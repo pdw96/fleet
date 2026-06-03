@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist/
+build/
+*.log
+.DS_Store
+.env
+.env.*
+fleet-data/
+coverage/
+*.tsbuildinfo
