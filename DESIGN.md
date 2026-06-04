@@ -98,7 +98,17 @@ goal ──▶ Planner(LLM) ──▶ TaskGraph(작업 분해)
         Summarizer ──▶ 최종 산출물 vs 원래 요구사항 누락 점검
 ```
 
-- 역할↔LLM 배정은 정책(`AssignmentPolicy`)으로 분리: `manual`, `round-robin`, `capability-scored`.
+- 역할↔LLM 배정은 정책(`AssignmentPolicy`)으로 분리: `manual`(사용자 지정), `round-robin`(순환),
+  `capability-scored`(적합도 기반). 배정 대상은 오케스트레이터가 실제 실행하는
+  `ASSIGNABLE_ROLES`(planner·implementer·reviewer·summarizer)로 한정한다.
+- **capability-scored 채점**: 세션별 `capabilities`(잘하는 역할)에 대한 이진 적합도(역할 포함=1) 최고 LLM
+  선택 → 동점 시 이번 실행에서 덜 쓰인 LLM(부하분산) → 그래도 동점이면 인덱스. 어떤 LLM도 맡지 않는
+  역할(전부 0점)은 자동으로 round-robin 으로 수렴해 한 LLM 독식·자기검토를 막는다. 결정론 보장.
+- **역량 시드**: 세션 등록 시 CLI 어댑터 / API provider 별 기본 역량을 시드한다(서로 다른 역할로 차별화 →
+  capability-scored 가 빈 설정에서도 즉시 분산 동작). `claude`/`anthropic`→`reviewer`,
+  `codex`/`openai`→`implementer`, `gemini`/`google`→`planner`+`summarizer`. [세션] 탭에서 토글로 수정하며
+  세션 수명 동안 유지(in-memory, 재시작 초기화). 정의: `engine.ts` 의 `DEFAULT_CAPABILITIES`.
+- 실행된 LLM 은 `Task.assignedLlmId`(폴백 해소 후 id)로 기록해 배정 효과를 추적·검증 가능하게 한다.
 - 재검토 루프는 결정론적 제어(최대 반복·종료 조건)로 무한루프 방지. 단위 테스트 대상.
 
 ---
