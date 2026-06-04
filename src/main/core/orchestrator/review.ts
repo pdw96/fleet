@@ -3,18 +3,24 @@ export interface ReviewVerdict {
   feedback: string
 }
 
-/** 구현 작업 프롬프트 (선택적 이전 피드백 반영). */
+/** 구현 작업 프롬프트 (선택적 이전 피드백 반영, 선택적 파일 아티팩트 형식 요청). */
 export function buildImplementPrompt(
   goal: string,
   taskTitle: string,
   taskDescription: string,
   feedback?: string,
+  wantsArtifacts = false,
 ): string {
   const parts = [
     `프로젝트 목표:\n${goal}`,
     `\n담당 작업: ${taskTitle}\n${taskDescription}`,
     '\n이 작업을 수행하고 산출물을 구체적으로 제시하라.',
   ]
+  if (wantsArtifacts) {
+    parts.push(
+      '\n파일을 생성/수정하려면 각 파일을 다음 형식의 코드펜스로 출력하라(워크스페이스 상대경로):\n```file:상대/경로.ext\n<파일 전체 내용>\n```',
+    )
+  }
   if (feedback && feedback.trim()) {
     parts.push(`\n이전 검토 피드백을 반드시 반영하라:\n${feedback.trim()}`)
   }
@@ -38,9 +44,11 @@ export function buildReviewPrompt(taskTitle: string, taskDescription: string, ou
 
 /** 리뷰 출력 파싱: 첫 토큰 APPROVE/REVISE + 피드백. */
 export function parseReviewVerdict(text: string): ReviewVerdict {
-  const trimmed = text.trim()
-  const approved = /^\s*APPROVE\b/i.test(trimmed)
-  const feedback = trimmed.replace(/^\s*(APPROVE|REVISE)\b[:\s]*/i, '').trim()
+  // 앞쪽의 마크다운 강조·인용부호·리스트 마커·공백을 벗겨 판정 토큰을 노출시킨다
+  // (예: "**APPROVE**", '"APPROVE"', "- APPROVE" 도 승인으로 인식). 'APPROVED' 변형도 허용.
+  const normalized = text.trim().replace(/^[\s*_`"'>•-]+/, '')
+  const approved = /^APPROVED?\b/i.test(normalized)
+  const feedback = normalized.replace(/^(APPROVED?|REVISE[DS]?)\b[:\s]*/i, '').trim()
   return { approved, feedback }
 }
 

@@ -15,11 +15,27 @@ export function ProjectPanel({ sessions }: Props) {
   const [events, setEvents] = useState<OrchestratorEvent[]>([])
   const [result, setResult] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [workspace, setWorkspace] = useState<string | null>(null)
 
   useEffect(() => {
     const unsub = window.fleet.onOrchestratorEvent((e) => setEvents((prev) => [...prev, e]))
     return unsub
   }, [])
+
+  useEffect(() => {
+    void window.fleet
+      .getWorkspace()
+      .then(setWorkspace)
+      .catch(() => undefined)
+  }, [])
+
+  async function pickWorkspace() {
+    try {
+      setWorkspace(await window.fleet.selectWorkspace())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
 
   async function run() {
     if (!goal.trim()) return
@@ -78,6 +94,16 @@ export function ProjectPanel({ sessions }: Props) {
           <button className="btn" style={{ marginLeft: 'auto' }} onClick={run} disabled={!canRun}>
             {running ? '실행 중…' : '오케스트레이션 실행'}
           </button>
+        </div>
+        <div className="row" style={{ alignItems: 'center', marginTop: 12, gap: 8 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => void pickWorkspace()}>
+            워크스페이스 선택
+          </button>
+          <span className="meta">
+            {workspace
+              ? `산출물·검증 활성 → ${workspace}`
+              : '워크스페이스 미설정 — 파일 기록/검증 비활성(텍스트 산출물만)'}
+          </span>
         </div>
         {noCapsConfigured && (
           <p className="note-warn" style={{ marginBottom: 0 }}>

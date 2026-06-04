@@ -234,6 +234,8 @@ export interface RunResult {
   projectId: string
   tasks: Task[]
   summary: string
+  /** 검증 단계가 실행된 경우의 결과(요구사항 5). 미실행이면 undefined. */
+  verifications?: VerificationResult[]
 }
 
 export type OrchestratorEventType =
@@ -245,6 +247,9 @@ export type OrchestratorEventType =
   | 'task.review'
   | 'task.done'
   | 'task.failed'
+  | 'task.artifacts'
+  | 'verify.passed'
+  | 'verify.failed'
   | 'summary'
   | 'project.done'
 
@@ -300,6 +305,10 @@ export interface FleetBridge {
   listProjects(): Promise<Project[]>
   getProjectTasks(projectId: string): Promise<Task[]>
   runProject(req: RunProjectRequest): Promise<RunResult>
+  /** 산출물 기록·검증 워크스페이스 조회. null 이면 비활성(파일 기록/검증 안 함). */
+  getWorkspace(): Promise<string | null>
+  /** 워크스페이스 디렉터리 선택(취소 시 기존 값 유지). 적용된 경로(또는 null) 반환. */
+  selectWorkspace(): Promise<string | null>
 
   // 채팅
   createRoom(title: string, participants?: string[]): Promise<ChatRoom>

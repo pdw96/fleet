@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import type {
   AgentRole,
   ApiProviderConfig,
@@ -61,6 +61,16 @@ function registerIpc(engine: FleetEngine): void {
   ipcMain.handle('fleet:project:list', () => engine.listProjects())
   ipcMain.handle('fleet:project:tasks', (_e, projectId: string) => engine.getProjectTasks(projectId))
   ipcMain.handle('fleet:project:run', (_e, req: RunProjectRequest) => engine.runProjectFlow(req))
+  ipcMain.handle('fleet:workspace:get', () => engine.getWorkspace())
+  ipcMain.handle('fleet:workspace:select', async () => {
+    const res = await dialog.showOpenDialog({
+      title: '산출물 워크스페이스 선택',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (res.canceled || res.filePaths.length === 0) return engine.getWorkspace()
+    engine.setWorkspace(res.filePaths[0])
+    return res.filePaths[0]
+  })
 
   // 채팅
   ipcMain.handle('fleet:chat:createRoom', (_e, title: string, participants?: string[]) =>

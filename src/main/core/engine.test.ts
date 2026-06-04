@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ChatStreamEvent } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
@@ -71,12 +74,92 @@ describe('FleetEngine', () => {
     await expect(engine.runProjectFlow({ goal: 'x' })).rejects.toThrow('세션이 없습니다')
   })
 
+  it('writes implementer artifacts to the workspace and runs verification when workspaceDir is set', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-'))
+    try {
+      const runner: CommandRunner = async (_cmd, args) => {
+        const prompt = args.join(' ')
+        if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+        if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
+        if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
+        // 구현: 파일 아티팩트를 출력
+        return { code: 0, stdout: ['```file:out.txt', 'hello', '```'].join('\n'), stderr: '' }
+      }
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({
+        store,
+        runner,
+        workspaceDir: dir,
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
+      })
+      engine.registerCliSession('claude')
+
+      const result = await engine.runProjectFlow({ goal: 'g' })
+
+      // 산출물이 워크스페이스에 실제로 기록된다(승인 게이트 통과)
+      expect(readFileSync(join(dir, 'out.txt'), 'utf8')).toBe('hello')
+      // 검증이 실행되고 결과가 surface 된다
+      expect((result.verifications ?? []).length).toBeGreaterThan(0)
+      expect(result.verifications?.every((v) => v.passed)).toBe(true)
+      expect(store.getProject(result.projectId)?.status).toBe('done')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('setSessionCapabilities stores capabilities on the live descriptor', () => {
     const engine = createFleetEngine({ runner: roleRunner })
     engine.registerCliSession('claude')
     const d = engine.setSessionCapabilities('cli:claude', ['reviewer', 'planner'])
     expect(d.capabilities).toEqual(['reviewer', 'planner'])
     expect(engine.listSessions()[0].capabilities).toEqual(['reviewer', 'planner'])
+  })
+
+  it('activates artifact writing after setWorkspace at runtime', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-ws-'))
+    try {
+      const runner: CommandRunner = async (_c, args) => {
+        const p = args.join(' ')
+        if (p.includes('JSON')) return { code: 0, stdout: '[{"title":"T","description":"d"}]', stderr: '' }
+        if (p.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
+        if (p.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
+        return { code: 0, stdout: ['```file:made.txt', 'hi', '```'].join('\n'), stderr: '' }
+      }
+      const engine = createFleetEngine({ runner, verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }) })
+      engine.registerCliSession('claude')
+      expect(engine.getWorkspace()).toBeNull()
+      engine.setWorkspace(dir)
+      expect(engine.getWorkspace()).toBe(dir)
+      await engine.runProjectFlow({ goal: 'g' })
+      expect(readFileSync(join(dir, 'made.txt'), 'utf8')).toBe('hi')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('discussRoom isolates a failing llm and continues with the others', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add({
+      id: 'bad',
+      descriptor: { id: 'bad', kind: 'api', displayName: 'bad', ref: 'bad', model: '' },
+      async send() {
+        throw new Error('boom')
+      },
+      async dispose() {},
+    })
+    sessions.add({
+      id: 'good',
+      descriptor: { id: 'good', kind: 'api', displayName: 'good', ref: 'good', model: '' },
+      async send() {
+        return '안녕하세요'
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ store, sessions })
+    const room = engine.createRoom('방', ['bad', 'good'])
+    const msgs = await engine.discussRoom(room.id, ['bad', 'good'])
+    expect(msgs.map((m) => m.content)).toContain('안녕하세요')
   })
 
   it('setSessionCapabilities throws for an unknown session', () => {

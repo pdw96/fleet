@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -36,6 +36,16 @@ describe('memory store — projects & tasks', () => {
     expect(tasks).toHaveLength(2)
     expect(tasks.map((t) => t.role)).toEqual(['architect', 'implementer'])
     expect(tasks.every((t) => t.status === 'pending')).toBe(true)
+  })
+
+  it('updates a task dependsOn (위상 스케줄용 의존성 해소)', () => {
+    const store = createMemoryStore(deterministic())
+    const p = store.createProject({ goal: 'goal' })
+    const a = store.createTask({ projectId: p.id, title: 'A', description: '' })
+    const b = store.createTask({ projectId: p.id, title: 'B', description: '' })
+    expect(b.dependsOn).toEqual([])
+    store.updateTask(b.id, { dependsOn: [a.id] })
+    expect(store.getTask(b.id)?.dependsOn).toEqual([a.id])
   })
 
   it('updates a task status and assignment', () => {
@@ -121,5 +131,19 @@ describe('json-file store', () => {
     const s = createJsonFileStore(dir)
     expect(s.listProjects()).toHaveLength(0)
     expect(s.snapshot()).toEqual({ projects: [], tasks: [], rooms: [], messages: [], events: [] })
+  })
+
+  it('backs up a corrupted store file instead of silently discarding it', () => {
+    writeFileSync(join(dir, 'fleet-store.json'), '{ 손상된 JSON', 'utf8')
+    const s = createJsonFileStore(dir)
+    expect(s.listProjects()).toHaveLength(0) // 깨진 파일 → 빈 상태로 복구
+    expect(existsSync(join(dir, 'fleet-store.json.corrupt'))).toBe(true) // 원본은 백업되어 보존
+  })
+
+  it('persists atomically without leaving a temp file', () => {
+    const s = createJsonFileStore(dir, deterministic())
+    s.createProject({ goal: 'g' })
+    expect(existsSync(join(dir, 'fleet-store.json'))).toBe(true)
+    expect(existsSync(join(dir, 'fleet-store.json.tmp'))).toBe(false)
   })
 })
