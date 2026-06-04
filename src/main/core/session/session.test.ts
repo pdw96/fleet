@@ -321,6 +321,47 @@ describe('createCliSession', () => {
   })
 })
 
+describe('createCliSession streaming', () => {
+  const streamAdapter: CliAdapter = {
+    ...claudeAdapter,
+    streaming: { args: ['--output-format', 'stream-json'], parse: 'claude-stream' },
+  }
+
+  it('onChunk 으로 토큰 델타를 순차 방출하고 합쳐서 최종 텍스트를 반환한다', async () => {
+    const lines = [
+      '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"안녕"}}}',
+      '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":" 세계"}}}',
+      '{"type":"result","result":"안녕 세계"}',
+    ]
+    let capturedArgs: string[] = []
+    const runner: CommandRunner = async (_c, args, _t, onStdout) => {
+      capturedArgs = args
+      // 청크 경계를 일부러 라인 중간에서 쪼개 경계 처리를 검증
+      onStdout?.(lines[0] + '\n' + lines[1].slice(0, 12))
+      onStdout?.(lines[1].slice(12) + '\n' + lines[2] + '\n')
+      return { code: 0, stdout: lines.join('\n'), stderr: '' }
+    }
+    const s = createCliSession(cliDesc, streamAdapter, runner)
+    const chunks: string[] = []
+    const out = await s.send('q', { onChunk: (c) => chunks.push(c) })
+
+    expect(chunks).toEqual(['안녕', ' 세계']) // 델타만(result 무시), 순서 보존
+    expect(out).toBe('안녕 세계') // 델타 합산 = 최종 텍스트
+    expect(capturedArgs).toEqual(['-p', 'q', '--output-format', 'stream-json']) // 스트림 인자 덧붙음
+  })
+
+  it('streaming 어댑터라도 onChunk 가 없으면 버퍼링(스트림 인자 미부착)', async () => {
+    let capturedArgs: string[] = []
+    const runner: CommandRunner = async (_c, args) => {
+      capturedArgs = args
+      return { code: 0, stdout: '버퍼 응답\n', stderr: '' }
+    }
+    const s = createCliSession(cliDesc, streamAdapter, runner)
+    expect(await s.send('q')).toBe('버퍼 응답')
+    expect(capturedArgs).toEqual(['-p', 'q']) // 스트림 인자 없음
+  })
+})
+
 describe('createSessionManager', () => {
   it('manages CLI and API sessions uniformly', async () => {
     const { provider } = fakeProvider()

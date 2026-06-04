@@ -1,4 +1,4 @@
-import type { CliOutputFormat } from '../../../shared/types'
+import type { CliOutputFormat, StreamParseFormat } from '../../../shared/types'
 
 /** codex `exec --json` 이벤트의 최소 형태. 알 수 없는 필드는 무시한다. */
 interface CodexEvent {
@@ -58,6 +58,48 @@ export function extractCodexThreadId(raw: string): string | undefined {
     }
   }
   return undefined
+}
+
+/** 스트림 1라인 파서의 최소 형태. */
+interface StreamLine {
+  type?: unknown
+  role?: unknown
+  delta?: unknown
+  content?: unknown
+  event?: { delta?: { type?: unknown; text?: unknown } }
+  item?: { type?: unknown; text?: unknown }
+}
+
+/**
+ * 스트림 JSONL 한 줄에서 사용자에게 보일 '텍스트 델타'를 추출한다(없으면 빈 문자열).
+ * 포맷별 이벤트 형태는 실측 확정(claude docs / gemini 0.45.0 / codex 0.136).
+ * JSON 이 아닌 줄(안내/빈 줄)은 빈 문자열로 무시한다.
+ */
+export function parseStreamLine(format: StreamParseFormat, line: string): string {
+  const trimmed = line.trim()
+  if (trimmed.charCodeAt(0) !== 0x7b /* '{' */) return ''
+  let e: StreamLine
+  try {
+    e = JSON.parse(trimmed) as StreamLine
+  } catch {
+    return ''
+  }
+  switch (format) {
+    case 'claude-stream':
+      return e.type === 'stream_event' && e.event?.delta?.type === 'text_delta' && typeof e.event.delta.text === 'string'
+        ? e.event.delta.text
+        : ''
+    case 'gemini-stream':
+      return e.type === 'message' && e.role === 'assistant' && e.delta === true && typeof e.content === 'string'
+        ? e.content
+        : ''
+    case 'codex-jsonl':
+      return e.type === 'item.completed' && e.item?.type === 'agent_message' && typeof e.item.text === 'string'
+        ? e.item.text
+        : ''
+    default:
+      return ''
+  }
 }
 
 /**

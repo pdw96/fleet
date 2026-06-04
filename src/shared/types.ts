@@ -41,6 +41,21 @@ export interface CliSessionSpec {
   idSource: SessionIdSource
 }
 
+/**
+ * 스트림 라인 → 텍스트 델타 추출 전략(실측 확정).
+ * - 'claude-stream' : `{type:'stream_event', event.delta:{type:'text_delta', text}}` 의 text.
+ * - 'gemini-stream' : `{type:'message', role:'assistant', delta:true, content}` 의 content.
+ * - 'codex-jsonl'   : `{type:'item.completed', item:{type:'agent_message', text}}` 의 text(이벤트 단위).
+ */
+export type StreamParseFormat = 'claude-stream' | 'gemini-stream' | 'codex-jsonl'
+
+/** 토큰/이벤트 스트리밍 사양('길 A' 2단계). onChunk 가 주어질 때만 활성화된다. */
+export interface CliStreamSpec {
+  /** 스트리밍 활성 추가 인자(base 인자 뒤에 덧붙는다). codex 는 base 에 --json 이 이미 있어 []. */
+  args: string[]
+  parse: StreamParseFormat
+}
+
 /** 등록 가능한 CLI 어댑터 (요구사항 2A). 새 CLI 는 이 형태로 레지스트리에 추가. */
 export interface CliAdapter {
   id: string
@@ -62,6 +77,8 @@ export interface CliAdapter {
    * headless.parse 를 재사용한다(codex 는 'codex-jsonl', claude/gemini 는 'text').
    */
   session?: CliSessionSpec
+  /** 토큰/이벤트 스트리밍 사양('길 A' 2단계). 미지정 시 버퍼링(최종 1회). */
+  streaming?: CliStreamSpec
 }
 
 /** CLI 감지 결과 — IPC 로 renderer 에 전달. */

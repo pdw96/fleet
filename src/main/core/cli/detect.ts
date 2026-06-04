@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder'
 import spawn from 'cross-spawn'
 import type { CliAdapter, CliDetectionResult } from '../../../shared/types'
 
@@ -9,8 +10,16 @@ export interface CommandResult {
   spawnError?: 'ENOENT' | 'ETIMEDOUT' | 'ENOBUFS' | string
 }
 
-/** 명령 실행기 — 테스트에서 mock 주입 가능하도록 분리. */
-export type CommandRunner = (command: string, args: string[], timeoutMs: number) => Promise<CommandResult>
+/**
+ * 명령 실행기 — 테스트에서 mock 주입 가능하도록 분리.
+ * `onStdout` 가 주어지면 stdout 디코드 청크를 도착 즉시 전달한다(스트리밍). 미지정 시 버퍼링만.
+ */
+export type CommandRunner = (
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  onStdout?: (chunk: string) => void,
+) => Promise<CommandResult>
 
 const MAX_BUFFER = 10 * 1024 * 1024
 
@@ -24,13 +33,15 @@ const MAX_BUFFER = 10 * 1024 * 1024
  * cross-spawn 은 PATHEXT 로 셰임을 찾고, cmd.exe 경유 시 인자를 안전하게
  * 이스케이프(주입 방지)해 실행한다. POSIX 에서는 일반 spawn 과 동일하게 동작.
  */
-export const defaultRunner: CommandRunner = (command, args, timeoutMs) =>
+export const defaultRunner: CommandRunner = (command, args, timeoutMs, onStdout) =>
   new Promise<CommandResult>((resolve) => {
     const outChunks: Buffer[] = []
     const errChunks: Buffer[] = []
     let outLen = 0
     let errLen = 0
     let settled = false
+    // 스트리밍 시 멀티바이트 경계 안전 디코드(청크가 UTF-8 글자 중간에서 끊겨도 OK).
+    const decoder = onStdout ? new StringDecoder('utf8') : null
 
     // 멀티바이트(UTF-8) 경계 깨짐 방지를 위해 Buffer 로 모았다가 마지막에 디코드한다.
     const decode = () => ({
@@ -62,6 +73,7 @@ export const defaultRunner: CommandRunner = (command, args, timeoutMs) =>
     child.stdout?.on('data', (c: Buffer) => {
       outChunks.push(c)
       outLen += c.length
+      if (onStdout && decoder) onStdout(decoder.write(c))
       if (outLen > MAX_BUFFER) onOverflow()
     })
     child.stderr?.on('data', (c: Buffer) => {
@@ -74,6 +86,10 @@ export const defaultRunner: CommandRunner = (command, args, timeoutMs) =>
       finish({ code: null, spawnError: err.code ?? err.message })
     })
     child.on('close', (code) => {
+      if (onStdout && decoder) {
+        const rest = decoder.end()
+        if (rest) onStdout(rest)
+      }
       finish({ code })
     })
 

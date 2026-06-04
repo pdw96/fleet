@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleanCliOutput, extractCodexThreadId, parseCodexJsonl } from './output'
+import { cleanCliOutput, extractCodexThreadId, parseCodexJsonl, parseStreamLine } from './output'
 
 // 실제 codex 0.136 `exec --json` 출력 (read-only, "PONG" 응답)에서 캡처한 스트림.
 // 맨 앞의 stdin 안내 줄은 JSON 이 아니며 반드시 무시되어야 한다.
@@ -72,6 +72,36 @@ describe('extractCodexThreadId', () => {
 
   it('thread.started 가 없으면 undefined 를 반환한다', () => {
     expect(extractCodexThreadId('{"type":"turn.started"}\n{"type":"turn.completed"}')).toBeUndefined()
+  })
+})
+
+describe('parseStreamLine', () => {
+  it("claude-stream: text_delta 이벤트의 text 만 추출한다", () => {
+    const line = '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"안녕"}}}'
+    expect(parseStreamLine('claude-stream', line)).toBe('안녕')
+    // result/기타 이벤트는 무시
+    expect(parseStreamLine('claude-stream', '{"type":"result","result":"안녕 세계"}')).toBe('')
+    expect(parseStreamLine('claude-stream', '{"type":"stream_event","event":{"delta":{"type":"message_start"}}}')).toBe('')
+  })
+
+  it("gemini-stream: assistant delta:true 의 content 만 추출한다", () => {
+    const line = '{"type":"message","role":"assistant","content":"world","delta":true}'
+    expect(parseStreamLine('gemini-stream', line)).toBe('world')
+    // user 메시지/init/result 는 무시
+    expect(parseStreamLine('gemini-stream', '{"type":"message","role":"user","content":"hi"}')).toBe('')
+    expect(parseStreamLine('gemini-stream', '{"type":"init","session_id":"s"}')).toBe('')
+  })
+
+  it("codex-jsonl: agent_message 의 text 만 추출한다(이벤트 단위)", () => {
+    const line = '{"type":"item.completed","item":{"type":"agent_message","text":"PONG"}}'
+    expect(parseStreamLine('codex-jsonl', line)).toBe('PONG')
+    expect(parseStreamLine('codex-jsonl', '{"type":"thread.started","thread_id":"t"}')).toBe('')
+  })
+
+  it("JSON 이 아니거나 깨진 줄은 빈 문자열", () => {
+    expect(parseStreamLine('claude-stream', 'Reading additional input...')).toBe('')
+    expect(parseStreamLine('claude-stream', '{ broken')).toBe('')
+    expect(parseStreamLine('gemini-stream', '')).toBe('')
   })
 })
 
