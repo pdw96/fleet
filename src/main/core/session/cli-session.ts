@@ -37,6 +37,7 @@ export function createCliSession(
 ): LlmSession {
   const spec = opts.stateful ? adapter.session : undefined
   let sessionId: string | null = null
+  let started = false // start 성공 여부. resume 전환은 이 플래그로만 → 첫 실패가 세션을 오염시키지 않게.
   let chain: Promise<unknown> = Promise.resolve() // 동일 세션 직렬화 체인
 
   const runStateless = async (prompt: string, sendOpts: SendOptions): Promise<string> => {
@@ -51,17 +52,20 @@ export function createCliSession(
   }
 
   const runStateful = async (s: CliSessionSpec, prompt: string, sendOpts: SendOptions): Promise<string> => {
-    const first = sessionId === null
-    if (first && s.idSource === 'preassigned') sessionId = randomUUID()
-    const template = first ? s.startArgs : s.resumeArgs
-    const args = template.map((a) => a.replaceAll('{prompt}', prompt).replaceAll('{sessionId}', sessionId ?? ''))
+    const resuming = started // 성공적으로 시작된 세션만 재개한다(첫 실패 후엔 start 로 재시도).
+    // start 시도마다 새 id 를 생성한다(직전 실패 id 는 미사용 상태이므로 재사용하지 않는다).
+    if (!resuming && s.idSource === 'preassigned') sessionId = randomUUID()
+    const template = resuming ? s.resumeArgs : s.startArgs
+    // {sessionId} 를 먼저 치환하고 사용자 프롬프트를 마지막에 주입 → 프롬프트 내 리터럴 토큰 충돌 방지.
+    const args = template.map((a) => a.replaceAll('{sessionId}', sessionId ?? '').replaceAll('{prompt}', prompt))
     const res = await runner(adapter.command, args, timeoutMs)
-    assertRunOk(adapter.command, res)
-    if (first && s.idSource === 'codex-thread') {
+    assertRunOk(adapter.command, res) // throw → started 미전환 → 다음 send 도 start 로 재시도(세션 오염 방지)
+    if (!resuming && s.idSource === 'codex-thread') {
       const tid = extractCodexThreadId(res.stdout)
       if (!tid) throw new Error(`${adapter.command}: 응답에서 thread_id 를 찾지 못해 세션을 시작할 수 없습니다.`)
       sessionId = tid
     }
+    started = true // 모든 throw 를 통과한 뒤에만 resume 모드로 전환
     const out = cleanCliOutput(adapter.headless?.parse, res.stdout)
     sendOpts.onChunk?.(out)
     return out

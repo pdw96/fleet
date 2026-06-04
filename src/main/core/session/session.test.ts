@@ -204,6 +204,52 @@ describe('createCliSession', () => {
     expect(calls[1]).toEqual(['exec', 'resume', '--json', 'abc-123', 'q2'])
   })
 
+  it("preassigned: 첫 호출 실패는 세션을 오염시키지 않고 둘째 send 가 start 로 재시도한다", async () => {
+    const calls: string[][] = []
+    let n = 0
+    const runner: CommandRunner = async (_c, args) => {
+      calls.push(args)
+      n++
+      return n === 1 ? { code: 1, stdout: '', stderr: 'rate limit' } : { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      ...claudeAdapter,
+      session: {
+        startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+        resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+        idSource: 'preassigned',
+      },
+    }
+    const s = createCliSession(cliDesc, adapter, runner, undefined, { stateful: true })
+    await expect(s.send('q1')).rejects.toThrow('종료코드 1') // 첫 호출 실패
+    expect(await s.send('q2')).toBe('ok') // 둘째는 정상
+
+    expect(calls[0][1]).toBe('--session-id') // 첫 호출: start
+    // 둘째 호출도 여전히 start(--session-id) — 유령 세션 --resume 시도가 아니어야 한다
+    expect(calls[1][1]).toBe('--session-id')
+  })
+
+  it("프롬프트에 리터럴 {sessionId} 가 있어도 치환되지 않는다(토큰 충돌 방지)", async () => {
+    const calls: string[][] = []
+    const runner: CommandRunner = async (_c, args) => {
+      calls.push(args)
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      ...claudeAdapter,
+      session: {
+        startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+        resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+        idSource: 'preassigned',
+      },
+    }
+    const s = createCliSession(cliDesc, adapter, runner, undefined, { stateful: true })
+    await s.send('내 토큰은 {sessionId} 이다')
+    const id = calls[0][2]
+    expect(id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(calls[0][3]).toBe('내 토큰은 {sessionId} 이다') // 프롬프트 내 리터럴 보존(=id 로 치환 안 됨)
+  })
+
   it("동일 세션 동시 send 를 직렬화한다(codex id 캡처 레이스 방지)", async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {
