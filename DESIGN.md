@@ -127,7 +127,36 @@ goal ──▶ Planner(LLM) ──▶ TaskGraph(작업 분해)
 
 ---
 
-## 9. MVP 범위 (요구사항 8) → 완수 정의
+## 9. UI 토큰 스트리밍 (채팅 라이브 렌더링)
+
+CLI 토큰 스트리밍 코어(`CliSession.execute`가 `SendOptions.onChunk`로 토큰/이벤트 델타를 라인 단위
+파싱해 실시간 방출)를 채팅 UI까지 연결해, 응답을 토큰 단위로 라이브 렌더링한다.
+
+```
+engine.askLlm / discussRoom
+  └─ streamedAsk(streamId 발급) ─ controller.askLlm({onToken}) ─ session.send({onChunk})
+                                                                     └─ 토큰별 onChunk(delta)
+  └─ onChatStream 싱크로 방출 ─ start → delta* → end | error
+       └─ broadcast('fleet:chat:stream', webContents.send) ─ preload 구독 ─ ChatPanel 라이브 말풍선
+```
+
+- **이벤트 계약** `ChatStreamEvent`(`src/shared/types.ts`): `start | delta | end | error` 합타입.
+  최종 `ChatMessage.id`는 store 영속 시점에야 정해지므로, in-flight 응답은 메인이 발급한 `streamId`로
+  식별한다(발언 1회 = 1 streamId). 모든 변형에 `roomId`를 실어 렌더러가 비활성 방 이벤트를 거른다.
+- **방출은 엔진이 소유.** `streamedAsk`(`engine.ts`)가 `askLlm`·`discussRoom`을 감싸 이벤트를 방출 →
+  단일 질문과 AI 토론이 균일하게 흐른다. `onChatStream` 싱크 미주입 시 그대로 위임(스트리밍 비활성).
+- **전송은 §8 패턴 재사용.** `onOrchestratorEvent`와 동형의 broadcast(`fleet:chat:stream`) + preload
+  구독(해제 함수 반환). `AskOptions.onToken` → `session.send({onChunk})`로 코어 콜백에 연결.
+- **graceful degradation.** 비스트리밍 세션(API/스트리밍 미지원 CLI)은 `onChunk`가 최종 텍스트로 1회만
+  호출 → delta 1개로 도착(한 번에 표시). 스트리밍 활성 여부와 무관하게 동작 보존.
+- **렌더러 동시성 안전**(`ChatPanel.tsx`): 라이브 말풍선을 `streamId` 평면 보관(각 말풍선이 roomId 보유)하고
+  렌더 시 활성 방으로 필터 → 방 전환에도 백그라운드 스트림 유지. 구독은 마운트 1회. `end`는 말풍선을 제거하고
+  영속 메시지를 활성 방에 한해 낙관적 추가(토론 중간 발언 즉시 표시). 비동기 응답 도착 시점의 방 불일치
+  덮어쓰기는 `activeRoomRef`(최신 활성 방) 도착-방 가드로 차단한다.
+
+---
+
+## 10. MVP 범위 (요구사항 8) → 완수 정의
 
 1. 빌드·기동되는 Electron 데스크톱 앱 (smoke 통과)
 2. claude/codex/gemini CLI 설치 감지
@@ -141,7 +170,7 @@ goal ──▶ Planner(LLM) ──▶ TaskGraph(작업 분해)
 
 ---
 
-## 10. 품질 게이트
+## 11. 품질 게이트
 
 - `npm run typecheck` (tsc --noEmit, main+renderer+shared)
 - `npm run lint` (eslint)
