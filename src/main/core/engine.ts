@@ -95,8 +95,15 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const adapter = cliRegistry.get(adapterId)
       if (!adapter) throw new Error(`알 수 없는 CLI 어댑터: ${adapterId}`)
       const id = `cli:${adapterId}`
-      const descriptor: LlmDescriptor = { id, kind: 'cli', displayName: adapter.displayName, ref: adapterId, model: '' }
       // 기본 stateless. stateful 은 채팅 등 연속성이 필요한 경로에서만 opt-in (오케스트레이터 독립성 보존).
+      const descriptor: LlmDescriptor = {
+        id,
+        kind: 'cli',
+        displayName: adapter.displayName,
+        ref: adapterId,
+        model: '',
+        stateful: !!sessionOpts?.stateful,
+      }
       sessions.add(createCliSession(descriptor, adapter, runner, undefined, { stateful: sessionOpts?.stateful }))
       store.appendEvent({ type: 'session.registered', data: { id, kind: 'cli', stateful: !!sessionOpts?.stateful } })
       return descriptor

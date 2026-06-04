@@ -16,6 +16,7 @@ const PROVIDER_DEFAULTS: Record<ApiProviderConfig['provider'], string> = {
 export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [clis, setClis] = useState<CliDetectionResult[]>([])
   const [detecting, setDetecting] = useState(false)
+  const [stateful, setStateful] = useState(false)
 
   const [provider, setProvider] = useState<ApiProviderConfig['provider']>('anthropic')
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
@@ -36,7 +37,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   }
 
   async function registerCli(id: string) {
-    await window.fleet.registerCliSession(id)
+    await window.fleet.registerCliSession(id, { stateful })
     onRefresh()
   }
 
@@ -68,6 +69,12 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             {detecting ? '감지 중…' : '다시 감지'}
           </button>
         </div>
+        <label
+          style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 12, color: colors.muted, cursor: 'pointer' }}
+        >
+          <input type="checkbox" checked={stateful} onChange={(e) => setStateful(e.target.checked)} />
+          세션 재개(대화 맥락 유지) — CLI 자체 --resume 으로 멀티턴. ⚠ 오케스트레이터와 세션 공유 시 검증용.
+        </label>
         <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
           {clis.map((c) => (
             <li key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: colors.panel2, borderRadius: 6 }}>
@@ -130,6 +137,14 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               <span style={{ fontSize: 11, color: colors.accent, border: `1px solid ${colors.accent}`, borderRadius: 4, padding: '1px 6px' }}>
                 {s.kind.toUpperCase()}
               </span>
+              {s.stateful && (
+                <span
+                  style={{ fontSize: 10, color: colors.green, border: `1px solid ${colors.green}`, borderRadius: 4, padding: '1px 5px' }}
+                  title="세션 재개(대화 맥락 유지) 모드"
+                >
+                  STATEFUL
+                </span>
+              )}
               <strong>{s.displayName}</strong>
               <code style={{ color: colors.muted, fontSize: 11 }}>{s.id}</code>
               <button

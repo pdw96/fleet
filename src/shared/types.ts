@@ -96,6 +96,8 @@ export interface LlmDescriptor {
   /** kind==='cli' → CliAdapter.id, kind==='api' → ApiProviderConfig.id */
   ref: string
   model?: string
+  /** CLI 세션이 맥락 유지(세션 재개) 모드로 등록되었는지. */
+  stateful?: boolean
 }
 
 // ── 채팅 / 메시지 (요구사항 3) ────────────────────────────────────────────
@@ -243,7 +245,7 @@ export interface FleetBridge {
   // 세션 / CLI
   detectClis(): Promise<CliDetectionResult[]>
   listAdapters(): Promise<CliAdapter[]>
-  registerCliSession(adapterId: string): Promise<LlmDescriptor>
+  registerCliSession(adapterId: string, opts?: { stateful?: boolean }): Promise<LlmDescriptor>
   registerApiSession(config: ApiProviderConfig): Promise<LlmDescriptor>
   listSessions(): Promise<LlmDescriptor[]>
   removeSession(id: string): Promise<void>

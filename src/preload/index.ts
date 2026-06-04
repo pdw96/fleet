@@ -7,7 +7,7 @@ const api: FleetBridge = {
   // 세션 / CLI
   detectClis: () => ipcRenderer.invoke('fleet:cli:detect'),
   listAdapters: () => ipcRenderer.invoke('fleet:cli:adapters'),
-  registerCliSession: (adapterId) => ipcRenderer.invoke('fleet:session:registerCli', adapterId),
+  registerCliSession: (adapterId, opts) => ipcRenderer.invoke('fleet:session:registerCli', adapterId, opts),
   registerApiSession: (config) => ipcRenderer.invoke('fleet:session:registerApi', config),
   listSessions: () => ipcRenderer.invoke('fleet:session:list'),
   removeSession: (id) => ipcRenderer.invoke('fleet:session:remove', id),
