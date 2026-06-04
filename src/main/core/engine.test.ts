@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import type { ChatStreamEvent } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
+import { createSessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
 
 function deterministic() {
@@ -127,5 +129,128 @@ describe('FleetEngine', () => {
     expect(msg.content).toBe('LLM 답변')
     expect(engine.roomHistory(room.id)).toHaveLength(2)
     expect(engine.listRooms()).toHaveLength(1)
+  })
+})
+
+/** claude-stream JSONL 델타를 onStdout 으로 흘리는 러너(스트리밍 코어 구동). */
+const streamRunner: CommandRunner = async (_cmd, _args, _t, onStdout) => {
+  onStdout?.('{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"안"}}}\n')
+  onStdout?.('{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"녕"}}}\n')
+  return { code: 0, stdout: '안녕', stderr: '' }
+}
+
+describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
+  it('askLlm 은 start → delta* → end 를 동일 streamId 로 방출하고 end 에 영속 메시지를 싣는다', async () => {
+    const events: ChatStreamEvent[] = []
+    const engine = createFleetEngine({ runner: streamRunner, onChatStream: (e) => events.push(e) })
+    engine.registerCliSession('claude')
+    const room = engine.createRoom('방', ['cli:claude'])
+    engine.postUserMessage(room.id, '안녕?')
+
+    const msg = await engine.askLlm(room.id, 'cli:claude')
+
+    expect(events[0].kind).toBe('start')
+    const sid = events[0].streamId
+    expect(events.every((e) => e.streamId === sid)).toBe(true) // 한 발언 = 한 streamId
+
+    const deltas = events.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
+    expect(deltas).toEqual(['안', '녕']) // 토큰 델타 순서 보존
+
+    const end = events.at(-1)
+    expect(end?.kind).toBe('end')
+    expect(end?.kind === 'end' && end.message.id).toBe(msg.id) // end 메시지 = 반환된 영속 메시지
+    expect(msg.content).toBe('안녕')
+  })
+
+  it('실패 시 error 를 방출하고 거부를 전파한다(IPC reject 경로 보존)', async () => {
+    const events: ChatStreamEvent[] = []
+    const failRunner: CommandRunner = async () => ({ code: 1, stdout: '', stderr: 'boom' })
+    const engine = createFleetEngine({ runner: failRunner, onChatStream: (e) => events.push(e) })
+    engine.registerCliSession('claude')
+    const room = engine.createRoom('방', ['cli:claude'])
+    engine.postUserMessage(room.id, 'x')
+
+    await expect(engine.askLlm(room.id, 'cli:claude')).rejects.toThrow('종료코드 1')
+
+    expect(events[0].kind).toBe('start')
+    const last = events.at(-1)
+    expect(last?.kind).toBe('error')
+    expect(last?.kind === 'error' && last.message).toContain('종료코드 1')
+  })
+
+  it('discuss 는 턴마다 고유 streamId 로 start/end 를 방출한다', async () => {
+    const events: ChatStreamEvent[] = []
+    const engine = createFleetEngine({ runner: streamRunner, onChatStream: (e) => events.push(e) })
+    engine.registerCliSession('claude')
+    engine.registerCliSession('codex')
+    const room = engine.createRoom('방', ['cli:claude', 'cli:codex'])
+    engine.postUserMessage(room.id, '주제')
+
+    await engine.discussRoom(room.id, ['cli:claude', 'cli:codex'], 1)
+
+    const starts = events.filter((e) => e.kind === 'start')
+    expect(starts).toHaveLength(2) // 2 LLM × 1 라운드
+    expect(new Set(starts.map((e) => e.streamId)).size).toBe(2) // 턴마다 고유 streamId
+    expect(events.filter((e) => e.kind === 'end')).toHaveLength(2)
+  })
+
+  it('onChatStream 미지정이면 스트림 인자 없이 버퍼링으로 동작한다(기존 경로 보존)', async () => {
+    let capturedArgs: string[] = []
+    const runner: CommandRunner = async (_c, args) => {
+      capturedArgs = args
+      return { code: 0, stdout: '버퍼 응답', stderr: '' }
+    }
+    const engine = createFleetEngine({ runner }) // onChatStream 미지정
+    engine.registerCliSession('claude')
+    const room = engine.createRoom('방', ['cli:claude'])
+    engine.postUserMessage(room.id, 'q')
+
+    const msg = await engine.askLlm(room.id, 'cli:claude')
+    expect(msg.content).toBe('버퍼 응답')
+    expect(capturedArgs).not.toContain('stream-json') // 스트림 인자 미부착
+  })
+
+  it('비스트리밍 세션(onChunk 1회)은 delta 가 최종 텍스트 1회로 도착한다(start→delta×1→end)', async () => {
+    const events: ChatStreamEvent[] = []
+    const sessions = createSessionManager()
+    sessions.add({
+      id: 'fake',
+      descriptor: { id: 'fake', kind: 'api', displayName: 'Fake', ref: 'fake', model: '' },
+      async send(_prompt, opts) {
+        opts?.onChunk?.('전체응답') // API 세션처럼 최종 텍스트를 1회만 흘림
+        return '전체응답'
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ sessions, onChatStream: (e) => events.push(e) })
+    const room = engine.createRoom('방', ['fake'])
+    engine.postUserMessage(room.id, 'q')
+
+    const msg = await engine.askLlm(room.id, 'fake')
+
+    const deltas = events.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
+    expect(deltas).toEqual(['전체응답']) // 정확히 1회, 전체 텍스트
+    expect(deltas[0]).toBe(msg.content) // delta = 영속 메시지 본문
+    expect(events[0].kind).toBe('start')
+    expect(events.at(-1)?.kind).toBe('end')
+  })
+
+  it('codex-jsonl 포맷도 streamedAsk → onChatStream delta 로 흐른다(이벤트 단위 단일 델타)', async () => {
+    const events: ChatStreamEvent[] = []
+    const codexLine = '{"type":"item.completed","item":{"type":"agent_message","text":"코덱스 응답"}}'
+    const codexRunner: CommandRunner = async (_c, _a, _t, onStdout) => {
+      onStdout?.(codexLine + '\n')
+      return { code: 0, stdout: codexLine, stderr: '' }
+    }
+    const engine = createFleetEngine({ runner: codexRunner, onChatStream: (e) => events.push(e) })
+    engine.registerCliSession('codex')
+    const room = engine.createRoom('방', ['cli:codex'])
+    engine.postUserMessage(room.id, 'q')
+
+    const msg = await engine.askLlm(room.id, 'cli:codex')
+
+    const deltas = events.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
+    expect(deltas).toEqual(['코덱스 응답']) // codex 는 토큰이 아닌 이벤트 단위 → 단일 델타
+    expect(msg.content).toBe('코덱스 응답')
   })
 })

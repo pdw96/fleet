@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { FleetBridge, OrchestratorEvent } from '../shared/types'
+import type { ChatStreamEvent, FleetBridge, OrchestratorEvent } from '../shared/types'
 
 const api: FleetBridge = {
   getAppInfo: () => ipcRenderer.invoke('fleet:app:info'),
@@ -32,6 +32,13 @@ const api: FleetBridge = {
     ipcRenderer.on('fleet:orchestrator:event', listener)
     return () => {
       ipcRenderer.removeListener('fleet:orchestrator:event', listener)
+    }
+  },
+  onChatStream: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: ChatStreamEvent): void => callback(event)
+    ipcRenderer.on('fleet:chat:stream', listener)
+    return () => {
+      ipcRenderer.removeListener('fleet:chat:stream', listener)
     }
   },
 }

@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
-import type { ApiProviderConfig, AppInfo, OrchestratorEvent, RunProjectRequest } from '../shared/types'
+import type { ApiProviderConfig, AppInfo, ChatStreamEvent, OrchestratorEvent, RunProjectRequest } from '../shared/types'
 import { createFleetEngine, type FleetEngine } from './core/engine'
 import { createJsonFileStore } from './core/store/json-file'
 
@@ -10,9 +10,19 @@ function broadcastOrchestratorEvent(event: OrchestratorEvent): void {
   }
 }
 
+function broadcastChatStream(event: ChatStreamEvent): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('fleet:chat:stream', event)
+  }
+}
+
 function buildEngine(): FleetEngine {
   const store = createJsonFileStore(join(app.getPath('userData'), 'fleet'))
-  return createFleetEngine({ store, onOrchestratorEvent: broadcastOrchestratorEvent })
+  return createFleetEngine({
+    store,
+    onOrchestratorEvent: broadcastOrchestratorEvent,
+    onChatStream: broadcastChatStream,
+  })
 }
 
 function registerIpc(engine: FleetEngine): void {

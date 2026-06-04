@@ -255,6 +255,26 @@ export interface RunProjectRequest {
   maxReviewRounds?: number
 }
 
+// ── 채팅 토큰 스트리밍 (IPC 이벤트 채널) ─────────────────────────────────────
+/**
+ * LLM 응답을 토큰 단위로 렌더러에 흘리는 이벤트(메인 → 렌더러 브로드캐스트).
+ * 최종 ChatMessage.id 는 store 영속 시점에야 정해지므로, in-flight 응답은
+ * 메인이 발급한 `streamId` 로 식별한다. 한 발언(askLlm 1회)이 한 streamId 다.
+ *
+ *  - start : 발언 시작. 렌더러는 빈 말풍선(작성자/역할 표시)을 즉시 띄운다.
+ *  - delta : 토큰/이벤트 증분 텍스트. 누적해 말풍선에 이어 붙인다.
+ *  - end   : 발언 완료. 영속된 최종 메시지를 싣는다(스트리밍 말풍선 → 확정 메시지로 교체).
+ *  - error : 발언 실패. 렌더러는 말풍선을 에러 표시로 바꾸거나 제거한다.
+ *
+ * 모든 변형에 roomId 를 실어 렌더러가 활성 방이 아닌 이벤트를 쉽게 거른다.
+ * 비스트리밍 세션(API/스트리밍 미지원 CLI)은 delta 가 최종 텍스트 1회로 도착한다.
+ */
+export type ChatStreamEvent =
+  | { kind: 'start'; streamId: string; roomId: string; llmId: string; role?: AgentRole }
+  | { kind: 'delta'; streamId: string; roomId: string; delta: string }
+  | { kind: 'end'; streamId: string; roomId: string; message: ChatMessage }
+  | { kind: 'error'; streamId: string; roomId: string; message: string }
+
 // ── preload 가 노출하는 브리지 계약 ────────────────────────────────────────
 export interface FleetBridge {
   getAppInfo(): Promise<AppInfo>
@@ -284,4 +304,6 @@ export interface FleetBridge {
   listEvents(): Promise<FleetEvent[]>
   /** 오케스트레이터 진행 이벤트 구독 (해제 함수 반환). */
   onOrchestratorEvent(callback: (event: OrchestratorEvent) => void): () => void
+  /** 채팅 응답 토큰 스트림 구독 (해제 함수 반환). */
+  onChatStream(callback: (event: ChatStreamEvent) => void): () => void
 }

@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import type {
   AgentRole,
   ApiProviderConfig,
   AssignmentPolicy,
   ChatMessage,
   ChatRoom,
+  ChatStreamEvent,
   CliAdapter,
   CliDetectionResult,
   FleetEvent,
@@ -12,7 +14,7 @@ import type {
   RoleAssignment,
   Task,
 } from '../../shared/types'
-import { createChatController, type AskOptions } from './chat/room'
+import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
 import { createCliRegistry, type CliRegistry } from './cli/registry'
 import { assignRoles } from './orchestrator/assignment'
@@ -35,6 +37,8 @@ export interface FleetEngineOptions {
   http?: HttpClient
   runner?: CommandRunner
   onOrchestratorEvent?: (e: OrchestratorEvent) => void
+  /** 채팅 응답 토큰 스트림 싱크(미지정 시 버퍼링: end 에서 최종 메시지만). */
+  onChatStream?: (e: ChatStreamEvent) => void
 }
 
 export interface RunProjectInput {
@@ -81,6 +85,35 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const cliRegistry = opts.cliRegistry ?? createCliRegistry()
   const http = opts.http ?? defaultHttp
   const runner = opts.runner ?? defaultRunner
+
+  /**
+   * 한 발언(askLlm 1회)을 스트리밍 이벤트로 감싼다 — 채팅 단일 질문과 AI 토론이 균일하게 흐른다.
+   * onChatStream 싱크가 없으면 그대로 위임(스트리밍 비활성). 있으면 streamId 를 발급해
+   * start → delta* → end(영속 메시지) 를 방출하고, 실패 시 error 를 방출한 뒤 그대로 rethrow 한다
+   * (호출자 IPC 가 여전히 reject 되어 렌더러의 busy 해제 경로가 정상 동작하도록).
+   */
+  const streamedAsk = async (
+    controller: ChatController,
+    roomId: string,
+    llmId: string,
+    askOpts?: AskOptions,
+  ): Promise<ChatMessage> => {
+    const emit = opts.onChatStream
+    if (!emit) return controller.askLlm(llmId, askOpts)
+    const streamId = randomUUID()
+    emit({ kind: 'start', streamId, roomId, llmId, role: askOpts?.role })
+    try {
+      const message = await controller.askLlm(llmId, {
+        ...askOpts,
+        onToken: (delta) => emit({ kind: 'delta', streamId, roomId, delta }),
+      })
+      emit({ kind: 'end', streamId, roomId, message })
+      return message
+    } catch (err) {
+      emit({ kind: 'error', streamId, roomId, message: err instanceof Error ? err.message : String(err) })
+      throw err
+    }
+  }
 
   return {
     detectClis() {
@@ -170,7 +203,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     askLlm(roomId, llmId, askOpts) {
-      return createChatController({ store, sessions, roomId }).askLlm(llmId, askOpts)
+      return streamedAsk(createChatController({ store, sessions, roomId }), roomId, llmId, askOpts)
     },
 
     async discussRoom(roomId, llmIds, rounds = 1) {
@@ -178,7 +211,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const out: ChatMessage[] = []
       for (let r = 0; r < rounds; r++) {
         for (const id of llmIds) {
-          out.push(await controller.askLlm(id))
+          out.push(await streamedAsk(controller, roomId, id))
         }
       }
       return out

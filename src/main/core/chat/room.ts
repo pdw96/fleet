@@ -7,6 +7,11 @@ export interface AskOptions {
   role?: AgentRole
   /** 추가 지시 (예: "비판적으로 검토하라") */
   instruction?: string
+  /**
+   * 토큰 델타 콜백. 지정 시 session.send 의 onChunk 로 연결돼 스트리밍을 활성화한다.
+   * 미지정 시 send 는 버퍼링(최종 1회) — 기존 비스트리밍 동작을 그대로 보존한다.
+   */
+  onToken?: (delta: string) => void
 }
 
 /**
@@ -89,7 +94,8 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
         `${context}\n\n` +
         `${instruction}당신(${session.descriptor.displayName})의 다음 발언:`
 
-      const reply = await session.send(prompt)
+      // onToken 이 있으면 onChunk 로 연결돼 스트리밍 활성화(없으면 onChunk=undefined → 버퍼링).
+      const reply = await session.send(prompt, { onChunk: opts.onToken })
       return store.appendMessage({ roomId, author: { type: 'llm', llmId }, role: opts.role, content: reply })
     },
 

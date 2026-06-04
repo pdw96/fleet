@@ -1,16 +1,31 @@
-import { useEffect, useState } from 'react'
-import type { ChatMessage, ChatRoom, LlmDescriptor } from '../../shared/types'
+import { useEffect, useRef, useState } from 'react'
+import type { AgentRole, ChatMessage, ChatRoom, ChatStreamEvent, LlmDescriptor } from '../../shared/types'
 import { button, buttonGhost, card, colors, input } from '../ui'
 
 interface Props {
   sessions: LlmDescriptor[]
 }
 
+/** 진행 중(in-flight) LLM 발언 — streamId 로 식별되는 라이브 말풍선. */
+interface StreamBubble {
+  streamId: string
+  roomId: string
+  llmId: string
+  role?: AgentRole
+  text: string
+  /** 방출된 에러 메시지(있으면 말풍선을 에러 표시로 렌더). */
+  error?: string
+}
+
+function llmName(llmId: string, sessions: LlmDescriptor[]): string {
+  return sessions.find((s) => s.id === llmId)?.displayName ?? llmId
+}
+
 function authorName(msg: ChatMessage, sessions: LlmDescriptor[]): string {
   const author = msg.author
   if (author.type === 'user') return '사용자'
   if (author.type === 'system') return '시스템'
-  return sessions.find((s) => s.id === author.llmId)?.displayName ?? author.llmId
+  return llmName(author.llmId, sessions)
 }
 
 export function ChatPanel({ sessions }: Props) {
@@ -21,14 +36,58 @@ export function ChatPanel({ sessions }: Props) {
   const [newRoomTitle, setNewRoomTitle] = useState('')
   const [busy, setBusy] = useState(false)
   const [rounds, setRounds] = useState(1)
+  // 라이브 말풍선은 streamId 로 평면 보관하고(각 말풍선이 roomId 보유) 렌더 시 활성 방만 필터한다.
+  // 방 전환에도 비우지 않으므로 백그라운드 방의 진행 중 스트림이 유지된다.
+  const [streams, setStreams] = useState<Record<string, StreamBubble>>({})
+  // 비동기 콜백이 '도착 시점'의 활성 방을 알 수 있게 최신 activeRoom 을 ref 로 추적(스테일 클로저 방지).
+  const activeRoomRef = useRef<string | null>(null)
 
   useEffect(() => {
     void refreshRooms()
   }, [])
 
   useEffect(() => {
+    activeRoomRef.current = activeRoom
     if (activeRoom) void refreshMessages(activeRoom)
   }, [activeRoom])
+
+  // 채팅 토큰 스트림 구독 — 마운트 1회. 방 필터는 렌더에서 하므로 activeRoom 클로저에 의존하지 않는다.
+  useEffect(() => {
+    const unsub = window.fleet.onChatStream((e: ChatStreamEvent) => {
+      if (e.kind === 'start') {
+        setStreams((prev) => ({
+          ...prev,
+          [e.streamId]: { streamId: e.streamId, roomId: e.roomId, llmId: e.llmId, role: e.role, text: '' },
+        }))
+      } else if (e.kind === 'delta') {
+        // start 를 못 받은 스트림(탭 언마운트 등)은 무시 — 작성자 미상 합성 말풍선을 만들지 않는다.
+        setStreams((prev) => {
+          const cur = prev[e.streamId]
+          if (!cur) return prev
+          return { ...prev, [e.streamId]: { ...cur, text: cur.text + e.delta } }
+        })
+      } else if (e.kind === 'end') {
+        // 라이브 말풍선 제거(어느 방이든) + 영속 메시지를 활성 방에 한해 낙관적 추가(토론 중간 발언 즉시 표시).
+        setStreams((prev) => {
+          if (!prev[e.streamId]) return prev
+          const next = { ...prev }
+          delete next[e.streamId]
+          return next
+        })
+        if (e.message.roomId === activeRoomRef.current) {
+          setMessages((prev) => (prev.some((m) => m.id === e.message.id) ? prev : [...prev, e.message]))
+        }
+      } else {
+        // error: 말풍선을 에러 표시로 전환(다음 ask/discuss 시 정리됨).
+        setStreams((prev) => {
+          const cur = prev[e.streamId]
+          if (!cur) return prev
+          return { ...prev, [e.streamId]: { ...cur, error: e.message } }
+        })
+      }
+    })
+    return unsub
+  }, [])
 
   async function refreshRooms() {
     const r = await window.fleet.listRooms()
@@ -37,7 +96,10 @@ export function ChatPanel({ sessions }: Props) {
   }
 
   async function refreshMessages(roomId: string) {
-    setMessages(await window.fleet.roomHistory(roomId))
+    const history = await window.fleet.roomHistory(roomId)
+    // 응답 도착 시점에 다른 방을 보고 있으면 적용하지 않는다(스테일 방 덮어쓰기 방지).
+    if (activeRoomRef.current !== roomId) return
+    setMessages(history)
   }
 
   async function createRoom() {
@@ -58,9 +120,12 @@ export function ChatPanel({ sessions }: Props) {
   async function ask(llmId: string) {
     if (!activeRoom) return
     setBusy(true)
+    setStreams({}) // 직전 에러 말풍선 정리
     try {
       await window.fleet.askLlm(activeRoom, llmId)
-      await refreshMessages(activeRoom)
+      await refreshMessages(activeRoom) // 성공 시에만 store 기준 정합(에러 시 'error' 말풍선 유지)
+    } catch {
+      // 실패는 스트림 'error' 이벤트가 말풍선으로 이미 표시함 — 미처리 거부만 흡수.
     } finally {
       setBusy(false)
     }
@@ -69,9 +134,12 @@ export function ChatPanel({ sessions }: Props) {
   async function discuss() {
     if (!activeRoom || sessions.length < 2) return
     setBusy(true)
+    setStreams({})
     try {
       await window.fleet.discussRoom(activeRoom, sessions.map((s) => s.id), rounds)
       await refreshMessages(activeRoom)
+    } catch {
+      // 한 턴 실패 시 해당 턴의 'error' 말풍선이 표시됨 — 미처리 거부만 흡수.
     } finally {
       setBusy(false)
     }
@@ -109,6 +177,24 @@ export function ChatPanel({ sessions }: Props) {
                 {m.role && <span style={{ color: colors.muted, marginLeft: 6 }}>· {m.role}</span>}
               </div>
               <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{m.content}</div>
+            </div>
+          ))}
+          {Object.values(streams)
+            .filter((s) => s.roomId === activeRoom)
+            .map((s) => (
+            <div key={s.streamId} style={{ padding: '8px 10px', background: colors.panel2, borderRadius: 6, border: `1px solid ${colors.border}` }}>
+              <div style={{ fontSize: 11, color: colors.accent, marginBottom: 2 }}>
+                {llmName(s.llmId, sessions)}
+                {s.role && <span style={{ color: colors.muted, marginLeft: 6 }}>· {s.role}</span>}
+              </div>
+              {s.error ? (
+                <div style={{ fontSize: 13, color: colors.red, whiteSpace: 'pre-wrap' }}>⚠ {s.error}</div>
+              ) : (
+                <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>
+                  {s.text || <span style={{ color: colors.muted }}>응답 대기 중…</span>}
+                  <span style={{ color: colors.muted }}>▌</span>
+                </div>
+              )}
             </div>
           ))}
         </div>

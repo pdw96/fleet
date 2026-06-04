@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createSessionManager } from '../session/manager'
-import type { LlmSession } from '../session/types'
+import type { LlmSession, SendOptions } from '../session/types'
 import { createMemoryStore } from '../store/memory'
 import { createChatController } from './room'
 
@@ -22,6 +22,19 @@ function recordingSession(
     async dispose() {},
   }
   return { session, prompts }
+}
+
+/** send 시 주어진 청크를 onChunk 으로 흘리는 세션(스트리밍 코어 대역). */
+function streamingSession(id: string, displayName: string, chunks: string[]): LlmSession {
+  return {
+    id,
+    descriptor: { id, kind: 'cli', displayName, ref: id, model: '' },
+    async send(_prompt, opts) {
+      for (const c of chunks) opts?.onChunk?.(c)
+      return chunks.join('')
+    },
+    async dispose() {},
+  }
 }
 
 function deterministic() {
@@ -100,5 +113,35 @@ describe('ChatController', () => {
   it('throws when asking an unknown LLM', async () => {
     const { ctrl } = setup()
     await expect(ctrl.askLlm('nope')).rejects.toThrow('세션')
+  })
+
+  it('onToken 을 지정하면 session.send 의 onChunk 로 연결돼 토큰 델타를 받는다', async () => {
+    const { sessions, ctrl } = setup()
+    sessions.add(streamingSession('s', 'S모델', ['안', '녕']))
+    ctrl.postUser('hi')
+
+    const tokens: string[] = []
+    const msg = await ctrl.askLlm('s', { onToken: (d) => tokens.push(d) })
+
+    expect(tokens).toEqual(['안', '녕']) // 델타 순차 수신
+    expect(msg.content).toBe('안녕') // 최종 합산 텍스트가 영속 메시지로
+  })
+
+  it('onToken 미지정 시 send 에 onChunk 를 전달하지 않는다(버퍼링 보존)', async () => {
+    const { sessions, ctrl } = setup()
+    let seen: SendOptions | undefined
+    const session: LlmSession = {
+      id: 's',
+      descriptor: { id: 's', kind: 'api', displayName: 'S', ref: 's', model: '' },
+      async send(_prompt, opts) {
+        seen = opts
+        return 'ok'
+      },
+      async dispose() {},
+    }
+    sessions.add(session)
+
+    await ctrl.askLlm('s')
+    expect(seen?.onChunk).toBeUndefined() // 스트리밍 미요청 → 기존 동작
   })
 })
