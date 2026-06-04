@@ -66,7 +66,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
           <span className="eyebrow">01 — CLI</span>
           <h2 className="panel-title">구독제 / TUI LLM</h2>
           <div className="right">
-            <button className="btn-ghost btn-sm" onClick={detect} disabled={detecting}>
+            <button className="btn btn-ghost btn-sm" onClick={detect} disabled={detecting}>
               {detecting ? '감지 중…' : '다시 감지'}
             </button>
           </div>
@@ -165,7 +165,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               <span className="name">{s.displayName}</span>
               <code className="id">{s.id}</code>
               <button
-                className="btn-danger btn-sm"
+                className="btn btn-danger btn-sm"
                 style={{ marginLeft: 'auto' }}
                 onClick={async () => {
                   await window.fleet.removeSession(s.id)

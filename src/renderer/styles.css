@@ -413,6 +413,7 @@ body::after {
   background: transparent;
   border-color: var(--line-2);
   color: var(--dim);
+  font-weight: 500; /* .btn 의 600 을 형제 .btn-ghost 와 맞춰 quiet 하게 강등 */
 }
 .btn-danger:hover:not(:disabled) {
   color: var(--bad);
