@@ -1,6 +1,13 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
-import type { ApiProviderConfig, AppInfo, ChatStreamEvent, OrchestratorEvent, RunProjectRequest } from '../shared/types'
+import type {
+  AgentRole,
+  ApiProviderConfig,
+  AppInfo,
+  ChatStreamEvent,
+  OrchestratorEvent,
+  RunProjectRequest,
+} from '../shared/types'
 import { createFleetEngine, type FleetEngine } from './core/engine'
 import { createJsonFileStore } from './core/store/json-file'
 
@@ -46,6 +53,9 @@ function registerIpc(engine: FleetEngine): void {
   ipcMain.handle('fleet:session:registerApi', (_e, config: ApiProviderConfig) => engine.registerApiSession(config))
   ipcMain.handle('fleet:session:list', () => engine.listSessions())
   ipcMain.handle('fleet:session:remove', (_e, id: string) => engine.removeSession(id))
+  ipcMain.handle('fleet:session:capabilities', (_e, id: string, roles: AgentRole[]) =>
+    engine.setSessionCapabilities(id, roles),
+  )
 
   // 프로젝트 / 오케스트레이션
   ipcMain.handle('fleet:project:list', () => engine.listProjects())

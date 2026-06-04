@@ -115,6 +115,8 @@ export interface LlmDescriptor {
   model?: string
   /** CLI 세션이 맥락 유지(세션 재개) 모드로 등록되었는지. */
   stateful?: boolean
+  /** 이 LLM 이 잘하는 역할들 (capability-scored 배정 정책의 선호 근거). 세션 수명 동안 유지. */
+  capabilities?: AgentRole[]
 }
 
 // ── 채팅 / 메시지 (요구사항 3) ────────────────────────────────────────────
@@ -155,6 +157,9 @@ export interface RoleAssignment {
 }
 
 export type AssignmentPolicy = 'manual' | 'round-robin' | 'capability-scored'
+
+/** 오케스트레이터가 실제로 배정·실행하는 역할 집합 (요구사항 8 MVP). 배정 UI·채점도 이 집합으로 제한한다. */
+export const ASSIGNABLE_ROLES: readonly AgentRole[] = ['planner', 'implementer', 'reviewer', 'summarizer']
 
 export type TaskStatus = 'pending' | 'running' | 'review' | 'done' | 'failed'
 
@@ -252,6 +257,8 @@ export interface OrchestratorEvent {
 export interface RunProjectRequest {
   goal: string
   policy?: AssignmentPolicy
+  /** manual 정책용 사용자 지정 역할↔LLM 배정. 지정 시 policy 보다 우선한다. */
+  assignments?: RoleAssignment[]
   maxReviewRounds?: number
 }
 
@@ -286,6 +293,8 @@ export interface FleetBridge {
   registerApiSession(config: ApiProviderConfig): Promise<LlmDescriptor>
   listSessions(): Promise<LlmDescriptor[]>
   removeSession(id: string): Promise<void>
+  /** 세션의 적합 역할(capabilities)을 설정한다. capability-scored 배정의 근거. */
+  setSessionCapabilities(id: string, roles: AgentRole[]): Promise<LlmDescriptor>
 
   // 프로젝트 / 오케스트레이션
   listProjects(): Promise<Project[]>

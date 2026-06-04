@@ -71,6 +71,48 @@ describe('FleetEngine', () => {
     await expect(engine.runProjectFlow({ goal: 'x' })).rejects.toThrow('세션이 없습니다')
   })
 
+  it('setSessionCapabilities stores capabilities on the live descriptor', () => {
+    const engine = createFleetEngine({ runner: roleRunner })
+    engine.registerCliSession('claude')
+    const d = engine.setSessionCapabilities('cli:claude', ['reviewer', 'planner'])
+    expect(d.capabilities).toEqual(['reviewer', 'planner'])
+    expect(engine.listSessions()[0].capabilities).toEqual(['reviewer', 'planner'])
+  })
+
+  it('setSessionCapabilities throws for an unknown session', () => {
+    const engine = createFleetEngine()
+    expect(() => engine.setSessionCapabilities('nope', ['reviewer'])).toThrow()
+  })
+
+  it('seeds differentiated default capabilities per CLI adapter at registration', () => {
+    const engine = createFleetEngine({ runner: roleRunner })
+    const claude = engine.registerCliSession('claude')
+    const codex = engine.registerCliSession('codex')
+    expect(claude.capabilities).toContain('reviewer')
+    expect(codex.capabilities).toContain('implementer')
+    expect(claude.capabilities).not.toEqual(codex.capabilities) // 차별화되어 capability-scored 가 의미를 가짐
+  })
+
+  it('seeds default capabilities per API provider at registration', () => {
+    const engine = createFleetEngine()
+    const d = engine.registerApiSession({ id: 'a', provider: 'google', displayName: 'g', model: 'm', apiKey: 'k' })
+    expect(d.capabilities?.length).toBeGreaterThan(0)
+  })
+
+  it('capability-scored routes a role to the session that lists it and records assignedLlmId', async () => {
+    const store = createMemoryStore(deterministic())
+    const engine = createFleetEngine({ store, runner: roleRunner })
+    engine.registerCliSession('claude') // cli:claude
+    engine.registerCliSession('codex') // cli:codex
+    // implementer 적합도를 claude 에 둔다 — round-robin 이면 implementer→codex 라 결과로 구분된다
+    engine.setSessionCapabilities('cli:claude', ['implementer'])
+    engine.setSessionCapabilities('cli:codex', ['reviewer'])
+
+    const result = await engine.runProjectFlow({ goal: 'x', policy: 'capability-scored' })
+
+    expect(result.tasks[0].assignedLlmId).toBe('cli:claude')
+  })
+
   it('runs an AI-to-AI discussion across multiple sessions', async () => {
     let turn = 0
     const engine = createFleetEngine({

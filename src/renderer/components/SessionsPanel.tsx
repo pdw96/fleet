@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { ApiProviderConfig, CliDetectionResult, LlmDescriptor } from '../../shared/types'
+import type { AgentRole, ApiProviderConfig, CliDetectionResult, LlmDescriptor } from '../../shared/types'
+import { ASSIGNABLE_ROLES } from '../../shared/types'
 
 interface Props {
   sessions: LlmDescriptor[]
@@ -40,6 +41,13 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
     onRefresh()
   }
 
+  async function toggleCapability(s: LlmDescriptor, role: AgentRole) {
+    const current = s.capabilities ?? []
+    const next = current.includes(role) ? current.filter((r) => r !== role) : [...current, role]
+    await window.fleet.setSessionCapabilities(s.id, next)
+    onRefresh()
+  }
+
   async function registerApi() {
     if (!apiKey.trim()) return
     setBusy(true)
@@ -66,7 +74,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
           <span className="eyebrow">01 — CLI</span>
           <h2 className="panel-title">구독제 / TUI LLM</h2>
           <div className="right">
-            <button className="btn-ghost btn-sm" onClick={detect} disabled={detecting}>
+            <button className="btn btn-ghost btn-sm" onClick={detect} disabled={detecting}>
               {detecting ? '감지 중…' : '다시 감지'}
             </button>
           </div>
@@ -155,7 +163,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
         {sessions.length === 0 && <p className="empty">아직 등록된 LLM 세션이 없습니다.</p>}
         <ul className="list">
           {sessions.map((s) => (
-            <li key={s.id} className="line-item">
+            <li key={s.id} className="line-item" style={{ flexWrap: 'wrap' }}>
               <span className="chip chip-signal">{s.kind.toUpperCase()}</span>
               {s.stateful && (
                 <span className="chip chip-live" title="세션 재개(대화 맥락 유지) 모드">
@@ -165,7 +173,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               <span className="name">{s.displayName}</span>
               <code className="id">{s.id}</code>
               <button
-                className="btn-danger btn-sm"
+                className="btn btn-danger btn-sm"
                 style={{ marginLeft: 'auto' }}
                 onClick={async () => {
                   await window.fleet.removeSession(s.id)
@@ -174,6 +182,30 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               >
                 제거
               </button>
+              <div
+                style={{ flexBasis: '100%', display: 'flex', gap: 6, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}
+              >
+                <span className="field-label" style={{ margin: 0 }} title="capability-scored 정책에서 이 LLM 에게 우선 배정할 역할">
+                  잘하는 역할
+                </span>
+                {ASSIGNABLE_ROLES.map((role) => {
+                  const active = (s.capabilities ?? []).includes(role)
+                  return (
+                    <button
+                      key={role}
+                      className="chip"
+                      onClick={() => toggleCapability(s, role)}
+                      style={{
+                        cursor: 'pointer',
+                        color: active ? 'var(--ok)' : 'var(--faint)',
+                        borderColor: 'currentColor',
+                      }}
+                    >
+                      {role}
+                    </button>
+                  )
+                })}
+              </div>
             </li>
           ))}
         </ul>

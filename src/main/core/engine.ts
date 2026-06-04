@@ -14,6 +14,7 @@ import type {
   RoleAssignment,
   Task,
 } from '../../shared/types'
+import { ASSIGNABLE_ROLES } from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
 import { createCliRegistry, type CliRegistry } from './cli/registry'
@@ -27,8 +28,21 @@ import { createSessionManager, type SessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
 import type { Store } from './store/types'
 
-/** MVP 오케스트레이션 역할 (요구사항 8). */
-const MVP_ROLES: readonly AgentRole[] = ['planner', 'implementer', 'reviewer', 'summarizer']
+/**
+ * CLI 어댑터 id / API provider 별 기본 적합 역할 시드.
+ * 등록 즉시 서로 다른 역할로 채워져 capability-scored 가 한 LLM 독식 없이 바로 의미를 가진다.
+ * 사용자는 [세션] 탭에서 언제든 덮어쓸 수 있다. 전부 ASSIGNABLE_ROLES 범위 내.
+ */
+const DEFAULT_CAPABILITIES: Record<string, readonly AgentRole[]> = {
+  claude: ['reviewer'],
+  codex: ['implementer'],
+  gemini: ['planner', 'summarizer'],
+  anthropic: ['reviewer'],
+  openai: ['implementer'],
+  google: ['planner', 'summarizer'],
+}
+
+const seedCapabilities = (key: string): AgentRole[] => [...(DEFAULT_CAPABILITIES[key] ?? [])]
 
 export interface FleetEngineOptions {
   store?: Store
@@ -60,6 +74,8 @@ export interface FleetEngine {
   registerApiSession(config: ApiProviderConfig): LlmDescriptor
   listSessions(): LlmDescriptor[]
   removeSession(id: string): Promise<void>
+  /** 세션의 적합 역할(capability-scored 근거)을 설정하고 갱신된 descriptor 를 반환한다. */
+  setSessionCapabilities(id: string, roles: AgentRole[]): LlmDescriptor
 
   // ── 프로젝트 / 오케스트레이션 ──
   listProjects(): Project[]
@@ -136,6 +152,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         ref: adapterId,
         model: '',
         stateful: !!sessionOpts?.stateful,
+        capabilities: seedCapabilities(adapterId),
       }
       sessions.add(createCliSession(descriptor, adapter, runner, undefined, { stateful: sessionOpts?.stateful }))
       store.appendEvent({ type: 'session.registered', data: { id, kind: 'cli', stateful: !!sessionOpts?.stateful } })
@@ -150,6 +167,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         displayName: config.displayName,
         ref: config.id,
         model: config.model,
+        capabilities: seedCapabilities(config.provider),
       }
       sessions.add(createApiSession(descriptor, createApiProvider(config, http)))
       store.appendEvent({ type: 'session.registered', data: { id, kind: 'api', provider: config.provider } })
@@ -158,6 +176,13 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
     listSessions() {
       return sessions.descriptors()
+    },
+
+    setSessionCapabilities(id, roles) {
+      const descriptor = sessions.setCapabilities(id, roles)
+      if (!descriptor) throw new Error(`알 수 없는 세션: ${id}`)
+      store.appendEvent({ type: 'session.capabilities', data: { id, roles: [...roles] } })
+      return descriptor
     },
 
     removeSession(id) {
@@ -175,8 +200,13 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     async runProjectFlow(input) {
       const llmIds = sessions.list().map((s) => s.id)
       if (llmIds.length === 0) throw new Error('등록된 LLM 세션이 없습니다. 먼저 세션을 등록하세요.')
+      // 세션별 적합 역할을 capability-scored 채점 맵으로 모은다(끊겼던 연결고리). 역량 없는 세션은 제외.
+      const capabilities = Object.fromEntries(
+        sessions.descriptors().flatMap((d) => (d.capabilities?.length ? [[d.id, d.capabilities]] : [])),
+      )
       const assignments =
-        input.assignments ?? assignRoles({ roles: MVP_ROLES, llmIds, policy: input.policy ?? 'round-robin' })
+        input.assignments ??
+        assignRoles({ roles: ASSIGNABLE_ROLES, llmIds, policy: input.policy ?? 'round-robin', capabilities })
       return runProject(input.goal, {
         store,
         sessions,
