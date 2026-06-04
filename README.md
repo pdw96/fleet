@@ -35,11 +35,23 @@ src/
   shared/      main/renderer 공유 타입 (단일 진실 원천)
 ```
 
-## 역할 배정 — 역량(capabilities) 시드
+## 역할 배정 정책
 
-`capability-scored` 배정 정책은 각 LLM 이 "잘하는 역할"(capabilities)을 근거로 역할을 배정한다.
-세션 등록 시 CLI 어댑터 / API provider 별로 아래 기본값이 시드되며, **[세션] 탭에서 토글로 언제든
-수정**할 수 있다. 값은 세션 수명 동안 유지된다(세션이 in-memory 이므로 앱 재시작 시 초기화).
+오케스트레이션 실행 시 [프로젝트] 탭의 **역할 배정 정책** 드롭다운으로 역할↔LLM 배정 방식을 고른다.
+배정 대상은 오케스트레이터가 실제 실행하는 `ASSIGNABLE_ROLES`(planner · implementer · reviewer ·
+summarizer)로 한정된다. 실행된 LLM 은 작업 보드에 `→ 이름` 칩으로 표시되고 `Task.assignedLlmId`(폴백
+해소 후 id)로 기록된다.
+
+- **`round-robin`** (기본): 역할 순서대로 등록된 세션을 순환 배정한다.
+- **`capability-scored`**: 세션별 역량(capabilities)을 근거로 적합도 배정한다(아래 참조).
+- **`manual`**: [프로젝트] 탭에서 역할마다 LLM 을 직접 지정한다. 지정하지 않은 역할은 첫 세션으로 기본
+  채워지며, 선택값은 `RunProjectRequest.assignments` 로 전달되어 정책 계산보다 우선한다.
+
+### 역량(capabilities) 시드 — `capability-scored`
+
+각 LLM 이 "잘하는 역할"(capabilities)을 근거로 역할을 배정한다. 세션 등록 시 CLI 어댑터 / API provider
+별로 아래 기본값이 시드되며, **[세션] 탭에서 토글로 언제든 수정**할 수 있다. 값은 세션 수명 동안
+유지된다(세션이 in-memory 이므로 앱 재시작 시 초기화).
 
 | CLI 어댑터 | API provider | 기본 역량 |
 |-----------|--------------|-----------|
@@ -47,8 +59,8 @@ src/
 | `codex`   | `openai`     | `implementer` |
 | `gemini`  | `google`     | `planner`, `summarizer` |
 
-- 대상 역할은 오케스트레이터가 실제 배정하는 `ASSIGNABLE_ROLES`(planner · implementer · reviewer ·
-  summarizer)로 제한된다. 그 외 역할로 시드/설정해도 배정에 반영되지 않는다.
-- 서로 다른 역할로 시드되어 `capability-scored` 가 한 LLM 독식 없이 즉시 분산 동작한다. 어떤 세션에도
-  역량이 없으면 사실상 `round-robin` 으로 격하된다(프로젝트 탭에서 경고).
+- 채점: 이진 적합도(역할 포함=1) 최고 LLM → 동점 시 덜 쓰인 LLM(부하분산) → 인덱스. 어떤 세션도 맡지
+  않는 역할은 `round-robin` 으로 수렴한다. 어떤 세션에도 역량이 없으면 사실상 `round-robin` 으로
+  격하된다([프로젝트] 탭에서 경고).
+- 그 외 역할(architect · critic · tester)로 시드/설정해도 `ASSIGNABLE_ROLES` 밖이라 배정에 반영되지 않는다.
 - 정의: [`src/main/core/engine.ts`](./src/main/core/engine.ts) 의 `DEFAULT_CAPABILITIES`.
