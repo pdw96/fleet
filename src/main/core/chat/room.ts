@@ -37,9 +37,8 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
 
   const nameFor = (llmId: string): string => sessions.get(llmId)?.descriptor.displayName ?? llmId
 
-  const renderTranscript = (): string =>
-    store
-      .listMessages(roomId)
+  const renderMessages = (messages: readonly ChatMessage[]): string =>
+    messages
       .map((m) => {
         const who =
           m.author.type === 'user' ? '사용자' : m.author.type === 'system' ? '시스템' : nameFor(m.author.llmId)
@@ -62,12 +61,32 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
       const session = sessions.get(llmId)
       if (!session) throw new Error(`세션을 찾을 수 없습니다: ${llmId}`)
 
-      const transcript = renderTranscript()
+      const all = store.listMessages(roomId)
+      let context: string
+      let intro: string
+      if (session.stateful) {
+        // 스테이트풀 세션: CLI 가 자기 맥락을 보유 → 지난 자기 발언 이후의 '새 메시지'만 전달.
+        // 첫 발언이면 그 시점까지의 전체 기록을 한 번 제공해 맥락을 심는다.
+        let lastOwn = -1
+        for (let i = 0; i < all.length; i++) {
+          const a = all[i].author
+          if (a.type === 'llm' && a.llmId === llmId) lastOwn = i
+        }
+        context = renderMessages(all.slice(lastOwn + 1)) || '(새 발언 없음)'
+        intro =
+          lastOwn >= 0
+            ? '다음은 당신의 지난 발언 이후 추가된 새 메시지다. 이어서 토론/반박/검증에 참여하라.'
+            : '다음은 작업방의 대화 기록이다. 다른 참여자의 의견을 검토하고 토론/반박/검증에 참여하라.'
+      } else {
+        context = renderMessages(all) || '(아직 발언 없음)'
+        intro = '다음은 작업방의 대화 기록이다. 다른 참여자의 의견을 검토하고 토론/반박/검증에 참여하라.'
+      }
+
       const roleLine = opts.role ? `당신의 역할: ${opts.role}\n` : ''
       const instruction = opts.instruction ? `${opts.instruction}\n` : ''
       const prompt =
-        `${roleLine}다음은 작업방의 대화 기록이다. 다른 참여자의 의견을 검토하고 토론/반박/검증에 참여하라.\n\n` +
-        `${transcript || '(아직 발언 없음)'}\n\n` +
+        `${roleLine}${intro}\n\n` +
+        `${context}\n\n` +
         `${instruction}당신(${session.descriptor.displayName})의 다음 발언:`
 
       const reply = await session.send(prompt)

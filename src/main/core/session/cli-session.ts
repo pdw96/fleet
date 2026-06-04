@@ -1,6 +1,8 @@
-import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
-import { defaultRunner, type CommandRunner } from '../cli/detect'
-import type { LlmSession, SendOptions } from './types'
+import { randomUUID } from 'node:crypto'
+import type { CliAdapter, CliSessionSpec, LlmDescriptor } from '../../../shared/types'
+import { defaultRunner, type CommandResult, type CommandRunner } from '../cli/detect'
+import { cleanCliOutput, extractCodexThreadId } from '../cli/output'
+import type { CreateCliSessionOptions, LlmSession, SendOptions } from './types'
 
 const DEFAULT_TIMEOUT_MS = 120_000
 
@@ -10,39 +12,77 @@ export function buildHeadlessArgs(adapter: CliAdapter, prompt: string): string[]
   return template.map((a) => a.replaceAll('{prompt}', prompt))
 }
 
+/** spawn 실패/비정상 종료를 통일된 에러로 변환. */
+function assertRunOk(command: string, res: CommandResult): void {
+  if (res.spawnError) throw new Error(`${command} 실행 실패: ${res.spawnError}`)
+  if (res.code !== 0) throw new Error(`${command} 종료코드 ${res.code}: ${res.stderr.trim()}`)
+}
+
 /**
- * CLI(구독제/TUI) 기반 LLM 세션 (요구사항 2A).
- * MVP: 헤드리스 1회 실행(비대화형 print 모드)으로 프롬프트→응답을 주고받는다.
- * 영속 PTY TUI 세션(node-pty)은 동일 LlmSession 뒤로 추후 슬롯인 가능.
+ * CLI(구독제/TUI) 기반 LLM 세션 (요구사항 2A). 두 가지 모드:
+ *
+ *  - stateless (기본): 헤드리스 1회 실행. 매 send 가 독립 프로세스 → 호출자가 맥락을 매번 제공.
+ *    오케스트레이터처럼 '깨끗한 독립 호출'이 필요한 경로에 적합(작업 간 맥락 오염 방지).
+ *  - stateful (opts.stateful && adapter.session): CLI 자체 세션 재개로 맥락을 프로세스 간 유지.
+ *    첫 호출은 startArgs, 이후는 resumeArgs. 세션 id 는 'preassigned'(우리가 UUID 생성) 또는
+ *    'codex-thread'(첫 응답의 thread_id 추출)로 확보. 동일 세션 동시 send 는 id 캡처 레이스/
+ *    상태 꼬임을 막기 위해 직렬화된다.
  */
 export function createCliSession(
   descriptor: LlmDescriptor,
   adapter: CliAdapter,
   runner: CommandRunner = defaultRunner,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  opts: CreateCliSessionOptions = {},
 ): LlmSession {
+  const spec = opts.stateful ? adapter.session : undefined
+  let sessionId: string | null = null
+  let chain: Promise<unknown> = Promise.resolve() // 동일 세션 직렬화 체인
+
+  const runStateless = async (prompt: string, sendOpts: SendOptions): Promise<string> => {
+    if (!adapter.headless) {
+      throw new Error(`${adapter.displayName}는 헤드리스 1회 실행을 지원하지 않습니다.`)
+    }
+    const res = await runner(adapter.command, buildHeadlessArgs(adapter, prompt), timeoutMs)
+    assertRunOk(adapter.command, res)
+    const out = cleanCliOutput(adapter.headless.parse, res.stdout)
+    sendOpts.onChunk?.(out)
+    return out
+  }
+
+  const runStateful = async (s: CliSessionSpec, prompt: string, sendOpts: SendOptions): Promise<string> => {
+    const first = sessionId === null
+    if (first && s.idSource === 'preassigned') sessionId = randomUUID()
+    const template = first ? s.startArgs : s.resumeArgs
+    const args = template.map((a) => a.replaceAll('{prompt}', prompt).replaceAll('{sessionId}', sessionId ?? ''))
+    const res = await runner(adapter.command, args, timeoutMs)
+    assertRunOk(adapter.command, res)
+    if (first && s.idSource === 'codex-thread') {
+      const tid = extractCodexThreadId(res.stdout)
+      if (!tid) throw new Error(`${adapter.command}: 응답에서 thread_id 를 찾지 못해 세션을 시작할 수 없습니다.`)
+      sessionId = tid
+    }
+    const out = cleanCliOutput(adapter.headless?.parse, res.stdout)
+    sendOpts.onChunk?.(out)
+    return out
+  }
+
   return {
     id: descriptor.id,
     descriptor,
-    async send(prompt: string, opts: SendOptions = {}): Promise<string> {
-      if (!adapter.headless) {
-        throw new Error(`${adapter.displayName}는 헤드리스 1회 실행을 지원하지 않습니다.`)
-      }
-      const args = buildHeadlessArgs(adapter, prompt)
-      const res = await runner(adapter.command, args, timeoutMs)
-
-      if (res.spawnError) {
-        throw new Error(`${adapter.command} 실행 실패: ${res.spawnError}`)
-      }
-      if (res.code !== 0) {
-        throw new Error(`${adapter.command} 종료코드 ${res.code}: ${res.stderr.trim()}`)
-      }
-      const out = res.stdout.trim()
-      opts.onChunk?.(out)
-      return out
+    stateful: !!spec,
+    async send(prompt: string, sendOpts: SendOptions = {}): Promise<string> {
+      const prior = chain
+      const result = (async () => {
+        await prior.catch(() => {}) // 앞 호출의 성공/실패와 무관하게 순서만 보장
+        return spec ? runStateful(spec, prompt, sendOpts) : runStateless(prompt, sendOpts)
+      })()
+      chain = result.catch(() => {}) // 직렬화 체인은 에러로 끊기지 않게
+      return result
     },
     async dispose(): Promise<void> {
-      // 1회 실행 모델이라 유지 리소스 없음. (PTY 도입 시 종료 처리)
+      // stateless 1회 실행 모델은 유지 리소스 없음. stateful 영속 정리
+      // (claude --no-session-persistence / codex --ephemeral / gemini --delete-session)는 후속.
     },
   }
 }

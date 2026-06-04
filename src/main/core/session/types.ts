@@ -6,6 +6,16 @@ export interface SendOptions {
   onChunk?: (chunk: string) => void
 }
 
+/** createCliSession 동작 옵션. */
+export interface CreateCliSessionOptions {
+  /**
+   * true + adapter.session 존재 시 스테이트풀(세션 재개) 모드.
+   * 기본 false = 헤드리스 1회 실행(독립 호출). 오케스트레이터는 false 로 두어
+   * 작업 간 리뷰 맥락이 섞이지 않게(독립 검증 보존) 한다.
+   */
+  stateful?: boolean
+}
+
 /**
  * 통합 LLM 세션 (요구사항 2,4).
  * CLI(TUI) 세션과 API 세션이 동일한 인터페이스를 만족 → 오케스트레이터/채팅방은
@@ -14,6 +24,11 @@ export interface SendOptions {
 export interface LlmSession {
   readonly id: string
   readonly descriptor: LlmDescriptor
+  /**
+   * 맥락 유지 여부. true 면 send 간 대화 상태를 내부 보유하므로
+   * 호출자는 전체 기록이 아닌 '새 메시지'만 전달해야 한다(채팅 델타 분기).
+   */
+  readonly stateful?: boolean
   /** 프롬프트 1회 → 응답 텍스트. */
   send(prompt: string, opts?: SendOptions): Promise<string>
   dispose(): Promise<void>

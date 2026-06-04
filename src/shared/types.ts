@@ -15,6 +15,32 @@ export interface AppInfo {
 // ── LLM 연결 ────────────────────────────────────────────────────────────────
 export type LlmConnectionKind = 'cli' | 'api'
 
+/**
+ * 헤드리스 stdout 정제 전략.
+ * - 'text'        : 트림만 (기본). claude `-p`, gemini `-p` 처럼 응답만 출력하는 CLI.
+ * - 'codex-jsonl' : codex `exec --json` 의 JSONL 이벤트에서 최종 agent_message 만 추출.
+ */
+export type CliOutputFormat = 'text' | 'codex-jsonl'
+
+/**
+ * 스테이트풀 세션의 id 획득 전략.
+ * - 'preassigned'  : 우리가 UUID 를 생성해 startArgs/resumeArgs 에 주입(추출 불필요). claude/gemini.
+ * - 'codex-thread' : 첫 응답 JSONL 의 `thread.started` 이벤트에서 thread_id 를 추출. codex.
+ */
+export type SessionIdSource = 'preassigned' | 'codex-thread'
+
+/**
+ * CLI 자체 세션 재개로 프로세스 간 대화 맥락을 유지하는 사양('길 A').
+ * 미지정 어댑터는 헤드리스 1회 실행(stateless)만 지원한다.
+ */
+export interface CliSessionSpec {
+  /** 새 세션 첫 호출 인자. '{prompt}','{sessionId}' 토큰이 치환된다. */
+  startArgs: string[]
+  /** 세션 재개 후속 호출 인자. '{prompt}','{sessionId}' 토큰이 치환된다. */
+  resumeArgs: string[]
+  idSource: SessionIdSource
+}
+
 /** 등록 가능한 CLI 어댑터 (요구사항 2A). 새 CLI 는 이 형태로 레지스트리에 추가. */
 export interface CliAdapter {
   id: string
@@ -25,8 +51,17 @@ export interface CliAdapter {
   versionArgs: string[]
   /** TUI 세션 spawn 시 인자 (없으면 대화형 기본 실행) */
   spawnArgs?: string[]
-  /** 헤드리스(비대화형) 1회 실행 인자 템플릿. '{prompt}' 토큰이 프롬프트로 치환된다. */
-  headless?: { args: string[] }
+  /**
+   * 헤드리스(비대화형) 1회 실행 인자 템플릿. '{prompt}' 토큰이 프롬프트로 치환된다.
+   * `parse` 로 stdout 정제 전략을 지정한다(미지정 시 'text' = 트림만).
+   */
+  headless?: { args: string[]; parse?: CliOutputFormat }
+  /**
+   * 스테이트풀 세션 재개 사양('길 A'). 존재해도 기본은 stateless 이며,
+   * createCliSession 의 `stateful` 옵션이 켜질 때만 활성화된다. stdout 정제는
+   * headless.parse 를 재사용한다(codex 는 'codex-jsonl', claude/gemini 는 'text').
+   */
+  session?: CliSessionSpec
 }
 
 /** CLI 감지 결과 — IPC 로 renderer 에 전달. */

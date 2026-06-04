@@ -4,11 +4,17 @@ import type { LlmSession } from '../session/types'
 import { createMemoryStore } from '../store/memory'
 import { createChatController } from './room'
 
-function recordingSession(id: string, displayName: string, reply: string): { session: LlmSession; prompts: string[] } {
+function recordingSession(
+  id: string,
+  displayName: string,
+  reply: string,
+  stateful = false,
+): { session: LlmSession; prompts: string[] } {
   const prompts: string[] = []
   const session: LlmSession = {
     id,
     descriptor: { id, kind: 'api', displayName, ref: id, model: '' },
+    stateful,
     async send(prompt) {
       prompts.push(prompt)
       return reply
@@ -74,6 +80,21 @@ describe('ChatController', () => {
     expect(b.prompts[0]).toContain('주제: 아키텍처')
     // 전체 로그: 사용자 주제 + A + B
     expect(ctrl.history()).toHaveLength(3)
+  })
+
+  it('스테이트풀 세션에는 지난 자기 발언 이후의 새 메시지(델타)만 전달한다', async () => {
+    const { sessions, ctrl } = setup()
+    const a = recordingSession('a', 'A모델', 'A응답', true)
+    sessions.add(a.session)
+
+    ctrl.postUser('첫 질문')
+    await ctrl.askLlm('a') // 첫 턴: 그 시점 전체 맥락(첫 질문 포함)
+    ctrl.postUser('둘째 질문')
+    await ctrl.askLlm('a') // 둘째 턴: 델타(둘째 질문)만, 첫 질문은 재전송 안 함
+
+    expect(a.prompts[0]).toContain('첫 질문')
+    expect(a.prompts[1]).toContain('둘째 질문')
+    expect(a.prompts[1]).not.toContain('첫 질문')
   })
 
   it('throws when asking an unknown LLM', async () => {

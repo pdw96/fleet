@@ -11,13 +11,27 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     command: 'claude',
     versionArgs: ['--version'],
     headless: { args: ['-p', '{prompt}'] },
+    // 세션 재개(검증: v2.1.162). UUID 사전지정 → 첫 호출 --session-id, 이후 --resume.
+    session: {
+      startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+      resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+      idSource: 'preassigned',
+    },
   },
   {
     id: 'codex',
     displayName: 'Codex CLI',
     command: 'codex',
     versionArgs: ['--version'],
-    headless: { args: ['exec', '{prompt}'] },
+    // --json: 사람용 배너/thinking/토큰 메타 대신 JSONL 이벤트로 출력 → agent_message 만 정제.
+    headless: { args: ['exec', '--json', '{prompt}'], parse: 'codex-jsonl' },
+    // 세션 재개(실측: codex 0.136). id 사전지정 불가 → 첫 응답 thread.started 의 thread_id 캡처.
+    // resume 시그니처: `exec resume [OPTIONS] <SESSION_ID> <PROMPT>` (옵션 먼저).
+    session: {
+      startArgs: ['exec', '--json', '{prompt}'],
+      resumeArgs: ['exec', 'resume', '--json', '{sessionId}', '{prompt}'],
+      idSource: 'codex-thread',
+    },
   },
   {
     id: 'gemini',
@@ -25,6 +39,12 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     command: 'gemini',
     versionArgs: ['--version'],
     headless: { args: ['-p', '{prompt}'] },
+    // 세션 재개(실측: gemini 0.45.0, 코드워드 왕복 통과). claude 와 동형(UUID 사전지정).
+    session: {
+      startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+      resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+      idSource: 'preassigned',
+    },
   },
 ]
 

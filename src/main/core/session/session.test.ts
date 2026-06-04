@@ -94,6 +94,149 @@ describe('createCliSession', () => {
     const s = createCliSession(cliDesc, noHeadless, async () => ({ code: 0, stdout: '', stderr: '' }))
     await expect(s.send('x')).rejects.toThrow('헤드리스')
   })
+
+  it("codex 어댑터(parse:'codex-jsonl')는 JSONL 에서 응답만 정제해 반환한다", async () => {
+    const codexAdapter: CliAdapter = {
+      id: 'codex',
+      displayName: 'Codex CLI',
+      command: 'codex',
+      versionArgs: ['--version'],
+      headless: { args: ['exec', '--json', '{prompt}'], parse: 'codex-jsonl' },
+    }
+    let captured: string[] = []
+    const runner: CommandRunner = async (_cmd, args) => {
+      captured = args
+      return {
+        code: 0,
+        stdout: [
+          'Reading additional input from stdin...',
+          '{"type":"turn.started"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"정제된 응답"}}',
+          '{"type":"turn.completed","usage":{"output_tokens":3}}',
+        ].join('\n'),
+        stderr: '',
+      }
+    }
+    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const s = createCliSession(codexDesc, codexAdapter, runner)
+    let chunk = ''
+    expect(await s.send('질문', { onChunk: (c) => (chunk = c) })).toBe('정제된 응답')
+    expect(chunk).toBe('정제된 응답')
+    expect(captured).toEqual(['exec', '--json', '질문'])
+  })
+
+  it('stateful=false(기본)면 session 사양이 있어도 stateless 헤드리스로 동작한다', async () => {
+    const calls: string[][] = []
+    const runner: CommandRunner = async (_c, args) => {
+      calls.push(args)
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const withSession: CliAdapter = {
+      ...claudeAdapter,
+      session: {
+        startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+        resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+        idSource: 'preassigned',
+      },
+    }
+    const s = createCliSession(cliDesc, withSession, runner) // opts 미지정 → stateless
+    expect(s.stateful).toBe(false)
+    await s.send('q1')
+    await s.send('q2')
+    expect(calls[0]).toEqual(['-p', 'q1'])
+    expect(calls[1]).toEqual(['-p', 'q2']) // 매번 헤드리스, 세션 인자 없음
+  })
+
+  it("preassigned 세션: 첫 호출 --session-id, 재개 --resume, 동일 UUID 재사용", async () => {
+    const calls: string[][] = []
+    const runner: CommandRunner = async (_c, args) => {
+      calls.push(args)
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      ...claudeAdapter,
+      session: {
+        startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+        resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+        idSource: 'preassigned',
+      },
+    }
+    const s = createCliSession(cliDesc, adapter, runner, undefined, { stateful: true })
+    expect(s.stateful).toBe(true)
+    await s.send('첫 질문')
+    await s.send('둘째 질문')
+
+    expect(calls[0][0]).toBe('-p')
+    expect(calls[0][1]).toBe('--session-id')
+    const id = calls[0][2]
+    expect(id).toMatch(/^[0-9a-f-]{36}$/) // 생성된 UUID
+    expect(calls[0][3]).toBe('첫 질문')
+    expect(calls[1]).toEqual(['-p', '--resume', id, '둘째 질문']) // 같은 id 로 재개
+  })
+
+  it("codex-thread 세션: 첫 응답의 thread_id 를 캡처해 resume 인자에 사용한다", async () => {
+    const calls: string[][] = []
+    const runner: CommandRunner = async (_c, args) => {
+      calls.push(args)
+      const stdout =
+        calls.length === 1
+          ? '{"type":"thread.started","thread_id":"abc-123"}\n{"type":"item.completed","item":{"type":"agent_message","text":"R1"}}'
+          : '{"type":"item.completed","item":{"type":"agent_message","text":"R2"}}'
+      return { code: 0, stdout, stderr: '' }
+    }
+    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const adapter: CliAdapter = {
+      id: 'codex',
+      displayName: 'Codex CLI',
+      command: 'codex',
+      versionArgs: ['--version'],
+      headless: { args: ['exec', '--json', '{prompt}'], parse: 'codex-jsonl' },
+      session: {
+        startArgs: ['exec', '--json', '{prompt}'],
+        resumeArgs: ['exec', 'resume', '--json', '{sessionId}', '{prompt}'],
+        idSource: 'codex-thread',
+      },
+    }
+    const s = createCliSession(codexDesc, adapter, runner, undefined, { stateful: true })
+    expect(await s.send('q1')).toBe('R1')
+    expect(await s.send('q2')).toBe('R2')
+    expect(calls[0]).toEqual(['exec', '--json', 'q1'])
+    expect(calls[1]).toEqual(['exec', 'resume', '--json', 'abc-123', 'q2'])
+  })
+
+  it("동일 세션 동시 send 를 직렬화한다(codex id 캡처 레이스 방지)", async () => {
+    const calls: string[][] = []
+    const runner: CommandRunner = async (_c, args) => {
+      calls.push(args)
+      const idx = calls.length
+      // 첫 호출을 일부러 느리게 → 직렬화 없으면 둘째가 id 없이 먼저 진행됨
+      await new Promise((r) => setTimeout(r, idx === 1 ? 15 : 0))
+      const stdout =
+        idx === 1
+          ? '{"type":"thread.started","thread_id":"tid-1"}\n{"type":"item.completed","item":{"type":"agent_message","text":"R1"}}'
+          : '{"type":"item.completed","item":{"type":"agent_message","text":"R2"}}'
+      return { code: 0, stdout, stderr: '' }
+    }
+    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const adapter: CliAdapter = {
+      id: 'codex',
+      displayName: 'Codex CLI',
+      command: 'codex',
+      versionArgs: ['--version'],
+      headless: { args: ['exec', '--json', '{prompt}'], parse: 'codex-jsonl' },
+      session: {
+        startArgs: ['exec', '--json', '{prompt}'],
+        resumeArgs: ['exec', 'resume', '--json', '{sessionId}', '{prompt}'],
+        idSource: 'codex-thread',
+      },
+    }
+    const s = createCliSession(codexDesc, adapter, runner, undefined, { stateful: true })
+    const [r1, r2] = await Promise.all([s.send('q1'), s.send('q2')])
+    expect(r1).toBe('R1')
+    expect(r2).toBe('R2')
+    expect(calls[0]).toEqual(['exec', '--json', 'q1']) // start
+    expect(calls[1]).toEqual(['exec', 'resume', '--json', 'tid-1', 'q2']) // 캡처된 id 로 resume
+  })
 })
 
 describe('createSessionManager', () => {
