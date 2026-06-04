@@ -1,12 +1,12 @@
-import { execFile } from 'node:child_process'
+import spawn from 'cross-spawn'
 import type { CliAdapter, CliDetectionResult } from '../../../shared/types'
 
 export interface CommandResult {
   code: number | null
   stdout: string
   stderr: string
-  /** spawn 자체 실패(예: 명령 없음) */
-  spawnError?: 'ENOENT' | string
+  /** spawn 자체 실패(예: 명령 없음 ENOENT, 타임아웃 ETIMEDOUT, 출력 초과 ENOBUFS) */
+  spawnError?: 'ENOENT' | 'ETIMEDOUT' | 'ENOBUFS' | string
 }
 
 /** 명령 실행기 — 테스트에서 mock 주입 가능하도록 분리. */
@@ -14,23 +14,69 @@ export type CommandRunner = (command: string, args: string[], timeoutMs: number)
 
 const MAX_BUFFER = 10 * 1024 * 1024
 
-/** 기본 실행기: child_process.execFile 래핑. */
+/**
+ * 기본 실행기: cross-spawn 기반.
+ *
+ * Windows 에서 npm 으로 설치된 CLI 는 `gemini.cmd` 같은 배치 셰임이라
+ * Node 의 execFile/spawn 으로는 직접 실행되지 않는다:
+ *  - 확장자 없이 `gemini` → PATHEXT 미해석으로 ENOENT
+ *  - `gemini.cmd` 명시 → Node 20+ 의 .cmd/.bat 차단(CVE-2024-27980)으로 EINVAL
+ * cross-spawn 은 PATHEXT 로 셰임을 찾고, cmd.exe 경유 시 인자를 안전하게
+ * 이스케이프(주입 방지)해 실행한다. POSIX 에서는 일반 spawn 과 동일하게 동작.
+ */
 export const defaultRunner: CommandRunner = (command, args, timeoutMs) =>
   new Promise<CommandResult>((resolve) => {
-    const child = execFile(
-      command,
-      args,
-      { timeout: timeoutMs, windowsHide: true, maxBuffer: MAX_BUFFER },
-      (err, stdout, stderr) => {
-        const e = err as (NodeJS.ErrnoException & { code?: number | string }) | null
-        if (e && e.code === 'ENOENT') {
-          resolve({ code: null, stdout: '', stderr: '', spawnError: 'ENOENT' })
-          return
-        }
-        const code = e ? (typeof e.code === 'number' ? e.code : 1) : 0
-        resolve({ code, stdout: stdout?.toString() ?? '', stderr: stderr?.toString() ?? '' })
-      },
-    )
+    const outChunks: Buffer[] = []
+    const errChunks: Buffer[] = []
+    let outLen = 0
+    let errLen = 0
+    let settled = false
+
+    // 멀티바이트(UTF-8) 경계 깨짐 방지를 위해 Buffer 로 모았다가 마지막에 디코드한다.
+    const decode = () => ({
+      stdout: Buffer.concat(outChunks).toString(),
+      stderr: Buffer.concat(errChunks).toString(),
+    })
+
+    const finish = (extra: { code: number | null; spawnError?: string }) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const { stdout, stderr } = decode()
+      resolve({ ...extra, stdout, stderr })
+    }
+
+    const child = spawn(command, args, { windowsHide: true })
+
+    const timer = setTimeout(() => {
+      child.kill()
+      finish({ code: null, spawnError: 'ETIMEDOUT' })
+    }, timeoutMs)
+
+    // 출력이 한도를 넘으면 child 를 죽이고 명시적 에러로 종료한다(과거 execFile maxBuffer 계약 유지).
+    // 그대로 두면 조용한 truncation 또는 무한 출력 CLI 의 timeout 까지 매달림이 발생한다.
+    const onOverflow = () => {
+      child.kill()
+      finish({ code: null, spawnError: 'ENOBUFS' })
+    }
+    child.stdout?.on('data', (c: Buffer) => {
+      outChunks.push(c)
+      outLen += c.length
+      if (outLen > MAX_BUFFER) onOverflow()
+    })
+    child.stderr?.on('data', (c: Buffer) => {
+      errChunks.push(c)
+      errLen += c.length
+      if (errLen > MAX_BUFFER) onOverflow()
+    })
+
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      finish({ code: null, spawnError: err.code ?? err.message })
+    })
+    child.on('close', (code) => {
+      finish({ code })
+    })
+
     // 헤드리스 CLI(claude -p 등)가 stdin 입력을 기다리며 멈추지 않도록 즉시 EOF 를 보낸다.
     child.stdin?.end()
   })

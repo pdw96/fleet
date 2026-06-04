@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { defaultRunner, detectAll, detectCli, parseVersion, type CommandRunner } from './detect'
 import { createCliRegistry, DEFAULT_CLI_ADAPTERS } from './registry'
 import type { CliAdapter } from '../../../shared/types'
@@ -77,6 +80,49 @@ describe('defaultRunner (integration)', () => {
     const res = await defaultRunner('node', ['-e', script], 10_000)
     expect(res.code).toBe(0)
     expect(res.stdout).toContain('done:0')
+  }, 15_000)
+
+  // 회귀: maxBuffer 초과 시 child 를 죽이고 명시적 에러를 반환해야 한다(조용한 truncation / 무한 매달림 방지).
+  it('errors with ENOBUFS when output exceeds the max buffer', async () => {
+    const script = "process.stdout.write('x'.repeat(11*1024*1024))"
+    const res = await defaultRunner('node', ['-e', script], 10_000)
+    expect(res.spawnError).toBe('ENOBUFS')
+  }, 15_000)
+})
+
+describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows .cmd shim regression)', () => {
+  // 회귀: npm 설치 CLI(gemini.cmd 등)는 .cmd 배치 셰임이다. execFile 은 bare 이름을
+  // PATHEXT 로 해석 못 해 ENOENT, .cmd 명시 시엔 Node 20+ 가드로 EINVAL. cross-spawn 이 둘 다 해결.
+  it('resolves and runs a bare command name backed only by a .cmd shim', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-cli-'))
+    const prevPath = process.env.PATH
+    try {
+      writeFileSync(join(dir, 'mycli.cmd'), '@echo off\r\necho mycli 7.8.9\r\n')
+      process.env.PATH = `${dir};${prevPath ?? ''}`
+      const res = await defaultRunner('mycli', ['--version'], 10_000)
+      expect(res.spawnError).toBeUndefined()
+      expect(res.code).toBe(0)
+      expect(parseVersion(res.stdout)).toBe('7.8.9')
+    } finally {
+      process.env.PATH = prevPath
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 15_000)
+
+  // 보안 회귀: 임의 인자(헤드리스 {prompt})에 cmd.exe 메타문자가 있어도 명령 주입이 일어나지 않아야 한다.
+  it('does not allow command injection via a malicious argument', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-inj-'))
+    const marker = join(dir, 'pwned.txt')
+    try {
+      writeFileSync(join(dir, 'echoarg.cmd'), '@echo off\r\necho GOT %1\r\n')
+      // 주입이 가능하면 체이닝된 'echo > marker' 가 실행되어 marker 파일이 생긴다.
+      const payload = `x" & echo pwned> "${marker}" & echo "y`
+      const res = await defaultRunner(join(dir, 'echoarg.cmd'), [payload], 10_000)
+      expect(res.spawnError).toBeUndefined()
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   }, 15_000)
 })
 
