@@ -1,68 +1,42 @@
 import type { CSSProperties } from 'react'
 
-export const colors = {
-  bg: '#1a1b1e',
-  panel: '#26282c',
-  panel2: '#1f2023',
-  border: '#33363b',
-  text: '#e6e6e6',
-  muted: '#9aa0aa',
-  accent: '#3b82f6',
-  green: '#22c55e',
-  red: '#ef4444',
-  amber: '#f59e0b',
+/**
+ * 시각 시스템은 styles.css(디자인 토큰·컴포넌트 클래스)가 소유한다.
+ * 여기서는 className 으로 표현하기 어려운 '동적 색상'(상태별·에이전트별)만 다룬다.
+ */
+
+/** 클래스명 조건 결합. */
+export function cx(...parts: (string | false | null | undefined)[]): string {
+  return parts.filter(Boolean).join(' ')
 }
 
-export const card: CSSProperties = {
-  background: colors.panel,
-  border: `1px solid ${colors.border}`,
-  borderRadius: 8,
-  padding: 16,
+/** CSS 커스텀 프로퍼티(예: --hue)를 인라인 스타일로 주입. */
+export function vars(map: Record<string, string>): CSSProperties {
+  return map as CSSProperties
 }
 
-export const button: CSSProperties = {
-  padding: '8px 14px',
-  background: colors.accent,
-  color: '#fff',
-  border: 'none',
-  borderRadius: 6,
-  cursor: 'pointer',
-  fontSize: 13,
-}
-
-export const buttonGhost: CSSProperties = {
-  ...button,
-  background: 'transparent',
-  border: `1px solid ${colors.border}`,
-  color: colors.text,
-}
-
-export const input: CSSProperties = {
-  background: colors.panel2,
-  color: colors.text,
-  border: `1px solid ${colors.border}`,
-  borderRadius: 6,
-  padding: '8px 10px',
-  width: '100%',
-  fontSize: 13,
-  boxSizing: 'border-box',
-}
-
-export const label: CSSProperties = { fontSize: 12, color: colors.muted, display: 'block', marginBottom: 4 }
-
-/** 작업/프로젝트 상태 → 색상. */
+/** 작업/프로젝트 상태 → CSS 변수 색상. */
 export function statusColor(status: string): string {
   switch (status) {
     case 'done':
-      return colors.green
+      return 'var(--ok)'
     case 'failed':
-      return colors.red
+      return 'var(--bad)'
     case 'running':
     case 'review':
     case 'executing':
     case 'verifying':
-      return colors.amber
+      return 'var(--warn)'
     default:
-      return colors.muted
+      return 'var(--dim)'
   }
+}
+
+/** 채팅 참여자(LLM)별 고유 색상 — 멀티 LLM 대화를 시각적으로 분간. */
+const AGENT_HUES = ['#ffc24b', '#4fe0c0', '#9d8bff', '#ff9e7a', '#7ec8ff', '#f7768e']
+
+export function agentHue(id: string): string {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return AGENT_HUES[h % AGENT_HUES.length]
 }

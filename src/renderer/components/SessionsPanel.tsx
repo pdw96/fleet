@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import type { ApiProviderConfig, CliDetectionResult, LlmDescriptor } from '../../shared/types'
-import { button, buttonGhost, card, colors, input, label } from '../ui'
 
 interface Props {
   sessions: LlmDescriptor[]
@@ -61,30 +60,37 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   }
 
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
-      <section style={card}>
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 15 }}>구독제 / TUI LLM (API 키 불요)</h2>
-          <button style={{ ...buttonGhost, marginLeft: 'auto' }} onClick={detect} disabled={detecting}>
-            {detecting ? '감지 중…' : '다시 감지'}
-          </button>
+    <div className="stack">
+      <section className="panel">
+        <div className="panel-head">
+          <span className="eyebrow">01 — CLI</span>
+          <h2 className="panel-title">구독제 / TUI LLM</h2>
+          <div className="right">
+            <button className="btn-ghost btn-sm" onClick={detect} disabled={detecting}>
+              {detecting ? '감지 중…' : '다시 감지'}
+            </button>
+          </div>
         </div>
-        <label
-          style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 12, color: colors.muted, cursor: 'pointer' }}
-        >
+
+        <label className="check" style={{ marginBottom: 14 }}>
           <input type="checkbox" checked={stateful} onChange={(e) => setStateful(e.target.checked)} />
-          세션 재개(대화 맥락 유지) — CLI 자체 --resume 으로 멀티턴. ⚠ 오케스트레이터와 세션 공유 시 검증용.
+          <span>
+            세션 재개(대화 맥락 유지) — CLI 자체 --resume 으로 멀티턴.{' '}
+            <span className="note-warn">⚠ 오케스트레이터와 공유 시 검증용.</span>
+          </span>
         </label>
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
+
+        <ul className="list">
           {clis.map((c) => (
-            <li key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: colors.panel2, borderRadius: 6 }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: c.installed ? colors.green : '#555' }} />
-              <strong style={{ minWidth: 110 }}>{c.displayName}</strong>
-              <span style={{ color: colors.muted, fontSize: 12 }}>
-                {c.installed ? `v${c.version ?? '?'}` : '미설치'}
+            <li key={c.id} className="line-item">
+              <span className="dot" style={{ background: c.installed ? 'var(--ok)' : 'var(--faint)' }} />
+              <span className="name" style={{ minWidth: 116 }}>
+                {c.displayName}
               </span>
+              <span className="meta">{c.installed ? `v${c.version ?? '?'}` : '미설치'}</span>
               <button
-                style={{ ...button, marginLeft: 'auto', opacity: c.installed ? 1 : 0.4 }}
+                className="btn btn-sm"
+                style={{ marginLeft: 'auto' }}
                 disabled={!c.installed}
                 onClick={() => registerCli(c.id)}
               >
@@ -92,16 +98,20 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               </button>
             </li>
           ))}
+          {clis.length === 0 && !detecting && <p className="empty">감지된 CLI 가 없습니다.</p>}
         </ul>
       </section>
 
-      <section style={card}>
-        <h2 style={{ margin: '0 0 12px', fontSize: 15 }}>API 기반 LLM</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <section className="panel">
+        <div className="panel-head">
+          <span className="eyebrow">02 — API</span>
+          <h2 className="panel-title">API 기반 LLM</h2>
+        </div>
+        <div className="grid-2">
           <div>
-            <label style={label}>Provider</label>
+            <label className="field-label">Provider</label>
             <select
-              style={input}
+              className="field"
               value={provider}
               onChange={(e) => {
                 const p = e.target.value as ApiProviderConfig['provider']
@@ -115,40 +125,48 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             </select>
           </div>
           <div>
-            <label style={label}>모델</label>
-            <input style={input} value={model} onChange={(e) => setModel(e.target.value)} />
+            <label className="field-label">모델</label>
+            <input className="field" value={model} onChange={(e) => setModel(e.target.value)} />
           </div>
         </div>
-        <div style={{ marginTop: 10 }}>
-          <label style={label}>API 키</label>
-          <input style={input} type="password" value={apiKey} placeholder="sk-..." onChange={(e) => setApiKey(e.target.value)} />
+        <div style={{ marginTop: 12 }}>
+          <label className="field-label">API 키</label>
+          <input
+            className="field"
+            type="password"
+            value={apiKey}
+            placeholder="sk-..."
+            onChange={(e) => setApiKey(e.target.value)}
+          />
         </div>
-        <button style={{ ...button, marginTop: 12 }} onClick={registerApi} disabled={busy || !apiKey.trim()}>
+        <button className="btn" style={{ marginTop: 14 }} onClick={registerApi} disabled={busy || !apiKey.trim()}>
           API 세션 등록
         </button>
       </section>
 
-      <section style={card}>
-        <h2 style={{ margin: '0 0 12px', fontSize: 15 }}>등록된 세션 ({sessions.length})</h2>
-        {sessions.length === 0 && <p style={{ color: colors.muted, fontSize: 13 }}>아직 등록된 LLM 세션이 없습니다.</p>}
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 6 }}>
+      <section className="panel">
+        <div className="panel-head">
+          <span className="eyebrow">03 — FLEET</span>
+          <h2 className="panel-title">등록된 세션</h2>
+          <div className="right">
+            <span className="chip chip-signal">{sessions.length} active</span>
+          </div>
+        </div>
+        {sessions.length === 0 && <p className="empty">아직 등록된 LLM 세션이 없습니다.</p>}
+        <ul className="list">
           {sessions.map((s) => (
-            <li key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: colors.panel2, borderRadius: 6 }}>
-              <span style={{ fontSize: 11, color: colors.accent, border: `1px solid ${colors.accent}`, borderRadius: 4, padding: '1px 6px' }}>
-                {s.kind.toUpperCase()}
-              </span>
+            <li key={s.id} className="line-item">
+              <span className="chip chip-signal">{s.kind.toUpperCase()}</span>
               {s.stateful && (
-                <span
-                  style={{ fontSize: 10, color: colors.green, border: `1px solid ${colors.green}`, borderRadius: 4, padding: '1px 5px' }}
-                  title="세션 재개(대화 맥락 유지) 모드"
-                >
+                <span className="chip chip-live" title="세션 재개(대화 맥락 유지) 모드">
                   STATEFUL
                 </span>
               )}
-              <strong>{s.displayName}</strong>
-              <code style={{ color: colors.muted, fontSize: 11 }}>{s.id}</code>
+              <span className="name">{s.displayName}</span>
+              <code className="id">{s.id}</code>
               <button
-                style={{ ...buttonGhost, marginLeft: 'auto', color: colors.red }}
+                className="btn-danger btn-sm"
+                style={{ marginLeft: 'auto' }}
                 onClick={async () => {
                   await window.fleet.removeSession(s.id)
                   onRefresh()

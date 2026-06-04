@@ -156,7 +156,31 @@ engine.askLlm / discussRoom
 
 ---
 
-## 10. MVP 범위 (요구사항 8) → 완수 정의
+## 10. UI 디자인 시스템 (Obsidian Command Deck)
+
+renderer 의 시각 정체성은 "멀티 LLM 을 지휘하는 정밀 계측기"다. 제너릭 다크 UI 를 벗어나
+의도적이고 distinctive 한 한 가지 미감에 충실하게 실행한다.
+
+- **색 — 이원 신호 체계.** 흑요석 베이스(#0a0b0d)에 두 액센트만: 시그널 앰버(#ffc24b) = 사용자
+  액션·포커스·활성, 라이브 민트(#4fe0c0) = 실시간 상태(스트리밍·라이브 세션). 채팅 참여자는 id
+  해시로 고유 색(`agentHue`)을 받아 멀티 LLM 발언을 시각적으로 분간한다.
+- **타이포 — 세리프 × 모노.** 디스플레이 세리프 Fraunces(워드마크·패널 타이틀) × 워크호스 모노
+  IBM Plex Mono(데이터·식별자·토큰·UI). 폰트는 `src/renderer/fonts/` 에 라틴 서브셋 woff2 로 로컬
+  번들 → index.html 의 엄격한 CSP(`default-src 'self'`)를 유지하면서 오프라인에서도 동작한다(vite 가
+  'self' 해시 자산으로 처리). 한글은 시스템 폰트로 폴백한다.
+- **분위기.** 헤어라인 보더 + 도트그리드 + 코너 글로우 + 비네팅(전부 CSS 그라디언트 — data: URI
+  없이 CSP 안전). 패널은 eyebrow 코드네임(01 — CLI…) + Fraunces 타이틀의 에디토리얼 헤더.
+- **스트리밍 히어로.** 라이브 말풍선은 민트 시그널 바 스윕 + 발광 캐럿 + 글로우로 '전송 중'을
+  표상하고(§9 토큰 스트리밍의 렌더 표면), 완료 시 영속 메시지로 승격된다.
+- **구현.** `styles.css` 가 디자인 토큰(CSS 변수)·컴포넌트 클래스·키프레임을 소유하고 컴포넌트는
+  className 으로만 표현한다. `ui.ts` 는 className 으로 어려운 동적 색상(`statusColor`·`agentHue`)만 둔다.
+- **접근성·모션.** 의미 텍스트는 WCAG AA 대비(faint ~4.9:1), 모든 인터랙티브 요소에 `:focus-visible`
+  링, 비활성 1차 버튼은 고스트로 강등(색 신호 의미 보존). 진입 스태거·스트리밍 펄스는
+  `prefers-reduced-motion` 에서 정지한다.
+
+---
+
+## 11. MVP 범위 (요구사항 8) → 완수 정의
 
 1. 빌드·기동되는 Electron 데스크톱 앱 (smoke 통과)
 2. claude/codex/gemini CLI 설치 감지
@@ -170,7 +194,7 @@ engine.askLlm / discussRoom
 
 ---
 
-## 11. 품질 게이트
+## 12. 품질 게이트
 
 - `npm run typecheck` (tsc --noEmit, main+renderer+shared)
 - `npm run lint` (eslint)

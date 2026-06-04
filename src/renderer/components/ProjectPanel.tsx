@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { AssignmentPolicy, LlmDescriptor, OrchestratorEvent, RunResult, Task } from '../../shared/types'
-import { button, card, colors, input, label, statusColor } from '../ui'
+import { statusColor } from '../ui'
 
 interface Props {
   sessions: LlmDescriptor[]
@@ -39,41 +39,50 @@ export function ProjectPanel({ sessions }: Props) {
   const canRun = sessions.length > 0 && goal.trim().length > 0 && !running
 
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
-      <section style={card}>
-        <h2 style={{ margin: '0 0 12px', fontSize: 15 }}>프로젝트 목표</h2>
+    <div className="stack">
+      <section className="panel">
+        <div className="panel-head">
+          <span className="eyebrow">01 — GOAL</span>
+          <h2 className="panel-title">프로젝트 목표</h2>
+        </div>
         {sessions.length === 0 && (
-          <p style={{ color: colors.amber, fontSize: 13 }}>먼저 [세션] 탭에서 LLM 세션을 1개 이상 등록하세요.</p>
+          <p className="note-warn" style={{ marginTop: 0 }}>
+            먼저 [세션] 탭에서 LLM 세션을 1개 이상 등록하세요.
+          </p>
         )}
         <textarea
-          style={{ ...input, minHeight: 120, resize: 'vertical', fontFamily: 'inherit' }}
+          className="field"
           placeholder="예: 사용자 인증이 있는 할 일 관리 REST API 를 만든다…"
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
         />
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginTop: 10 }}>
-          <div style={{ width: 200 }}>
-            <label style={label}>역할 배정 정책</label>
-            <select style={input} value={policy} onChange={(e) => setPolicy(e.target.value as AssignmentPolicy)}>
+        <div className="row" style={{ alignItems: 'flex-end', marginTop: 12 }}>
+          <div style={{ width: 220 }}>
+            <label className="field-label">역할 배정 정책</label>
+            <select className="field" value={policy} onChange={(e) => setPolicy(e.target.value as AssignmentPolicy)}>
               <option value="round-robin">round-robin</option>
               <option value="capability-scored">capability-scored</option>
               <option value="manual">manual</option>
             </select>
           </div>
-          <button style={{ ...button, marginLeft: 'auto' }} onClick={run} disabled={!canRun}>
+          <button className="btn" style={{ marginLeft: 'auto' }} onClick={run} disabled={!canRun}>
             {running ? '실행 중…' : '오케스트레이션 실행'}
           </button>
         </div>
-        {error && <p style={{ color: colors.red, fontSize: 13, marginTop: 10 }}>오류: {error}</p>}
+        {error && <p className="note-bad" style={{ marginBottom: 0 }}>오류: {error}</p>}
       </section>
 
       {(events.length > 0 || running) && (
-        <section style={card}>
-          <h2 style={{ margin: '0 0 12px', fontSize: 15 }}>진행 상황</h2>
-          <div style={{ maxHeight: 180, overflow: 'auto', display: 'grid', gap: 4 }}>
+        <section className="panel">
+          <div className="panel-head">
+            <span className="eyebrow">02 — STREAM</span>
+            <h2 className="panel-title">진행 상황</h2>
+          </div>
+          <div className="log">
             {events.map((e, i) => (
-              <div key={i} style={{ fontSize: 12, color: colors.muted }}>
-                <span style={{ color: colors.accent }}>{e.type}</span> · {e.message}
+              <div key={i} className="log-line">
+                <span className="t">{e.type}</span>
+                <span>{e.message}</span>
               </div>
             ))}
           </div>
@@ -81,30 +90,38 @@ export function ProjectPanel({ sessions }: Props) {
       )}
 
       {tasks.length > 0 && (
-        <section style={card}>
-          <h2 style={{ margin: '0 0 12px', fontSize: 15 }}>작업 보드 ({tasks.length})</h2>
-          <div style={{ display: 'grid', gap: 6 }}>
+        <section className="panel">
+          <div className="panel-head">
+            <span className="eyebrow">03 — BOARD</span>
+            <h2 className="panel-title">작업 보드</h2>
+            <div className="right">
+              <span className="chip">{tasks.length} tasks</span>
+            </div>
+          </div>
+          <ul className="list">
             {tasks.map((t) => (
-              <div key={t.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 10px', background: colors.panel2, borderRadius: 6 }}>
-                <span style={{ fontSize: 11, color: statusColor(t.status), border: `1px solid ${statusColor(t.status)}`, borderRadius: 4, padding: '1px 6px', minWidth: 56, textAlign: 'center' }}>
+              <li key={t.id} className="line-item">
+                <span
+                  className="chip"
+                  style={{ color: statusColor(t.status), borderColor: 'currentColor', minWidth: 62, justifyContent: 'center' }}
+                >
                   {t.status}
                 </span>
-                <div style={{ flex: 1 }}>
-                  <strong style={{ fontSize: 13 }}>{t.title}</strong>
-                  {t.role && <span style={{ color: colors.muted, fontSize: 11, marginLeft: 8 }}>{t.role}</span>}
-                </div>
-              </div>
+                <span className="name">{t.title}</span>
+                {t.role && <span className="meta">{t.role}</span>}
+              </li>
             ))}
-          </div>
+          </ul>
         </section>
       )}
 
       {result?.summary && (
-        <section style={card}>
-          <h2 style={{ margin: '0 0 12px', fontSize: 15 }}>최종 요약 / 누락 점검</h2>
-          <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 13, color: colors.text, margin: 0 }}>
-            {result.summary}
-          </pre>
+        <section className="panel">
+          <div className="panel-head">
+            <span className="eyebrow">04 — SUMMARY</span>
+            <h2 className="panel-title">최종 요약 / 누락 점검</h2>
+          </div>
+          <pre className="summary">{result.summary}</pre>
         </section>
       )}
     </div>

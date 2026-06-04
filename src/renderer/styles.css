@@ -1,0 +1,884 @@
+/* ════════════════════════════════════════════════════════════════════════
+   Fleet — "Obsidian Command Deck"
+   멀티 LLM 을 지휘하는 정밀 계측기. 흑요석 베이스 · 시그널 앰버 · 라이브 민트.
+   Fraunces(디스플레이 세리프) × IBM Plex Mono(워크호스). CSP 'self' 준수(로컬 번들).
+   ════════════════════════════════════════════════════════════════════════ */
+
+@font-face {
+  font-family: 'Fraunces';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/fraunces-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Fraunces';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./fonts/fraunces-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/plexmono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/plexmono-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./fonts/plexmono-600.woff2') format('woff2');
+}
+
+:root {
+  --bg: #0a0b0d;
+  --bg-2: #0e0f12;
+  --surface: #141619;
+  --surface-2: #191c20;
+  --surface-3: #22262c;
+  --line: rgba(233, 228, 220, 0.07);
+  --line-2: rgba(233, 228, 220, 0.13);
+
+  --text: #e9e4dc;
+  --dim: #969ba3;
+  --faint: #828892; /* 의미 텍스트용 — bg 위 ~4.9:1 (WCAG AA) */
+  --faint-deco: #4d525a; /* 장식 전용(구분자·비활성 닷) — 대비 무관 */
+
+  --signal: #ffc24b; /* 앰버 — 주 액션/포커스/활성 */
+  --signal-soft: rgba(255, 194, 75, 0.14);
+  --signal-line: rgba(255, 194, 75, 0.42);
+  --live: #4fe0c0; /* 민트 — 스트리밍/라이브 */
+  --live-soft: rgba(79, 224, 192, 0.14);
+
+  --ok: #5fd38a;
+  --warn: #ffc24b;
+  --bad: #ff6f6f;
+
+  --mono: 'Plex Mono', 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+  --display: 'Fraunces', 'Georgia', 'Times New Roman', serif;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 18px 40px -24px rgba(0, 0, 0, 0.8);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* 키보드 포커스 링 — appearance 리셋으로 기본 아웃라인이 사라진 모든 인터랙티브 요소에 부여.
+   2겹(bg + signal)으로 어떤 배경 위에서도 보이게 한다. */
+.nav-btn:focus-visible,
+.room-btn:focus-visible,
+.btn:focus-visible,
+.btn-ghost:focus-visible,
+.btn-danger:focus-visible,
+.btn-live:focus-visible,
+.ask-btn:focus-visible,
+.check input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--signal-line);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(1100px 560px at 82% -12%, rgba(255, 194, 75, 0.07), transparent 60%),
+    radial-gradient(820px 480px at -8% -6%, rgba(79, 224, 192, 0.05), transparent 55%),
+    radial-gradient(rgba(233, 228, 220, 0.022) 1px, transparent 1px);
+  background-size: auto, auto, 23px 23px;
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden; /* 앱 셸이 스크롤 영역을 관리 */
+}
+
+/* 가장자리 비네팅(분위기) — CSP 안전(그라디언트) */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(120% 120% at 50% 40%, transparent 58%, rgba(0, 0, 0, 0.42) 100%);
+}
+
+::selection {
+  background: var(--signal-soft);
+  color: #fff;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(233, 228, 220, 0.12);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(233, 228, 220, 0.22);
+  background-clip: padding-box;
+}
+
+/* ── 앱 셸 ─────────────────────────────────────────────────────────────── */
+.app {
+  position: relative;
+  z-index: 1;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 16px 26px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent);
+  animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.brand h1 {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 27px;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--text);
+}
+.brand h1 .dotmark {
+  color: var(--signal);
+}
+.brand .tag {
+  font-size: 10px;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* 세그먼트 내비 */
+.nav {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+}
+.nav-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em; /* 한글 라벨 자간 자연스럽게 */
+  padding: 7px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.18s, background 0.18s, box-shadow 0.18s;
+}
+.nav-btn:hover {
+  color: var(--text);
+}
+.nav-btn[data-active='true'] {
+  color: #1a1407;
+  background: var(--signal);
+  box-shadow: 0 0 0 1px var(--signal-line), 0 6px 18px -8px rgba(255, 194, 75, 0.6);
+  font-weight: 600;
+}
+
+.spacer {
+  margin-left: auto;
+}
+
+/* 라이브 세션 카운터 */
+.live {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.live .num {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.live[data-live='true'] .num {
+  color: var(--live); /* 라이브 세션이 있으면 민트로 표상 — 앰버=액션 / 민트=실시간 이원 체계 */
+}
+.beacon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint-deco);
+  position: relative;
+}
+.beacon[data-on='true'] {
+  background: var(--live);
+}
+.beacon[data-on='true']::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid var(--live);
+  animation: ring 1.8s ease-out infinite;
+}
+
+.main {
+  flex: 1;
+  overflow: auto;
+  padding: 26px;
+}
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.footer {
+  padding: 9px 26px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+.footer .sep {
+  color: rgba(233, 228, 220, 0.18);
+  margin: 0 8px;
+}
+
+/* ── 레이아웃 유틸 ─────────────────────────────────────────────────────── */
+.stack {
+  display: grid;
+  gap: 18px;
+}
+.stack > * {
+  animation: fadeUp 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.stack > *:nth-child(2) {
+  animation-delay: 0.06s;
+}
+.stack > *:nth-child(3) {
+  animation-delay: 0.12s;
+}
+.stack > *:nth-child(4) {
+  animation-delay: 0.18s;
+}
+.stack > *:nth-child(5) {
+  animation-delay: 0.24s;
+}
+.stack > *:nth-child(6) {
+  animation-delay: 0.3s;
+}
+
+/* ── 패널 / 카드 ───────────────────────────────────────────────────────── */
+.panel {
+  position: relative;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 120px), var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line-2) 20%, var(--line-2) 80%, transparent);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.eyebrow::before {
+  content: '';
+  width: 16px;
+  height: 1px;
+  background: var(--signal);
+  opacity: 0.7;
+}
+.panel-title {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 18px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.panel-head .right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ── 버튼 ──────────────────────────────────────────────────────────────── */
+.btn {
+  appearance: none;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--signal-line);
+  background: var(--signal);
+  color: #1a1407;
+  cursor: pointer;
+  transition: transform 0.12s, box-shadow 0.18s, background 0.18s, opacity 0.18s, border-color 0.18s,
+    color 0.18s;
+}
+.btn:hover:not(:disabled) {
+  box-shadow: 0 8px 22px -10px rgba(255, 194, 75, 0.7);
+  transform: translateY(-1px);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+/* 비활성: 솔리드 앰버 채움을 버리고 명시적 '죽은' 고스트 룩으로 강등
+   → 1차 액션 색(앰버)은 '실행 가능'할 때만 등장해 색 신호의 의미를 보존. */
+.btn:disabled {
+  background: transparent;
+  border-color: var(--line-2);
+  color: var(--faint);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--line-2);
+  color: var(--text);
+  font-weight: 500;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--line-2);
+  box-shadow: none;
+}
+.btn-danger {
+  background: transparent;
+  border-color: var(--line-2);
+  color: var(--dim);
+}
+.btn-danger:hover:not(:disabled) {
+  color: var(--bad);
+  border-color: rgba(255, 111, 111, 0.5);
+  background: rgba(255, 111, 111, 0.08);
+  box-shadow: none;
+}
+.btn-live {
+  background: var(--live);
+  border-color: rgba(79, 224, 192, 0.5);
+  color: #07211c;
+}
+.btn-live:hover:not(:disabled) {
+  box-shadow: 0 8px 22px -10px rgba(79, 224, 192, 0.7);
+}
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+/* ── 폼 필드 ───────────────────────────────────────────────────────────── */
+.field-label {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 6px;
+}
+.field {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  outline: none;
+  transition: border-color 0.16s, box-shadow 0.16s, background 0.16s;
+}
+.field::placeholder {
+  color: var(--faint);
+}
+.field:focus {
+  border-color: var(--signal-line);
+  box-shadow: 0 0 0 3px var(--signal-soft);
+  background: var(--bg-2);
+}
+textarea.field {
+  resize: vertical;
+  min-height: 122px;
+  line-height: 1.6;
+}
+select.field {
+  cursor: pointer;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* ── 칩 / 배지 / 닷 ────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.chip-signal {
+  color: var(--signal);
+  border-color: var(--signal-line);
+}
+.chip-live {
+  color: var(--live);
+  border-color: rgba(79, 224, 192, 0.42);
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--faint);
+}
+
+/* 등록/감지 항목 행 */
+.line-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.16s, background 0.16s;
+}
+.line-item:hover {
+  border-color: var(--line-2);
+}
+.line-item .name {
+  font-weight: 600;
+  color: var(--text);
+}
+.line-item .meta {
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+.muted {
+  color: var(--dim);
+}
+.empty {
+  color: var(--faint);
+  font-size: 12.5px;
+  padding: 6px 2px;
+}
+.note-warn {
+  color: var(--warn);
+  font-size: 12.5px;
+}
+.note-bad {
+  color: var(--bad);
+  font-size: 12.5px;
+}
+code.id {
+  font-size: 11px;
+  color: var(--faint);
+  letter-spacing: 0.02em;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+  user-select: none;
+}
+.check input {
+  accent-color: var(--signal);
+  width: 15px;
+  height: 15px;
+}
+
+/* ── 채팅 ──────────────────────────────────────────────────────────────── */
+.chat {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  gap: 18px;
+  height: calc(100vh - 160px);
+  min-height: 460px;
+}
+.rooms {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.room-btn {
+  appearance: none;
+  text-align: left;
+  width: 100%;
+  position: relative;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px 10px 16px;
+  cursor: pointer;
+  transition: color 0.16s, background 0.16s, border-color 0.16s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.room-btn:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.room-btn[data-active='true'] {
+  color: var(--text);
+  background: var(--surface-2);
+  border-color: var(--line-2);
+}
+.room-btn[data-active='true']::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--signal);
+  box-shadow: 0 0 12px rgba(255, 194, 75, 0.6);
+}
+
+.chat-main {
+  display: grid;
+  grid-template-rows: 1fr auto auto;
+  gap: 14px;
+  min-height: 0;
+}
+.transcript {
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding-right: 4px;
+}
+
+/* 메시지 버블 */
+.msg {
+  --hue: var(--signal);
+  position: relative;
+  padding: 11px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  animation: fadeUp 0.32s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.msg.user {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent), var(--surface);
+}
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.msg-author {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--hue);
+}
+.msg-author.neutral {
+  color: var(--dim);
+}
+.msg-role {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--dim); /* 역할(architect/critic)이 유일 구분 단서 — faint→dim 으로 가독 확보 */
+}
+.msg-body {
+  font-size: 13px;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+/* 라이브 스트리밍 버블 — 히어로 */
+.stream {
+  --hue: var(--live);
+  position: relative;
+  padding: 11px 14px 11px 16px;
+  background: linear-gradient(180deg, var(--live-soft), transparent 60%), var(--surface-2);
+  border: 1px solid rgba(79, 224, 192, 0.34);
+  border-radius: 11px;
+  overflow: hidden;
+  /* 히어로: 정적 메시지 옆에서 떠 보이도록 민트 글로우 */
+  box-shadow: 0 0 0 1px rgba(79, 224, 192, 0.16), 0 14px 34px -18px rgba(79, 224, 192, 0.5);
+  animation: fadeUp 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.stream::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  /* 밝은 띠가 위로 흐르는 스윕 — '토큰이 흐른다'는 운동감 */
+  background: linear-gradient(180deg, rgba(79, 224, 192, 0.2) 0%, var(--live) 50%, rgba(79, 224, 192, 0.2) 100%);
+  background-size: 100% 200%;
+  animation: livesweep 1.5s linear infinite;
+}
+.stream.error {
+  --hue: var(--bad);
+  background: linear-gradient(180deg, rgba(255, 111, 111, 0.1), transparent 60%), var(--surface-2);
+  border-color: rgba(255, 111, 111, 0.4);
+}
+.stream.error::before {
+  background: var(--bad);
+  animation: none;
+}
+.stream-body {
+  font-size: 13px;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+.stream-wait {
+  color: var(--faint);
+}
+.stream-err {
+  color: var(--bad);
+  white-space: pre-wrap;
+}
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em; /* 한글 폴백(맑은 고딕) 베이스라인과 정렬 보정 */
+  background: var(--live);
+  border-radius: 1px;
+  box-shadow: 0 0 7px var(--live); /* 민트 바와 묻히지 않게 발광 */
+  animation: blink 1s steps(2, start) infinite;
+}
+
+/* 채팅 컨트롤 */
+.controls {
+  display: grid;
+  gap: 10px;
+}
+.chiprow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+.ask-btn {
+  appearance: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 6px 13px;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s, transform 0.12s;
+}
+.ask-btn::before {
+  content: '▸ ';
+  color: var(--signal);
+}
+.ask-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--signal-line);
+  transform: translateY(-1px);
+}
+.ask-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.composer {
+  display: flex;
+  gap: 8px;
+}
+
+.placeholder-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--faint);
+  font-size: 13px;
+}
+
+/* 진행 이벤트 로그 */
+.log {
+  max-height: 190px;
+  overflow: auto;
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+.log-line {
+  color: var(--dim);
+  display: flex;
+  gap: 8px;
+}
+.log-line .t {
+  color: var(--signal);
+  flex: none;
+}
+.summary {
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text);
+  margin: 0;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes livesweep {
+  0% {
+    background-position: 0 200%;
+  }
+  100% {
+    background-position: 0 0%;
+  }
+}
+@keyframes ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .caret {
+    animation: none;
+    opacity: 1;
+  }
+}

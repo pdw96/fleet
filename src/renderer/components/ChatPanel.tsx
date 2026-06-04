@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentRole, ChatMessage, ChatRoom, ChatStreamEvent, LlmDescriptor } from '../../shared/types'
-import { button, buttonGhost, card, colors, input } from '../ui'
+import { agentHue, cx, vars } from '../ui'
 
 interface Props {
   sessions: LlmDescriptor[]
@@ -145,103 +145,127 @@ export function ChatPanel({ sessions }: Props) {
     }
   }
 
+  const liveBubbles = Object.values(streams).filter((s) => s.roomId === activeRoom)
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16, height: '100%' }}>
-      <aside style={{ ...card, display: 'grid', gap: 8, alignContent: 'start' }}>
-        <h2 style={{ margin: 0, fontSize: 14 }}>작업방</h2>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <input style={input} placeholder="새 방 이름" value={newRoomTitle} onChange={(e) => setNewRoomTitle(e.target.value)} />
-          <button style={button} onClick={createRoom}>
+    <div className="chat">
+      <aside className="panel rooms">
+        <span className="eyebrow">작업방</span>
+        <div className="row" style={{ gap: 6 }}>
+          <input
+            className="field"
+            placeholder="새 방 이름"
+            value={newRoomTitle}
+            onChange={(e) => setNewRoomTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void createRoom()
+            }}
+          />
+          <button className="btn btn-sm" onClick={createRoom}>
             +
           </button>
         </div>
         {rooms.map((r) => (
-          <button
-            key={r.id}
-            style={{ ...buttonGhost, textAlign: 'left', background: r.id === activeRoom ? colors.panel2 : 'transparent' }}
-            onClick={() => setActiveRoom(r.id)}
-          >
+          <button key={r.id} className="room-btn" data-active={r.id === activeRoom} onClick={() => setActiveRoom(r.id)}>
             {r.title}
           </button>
         ))}
+        {rooms.length === 0 && <p className="empty">방이 없습니다.</p>}
       </aside>
 
-      <section style={{ ...card, display: 'grid', gridTemplateRows: '1fr auto auto', gap: 10, minHeight: 420 }}>
-        {!activeRoom && <p style={{ color: colors.muted }}>방을 만들거나 선택하세요.</p>}
-
-        <div style={{ overflow: 'auto', display: 'grid', gap: 8, alignContent: 'start' }}>
-          {messages.map((m) => (
-            <div key={m.id} style={{ padding: '8px 10px', background: colors.panel2, borderRadius: 6 }}>
-              <div style={{ fontSize: 11, color: colors.accent, marginBottom: 2 }}>
-                {authorName(m, sessions)}
-                {m.role && <span style={{ color: colors.muted, marginLeft: 6 }}>· {m.role}</span>}
-              </div>
-              <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{m.content}</div>
-            </div>
-          ))}
-          {Object.values(streams)
-            .filter((s) => s.roomId === activeRoom)
-            .map((s) => (
-            <div key={s.streamId} style={{ padding: '8px 10px', background: colors.panel2, borderRadius: 6, border: `1px solid ${colors.border}` }}>
-              <div style={{ fontSize: 11, color: colors.accent, marginBottom: 2 }}>
-                {llmName(s.llmId, sessions)}
-                {s.role && <span style={{ color: colors.muted, marginLeft: 6 }}>· {s.role}</span>}
-              </div>
-              {s.error ? (
-                <div style={{ fontSize: 13, color: colors.red, whiteSpace: 'pre-wrap' }}>⚠ {s.error}</div>
-              ) : (
-                <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>
-                  {s.text || <span style={{ color: colors.muted }}>응답 대기 중…</span>}
-                  <span style={{ color: colors.muted }}>▌</span>
+      <section className="panel chat-main">
+        {activeRoom ? (
+          <>
+            <div className="transcript">
+              {messages.map((m) => (
+                <div
+                  key={m.id}
+                  className={cx('msg', m.author.type === 'user' && 'user')}
+                  style={m.author.type === 'llm' ? vars({ '--hue': agentHue(m.author.llmId) }) : undefined}
+                >
+                  <div className="msg-head">
+                    <span className={cx('msg-author', m.author.type !== 'llm' && 'neutral')}>
+                      {authorName(m, sessions)}
+                    </span>
+                    {m.role && <span className="msg-role">· {m.role}</span>}
+                  </div>
+                  <div className="msg-body">{m.content}</div>
                 </div>
-              )}
-            </div>
-          ))}
-        </div>
+              ))}
 
-        {activeRoom && (
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <button
-                style={{ ...button, background: colors.green, opacity: busy || sessions.length < 2 ? 0.5 : 1 }}
-                disabled={busy || sessions.length < 2}
-                onClick={discuss}
-              >
-                {busy ? 'AI 토론 중…' : '🤖 AI 자동 토론'}
-              </button>
-              <label style={{ fontSize: 12, color: colors.muted }}>라운드</label>
-              <select style={{ ...input, width: 64 }} value={rounds} onChange={(e) => setRounds(Number(e.target.value))}>
-                <option value={1}>1</option>
-                <option value={2}>2</option>
-                <option value={3}>3</option>
-              </select>
-              {sessions.length < 2 && <span style={{ fontSize: 11, color: colors.amber }}>세션 2개 이상 필요</span>}
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {sessions.map((s) => (
-                <button key={s.id} style={{ ...buttonGhost, opacity: busy ? 0.5 : 1 }} disabled={busy} onClick={() => ask(s.id)}>
-                  {busy ? '…' : `${s.displayName}에게 묻기`}
-                </button>
+              {liveBubbles.map((s) => (
+                <div
+                  key={s.streamId}
+                  className={cx('stream', s.error && 'error')}
+                  // 에러일 땐 인라인 --hue 를 주지 않아 .stream.error 의 --hue(빨강)가 작성자 색에 적용되게 한다.
+                  style={s.error ? undefined : vars({ '--hue': agentHue(s.llmId) })}
+                >
+                  <div className="msg-head">
+                    <span className="msg-author">{llmName(s.llmId, sessions)}</span>
+                    {s.role && <span className="msg-role">· {s.role}</span>}
+                  </div>
+                  {s.error ? (
+                    <div className="stream-err">⚠ {s.error}</div>
+                  ) : (
+                    <div className="stream-body">
+                      {s.text || <span className="stream-wait">응답 대기 중…</span>}
+                      <span className="caret" />
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
-          </div>
-        )}
 
-        {activeRoom && (
-          <div style={{ display: 'flex', gap: 6 }}>
-            <input
-              style={input}
-              placeholder="메시지 입력 (개입/지시)"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void postMessage()
-              }}
-            />
-            <button style={button} onClick={postMessage}>
-              전송
-            </button>
-          </div>
+            <div className="controls">
+              <div className="chiprow">
+                <button className="btn btn-live btn-sm" disabled={busy || sessions.length < 2} onClick={discuss}>
+                  {busy ? 'AI 토론 중…' : '🤖 AI 자동 토론'}
+                </button>
+                <span className="field-label" style={{ margin: 0 }}>
+                  라운드
+                </span>
+                <select
+                  className="field"
+                  style={{ width: 64, padding: '6px 8px' }}
+                  value={rounds}
+                  onChange={(e) => setRounds(Number(e.target.value))}
+                >
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                </select>
+                {sessions.length < 2 && (
+                  <span className="note-warn" style={{ fontSize: 11 }}>
+                    세션 2개 이상 필요
+                  </span>
+                )}
+              </div>
+              <div className="chiprow">
+                {sessions.map((s) => (
+                  <button key={s.id} className="ask-btn" disabled={busy} onClick={() => ask(s.id)}>
+                    {busy ? '…' : `${s.displayName}에게 묻기`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="composer">
+              <input
+                className="field"
+                placeholder="메시지 입력 (개입/지시)"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void postMessage()
+                }}
+              />
+              <button className="btn" onClick={postMessage}>
+                전송
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="placeholder-empty">방을 만들거나 선택하세요.</div>
         )}
       </section>
     </div>
