@@ -77,7 +77,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     let approved = false
     let feedback = ''
     for (let round = 0; round <= maxRounds; round++) {
-      output = await implementer.send(buildImplementPrompt(goal, task.title, task.description, feedback || undefined))
+      output = await implementer.send(buildImplementPrompt(goal, task.title, task.description, feedback || undefined), {
+        fresh: true,
+      })
       store.updateTask(task.id, { status: 'review', output })
       emit({ type: 'task.implemented', message: `구현 완료 (라운드 ${round + 1})`, data: { taskId: task.id, round } })
 
@@ -86,7 +88,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         approved = true // 리뷰어 미배정 시 승인 간주
         break
       }
-      const verdict = parseReviewVerdict(await reviewer.send(buildReviewPrompt(task.title, task.description, output)))
+      const verdict = parseReviewVerdict(
+        await reviewer.send(buildReviewPrompt(task.title, task.description, output), { fresh: true }),
+      )
       emit({
         type: 'task.review',
         message: verdict.approved ? '리뷰 승인' : '수정 요청',
@@ -112,7 +116,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const summarizer = sessionForRole('summarizer', 'reviewer')
   if (summarizer) {
     const finalTasks = store.listTasks(project.id)
-    summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks))
+    summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), { fresh: true })
     emit({ type: 'summary', message: '최종 요약 완료', data: { projectId: project.id } })
   }
 

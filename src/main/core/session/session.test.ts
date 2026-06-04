@@ -52,6 +52,18 @@ describe('createApiSession', () => {
     await s.send('x', { onChunk: (c) => (chunk = c) })
     expect(chunk).toBe('echo:x')
   })
+
+  it('fresh: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립 호출)', async () => {
+    const { provider, seen } = fakeProvider()
+    const s = createApiSession(apiDesc, provider, { system: 'sys' })
+    await s.send('hi') // history 누적
+    await s.send('독립', { fresh: true }) // 독립: system + 이 prompt 만
+    await s.send('next') // 독립은 history 에 안 남음
+
+    expect(seen[1].map((m) => m.content)).toEqual(['sys', '독립'])
+    expect(seen[2].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
+    expect(seen[2].map((m) => m.content)).toEqual(['sys', 'hi', 'echo:hi', 'next'])
+  })
 })
 
 describe('buildHeadlessArgs', () => {
@@ -248,6 +260,30 @@ describe('createCliSession', () => {
     const id = calls[0][2]
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
     expect(calls[0][3]).toBe('내 토큰은 {sessionId} 이다') // 프롬프트 내 리터럴 보존(=id 로 치환 안 됨)
+  })
+
+  it("fresh: stateful 세션이라도 헤드리스 1회로 실행하고 재개 상태를 건드리지 않는다", async () => {
+    const calls: string[][] = []
+    const runner: CommandRunner = async (_c, args) => {
+      calls.push(args)
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      ...claudeAdapter,
+      session: {
+        startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+        resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+        idSource: 'preassigned',
+      },
+    }
+    const s = createCliSession(cliDesc, adapter, runner, undefined, { stateful: true })
+    await s.send('독립', { fresh: true }) // 헤드리스 1회
+    await s.send('첫 대화') // 재개 미시작 → 여전히 start
+    await s.send('둘째 대화') // 이제 resume
+
+    expect(calls[0]).toEqual(['-p', '독립']) // fresh = 헤드리스(세션 인자 없음)
+    expect(calls[1][1]).toBe('--session-id') // fresh 가 세션을 시작시키지 않음 → 첫 stateful 은 start
+    expect(calls[2][1]).toBe('--resume') // 둘째는 resume
   })
 
   it("동일 세션 동시 send 를 직렬화한다(codex id 캡처 레이스 방지)", async () => {

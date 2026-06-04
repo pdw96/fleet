@@ -79,7 +79,8 @@ export function createCliSession(
       const prior = chain
       const result = (async () => {
         await prior.catch(() => {}) // 앞 호출의 성공/실패와 무관하게 순서만 보장
-        return spec ? runStateful(spec, prompt, sendOpts) : runStateless(prompt, sendOpts)
+        // fresh 면 stateful 세션이라도 헤드리스 1회(재개 상태 불변) → 오케스트레이터 독립 호출.
+        return spec && !sendOpts.fresh ? runStateful(spec, prompt, sendOpts) : runStateless(prompt, sendOpts)
       })()
       chain = result.catch(() => {}) // 직렬화 체인은 에러로 끊기지 않게
       return result

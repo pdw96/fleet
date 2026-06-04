@@ -18,6 +18,15 @@ export function createApiSession(
     id: descriptor.id,
     descriptor,
     async send(prompt: string, sendOpts: SendOptions = {}): Promise<string> {
+      if (sendOpts.fresh) {
+        // 독립 1회 호출: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립성).
+        const turns: ChatTurn[] = opts.system
+          ? [{ role: 'system', content: opts.system }, { role: 'user', content: prompt }]
+          : [{ role: 'user', content: prompt }]
+        const reply = await provider.chat(turns, { signal: sendOpts.signal })
+        sendOpts.onChunk?.(reply)
+        return reply
+      }
       history.push({ role: 'user', content: prompt })
       const reply = await provider.chat(history, { signal: sendOpts.signal })
       history.push({ role: 'assistant', content: reply })

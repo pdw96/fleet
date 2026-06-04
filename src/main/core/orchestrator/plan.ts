@@ -55,6 +55,7 @@ export function parsePlannedTasks(text: string): PlannedTask[] {
 
 /** planner 세션을 사용해 목표를 작업으로 분해. */
 export async function planTasks(goal: string, planner: LlmSession): Promise<PlannedTask[]> {
-  const reply = await planner.send(buildPlannerPrompt(goal))
+  // fresh: 분해는 독립 1회 호출(세션 맥락에 의존하지 않는 자기완결 프롬프트).
+  const reply = await planner.send(buildPlannerPrompt(goal), { fresh: true })
   return parsePlannedTasks(reply)
 }

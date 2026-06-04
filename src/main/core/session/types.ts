@@ -4,6 +4,12 @@ export interface SendOptions {
   signal?: AbortSignal
   /** 스트리밍/부분 출력 콜백 (MVP: 최종 텍스트 1회 전달). */
   onChunk?: (chunk: string) => void
+  /**
+   * stateful 세션이라도 이 호출만은 맥락 없이 독립 1회 실행한다.
+   * 오케스트레이터가 작업 간 맥락 오염 없이 깨끗한 독립 호출(독립 검증)을 보장하는 데 쓴다.
+   * 세션의 재개 상태(sessionId/started)와 누적 history 를 건드리지도 참조하지도 않는다.
+   */
+  fresh?: boolean
 }
 
 /** createCliSession 동작 옵션. */
