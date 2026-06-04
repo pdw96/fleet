@@ -32,8 +32,15 @@ export function assignRoles(input: AssignmentInput): RoleAssignment[] {
     }
     case 'round-robin':
       return roles.map((role, i) => ({ role, llmId: llmIds[i % llmIds.length] }))
-    case 'capability-scored':
-      return roles.map((role) => ({ role, llmId: pickBest(role, llmIds, input.capabilities) }))
+    case 'capability-scored': {
+      // 역할별로 최적 LLM을 고르되 이번 실행의 누적 사용량으로 부하를 분산한다.
+      const used = new Map<string, number>()
+      return roles.map((role) => {
+        const llmId = pickBest(role, llmIds, used, input.capabilities)
+        used.set(llmId, (used.get(llmId) ?? 0) + 1)
+        return { role, llmId }
+      })
+    }
     default: {
       const exhaustive: never = policy
       throw new Error(`알 수 없는 배정 정책: ${String(exhaustive)}`)
@@ -41,19 +48,27 @@ export function assignRoles(input: AssignmentInput): RoleAssignment[] {
   }
 }
 
-/** 역할 선호 맵 기준 최고 점수 LLM 선택 (동점 시 첫 번째 = 결정론적). */
+/**
+ * 역할 선호(이진 점수) 최고 LLM 선택. 동점이면 이번 실행에서 덜 쓰인 LLM,
+ * 그래도 동점이면 첫 번째(인덱스) = 결정론적. 아무도 역할을 선호하지 않으면(전부 0점)
+ * 사용량 기준 분산이 그대로 라운드로빈으로 수렴해 한 LLM에 몰리지 않는다.
+ */
 function pickBest(
   role: AgentRole,
   llmIds: readonly string[],
+  used: ReadonlyMap<string, number>,
   capabilities?: Record<string, readonly AgentRole[]>,
 ): string {
   let best = llmIds[0]
   let bestScore = score(best, role, capabilities)
+  let bestUsed = used.get(best) ?? 0
   for (const id of llmIds.slice(1)) {
     const s = score(id, role, capabilities)
-    if (s > bestScore) {
+    const u = used.get(id) ?? 0
+    if (s > bestScore || (s === bestScore && u < bestUsed)) {
       best = id
       bestScore = s
+      bestUsed = u
     }
   }
   return best

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { AssignmentPolicy, LlmDescriptor, OrchestratorEvent, RunResult, Task } from '../../shared/types'
+import type { AgentRole, AssignmentPolicy, LlmDescriptor, OrchestratorEvent, RunResult, Task } from '../../shared/types'
+import { ASSIGNABLE_ROLES } from '../../shared/types'
 import { statusColor } from '../ui'
 
 interface Props {
@@ -9,6 +10,7 @@ interface Props {
 export function ProjectPanel({ sessions }: Props) {
   const [goal, setGoal] = useState('')
   const [policy, setPolicy] = useState<AssignmentPolicy>('round-robin')
+  const [manual, setManual] = useState<Partial<Record<AgentRole, string>>>({})
   const [running, setRunning] = useState(false)
   const [events, setEvents] = useState<OrchestratorEvent[]>([])
   const [result, setResult] = useState<RunResult | null>(null)
@@ -26,7 +28,11 @@ export function ProjectPanel({ sessions }: Props) {
     setResult(null)
     setError(null)
     try {
-      const r = await window.fleet.runProject({ goal: goal.trim(), policy })
+      const assignments =
+        policy === 'manual'
+          ? ASSIGNABLE_ROLES.map((role) => ({ role, llmId: manual[role] ?? sessions[0]?.id ?? '' }))
+          : undefined
+      const r = await window.fleet.runProject({ goal: goal.trim(), policy, assignments })
       setResult(r)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -37,6 +43,10 @@ export function ProjectPanel({ sessions }: Props) {
 
   const tasks: Task[] = result?.tasks ?? []
   const canRun = sessions.length > 0 && goal.trim().length > 0 && !running
+  const llmName = (id?: string) => (id ? (sessions.find((s) => s.id === id)?.displayName ?? id) : undefined)
+  // capability-scored 인데 어떤 세션에도 역량이 없으면 사실상 round-robin — 침묵 격하 경고(2개 이상일 때만 의미).
+  const noCapsConfigured =
+    policy === 'capability-scored' && sessions.length > 1 && !sessions.some((s) => s.capabilities?.length)
 
   return (
     <div className="stack">
@@ -69,6 +79,32 @@ export function ProjectPanel({ sessions }: Props) {
             {running ? '실행 중…' : '오케스트레이션 실행'}
           </button>
         </div>
+        {noCapsConfigured && (
+          <p className="note-warn" style={{ marginBottom: 0 }}>
+            capability-scored 선택됨 — 어떤 세션에도 역량이 설정되지 않아 사실상 round-robin 으로 동작합니다. [세션] 탭에서
+            역할을 지정하세요.
+          </p>
+        )}
+        {policy === 'manual' && sessions.length > 0 && (
+          <div className="grid-2" style={{ marginTop: 12 }}>
+            {ASSIGNABLE_ROLES.map((role) => (
+              <div key={role}>
+                <label className="field-label">{role}</label>
+                <select
+                  className="field"
+                  value={manual[role] ?? sessions[0]?.id ?? ''}
+                  onChange={(e) => setManual((m) => ({ ...m, [role]: e.target.value }))}
+                >
+                  {sessions.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        )}
         {error && <p className="note-bad" style={{ marginBottom: 0 }}>오류: {error}</p>}
       </section>
 
@@ -109,6 +145,11 @@ export function ProjectPanel({ sessions }: Props) {
                 </span>
                 <span className="name">{t.title}</span>
                 {t.role && <span className="meta">{t.role}</span>}
+                {t.assignedLlmId && (
+                  <span className="meta" title="실행 LLM" style={{ color: 'var(--accent, currentColor)' }}>
+                    → {llmName(t.assignedLlmId)}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

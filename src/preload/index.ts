@@ -11,6 +11,7 @@ const api: FleetBridge = {
   registerApiSession: (config) => ipcRenderer.invoke('fleet:session:registerApi', config),
   listSessions: () => ipcRenderer.invoke('fleet:session:list'),
   removeSession: (id) => ipcRenderer.invoke('fleet:session:remove', id),
+  setSessionCapabilities: (id, roles) => ipcRenderer.invoke('fleet:session:capabilities', id, roles),
 
   // 프로젝트 / 오케스트레이션
   listProjects: () => ipcRenderer.invoke('fleet:project:list'),

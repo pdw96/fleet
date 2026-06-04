@@ -60,6 +60,46 @@ describe('runProject', () => {
     expect(store.listEvents().some((e) => e.type === 'project.done')).toBe(true)
   })
 
+  it('records the resolved implementer llm as assignedLlmId on each task', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+    })
+    expect(result.tasks[0].assignedLlmId).toBe('impl')
+  })
+
+  it('records the post-fallback llm when a task role has no direct assignment', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    // planner 가 architect 역할 작업을 만든다 — architect 는 배정에 없어 implementer 로 폴백
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d","role":"architect"}]'))
+    sessions.add(fakeSession('impl', () => '구현'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+    })
+    expect(result.tasks[0].role).toBe('architect')
+    expect(result.tasks[0].assignedLlmId).toBe('impl') // 폴백 해소된 실제 LLM
+  })
+
   it('runs the re-review loop until approval', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

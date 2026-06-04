@@ -66,12 +66,15 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     emit({ type: 'task.started', message: `작업 시작: ${task.title}`, data: { taskId: task.id } })
 
     const implRole: AgentRole = task.role ?? 'implementer'
-    const implementer = sessionForRole(implRole, 'implementer')
+    const implementerId = resolveLlmForRole(assignments, implRole, 'implementer')
+    const implementer = implementerId ? sessions.get(implementerId) : undefined
     if (!implementer) {
       store.updateTask(task.id, { status: 'failed', output: '구현 역할에 배정된 LLM 없음' })
       emit({ type: 'task.failed', message: `${task.title}: 구현 LLM 미배정`, data: { taskId: task.id } })
       continue
     }
+    // 폴백까지 해소된 실제 실행 LLM 을 기록해 배정 정책 효과를 추적 가능하게 한다.
+    store.updateTask(task.id, { assignedLlmId: implementerId })
 
     let output = ''
     let approved = false
