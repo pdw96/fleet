@@ -141,7 +141,7 @@ describe('createWorkspace diff/keep/revert', () => {
     await ws.revert('base9')
     const cmds = g.calls.map((c) => c.join(' '))
     expect(cmds).toContain('reset --hard base9')
-    expect(cmds).toContain('clean -fd')
+    expect(cmds).toContain('clean -ffd') // 중첩 git 레포까지 제거
   })
 
   it('keep commits and returns the new HEAD hash', async () => {

@@ -246,15 +246,22 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const capabilities = Object.fromEntries(
         sessions.descriptors().flatMap((d) => (d.capabilities?.length ? [[d.id, d.capabilities]] : [])),
       )
-      const assignments =
+      let assignments =
         input.assignments ??
         assignRoles({ roles: ASSIGNABLE_ROLES, llmIds, policy: input.policy ?? 'round-robin', capabilities })
       // 구현(implementer) 역할은 워크스페이스를 직접 편집할 수 있는 CLI 세션이어야 한다.
-      // API 세션이 배정되면 계획 전에 fail-fast 한다(plan 호출 한 번 낭비 방지).
-      const implId = resolveLlmForRole(assignments, 'implementer', 'implementer')
-      const impl = implId ? sessions.get(implId) : undefined
-      if (!impl || impl.descriptor.kind !== 'cli') {
-        throw new Error('구현(implementer) 역할에는 워크스페이스를 직접 편집할 수 있는 CLI 세션이 필요합니다. CLI 세션(claude/codex/gemini)을 등록하고 implementer 로 배정하세요.')
+      // capability-scored/round-robin 이 CLI 가 있는데도 API 를 implementer 슬롯에 넣을 수 있으므로,
+      // CLI 세션이 하나라도 있으면 그쪽으로 재배정한다. CLI 가 전혀 없을 때만 계획 전에 fail-fast 한다.
+      const cliSessionIds = sessions.list().filter((s) => s.descriptor.kind === 'cli').map((s) => s.id)
+      if (cliSessionIds.length === 0) {
+        throw new Error('구현(implementer) 역할에는 워크스페이스를 직접 편집할 수 있는 CLI 세션이 필요합니다. CLI 세션(claude/codex/gemini)을 등록하세요.')
+      }
+      const curImplId = resolveLlmForRole(assignments, 'implementer', 'implementer')
+      const curImpl = curImplId ? sessions.get(curImplId) : undefined
+      if (!curImpl || curImpl.descriptor.kind !== 'cli') {
+        const cliId = cliSessionIds[0]
+        assignments = [...assignments.filter((a) => a.role !== 'implementer'), { role: 'implementer', llmId: cliId }]
+        store.appendEvent({ type: 'assignment.implementer_reassigned', data: { to: cliId } })
       }
       // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
       const controller = new AbortController()

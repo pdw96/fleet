@@ -53,7 +53,13 @@ export function createCliSession(
    * 아니면 버퍼링 후 최종 텍스트를 1회 onChunk 한다. 두 경우 모두 {res, text} 를 반환한다
    * (res.stdout 은 codex thread_id 추출 등에 쓰인다).
    */
-  const execute = async (args: string[], sendOpts: SendOptions): Promise<{ res: CommandResult; text: string }> => {
+  const execute = async (
+    args: string[],
+    sendOpts: SendOptions,
+    // 버퍼 정제에 쓸 파싱 포맷. 기본은 헤드리스 포맷이며, 편집 모드는 adapter.edit.parse 를 넘긴다
+    // (스트리밍 델타 파서는 별개로 adapter.streaming.parse 를 그대로 쓴다).
+    parseFmt = adapter.headless?.parse,
+  ): Promise<{ res: CommandResult; text: string }> => {
     const stream = adapter.streaming
     if (stream && sendOpts.onChunk) {
       const onChunk = sendOpts.onChunk
@@ -84,7 +90,7 @@ export function createCliSession(
       emitLine(buf) // 마지막 개행 없는 잔여 라인
       assertRunOk(adapter.command, res)
       // 델타가 비어 있으면(이벤트 단위 CLI 등) 버퍼 정제로 폴백해 응답을 잃지 않는다.
-      return { res, text: full || cleanCliOutput(adapter.headless?.parse, res.stdout) }
+      return { res, text: full || cleanCliOutput(parseFmt, res.stdout) }
     }
     const res = await runner(adapter.command, args, {
       timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
@@ -92,7 +98,7 @@ export function createCliSession(
       signal: sendOpts.signal,
     })
     assertRunOk(adapter.command, res)
-    const text = cleanCliOutput(adapter.headless?.parse, res.stdout)
+    const text = cleanCliOutput(parseFmt, res.stdout)
     sendOpts.onChunk?.(text)
     return { res, text }
   }
@@ -108,7 +114,12 @@ export function createCliSession(
   // 편집 모드는 항상 stateless/fresh: cwd=workspace 에서 1회 실행해 파일을 직접 편집한다.
   const runEditing = async (prompt: string, workspace: string, sendOpts: SendOptions): Promise<string> => {
     if (!adapter.edit) throw new Error(`${adapter.displayName}는 편집 모드를 지원하지 않습니다.`)
-    const { text } = await execute(buildEditArgs(adapter.edit, prompt, workspace), sendOpts)
+    // 편집 모드 stdout 정제는 edit.parse 를 우선한다(편집 CLI 의 출력 포맷이 헤드리스와 다를 수 있다).
+    const { text } = await execute(
+      buildEditArgs(adapter.edit, prompt, workspace),
+      sendOpts,
+      adapter.edit.parse ?? adapter.headless?.parse,
+    )
     return text
   }
 

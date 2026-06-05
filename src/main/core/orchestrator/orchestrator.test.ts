@@ -654,6 +654,121 @@ describe('runProject', () => {
     expect(ws.commits).toHaveLength(1)
   })
 
+  it('#1: routes a planner task labeled role:"reviewer" through the CLI implementer (runs to done, not skipped)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    // planner 가 작업에 role:"reviewer" 를 붙인다 — 모든 작업은 편집하므로 implementer 로 라우팅돼야 한다.
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d","role":"reviewer"}]'))
+    let implCalls = 0
+    sessions.add(fakeSession('impl', () => { implCalls++; return '구현' }, 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE', 'api')) // 리뷰어는 API(비편집)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    expect(result.tasks[0].role).toBe('reviewer') // 라벨은 보존
+    expect(result.tasks[0].status).toBe('done') // 비편집 reviewer 로 오라우팅돼 skipped 되지 않음
+    expect(result.tasks[0].assignedLlmId).toBe('impl') // 항상 implementer 로 실행
+    expect(implCalls).toBe(1)
+  })
+
+  it('#5: does NOT send a sensitive diff to the reviewer when the risk gate has no approver', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    let reviewerCalls = 0
+    sessions.add(fakeSession('rev', () => { reviewerCalls++; return 'APPROVE' }))
+    sessions.add(fakeSession('sum', () => '요약')) // 별도 summarizer — 리뷰어가 요약 폴백으로 재사용되지 않게
+    // 민감 파일(.env) → destructive. gate 없음 → 리뷰어에게 보내기 전에 거부돼야 한다.
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      // gate 미지정 → 위험 변경은 거부(안전 기본값)
+    })
+    expect(result.tasks[0].status).toBe('failed')
+    expect(reviewerCalls).toBe(0) // P1: 비밀 diff 가 리뷰어(외부 API 가능)에게 절대 전달되지 않음
+    expect(ws.commits).toHaveLength(0)
+    expect(ws.reverts).toBeGreaterThanOrEqual(1)
+  })
+
+  it('#5: sends to the reviewer only after the gate approves a sensitive diff', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    let reviewerCalls = 0
+    sessions.add(fakeSession('rev', () => { reviewerCalls++; return 'APPROVE' }))
+    sessions.add(fakeSession('sum', () => '요약')) // 별도 summarizer — 리뷰어 폴백 재사용 방지
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: { async request() { return 'approved' } },
+    })
+    expect(result.tasks[0].status).toBe('done')
+    expect(reviewerCalls).toBe(1) // 승인 후에는 리뷰어가 호출된다
+    expect(ws.commits).toHaveLength(1)
+  })
+
+  it('#6: planTasks forwards the abort signal to the planner send', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    const controller = new AbortController()
+    let plannerSignal: AbortSignal | undefined
+    let sawSignal = false
+    sessions.add({
+      id: 'planner',
+      descriptor: { id: 'planner', kind: 'api', displayName: 'planner', ref: 'planner', model: '' },
+      async send(_prompt, opts) {
+        plannerSignal = opts?.signal
+        sawSignal = opts?.signal !== undefined
+        return '[{"title":"T","description":"d"}]'
+      },
+      async dispose() {},
+    })
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+    })
+    expect(sawSignal).toBe(true) // planner send 에 signal 이 전달됨
+    expect(plannerSignal).toBe(controller.signal) // 정확히 같은 signal 인스턴스
+  })
+
   it('runs verification after tasks and surfaces results', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

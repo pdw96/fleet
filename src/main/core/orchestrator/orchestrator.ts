@@ -72,7 +72,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
   let plannedCount = 0
   try {
-    const planned = await planTasks(goal, planner)
+    const planned = await planTasks(goal, planner, opts.signal)
     store.updateProject(project.id, { status: 'executing' })
     // 1차: 작업 생성으로 계획 인덱스 → taskId 매핑 확보.
     const createdIds = planned.map(
@@ -124,8 +124,10 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   /** 단일 작업 실행: 직접 편집→diff 교차리뷰 루프→위험게이트→keep. 결과를 done/failed 집합에 반영한다. */
   const runTask = async (task: Task): Promise<void> => {
     const ws = opts.workspace
-    const implRole: AgentRole = task.role ?? 'implementer'
-    const implementerId = resolveLlmForRole(assignments, implRole, 'implementer')
+    // #1: 모든 작업은 워크스페이스를 편집하므로 항상 implementer 역할로 실행 세션을 해소한다.
+    // planner 가 role:"reviewer"(혹은 다른 비-implementer)를 붙여도 비편집 세션으로 오라우팅되지 않게 한다
+    // (task.role 은 표시용 라벨로만 보존된다).
+    const implementerId = resolveLlmForRole(assignments, 'implementer', 'implementer')
     const implementer = implementerId ? sessions.get(implementerId) : undefined
     if (!implementer) {
       store.updateTask(task.id, { status: 'failed', output: '구현 역할에 배정된 LLM 없음' })
@@ -167,6 +169,21 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         store.updateTask(task.id, { status: 'review', changedFiles: diff.files })
         emit({ type: 'task.implemented', message: `구현 완료 (라운드 ${round + 1}, 변경 ${diff.files.length}개)`, data: { taskId: task.id, round } })
 
+        // #5: 민감/위험 diff 는 리뷰어(외부 API 가능)에게 보내기 전에 승인 게이트를 거친다(비밀 유출 방지).
+        const dr = classifyDiffRisk(diff)
+        if (dr.risk === 'destructive') {
+          const decision = opts.gate
+            ? await opts.gate.request({ kind: 'apply-diff', summary: `${task.title} 변경 적용`, target: diff.files.join(', '), risk: 'destructive' })
+            : 'rejected'
+          if (decision !== 'approved') {
+            await ws.revert(base)
+            store.updateTask(task.id, { status: 'failed', output: `위험 변경 미승인: ${dr.reasons.join('; ')}`, changedFiles: [] })
+            emit({ type: 'task.failed', message: `${task.title}: 위험 변경 미승인`, data: { taskId: task.id } })
+            failed.add(task.id)
+            return
+          }
+        }
+
         const reviewer = sessionForRole('reviewer')
         if (!reviewer) {
           approved = true
@@ -190,20 +207,6 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         emit({ type: 'task.failed', message: `${task.title}: 미승인(재검토 한도 초과)`, data: { taskId: task.id } })
         failed.add(task.id)
         return
-      }
-
-      const dr = classifyDiffRisk(diff)
-      if (dr.risk === 'destructive') {
-        const decision = opts.gate
-          ? await opts.gate.request({ kind: 'apply-diff', summary: `${task.title} 변경 적용`, target: diff.files.join(', '), risk: 'destructive' })
-          : 'rejected'
-        if (decision !== 'approved') {
-          await ws.revert(base)
-          store.updateTask(task.id, { status: 'failed', output: `위험 변경 미승인: ${dr.reasons.join('; ')}`, changedFiles: [] })
-          emit({ type: 'task.failed', message: `${task.title}: 위험 변경 미승인`, data: { taskId: task.id } })
-          failed.add(task.id)
-          return
-        }
       }
 
       await ws.keep(`[${task.title}] by ${implementerId}`)

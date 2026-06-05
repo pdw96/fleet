@@ -121,14 +121,43 @@ describe('FleetEngine', () => {
     await expect(engine.runProjectFlow({ goal: 'g' })).rejects.toThrow('워크스페이스')
   })
 
-  it('fails fast when the implementer resolves to an API session (cannot direct-edit)', async () => {
-    // CLI 없이 API 세션만 등록 + 워크스페이스 지정 → implementer 가 API 라 직접 편집 불가.
+  it('fails fast when NO CLI session exists at all (cannot direct-edit)', async () => {
+    // CLI 없이 API 세션만 등록 + 워크스페이스 지정 → implementer 로 쓸 CLI 가 전혀 없다.
     // 계획 전에 명확한 설정 오류로 거부해야 한다(API 호출 한 번 낭비 방지).
     const dir = mkdtempSync(join(tmpdir(), 'fleet-noimpl-'))
     try {
       const engine = createFleetEngine({ workspaceDir: dir, gitRunner: fakeGit() })
       engine.registerApiSession({ id: 'a', provider: 'openai', displayName: 'GPT', model: 'm', apiKey: 'k' })
       await expect(engine.runProjectFlow({ goal: 'g' })).rejects.toThrow(/구현|CLI 세션/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reassigns the implementer to a CLI session (does not throw) when assignments put an API session there', async () => {
+    // CLI 와 API 가 모두 있고, 명시적 배정이 implementer 를 API 에 둔 경우:
+    // fail-fast 대신 CLI 세션으로 재배정해 실행을 계속해야 한다(blunt throw 가 아님).
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-reassign-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      engine.registerCliSession('claude') // cli:claude — 유일한 CLI
+      engine.registerApiSession({ id: 'a', provider: 'openai', displayName: 'GPT', model: 'm', apiKey: 'k' })
+
+      // implementer 를 API 세션에 명시 배정 → 재배정 로직이 cli:claude 로 바꿔야 한다.
+      const result = await engine.runProjectFlow({
+        goal: 'g',
+        assignments: [
+          { role: 'planner', llmId: 'cli:claude' },
+          { role: 'implementer', llmId: 'api:a' },
+          { role: 'reviewer', llmId: 'cli:claude' },
+          { role: 'summarizer', llmId: 'cli:claude' },
+        ],
+      })
+
+      expect(result.tasks[0].status).toBe('done') // 재배정된 CLI 로 직접 편집 실행됨
+      expect(result.tasks[0].assignedLlmId).toBe('cli:claude') // API 가 아니라 CLI 로 라우팅
+      expect(store.listEvents().some((e) => e.type === 'assignment.implementer_reassigned')).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

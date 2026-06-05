@@ -306,6 +306,28 @@ describe('createCliSession', () => {
     expect(seenArgs).toEqual(['agent', '-C', '/ws', 'do it'])
   })
 
+  it("편집 모드는 adapter.edit.parse 로 stdout 을 정제한다(headless.parse 가 아니라)", async () => {
+    // headless.parse='text' 면 JSONL 원문이 그대로 나오지만, edit.parse='codex-jsonl' 이면 agent_message 만 추출돼야 한다.
+    const agentLine = '{"type":"item.completed","item":{"type":"agent_message","text":"편집 결과"}}'
+    const runner: CommandRunner = async () => ({
+      code: 0,
+      stdout: ['{"type":"turn.started"}', agentLine, '{"type":"turn.completed"}'].join('\n'),
+      stderr: '',
+    })
+    const adapter: CliAdapter = {
+      id: 'codex',
+      displayName: 'Codex CLI',
+      command: 'codex',
+      versionArgs: ['--version'],
+      headless: { args: ['exec', '--json', '{prompt}'], parse: 'text' },
+      edit: { args: ['agent', '-C', '{workspace}', '{prompt}'], parse: 'codex-jsonl' },
+    }
+    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const s = createCliSession(codexDesc, adapter, runner)
+    // 편집 모드(workspace 지정) → edit.parse(codex-jsonl)로 정제 → agent_message 만
+    expect(await s.send('do it', { workspace: '/ws' })).toBe('편집 결과')
+  })
+
   it('편집 모드가 stateful 세션보다 우선한다(workspace 가 startArgs/resumeArgs 를 이긴다)', async () => {
     let seenCwd: string | undefined
     let seenArgs: string[] = []
