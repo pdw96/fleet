@@ -490,19 +490,4 @@ describe('ProjectPanel', () => {
     expect(listProjects.mock.calls.length).toBeGreaterThan(before) // verify.fixing 에서 refreshProjects 호출됨
     expect(screen.getAllByText('verifying').length).toBeGreaterThan(0) // executing 고착 아님
   })
-
-  // V: 새 프로젝트 뷰로 전환하면 영속된 active project 를 null 로 비워, remount 시 옛 방이 복원되지 않아야 한다.
-  it('clears the persisted active project when switching to the new-project view', async () => {
-    const fleet = mockFleet({
-      listProjects: vi.fn().mockResolvedValue([P1]),
-      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
-      getProjectTasks: vi.fn().mockResolvedValue([]),
-      listProjectEvents: vi.fn().mockResolvedValue([]),
-    })
-    render(<ProjectPanel sessions={[SESSION]} />)
-    await screen.findByText('로그인 기능')
-    await vi.waitFor(() => expect(fleet.setLastActiveProject).toHaveBeenCalledWith('p1')) // p1 자동선택 영속
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '+ 새 프로젝트' })) })
-    expect(fleet.setLastActiveProject).toHaveBeenCalledWith(null) // 새 프로젝트 뷰 → 영속 id 클리어
-  })
 })

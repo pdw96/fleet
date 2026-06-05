@@ -150,11 +150,7 @@ export function ProjectPanel({ sessions }: Props) {
   // 선택 변경: 저장소 스냅샷 로드(보드/로그)와 마지막 선택 영속. 보드/로그/요약 비우기와 카운터 리셋은
   // selectProject 가 선택 시점에 동기로 끝냈다(여기서 다시 비우면 그 사이 도착한 라이브 행을 잃는다).
   useEffect(() => {
-    if (!selectedId) {
-      // 새 프로젝트 뷰 — 영속된 마지막 active project 도 비워야 remount/재오픈 시 마운트 자동선택이 옛 방을 복원하지 않는다.
-      void window.fleet.setLastActiveProject(null)
-      return // 보드/로그/요약은 selectProject(null) 이 이미 동기로 비웠다
-    }
+    if (!selectedId) return // selectProject(null) 이 이미 보드/로그/요약을 비웠다
     void window.fleet.setLastActiveProject(selectedId)
     const token = ++loadTokenRef.current // 이 로드의 신원 — 같은 방 재방문으로 중첩된 로드 중 최신만 반영
     const boardToken = ++boardTokenRef.current // 보드 갱신 토큰 — 로드 중 라이브 refreshTasks 가 더 새 토큰을 만들면 이 스냅샷 setTasks 는 폐기
