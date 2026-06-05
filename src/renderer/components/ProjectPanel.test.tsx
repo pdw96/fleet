@@ -356,4 +356,67 @@ describe('ProjectPanel', () => {
     )
     expect(await screen.findByText('토큰스트림조각')).toBeTruthy() // 드롭되지 않고 라이브 로그 보존
   })
+
+  // P: 이미 열린 방을 다시 클릭해도 보드/로그가 비워진 채 남지 않아야 한다(재선택 no-op).
+  it('keeps the board and log when reselecting the already-active project', async () => {
+    mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      getProjectTasks: vi.fn().mockResolvedValue([T1]),
+      listProjectEvents: vi.fn().mockResolvedValue([
+        { id: 'e1', type: 'plan.created', message: 'A 진행로그', data: { projectId: 'p1' }, ts: 1 },
+      ]),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    expect(await screen.findByText('변경 2개')).toBeTruthy() // P1 보드 로드됨
+    expect(screen.getByText('A 진행로그')).toBeTruthy()
+    await act(async () => { fireEvent.click(screen.getByText('로그인 기능')) }) // 이미 선택된 P1 재클릭
+    expect(screen.getByText('변경 2개')).toBeTruthy() // 보드 유지(빈 보드로 안 남음)
+    expect(screen.getByText('A 진행로그')).toBeTruthy() // 로그 유지
+  })
+
+  // Q: 마운트 자동선택이 await 중일 때 새 실행이 선택한 프로젝트를 뒤늦게 덮어쓰면 안 된다.
+  it('does not let a slow mount auto-select override a run-created selection', async () => {
+    let resolveLast: (v: string | null) => void = () => {}
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn(() => new Promise<string | null>((res) => { resolveLast = res })), // 자동선택 지연
+      getProjectTasks: vi.fn().mockResolvedValue([]),
+      listProjectEvents: vi.fn().mockResolvedValue([]),
+      runProject: vi.fn(() => new Promise(() => {})),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능') // 사이드바 로드됨, 자동선택은 getLastActiveProject 펜딩으로 보류
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
+    await fleet.fire({ type: 'project.created', message: '생성', data: { projectId: 'pX' } }) // pX 선택
+    await fleet.fire({ type: 'task.done', message: 'pX작업완료', data: { projectId: 'pX' } }) // pX 라이브 로그
+    expect(await screen.findByText('pX작업완료')).toBeTruthy()
+    await act(async () => { resolveLast('p1') }) // 지연된 자동선택이 옛 last(p1)로 해소
+    expect(screen.getByText('pX작업완료')).toBeTruthy() // 여전히 pX (p1 으로 안 바뀜)
+  })
+
+  // R: 근접 도착한 두 마일스톤의 보드 갱신이 순서 뒤바뀌어도 보드가 역행하지 않아야 한다.
+  it('discards an out-of-order live board refresh (no board regression)', async () => {
+    const RUNNING: Task[] = [{ ...T1, status: 'running', changedFiles: [] }]
+    const DONE: Task[] = [{ ...T1, status: 'done', changedFiles: ['a.ts', 'b.ts'] }]
+    let resolveFirst: (t: Task[]) => void = () => {}
+    const getProjectTasks = vi
+      .fn()
+      .mockResolvedValueOnce(RUNNING) // #1 선택 스냅샷(마운트)
+      .mockImplementationOnce(() => new Promise<Task[]>((res) => { resolveFirst = res })) // #2 라이브 refresh A(지연)
+      .mockResolvedValue(DONE) // #3 라이브 refresh B(즉시 DONE)
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      getProjectTasks,
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await vi.waitFor(() => expect(getProjectTasks).toHaveBeenCalledTimes(1)) // 선택 스냅샷(#1)
+    await act(async () => { fleet.fire({ type: 'task.review', message: 'r1', data: { projectId: 'p1' } }) }) // refresh A(#2, 지연)
+    await act(async () => { fleet.fire({ type: 'task.done', message: 'r2', data: { projectId: 'p1' } }) }) // refresh B(#3 → DONE)
+    expect(await screen.findByText('변경 2개')).toBeTruthy() // 최신(DONE) 반영
+    await act(async () => { resolveFirst(RUNNING) }) // 지연된 refresh A 가 늦게 도착
+    expect(screen.getByText('변경 2개')).toBeTruthy() // DONE 유지(RUNNING 으로 역행 안 함)
+  })
 })

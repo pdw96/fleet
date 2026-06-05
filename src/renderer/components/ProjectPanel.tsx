@@ -37,12 +37,14 @@ export function ProjectPanel({ sessions }: Props) {
   // 비동기 콜백이 '도착 시점'의 선택 방을 알도록 selectedId 를 ref 로 추적(스테일 클로저 방지).
   // selectProject() 가 방 전환 시 동기적으로 갱신한다 — 직후 도착하는 라이브 이벤트가 새 방 필터를 통과하도록.
   const selectedIdRef = useRef<string | null>(null)
+  // 마운트 이후 한 번이라도 방을 선택했는지 — 마운트 자동선택이 실행 중 선택(project.created)을 덮어쓰지 않게 가드한다.
+  const hasSelectedRef = useRef(false)
   // 선택 effect 의 스냅샷 로드가 끝나기 전에 도착해 log 에 append 된 라이브 행 수.
   // 로드 완료 시 스냅샷 뒤에 이 행들을 보존해 덮어쓰기로 인한 라이브 로그 유실을 막는다.
   const liveDuringLoadRef = useRef(0)
-  // 로드 중 도착해 보드(refreshTasks)를 갱신한 라이브 마일스톤 수. >0 이면 스냅샷 setTasks 가
-  // 더 최신 보드를 덮어쓰지 않도록 건너뛴다(로그 보존과 대칭).
-  const liveTaskUpdateDuringLoadRef = useRef(0)
+  // 보드(setTasks) 갱신의 단조 토큰 — refreshTasks 와 선택 effect 로드가 공유한다. 순서 뒤바뀐
+  // getProjectTasks 응답이 최신 보드를 덮어쓰지 않게 하고(선택 스냅샷 vs 라이브 갱신 모두 포함) 최신 응답만 반영한다.
+  const boardTokenRef = useRef(0)
   // 선택 스냅샷 로드의 단조 토큰 — 같은 방 재방문(P1→P2→P1)으로 중첩된 로드 중 최신 응답만 반영한다.
   const loadTokenRef = useRef(0)
 
@@ -50,9 +52,11 @@ export function ProjectPanel({ sessions }: Props) {
   // 동기 처리라 (a) 직후 도착 라이브 이벤트가 새 방 필터를 통과하고(특히 막 생성된 프로젝트의 task.progress),
   // (b) 이전 방 내용이 새 방 제목 아래 잔류하지 않는다. 스냅샷 로드는 아래 선택 effect 가 이어받는다.
   function selectProject(pid: string | null) {
+    // 이미 열린 방 재선택은 무시 — 클리어만 하고 setSelectedId 가 no-op 이라 재로드가 안 되면 빈 보드가 남는다.
+    if (hasSelectedRef.current && pid === selectedIdRef.current) return
+    hasSelectedRef.current = true
     selectedIdRef.current = pid
     liveDuringLoadRef.current = 0
-    liveTaskUpdateDuringLoadRef.current = 0
     setTasks([])
     setLog([])
     setSummary('')
@@ -67,8 +71,10 @@ export function ProjectPanel({ sessions }: Props) {
   }
 
   async function refreshTasks(projectId: string): Promise<void> {
+    const token = ++boardTokenRef.current
     const t = await window.fleet.getProjectTasks(projectId)
-    if (selectedIdRef.current === projectId) setTasks(t)
+    // 다른 방으로 바뀌었거나(크로스-프로젝트) 더 새 보드 갱신이 시작됐으면(순서 뒤바뀐 응답) 폐기한다.
+    if (selectedIdRef.current === projectId && token === boardTokenRef.current) setTasks(t)
   }
 
   // 마운트: 방 목록 로드 + 마지막 보던(없으면 최신) 프로젝트 자동 선택.
@@ -77,7 +83,8 @@ export function ProjectPanel({ sessions }: Props) {
       const list = await refreshProjects()
       const last = await window.fleet.getLastActiveProject()
       const pick = last && list.some((p) => p.id === last) ? last : (list[0]?.id ?? null)
-      if (pick) selectProject(pick)
+      // 마운트 await 동안 사용자가 이미 방을 선택했으면(예: 새 실행의 project.created) 자동선택으로 되돌리지 않는다.
+      if (pick && !hasSelectedRef.current) selectProject(pick)
     })()
   }, [])
 
@@ -113,10 +120,9 @@ export function ProjectPanel({ sessions }: Props) {
         const eventId = typeof e.data?.['eventId'] === 'string' ? (e.data['eventId'] as string) : undefined
         setLog((prev) => [...prev, { type: e.type, message: e.message, id: eventId }])
         liveDuringLoadRef.current += 1 // 진행 중 로드가 끝날 때 스냅샷 뒤로 보존할 라이브 행 카운트(아래 선택 effect 가 리셋·소비)
-        if (e.type !== 'task.progress') {
-          liveTaskUpdateDuringLoadRef.current += 1 // 로드 중 보드를 갱신한 마일스톤 — 스냅샷 setTasks 스킵 신호
-          void refreshTasks(pid) // 보드는 마일스톤에서만 갱신
-        }
+        // 보드는 마일스톤에서만 갱신. refreshTasks 가 boardToken 으로 순서를 보장하고, 선택 스냅샷보다 새 갱신이면
+        // 스냅샷 setTasks 를 자연히 폐기시킨다(별도 플래그 불필요).
+        if (e.type !== 'task.progress') void refreshTasks(pid)
       }
     })
     return unsub
@@ -128,6 +134,7 @@ export function ProjectPanel({ sessions }: Props) {
     if (!selectedId) return // selectProject(null) 이 이미 보드/로그/요약을 비웠다
     void window.fleet.setLastActiveProject(selectedId)
     const token = ++loadTokenRef.current // 이 로드의 신원 — 같은 방 재방문으로 중첩된 로드 중 최신만 반영
+    const boardToken = ++boardTokenRef.current // 보드 갱신 토큰 — 로드 중 라이브 refreshTasks 가 더 새 토큰을 만들면 이 스냅샷 setTasks 는 폐기
     void (async () => {
       const [t, ev] = await Promise.all([
         window.fleet.getProjectTasks(selectedId),
@@ -135,8 +142,8 @@ export function ProjectPanel({ sessions }: Props) {
       ])
       // 더 새 로드가 시작됐거나(같은 방 재방문) 다른 방으로 바뀌었으면 오래된 응답을 버린다.
       if (loadTokenRef.current !== token || selectedIdRef.current !== selectedId) return
-      // 로드 중 라이브 마일스톤이 보드를 더 최신으로 갱신했다면, 오래된 스냅샷으로 덮어쓰지 않는다.
-      if (liveTaskUpdateDuringLoadRef.current === 0) setTasks(t)
+      // 로드 중(또는 이후) 라이브 refreshTasks 가 보드를 더 최신으로 갱신했으면 오래된 스냅샷으로 덮어쓰지 않는다.
+      if (boardToken === boardTokenRef.current) setTasks(t)
       const snapshot: LogLine[] = ev.map((e) => ({ type: e.type, message: e.message ?? '', id: e.id }))
       const snapshotIds = new Set(snapshot.map((s) => s.id))
       // 로드 중 도착한 라이브 행을 스냅샷 뒤에 보존하되, 스냅샷에 이미 영속된 같은 id 의 행만 중복으로 제외한다.
