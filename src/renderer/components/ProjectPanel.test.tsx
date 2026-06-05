@@ -114,4 +114,15 @@ describe('ProjectPanel', () => {
     await act(async () => {})
     expect(fleet.cancelRun).toHaveBeenCalledWith('proj-9')
   })
+
+  it('appends a live event for the selected project to the log', async () => {
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능')
+    fleet.fire({ type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' } })
+    expect(await screen.findByText('구현 A 완료')).toBeTruthy()
+  })
 })

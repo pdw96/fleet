@@ -73,6 +73,8 @@ export function ProjectPanel({ sessions }: Props) {
     const unsub = window.fleet.onOrchestratorEvent((e) => {
       const pid = typeof e.data?.['projectId'] === 'string' ? (e.data['projectId'] as string) : undefined
       // 취소 버튼용 in-flight id.
+      // 주의: project.created 시점엔 selectedIdRef 가 아직 이전 값이라 이 이벤트는 라이브 로그에 안 들어가지만,
+      // 영속되어 있어 선택 effect 의 listProjectEvents 재조회로 곧 표시된다(허용된 동작).
       if (e.type === 'project.created' && pid) {
         setActiveProjectId(pid)
         void refreshProjects()

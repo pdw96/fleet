@@ -54,29 +54,25 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const DEFAULT_TASK_TIMEOUT_MS = 900_000
   const requestedTaskTimeout = Math.floor(opts.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS)
   const taskTimeoutMs = Number.isFinite(requestedTaskTimeout) && requestedTaskTimeout > 0 ? requestedTaskTimeout : DEFAULT_TASK_TIMEOUT_MS
-  // 현재 실행의 projectId — createProject 직후 설정되어 모든 영속 이벤트에 태깅된다.
-  let currentProjectId: string | undefined
+  // 프로젝트를 먼저 만들어 projectId 를 const 로 확보한다(emit 클로저가 캡처).
+  const project = store.createProject({ goal })
+  const projectId = project.id
   const emit = (e: OrchestratorEvent): void => {
+    // 라이브(onEvent)와 영속 이벤트가 같은 data(projectId 포함)를 갖도록 한 번만 enrich 한다.
+    // 이렇게 해야 렌더러가 projectId 로 라이브 이벤트를 필터링할 수 있다(task.* 이벤트는 원래 taskId 만 보유).
+    const enriched: OrchestratorEvent = { ...e, data: { ...(e.data ?? {}), projectId } }
     // task.progress(토큰 델타)는 영속하지 않는다 — 재생 로그 노이즈 + 매 토큰 전체 스냅샷 재기록 방지(라이브 onEvent 만).
     if (e.type !== 'task.progress') {
-      const pid =
-        currentProjectId ?? (typeof e.data?.['projectId'] === 'string' ? (e.data['projectId'] as string) : undefined)
-      store.appendEvent({
-        type: e.type,
-        message: e.message,
-        data: { ...(e.data ?? {}), ...(pid ? { projectId: pid } : {}) },
-      })
+      store.appendEvent({ type: enriched.type, message: enriched.message, data: enriched.data ?? {} })
     }
-    opts.onEvent?.(e)
+    opts.onEvent?.(enriched)
   }
   const sessionForRole = (role: AgentRole, fallback?: AgentRole) => {
     const id = resolveLlmForRole(assignments, role, fallback)
     return id ? sessions.get(id) : undefined
   }
 
-  const project = store.createProject({ goal })
-  currentProjectId = project.id
-  emit({ type: 'project.created', message: `프로젝트 생성: ${project.title}`, data: { projectId: project.id } })
+  emit({ type: 'project.created', message: `프로젝트 생성: ${project.title}`, data: { projectId } })
 
   // ── 1) 목표 분해 ──
   const planner = sessionForRole('planner')
