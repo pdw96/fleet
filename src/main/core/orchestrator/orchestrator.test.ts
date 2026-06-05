@@ -117,6 +117,60 @@ describe('runProject', () => {
     expect(result.tasks[0].changedFiles).toEqual(['src/a.ts', 'src/b.ts'])
   })
 
+  it('bails out on abort: skips remaining tasks, skips summary/verify, ends failed', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession('planner', () => '[{"title":"T1","description":"a"},{"title":"T2","description":"b"}]'),
+    )
+    const controller = new AbortController()
+    let implCalls = 0
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        implCalls++
+        // 첫 작업 중간에 취소 발생을 시뮬레이션: abort 후 throw.
+        controller.abort()
+        throw new Error('aborted mid-task')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    let summarizerCalls = 0
+    sessions.add(fakeSession('sum', () => { summarizerCalls++; return '요약' }))
+
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+      verify: async () => {
+        verifyCalls++
+        return [{ kind: 'test', command: 'npm test', passed: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1 }]
+      },
+    })
+
+    const t1 = result.tasks.find((t) => t.title === 'T1')
+    const t2 = result.tasks.find((t) => t.title === 'T2')
+    expect(t1?.status).toBe('failed') // 첫 작업은 send 예외로 실패
+    expect(t2?.status).toBe('skipped') // 취소 후 남은 작업은 실행 없이 skipped
+    expect(implCalls).toBe(1) // 둘째 작업은 실행되지 않음
+    expect(summarizerCalls).toBe(0) // 취소 시 요약 생략
+    expect(verifyCalls).toBe(0) // 취소 시 검증 생략
+    expect(result.summary).toBe('')
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
   it('records the resolved implementer llm as assignedLlmId on each task', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
@@ -663,6 +717,42 @@ describe('runProject', () => {
     expect(ws.commits[1]).toContain('verify-fix')
     expect(result.verifications?.[0].passed).toBe(true)
     expect(store.getProject(result.projectId)?.status).toBe('done')
+  })
+
+  it('reverts a destructive verify-fix diff when no gate is provided', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // collectDiff 호출 순서: [0] 작업 경로(안전) → keep, [1] verify-fix 경로(파괴적) → 게이트 없음이므로 revert
+    const ws = fakeWorkspace([
+      { files: ['src/a.ts'], patch: '+a', truncated: false },
+      { files: ['.env'], patch: '', truncated: true },
+    ])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      // gate 미지정 → 위험 verify-fix 변경은 거부(안전 기본값)
+      verify: async () => [
+        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+      ],
+    })
+
+    // 작업 keep 만 존재하고, verify-fix 는 위험·미승인이라 keep 되지 않아야 한다(revert).
+    expect(ws.commits).toHaveLength(1)
+    expect(ws.commits.some((c) => c.includes('verify-fix'))).toBe(false)
+    // 게이트 없이 위험 수정이 적용되지 않았으므로 프로젝트는 실패로 종료.
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
   it('marks the project failed when verify fixes are exhausted', async () => {

@@ -211,13 +211,19 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // 의존 작업이 failed/skipped 면 해당 작업은 실행 없이 skipped 로 전파한다.
   const pending = tasks.map((t) => t.id)
   let progressed = true
-  while (pending.length > 0 && progressed) {
+  let aborted = false
+  while (pending.length > 0 && progressed && !aborted) {
     progressed = false
     for (let i = 0; i < pending.length; ) {
       const task = byId.get(pending[i])
       if (!task) {
         pending.splice(i, 1)
         continue
+      }
+      // 취소되면 더 이상 스케줄링하지 않는다 — 남은 pending 은 아래에서 skipped 처리.
+      if (opts.signal?.aborted) {
+        aborted = true
+        break
       }
       const deps = task.dependsOn ?? []
       if (deps.some((d) => failed.has(d))) {
@@ -237,21 +243,26 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       i++ // 의존성 미해소 → 다음 sweep 으로 미룬다
     }
   }
-  // 위상 정렬로 해소되지 않은 작업(순환 의존 등)은 실패 처리해 무한 대기를 막는다.
+  // 남은 작업 처리. 취소 시에는 skipped(실행 취소됨), 그 외(순환 의존 등)는 failed 로 무한 대기를 막는다.
   for (const id of pending) {
     const task = byId.get(id)
     if (!task) continue
-    store.updateTask(id, { status: 'failed', output: '의존성 해소 불가(순환 가능)' })
-    emit({ type: 'task.failed', message: `${task.title}: 의존성 해소 불가(순환 가능)`, data: { taskId: id } })
+    if (opts.signal?.aborted) {
+      store.updateTask(id, { status: 'skipped', output: '실행 취소됨' })
+      emit({ type: 'task.skipped', message: `${task.title}: 실행 취소됨`, data: { taskId: id } })
+    } else {
+      store.updateTask(id, { status: 'failed', output: '의존성 해소 불가(순환 가능)' })
+      emit({ type: 'task.failed', message: `${task.title}: 의존성 해소 불가(순환 가능)`, data: { taskId: id } })
+    }
   }
 
-  // ── 3) 최종 요약 / 누락 점검 ──
+  // ── 3) 최종 요약 / 누락 점검 ── (취소 시 생략)
   let summary = ''
   const summarizer = sessionForRole('summarizer', 'reviewer')
-  if (summarizer) {
+  if (summarizer && !opts.signal?.aborted) {
     try {
       const finalTasks = store.listTasks(project.id)
-      summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), { fresh: true })
+      summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), { fresh: true, signal: opts.signal })
       emit({ type: 'summary', message: '최종 요약 완료', data: { projectId: project.id } })
     } catch (err) {
       // 요약 실패가 완료된 작업 결과를 무효화하지 않도록 격리한다(summary 는 빈 문자열로 둔다).
@@ -263,7 +274,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // verify 실패 시 implementer 에이전트를 워크스페이스에서 재실행해 직접 수정·커밋하고 재검증한다.
   // 최대 maxVerifyFixRounds 회(기본 2, 0=비활성). 워크스페이스/CLI implementer 없으면 루프 생략.
   let verifications: VerificationResult[] | undefined
-  if (opts.verify) {
+  if (opts.verify && !opts.signal?.aborted) {
     const run = opts.verify
     const requestedFix = Math.floor(opts.maxVerifyFixRounds ?? 2)
     const maxFix = Number.isFinite(requestedFix) && requestedFix >= 0 ? requestedFix : 2
@@ -316,6 +327,19 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           signal: opts.signal,
           timeoutMs: taskTimeoutMs,
         })
+        // 작업 경로와 동일하게 verify-fix diff 도 위험 분류·승인 게이트를 거친다.
+        const diff = await opts.workspace.collectDiff(base)
+        const dr = classifyDiffRisk(diff)
+        if (dr.risk === 'destructive') {
+          const decision = opts.gate
+            ? await opts.gate.request({ kind: 'apply-diff', summary: `verify-fix r${round} 변경 적용`, target: diff.files.join(', '), risk: 'destructive' })
+            : 'rejected'
+          if (decision !== 'approved') {
+            await opts.workspace.revert(base)
+            emit({ type: 'verify.fixing', message: `수정 위험 변경 미승인: ${dr.reasons.join('; ')}`, data: { projectId: project.id, round } })
+            break
+          }
+        }
         await opts.workspace.keep(`[verify-fix r${round}]`)
       } catch (err) {
         await opts.workspace.revert(base).catch(() => {})
@@ -331,9 +355,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     }
   }
 
+  // 취소되면 검증·요약을 건너뛰었으므로 무조건 failed 로 종료한다(misleading done 방지).
+  // run.cancelled 는 engine 이 별도로 방출하므로 오케스트레이터는 일을 멈추기만 하면 된다.
   const verifyFailed =
     !!opts.verify && !(verifications !== undefined && verifications.length > 0 && verifications.every((v) => v.passed))
-  store.updateProject(project.id, { status: verifyFailed ? 'failed' : 'done' })
+  store.updateProject(project.id, { status: opts.signal?.aborted || verifyFailed ? 'failed' : 'done' })
   emit({ type: 'project.done', message: `프로젝트 완료: ${project.title}`, data: { projectId: project.id } })
 
   return { projectId: project.id, tasks: store.listTasks(project.id), summary, verifications }

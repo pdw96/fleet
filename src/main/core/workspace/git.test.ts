@@ -34,6 +34,26 @@ describe('createWorkspace.ensureRepo', () => {
     const ws = createWorkspace('/ws', g.runner)
     await ws.ensureRepo()
     expect(g.calls.some((c) => c[0] === 'init')).toBe(false)
+    // HEAD 존재(rev-parse HEAD → code 0) → 초기 커밋 생성 안 함
+    expect(g.calls.some((c) => c[0] === 'commit')).toBe(false)
+  })
+
+  it('creates an initial commit (no init) when inside a repo but HEAD is missing', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      // 이미 레포 안이지만(rev-parse --is-inside-work-tree → 0) 커밋이 없다(rev-parse HEAD → 128)
+      if (args[0] === 'rev-parse' && args.includes('--is-inside-work-tree')) {
+        return { code: 0, stdout: 'true', stderr: '' }
+      }
+      if (args[0] === 'rev-parse' && args.includes('HEAD')) {
+        return { code: 128, stdout: '', stderr: "fatal: ambiguous argument 'HEAD'" }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    await ws.ensureRepo()
+    expect(g.calls.some((c) => c[0] === 'init')).toBe(false) // 이미 레포 → init 안 함
+    expect(g.calls.some((c) => c[0] === 'commit')).toBe(true) // HEAD 없음 → 초기 체크포인트 커밋
   })
 })
 

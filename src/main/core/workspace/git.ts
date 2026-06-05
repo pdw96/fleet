@@ -65,6 +65,13 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
         await ok(['init'])
         await ok(['add', '-A'])
         await ok(['commit', '--allow-empty', '-m', 'fleet: 초기 체크포인트'])
+        return
+      }
+      // 이미 레포지만 커밋이 없을 수 있다(git init 후 미커밋). HEAD 없으면 초기 체크포인트 생성.
+      const head = await run(['rev-parse', 'HEAD'])
+      if (head.code !== 0) {
+        await ok(['add', '-A'])
+        await ok(['commit', '--allow-empty', '-m', 'fleet: 초기 체크포인트'])
       }
     },
     async checkpoint() {
