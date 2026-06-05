@@ -69,13 +69,13 @@ export function createCliSession(
           nl = buf.indexOf('\n')
         }
       }
-      const res = await runner(adapter.command, [...args, ...stream.args], timeoutMs, onStdout)
+      const res = await runner(adapter.command, [...args, ...stream.args], { timeoutMs }, onStdout)
       emitLine(buf) // 마지막 개행 없는 잔여 라인
       assertRunOk(adapter.command, res)
       // 델타가 비어 있으면(이벤트 단위 CLI 등) 버퍼 정제로 폴백해 응답을 잃지 않는다.
       return { res, text: full || cleanCliOutput(adapter.headless?.parse, res.stdout) }
     }
-    const res = await runner(adapter.command, args, timeoutMs)
+    const res = await runner(adapter.command, args, { timeoutMs })
     assertRunOk(adapter.command, res)
     const text = cleanCliOutput(adapter.headless?.parse, res.stdout)
     sendOpts.onChunk?.(text)
