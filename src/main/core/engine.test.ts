@@ -222,6 +222,11 @@ describe('FleetEngine', () => {
       // run.cancelled 가 콜백으로 방출되고 감사 로그(store)에도 남는다.
       expect(events.some((e) => e.type === 'run.cancelled')).toBe(true)
       expect(store.listEvents().some((e) => e.type === 'run.cancelled')).toBe(true)
+      // 라이브 run.cancelled 는 영속 이벤트 id 를 data.eventId 로 함께 싣는다(렌더러 dedup 용).
+      const liveCancel = events.find((e) => e.type === 'run.cancelled')
+      const persistedCancel = store.listEvents().find((e) => e.type === 'run.cancelled')
+      expect(liveCancel?.data?.['eventId']).toBeTruthy()
+      expect(liveCancel?.data?.['eventId']).toBe(persistedCancel?.id)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

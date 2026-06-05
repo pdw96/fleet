@@ -25,7 +25,11 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     ...overrides,
   }
   ;(window as unknown as { fleet: unknown }).fleet = fleet
-  return Object.assign(fleet, { fire: (e: OrchestratorEvent) => act(() => emit?.(e)) })
+  return Object.assign(fleet, {
+    fire: (e: OrchestratorEvent) => act(() => emit?.(e)),
+    // 여러 이벤트를 단일 act 로 방출 — 그 사이 effect 가 flush 되지 않아 핸들러 간 동기 레이스를 재현한다.
+    fireBatch: (...events: OrchestratorEvent[]) => act(() => events.forEach((e) => emit?.(e))),
+  })
 }
 
 const SESSION: LlmDescriptor = { id: 'llm-1', kind: 'cli', displayName: 'Claude', ref: 'claude' }
@@ -305,5 +309,51 @@ describe('ProjectPanel', () => {
     await act(async () => { fleet.fire({ type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' } }) }) // 라이브 → NEW
     await act(async () => { resolveSnapshot(OLD) }) // 지연된 스냅샷이 OLD 로 늦게 도착
     expect(screen.getByText('변경 2개')).toBeTruthy() // NEW 유지(OLD 로 덮어쓰지 않음)
+  })
+
+  // N: 같은 방 재방문(P2 → P1 → P2) 중 첫 P2 로드가 늦게 도착해도 최신 P2 결과를 덮어쓰지 않아야 한다.
+  // (refreshProjects 가 updatedAt 내림차순 정렬 → 마운트는 P2 를 자동선택한다.)
+  it('ignores a stale snapshot load after revisiting the same project', async () => {
+    const OLD: Task[] = [{ ...T1, changedFiles: [] }] // 변경 chip 없음
+    const NEW: Task[] = [{ ...T1, changedFiles: ['a.ts', 'b.ts'] }] // 변경 2개
+    let resolveOld: (t: Task[]) => void = () => {}
+    const getProjectTasks = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<Task[]>((res) => { resolveOld = res })) // #1 P2 마운트 자동선택(지연 OLD)
+      .mockResolvedValueOnce([]) // #2 P1
+      .mockResolvedValue(NEW) // #3 P2 재방문(즉시 NEW)
+    mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1, P2]),
+      getProjectTasks,
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('결제 연동')
+    await vi.waitFor(() => expect(getProjectTasks).toHaveBeenCalledTimes(1)) // 마운트 P2 자동선택 로드(#1, 지연) 디스패치됨
+    await act(async () => { fireEvent.click(screen.getByText('로그인 기능')) }) // P1 (#2)
+    await act(async () => { fireEvent.click(screen.getByText('결제 연동')) }) // P2 재방문 (#3 → NEW)
+    expect(await screen.findByText('변경 2개')).toBeTruthy() // 최신 로드(NEW) 반영
+    await act(async () => { resolveOld(OLD) }) // 지연된 첫 P2 로드가 늦게 도착
+    expect(screen.getByText('변경 2개')).toBeTruthy() // OLD 로 회귀하지 않음
+  })
+
+  // O: project.created 직후 도착하는 task.progress(영속 안 됨)가 ref 스테일로 드롭되지 않아야 한다.
+  it('keeps task.progress that arrives immediately after project.created auto-select', async () => {
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([]),
+      getProjectTasks: vi.fn().mockResolvedValue([]),
+      listProjectEvents: vi.fn().mockResolvedValue([]), // 새 프로젝트라 영속 이벤트 없음
+      runProject: vi.fn(() => new Promise(() => {})), // 실행 진행 중(미완)
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
+    // 두 이벤트를 한 act 로 방출 — project.created 와 task.progress 사이에 selectedIdRef 동기화 effect 가
+    // flush 되지 않게 해 실제 레이스(직후 task.progress)를 재현한다.
+    fleet.fireBatch(
+      { type: 'project.created', message: '생성', data: { projectId: 'pX' } }, // pX 자동선택(ref 동기)
+      { type: 'task.progress', message: '토큰스트림조각', data: { projectId: 'pX' } }, // 직후 도착
+    )
+    expect(await screen.findByText('토큰스트림조각')).toBeTruthy() // 드롭되지 않고 라이브 로그 보존
   })
 })

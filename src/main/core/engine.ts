@@ -315,8 +315,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       if (!c) return // 미존재 id 는 무해한 no-op
       c.abort()
       activeRuns.delete(projectId)
-      store.appendEvent({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
-      opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
+      // 영속 이벤트 id 를 라이브 페이로드(data.eventId)에도 실어 보낸다 — 렌더러가 스냅샷 재조회 시
+      // 라이브로 받은 run.cancelled 와 영속본을 같은 id 로 dedup 하도록(중복 '실행 취소됨' 방지).
+      const persisted = store.appendEvent({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
+      opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId, eventId: persisted.id } })
     },
 
     getWorkspace() {
