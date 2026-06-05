@@ -22,20 +22,51 @@ describe('createWorkspace.ensureRepo', () => {
     await ws.ensureRepo()
     const cmds = g.calls.map((c) => c.join(' '))
     expect(cmds.some((c) => c.startsWith('init'))).toBe(true)
-    expect(cmds.some((c) => c.startsWith('commit'))).toBe(true)
+    // 커밋엔 아이덴티티(-c …) 플래그가 앞에 붙으므로 includes 로 확인
+    expect(cmds.some((c) => c.includes('commit'))).toBe(true)
   })
 
   it('does nothing when already a git repo with commits', async () => {
     const g = fakeGit()
     g.setReply((args) => {
       if (args[0] === 'rev-parse') return { code: 0, stdout: 'true', stderr: '' }
+      // 워크트리는 깨끗하다(status --porcelain → 빈 출력) → 시작 스냅샷 커밋 안 함
+      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
       return { code: 0, stdout: 'abc123', stderr: '' }
     })
     const ws = createWorkspace('/ws', g.runner)
     await ws.ensureRepo()
     expect(g.calls.some((c) => c[0] === 'init')).toBe(false)
     // HEAD 존재(rev-parse HEAD → code 0) → 초기 커밋 생성 안 함
-    expect(g.calls.some((c) => c[0] === 'commit')).toBe(false)
+    expect(g.calls.some((c) => c.includes('commit'))).toBe(false)
+  })
+
+  it('snapshots a dirty worktree into a baseline commit at run start', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'rev-parse') return { code: 0, stdout: 'abc123', stderr: '' }
+      // 이미 커밋이 있는 레포인데 미커밋 변경이 있다(status --porcelain → 더티)
+      if (args[0] === 'status') return { code: 0, stdout: ' M file.ts\n', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    await ws.ensureRepo()
+    expect(g.calls.some((c) => c[0] === 'init')).toBe(false) // 이미 레포 → init 안 함
+    // 더티 → add -A 후 스냅샷 커밋(사용자 미커밋 변경 보존)
+    expect(g.calls.some((c) => c.includes('commit'))).toBe(true)
+  })
+
+  it('does not snapshot when an existing repo worktree is clean', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'rev-parse') return { code: 0, stdout: 'abc123', stderr: '' }
+      // 워크트리가 깨끗하다(status --porcelain → 빈 출력) → 스냅샷 커밋 없음
+      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    await ws.ensureRepo()
+    expect(g.calls.some((c) => c.includes('commit'))).toBe(false)
   })
 
   it('creates an initial commit (no init) when inside a repo but HEAD is missing', async () => {
@@ -53,7 +84,7 @@ describe('createWorkspace.ensureRepo', () => {
     const ws = createWorkspace('/ws', g.runner)
     await ws.ensureRepo()
     expect(g.calls.some((c) => c[0] === 'init')).toBe(false) // 이미 레포 → init 안 함
-    expect(g.calls.some((c) => c[0] === 'commit')).toBe(true) // HEAD 없음 → 초기 체크포인트 커밋
+    expect(g.calls.some((c) => c.includes('commit'))).toBe(true) // HEAD 없음 → 초기 체크포인트 커밋
   })
 })
 
@@ -93,7 +124,18 @@ describe('createWorkspace diff/keep/revert', () => {
     g.setReply((args) => (args[0] === 'rev-parse' ? { code: 0, stdout: 'newhash\n', stderr: '' } : { code: 0, stdout: '', stderr: '' }))
     const ws = createWorkspace('/ws', g.runner)
     expect(await ws.keep('[T] by impl')).toBe('newhash')
-    expect(g.calls.map((c) => c.join(' ')).some((c) => c.startsWith('commit'))).toBe(true)
+    expect(g.calls.map((c) => c.join(' ')).some((c) => c.includes('commit'))).toBe(true)
+  })
+
+  it('gives Fleet-internal commits an explicit committer identity', async () => {
+    const g = fakeGit()
+    g.setReply((args) => (args[0] === 'rev-parse' ? { code: 0, stdout: 'newhash\n', stderr: '' } : { code: 0, stdout: '', stderr: '' }))
+    const ws = createWorkspace('/ws', g.runner)
+    await ws.keep('[T] by impl')
+    // 커밋 호출엔 명시적 아이덴티티 플래그가 commit 서브커맨드 앞에 와야 한다(미설정 머신 대응)
+    const cmds = g.calls.map((c) => c.join(' '))
+    expect(cmds.some((c) => c.includes('-c user.email=fleet@local') && c.includes('commit'))).toBe(true)
+    expect(cmds.some((c) => c.includes('-c user.name=Fleet') && c.includes('commit'))).toBe(true)
   })
 
   it('throws a descriptive error when a git command fails', async () => {

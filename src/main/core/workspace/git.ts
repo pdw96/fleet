@@ -58,20 +58,32 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
     throw new Error(`git ${args[0]} 실패(code ${last?.code ?? null}): ${last?.stderr.trim() ?? ''}`)
   }
 
+  // Fleet 내부 체크포인트 커밋엔 명시적 아이덴티티를 준다(user.name/email 미설정 머신에서도 동작).
+  const commit = (message: string): Promise<GitResult> =>
+    ok(['-c', 'user.name=Fleet', '-c', 'user.email=fleet@local', 'commit', '--allow-empty', '-m', message])
+
   return {
     async ensureRepo() {
       const inside = await run(['rev-parse', '--is-inside-work-tree'])
       if (inside.code !== 0) {
         await ok(['init'])
         await ok(['add', '-A'])
-        await ok(['commit', '--allow-empty', '-m', 'fleet: 초기 체크포인트'])
+        await commit('fleet: 초기 체크포인트')
         return
       }
       // 이미 레포지만 커밋이 없을 수 있다(git init 후 미커밋). HEAD 없으면 초기 체크포인트 생성.
       const head = await run(['rev-parse', 'HEAD'])
       if (head.code !== 0) {
         await ok(['add', '-A'])
-        await ok(['commit', '--allow-empty', '-m', 'fleet: 초기 체크포인트'])
+        await commit('fleet: 초기 체크포인트')
+        return
+      }
+      // 이미 커밋이 있는 레포: 사용자의 미커밋 변경이 있으면 baseline 으로 스냅샷한다.
+      // (이후 revert 가 사용자 작업을 지우지 않고, 작업 diff 도 에이전트 변경만 담게 한다.)
+      const dirty = await run(['status', '--porcelain'])
+      if (dirty.code === 0 && dirty.stdout.trim() !== '') {
+        await ok(['add', '-A'])
+        await commit('fleet: 시작 시점 스냅샷(사용자 미커밋 변경 보존)')
       }
     },
     async checkpoint() {
@@ -89,7 +101,7 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
     },
     async keep(message) {
       await ok(['add', '-A'])
-      await ok(['commit', '--allow-empty', '-m', message])
+      await commit(message)
       const r = await ok(['rev-parse', 'HEAD'])
       return r.stdout.trim()
     },
