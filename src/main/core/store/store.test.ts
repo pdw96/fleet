@@ -173,4 +173,17 @@ describe('json-file store', () => {
     expect(existsSync(join(dir, 'fleet-store.json'))).toBe(true)
     expect(existsSync(join(dir, 'fleet-store.json.tmp'))).toBe(false)
   })
+
+  it('fills missing top-level keys when loading an older store file', () => {
+    // lastActiveProjectId 없는 구버전 파일 + 신규 필드 부재
+    writeFileSync(
+      join(dir, 'fleet-store.json'),
+      JSON.stringify({ projects: [{ id: 'p1', goal: 'g', title: 'T', status: 'done', createdAt: 0, updatedAt: 0 }] }),
+      'utf8',
+    )
+    const s = createJsonFileStore(dir)
+    expect(s.listProjects()).toHaveLength(1)
+    expect(s.snapshot().tasks).toEqual([]) // 결측 배열이 기본값으로 보강됨
+    expect(s.snapshot().events).toEqual([])
+  })
 })
