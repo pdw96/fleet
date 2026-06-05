@@ -1054,4 +1054,44 @@ describe('runProject', () => {
     expect(ws.commits).toHaveLength(1) // 작업 keep 만, 수정 keep 없음
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
+
+  it('persists milestones with message+projectId and does NOT persist task.progress', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // 구현 세션이 토큰 델타(onChunk)를 흘리도록 한다.
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        opts?.onChunk?.('토큰1')
+        opts?.onChunk?.('토큰2')
+        return '구현'
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+
+    const persisted = store.listProjectEvents(result.projectId)
+    // 모든 영속 이벤트가 해당 projectId 로 태깅된다.
+    expect(persisted.every((e) => e.data['projectId'] === result.projectId)).toBe(true)
+    // 마일스톤은 메시지와 함께 재생 가능.
+    expect(persisted.some((e) => e.type === 'project.created' && !!e.message)).toBe(true)
+    expect(persisted.some((e) => e.type === 'project.done' && !!e.message)).toBe(true)
+    // task.progress(토큰 델타)는 영속되지 않는다.
+    expect(store.listEvents().some((e) => e.type === 'task.progress')).toBe(false)
+  })
 })

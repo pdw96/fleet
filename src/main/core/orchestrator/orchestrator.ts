@@ -54,8 +54,19 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const DEFAULT_TASK_TIMEOUT_MS = 900_000
   const requestedTaskTimeout = Math.floor(opts.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS)
   const taskTimeoutMs = Number.isFinite(requestedTaskTimeout) && requestedTaskTimeout > 0 ? requestedTaskTimeout : DEFAULT_TASK_TIMEOUT_MS
+  // 현재 실행의 projectId — createProject 직후 설정되어 모든 영속 이벤트에 태깅된다.
+  let currentProjectId: string | undefined
   const emit = (e: OrchestratorEvent): void => {
-    store.appendEvent({ type: e.type, data: e.data ?? {} })
+    // task.progress(토큰 델타)는 영속하지 않는다 — 재생 로그 노이즈 + 매 토큰 전체 스냅샷 재기록 방지(라이브 onEvent 만).
+    if (e.type !== 'task.progress') {
+      const pid =
+        currentProjectId ?? (typeof e.data?.['projectId'] === 'string' ? (e.data['projectId'] as string) : undefined)
+      store.appendEvent({
+        type: e.type,
+        message: e.message,
+        data: { ...(e.data ?? {}), ...(pid ? { projectId: pid } : {}) },
+      })
+    }
     opts.onEvent?.(e)
   }
   const sessionForRole = (role: AgentRole, fallback?: AgentRole) => {
@@ -64,6 +75,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   }
 
   const project = store.createProject({ goal })
+  currentProjectId = project.id
   emit({ type: 'project.created', message: `프로젝트 생성: ${project.title}`, data: { projectId: project.id } })
 
   // ── 1) 목표 분해 ──
