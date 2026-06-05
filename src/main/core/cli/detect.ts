@@ -6,8 +6,17 @@ export interface CommandResult {
   code: number | null
   stdout: string
   stderr: string
-  /** spawn 자체 실패(예: 명령 없음 ENOENT, 타임아웃 ETIMEDOUT, 출력 초과 ENOBUFS) */
-  spawnError?: 'ENOENT' | 'ETIMEDOUT' | 'ENOBUFS' | string
+  /** spawn 자체 실패(예: 명령 없음 ENOENT, 타임아웃 ETIMEDOUT, 출력 초과 ENOBUFS, 중단 ABORTED) */
+  spawnError?: 'ENOENT' | 'ETIMEDOUT' | 'ENOBUFS' | 'ABORTED' | string
+}
+
+/** 명령 실행 옵션. */
+export interface RunOpts {
+  timeoutMs: number
+  /** 자식 프로세스 작업 디렉터리(편집 모드 등에서 워크스페이스 지정). */
+  cwd?: string
+  /** 외부 취소 신호 — abort 시 자식을 죽이고 ABORTED 로 종료한다. */
+  signal?: AbortSignal
 }
 
 /**
@@ -17,7 +26,7 @@ export interface CommandResult {
 export type CommandRunner = (
   command: string,
   args: string[],
-  timeoutMs: number,
+  opts: RunOpts,
   onStdout?: (chunk: string) => void,
 ) => Promise<CommandResult>
 
@@ -33,8 +42,9 @@ const MAX_BUFFER = 10 * 1024 * 1024
  * cross-spawn 은 PATHEXT 로 셰임을 찾고, cmd.exe 경유 시 인자를 안전하게
  * 이스케이프(주입 방지)해 실행한다. POSIX 에서는 일반 spawn 과 동일하게 동작.
  */
-export const defaultRunner: CommandRunner = (command, args, timeoutMs, onStdout) =>
+export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
   new Promise<CommandResult>((resolve) => {
+    const { timeoutMs, cwd, signal } = opts
     const outChunks: Buffer[] = []
     const errChunks: Buffer[] = []
     let outLen = 0
@@ -53,16 +63,27 @@ export const defaultRunner: CommandRunner = (command, args, timeoutMs, onStdout)
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (signal) signal.removeEventListener('abort', onAbort)
       const { stdout, stderr } = decode()
       resolve({ ...extra, stdout, stderr })
     }
 
-    const child = spawn(command, args, { windowsHide: true })
+    const child = spawn(command, args, { windowsHide: true, cwd })
 
     const timer = setTimeout(() => {
       child.kill()
       finish({ code: null, spawnError: 'ETIMEDOUT' })
     }, timeoutMs)
+
+    // 외부 취소 신호 처리: abort 시 자식을 죽이고 ABORTED 로 종료한다.
+    const onAbort = () => {
+      child.kill()
+      finish({ code: null, spawnError: 'ABORTED' })
+    }
+    if (signal) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort)
+    }
 
     // 출력이 한도를 넘으면 child 를 죽이고 명시적 에러로 종료한다(과거 execFile maxBuffer 계약 유지).
     // 그대로 두면 조용한 truncation 또는 무한 출력 CLI 의 timeout 까지 매달림이 발생한다.
@@ -117,7 +138,7 @@ export async function detectCli(
     command: adapter.command,
     kind: 'cli' as const,
   }
-  const res = await runner(adapter.command, adapter.versionArgs, timeoutMs)
+  const res = await runner(adapter.command, adapter.versionArgs, { timeoutMs })
 
   if (res.spawnError) {
     return { ...base, installed: false, error: res.spawnError }

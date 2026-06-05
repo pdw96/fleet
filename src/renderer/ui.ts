@@ -27,6 +27,9 @@ export function statusColor(status: string): string {
     case 'executing':
     case 'verifying':
       return 'var(--warn)'
+    case 'skipped':
+      // 건너뜀 — 실패(빨강)와 구분되는 muted 톤. pending(기본 --dim)보다 한 단계 더 흐리게.
+      return 'var(--faint)'
     default:
       return 'var(--dim)'
   }

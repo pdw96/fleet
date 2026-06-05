@@ -69,6 +69,21 @@ describe('ApprovalModal', () => {
     expect(respondApproval).toHaveBeenCalledWith('req-1', false)
   })
 
+  it('shows the 변경 적용 승인 title and file list for an apply-diff request', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire({
+      id: 'req-diff',
+      kind: 'apply-diff',
+      summary: '작업 변경 적용: 구현 A',
+      target: 'src/a.ts, src/b.ts',
+      risk: 'caution',
+      ts: 2,
+    })
+    expect(screen.getByText('변경 적용 승인')).toBeTruthy()
+    expect(screen.getByText('src/a.ts, src/b.ts')).toBeTruthy()
+  })
+
   it('shows queued requests one at a time', () => {
     const { fire, respondApproval } = mockFleet()
     render(<ApprovalModal />)

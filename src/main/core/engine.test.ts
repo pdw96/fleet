@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -7,20 +7,55 @@ import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
 import { createSessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
+import type { GitRunner } from './workspace/git'
 
 function deterministic() {
   let n = 0
   return { idGen: () => `id-${++n}`, now: () => 1000 + n }
 }
 
-/** 프롬프트 내용에 따라 역할별 응답을 돌려주는 러너. */
-const roleRunner: CommandRunner = async (_cmd, args) => {
+/**
+ * 인메모리 가짜 git 실행기 — 실제 git 을 건드리지 않고 워크스페이스 diff 모델을 시뮬레이트한다.
+ * (실 git 을 쓰면 tmpdir 이 사용자 홈 저장소 하위라 부모 .git 을 오염시킬 위험이 있어 격리한다.)
+ * collectDiff 의 name-only 는 cwd 디렉터리의 실제 파일 목록을 보고해, 편집 러너가 만든 파일이 변경으로 잡힌다.
+ */
+function fakeGit(): GitRunner {
+  let head = 0
+  return {
+    async run(args, cwd) {
+      const sub = args[0]
+      if (sub === 'rev-parse' && args.includes('--is-inside-work-tree')) return { code: 0, stdout: 'true', stderr: '' }
+      if (sub === 'rev-parse') return { code: 0, stdout: `hash-${head}`, stderr: '' }
+      if (sub === 'add') return { code: 0, stdout: '', stderr: '' }
+      if (sub === 'diff' && args.includes('--name-only')) {
+        const files = readdirSync(cwd).filter((f) => f !== '.git')
+        return { code: 0, stdout: files.join('\n'), stderr: '' }
+      }
+      if (sub === 'diff') {
+        const files = readdirSync(cwd).filter((f) => f !== '.git')
+        return { code: 0, stdout: files.map((f) => `+++ b/${f}`).join('\n'), stderr: '' }
+      }
+      if (sub === 'commit') {
+        head++
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      if (sub === 'reset' || sub === 'clean' || sub === 'init') return { code: 0, stdout: '', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  }
+}
+
+/**
+ * 프롬프트 내용에 따라 역할별 응답을 돌려주는 러너.
+ * 편집 모드(opts.cwd 지정)에선 워크스페이스에 파일을 직접 만들어 실제 git diff 를 발생시킨다.
+ */
+const roleRunner: CommandRunner = async (_cmd, args, opts) => {
   const prompt = args.join(' ')
-  let out = '구현 결과물'
-  if (prompt.includes('JSON')) out = '[{"title":"작업1","description":"d1"}]'
-  else if (prompt.includes('검토')) out = 'APPROVE'
-  else if (prompt.includes('누락')) out = '요약: 목표 충족, 누락 없음'
-  return { code: 0, stdout: out, stderr: '' }
+  if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+  if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
+  if (prompt.includes('누락')) return { code: 0, stdout: '요약: 목표 충족, 누락 없음', stderr: '' }
+  if (opts.cwd) writeFileSync(join(opts.cwd, 'impl.txt'), '구현 결과물') // 직접 편집
+  return { code: 0, stdout: '구현 결과물', stderr: '' }
 }
 
 describe('FleetEngine', () => {
@@ -56,17 +91,22 @@ describe('FleetEngine', () => {
   })
 
   it('runs a full project flow through registered CLI sessions', async () => {
-    const store = createMemoryStore(deterministic())
-    const engine = createFleetEngine({ store, runner: roleRunner })
-    engine.registerCliSession('claude')
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-flow-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      engine.registerCliSession('claude')
 
-    const result = await engine.runProjectFlow({ goal: '멀티 LLM 앱 만들기' })
+      const result = await engine.runProjectFlow({ goal: '멀티 LLM 앱 만들기' })
 
-    expect(result.tasks).toHaveLength(1)
-    expect(result.tasks[0].status).toBe('done')
-    expect(result.summary).toContain('요약')
-    expect(engine.listProjects()).toHaveLength(1)
-    expect(engine.getProjectTasks(result.projectId)).toHaveLength(1)
+      expect(result.tasks).toHaveLength(1)
+      expect(result.tasks[0].status).toBe('done')
+      expect(result.summary).toContain('요약')
+      expect(engine.listProjects()).toHaveLength(1)
+      expect(engine.getProjectTasks(result.projectId)).toHaveLength(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('throws when running a project with no sessions', async () => {
@@ -74,30 +114,154 @@ describe('FleetEngine', () => {
     await expect(engine.runProjectFlow({ goal: 'x' })).rejects.toThrow('세션이 없습니다')
   })
 
-  it('writes implementer artifacts to the workspace and runs verification when workspaceDir is set', async () => {
+  it('throws when running a project without a selected workspace', async () => {
+    // 세션은 있으나 워크스페이스 미선택 — 직접 편집 모델은 워크스페이스 필수라 거부해야 한다.
+    const engine = createFleetEngine({ runner: roleRunner })
+    engine.registerCliSession('claude')
+    await expect(engine.runProjectFlow({ goal: 'g' })).rejects.toThrow('워크스페이스')
+  })
+
+  it('fails fast when NO CLI session exists at all (cannot direct-edit)', async () => {
+    // CLI 없이 API 세션만 등록 + 워크스페이스 지정 → implementer 로 쓸 CLI 가 전혀 없다.
+    // 계획 전에 명확한 설정 오류로 거부해야 한다(API 호출 한 번 낭비 방지).
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-noimpl-'))
+    try {
+      const engine = createFleetEngine({ workspaceDir: dir, gitRunner: fakeGit() })
+      engine.registerApiSession({ id: 'a', provider: 'openai', displayName: 'GPT', model: 'm', apiKey: 'k' })
+      await expect(engine.runProjectFlow({ goal: 'g' })).rejects.toThrow(/구현|CLI 세션/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reassigns the implementer to a CLI session (does not throw) when assignments put an API session there', async () => {
+    // CLI 와 API 가 모두 있고, 명시적 배정이 implementer 를 API 에 둔 경우:
+    // fail-fast 대신 CLI 세션으로 재배정해 실행을 계속해야 한다(blunt throw 가 아님).
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-reassign-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      engine.registerCliSession('claude') // cli:claude — 유일한 CLI
+      engine.registerApiSession({ id: 'a', provider: 'openai', displayName: 'GPT', model: 'm', apiKey: 'k' })
+
+      // implementer 를 API 세션에 명시 배정 → 재배정 로직이 cli:claude 로 바꿔야 한다.
+      const result = await engine.runProjectFlow({
+        goal: 'g',
+        assignments: [
+          { role: 'planner', llmId: 'cli:claude' },
+          { role: 'implementer', llmId: 'api:a' },
+          { role: 'reviewer', llmId: 'cli:claude' },
+          { role: 'summarizer', llmId: 'cli:claude' },
+        ],
+      })
+
+      expect(result.tasks[0].status).toBe('done') // 재배정된 CLI 로 직접 편집 실행됨
+      expect(result.tasks[0].assignedLlmId).toBe('cli:claude') // API 가 아니라 CLI 로 라우팅
+      expect(store.listEvents().some((e) => e.type === 'assignment.implementer_reassigned')).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('cancelRun aborts an in-flight run: task ends not-done and run.cancelled is emitted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-cancel-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const sessions = createSessionManager()
+      // 구현 호출(opts.workspace 지정)은 전달된 AbortSignal 에서 abort 될 때까지 대기하다 거부한다.
+      // 그 외(plan JSON / 검토 / 요약) 호출은 즉시 응답해 작업 루프까지 도달하게 한다.
+      sessions.add({
+        id: 'cli:claude',
+        descriptor: { id: 'cli:claude', kind: 'cli', displayName: 'Claude', ref: 'claude', model: '', capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'] },
+        async send(prompt, opts) {
+          if (prompt.includes('JSON')) return '[{"title":"작업1","description":"d1"}]'
+          if (prompt.includes('검토')) return 'APPROVE'
+          if (prompt.includes('누락')) return '요약'
+          if (opts?.workspace) {
+            // 편집(구현) 호출: abort 까지 hang → cancelRun 이 신호를 보내면 reject.
+            return await new Promise<string>((_resolve, reject) => {
+              const signal = opts.signal
+              if (signal?.aborted) return reject(new Error('aborted'))
+              signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+            })
+          }
+          return '응답'
+        },
+        async dispose() {},
+      })
+
+      const events: { type: string; data?: Record<string, unknown> }[] = []
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
+
+      // 실행을 await 하지 않고 띄운 뒤, project.created 에서 projectId 를 잡아 취소한다.
+      const runPromise = engine.runProjectFlow({ goal: 'g' })
+      const pid = await new Promise<string>((resolve) => {
+        const timer = setInterval(() => {
+          const created = events.find((e) => e.type === 'project.created')
+          const id = created?.data?.['projectId']
+          if (typeof id === 'string') {
+            clearInterval(timer)
+            resolve(id)
+          }
+        }, 5)
+      })
+
+      engine.cancelRun(pid)
+
+      const result = await runPromise
+
+      // abort 된 구현 호출 → 작업이 done 이 아니어야 한다(revert 후 failed).
+      expect(result.tasks).toHaveLength(1)
+      expect(result.tasks[0].status).not.toBe('done')
+      // run.cancelled 가 콜백으로 방출되고 감사 로그(store)에도 남는다.
+      expect(events.some((e) => e.type === 'run.cancelled')).toBe(true)
+      expect(store.listEvents().some((e) => e.type === 'run.cancelled')).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('cancelRun on an unknown projectId is a harmless no-op', () => {
+    const engine = createFleetEngine({ runner: roleRunner })
+    expect(() => engine.cancelRun('does-not-exist')).not.toThrow()
+    // 미존재 id 는 어떤 이벤트도 남기지 않는다.
+    expect(engine.listEvents().some((e) => e.type === 'run.cancelled')).toBe(false)
+  })
+
+  it('runs the implementer as a direct-edit agent in the workspace and verifies when workspaceDir is set', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-'))
     try {
-      const runner: CommandRunner = async (_cmd, args) => {
+      // 편집 모드(opts.cwd 지정)에서 에이전트가 워크스페이스에 파일을 직접 만든다 → 실제 git diff 발생.
+      const runner: CommandRunner = async (_cmd, args, opts) => {
         const prompt = args.join(' ')
         if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
         if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
-        // 구현: 파일 아티팩트를 출력
-        return { code: 0, stdout: ['```file:out.txt', 'hello', '```'].join('\n'), stderr: '' }
+        if (opts.cwd) writeFileSync(join(opts.cwd, 'out.txt'), 'hello') // 직접 편집
+        return { code: 0, stdout: '구현 완료', stderr: '' }
       }
       const store = createMemoryStore(deterministic())
       const engine = createFleetEngine({
         store,
         runner,
         workspaceDir: dir,
+        gitRunner: fakeGit(),
         verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
       })
       engine.registerCliSession('claude')
 
       const result = await engine.runProjectFlow({ goal: 'g' })
 
-      // 산출물이 워크스페이스에 실제로 기록된다(승인 게이트 통과)
+      // 에이전트의 직접 편집이 워크스페이스에 반영되고 keep(커밋)된다
       expect(readFileSync(join(dir, 'out.txt'), 'utf8')).toBe('hello')
+      expect(result.tasks[0].status).toBe('done')
+      expect(result.tasks[0].changedFiles).toContain('out.txt')
       // 검증이 실행되고 결과가 surface 된다
       expect((result.verifications ?? []).length).toBeGreaterThan(0)
       expect(result.verifications?.every((v) => v.passed)).toBe(true)
@@ -115,17 +279,22 @@ describe('FleetEngine', () => {
     expect(engine.listSessions()[0].capabilities).toEqual(['reviewer', 'planner'])
   })
 
-  it('activates artifact writing after setWorkspace at runtime', async () => {
+  it('activates direct-edit execution after setWorkspace at runtime', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-ws-'))
     try {
-      const runner: CommandRunner = async (_c, args) => {
+      const runner: CommandRunner = async (_c, args, opts) => {
         const p = args.join(' ')
         if (p.includes('JSON')) return { code: 0, stdout: '[{"title":"T","description":"d"}]', stderr: '' }
         if (p.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (p.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
-        return { code: 0, stdout: ['```file:made.txt', 'hi', '```'].join('\n'), stderr: '' }
+        if (opts.cwd) writeFileSync(join(opts.cwd, 'made.txt'), 'hi') // 직접 편집
+        return { code: 0, stdout: '구현 완료', stderr: '' }
       }
-      const engine = createFleetEngine({ runner, verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }) })
+      const engine = createFleetEngine({
+        runner,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
+      })
       engine.registerCliSession('claude')
       expect(engine.getWorkspace()).toBeNull()
       engine.setWorkspace(dir)
@@ -183,17 +352,22 @@ describe('FleetEngine', () => {
   })
 
   it('capability-scored routes a role to the session that lists it and records assignedLlmId', async () => {
-    const store = createMemoryStore(deterministic())
-    const engine = createFleetEngine({ store, runner: roleRunner })
-    engine.registerCliSession('claude') // cli:claude
-    engine.registerCliSession('codex') // cli:codex
-    // implementer 적합도를 claude 에 둔다 — round-robin 이면 implementer→codex 라 결과로 구분된다
-    engine.setSessionCapabilities('cli:claude', ['implementer'])
-    engine.setSessionCapabilities('cli:codex', ['reviewer'])
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-cap-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      engine.registerCliSession('claude') // cli:claude
+      engine.registerCliSession('codex') // cli:codex
+      // implementer 적합도를 claude 에 둔다 — round-robin 이면 implementer→codex 라 결과로 구분된다
+      engine.setSessionCapabilities('cli:claude', ['implementer'])
+      engine.setSessionCapabilities('cli:codex', ['reviewer'])
 
-    const result = await engine.runProjectFlow({ goal: 'x', policy: 'capability-scored' })
+      const result = await engine.runProjectFlow({ goal: 'x', policy: 'capability-scored' })
 
-    expect(result.tasks[0].assignedLlmId).toBe('cli:claude')
+      expect(result.tasks[0].assignedLlmId).toBe('cli:claude')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('runs an AI-to-AI discussion across multiple sessions', async () => {

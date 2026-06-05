@@ -8,6 +8,14 @@ const RISK_LABEL: Record<RiskLevel, string> = {
   destructive: '위험',
 }
 
+/** 승인 종류별 모달 제목. apply-diff 는 작업 변경 적용 승인. */
+const KIND_TITLE: Record<ApprovalRequest['kind'], string> = {
+  'file-write': '위험 작업 승인',
+  'file-delete': '위험 작업 승인',
+  shell: '위험 작업 승인',
+  'apply-diff': '변경 적용 승인',
+}
+
 /** destructive 작업 승인 모달. App 레벨에 상시 마운트되어 메인의 승인 요청을 큐로 순차 처리한다. */
 export function ApprovalModal() {
   const [queue, setQueue] = useState<ApprovalRequest[]>([])
@@ -41,7 +49,7 @@ export function ApprovalModal() {
       <div className="panel modal-card">
         <div className="panel-head">
           <span className="eyebrow">승인 필요</span>
-          <h2 className="panel-title">위험 작업 승인</h2>
+          <h2 className="panel-title">{KIND_TITLE[current.kind]}</h2>
           <div className="right">
             <span className="chip" style={{ color: 'var(--bad)', borderColor: 'currentColor' }}>
               {RISK_LABEL[current.risk]}

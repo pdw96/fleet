@@ -16,9 +16,20 @@ export function ProjectPanel({ sessions }: Props) {
   const [result, setResult] = useState<RunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
+  // 진행 중 실행의 projectId — 취소 상관용. projectId 는 runProject 내부에서 생성되므로
+  // 메인이 방출하는 project.created 이벤트의 data.projectId 로부터 잡는다(엔진과 동일 규약).
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
 
   useEffect(() => {
-    const unsub = window.fleet.onOrchestratorEvent((e) => setEvents((prev) => [...prev, e]))
+    const unsub = window.fleet.onOrchestratorEvent((e) => {
+      setEvents((prev) => [...prev, e])
+      const pid = e.data?.['projectId']
+      if (e.type === 'project.created' && typeof pid === 'string') setActiveProjectId(pid)
+      // 실행 종료/취소 시 in-flight id 해제 — 취소 버튼이 사라진다.
+      if ((e.type === 'project.done' || e.type === 'run.cancelled') && typeof pid === 'string') {
+        setActiveProjectId((cur) => (cur === pid ? null : cur))
+      }
+    })
     return unsub
   }, [])
 
@@ -37,12 +48,22 @@ export function ProjectPanel({ sessions }: Props) {
     }
   }
 
+  async function cancel() {
+    if (!activeProjectId) return
+    try {
+      await window.fleet.cancelRun(activeProjectId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   async function run() {
     if (!goal.trim()) return
     setRunning(true)
     setEvents([])
     setResult(null)
     setError(null)
+    setActiveProjectId(null)
     try {
       const assignments =
         policy === 'manual'
@@ -54,6 +75,7 @@ export function ProjectPanel({ sessions }: Props) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setRunning(false)
+      setActiveProjectId(null)
     }
   }
 
@@ -94,6 +116,11 @@ export function ProjectPanel({ sessions }: Props) {
           <button className="btn" style={{ marginLeft: 'auto' }} onClick={run} disabled={!canRun}>
             {running ? '실행 중…' : '오케스트레이션 실행'}
           </button>
+          {running && activeProjectId && (
+            <button className="btn btn-danger" onClick={() => void cancel()}>
+              취소
+            </button>
+          )}
         </div>
         <div className="row" style={{ alignItems: 'center', marginTop: 12, gap: 8 }}>
           <button className="btn btn-ghost btn-sm" onClick={() => void pickWorkspace()}>
@@ -167,13 +194,18 @@ export function ProjectPanel({ sessions }: Props) {
                   className="chip"
                   style={{ color: statusColor(t.status), borderColor: 'currentColor', minWidth: 62, justifyContent: 'center' }}
                 >
-                  {t.status}
+                  {t.status === 'skipped' ? '건너뜀' : t.status}
                 </span>
                 <span className="name">{t.title}</span>
                 {t.role && <span className="meta">{t.role}</span>}
                 {t.assignedLlmId && (
                   <span className="meta" title="실행 LLM" style={{ color: 'var(--accent, currentColor)' }}>
                     → {llmName(t.assignedLlmId)}
+                  </span>
+                )}
+                {t.changedFiles && t.changedFiles.length > 0 && (
+                  <span className="chip" title={t.changedFiles.join('\n')} style={{ marginLeft: 'auto' }}>
+                    변경 {t.changedFiles.length}개
                   </span>
                 )}
               </li>

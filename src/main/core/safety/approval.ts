@@ -16,7 +16,7 @@ const DESTRUCTIVE_PATTERNS: readonly RegExp[] = [
   />\s*\/dev\/sd/i,
 ]
 
-const SENSITIVE_FILE = /\.(env|pem|key|p12|pfx)$|(^|[/\\])\.ssh[/\\]/i
+export const SENSITIVE_FILE = /(^|[/\\])\.env(\.|$)|\.(env|pem|key|p12|pfx)$|(^|[/\\])\.ssh[/\\]/i
 
 export function classifyCommandRisk(command: string): RiskLevel {
   return DESTRUCTIVE_PATTERNS.some((re) => re.test(command)) ? 'destructive' : 'caution'

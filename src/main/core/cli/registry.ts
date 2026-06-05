@@ -19,6 +19,8 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     },
     // 토큰 스트리밍(docs 확정). text_delta 이벤트로 부분 텍스트가 흐른다.
     streaming: { args: ['--output-format', 'stream-json', '--verbose', '--include-partial-messages'], parse: 'claude-stream' },
+    // 워크스페이스 직접 편집(실측: v2.1.163). -p 헤드리스 + --permission-mode acceptEdits 로 편집 도구만 자동 승인(전체 우회 아님). cwd=workspace 는 세션이 설정.
+    edit: { args: ['-p', '--permission-mode', 'acceptEdits', '{prompt}'], parse: 'text' },
   },
   {
     id: 'codex',
@@ -36,6 +38,8 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     },
     // base 인자에 --json 이 이미 있어 추가 인자 없음. agent_message 는 이벤트 단위(토큰 델타 아님).
     streaming: { args: [], parse: 'codex-jsonl' },
+    // 워크스페이스 직접 편집(실측: codex 0.136). -C 로 작업 루트 지정, -s workspace-write 로 워크스페이스 안만 쓰기 허용.
+    edit: { args: ['exec', '--json', '-C', '{workspace}', '-s', 'workspace-write', '{prompt}'], parse: 'codex-jsonl' },
   },
   {
     id: 'gemini',
@@ -51,6 +55,8 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     },
     // 토큰 스트리밍(실측 0.45.0). message/assistant delta:true 의 content 로 부분 텍스트가 흐른다.
     streaming: { args: ['--output-format', 'stream-json'], parse: 'gemini-stream' },
+    // 워크스페이스 직접 편집(실측: gemini 0.45.0). -p 헤드리스 + --approval-mode auto_edit 로 편집 도구만 자동 승인(yolo 전체 우회 아님). cwd=workspace 는 세션이 설정.
+    edit: { args: ['-p', '{prompt}', '--approval-mode', 'auto_edit'], parse: 'text' },
   },
 ]
 

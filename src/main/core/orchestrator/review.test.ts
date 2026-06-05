@@ -35,13 +35,17 @@ describe('prompt builders', () => {
     expect(buildImplementPrompt('g', 't', 'd')).not.toContain('이전 검토')
   })
 
-  it('implement prompt asks for the file artifact format only when requested', () => {
-    expect(buildImplementPrompt('g', 't', 'd', undefined, true)).toContain('file:')
-    expect(buildImplementPrompt('g', 't', 'd')).not.toContain('file:')
+  it('buildImplementPrompt instructs editing the workspace directly (no file fences)', () => {
+    const p = buildImplementPrompt('목표', '작업', '설명')
+    expect(p).toContain('작업')
+    expect(p).not.toContain('```file:')
+    expect(p).toContain('워크스페이스')
   })
 
-  it('review prompt embeds the output', () => {
-    expect(buildReviewPrompt('작업', '설명', '산출물내용')).toContain('산출물내용')
+  it('buildReviewPrompt embeds the diff and asks APPROVE/REVISE', () => {
+    const p = buildReviewPrompt('작업', '설명', 'diff --git a/x b/x')
+    expect(p).toContain('diff --git')
+    expect(p).toContain('APPROVE')
   })
 
   it('summary prompt lists task statuses', () => {
@@ -67,26 +71,22 @@ describe('buildVerifyFixPrompt', () => {
     ...over,
   })
 
-  it('includes goal, failure analysis, and current artifacts', () => {
-    const artifacts = new Map<string, string>([['src/a.ts', 'export const x = 1']])
-    const prompt = buildVerifyFixPrompt('할 일 앱', [fail()], artifacts)
+  it('asks the agent to fix failures in the workspace', () => {
+    const p = buildVerifyFixPrompt('목표', [
+      { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'boom', analysis: 'boom', durationMs: 1 },
+    ])
+    expect(p).toContain('boom')
+    expect(p).toContain('워크스페이스')
+  })
+
+  it('includes goal and failure analysis', () => {
+    const prompt = buildVerifyFixPrompt('할 일 앱', [fail()])
     expect(prompt).toContain('할 일 앱')
     expect(prompt).toContain('AssertionError: x !== y')
-    expect(prompt).toContain('src/a.ts')
-    expect(prompt).toContain('export const x = 1')
-    expect(prompt).toContain('```file:')
   })
 
   it('falls back to stderr when analysis is absent', () => {
-    const prompt = buildVerifyFixPrompt('g', [fail({ analysis: undefined, stderr: 'STDERR-LINE' })], new Map())
+    const prompt = buildVerifyFixPrompt('g', [fail({ analysis: undefined, stderr: 'STDERR-LINE' })])
     expect(prompt).toContain('STDERR-LINE')
-    expect(prompt).toContain('(기록된 파일 없음)')
-  })
-
-  it('truncates oversized artifact content', () => {
-    const big = 'A'.repeat(20_000)
-    const prompt = buildVerifyFixPrompt('g', [fail()], new Map([['big.txt', big]]))
-    expect(prompt).toContain('…(절단)')
-    expect(prompt.length).toBeLessThan(big.length)
   })
 })

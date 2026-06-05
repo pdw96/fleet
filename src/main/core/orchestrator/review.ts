@@ -5,39 +5,34 @@ export interface ReviewVerdict {
   feedback: string
 }
 
-/** 구현 작업 프롬프트 (선택적 이전 피드백 반영, 선택적 파일 아티팩트 형식 요청). */
+/** 구현 작업 프롬프트 (선택적 이전 피드백 반영). 에이전트가 워크스페이스를 직접 편집한다. */
 export function buildImplementPrompt(
   goal: string,
   taskTitle: string,
   taskDescription: string,
   feedback?: string,
-  wantsArtifacts = false,
 ): string {
   const parts = [
     `프로젝트 목표:\n${goal}`,
     `\n담당 작업: ${taskTitle}\n${taskDescription}`,
-    '\n이 작업을 수행하고 산출물을 구체적으로 제시하라.',
+    '\n현재 워크스페이스(작업 디렉터리)에서 이 작업을 직접 수행하라. 필요한 파일을 만들거나 수정하라.',
+    '작업 범위 밖의 파일은 건드리지 마라. 완료 후 무엇을 왜 변경했는지 한 단락으로 요약하라.',
   ]
-  if (wantsArtifacts) {
-    parts.push(
-      '\n파일을 생성/수정하려면 각 파일을 다음 형식의 코드펜스로 출력하라(워크스페이스 상대경로):\n```file:상대/경로.ext\n<파일 전체 내용>\n```',
-    )
-  }
   if (feedback && feedback.trim()) {
     parts.push(`\n이전 검토 피드백을 반드시 반영하라:\n${feedback.trim()}`)
   }
   return parts.join('\n')
 }
 
-/** 교차 리뷰 프롬프트 (다른 LLM 이 산출물을 검토). */
-export function buildReviewPrompt(taskTitle: string, taskDescription: string, output: string): string {
+/** 교차 리뷰 프롬프트 (다른 LLM 이 워크스페이스 변경 diff 를 검토). */
+export function buildReviewPrompt(taskTitle: string, taskDescription: string, diff: string): string {
   return [
-    '다음 작업 산출물을 비판적으로 검토하라.',
+    '다음은 한 작업으로 발생한 워크스페이스 변경(diff)이다. 비판적으로 검토하라.',
     `작업: ${taskTitle}`,
     `설명: ${taskDescription}`,
     '',
-    '산출물:',
-    output,
+    '변경(diff):',
+    diff || '(변경 없음)',
     '',
     '승인하면 첫 줄에 "APPROVE" 만 쓰라. 수정이 필요하면 첫 줄에 "REVISE" 를 쓰고',
     '다음 줄부터 무엇을 어떻게 고칠지 구체적으로 작성하라.',
@@ -71,49 +66,21 @@ export function buildSummaryPrompt(
 }
 
 const FIX_DETAIL_CAP = 2_000
-const FIX_ARTIFACTS_CAP = 12_000
 
 /**
- * verify 실패 → implementer 재구현 프롬프트(요구사항 5 후속).
- * 실패한 검증의 분석(없으면 stderr)과 현재 워크스페이스 파일 내용(총량 상한)을 실어,
- * 교정본 전체를 ```file:상대경로``` 형식으로 출력하도록 요청한다.
+ * verify 실패 → 에이전트 수정 프롬프트.
+ * 실패한 검증의 분석(없으면 stderr)을 실어, 워크스페이스에서 직접 수정하도록 요청한다.
  */
-export function buildVerifyFixPrompt(
-  goal: string,
-  failures: ReadonlyArray<VerificationResult>,
-  artifacts: ReadonlyMap<string, string>,
-): string {
+export function buildVerifyFixPrompt(goal: string, failures: ReadonlyArray<VerificationResult>): string {
   const failBlock = failures
-    .map((f) => {
-      const detail = (f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP)
-      return `- [${f.kind}] ${f.command}\n  ${detail.replace(/\n/g, '\n  ')}`
-    })
+    .map((f) => `- [${f.kind}] ${f.command}\n  ${(f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP).replace(/\n/g, '\n  ')}`)
     .join('\n')
-
-  let budget = FIX_ARTIFACTS_CAP
-  const artBlocks: string[] = []
-  for (const [path, content] of artifacts) {
-    if (budget <= 0) {
-      artBlocks.push(`\`\`\`file:${path}\n…(생략: 길이 초과)\n\`\`\``)
-      continue
-    }
-    const slice = content.slice(0, budget)
-    const body = slice.length < content.length ? `${slice}\n…(절단)` : slice
-    budget -= slice.length
-    artBlocks.push(`\`\`\`file:${path}\n${body}\n\`\`\``)
-  }
-  const artText = artBlocks.length > 0 ? artBlocks.join('\n') : '(기록된 파일 없음)'
-
   return [
     `프로젝트 목표:\n${goal}`,
     '',
-    '검증(verify)이 실패했다. 아래 실패를 모두 해결하라:',
+    '검증(verify)이 실패했다. 현재 워크스페이스에서 아래 실패를 모두 직접 고쳐라:',
     failBlock,
     '',
-    '현재 워크스페이스 파일:',
-    artText,
-    '',
-    '수정된 파일 전체를 다음 형식의 코드펜스로 출력하라(워크스페이스 상대경로):',
-    '```file:상대/경로.ext\n<파일 전체 내용>\n```',
+    '필요한 파일을 직접 수정하라. 완료 후 변경 요약을 한 단락으로 작성하라.',
   ].join('\n')
 }

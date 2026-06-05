@@ -48,7 +48,20 @@ export interface Store {
   listTasks(projectId: string): Task[]
   updateTask(
     id: string,
-    patch: Partial<Pick<Task, 'status' | 'role' | 'assignedLlmId' | 'output' | 'title' | 'description' | 'dependsOn'>>,
+    patch: Partial<
+      Pick<
+        Task,
+        | 'status'
+        | 'role'
+        | 'assignedLlmId'
+        | 'output'
+        | 'title'
+        | 'description'
+        | 'dependsOn'
+        | 'changedFiles'
+        | 'checkpoint'
+      >
+    >,
   ): Task | undefined
 
   // ── chat rooms + messages ──

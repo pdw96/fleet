@@ -286,6 +286,82 @@ describe('createCliSession', () => {
     expect(calls[2][1]).toBe('--resume') // 둘째는 resume
   })
 
+  it('runs in edit mode (cwd=workspace) when workspace is given and adapter has edit args', async () => {
+    let seenCwd: string | undefined
+    let seenArgs: string[] = []
+    const runner: CommandRunner = async (_cmd, args, opts) => {
+      seenCwd = opts.cwd
+      seenArgs = args
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      id: 'x', displayName: 'X', command: 'x', versionArgs: ['--version'],
+      headless: { args: ['-p', '{prompt}'] },
+      edit: { args: ['agent', '-C', '{workspace}', '{prompt}'] },
+    }
+    const session = createCliSession({ id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' }, adapter, runner)
+    const text = await session.send('do it', { workspace: '/ws' })
+    expect(text).toBe('ok')
+    expect(seenCwd).toBe('/ws')
+    expect(seenArgs).toEqual(['agent', '-C', '/ws', 'do it'])
+  })
+
+  it("편집 모드는 adapter.edit.parse 로 stdout 을 정제한다(headless.parse 가 아니라)", async () => {
+    // headless.parse='text' 면 JSONL 원문이 그대로 나오지만, edit.parse='codex-jsonl' 이면 agent_message 만 추출돼야 한다.
+    const agentLine = '{"type":"item.completed","item":{"type":"agent_message","text":"편집 결과"}}'
+    const runner: CommandRunner = async () => ({
+      code: 0,
+      stdout: ['{"type":"turn.started"}', agentLine, '{"type":"turn.completed"}'].join('\n'),
+      stderr: '',
+    })
+    const adapter: CliAdapter = {
+      id: 'codex',
+      displayName: 'Codex CLI',
+      command: 'codex',
+      versionArgs: ['--version'],
+      headless: { args: ['exec', '--json', '{prompt}'], parse: 'text' },
+      edit: { args: ['agent', '-C', '{workspace}', '{prompt}'], parse: 'codex-jsonl' },
+    }
+    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const s = createCliSession(codexDesc, adapter, runner)
+    // 편집 모드(workspace 지정) → edit.parse(codex-jsonl)로 정제 → agent_message 만
+    expect(await s.send('do it', { workspace: '/ws' })).toBe('편집 결과')
+  })
+
+  it('편집 모드가 stateful 세션보다 우선한다(workspace 가 startArgs/resumeArgs 를 이긴다)', async () => {
+    let seenCwd: string | undefined
+    let seenArgs: string[] = []
+    const runner: CommandRunner = async (_cmd, args, opts) => {
+      seenCwd = opts.cwd
+      seenArgs = args
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      ...claudeAdapter,
+      session: {
+        startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+        resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+        idSource: 'preassigned',
+      },
+      edit: { args: ['agent', '-C', '{workspace}', '{prompt}'] },
+    }
+    const s = createCliSession(cliDesc, adapter, runner, undefined, { stateful: true })
+    expect(s.stateful).toBe(true)
+    const text = await s.send('p', { workspace: '/ws' })
+    expect(text).toBe('ok')
+    expect(seenCwd).toBe('/ws')
+    expect(seenArgs).toEqual(['agent', '-C', '/ws', 'p']) // edit 인자(stateful startArgs 가 아님)
+  })
+
+  it('runEditing 은 adapter.edit 가 없으면 거부한다(편집 모드 미지원)', async () => {
+    const noEdit: CliAdapter = {
+      ...claudeAdapter,
+      headless: { args: ['-p', '{prompt}'] }, // headless 만, edit 없음
+    }
+    const s = createCliSession(cliDesc, noEdit, async () => ({ code: 0, stdout: 'ok', stderr: '' }))
+    await expect(s.send('p', { workspace: '/ws' })).rejects.toThrow('편집 모드')
+  })
+
   it("동일 세션 동시 send 를 직렬화한다(codex id 캡처 레이스 방지)", async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {

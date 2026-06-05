@@ -12,6 +12,10 @@ export function buildHeadlessArgs(adapter: CliAdapter, prompt: string): string[]
   return template.map((a) => a.replaceAll('{prompt}', prompt))
 }
 
+// 편집 에이전트 실행 인자 빌드: '{workspace}'·'{prompt}' 토큰을 치환. ({workspace} 먼저 → 프롬프트 내 리터럴 토큰 주입 방지)
+const buildEditArgs = (edit: { args: string[] }, prompt: string, workspace: string): string[] =>
+  edit.args.map((a) => a.replaceAll('{workspace}', workspace).replaceAll('{prompt}', prompt))
+
 /** spawn 실패/비정상 종료를 통일된 에러로 변환. */
 function assertRunOk(command: string, res: CommandResult): void {
   if (res.spawnError) throw new Error(`${command} 실행 실패: ${res.spawnError}`)
@@ -26,6 +30,8 @@ function assertRunOk(command: string, res: CommandResult): void {
  *  - stateful (opts.stateful && adapter.session): CLI 자체 세션 재개로 맥락을 프로세스 간 유지.
  *    첫 호출은 startArgs, 이후는 resumeArgs. 세션 id 는 'preassigned'(우리가 UUID 생성) 또는
  *    'codex-thread'(첫 응답의 thread_id 추출)로 확보. 동일 세션 동시 send 는 직렬화된다.
+ *  - edit (sendOpts.workspace 지정 시): 위 둘보다 최우선 경로. adapter.edit 인자를 cwd=workspace 에서
+ *    1회 실행해 파일을 직접 편집한다. stateful 여부와 무관하게 항상 stateless(재개 상태 불변).
  *
  * adapter.streaming + sendOpts.onChunk 가 모두 있으면 토큰/이벤트 델타를 실시간으로 흘리고,
  * 아니면 버퍼링 후 최종 텍스트를 1회 전달한다.
@@ -47,7 +53,13 @@ export function createCliSession(
    * 아니면 버퍼링 후 최종 텍스트를 1회 onChunk 한다. 두 경우 모두 {res, text} 를 반환한다
    * (res.stdout 은 codex thread_id 추출 등에 쓰인다).
    */
-  const execute = async (args: string[], sendOpts: SendOptions): Promise<{ res: CommandResult; text: string }> => {
+  const execute = async (
+    args: string[],
+    sendOpts: SendOptions,
+    // 버퍼 정제에 쓸 파싱 포맷. 기본은 헤드리스 포맷이며, 편집 모드는 adapter.edit.parse 를 넘긴다
+    // (스트리밍 델타 파서는 별개로 adapter.streaming.parse 를 그대로 쓴다).
+    parseFmt = adapter.headless?.parse,
+  ): Promise<{ res: CommandResult; text: string }> => {
     const stream = adapter.streaming
     if (stream && sendOpts.onChunk) {
       const onChunk = sendOpts.onChunk
@@ -69,15 +81,24 @@ export function createCliSession(
           nl = buf.indexOf('\n')
         }
       }
-      const res = await runner(adapter.command, [...args, ...stream.args], timeoutMs, onStdout)
+      const res = await runner(
+        adapter.command,
+        [...args, ...stream.args],
+        { timeoutMs: sendOpts.timeoutMs ?? timeoutMs, cwd: sendOpts.workspace, signal: sendOpts.signal },
+        onStdout,
+      )
       emitLine(buf) // 마지막 개행 없는 잔여 라인
       assertRunOk(adapter.command, res)
       // 델타가 비어 있으면(이벤트 단위 CLI 등) 버퍼 정제로 폴백해 응답을 잃지 않는다.
-      return { res, text: full || cleanCliOutput(adapter.headless?.parse, res.stdout) }
+      return { res, text: full || cleanCliOutput(parseFmt, res.stdout) }
     }
-    const res = await runner(adapter.command, args, timeoutMs)
+    const res = await runner(adapter.command, args, {
+      timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
+      cwd: sendOpts.workspace,
+      signal: sendOpts.signal,
+    })
     assertRunOk(adapter.command, res)
-    const text = cleanCliOutput(adapter.headless?.parse, res.stdout)
+    const text = cleanCliOutput(parseFmt, res.stdout)
     sendOpts.onChunk?.(text)
     return { res, text }
   }
@@ -87,6 +108,18 @@ export function createCliSession(
       throw new Error(`${adapter.displayName}는 헤드리스 1회 실행을 지원하지 않습니다.`)
     }
     const { text } = await execute(buildHeadlessArgs(adapter, prompt), sendOpts)
+    return text
+  }
+
+  // 편집 모드는 항상 stateless/fresh: cwd=workspace 에서 1회 실행해 파일을 직접 편집한다.
+  const runEditing = async (prompt: string, workspace: string, sendOpts: SendOptions): Promise<string> => {
+    if (!adapter.edit) throw new Error(`${adapter.displayName}는 편집 모드를 지원하지 않습니다.`)
+    // 편집 모드 stdout 정제는 edit.parse 를 우선한다(편집 CLI 의 출력 포맷이 헤드리스와 다를 수 있다).
+    const { text } = await execute(
+      buildEditArgs(adapter.edit, prompt, workspace),
+      sendOpts,
+      adapter.edit.parse ?? adapter.headless?.parse,
+    )
     return text
   }
 
@@ -115,6 +148,8 @@ export function createCliSession(
       const prior = chain
       const result = (async () => {
         await prior.catch(() => {}) // 앞 호출의 성공/실패와 무관하게 순서만 보장
+        // workspace 가 있으면 편집 모드가 최우선(항상 fresh/stateless): cwd=workspace 에서 파일 직접 편집.
+        if (sendOpts.workspace) return runEditing(prompt, sendOpts.workspace, sendOpts)
         // fresh 면 stateful 세션이라도 헤드리스 1회(재개 상태 불변) → 오케스트레이터 독립 호출.
         return spec && !sendOpts.fresh ? runStateful(spec, prompt, sendOpts) : runStateless(prompt, sendOpts)
       })()

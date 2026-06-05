@@ -77,7 +77,7 @@ describe('defaultRunner (integration)', () => {
   it('closes child stdin so stdin-reading commands do not hang', async () => {
     const script =
       "let n=0;process.stdin.on('data',c=>n+=c.length);process.stdin.on('end',()=>process.stdout.write('done:'+n))"
-    const res = await defaultRunner('node', ['-e', script], 10_000)
+    const res = await defaultRunner('node', ['-e', script], { timeoutMs: 10_000 })
     expect(res.code).toBe(0)
     expect(res.stdout).toContain('done:0')
   }, 15_000)
@@ -85,8 +85,30 @@ describe('defaultRunner (integration)', () => {
   // 회귀: maxBuffer 초과 시 child 를 죽이고 명시적 에러를 반환해야 한다(조용한 truncation / 무한 매달림 방지).
   it('errors with ENOBUFS when output exceeds the max buffer', async () => {
     const script = "process.stdout.write('x'.repeat(11*1024*1024))"
-    const res = await defaultRunner('node', ['-e', script], 10_000)
+    const res = await defaultRunner('node', ['-e', script], { timeoutMs: 10_000 })
     expect(res.spawnError).toBe('ENOBUFS')
+  }, 15_000)
+
+  it('runs the child in the given cwd', async () => {
+    const res = await defaultRunner('node', ['-e', 'process.stdout.write(process.cwd())'], {
+      timeoutMs: 10_000,
+      cwd: tmpdir(),
+    })
+    expect(res.code).toBe(0)
+    expect(res.stdout.length).toBeGreaterThan(0)
+    const base = tmpdir().split(/[\\/]/).pop() ?? ''
+    expect(res.stdout).toContain(base)
+  }, 15_000)
+
+  it('kills the child when the abort signal fires', async () => {
+    const ac = new AbortController()
+    const p = defaultRunner('node', ['-e', 'setTimeout(()=>{}, 60000)'], {
+      timeoutMs: 30_000,
+      signal: ac.signal,
+    })
+    ac.abort()
+    const res = await p
+    expect(res.spawnError).toBe('ABORTED')
   }, 15_000)
 })
 
@@ -99,7 +121,7 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows .cmd shim 
     try {
       writeFileSync(join(dir, 'mycli.cmd'), '@echo off\r\necho mycli 7.8.9\r\n')
       process.env.PATH = `${dir};${prevPath ?? ''}`
-      const res = await defaultRunner('mycli', ['--version'], 10_000)
+      const res = await defaultRunner('mycli', ['--version'], { timeoutMs: 10_000 })
       expect(res.spawnError).toBeUndefined()
       expect(res.code).toBe(0)
       expect(parseVersion(res.stdout)).toBe('7.8.9')
@@ -117,7 +139,7 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows .cmd shim 
       writeFileSync(join(dir, 'echoarg.cmd'), '@echo off\r\necho GOT %1\r\n')
       // 주입이 가능하면 체이닝된 'echo > marker' 가 실행되어 marker 파일이 생긴다.
       const payload = `x" & echo pwned> "${marker}" & echo "y`
-      const res = await defaultRunner(join(dir, 'echoarg.cmd'), [payload], 10_000)
+      const res = await defaultRunner(join(dir, 'echoarg.cmd'), [payload], { timeoutMs: 10_000 })
       expect(res.spawnError).toBeUndefined()
       expect(existsSync(marker)).toBe(false)
     } finally {

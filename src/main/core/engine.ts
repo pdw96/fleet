@@ -19,8 +19,7 @@ import { ASSIGNABLE_ROLES } from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
 import { createCliRegistry, type CliRegistry } from './cli/registry'
-import { createFileOps } from './fileops/fileops'
-import { assignRoles } from './orchestrator/assignment'
+import { assignRoles, resolveLlmForRole } from './orchestrator/assignment'
 import { runProject, type OrchestratorEvent, type RunResult } from './orchestrator/orchestrator'
 import { createApiProvider } from './providers/registry'
 import { createResilientHttp } from './providers/resilient'
@@ -32,6 +31,7 @@ import { createSessionManager, type SessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
 import type { Store } from './store/types'
 import { npmVerifyCommands, runAllVerifications, type VerifyRunner } from './verify/run'
+import { createWorkspace, type GitRunner } from './workspace/git'
 
 /**
  * CLI 어댑터 id / API provider 별 기본 적합 역할 시드.
@@ -49,6 +49,9 @@ const DEFAULT_CAPABILITIES: Record<string, readonly AgentRole[]> = {
 
 const seedCapabilities = (key: string): AgentRole[] => [...(DEFAULT_CAPABILITIES[key] ?? [])]
 
+// 오케스트레이션 검증은 실제 빌드/테스트라 채팅용 120s 로는 부족하다 — 10분으로 상향(spec §5 분리·상향).
+const VERIFY_TIMEOUT_MS = 600_000
+
 export interface FleetEngineOptions {
   store?: Store
   sessions?: SessionManager
@@ -64,6 +67,8 @@ export interface FleetEngineOptions {
   approver?: (req: ApprovalRequest) => Promise<boolean>
   /** 검증 실행기 주입(테스트용). 기본은 child_process 기반. */
   verifyRunner?: VerifyRunner
+  /** git 실행기 주입(테스트용). 기본은 child_process 기반 defaultGitRunner. */
+  gitRunner?: GitRunner
 }
 
 export interface RunProjectInput {
@@ -71,6 +76,8 @@ export interface RunProjectInput {
   assignments?: RoleAssignment[]
   policy?: AssignmentPolicy
   maxReviewRounds?: number
+  taskTimeoutMs?: number
+  continueOnFailure?: boolean
 }
 
 /**
@@ -92,6 +99,8 @@ export interface FleetEngine {
   listProjects(): Project[]
   getProjectTasks(projectId: string): Task[]
   runProjectFlow(input: RunProjectInput): Promise<RunResult>
+  /** 진행 중인 프로젝트 실행을 취소한다(현재 작업 revert 후 중단). 미존재 id 는 무시. */
+  cancelRun(projectId: string): void
   /** 산출물 기록·검증 워크스페이스 조회/설정(null 이면 비활성). */
   getWorkspace(): string | null
   setWorkspace(dir: string | null): void
@@ -124,11 +133,13 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const gate = createApprovalGate({ autoApprove: ['safe', 'caution'], approver: opts.approver, onEvent: appendAudit })
   // 워크스페이스는 런타임에 바꿀 수 있다(렌더러에서 선택). null 이면 파일 기록/검증 비활성.
   let workspaceDir: string | null = opts.workspaceDir ?? null
-  const currentFileOps = () =>
-    workspaceDir ? createFileOps({ root: workspaceDir, gate, onEvent: appendAudit }) : undefined
-  const currentVerify = () => {
+  // 진행 중 실행: projectId → AbortController. project.created 에서 등록, project.done 에서 해제.
+  const activeRuns = new Map<string, AbortController>()
+  const currentWorkspace = () =>
+    workspaceDir ? createWorkspace(workspaceDir, opts.gitRunner) : undefined
+  const currentVerify = (signal?: AbortSignal) => {
     const dir = workspaceDir
-    return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner }) : undefined
+    return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner, timeoutMs: VERIFY_TIMEOUT_MS, signal }) : undefined
   }
 
   /**
@@ -229,22 +240,65 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     async runProjectFlow(input) {
       const llmIds = sessions.list().map((s) => s.id)
       if (llmIds.length === 0) throw new Error('등록된 LLM 세션이 없습니다. 먼저 세션을 등록하세요.')
+      // 직접 편집 모델은 산출물 워크스페이스가 필수다(없으면 작업이 전부 skip 되어 의미가 없다).
+      if (!workspaceDir) throw new Error('워크스페이스가 선택되지 않았습니다. 먼저 산출물 워크스페이스를 선택하세요.')
       // 세션별 적합 역할을 capability-scored 채점 맵으로 모은다(끊겼던 연결고리). 역량 없는 세션은 제외.
       const capabilities = Object.fromEntries(
         sessions.descriptors().flatMap((d) => (d.capabilities?.length ? [[d.id, d.capabilities]] : [])),
       )
-      const assignments =
+      let assignments =
         input.assignments ??
         assignRoles({ roles: ASSIGNABLE_ROLES, llmIds, policy: input.policy ?? 'round-robin', capabilities })
-      return runProject(input.goal, {
-        store,
-        sessions,
-        assignments,
-        maxReviewRounds: input.maxReviewRounds,
-        fileWriter: currentFileOps(),
-        verify: currentVerify(),
-        onEvent: opts.onOrchestratorEvent,
-      })
+      // 구현(implementer) 역할은 워크스페이스를 직접 편집할 수 있는 CLI 세션이어야 한다.
+      // capability-scored/round-robin 이 CLI 가 있는데도 API 를 implementer 슬롯에 넣을 수 있으므로,
+      // CLI 세션이 하나라도 있으면 그쪽으로 재배정한다. CLI 가 전혀 없을 때만 계획 전에 fail-fast 한다.
+      const cliSessionIds = sessions.list().filter((s) => s.descriptor.kind === 'cli').map((s) => s.id)
+      if (cliSessionIds.length === 0) {
+        throw new Error('구현(implementer) 역할에는 워크스페이스를 직접 편집할 수 있는 CLI 세션이 필요합니다. CLI 세션(claude/codex/gemini)을 등록하세요.')
+      }
+      const curImplId = resolveLlmForRole(assignments, 'implementer', 'implementer')
+      const curImpl = curImplId ? sessions.get(curImplId) : undefined
+      if (!curImpl || curImpl.descriptor.kind !== 'cli') {
+        const cliId = cliSessionIds[0]
+        assignments = [...assignments.filter((a) => a.role !== 'implementer'), { role: 'implementer', llmId: cliId }]
+        store.appendEvent({ type: 'assignment.implementer_reassigned', data: { to: cliId } })
+      }
+      // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
+      const controller = new AbortController()
+      const onEvent = (e: OrchestratorEvent) => {
+        const pid = e.data?.['projectId']
+        if (e.type === 'project.created' && typeof pid === 'string') activeRuns.set(pid, controller)
+        if (e.type === 'project.done' && typeof pid === 'string') activeRuns.delete(pid)
+        opts.onOrchestratorEvent?.(e)
+      }
+      try {
+        return await runProject(input.goal, {
+          store,
+          sessions,
+          assignments,
+          maxReviewRounds: input.maxReviewRounds,
+          taskTimeoutMs: input.taskTimeoutMs,
+          continueOnFailure: input.continueOnFailure,
+          workspace: currentWorkspace(),
+          workspaceRoot: workspaceDir ?? undefined,
+          gate,
+          verify: currentVerify(controller.signal),
+          signal: controller.signal,
+          onEvent,
+        })
+      } finally {
+        // 정상 경로는 project.done 에서 제거되지만, 조기 throw 시에도 누수 없이 정리한다.
+        for (const [pid, c] of activeRuns) if (c === controller) activeRuns.delete(pid)
+      }
+    },
+
+    cancelRun(projectId) {
+      const c = activeRuns.get(projectId)
+      if (!c) return // 미존재 id 는 무해한 no-op
+      c.abort()
+      activeRuns.delete(projectId)
+      store.appendEvent({ type: 'run.cancelled', data: { projectId } })
+      opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
     },
 
     getWorkspace() {

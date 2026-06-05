@@ -79,6 +79,12 @@ export interface CliAdapter {
   session?: CliSessionSpec
   /** 토큰/이벤트 스트리밍 사양('길 A' 2단계). 미지정 시 버퍼링(최종 1회). */
   streaming?: CliStreamSpec
+  /**
+   * 편집 에이전트 1회 실행 인자 템플릿. '{prompt}'·'{workspace}' 토큰이 치환된다.
+   * 존재하면 send({workspace}) 호출이 이 인자로 cwd=workspace 에서 에이전트를 실행해
+   * 워크스페이스 파일을 직접 편집한다. 미지정 어댑터는 implementer 역할에 쓸 수 없다.
+   */
+  edit?: { args: string[]; parse?: CliOutputFormat }
 }
 
 /** CLI 감지 결과 — IPC 로 renderer 에 전달. */
@@ -161,7 +167,7 @@ export type AssignmentPolicy = 'manual' | 'round-robin' | 'capability-scored'
 /** 오케스트레이터가 실제로 배정·실행하는 역할 집합 (요구사항 8 MVP). 배정 UI·채점도 이 집합으로 제한한다. */
 export const ASSIGNABLE_ROLES: readonly AgentRole[] = ['planner', 'implementer', 'reviewer', 'summarizer']
 
-export type TaskStatus = 'pending' | 'running' | 'review' | 'done' | 'failed'
+export type TaskStatus = 'pending' | 'running' | 'review' | 'done' | 'failed' | 'skipped'
 
 export interface Task {
   id: string
@@ -177,6 +183,10 @@ export interface Task {
   dependsOn: string[]
   /** 산출물 요약 */
   output?: string
+  /** keep 직전 변경된 파일 목록(diff 기반). */
+  changedFiles?: string[]
+  /** 작업 전 체크포인트 커밋 해시. */
+  checkpoint?: string
   createdAt: number
   updatedAt: number
 }
@@ -210,7 +220,7 @@ export type RiskLevel = 'safe' | 'caution' | 'destructive'
 
 export interface ApprovalRequest {
   id: string
-  kind: 'file-write' | 'file-delete' | 'shell'
+  kind: 'file-write' | 'file-delete' | 'shell' | 'apply-diff'
   summary: string
   /** 대상 경로 또는 명령 */
   target: string
@@ -250,7 +260,9 @@ export type OrchestratorEventType =
   | 'task.review'
   | 'task.done'
   | 'task.failed'
-  | 'task.artifacts'
+  | 'task.progress'
+  | 'task.skipped'
+  | 'run.cancelled'
   | 'verify.passed'
   | 'verify.failed'
   | 'verify.fixing'
@@ -269,6 +281,9 @@ export interface RunProjectRequest {
   /** manual 정책용 사용자 지정 역할↔LLM 배정. 지정 시 policy 보다 우선한다. */
   assignments?: RoleAssignment[]
   maxReviewRounds?: number
+  taskTimeoutMs?: number
+  /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
+  continueOnFailure?: boolean
 }
 
 // ── 채팅 토큰 스트리밍 (IPC 이벤트 채널) ─────────────────────────────────────
@@ -309,6 +324,8 @@ export interface FleetBridge {
   listProjects(): Promise<Project[]>
   getProjectTasks(projectId: string): Promise<Task[]>
   runProject(req: RunProjectRequest): Promise<RunResult>
+  /** 진행 중인 프로젝트 실행을 취소한다. */
+  cancelRun(projectId: string): Promise<void>
   /** 산출물 기록·검증 워크스페이스 조회. null 이면 비활성(파일 기록/검증 안 함). */
   getWorkspace(): Promise<string | null>
   /** 워크스페이스 디렉터리 선택(취소 시 기존 값 유지). 적용된 경로(또는 null) 반환. */

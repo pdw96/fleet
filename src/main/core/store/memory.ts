@@ -97,6 +97,8 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
       if (patch.title !== undefined) t.title = patch.title
       if (patch.description !== undefined) t.description = patch.description
       if (patch.dependsOn !== undefined) t.dependsOn = patch.dependsOn
+      if (patch.changedFiles !== undefined) t.changedFiles = patch.changedFiles
+      if (patch.checkpoint !== undefined) t.checkpoint = patch.checkpoint
       t.updatedAt = now()
       save()
       return structuredClone(t)
