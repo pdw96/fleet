@@ -3,12 +3,14 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import type {
   AgentRole,
   ApiProviderConfig,
+  ApprovalRequest,
   AppInfo,
   ChatStreamEvent,
   OrchestratorEvent,
   RunProjectRequest,
 } from '../shared/types'
 import { createFleetEngine, type FleetEngine } from './core/engine'
+import { createIpcApprover, type IpcApprover } from './core/safety/approval-bridge'
 import { createJsonFileStore } from './core/store/json-file'
 
 function broadcastOrchestratorEvent(event: OrchestratorEvent): void {
@@ -23,16 +25,28 @@ function broadcastChatStream(event: ChatStreamEvent): void {
   }
 }
 
-function buildEngine(): FleetEngine {
+function broadcastApprovalRequest(req: ApprovalRequest): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('fleet:approval:request', req)
+  }
+}
+
+function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover } {
   const store = createJsonFileStore(join(app.getPath('userData'), 'fleet'))
-  return createFleetEngine({
+  const ipcApprover = createIpcApprover({
+    send: broadcastApprovalRequest,
+    hasWindow: () => BrowserWindow.getAllWindows().length > 0,
+  })
+  const engine = createFleetEngine({
     store,
     onOrchestratorEvent: broadcastOrchestratorEvent,
     onChatStream: broadcastChatStream,
+    approver: ipcApprover.approver,
   })
+  return { engine, ipcApprover }
 }
 
-function registerIpc(engine: FleetEngine): void {
+function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   ipcMain.handle(
     'fleet:app:info',
     (): AppInfo => ({
@@ -86,6 +100,11 @@ function registerIpc(engine: FleetEngine): void {
 
   // 감사
   ipcMain.handle('fleet:events:list', () => engine.listEvents())
+
+  // 안전 / 승인 — 렌더러 모달 결정 회신을 id 로 상관 해소.
+  ipcMain.handle('fleet:approval:respond', (_e, id: string, approved: boolean) => {
+    ipcApprover.resolve(id, approved)
+  })
 }
 
 function createWindow(): void {
@@ -113,7 +132,8 @@ function createWindow(): void {
 }
 
 void app.whenReady().then(() => {
-  registerIpc(buildEngine())
+  const { engine, ipcApprover } = buildEngine()
+  registerIpc(engine, ipcApprover)
   createWindow()
 
   app.on('activate', () => {

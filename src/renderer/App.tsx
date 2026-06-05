@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AppInfo, LlmDescriptor } from '../shared/types'
+import { ApprovalModal } from './components/ApprovalModal'
 import { ChatPanel } from './components/ChatPanel'
 import { ProjectPanel } from './components/ProjectPanel'
 import { SessionsPanel } from './components/SessionsPanel'
@@ -74,6 +75,8 @@ export function App() {
           <span className="sep">/</span>Chrome {info.chrome}
         </footer>
       )}
+
+      <ApprovalModal />
     </div>
   )
 }

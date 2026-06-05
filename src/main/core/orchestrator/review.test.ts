@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, parseReviewVerdict } from './review'
+import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict } from './review'
+import type { VerificationResult } from '../../../shared/types'
 
 describe('parseReviewVerdict', () => {
   it('APPROVE → approved', () => {
@@ -50,5 +51,42 @@ describe('prompt builders', () => {
     ])
     expect(p).toContain('[done] A')
     expect(p).toContain('[failed] B')
+  })
+})
+
+describe('buildVerifyFixPrompt', () => {
+  const fail = (over: Partial<VerificationResult> = {}): VerificationResult => ({
+    kind: 'test',
+    command: 'npm test',
+    passed: false,
+    exitCode: 1,
+    stdout: '',
+    stderr: 'boom',
+    analysis: 'AssertionError: x !== y',
+    durationMs: 1,
+    ...over,
+  })
+
+  it('includes goal, failure analysis, and current artifacts', () => {
+    const artifacts = new Map<string, string>([['src/a.ts', 'export const x = 1']])
+    const prompt = buildVerifyFixPrompt('할 일 앱', [fail()], artifacts)
+    expect(prompt).toContain('할 일 앱')
+    expect(prompt).toContain('AssertionError: x !== y')
+    expect(prompt).toContain('src/a.ts')
+    expect(prompt).toContain('export const x = 1')
+    expect(prompt).toContain('```file:')
+  })
+
+  it('falls back to stderr when analysis is absent', () => {
+    const prompt = buildVerifyFixPrompt('g', [fail({ analysis: undefined, stderr: 'STDERR-LINE' })], new Map())
+    expect(prompt).toContain('STDERR-LINE')
+    expect(prompt).toContain('(기록된 파일 없음)')
+  })
+
+  it('truncates oversized artifact content', () => {
+    const big = 'A'.repeat(20_000)
+    const prompt = buildVerifyFixPrompt('g', [fail()], new Map([['big.txt', big]]))
+    expect(prompt).toContain('…(절단)')
+    expect(prompt.length).toBeLessThan(big.length)
   })
 })

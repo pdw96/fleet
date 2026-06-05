@@ -1,3 +1,5 @@
+import type { VerificationResult } from '../../../shared/types'
+
 export interface ReviewVerdict {
   approved: boolean
   feedback: string
@@ -65,5 +67,53 @@ export function buildSummaryPrompt(
     lines,
     '',
     '최종 결과가 원래 목표를 충족하는지 평가하고, 누락되거나 미흡한 부분을 구체적으로 지적하라.',
+  ].join('\n')
+}
+
+const FIX_DETAIL_CAP = 2_000
+const FIX_ARTIFACTS_CAP = 12_000
+
+/**
+ * verify 실패 → implementer 재구현 프롬프트(요구사항 5 후속).
+ * 실패한 검증의 분석(없으면 stderr)과 현재 워크스페이스 파일 내용(총량 상한)을 실어,
+ * 교정본 전체를 ```file:상대경로``` 형식으로 출력하도록 요청한다.
+ */
+export function buildVerifyFixPrompt(
+  goal: string,
+  failures: ReadonlyArray<VerificationResult>,
+  artifacts: ReadonlyMap<string, string>,
+): string {
+  const failBlock = failures
+    .map((f) => {
+      const detail = (f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP)
+      return `- [${f.kind}] ${f.command}\n  ${detail.replace(/\n/g, '\n  ')}`
+    })
+    .join('\n')
+
+  let budget = FIX_ARTIFACTS_CAP
+  const artBlocks: string[] = []
+  for (const [path, content] of artifacts) {
+    if (budget <= 0) {
+      artBlocks.push(`\`\`\`file:${path}\n…(생략: 길이 초과)\n\`\`\``)
+      continue
+    }
+    const slice = content.slice(0, budget)
+    const body = slice.length < content.length ? `${slice}\n…(절단)` : slice
+    budget -= slice.length
+    artBlocks.push(`\`\`\`file:${path}\n${body}\n\`\`\``)
+  }
+  const artText = artBlocks.length > 0 ? artBlocks.join('\n') : '(기록된 파일 없음)'
+
+  return [
+    `프로젝트 목표:\n${goal}`,
+    '',
+    '검증(verify)이 실패했다. 아래 실패를 모두 해결하라:',
+    failBlock,
+    '',
+    '현재 워크스페이스 파일:',
+    artText,
+    '',
+    '수정된 파일 전체를 다음 형식의 코드펜스로 출력하라(워크스페이스 상대경로):',
+    '```file:상대/경로.ext\n<파일 전체 내용>\n```',
   ].join('\n')
 }

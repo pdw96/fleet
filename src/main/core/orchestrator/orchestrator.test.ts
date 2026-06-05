@@ -451,4 +451,142 @@ describe('runProject', () => {
     })
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
+
+  it('re-implements and re-verifies when verification fails, then succeeds', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    sessions.add(
+      fakeSession('impl', () => {
+        implCalls++
+        return ['구현', '```file:src/a.ts', `export const v = ${implCalls}`, '```'].join('\n')
+      }),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const writes: Array<{ path: string; content: string }> = []
+    const fileWriter = {
+      async write(path: string, content: string) {
+        writes.push({ path, content })
+        return { ok: true, path }
+      },
+    }
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      fileWriter,
+      verify: async () => {
+        verifyCalls++
+        const passed = verifyCalls >= 2 // 1차 실패, 2차(수정 후) 통과
+        return [
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed,
+            exitCode: passed ? 0 : 1,
+            stdout: '',
+            stderr: passed ? '' : 'boom',
+            analysis: passed ? undefined : 'boom',
+            durationMs: 1,
+          },
+        ]
+      },
+    })
+
+    expect(verifyCalls).toBe(2) // 최초 + 수정 후 재검증 1회
+    expect(implCalls).toBe(2) // 작업 구현 1 + 수정 1
+    expect(writes).toHaveLength(2) // 작업 아티팩트 + 수정 아티팩트
+    expect(result.verifications?.[0].passed).toBe(true)
+    expect(store.getProject(result.projectId)?.status).toBe('done')
+  })
+
+  it('marks the project failed when verify fixes are exhausted', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    sessions.add(
+      fakeSession('impl', () => {
+        implCalls++
+        return ['구현', '```file:src/a.ts', 'export const v = 1', '```'].join('\n')
+      }),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const fileWriter = {
+      async write(path: string) {
+        return { ok: true, path }
+      },
+    }
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      fileWriter,
+      maxVerifyFixRounds: 2,
+      verify: async () => {
+        verifyCalls++
+        return [
+          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        ]
+      },
+    })
+
+    expect(verifyCalls).toBe(3) // 최초 + 수정 2라운드 재검증
+    expect(implCalls).toBe(3) // 작업 1 + 수정 2
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('does not attempt fixes when maxVerifyFixRounds is 0', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    sessions.add(
+      fakeSession('impl', () => {
+        implCalls++
+        return '구현'
+      }),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const fileWriter = {
+      async write(path: string) {
+        return { ok: true, path }
+      },
+    }
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      fileWriter,
+      maxVerifyFixRounds: 0,
+      verify: async () => {
+        verifyCalls++
+        return [
+          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', durationMs: 1 },
+        ]
+      },
+    })
+
+    expect(verifyCalls).toBe(1) // 수정 시도 없음
+    expect(implCalls).toBe(1) // 작업 구현만
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
 })

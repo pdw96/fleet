@@ -11,7 +11,7 @@ import type { Store } from '../store/types'
 import { parseArtifacts } from './artifacts'
 import { resolveLlmForRole } from './assignment'
 import { planTasks } from './plan'
-import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, parseReviewVerdict } from './review'
+import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict } from './review'
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
 
@@ -30,6 +30,8 @@ export interface RunOptions {
   fileWriter?: ProjectFileWriter
   /** 있으면 모든 작업 후 검증을 실행하고 결과를 RunResult/이벤트로 surface 한다(요구사항 5). */
   verify?: () => Promise<VerificationResult[]>
+  /** verify 실패 시 implementer 재구현→재검증을 최대 N회 시도(기본 2, 0=비활성). */
+  maxVerifyFixRounds?: number
   onEvent?: (e: OrchestratorEvent) => void
 }
 
@@ -93,9 +95,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const byId = new Map(tasks.map((t) => [t.id, t]))
   const done = new Set<string>()
   const failed = new Set<string>()
+  // verify 수정-루프가 implementer 에게 보여줄 '현재 워크스페이스 파일' 원장(성공 기록분 누적).
+  const artifactLedger = new Map<string, string>()
 
-  /** 승인된 산출물의 파일 아티팩트를 워크스페이스에 기록한다(주입된 fileWriter 가 있을 때만). */
-  const writeArtifacts = async (task: Task, output: string): Promise<void> => {
+  /** 승인된 산출물의 파일 아티팩트를 워크스페이스에 기록하고 원장을 갱신한다(fileWriter 가 있을 때만). */
+  const writeArtifacts = async (output: string, ctx: { taskId?: string }): Promise<void> => {
     const fw = opts.fileWriter
     if (!fw) return
     const arts = parseArtifacts(output)
@@ -105,8 +109,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     for (const a of arts) {
       try {
         const res = await fw.write(a.path, a.content)
-        if (res.ok) written.push(res.path)
-        else denied.push(`${a.path}(${res.reason ?? '거부'})`)
+        if (res.ok) {
+          written.push(res.path)
+          artifactLedger.set(a.path, a.content)
+        } else {
+          denied.push(`${a.path}(${res.reason ?? '거부'})`)
+        }
       } catch (err) {
         denied.push(`${a.path}(${err instanceof Error ? err.message : String(err)})`)
       }
@@ -114,7 +122,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     emit({
       type: 'task.artifacts',
       message: `파일 기록 ${written.length}개${denied.length ? `, 거부/실패 ${denied.length}개` : ''}`,
-      data: { taskId: task.id, written, denied },
+      data: { taskId: ctx.taskId, written, denied },
     })
   }
 
@@ -173,7 +181,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         feedback = verdict.feedback
       }
 
-      if (approved) await writeArtifacts(task, output)
+      if (approved) await writeArtifacts(output, { taskId: task.id })
       store.updateTask(task.id, { status: approved ? 'done' : 'failed', output })
       emit({
         type: approved ? 'task.done' : 'task.failed',
@@ -243,27 +251,68 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     }
   }
 
-  // ── 4) 검증 (요구사항 5): 산출물에 대해 test/lint/typecheck 등 실행 후 결과를 surface ──
+  // ── 4) 검증 + 자동 수정-루프 (요구사항 5 후속) ──
+  // verify 실패 시 실패 분석 + 현재 아티팩트를 implementer 에 피드백해 교정본을 재구현·게이트경유 재기록하고
+  // 재검증한다. 최대 maxVerifyFixRounds 회(기본 2, 0=비활성). implementer/fileWriter 없으면 루프 생략.
   let verifications: VerificationResult[] | undefined
   if (opts.verify) {
+    const run = opts.verify
+    const requestedFix = Math.floor(opts.maxVerifyFixRounds ?? 2)
+    const maxFix = Number.isFinite(requestedFix) && requestedFix >= 0 ? requestedFix : 2
     store.updateProject(project.id, { status: 'verifying' })
-    try {
-      verifications = await opts.verify()
-      const passed = verifications.length > 0 && verifications.every((v) => v.passed)
+
+    const verifyOnce = async (): Promise<VerificationResult[]> => {
+      try {
+        return await run()
+      } catch (err) {
+        emit({
+          type: 'verify.failed',
+          message: `검증 실행 오류: ${err instanceof Error ? err.message : String(err)}`,
+          data: { projectId: project.id },
+        })
+        return []
+      }
+    }
+    const emitVerify = (v: readonly VerificationResult[]): void => {
+      if (v.length === 0) return // 실행 오류는 verifyOnce 가 이미 방출
+      const ok = v.every((r) => r.passed)
       emit({
-        type: passed ? 'verify.passed' : 'verify.failed',
-        message: passed
-          ? '검증 통과'
-          : `검증 실패: ${verifications.filter((v) => !v.passed).map((v) => v.kind).join(', ') || '결과 없음'}`,
+        type: ok ? 'verify.passed' : 'verify.failed',
+        message: ok ? '검증 통과' : `검증 실패: ${v.filter((r) => !r.passed).map((r) => r.kind).join(', ')}`,
         data: { projectId: project.id },
       })
-    } catch (err) {
-      verifications = []
+    }
+
+    verifications = await verifyOnce()
+    emitVerify(verifications)
+
+    const fixImplementerId = resolveLlmForRole(assignments, 'implementer', 'implementer')
+    const fixImplementer = fixImplementerId ? sessions.get(fixImplementerId) : undefined
+
+    for (
+      let round = 1;
+      round <= maxFix && verifications.some((v) => !v.passed) && !!opts.fileWriter && !!fixImplementer;
+      round++
+    ) {
+      const failing = verifications.filter((v) => !v.passed)
       emit({
-        type: 'verify.failed',
-        message: `검증 실행 오류: ${err instanceof Error ? err.message : String(err)}`,
-        data: { projectId: project.id },
+        type: 'verify.fixing',
+        message: `검증 실패 — 수정 시도 (라운드 ${round})`,
+        data: { projectId: project.id, round },
       })
+      try {
+        const fixOutput = await fixImplementer.send(buildVerifyFixPrompt(goal, failing, artifactLedger), { fresh: true })
+        await writeArtifacts(fixOutput, {})
+      } catch (err) {
+        emit({
+          type: 'verify.fixing',
+          message: `수정 실패: ${err instanceof Error ? err.message : String(err)}`,
+          data: { projectId: project.id, round },
+        })
+        break
+      }
+      verifications = await verifyOnce()
+      emitVerify(verifications)
     }
   }
 

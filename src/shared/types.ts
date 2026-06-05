@@ -220,6 +220,9 @@ export interface ApprovalRequest {
 
 export type ApprovalDecision = 'approved' | 'rejected'
 
+/** destructive 승인 무응답 시 자동 거부까지의 시간(메인 측 권위 + 렌더러 카운트다운 공용). */
+export const APPROVAL_TIMEOUT_MS = 60_000
+
 // ── 감사 로그 (요구사항 6) ────────────────────────────────────────────────
 export interface FleetEvent {
   id: string
@@ -250,6 +253,7 @@ export type OrchestratorEventType =
   | 'task.artifacts'
   | 'verify.passed'
   | 'verify.failed'
+  | 'verify.fixing'
   | 'summary'
   | 'project.done'
 
@@ -324,4 +328,8 @@ export interface FleetBridge {
   onOrchestratorEvent(callback: (event: OrchestratorEvent) => void): () => void
   /** 채팅 응답 토큰 스트림 구독 (해제 함수 반환). */
   onChatStream(callback: (event: ChatStreamEvent) => void): () => void
+  /** destructive 작업 승인 요청 구독 (해제 함수 반환). */
+  onApprovalRequest(callback: (req: ApprovalRequest) => void): () => void
+  /** 승인 모달 결정 회신(메인이 id 로 상관). */
+  respondApproval(id: string, approved: boolean): Promise<void>
 }
