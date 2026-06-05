@@ -98,6 +98,12 @@ export interface FleetEngine {
   // ── 프로젝트 / 오케스트레이션 ──
   listProjects(): Project[]
   getProjectTasks(projectId: string): Task[]
+  /** 프로젝트의 영속 진행 이벤트(시간순, task.progress 제외). */
+  listProjectEvents(projectId: string): FleetEvent[]
+  /** 마지막으로 본 프로젝트 id(없으면 null). */
+  getLastActiveProject(): string | null
+  /** 마지막으로 본 프로젝트 id 저장(null 이면 해제). */
+  setLastActiveProject(projectId: string | null): void
   runProjectFlow(input: RunProjectInput): Promise<RunResult>
   /** 진행 중인 프로젝트 실행을 취소한다(현재 작업 revert 후 중단). 미존재 id 는 무시. */
   cancelRun(projectId: string): void
@@ -235,6 +241,18 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
     getProjectTasks(projectId) {
       return store.listTasks(projectId)
+    },
+
+    listProjectEvents(projectId) {
+      return store.listProjectEvents(projectId)
+    },
+
+    getLastActiveProject() {
+      return store.snapshot().lastActiveProjectId ?? null
+    },
+
+    setLastActiveProject(projectId) {
+      store.setLastActiveProject(projectId)
     },
 
     async runProjectFlow(input) {

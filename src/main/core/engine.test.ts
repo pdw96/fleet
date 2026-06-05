@@ -553,3 +553,24 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
     expect(msg.content).toBe('코덱스 응답')
   })
 })
+
+describe('FleetEngine — 프로젝트 영속 읽기', () => {
+  it('lists a project events via the store (excluding task.progress)', () => {
+    const store = createMemoryStore({ idGen: (() => { let n = 0; return () => `id-${++n}` })(), now: () => 1 })
+    store.appendEvent({ type: 'project.created', message: '생성', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.progress', message: '토큰', data: { projectId: 'p1' } })
+    const engine = createFleetEngine({ store })
+    const events = engine.listProjectEvents('p1')
+    expect(events.map((e) => e.type)).toEqual(['project.created'])
+    expect(events[0].message).toBe('생성')
+  })
+
+  it('round-trips the last active project id', () => {
+    const engine = createFleetEngine({ store: createMemoryStore() })
+    expect(engine.getLastActiveProject()).toBeNull()
+    engine.setLastActiveProject('p7')
+    expect(engine.getLastActiveProject()).toBe('p7')
+    engine.setLastActiveProject(null)
+    expect(engine.getLastActiveProject()).toBeNull()
+  })
+})
