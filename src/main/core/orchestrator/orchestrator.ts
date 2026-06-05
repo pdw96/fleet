@@ -54,6 +54,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const DEFAULT_TASK_TIMEOUT_MS = 900_000
   const requestedTaskTimeout = Math.floor(opts.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS)
   const taskTimeoutMs = Number.isFinite(requestedTaskTimeout) && requestedTaskTimeout > 0 ? requestedTaskTimeout : DEFAULT_TASK_TIMEOUT_MS
+  // planner 세션은 프로젝트 생성 전에 검증한다 — 없으면 store 에 고아 프로젝트(planning 상태로 영구 정체)를 남기지 않는다.
+  const plannerId = resolveLlmForRole(assignments, 'planner')
+  const planner = plannerId ? sessions.get(plannerId) : undefined
+  if (!planner) throw new Error('planner 역할에 배정된 LLM 세션이 없습니다.')
+
   // 프로젝트를 먼저 만들어 projectId 를 const 로 확보한다(emit 클로저가 캡처).
   const project = store.createProject({ goal })
   const projectId = project.id
@@ -74,10 +79,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
   emit({ type: 'project.created', message: `프로젝트 생성: ${project.title}`, data: { projectId } })
 
-  // ── 1) 목표 분해 ──
-  const planner = sessionForRole('planner')
-  if (!planner) throw new Error('planner 역할에 배정된 LLM 세션이 없습니다.')
-
+  // ── 1) 목표 분해 ── (planner 는 위에서 검증됨)
   let plannedCount = 0
   try {
     const planned = await planTasks(goal, planner, opts.signal)

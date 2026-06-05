@@ -38,6 +38,10 @@ export function ProjectPanel({ sessions }: Props) {
     selectedIdRef.current = selectedId
   }, [selectedId])
 
+  // 선택 effect 의 스냅샷 로드가 끝나기 전에 도착해 log 에 append 된 라이브 행 수.
+  // 로드 완료 시 스냅샷 뒤에 이 행들을 보존해 덮어쓰기로 인한 라이브 로그 유실을 막는다.
+  const liveDuringLoadRef = useRef(0)
+
   async function refreshProjects(): Promise<Project[]> {
     const list = await window.fleet.listProjects()
     const sorted = [...list].sort((a, b) => b.updatedAt - a.updatedAt) // 최신순
@@ -86,6 +90,7 @@ export function ProjectPanel({ sessions }: Props) {
       // 현재 열려 있는 프로젝트의 이벤트만 라이브 로그/보드에 반영(크로스-프로젝트 누수 방지).
       if (pid && pid === selectedIdRef.current) {
         setLog((prev) => [...prev, { type: e.type, message: e.message }])
+        liveDuringLoadRef.current += 1 // 진행 중 로드가 끝날 때 스냅샷 뒤로 보존할 라이브 행 카운트(아래 선택 effect 가 리셋·소비)
         if (e.type !== 'task.progress') void refreshTasks(pid) // 보드는 마일스톤에서만 갱신
       }
     })
@@ -100,6 +105,7 @@ export function ProjectPanel({ sessions }: Props) {
       return
     }
     void window.fleet.setLastActiveProject(selectedId)
+    liveDuringLoadRef.current = 0 // 이 로드 동안 도착하는 라이브 행만 카운트
     void (async () => {
       const [t, ev] = await Promise.all([
         window.fleet.getProjectTasks(selectedId),
@@ -107,7 +113,9 @@ export function ProjectPanel({ sessions }: Props) {
       ])
       if (selectedIdRef.current !== selectedId) return // 응답 도착 시 다른 방이면 무시
       setTasks(t)
-      setLog(ev.map((e) => ({ type: e.type, message: e.message ?? '' })))
+      const snapshot = ev.map((e) => ({ type: e.type, message: e.message ?? '' }))
+      // 로드 중 도착한 라이브 행(스냅샷에 아직 반영 안 된 마일스톤·진행)을 스냅샷 뒤에 보존 — 덮어쓰기 유실 방지.
+      setLog((prev) => [...snapshot, ...prev.slice(prev.length - liveDuringLoadRef.current)])
       setSummary('') // 다른 방으로 전환 시 라이브 요약 초기화
     })()
   }, [selectedId])
@@ -141,11 +149,13 @@ export function ProjectPanel({ sessions }: Props) {
           ? ASSIGNABLE_ROLES.map((role) => ({ role, llmId: manual[role] ?? sessions[0]?.id ?? '' }))
           : undefined
       const r = await window.fleet.runProject({ goal: goal.trim(), policy, assignments })
-      setSummary(r.summary)
+      if (selectedIdRef.current === r.projectId) setSummary(r.summary) // 끝난 프로젝트가 아직 열려 있을 때만 요약 표시
       await refreshProjects()
       if (selectedIdRef.current) await refreshTasks(selectedIdRef.current)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      // 실행이 거부돼도 오케스트레이터가 프로젝트를 failed 로 표시했을 수 있으니 사이드바/상태칩을 갱신한다.
+      await refreshProjects().catch(() => undefined)
     } finally {
       setRunning(false)
       setActiveProjectId(null)

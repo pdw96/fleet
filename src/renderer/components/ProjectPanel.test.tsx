@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { LlmDescriptor, OrchestratorEvent, Project, Task } from '../../shared/types'
+import type { FleetEvent, LlmDescriptor, OrchestratorEvent, Project, RunResult, Task } from '../../shared/types'
 import { ProjectPanel } from './ProjectPanel'
 
 function mockFleet(overrides: Record<string, unknown> = {}) {
@@ -124,5 +124,56 @@ describe('ProjectPanel', () => {
     await screen.findByText('로그인 기능')
     fleet.fire({ type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' } })
     expect(await screen.findByText('구현 A 완료')).toBeTruthy()
+  })
+
+  // ② 실행이 거부되면(예: planner 미배정) store 가 프로젝트를 failed 로 표시했을 수 있으니 사이드바/상태칩을 갱신한다.
+  it('refreshes the project list when a run is rejected', async () => {
+    const fleet = mockFleet({
+      runProject: vi.fn().mockRejectedValue(new Error('planner 역할에 배정된 LLM 세션이 없습니다.')),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    const before = fleet.listProjects.mock.calls.length
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
+    expect(await screen.findByText(/planner 역할/)).toBeTruthy()
+    expect(fleet.listProjects.mock.calls.length).toBeGreaterThan(before)
+  })
+
+  // ③ 실행 중 다른 방으로 전환하면, 끝난 실행의 요약이 전환된 방 아래 표시돼선 안 된다.
+  it('does not show a finished run summary under a different selected project', async () => {
+    let resolveRun: (r: RunResult) => void = () => {}
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      runProject: vi.fn(() => new Promise<RunResult>((res) => { resolveRun = res })),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능')
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
+    fleet.fire({ type: 'project.created', message: '생성', data: { projectId: 'pA' } }) // pA 가 열린다
+    fireEvent.click(screen.getByText('로그인 기능')) // 다른 방(P1)으로 전환
+    await act(async () => {})
+    await act(async () => { resolveRun({ projectId: 'pA', tasks: [], summary: 'A프로젝트요약' }) })
+    expect(screen.queryByText('A프로젝트요약')).toBeNull()
+  })
+
+  // ④ 스냅샷 로드 중 도착한 라이브 로그 행이 스냅샷 교체로 유실되지 않아야 한다.
+  it('preserves a live log row that arrives while the selection snapshot is loading', async () => {
+    let resolveEvents: (e: FleetEvent[]) => void = () => {}
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      listProjectEvents: vi.fn(() => new Promise<FleetEvent[]>((res) => { resolveEvents = res })),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능')
+    await vi.waitFor(() => expect(fleet.listProjectEvents).toHaveBeenCalledWith('p1')) // 선택 effect 가 스냅샷 로드 디스패치
+    fleet.fire({ type: 'task.done', message: '로딩중도착', data: { projectId: 'p1' } }) // 로드 중 라이브 도착
+    await act(async () => {
+      resolveEvents([{ id: 'e1', type: 'plan.created', message: '계획됨', data: { projectId: 'p1' }, ts: 1 }])
+    })
+    expect(screen.getByText('계획됨')).toBeTruthy() // 스냅샷 행
+    expect(screen.getByText('로딩중도착')).toBeTruthy() // 보존된 라이브 행
   })
 })

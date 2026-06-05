@@ -325,6 +325,8 @@ describe('runProject', () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     await expect(runProject('g', { store, sessions, assignments: [] })).rejects.toThrow('planner')
+    // planner 검증은 createProject 전에 일어난다 — 고아 프로젝트(planning 영구 정체)를 store 에 남기지 않는다.
+    expect(store.listProjects()).toHaveLength(0)
   })
 
   it('marks the project failed when planning output is unparseable', async () => {
