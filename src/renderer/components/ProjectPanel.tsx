@@ -47,6 +47,9 @@ export function ProjectPanel({ sessions }: Props) {
   const boardTokenRef = useRef(0)
   // 선택 스냅샷 로드의 단조 토큰 — 같은 방 재방문(P1→P2→P1)으로 중첩된 로드 중 최신 응답만 반영한다.
   const loadTokenRef = useRef(0)
+  // 프로젝트 목록(setProjects) 갱신의 단조 토큰 — 근접 마일스톤들이 띄운 refreshProjects 응답이 순서 뒤바뀌어
+  // 도착해도(예: 느린 plan.created 가 빠른 project.done 뒤에 resolve) 옛 스냅샷이 최신 목록/상태칩을 덮어쓰지 않게 한다.
+  const projectsTokenRef = useRef(0)
 
   // 방 선택을 동기적으로 확정한다: selectedIdRef·카운터를 즉시 갱신하고 이전 방의 보드/로그/요약을 비운다.
   // 동기 처리라 (a) 직후 도착 라이브 이벤트가 새 방 필터를 통과하고(특히 막 생성된 프로젝트의 task.progress),
@@ -57,6 +60,11 @@ export function ProjectPanel({ sessions }: Props) {
     hasSelectedRef.current = true
     selectedIdRef.current = pid
     liveDuringLoadRef.current = 0
+    // 이전 방문의 in-flight 스냅샷/보드 응답을 즉시 무효화한다. 토큰 갱신을 선택 effect 로만 미루면,
+    // 같은 방을 한 배치로 떠났다 돌아와(최종 selectedId 가 이전과 동일) [selectedId] effect 가 재실행되지 않는 경우
+    // 옛 응답이 가드(loadToken/boardToken)를 통과해 보드/로그를 되돌릴 수 있다. 같은 방 재선택은 위에서 이미 제외.
+    loadTokenRef.current += 1
+    boardTokenRef.current += 1
     setTasks([])
     setLog([])
     setSummary('')
@@ -64,9 +72,11 @@ export function ProjectPanel({ sessions }: Props) {
   }
 
   async function refreshProjects(): Promise<Project[]> {
+    const token = ++projectsTokenRef.current
     const list = await window.fleet.listProjects()
     const sorted = [...list].sort((a, b) => b.updatedAt - a.updatedAt) // 최신순
-    setProjects(sorted)
+    // 더 새 refreshProjects 가 시작됐으면(순서 뒤바뀐 응답) setProjects 를 건너뛴다 — 반환값은 호출자(마운트 자동선택)용으로 유지.
+    if (token === projectsTokenRef.current) setProjects(sorted)
     return sorted
   }
 
@@ -113,8 +123,17 @@ export function ProjectPanel({ sessions }: Props) {
         setActiveProjectId((cur) => (cur === pid ? null : cur))
         void refreshProjects()
       }
-      // 상태 전환 마일스톤(planning→executing)도 목록 갱신 — 그러지 않으면 실행 내내 상태칩이 planning 에 고착된다.
-      if (e.type === 'plan.created' && pid) void refreshProjects()
+      // 상태 전환 마일스톤도 목록 갱신 — planning→executing(plan.created), executing→verifying(verify.*).
+      // 그러지 않으면 실행/검증 내내 사이드바·상태칩이 이전 단계(planning/executing)에 고착된다.
+      // (verify.passed/failed/fixing 은 orchestrator 가 status 를 verifying 으로 바꾼 뒤 방출한다.)
+      if (
+        (e.type === 'plan.created' ||
+          e.type === 'verify.passed' ||
+          e.type === 'verify.failed' ||
+          e.type === 'verify.fixing') &&
+        pid
+      )
+        void refreshProjects()
       // 현재 열려 있는 프로젝트의 이벤트만 라이브 로그/보드에 반영(크로스-프로젝트 누수 방지).
       if (pid && pid === selectedIdRef.current) {
         const eventId = typeof e.data?.['eventId'] === 'string' ? (e.data['eventId'] as string) : undefined

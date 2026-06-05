@@ -419,4 +419,75 @@ describe('ProjectPanel', () => {
     await act(async () => { resolveFirst(RUNNING) }) // 지연된 refresh A 가 늦게 도착
     expect(screen.getByText('변경 2개')).toBeTruthy() // DONE 유지(RUNNING 으로 역행 안 함)
   })
+
+  // S: 같은 방을 한 배치로 떠났다 돌아오면(최종 selectedId 가 이전과 동일 → [selectedId] effect 미실행)
+  //    이전 방문의 지연 스냅샷이 늦게 도착해도 보드를 옛 상태로 되돌리지 않아야 한다.
+  //    선택 effect 가 재실행되지 않으므로 토큰 무효화는 selectProject 가 동기로 해야 한다.
+  it('invalidates a stale snapshot load when leaving and re-entering a room in one batch', async () => {
+    const OLD: Task[] = [{ ...T1, title: '옛작업' }]
+    let resolveOld: (t: Task[]) => void = () => {}
+    const getProjectTasks = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<Task[]>((res) => { resolveOld = res })) // #1 마운트 p1 선택(지연 OLD)
+      .mockResolvedValue([]) // 이후 로드
+    mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      getProjectTasks,
+      listProjectEvents: vi.fn().mockResolvedValue([]),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능')
+    await vi.waitFor(() => expect(getProjectTasks).toHaveBeenCalledTimes(1)) // #1(지연) 디스패치, selectedId=p1 커밋
+    // + 새 프로젝트(null) → p1 을 단일 act 로 — 최종 selectedId 가 다시 p1 이라 [selectedId] effect 가 재실행되지 않는다.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '+ 새 프로젝트' }))
+      fireEvent.click(screen.getByText('로그인 기능'))
+    })
+    expect(getProjectTasks).toHaveBeenCalledTimes(1) // 전제: 선택 effect 가 재실행되지 않아 재로드가 없음
+    await act(async () => { resolveOld(OLD) }) // 지연된 첫 로드가 늦게 도착
+    expect(screen.queryByText('옛작업')).toBeNull() // 옛 스냅샷이 보드를 되돌리지 않음
+  })
+
+  // T: 근접한 두 마일스톤의 refreshProjects 응답이 순서 뒤바뀌어 도착해도 상태칩이 옛 스냅샷으로 역행하지 않아야 한다.
+  it('discards an out-of-order project list refresh (no status chip regression)', async () => {
+    const executing = { ...P2, status: 'executing' as const }
+    const done = { ...P2, status: 'done' as const }
+    let resolveSlow: (p: Project[]) => void = () => {}
+    const listProjects = vi
+      .fn()
+      .mockResolvedValueOnce([executing]) // #1 마운트
+      .mockImplementationOnce(() => new Promise<Project[]>((res) => { resolveSlow = res })) // #2 plan.created(느림 → executing)
+      .mockResolvedValue([done]) // #3 project.done(즉시 → done)
+    const fleet = mockFleet({ listProjects, getLastActiveProject: vi.fn().mockResolvedValue('p2') })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('결제 연동')
+    // 두 마일스톤을 단일 배치로 — 핸들러가 refreshProjects 두 개를 순서대로 디스패치(plan.created #2, project.done #3)
+    await act(async () => {
+      fleet.fireBatch(
+        { type: 'plan.created', message: '계획', data: { projectId: 'p2' } }, // #2 (느림)
+        { type: 'project.done', message: '완료', data: { projectId: 'p2' } }, // #3 (즉시 done)
+      )
+    })
+    expect(screen.getAllByText('done').length).toBeGreaterThan(0) // #3 가 done 반영
+    await act(async () => { resolveSlow([executing]) }) // 느린 #2 가 늦게 executing 으로 도착
+    expect(screen.queryAllByText('executing').length).toBe(0) // executing 으로 역행 안 함
+    expect(screen.getAllByText('done').length).toBeGreaterThan(0) // done 유지
+  })
+
+  // U: verifying 단계 진입 시(verify.* 이벤트)에도 목록을 갱신해 상태칩이 executing 에 고착되지 않아야 한다.
+  it('refreshes the project list on verify events so the status reflects verifying', async () => {
+    const executing = { ...P2, status: 'executing' as const }
+    const verifying = { ...P2, status: 'verifying' as const }
+    const listProjects = vi.fn().mockResolvedValueOnce([executing]).mockResolvedValue([verifying])
+    const fleet = mockFleet({ listProjects, getLastActiveProject: vi.fn().mockResolvedValue('p2') })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('결제 연동')
+    const before = listProjects.mock.calls.length
+    await act(async () => {
+      fleet.fire({ type: 'verify.fixing', message: '검증 실패 — 수정 시도 (라운드 1)', data: { projectId: 'p2' } })
+    })
+    expect(listProjects.mock.calls.length).toBeGreaterThan(before) // verify.fixing 에서 refreshProjects 호출됨
+    expect(screen.getAllByText('verifying').length).toBeGreaterThan(0) // executing 고착 아님
+  })
 })
