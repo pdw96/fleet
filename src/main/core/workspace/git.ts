@@ -1,3 +1,5 @@
+import { existsSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { defaultRunner } from '../cli/detect'
 
 export interface GitResult { code: number | null; stdout: string; stderr: string }
@@ -5,6 +7,11 @@ export interface GitRunner {
   run(args: string[], cwd: string, signal?: AbortSignal): Promise<GitResult>
 }
 export interface DiffResult { files: string[]; patch: string; truncated: boolean }
+
+/** 편집 에이전트(codex 등)의 자체 git 작업이 남긴 index.lock 경합 패턴. */
+const LOCK_RE = /index\.lock|Another git process/i
+const LOCK_RETRIES = 4
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 export interface Workspace {
   ensureRepo(): Promise<void>
@@ -28,10 +35,27 @@ export const defaultGitRunner: GitRunner = {
 
 export function createWorkspace(root: string, git: GitRunner = defaultGitRunner): Workspace {
   const run = (args: string[]) => git.run(args, root)
+  // 반드시 성공해야 하는 git 명령. index.lock 경합(편집 에이전트의 자체 git)에는
+  // 백오프 재시도하고, 끈질긴 스테일 락은 제거한다 — 오케스트레이터는 순차 실행이라
+  // 이 시점에 동시 git 프로세스가 없음이 보장된다(락 제거가 안전).
   const ok = async (args: string[]): Promise<GitResult> => {
-    const r = await run(args)
-    if (r.code !== 0) throw new Error(`git ${args[0]} 실패(code ${r.code}): ${r.stderr.trim()}`)
-    return r
+    let last: GitResult | undefined
+    for (let attempt = 0; attempt < LOCK_RETRIES; attempt++) {
+      const r = await run(args)
+      if (r.code === 0) return r
+      last = r
+      if (!LOCK_RE.test(r.stderr)) break // 락 외 에러는 재시도하지 않는다
+      await wait(150 * (attempt + 1))
+      const lock = join(root, '.git', 'index.lock')
+      if (attempt >= 1 && existsSync(lock)) {
+        try {
+          rmSync(lock)
+        } catch {
+          /* 다음 시도에서 재확인 */
+        }
+      }
+    }
+    throw new Error(`git ${args[0]} 실패(code ${last?.code ?? null}): ${last?.stderr.trim() ?? ''}`)
   }
 
   return {

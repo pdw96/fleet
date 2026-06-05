@@ -83,3 +83,39 @@ describe('createWorkspace diff/keep/revert', () => {
     await expect(ws.checkpoint()).rejects.toThrow('git rev-parse 실패')
   })
 })
+
+describe('createWorkspace index.lock 경합 재시도', () => {
+  it('retries a git op that fails with an index.lock conflict until it succeeds', async () => {
+    const g = fakeGit()
+    let addCalls = 0
+    g.setReply((args) => {
+      if (args[0] === 'add') {
+        addCalls++
+        return addCalls < 2
+          ? { code: 128, stdout: '', stderr: "fatal: Unable to create '/ws/.git/index.lock': File exists.\nAnother git process seems to be running" }
+          : { code: 0, stdout: '', stderr: '' }
+      }
+      if (args[0] === 'diff' && args.includes('--name-only')) return { code: 0, stdout: 'a.ts\n', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const d = await ws.collectDiff('base')
+    expect(d.files).toEqual(['a.ts'])
+    expect(addCalls).toBeGreaterThanOrEqual(2) // 락으로 1회 실패 후 재시도해 성공
+  })
+
+  it('does not retry non-lock git errors', async () => {
+    const g = fakeGit()
+    let addCalls = 0
+    g.setReply((args) => {
+      if (args[0] === 'add') {
+        addCalls++
+        return { code: 1, stdout: '', stderr: 'fatal: pathspec error' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    await expect(ws.collectDiff('base')).rejects.toThrow('git add 실패')
+    expect(addCalls).toBe(1) // 락이 아닌 에러는 즉시 실패(재시도 없음)
+  })
+})
