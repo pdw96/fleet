@@ -286,6 +286,26 @@ describe('createCliSession', () => {
     expect(calls[2][1]).toBe('--resume') // 둘째는 resume
   })
 
+  it('runs in edit mode (cwd=workspace) when workspace is given and adapter has edit args', async () => {
+    let seenCwd: string | undefined
+    let seenArgs: string[] = []
+    const runner: CommandRunner = async (_cmd, args, opts) => {
+      seenCwd = opts.cwd
+      seenArgs = args
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      id: 'x', displayName: 'X', command: 'x', versionArgs: ['--version'],
+      headless: { args: ['-p', '{prompt}'] },
+      edit: { args: ['agent', '-C', '{workspace}', '{prompt}'] },
+    }
+    const session = createCliSession({ id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' }, adapter, runner)
+    const text = await session.send('do it', { workspace: '/ws' })
+    expect(text).toBe('ok')
+    expect(seenCwd).toBe('/ws')
+    expect(seenArgs).toEqual(['agent', '-C', '/ws', 'do it'])
+  })
+
   it("동일 세션 동시 send 를 직렬화한다(codex id 캡처 레이스 방지)", async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {

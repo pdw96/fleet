@@ -79,6 +79,12 @@ export interface CliAdapter {
   session?: CliSessionSpec
   /** 토큰/이벤트 스트리밍 사양('길 A' 2단계). 미지정 시 버퍼링(최종 1회). */
   streaming?: CliStreamSpec
+  /**
+   * 편집 에이전트 1회 실행 인자 템플릿. '{prompt}'·'{workspace}' 토큰이 치환된다.
+   * 존재하면 send({workspace}) 호출이 이 인자로 cwd=workspace 에서 에이전트를 실행해
+   * 워크스페이스 파일을 직접 편집한다. 미지정 어댑터는 implementer 역할에 쓸 수 없다.
+   */
+  edit?: { args: string[]; parse?: CliOutputFormat }
 }
 
 /** CLI 감지 결과 — IPC 로 renderer 에 전달. */
