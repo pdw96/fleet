@@ -50,6 +50,10 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // 작업당 최대 구현→검토 시도 횟수. 0/음수/NaN 은 최소 1회로 보정한다.
   const requested = Math.floor(opts.maxReviewRounds ?? 2)
   const maxRounds = Number.isFinite(requested) && requested >= 1 ? requested : 1
+  // 편집 에이전트 작업은 수 분이 걸린다 — 미지정 시 15분 기본(채팅용 120s 기본을 상속하지 않게).
+  const DEFAULT_TASK_TIMEOUT_MS = 900_000
+  const requestedTaskTimeout = Math.floor(opts.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS)
+  const taskTimeoutMs = Number.isFinite(requestedTaskTimeout) && requestedTaskTimeout > 0 ? requestedTaskTimeout : DEFAULT_TASK_TIMEOUT_MS
   const emit = (e: OrchestratorEvent): void => {
     store.appendEvent({ type: e.type, data: e.data ?? {} })
     opts.onEvent?.(e)
@@ -143,7 +147,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           fresh: true,
           workspace: opts.workspaceRoot,
           signal: opts.signal,
-          timeoutMs: opts.taskTimeoutMs,
+          timeoutMs: taskTimeoutMs,
           onChunk: (delta) => emit({ type: 'task.progress', message: delta, data: { taskId: task.id } }),
         })
         diff = await ws.collectDiff(base)
@@ -310,7 +314,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           fresh: true,
           workspace: opts.workspaceRoot,
           signal: opts.signal,
-          timeoutMs: opts.taskTimeoutMs,
+          timeoutMs: taskTimeoutMs,
         })
         await opts.workspace.keep(`[verify-fix r${round}]`)
       } catch (err) {

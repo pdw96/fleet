@@ -49,6 +49,9 @@ const DEFAULT_CAPABILITIES: Record<string, readonly AgentRole[]> = {
 
 const seedCapabilities = (key: string): AgentRole[] => [...(DEFAULT_CAPABILITIES[key] ?? [])]
 
+// 오케스트레이션 검증은 실제 빌드/테스트라 채팅용 120s 로는 부족하다 — 10분으로 상향(spec §5 분리·상향).
+const VERIFY_TIMEOUT_MS = 600_000
+
 export interface FleetEngineOptions {
   store?: Store
   sessions?: SessionManager
@@ -136,7 +139,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     workspaceDir ? createWorkspace(workspaceDir, opts.gitRunner) : undefined
   const currentVerify = () => {
     const dir = workspaceDir
-    return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner }) : undefined
+    return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner, timeoutMs: VERIFY_TIMEOUT_MS }) : undefined
   }
 
   /**

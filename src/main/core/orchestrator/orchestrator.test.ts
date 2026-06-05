@@ -709,6 +709,64 @@ describe('runProject', () => {
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
+  function timeoutCapturingImplementer(sink: { timeoutMs?: number }): LlmSession {
+    return {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        sink.timeoutMs = opts?.timeoutMs
+        return '구현'
+      },
+      async dispose() {},
+    }
+  }
+
+  it('injects a 15-minute default task timeout into send when none is requested', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const sink: { timeoutMs?: number } = {}
+    sessions.add(timeoutCapturingImplementer(sink))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      // taskTimeoutMs 미지정 → 채팅용 120s 가 아니라 15분 기본이 send 에 도달해야 한다
+    })
+    expect(sink.timeoutMs).toBe(900_000)
+  })
+
+  it('passes an explicit taskTimeoutMs through to send unchanged', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const sink: { timeoutMs?: number } = {}
+    sessions.add(timeoutCapturingImplementer(sink))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      taskTimeoutMs: 5000,
+    })
+    expect(sink.timeoutMs).toBe(5000)
+  })
+
   it('does not attempt fixes when maxVerifyFixRounds is 0', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
