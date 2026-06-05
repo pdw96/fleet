@@ -167,7 +167,7 @@ export type AssignmentPolicy = 'manual' | 'round-robin' | 'capability-scored'
 /** 오케스트레이터가 실제로 배정·실행하는 역할 집합 (요구사항 8 MVP). 배정 UI·채점도 이 집합으로 제한한다. */
 export const ASSIGNABLE_ROLES: readonly AgentRole[] = ['planner', 'implementer', 'reviewer', 'summarizer']
 
-export type TaskStatus = 'pending' | 'running' | 'review' | 'done' | 'failed'
+export type TaskStatus = 'pending' | 'running' | 'review' | 'done' | 'failed' | 'skipped'
 
 export interface Task {
   id: string
@@ -183,6 +183,10 @@ export interface Task {
   dependsOn: string[]
   /** 산출물 요약 */
   output?: string
+  /** keep 직전 변경된 파일 목록(diff 기반). */
+  changedFiles?: string[]
+  /** 작업 전 체크포인트 커밋 해시. */
+  checkpoint?: string
   createdAt: number
   updatedAt: number
 }
@@ -216,7 +220,7 @@ export type RiskLevel = 'safe' | 'caution' | 'destructive'
 
 export interface ApprovalRequest {
   id: string
-  kind: 'file-write' | 'file-delete' | 'shell'
+  kind: 'file-write' | 'file-delete' | 'shell' | 'apply-diff'
   summary: string
   /** 대상 경로 또는 명령 */
   target: string
@@ -257,6 +261,9 @@ export type OrchestratorEventType =
   | 'task.done'
   | 'task.failed'
   | 'task.artifacts'
+  | 'task.progress'
+  | 'task.skipped'
+  | 'run.cancelled'
   | 'verify.passed'
   | 'verify.failed'
   | 'verify.fixing'
@@ -275,6 +282,8 @@ export interface RunProjectRequest {
   /** manual 정책용 사용자 지정 역할↔LLM 배정. 지정 시 policy 보다 우선한다. */
   assignments?: RoleAssignment[]
   maxReviewRounds?: number
+  taskTimeoutMs?: number
+  continueOnFailure?: boolean
 }
 
 // ── 채팅 토큰 스트리밍 (IPC 이벤트 채널) ─────────────────────────────────────
