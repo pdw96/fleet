@@ -306,6 +306,40 @@ describe('createCliSession', () => {
     expect(seenArgs).toEqual(['agent', '-C', '/ws', 'do it'])
   })
 
+  it('편집 모드가 stateful 세션보다 우선한다(workspace 가 startArgs/resumeArgs 를 이긴다)', async () => {
+    let seenCwd: string | undefined
+    let seenArgs: string[] = []
+    const runner: CommandRunner = async (_cmd, args, opts) => {
+      seenCwd = opts.cwd
+      seenArgs = args
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      ...claudeAdapter,
+      session: {
+        startArgs: ['-p', '--session-id', '{sessionId}', '{prompt}'],
+        resumeArgs: ['-p', '--resume', '{sessionId}', '{prompt}'],
+        idSource: 'preassigned',
+      },
+      edit: { args: ['agent', '-C', '{workspace}', '{prompt}'] },
+    }
+    const s = createCliSession(cliDesc, adapter, runner, undefined, { stateful: true })
+    expect(s.stateful).toBe(true)
+    const text = await s.send('p', { workspace: '/ws' })
+    expect(text).toBe('ok')
+    expect(seenCwd).toBe('/ws')
+    expect(seenArgs).toEqual(['agent', '-C', '/ws', 'p']) // edit 인자(stateful startArgs 가 아님)
+  })
+
+  it('runEditing 은 adapter.edit 가 없으면 거부한다(편집 모드 미지원)', async () => {
+    const noEdit: CliAdapter = {
+      ...claudeAdapter,
+      headless: { args: ['-p', '{prompt}'] }, // headless 만, edit 없음
+    }
+    const s = createCliSession(cliDesc, noEdit, async () => ({ code: 0, stdout: 'ok', stderr: '' }))
+    await expect(s.send('p', { workspace: '/ws' })).rejects.toThrow('편집 모드')
+  })
+
   it("동일 세션 동시 send 를 직렬화한다(codex id 캡처 레이스 방지)", async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {
