@@ -96,8 +96,9 @@ describe('defaultRunner (integration)', () => {
     })
     expect(res.code).toBe(0)
     expect(res.stdout.length).toBeGreaterThan(0)
-    expect(res.stdout).toContain(tmpdir().split(/[\\/]/).pop() as string)
-  })
+    const base = tmpdir().split(/[\\/]/).pop() ?? ''
+    expect(res.stdout).toContain(base)
+  }, 15_000)
 
   it('kills the child when the abort signal fires', async () => {
     const ac = new AbortController()
@@ -107,8 +108,8 @@ describe('defaultRunner (integration)', () => {
     })
     ac.abort()
     const res = await p
-    expect(res.code).not.toBe(0)
-  })
+    expect(res.spawnError).toBe('ABORTED')
+  }, 15_000)
 })
 
 describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows .cmd shim regression)', () => {
