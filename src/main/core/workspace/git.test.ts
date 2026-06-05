@@ -12,10 +12,16 @@ function fakeGit(): { runner: GitRunner; calls: string[][]; setReply: (m: (args:
 }
 
 describe('createWorkspace.ensureRepo', () => {
-  it('initializes a repo and makes an initial commit when not a git repo', async () => {
+  // ensureRepo 는 워크스페이스가 자기 자신의 레포 루트인지 `rev-parse --show-toplevel` 로 확인한다.
+  // 이 머신에서 samePath(returned, root) 가 결정론적으로 true 가 되도록 실제 cwd 를 root 로 쓴다.
+  const ownRoot = process.cwd()
+  const ownTop = ownRoot.replace(/\\/g, '/') // show-toplevel 은 슬래시 절대경로를 돌려준다
+
+  it('initializes an isolated repo and makes an initial commit when not a git repo', async () => {
     const g = fakeGit()
     g.setReply((args) => {
-      if (args[0] === 'rev-parse') return { code: 128, stdout: '', stderr: 'not a git repo' }
+      // 레포가 아니다 → show-toplevel 실패(128)
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 128, stdout: '', stderr: 'not a git repo' }
       return { code: 0, stdout: '', stderr: '' }
     })
     const ws = createWorkspace('/ws', g.runner)
@@ -26,32 +32,52 @@ describe('createWorkspace.ensureRepo', () => {
     expect(cmds.some((c) => c.includes('commit'))).toBe(true)
   })
 
-  it('does nothing when already a git repo with commits', async () => {
+  it('initializes an ISOLATED repo when the workspace is a SUBDIR of an enclosing repo', async () => {
+    // 워크스페이스가 상위 레포의 하위 디렉터리: show-toplevel 이 상위 레포 루트를 돌려준다(≠ 워크스페이스).
+    // 격리 레포를 만들지 않으면 revert(reset --hard)가 상위 레포 전체를 날린다(P1).
     const g = fakeGit()
     g.setReply((args) => {
-      if (args[0] === 'rev-parse') return { code: 0, stdout: 'true', stderr: '' }
-      // 워크트리는 깨끗하다(status --porcelain → 빈 출력) → 시작 스냅샷 커밋 안 함
-      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
-      return { code: 0, stdout: 'abc123', stderr: '' }
-    })
-    const ws = createWorkspace('/ws', g.runner)
-    await ws.ensureRepo()
-    expect(g.calls.some((c) => c[0] === 'init')).toBe(false)
-    // HEAD 존재(rev-parse HEAD → code 0) → 초기 커밋 생성 안 함
-    expect(g.calls.some((c) => c.includes('commit'))).toBe(false)
-  })
-
-  it('snapshots a dirty worktree into a baseline commit at run start', async () => {
-    const g = fakeGit()
-    g.setReply((args) => {
-      if (args[0] === 'rev-parse') return { code: 0, stdout: 'abc123', stderr: '' }
-      // 이미 커밋이 있는 레포인데 미커밋 변경이 있다(status --porcelain → 더티)
-      if (args[0] === 'status') return { code: 0, stdout: ' M file.ts\n', stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) {
+        return { code: 0, stdout: 'C:/other/parent', stderr: '' } // ≠ '/ws'
+      }
       return { code: 0, stdout: '', stderr: '' }
     })
     const ws = createWorkspace('/ws', g.runner)
     await ws.ensureRepo()
-    expect(g.calls.some((c) => c[0] === 'init')).toBe(false) // 이미 레포 → init 안 함
+    const cmds = g.calls.map((c) => c.join(' '))
+    expect(cmds.some((c) => c.startsWith('init'))).toBe(true) // 격리 레포 생성
+    expect(cmds.some((c) => c.includes('commit'))).toBe(true)
+  })
+
+  it('does NOT re-init when the workspace IS its own repo root (preserves existing repo)', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      // 워크스페이스가 자기 자신의 레포 루트 → show-toplevel 이 root 와 같은 경로를 돌려준다
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 0, stdout: ownTop, stderr: '' }
+      // HEAD 존재 + 워크트리 깨끗 → 스냅샷/init 모두 없음
+      if (args[0] === 'rev-parse' && args.includes('HEAD')) return { code: 0, stdout: 'abc123', stderr: '' }
+      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace(ownRoot, g.runner)
+    await ws.ensureRepo()
+    expect(g.calls.some((c) => c[0] === 'init')).toBe(false) // 기존 레포 보존 → init 안 함
+    // HEAD 존재(rev-parse HEAD → code 0) + 깨끗 → 초기/스냅샷 커밋 생성 안 함
+    expect(g.calls.some((c) => c.includes('commit'))).toBe(false)
+  })
+
+  it('snapshots a dirty worktree into a baseline commit at run start (own repo root)', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 0, stdout: ownTop, stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('HEAD')) return { code: 0, stdout: 'abc123', stderr: '' }
+      // 이미 커밋이 있는 레포인데 미커밋 변경이 있다(status --porcelain → 더티)
+      if (args[0] === 'status') return { code: 0, stdout: ' M file.ts\n', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace(ownRoot, g.runner)
+    await ws.ensureRepo()
+    expect(g.calls.some((c) => c[0] === 'init')).toBe(false) // 이미 자기 레포 루트 → init 안 함
     // 더티 → add -A 후 스냅샷 커밋(사용자 미커밋 변경 보존)
     expect(g.calls.some((c) => c.includes('commit'))).toBe(true)
   })
@@ -59,31 +85,30 @@ describe('createWorkspace.ensureRepo', () => {
   it('does not snapshot when an existing repo worktree is clean', async () => {
     const g = fakeGit()
     g.setReply((args) => {
-      if (args[0] === 'rev-parse') return { code: 0, stdout: 'abc123', stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 0, stdout: ownTop, stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('HEAD')) return { code: 0, stdout: 'abc123', stderr: '' }
       // 워크트리가 깨끗하다(status --porcelain → 빈 출력) → 스냅샷 커밋 없음
       if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
     })
-    const ws = createWorkspace('/ws', g.runner)
+    const ws = createWorkspace(ownRoot, g.runner)
     await ws.ensureRepo()
     expect(g.calls.some((c) => c.includes('commit'))).toBe(false)
   })
 
-  it('creates an initial commit (no init) when inside a repo but HEAD is missing', async () => {
+  it('creates an initial commit (no init) when its own repo root has no HEAD yet', async () => {
     const g = fakeGit()
     g.setReply((args) => {
-      // 이미 레포 안이지만(rev-parse --is-inside-work-tree → 0) 커밋이 없다(rev-parse HEAD → 128)
-      if (args[0] === 'rev-parse' && args.includes('--is-inside-work-tree')) {
-        return { code: 0, stdout: 'true', stderr: '' }
-      }
+      // 자기 레포 루트지만(show-toplevel = root) 커밋이 없다(rev-parse HEAD → 128)
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 0, stdout: ownTop, stderr: '' }
       if (args[0] === 'rev-parse' && args.includes('HEAD')) {
         return { code: 128, stdout: '', stderr: "fatal: ambiguous argument 'HEAD'" }
       }
       return { code: 0, stdout: '', stderr: '' }
     })
-    const ws = createWorkspace('/ws', g.runner)
+    const ws = createWorkspace(ownRoot, g.runner)
     await ws.ensureRepo()
-    expect(g.calls.some((c) => c[0] === 'init')).toBe(false) // 이미 레포 → init 안 함
+    expect(g.calls.some((c) => c[0] === 'init')).toBe(false) // 이미 자기 레포 루트 → init 안 함
     expect(g.calls.some((c) => c.includes('commit'))).toBe(true) // HEAD 없음 → 초기 체크포인트 커밋
   })
 })

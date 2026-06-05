@@ -121,6 +121,19 @@ describe('FleetEngine', () => {
     await expect(engine.runProjectFlow({ goal: 'g' })).rejects.toThrow('워크스페이스')
   })
 
+  it('fails fast when the implementer resolves to an API session (cannot direct-edit)', async () => {
+    // CLI 없이 API 세션만 등록 + 워크스페이스 지정 → implementer 가 API 라 직접 편집 불가.
+    // 계획 전에 명확한 설정 오류로 거부해야 한다(API 호출 한 번 낭비 방지).
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-noimpl-'))
+    try {
+      const engine = createFleetEngine({ workspaceDir: dir, gitRunner: fakeGit() })
+      engine.registerApiSession({ id: 'a', provider: 'openai', displayName: 'GPT', model: 'm', apiKey: 'k' })
+      await expect(engine.runProjectFlow({ goal: 'g' })).rejects.toThrow(/구현|CLI 세션/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('cancelRun aborts an in-flight run: task ends not-done and run.cancelled is emitted', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-cancel-'))
     try {

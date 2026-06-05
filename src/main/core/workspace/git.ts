@@ -1,6 +1,16 @@
 import { existsSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { defaultRunner } from '../cli/detect'
+
+/**
+ * 두 경로가 같은 위치를 가리키는지 비교한다.
+ * Windows 대소문자 무시 + 구분자(\\ vs /)·끝 슬래시 차이를 정규화한다.
+ * (`git rev-parse --show-toplevel` 은 슬래시(/) 절대경로를 돌려준다.)
+ */
+const samePath = (a: string, b: string): boolean => {
+  const norm = (p: string): string => resolve(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return norm(a) === norm(b)
+}
 
 export interface GitResult { code: number | null; stdout: string; stderr: string }
 export interface GitRunner {
@@ -64,14 +74,17 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
 
   return {
     async ensureRepo() {
-      const inside = await run(['rev-parse', '--is-inside-work-tree'])
-      if (inside.code !== 0) {
+      const top = await run(['rev-parse', '--show-toplevel'])
+      if (!(top.code === 0 && samePath(top.stdout.trim(), root))) {
+        // 레포가 아니거나, 상위 레포의 하위 디렉터리다 → 워크스페이스에 격리된 레포를 만든다
+        // (상위 레포에 reset --hard/clean 이 영향을 주지 않도록).
         await ok(['init'])
         await ok(['add', '-A'])
         await commit('fleet: 초기 체크포인트')
         return
       }
-      // 이미 레포지만 커밋이 없을 수 있다(git init 후 미커밋). HEAD 없으면 초기 체크포인트 생성.
+      // 워크스페이스 자체가 레포 루트: HEAD 보장 + 사용자 미커밋 변경 스냅샷.
+      // 커밋이 없을 수 있다(git init 후 미커밋). HEAD 없으면 초기 체크포인트 생성.
       const head = await run(['rev-parse', 'HEAD'])
       if (head.code !== 0) {
         await ok(['add', '-A'])
