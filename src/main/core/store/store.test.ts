@@ -91,6 +91,33 @@ describe('memory store — chat & events', () => {
     list[0].title = 'mutated'
     expect(store.listProjects()[0].title).not.toBe('mutated')
   })
+
+  it('preserves message on appended events', () => {
+    const store = createMemoryStore(deterministic())
+    store.appendEvent({ type: 'task.done', message: '작업 완료', data: { projectId: 'p1' } })
+    expect(store.listEvents()[0].message).toBe('작업 완료')
+  })
+
+  it('lists a project events in order and excludes task.progress', () => {
+    const store = createMemoryStore(deterministic())
+    store.appendEvent({ type: 'project.created', message: '생성', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.progress', message: '토큰', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.done', message: '완료', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.done', message: '다른 프로젝트', data: { projectId: 'p2' } })
+
+    const events = store.listProjectEvents('p1')
+    expect(events.map((e) => e.type)).toEqual(['project.created', 'task.done']) // progress 제외, p2 제외
+    expect(events.map((e) => e.message)).toEqual(['생성', '완료'])
+  })
+
+  it('stores and exposes the last active project id', () => {
+    const store = createMemoryStore(deterministic())
+    expect(store.snapshot().lastActiveProjectId).toBeUndefined()
+    store.setLastActiveProject('p9')
+    expect(store.snapshot().lastActiveProjectId).toBe('p9')
+    store.setLastActiveProject(null)
+    expect(store.snapshot().lastActiveProjectId).toBeUndefined()
+  })
 })
 
 describe('memory store — persistence hook', () => {

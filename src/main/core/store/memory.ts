@@ -145,6 +145,7 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
       const event: FleetEvent = {
         id: idGen(),
         type: input.type,
+        message: input.message,
         data: input.data ?? {},
         ts: now(),
       }
@@ -154,6 +155,19 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
     },
     listEvents() {
       return structuredClone(state.events)
+    },
+    listProjectEvents(projectId) {
+      // 토큰 델타(task.progress)는 영속 노이즈라 제외한다. 삽입 순서가 곧 시간순.
+      return structuredClone(
+        state.events.filter((e) => e.type !== 'task.progress' && e.data?.['projectId'] === projectId),
+      )
+    },
+
+    // ── ui 상태 ──
+    setLastActiveProject(projectId) {
+      if (projectId) state.lastActiveProjectId = projectId
+      else delete state.lastActiveProjectId
+      save()
     },
 
     // ── persistence ──
