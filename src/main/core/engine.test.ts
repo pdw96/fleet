@@ -222,6 +222,11 @@ describe('FleetEngine', () => {
       // run.cancelled 가 콜백으로 방출되고 감사 로그(store)에도 남는다.
       expect(events.some((e) => e.type === 'run.cancelled')).toBe(true)
       expect(store.listEvents().some((e) => e.type === 'run.cancelled')).toBe(true)
+      // 라이브 run.cancelled 는 영속 이벤트 id 를 data.eventId 로 함께 싣는다(렌더러 dedup 용).
+      const liveCancel = events.find((e) => e.type === 'run.cancelled')
+      const persistedCancel = store.listEvents().find((e) => e.type === 'run.cancelled')
+      expect(liveCancel?.data?.['eventId']).toBeTruthy()
+      expect(liveCancel?.data?.['eventId']).toBe(persistedCancel?.id)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -551,5 +556,26 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
     const deltas = events.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
     expect(deltas).toEqual(['코덱스 응답']) // codex 는 토큰이 아닌 이벤트 단위 → 단일 델타
     expect(msg.content).toBe('코덱스 응답')
+  })
+})
+
+describe('FleetEngine — 프로젝트 영속 읽기', () => {
+  it('lists a project events via the store (excluding task.progress)', () => {
+    const store = createMemoryStore({ idGen: (() => { let n = 0; return () => `id-${++n}` })(), now: () => 1 })
+    store.appendEvent({ type: 'project.created', message: '생성', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.progress', message: '토큰', data: { projectId: 'p1' } })
+    const engine = createFleetEngine({ store })
+    const events = engine.listProjectEvents('p1')
+    expect(events.map((e) => e.type)).toEqual(['project.created'])
+    expect(events[0].message).toBe('생성')
+  })
+
+  it('round-trips the last active project id', () => {
+    const engine = createFleetEngine({ store: createMemoryStore() })
+    expect(engine.getLastActiveProject()).toBeNull()
+    engine.setLastActiveProject('p7')
+    expect(engine.getLastActiveProject()).toBe('p7')
+    engine.setLastActiveProject(null)
+    expect(engine.getLastActiveProject()).toBeNull()
   })
 })

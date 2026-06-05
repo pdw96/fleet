@@ -646,6 +646,36 @@ code.id {
   padding-right: 4px;
 }
 
+/* ── 프로젝트 ─────────────────────────────────────────────────────────── */
+.project-layout {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  gap: 18px;
+  align-items: start;
+}
+.project-main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.project-layout .room-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.proj-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 /* 메시지 버블 */
 .msg {
   --hue: var(--signal);

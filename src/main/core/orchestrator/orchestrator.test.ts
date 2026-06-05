@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { LlmConnectionKind } from '../../../shared/types'
+import type { LlmConnectionKind, OrchestratorEvent } from '../../../shared/types'
 import { createSessionManager } from '../session/manager'
 import type { LlmSession } from '../session/types'
 import { createMemoryStore } from '../store/memory'
@@ -325,6 +325,8 @@ describe('runProject', () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     await expect(runProject('g', { store, sessions, assignments: [] })).rejects.toThrow('planner')
+    // planner 검증은 createProject 전에 일어난다 — 고아 프로젝트(planning 영구 정체)를 store 에 남기지 않는다.
+    expect(store.listProjects()).toHaveLength(0)
   })
 
   it('marks the project failed when planning output is unparseable', async () => {
@@ -1053,5 +1055,71 @@ describe('runProject', () => {
     expect(implCalls).toBe(1) // 작업 구현만
     expect(ws.commits).toHaveLength(1) // 작업 keep 만, 수정 keep 없음
     expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('enriches live onEvent events with projectId for task-level events (not just persisted)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const live: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      onEvent: (e) => live.push(e),
+    })
+    // 라이브 task 이벤트(원래 data:{taskId})도 projectId 로 enrich 되어야 렌더러 필터를 통과한다.
+    const taskDone = live.find((e) => e.type === 'task.done')
+    expect(taskDone?.data?.['projectId']).toBe(result.projectId)
+    const planCreated = live.find((e) => e.type === 'plan.created')
+    expect(planCreated?.data?.['projectId']).toBe(result.projectId)
+  })
+
+  it('persists milestones with message+projectId and does NOT persist task.progress', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // 구현 세션이 토큰 델타(onChunk)를 흘리도록 한다.
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        opts?.onChunk?.('토큰1')
+        opts?.onChunk?.('토큰2')
+        return '구현'
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+
+    const persisted = store.listProjectEvents(result.projectId)
+    // 모든 영속 이벤트가 해당 projectId 로 태깅된다.
+    expect(persisted.every((e) => e.data['projectId'] === result.projectId)).toBe(true)
+    // 마일스톤은 메시지와 함께 재생 가능.
+    expect(persisted.some((e) => e.type === 'project.created' && !!e.message)).toBe(true)
+    expect(persisted.some((e) => e.type === 'project.done' && !!e.message)).toBe(true)
+    // task.progress(토큰 델타)는 영속되지 않는다.
+    expect(store.listEvents().some((e) => e.type === 'task.progress')).toBe(false)
   })
 })

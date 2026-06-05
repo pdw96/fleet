@@ -237,6 +237,8 @@ export const APPROVAL_TIMEOUT_MS = 60_000
 export interface FleetEvent {
   id: string
   type: string
+  /** 사람이 읽는 진행 메시지(오케스트레이터 이벤트 재생용, 감사 이벤트엔 없을 수 있음). */
+  message?: string
   /** 자유 형식 payload */
   data: Record<string, unknown>
   ts: number
@@ -323,6 +325,12 @@ export interface FleetBridge {
   // 프로젝트 / 오케스트레이션
   listProjects(): Promise<Project[]>
   getProjectTasks(projectId: string): Promise<Task[]>
+  /** 프로젝트의 진행 이벤트(영속된 마일스톤)를 시간순 반환. task.progress 토큰 델타는 제외. */
+  listProjectEvents(projectId: string): Promise<FleetEvent[]>
+  /** 마지막으로 본 프로젝트 id 조회(없으면 null). */
+  getLastActiveProject(): Promise<string | null>
+  /** 마지막으로 본 프로젝트 id 저장(null 이면 해제). */
+  setLastActiveProject(projectId: string | null): Promise<void>
   runProject(req: RunProjectRequest): Promise<RunResult>
   /** 진행 중인 프로젝트 실행을 취소한다. */
   cancelRun(projectId: string): Promise<void>

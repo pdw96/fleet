@@ -54,22 +54,36 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const DEFAULT_TASK_TIMEOUT_MS = 900_000
   const requestedTaskTimeout = Math.floor(opts.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS)
   const taskTimeoutMs = Number.isFinite(requestedTaskTimeout) && requestedTaskTimeout > 0 ? requestedTaskTimeout : DEFAULT_TASK_TIMEOUT_MS
+  // planner 세션은 프로젝트 생성 전에 검증한다 — 없으면 store 에 고아 프로젝트(planning 상태로 영구 정체)를 남기지 않는다.
+  const plannerId = resolveLlmForRole(assignments, 'planner')
+  const planner = plannerId ? sessions.get(plannerId) : undefined
+  if (!planner) throw new Error('planner 역할에 배정된 LLM 세션이 없습니다.')
+
+  // 프로젝트를 먼저 만들어 projectId 를 const 로 확보한다(emit 클로저가 캡처).
+  const project = store.createProject({ goal })
+  const projectId = project.id
   const emit = (e: OrchestratorEvent): void => {
-    store.appendEvent({ type: e.type, data: e.data ?? {} })
-    opts.onEvent?.(e)
+    // 라이브(onEvent)와 영속 이벤트가 같은 data(projectId 포함)를 갖도록 한 번만 enrich 한다.
+    // 이렇게 해야 렌더러가 projectId 로 라이브 이벤트를 필터링할 수 있다(task.* 이벤트는 원래 taskId 만 보유).
+    const enriched: OrchestratorEvent = { ...e, data: { ...(e.data ?? {}), projectId } }
+    // task.progress(토큰 델타)는 영속하지 않는다 — 재생 로그 노이즈 + 매 토큰 전체 스냅샷 재기록 방지(라이브 onEvent 만).
+    if (e.type !== 'task.progress') {
+      // 영속 이벤트의 id 를 라이브 페이로드(data.eventId)에도 실어 보낸다 — 렌더러가 스냅샷 재조회 시
+      // 라이브로 이미 받은 행과 영속본을 같은 id 로 정확히 dedup 하도록(반복 메시지 과잉제거 방지).
+      const persisted = store.appendEvent({ type: enriched.type, message: enriched.message, data: enriched.data ?? {} })
+      opts.onEvent?.({ ...enriched, data: { ...enriched.data, eventId: persisted.id } })
+      return
+    }
+    opts.onEvent?.(enriched)
   }
   const sessionForRole = (role: AgentRole, fallback?: AgentRole) => {
     const id = resolveLlmForRole(assignments, role, fallback)
     return id ? sessions.get(id) : undefined
   }
 
-  const project = store.createProject({ goal })
-  emit({ type: 'project.created', message: `프로젝트 생성: ${project.title}`, data: { projectId: project.id } })
+  emit({ type: 'project.created', message: `프로젝트 생성: ${project.title}`, data: { projectId } })
 
-  // ── 1) 목표 분해 ──
-  const planner = sessionForRole('planner')
-  if (!planner) throw new Error('planner 역할에 배정된 LLM 세션이 없습니다.')
-
+  // ── 1) 목표 분해 ── (planner 는 위에서 검증됨)
   let plannedCount = 0
   try {
     const planned = await planTasks(goal, planner, opts.signal)

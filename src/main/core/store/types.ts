@@ -15,6 +15,8 @@ export interface StoreState {
   rooms: ChatRoom[]
   messages: ChatMessage[]
   events: FleetEvent[]
+  /** 프로젝트 탭에서 마지막으로 본 프로젝트(렌더러 복원용). 미설정이면 부재. */
+  lastActiveProjectId?: string
 }
 
 export interface StoreOptions {
@@ -72,8 +74,16 @@ export interface Store {
   listMessages(roomId: string): ChatMessage[]
 
   // ── audit events ──
-  appendEvent(input: { type: string; data?: Record<string, unknown> }): FleetEvent
+  appendEvent(input: { type: string; message?: string; data?: Record<string, unknown> }): FleetEvent
   listEvents(): FleetEvent[]
+  /** 한 프로젝트의 영속 이벤트(시간순). task.progress 는 제외. */
+  listProjectEvents(projectId: string): FleetEvent[]
+
+  // ── ui 상태 ──
+  /** 마지막 본 프로젝트 저장. */
+  setLastActiveProject(projectId: string | null): void
+  /** 마지막 본 프로젝트 id 경량 읽기 — 전체 상태 clone(snapshot) 없이 한 필드만 반환. */
+  getLastActiveProjectId(): string | undefined
 
   // ── persistence ──
   snapshot(): StoreState

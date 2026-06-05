@@ -21,7 +21,8 @@ export function createJsonFileStore(dir: string, opts: Omit<StoreOptions, 'initi
   let initial: StoreState = EMPTY
   if (existsSync(file)) {
     try {
-      initial = JSON.parse(readFileSync(file, 'utf8')) as StoreState
+      // 결측 최상위 키를 EMPTY 기본값으로 보강(구버전 파일·부분 손상 방어).
+      initial = { ...EMPTY, ...(JSON.parse(readFileSync(file, 'utf8')) as Partial<StoreState>) }
     } catch {
       // 손상 파일을 덮어쓰기 전에 백업해 원본을 보존한다(조용한 데이터 손실 방지).
       try {

@@ -98,6 +98,12 @@ export interface FleetEngine {
   // ── 프로젝트 / 오케스트레이션 ──
   listProjects(): Project[]
   getProjectTasks(projectId: string): Task[]
+  /** 프로젝트의 영속 진행 이벤트(시간순, task.progress 제외). */
+  listProjectEvents(projectId: string): FleetEvent[]
+  /** 마지막으로 본 프로젝트 id(없으면 null). */
+  getLastActiveProject(): string | null
+  /** 마지막으로 본 프로젝트 id 저장(null 이면 해제). */
+  setLastActiveProject(projectId: string | null): void
   runProjectFlow(input: RunProjectInput): Promise<RunResult>
   /** 진행 중인 프로젝트 실행을 취소한다(현재 작업 revert 후 중단). 미존재 id 는 무시. */
   cancelRun(projectId: string): void
@@ -237,6 +243,18 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       return store.listTasks(projectId)
     },
 
+    listProjectEvents(projectId) {
+      return store.listProjectEvents(projectId)
+    },
+
+    getLastActiveProject() {
+      return store.getLastActiveProjectId() ?? null
+    },
+
+    setLastActiveProject(projectId) {
+      store.setLastActiveProject(projectId)
+    },
+
     async runProjectFlow(input) {
       const llmIds = sessions.list().map((s) => s.id)
       if (llmIds.length === 0) throw new Error('등록된 LLM 세션이 없습니다. 먼저 세션을 등록하세요.')
@@ -297,8 +315,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       if (!c) return // 미존재 id 는 무해한 no-op
       c.abort()
       activeRuns.delete(projectId)
-      store.appendEvent({ type: 'run.cancelled', data: { projectId } })
-      opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
+      // 영속 이벤트 id 를 라이브 페이로드(data.eventId)에도 실어 보낸다 — 렌더러가 스냅샷 재조회 시
+      // 라이브로 받은 run.cancelled 와 영속본을 같은 id 로 dedup 하도록(중복 '실행 취소됨' 방지).
+      const persisted = store.appendEvent({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
+      opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId, eventId: persisted.id } })
     },
 
     getWorkspace() {
