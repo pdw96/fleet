@@ -248,7 +248,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     getLastActiveProject() {
-      return store.snapshot().lastActiveProjectId ?? null
+      return store.getLastActiveProjectId() ?? null
     },
 
     setLastActiveProject(projectId) {

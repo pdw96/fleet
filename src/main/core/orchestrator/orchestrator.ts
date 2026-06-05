@@ -68,7 +68,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     const enriched: OrchestratorEvent = { ...e, data: { ...(e.data ?? {}), projectId } }
     // task.progress(토큰 델타)는 영속하지 않는다 — 재생 로그 노이즈 + 매 토큰 전체 스냅샷 재기록 방지(라이브 onEvent 만).
     if (e.type !== 'task.progress') {
-      store.appendEvent({ type: enriched.type, message: enriched.message, data: enriched.data ?? {} })
+      // 영속 이벤트의 id 를 라이브 페이로드(data.eventId)에도 실어 보낸다 — 렌더러가 스냅샷 재조회 시
+      // 라이브로 이미 받은 행과 영속본을 같은 id 로 정확히 dedup 하도록(반복 메시지 과잉제거 방지).
+      const persisted = store.appendEvent({ type: enriched.type, message: enriched.message, data: enriched.data ?? {} })
+      opts.onEvent?.({ ...enriched, data: { ...enriched.data, eventId: persisted.id } })
+      return
     }
     opts.onEvent?.(enriched)
   }

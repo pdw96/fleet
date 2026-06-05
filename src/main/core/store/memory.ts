@@ -169,6 +169,9 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
       else delete state.lastActiveProjectId
       save()
     },
+    getLastActiveProjectId() {
+      return state.lastActiveProjectId
+    },
 
     // ── persistence ──
     snapshot() {

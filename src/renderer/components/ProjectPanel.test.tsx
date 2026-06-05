@@ -191,6 +191,20 @@ describe('ProjectPanel', () => {
     expect(screen.getAllByText('done').length).toBeGreaterThan(0) // 상태칩이 갱신됨
   })
 
+  // ⑨ plan.created(planning → executing) 전환에서도 목록을 갱신해 상태칩이 planning 에 고착되지 않아야 한다.
+  it('refreshes the project list on plan.created so the status chip is not stuck on planning', async () => {
+    const planning = { ...P2, status: 'planning' as const }
+    const executing = { ...P2, status: 'executing' as const }
+    const listProjects = vi.fn().mockResolvedValueOnce([planning]).mockResolvedValue([executing])
+    const fleet = mockFleet({ listProjects, getLastActiveProject: vi.fn().mockResolvedValue('p2') })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('결제 연동')
+    const before = listProjects.mock.calls.length
+    await act(async () => { fleet.fire({ type: 'plan.created', message: '2개 작업으로 분해', data: { projectId: 'p2' } }) })
+    expect(listProjects.mock.calls.length).toBeGreaterThan(before) // plan.created 에서 refreshProjects 호출됨
+    expect(screen.getAllByText('executing').length).toBeGreaterThan(0) // planning 고착 아님
+  })
+
   // ⑥ 마일스톤이 스냅샷과 라이브 tail 양쪽에 있어도 로그 행이 중복되지 않아야 한다.
   it('does not duplicate a milestone present in both the snapshot and the live tail', async () => {
     let resolveEvents: (e: FleetEvent[]) => void = () => {}
@@ -202,12 +216,53 @@ describe('ProjectPanel', () => {
     render(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     await vi.waitFor(() => expect(fleet.listProjectEvents).toHaveBeenCalledWith('p1'))
-    fleet.fire({ type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' } }) // 라이브 append
+    // 라이브 이벤트는 영속 id(eventId)를 함께 싣고 온다(orchestrator emit). 스냅샷의 같은 id 와 dedup 된다.
+    fleet.fire({ type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1', eventId: 'e1' } })
     await act(async () => {
-      // 메인이 먼저 영속해 스냅샷에도 같은 마일스톤이 포함된 채 도착
+      // 메인이 먼저 영속해 스냅샷에도 같은 id 의 마일스톤이 포함된 채 도착
       resolveEvents([{ id: 'e1', type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' }, ts: 1 }])
     })
-    expect(screen.getAllByText('구현 A 완료')).toHaveLength(1) // 중복 아님
+    expect(screen.getAllByText('구현 A 완료')).toHaveLength(1) // 같은 id → 중복 아님
+  })
+
+  // ⑪ id 가 다른 반복 마일스톤(같은 type·message)은 dedup 으로 유실되지 않아야 한다.
+  it('preserves distinct repeated milestones that share type and message', async () => {
+    let resolveEvents: (e: FleetEvent[]) => void = () => {}
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      listProjectEvents: vi.fn(() => new Promise<FleetEvent[]>((res) => { resolveEvents = res })),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능')
+    await vi.waitFor(() => expect(fleet.listProjectEvents).toHaveBeenCalledWith('p1'))
+    // 로드 중 두 번째 '리뷰 승인'(id e2)이 라이브로 도착 — 스냅샷의 첫 번째(id e1)와 같은 message 지만 다른 이벤트.
+    fleet.fire({ type: 'task.review', message: '리뷰 승인', data: { projectId: 'p1', eventId: 'e2' } })
+    await act(async () => {
+      resolveEvents([{ id: 'e1', type: 'task.review', message: '리뷰 승인', data: { projectId: 'p1' }, ts: 1 }])
+    })
+    expect(screen.getAllByText('리뷰 승인')).toHaveLength(2) // 서로 다른 id → 둘 다 보존
+  })
+
+  // ⑩ 방 전환 시 이전 방의 보드·로그가 새 방 제목 아래 잔류하지 않아야 한다(동기 클리어).
+  it('clears the previous board and log synchronously when switching projects', async () => {
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1, P2]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      getProjectTasks: vi.fn().mockResolvedValue([T1]),
+      listProjectEvents: vi.fn().mockResolvedValue([
+        { id: 'e1', type: 'plan.created', message: 'A 진행로그', data: { projectId: 'p1' }, ts: 1 },
+      ]),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    expect(await screen.findByText('변경 2개')).toBeTruthy() // P1 보드 로드됨
+    expect(screen.getByText('A 진행로그')).toBeTruthy()
+    // P2 로 전환 시 스냅샷을 지연시켜, 동기 클리어 여부만 검증
+    fleet.getProjectTasks.mockImplementationOnce(() => new Promise<Task[]>(() => {}))
+    fleet.listProjectEvents.mockImplementationOnce(() => new Promise<FleetEvent[]>(() => {}))
+    await act(async () => { fireEvent.click(screen.getByText('결제 연동')) })
+    expect(screen.queryByText('변경 2개')).toBeNull() // 이전 보드 잔류 안 함
+    expect(screen.queryByText('A 진행로그')).toBeNull() // 이전 로그 잔류 안 함
   })
 
   // ⑦ 방 전환 시 이전 요약을 스냅샷 로드 완료 전(동기)에 제거해야 한다.

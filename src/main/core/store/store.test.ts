@@ -118,6 +118,15 @@ describe('memory store — chat & events', () => {
     store.setLastActiveProject(null)
     expect(store.snapshot().lastActiveProjectId).toBeUndefined()
   })
+
+  it('exposes the last active project id via a lightweight getter (no full snapshot)', () => {
+    const store = createMemoryStore(deterministic())
+    expect(store.getLastActiveProjectId()).toBeUndefined()
+    store.setLastActiveProject('p9')
+    expect(store.getLastActiveProjectId()).toBe('p9')
+    store.setLastActiveProject(null)
+    expect(store.getLastActiveProjectId()).toBeUndefined()
+  })
 })
 
 describe('memory store — persistence hook', () => {

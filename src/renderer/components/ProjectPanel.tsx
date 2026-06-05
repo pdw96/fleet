@@ -11,6 +11,8 @@ interface Props {
 interface LogLine {
   type: string
   message: string
+  /** 영속 이벤트 id(스냅샷=FleetEvent.id, 라이브=data.eventId). 스냅샷·라이브 중복 dedup 용. task.progress 는 없음. */
+  id?: string
 }
 
 export function ProjectPanel({ sessions }: Props) {
@@ -93,9 +95,12 @@ export function ProjectPanel({ sessions }: Props) {
         setActiveProjectId((cur) => (cur === pid ? null : cur))
         void refreshProjects()
       }
+      // 상태 전환 마일스톤(planning→executing)도 목록 갱신 — 그러지 않으면 실행 내내 상태칩이 planning 에 고착된다.
+      if (e.type === 'plan.created' && pid) void refreshProjects()
       // 현재 열려 있는 프로젝트의 이벤트만 라이브 로그/보드에 반영(크로스-프로젝트 누수 방지).
       if (pid && pid === selectedIdRef.current) {
-        setLog((prev) => [...prev, { type: e.type, message: e.message }])
+        const eventId = typeof e.data?.['eventId'] === 'string' ? (e.data['eventId'] as string) : undefined
+        setLog((prev) => [...prev, { type: e.type, message: e.message, id: eventId }])
         liveDuringLoadRef.current += 1 // 진행 중 로드가 끝날 때 스냅샷 뒤로 보존할 라이브 행 카운트(아래 선택 effect 가 리셋·소비)
         if (e.type !== 'task.progress') {
           liveTaskUpdateDuringLoadRef.current += 1 // 로드 중 보드를 갱신한 마일스톤 — 스냅샷 setTasks 스킵 신호
@@ -116,7 +121,11 @@ export function ProjectPanel({ sessions }: Props) {
     void window.fleet.setLastActiveProject(selectedId)
     liveDuringLoadRef.current = 0 // 이 로드 동안 도착하는 라이브 행만 카운트
     liveTaskUpdateDuringLoadRef.current = 0
-    setSummary('') // 방 전환 즉시 이전 라이브 요약 제거(스냅샷 로드 완료를 기다리지 않아 엉뚱한 방 귀속 방지)
+    // 방 전환 즉시 이전 방의 보드·로그·요약을 비운다(스냅샷 IPC 완료를 기다리는 동안 이전 방 내용이
+    // 새 방 제목 아래 잔류하는 크로스-프로젝트 누수 방지). 로드 중 도착하는 라이브 행은 아래에서 보존된다.
+    setTasks([])
+    setLog([])
+    setSummary('')
     void (async () => {
       const [t, ev] = await Promise.all([
         window.fleet.getProjectTasks(selectedId),
@@ -125,12 +134,14 @@ export function ProjectPanel({ sessions }: Props) {
       if (selectedIdRef.current !== selectedId) return // 응답 도착 시 다른 방이면 무시
       // 로드 중 라이브 마일스톤이 보드를 더 최신으로 갱신했다면, 오래된 스냅샷으로 덮어쓰지 않는다.
       if (liveTaskUpdateDuringLoadRef.current === 0) setTasks(t)
-      const snapshot = ev.map((e) => ({ type: e.type, message: e.message ?? '' }))
-      // 로드 중 도착한 라이브 행을 스냅샷 뒤에 보존하되, 스냅샷에 이미 영속된 동일 행(type·message)은
-      // 중복이라 제외한다. task.progress 는 영속되지 않아 스냅샷에 없으므로 항상 보존된다.
+      const snapshot: LogLine[] = ev.map((e) => ({ type: e.type, message: e.message ?? '', id: e.id }))
+      const snapshotIds = new Set(snapshot.map((s) => s.id))
+      // 로드 중 도착한 라이브 행을 스냅샷 뒤에 보존하되, 스냅샷에 이미 영속된 같은 id 의 행만 중복으로 제외한다.
+      // id 로 dedup 하므로 (type,message)가 같은 서로 다른 마일스톤(예: 여러 작업의 '리뷰 승인')은 보존되고,
+      // id 없는 task.progress 도 항상 보존된다.
       setLog((prev) => {
         const tail = prev.slice(prev.length - liveDuringLoadRef.current)
-        const fresh = tail.filter((r) => !snapshot.some((s) => s.type === r.type && s.message === r.message))
+        const fresh = tail.filter((r) => !(r.id && snapshotIds.has(r.id)))
         return [...snapshot, ...fresh]
       })
     })()

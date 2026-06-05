@@ -80,8 +80,10 @@ export interface Store {
   listProjectEvents(projectId: string): FleetEvent[]
 
   // ── ui 상태 ──
-  /** 마지막 본 프로젝트 저장. 읽기는 전용 getter 없이 snapshot().lastActiveProjectId 로 한다(engine.getLastActiveProject 참조). */
+  /** 마지막 본 프로젝트 저장. */
   setLastActiveProject(projectId: string | null): void
+  /** 마지막 본 프로젝트 id 경량 읽기 — 전체 상태 clone(snapshot) 없이 한 필드만 반환. */
+  getLastActiveProjectId(): string | undefined
 
   // ── persistence ──
   snapshot(): StoreState
