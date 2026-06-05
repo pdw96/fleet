@@ -27,9 +27,15 @@ export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs) =>
       cmd.args,
       { cwd: cmd.cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: MAX_BUFFER },
       (err, stdout, stderr) => {
-        const e = err as (NodeJS.ErrnoException & { code?: number | string }) | null
+        const e = err as
+          | (NodeJS.ErrnoException & { code?: number | string; killed?: boolean; signal?: NodeJS.Signals | null })
+          | null
         if (e && e.code === 'ENOENT') {
           resolve({ code: null, stdout: '', stderr: '', spawnError: 'ENOENT' })
+          return
+        }
+        if (e && (e.killed || e.signal === 'SIGTERM')) {
+          resolve({ code: null, stdout: stdout?.toString() ?? '', stderr: stderr?.toString() ?? '', spawnError: 'ETIMEDOUT' })
           return
         }
         const code = e ? (typeof e.code === 'number' ? e.code : 1) : 0

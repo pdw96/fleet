@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allPassed, runAllVerifications, runVerification, summarizeFailure, type VerifyRunner } from './run'
+import { allPassed, defaultVerifyRunner, runAllVerifications, runVerification, summarizeFailure, type VerifyRunner } from './run'
 
 describe('summarizeFailure', () => {
   it('extracts the first error-like line', () => {
@@ -36,6 +36,16 @@ describe('runVerification', () => {
     expect(r.passed).toBe(false)
     expect(r.analysis).toContain('ENOENT')
   })
+})
+
+describe('defaultVerifyRunner', () => {
+  it('defaultVerifyRunner reports timeout as spawnError, not exit code', async () => {
+    const res = await defaultVerifyRunner(
+      { kind: 'custom', command: 'node', args: ['-e', 'setTimeout(()=>{},5000)'] },
+      200,
+    )
+    expect(res.spawnError).toBe('ETIMEDOUT')
+  }, 10_000)
 })
 
 describe('runAllVerifications / allPassed', () => {
