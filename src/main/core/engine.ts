@@ -315,7 +315,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       if (!c) return // 미존재 id 는 무해한 no-op
       c.abort()
       activeRuns.delete(projectId)
-      store.appendEvent({ type: 'run.cancelled', data: { projectId } })
+      store.appendEvent({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
       opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
     },
 
