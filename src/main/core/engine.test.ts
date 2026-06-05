@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -7,20 +7,55 @@ import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
 import { createSessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
+import type { GitRunner } from './workspace/git'
 
 function deterministic() {
   let n = 0
   return { idGen: () => `id-${++n}`, now: () => 1000 + n }
 }
 
-/** 프롬프트 내용에 따라 역할별 응답을 돌려주는 러너. */
-const roleRunner: CommandRunner = async (_cmd, args) => {
+/**
+ * 인메모리 가짜 git 실행기 — 실제 git 을 건드리지 않고 워크스페이스 diff 모델을 시뮬레이트한다.
+ * (실 git 을 쓰면 tmpdir 이 사용자 홈 저장소 하위라 부모 .git 을 오염시킬 위험이 있어 격리한다.)
+ * collectDiff 의 name-only 는 cwd 디렉터리의 실제 파일 목록을 보고해, 편집 러너가 만든 파일이 변경으로 잡힌다.
+ */
+function fakeGit(): GitRunner {
+  let head = 0
+  return {
+    async run(args, cwd) {
+      const sub = args[0]
+      if (sub === 'rev-parse' && args.includes('--is-inside-work-tree')) return { code: 0, stdout: 'true', stderr: '' }
+      if (sub === 'rev-parse') return { code: 0, stdout: `hash-${head}`, stderr: '' }
+      if (sub === 'add') return { code: 0, stdout: '', stderr: '' }
+      if (sub === 'diff' && args.includes('--name-only')) {
+        const files = readdirSync(cwd).filter((f) => f !== '.git')
+        return { code: 0, stdout: files.join('\n'), stderr: '' }
+      }
+      if (sub === 'diff') {
+        const files = readdirSync(cwd).filter((f) => f !== '.git')
+        return { code: 0, stdout: files.map((f) => `+++ b/${f}`).join('\n'), stderr: '' }
+      }
+      if (sub === 'commit') {
+        head++
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      if (sub === 'reset' || sub === 'clean' || sub === 'init') return { code: 0, stdout: '', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  }
+}
+
+/**
+ * 프롬프트 내용에 따라 역할별 응답을 돌려주는 러너.
+ * 편집 모드(opts.cwd 지정)에선 워크스페이스에 파일을 직접 만들어 실제 git diff 를 발생시킨다.
+ */
+const roleRunner: CommandRunner = async (_cmd, args, opts) => {
   const prompt = args.join(' ')
-  let out = '구현 결과물'
-  if (prompt.includes('JSON')) out = '[{"title":"작업1","description":"d1"}]'
-  else if (prompt.includes('검토')) out = 'APPROVE'
-  else if (prompt.includes('누락')) out = '요약: 목표 충족, 누락 없음'
-  return { code: 0, stdout: out, stderr: '' }
+  if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+  if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
+  if (prompt.includes('누락')) return { code: 0, stdout: '요약: 목표 충족, 누락 없음', stderr: '' }
+  if (opts.cwd) writeFileSync(join(opts.cwd, 'impl.txt'), '구현 결과물') // 직접 편집
+  return { code: 0, stdout: '구현 결과물', stderr: '' }
 }
 
 describe('FleetEngine', () => {
@@ -56,17 +91,22 @@ describe('FleetEngine', () => {
   })
 
   it('runs a full project flow through registered CLI sessions', async () => {
-    const store = createMemoryStore(deterministic())
-    const engine = createFleetEngine({ store, runner: roleRunner })
-    engine.registerCliSession('claude')
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-flow-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      engine.registerCliSession('claude')
 
-    const result = await engine.runProjectFlow({ goal: '멀티 LLM 앱 만들기' })
+      const result = await engine.runProjectFlow({ goal: '멀티 LLM 앱 만들기' })
 
-    expect(result.tasks).toHaveLength(1)
-    expect(result.tasks[0].status).toBe('done')
-    expect(result.summary).toContain('요약')
-    expect(engine.listProjects()).toHaveLength(1)
-    expect(engine.getProjectTasks(result.projectId)).toHaveLength(1)
+      expect(result.tasks).toHaveLength(1)
+      expect(result.tasks[0].status).toBe('done')
+      expect(result.summary).toContain('요약')
+      expect(engine.listProjects()).toHaveLength(1)
+      expect(engine.getProjectTasks(result.projectId)).toHaveLength(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('throws when running a project with no sessions', async () => {
@@ -74,30 +114,34 @@ describe('FleetEngine', () => {
     await expect(engine.runProjectFlow({ goal: 'x' })).rejects.toThrow('세션이 없습니다')
   })
 
-  it('writes implementer artifacts to the workspace and runs verification when workspaceDir is set', async () => {
+  it('runs the implementer as a direct-edit agent in the workspace and verifies when workspaceDir is set', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-'))
     try {
-      const runner: CommandRunner = async (_cmd, args) => {
+      // 편집 모드(opts.cwd 지정)에서 에이전트가 워크스페이스에 파일을 직접 만든다 → 실제 git diff 발생.
+      const runner: CommandRunner = async (_cmd, args, opts) => {
         const prompt = args.join(' ')
         if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
         if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
-        // 구현: 파일 아티팩트를 출력
-        return { code: 0, stdout: ['```file:out.txt', 'hello', '```'].join('\n'), stderr: '' }
+        if (opts.cwd) writeFileSync(join(opts.cwd, 'out.txt'), 'hello') // 직접 편집
+        return { code: 0, stdout: '구현 완료', stderr: '' }
       }
       const store = createMemoryStore(deterministic())
       const engine = createFleetEngine({
         store,
         runner,
         workspaceDir: dir,
+        gitRunner: fakeGit(),
         verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
       })
       engine.registerCliSession('claude')
 
       const result = await engine.runProjectFlow({ goal: 'g' })
 
-      // 산출물이 워크스페이스에 실제로 기록된다(승인 게이트 통과)
+      // 에이전트의 직접 편집이 워크스페이스에 반영되고 keep(커밋)된다
       expect(readFileSync(join(dir, 'out.txt'), 'utf8')).toBe('hello')
+      expect(result.tasks[0].status).toBe('done')
+      expect(result.tasks[0].changedFiles).toContain('out.txt')
       // 검증이 실행되고 결과가 surface 된다
       expect((result.verifications ?? []).length).toBeGreaterThan(0)
       expect(result.verifications?.every((v) => v.passed)).toBe(true)
@@ -115,17 +159,22 @@ describe('FleetEngine', () => {
     expect(engine.listSessions()[0].capabilities).toEqual(['reviewer', 'planner'])
   })
 
-  it('activates artifact writing after setWorkspace at runtime', async () => {
+  it('activates direct-edit execution after setWorkspace at runtime', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-ws-'))
     try {
-      const runner: CommandRunner = async (_c, args) => {
+      const runner: CommandRunner = async (_c, args, opts) => {
         const p = args.join(' ')
         if (p.includes('JSON')) return { code: 0, stdout: '[{"title":"T","description":"d"}]', stderr: '' }
         if (p.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (p.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
-        return { code: 0, stdout: ['```file:made.txt', 'hi', '```'].join('\n'), stderr: '' }
+        if (opts.cwd) writeFileSync(join(opts.cwd, 'made.txt'), 'hi') // 직접 편집
+        return { code: 0, stdout: '구현 완료', stderr: '' }
       }
-      const engine = createFleetEngine({ runner, verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }) })
+      const engine = createFleetEngine({
+        runner,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
+      })
       engine.registerCliSession('claude')
       expect(engine.getWorkspace()).toBeNull()
       engine.setWorkspace(dir)
@@ -183,17 +232,22 @@ describe('FleetEngine', () => {
   })
 
   it('capability-scored routes a role to the session that lists it and records assignedLlmId', async () => {
-    const store = createMemoryStore(deterministic())
-    const engine = createFleetEngine({ store, runner: roleRunner })
-    engine.registerCliSession('claude') // cli:claude
-    engine.registerCliSession('codex') // cli:codex
-    // implementer 적합도를 claude 에 둔다 — round-robin 이면 implementer→codex 라 결과로 구분된다
-    engine.setSessionCapabilities('cli:claude', ['implementer'])
-    engine.setSessionCapabilities('cli:codex', ['reviewer'])
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-cap-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      engine.registerCliSession('claude') // cli:claude
+      engine.registerCliSession('codex') // cli:codex
+      // implementer 적합도를 claude 에 둔다 — round-robin 이면 implementer→codex 라 결과로 구분된다
+      engine.setSessionCapabilities('cli:claude', ['implementer'])
+      engine.setSessionCapabilities('cli:codex', ['reviewer'])
 
-    const result = await engine.runProjectFlow({ goal: 'x', policy: 'capability-scored' })
+      const result = await engine.runProjectFlow({ goal: 'x', policy: 'capability-scored' })
 
-    expect(result.tasks[0].assignedLlmId).toBe('cli:claude')
+      expect(result.tasks[0].assignedLlmId).toBe('cli:claude')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('runs an AI-to-AI discussion across multiple sessions', async () => {

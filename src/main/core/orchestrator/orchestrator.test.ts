@@ -3,6 +3,7 @@ import type { LlmConnectionKind } from '../../../shared/types'
 import { createSessionManager } from '../session/manager'
 import type { LlmSession } from '../session/types'
 import { createMemoryStore } from '../store/memory'
+import type { DiffResult, Workspace } from '../workspace/git'
 import { runProject } from './orchestrator'
 
 function fakeSession(id: string, responder: () => string, kind: LlmConnectionKind = 'api'): LlmSession {
@@ -21,22 +22,52 @@ function deterministic() {
   return { idGen: () => `id-${++n}`, now: () => 1000 + n }
 }
 
+/** diff/커밋을 기록하는 가짜 워크스페이스. collectDiff 는 호출마다 diffByCall 을 소비한다. */
+function fakeWorkspace(diffByCall: DiffResult[] = []): Workspace & { commits: string[]; reverts: number } {
+  let i = 0
+  const commits: string[] = []
+  const ws = {
+    commits,
+    reverts: 0,
+    async ensureRepo() {},
+    async checkpoint() {
+      return `base-${i}`
+    },
+    async collectDiff() {
+      return diffByCall[i++] ?? { files: ['src/x.ts'], patch: '+x', truncated: false }
+    },
+    async keep(message: string) {
+      commits.push(message)
+      return `commit-${commits.length}`
+    },
+    async revert() {
+      ws.reverts++
+    },
+  }
+  return ws
+}
+
 describe('runProject', () => {
-  it('plans, implements, reviews (approve), and summarizes', async () => {
+  it('plans, implements (direct edit), reviews (approve), and summarizes', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"작업A","description":"a"},{"title":"작업B","description":"b"}]'))
     let implCalls = 0
     sessions.add(
-      fakeSession('impl', () => {
-        implCalls++
-        return '구현 결과'
-      }),
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현 결과'
+        },
+        'cli',
+      ),
     )
     sessions.add(fakeSession('rev', () => 'APPROVE'))
     sessions.add(fakeSession('sum', () => '요약: 목표 충족'))
 
     const events: string[] = []
+    const ws = fakeWorkspace()
     const result = await runProject('멀티 LLM 앱', {
       store,
       sessions,
@@ -46,6 +77,8 @@ describe('runProject', () => {
         { role: 'reviewer', llmId: 'rev' },
         { role: 'summarizer', llmId: 'sum' },
       ],
+      workspace: ws,
+      workspaceRoot: '/ws',
       onEvent: (e) => events.push(e.type),
     })
 
@@ -53,6 +86,7 @@ describe('runProject', () => {
     expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
     expect(result.summary).toContain('요약')
     expect(implCalls).toBe(2)
+    expect(ws.commits).toHaveLength(2) // 승인된 작업마다 keep 1회
     expect(events).toContain('plan.created')
     expect(events).toContain('project.done')
     expect(store.getProject(result.projectId)?.status).toBe('done')
@@ -60,11 +94,34 @@ describe('runProject', () => {
     expect(store.listEvents().some((e) => e.type === 'project.done')).toBe(true)
   })
 
+  it('commits a checkpoint per approved task and records changed files', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현 요약', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const ws = fakeWorkspace([{ files: ['src/a.ts', 'src/b.ts'], patch: '+ab', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+    })
+    expect(result.tasks[0].status).toBe('done')
+    expect(ws.commits).toHaveLength(1)
+    expect(result.tasks[0].changedFiles).toEqual(['src/a.ts', 'src/b.ts'])
+  })
+
   it('records the resolved implementer llm as assignedLlmId on each task', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
-    sessions.add(fakeSession('impl', () => '구현'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
     const result = await runProject('goal', {
@@ -75,6 +132,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
     })
     expect(result.tasks[0].assignedLlmId).toBe('impl')
   })
@@ -84,7 +143,7 @@ describe('runProject', () => {
     const sessions = createSessionManager()
     // planner 가 architect 역할 작업을 만든다 — architect 는 배정에 없어 implementer 로 폴백
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d","role":"architect"}]'))
-    sessions.add(fakeSession('impl', () => '구현'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
     const result = await runProject('goal', {
@@ -95,21 +154,27 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
     })
     expect(result.tasks[0].role).toBe('architect')
     expect(result.tasks[0].assignedLlmId).toBe('impl') // 폴백 해소된 실제 LLM
   })
 
-  it('runs the re-review loop until approval', async () => {
+  it('runs the re-review loop until approval (reverting rejected attempts)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     let implCalls = 0
     sessions.add(
-      fakeSession('impl', () => {
-        implCalls++
-        return `구현 v${implCalls}`
-      }),
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return `구현 v${implCalls}`
+        },
+        'cli',
+      ),
     )
     let revCalls = 0
     sessions.add(
@@ -119,6 +184,7 @@ describe('runProject', () => {
       }),
     )
 
+    const ws = fakeWorkspace()
     const result = await runProject('goal', {
       store,
       sessions,
@@ -127,19 +193,24 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: ws,
+      workspaceRoot: '/ws',
       maxReviewRounds: 3,
     })
     expect(implCalls).toBe(2)
     expect(result.tasks[0].status).toBe('done')
+    expect(ws.commits).toHaveLength(1) // 최종 승인본만 keep
+    expect(ws.reverts).toBeGreaterThanOrEqual(1) // 첫 거절 시도는 revert
   })
 
   it('marks a task failed when review never approves within the round limit', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
-    sessions.add(fakeSession('impl', () => '구현'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'REVISE: 계속 고쳐'))
 
+    const ws = fakeWorkspace()
     const result = await runProject('goal', {
       store,
       sessions,
@@ -148,9 +219,12 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: ws,
+      workspaceRoot: '/ws',
       maxReviewRounds: 1,
     })
     expect(result.tasks[0].status).toBe('failed')
+    expect(ws.commits).toHaveLength(0) // 미승인 → keep 없음
   })
 
   it('throws when planner is not assigned', async () => {
@@ -185,10 +259,14 @@ describe('runProject', () => {
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     let implCalls = 0
     sessions.add(
-      fakeSession('impl', () => {
-        implCalls++
-        return '구현'
-      }),
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
     )
     sessions.add(fakeSession('rev', () => 'REVISE: 다시'))
 
@@ -200,6 +278,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
       maxReviewRounds: 2,
     })
     expect(implCalls).toBe(2) // 2회 시도 (off-by-one 이면 3회가 됨)
@@ -212,10 +292,14 @@ describe('runProject', () => {
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     let implCalls = 0
     sessions.add(
-      fakeSession('impl', () => {
-        implCalls++
-        return '구현'
-      }),
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
     )
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
@@ -227,6 +311,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
       maxReviewRounds: 0,
     })
     expect(implCalls).toBe(1) // 0/음수여도 최소 1회는 구현한다
@@ -241,10 +327,10 @@ describe('runProject', () => {
     let calls = 0
     const impl: LlmSession = {
       id: 'impl',
-      descriptor: { id: 'impl', kind: 'api', displayName: 'impl', ref: 'impl', model: '' },
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
       async send() {
         calls++
-        if (calls === 1) throw new Error('API 호출 실패')
+        if (calls === 1) throw new Error('CLI 호출 실패')
         return '구현'
       },
       async dispose() {},
@@ -260,6 +346,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
     })
     expect(result.tasks).toHaveLength(2)
     expect(result.tasks[0].status).toBe('failed') // 첫 작업은 예외로 실패
@@ -270,7 +358,7 @@ describe('runProject', () => {
   function recordingImplementer(sink: string[]): LlmSession {
     return {
       id: 'impl',
-      descriptor: { id: 'impl', kind: 'api', displayName: 'impl', ref: 'impl', model: '' },
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
       async send(prompt: string) {
         const m = /담당 작업: (\S+)/.exec(prompt)
         if (m) sink.push(m[1])
@@ -299,11 +387,13 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
     })
     expect(order).toEqual(['B', 'A'])
   })
 
-  it('marks a dependent task failed without running it when its dependency fails', async () => {
+  it('skips a dependent task without running it when its dependency fails', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     // B(인덱스1)는 A(인덱스0)에 의존. A 는 리뷰 거절로 실패한다.
@@ -325,13 +415,54 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
       maxReviewRounds: 1,
     })
     const a = result.tasks.find((t) => t.title === 'A')
     const b = result.tasks.find((t) => t.title === 'B')
-    expect(a?.status).toBe('failed')
-    expect(b?.status).toBe('failed')
+    expect(a?.status).toBe('failed') // 실패한 의존 작업 자체는 failed
+    expect(b?.status).toBe('skipped') // 의존 실패로 건너뛴 작업은 skipped
     expect(implemented).toEqual(['A']) // B 는 의존 실패로 실행되지 않음
+  })
+
+  it('skips an implementer task assigned to an API session', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'api')) // API 세션은 직접 편집 불가
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    expect(result.tasks[0].status).toBe('skipped')
+  })
+
+  it('skips a task when no workspace is provided', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      // workspace 미지정 → 직접 편집 불가
+    })
+    expect(result.tasks[0].status).toBe('skipped')
   })
 
   it('fails cyclic tasks instead of hanging', async () => {
@@ -344,7 +475,7 @@ describe('runProject', () => {
         () => '[{"title":"A","description":"a","dependsOn":[1]},{"title":"B","description":"b","dependsOn":[0]}]',
       ),
     )
-    sessions.add(fakeSession('impl', () => '구현'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
     const result = await runProject('goal', {
@@ -355,6 +486,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
     })
     expect(result.tasks.every((t) => t.status === 'failed')).toBe(true)
     expect(store.getProject(result.projectId)?.status).toBe('done')
@@ -364,7 +497,7 @@ describe('runProject', () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
-    sessions.add(fakeSession('solo', () => 'APPROVE')) // 구현·검토를 같은 LLM 이 맡음
+    sessions.add(fakeSession('solo', () => 'APPROVE', 'cli')) // 구현·검토를 같은 LLM 이 맡음
     await runProject('goal', {
       store,
       sessions,
@@ -373,28 +506,21 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'solo' },
         { role: 'reviewer', llmId: 'solo' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
     })
     expect(store.listEvents().some((e) => e.type === 'task.self_review')).toBe(true)
   })
 
-  it('writes implementer file artifacts through the injected file writer', async () => {
+  it('requires gate approval for destructive diffs and reverts when rejected', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
-    sessions.add(
-      fakeSession('impl', () => ['구현했습니다.', '```file:src/x.ts', 'export const x = 1', '```'].join('\n')),
-    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
-
-    const writes: Array<{ path: string; content: string }> = []
-    const fileWriter = {
-      async write(path: string, content: string) {
-        writes.push({ path, content })
-        return { ok: true, path }
-      },
-    }
-
-    await runProject('goal', {
+    // 민감 파일 변경 → classifyDiffRisk 가 destructive 로 분류
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
+    const result = await runProject('goal', {
       store,
       sessions,
       assignments: [
@@ -402,16 +528,43 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
-      fileWriter,
+      workspace: ws,
+      workspaceRoot: '/ws',
+      // gate 미지정 → 위험 변경은 거부(안전 기본값)
     })
-    expect(writes).toEqual([{ path: 'src/x.ts', content: 'export const x = 1' }])
+    expect(result.tasks[0].status).toBe('failed')
+    expect(ws.commits).toHaveLength(0) // 거부되어 keep 없음
+    expect(ws.reverts).toBeGreaterThanOrEqual(1)
+  })
+
+  it('applies a destructive diff when the gate approves', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: { async request() { return 'approved' } },
+    })
+    expect(result.tasks[0].status).toBe('done')
+    expect(ws.commits).toHaveLength(1)
   })
 
   it('runs verification after tasks and surfaces results', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
-    sessions.add(fakeSession('impl', () => '구현'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
     const result = await runProject('goal', {
@@ -422,6 +575,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
       verify: async () => [
         { kind: 'test', command: 'npm test', passed: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1 },
       ],
@@ -434,7 +589,7 @@ describe('runProject', () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
-    sessions.add(fakeSession('impl', () => '구현'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
     const result = await runProject('goal', {
@@ -445,6 +600,9 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
       verify: async () => [
         { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', durationMs: 1 },
       ],
@@ -452,26 +610,24 @@ describe('runProject', () => {
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
-  it('re-implements and re-verifies when verification fails, then succeeds', async () => {
+  it('re-implements (agent) and re-verifies when verification fails, then succeeds', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     let implCalls = 0
     sessions.add(
-      fakeSession('impl', () => {
-        implCalls++
-        return ['구현', '```file:src/a.ts', `export const v = ${implCalls}`, '```'].join('\n')
-      }),
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
     )
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
-    const writes: Array<{ path: string; content: string }> = []
-    const fileWriter = {
-      async write(path: string, content: string) {
-        writes.push({ path, content })
-        return { ok: true, path }
-      },
-    }
+    const ws = fakeWorkspace()
     let verifyCalls = 0
     const result = await runProject('goal', {
       store,
@@ -481,7 +637,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
-      fileWriter,
+      workspace: ws,
+      workspaceRoot: '/ws',
       verify: async () => {
         verifyCalls++
         const passed = verifyCalls >= 2 // 1차 실패, 2차(수정 후) 통과
@@ -502,7 +659,8 @@ describe('runProject', () => {
 
     expect(verifyCalls).toBe(2) // 최초 + 수정 후 재검증 1회
     expect(implCalls).toBe(2) // 작업 구현 1 + 수정 1
-    expect(writes).toHaveLength(2) // 작업 아티팩트 + 수정 아티팩트
+    expect(ws.commits).toHaveLength(2) // 작업 keep + 수정 keep
+    expect(ws.commits[1]).toContain('verify-fix')
     expect(result.verifications?.[0].passed).toBe(true)
     expect(store.getProject(result.projectId)?.status).toBe('done')
   })
@@ -513,18 +671,18 @@ describe('runProject', () => {
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     let implCalls = 0
     sessions.add(
-      fakeSession('impl', () => {
-        implCalls++
-        return ['구현', '```file:src/a.ts', 'export const v = 1', '```'].join('\n')
-      }),
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
     )
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
-    const fileWriter = {
-      async write(path: string) {
-        return { ok: true, path }
-      },
-    }
+    const ws = fakeWorkspace()
     let verifyCalls = 0
     const result = await runProject('goal', {
       store,
@@ -534,7 +692,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
-      fileWriter,
+      workspace: ws,
+      workspaceRoot: '/ws',
       maxVerifyFixRounds: 2,
       verify: async () => {
         verifyCalls++
@@ -546,6 +705,7 @@ describe('runProject', () => {
 
     expect(verifyCalls).toBe(3) // 최초 + 수정 2라운드 재검증
     expect(implCalls).toBe(3) // 작업 1 + 수정 2
+    expect(ws.commits).toHaveLength(3) // 작업 keep + 수정 2 keep
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
@@ -555,17 +715,17 @@ describe('runProject', () => {
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     let implCalls = 0
     sessions.add(
-      fakeSession('impl', () => {
-        implCalls++
-        return '구현'
-      }),
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
     )
     sessions.add(fakeSession('rev', () => 'APPROVE'))
-    const fileWriter = {
-      async write(path: string) {
-        return { ok: true, path }
-      },
-    }
+    const ws = fakeWorkspace()
     let verifyCalls = 0
     const result = await runProject('goal', {
       store,
@@ -575,7 +735,8 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
-      fileWriter,
+      workspace: ws,
+      workspaceRoot: '/ws',
       maxVerifyFixRounds: 0,
       verify: async () => {
         verifyCalls++
@@ -587,6 +748,7 @@ describe('runProject', () => {
 
     expect(verifyCalls).toBe(1) // 수정 시도 없음
     expect(implCalls).toBe(1) // 작업 구현만
+    expect(ws.commits).toHaveLength(1) // 작업 keep 만, 수정 keep 없음
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 })
