@@ -324,6 +324,8 @@ export interface FleetBridge {
   listProjects(): Promise<Project[]>
   getProjectTasks(projectId: string): Promise<Task[]>
   runProject(req: RunProjectRequest): Promise<RunResult>
+  /** 진행 중인 프로젝트 실행을 취소한다. */
+  cancelRun(projectId: string): Promise<void>
   /** 산출물 기록·검증 워크스페이스 조회. null 이면 비활성(파일 기록/검증 안 함). */
   getWorkspace(): Promise<string | null>
   /** 워크스페이스 디렉터리 선택(취소 시 기존 값 유지). 적용된 경로(또는 null) 반환. */
