@@ -176,4 +176,79 @@ describe('ProjectPanel', () => {
     expect(screen.getByText('계획됨')).toBeTruthy() // 스냅샷 행
     expect(screen.getByText('로딩중도착')).toBeTruthy() // 보존된 라이브 행
   })
+
+  // ⑤ run() 프로미스가 없는 마운트-옵저버도 project.done 라이브 이벤트로 프로젝트 목록을 갱신해야 한다.
+  it('refreshes the project list when a live run finishes on a mounted observer', async () => {
+    const running = { ...P2, status: 'executing' as const }
+    const finished = { ...P2, status: 'done' as const }
+    const listProjects = vi.fn().mockResolvedValueOnce([running]).mockResolvedValue([finished])
+    const fleet = mockFleet({ listProjects, getLastActiveProject: vi.fn().mockResolvedValue('p2') })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('결제 연동')
+    const before = listProjects.mock.calls.length
+    await act(async () => { fleet.fire({ type: 'project.done', message: '완료', data: { projectId: 'p2' } }) })
+    expect(listProjects.mock.calls.length).toBeGreaterThan(before) // 종료 시 refreshProjects 호출됨
+    expect(screen.getAllByText('done').length).toBeGreaterThan(0) // 상태칩이 갱신됨
+  })
+
+  // ⑥ 마일스톤이 스냅샷과 라이브 tail 양쪽에 있어도 로그 행이 중복되지 않아야 한다.
+  it('does not duplicate a milestone present in both the snapshot and the live tail', async () => {
+    let resolveEvents: (e: FleetEvent[]) => void = () => {}
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      listProjectEvents: vi.fn(() => new Promise<FleetEvent[]>((res) => { resolveEvents = res })),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능')
+    await vi.waitFor(() => expect(fleet.listProjectEvents).toHaveBeenCalledWith('p1'))
+    fleet.fire({ type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' } }) // 라이브 append
+    await act(async () => {
+      // 메인이 먼저 영속해 스냅샷에도 같은 마일스톤이 포함된 채 도착
+      resolveEvents([{ id: 'e1', type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' }, ts: 1 }])
+    })
+    expect(screen.getAllByText('구현 A 완료')).toHaveLength(1) // 중복 아님
+  })
+
+  // ⑦ 방 전환 시 이전 요약을 스냅샷 로드 완료 전(동기)에 제거해야 한다.
+  it('clears a visible summary synchronously when switching projects', async () => {
+    const getProjectTasks = vi.fn().mockResolvedValue([])
+    mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1, P2]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      getProjectTasks,
+      runProject: vi.fn().mockResolvedValue({ projectId: 'p1', tasks: [], summary: 'S요약' }),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능')
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' })) })
+    expect(await screen.findByText('S요약')).toBeTruthy() // p1 에 요약 표시(selectedId 유지)
+    // P2 선택 시 스냅샷을 지연시켜, 동기 클리어 여부만 검증
+    getProjectTasks.mockImplementationOnce(() => new Promise<Task[]>(() => {}))
+    await act(async () => { fireEvent.click(screen.getByText('결제 연동')) })
+    expect(screen.queryByText('S요약')).toBeNull() // 스냅샷 resolve 전에 이미 사라져야 함
+  })
+
+  // ⑧ 스냅샷 로드 중 라이브 마일스톤이 더 최신 보드를 만들면, 옛 스냅샷으로 덮어쓰지 않아야 한다.
+  it('does not overwrite a newer live board update with the stale selection snapshot', async () => {
+    const OLD: Task[] = [{ ...T1, status: 'running', changedFiles: [] }]
+    const NEW: Task[] = [{ ...T1, status: 'done', changedFiles: ['a.ts', 'b.ts'] }]
+    let resolveSnapshot: (t: Task[]) => void = () => {}
+    const getProjectTasks = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<Task[]>((res) => { resolveSnapshot = res })) // 선택 스냅샷(지연)
+      .mockResolvedValue(NEW) // 라이브 refreshTasks 는 최신 보드
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'),
+      getProjectTasks,
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('로그인 기능')
+    await vi.waitFor(() => expect(getProjectTasks).toHaveBeenCalledWith('p1'))
+    await act(async () => { fleet.fire({ type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' } }) }) // 라이브 → NEW
+    await act(async () => { resolveSnapshot(OLD) }) // 지연된 스냅샷이 OLD 로 늦게 도착
+    expect(screen.getByText('변경 2개')).toBeTruthy() // NEW 유지(OLD 로 덮어쓰지 않음)
+  })
 })

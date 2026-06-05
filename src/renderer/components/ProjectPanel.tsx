@@ -41,6 +41,9 @@ export function ProjectPanel({ sessions }: Props) {
   // 선택 effect 의 스냅샷 로드가 끝나기 전에 도착해 log 에 append 된 라이브 행 수.
   // 로드 완료 시 스냅샷 뒤에 이 행들을 보존해 덮어쓰기로 인한 라이브 로그 유실을 막는다.
   const liveDuringLoadRef = useRef(0)
+  // 로드 중 도착해 보드(refreshTasks)를 갱신한 라이브 마일스톤 수. >0 이면 스냅샷 setTasks 가
+  // 더 최신 보드를 덮어쓰지 않도록 건너뛴다(로그 보존과 대칭).
+  const liveTaskUpdateDuringLoadRef = useRef(0)
 
   async function refreshProjects(): Promise<Project[]> {
     const list = await window.fleet.listProjects()
@@ -84,14 +87,20 @@ export function ProjectPanel({ sessions }: Props) {
         void refreshProjects()
         setSelectedId(pid) // 새 프로젝트를 바로 연다
       }
-      if ((e.type === 'project.done' || e.type === 'run.cancelled') && pid) {
+      // 실행 종료(완료/취소/계획실패): in-flight id 해제 + 프로젝트 목록 갱신.
+      // run() 을 시작하지 않은 마운트-옵저버 인스턴스(탭/창 전환 후 재마운트)도 여기서 사이드바·상태칩을 갱신한다.
+      if ((e.type === 'project.done' || e.type === 'run.cancelled' || e.type === 'plan.failed') && pid) {
         setActiveProjectId((cur) => (cur === pid ? null : cur))
+        void refreshProjects()
       }
       // 현재 열려 있는 프로젝트의 이벤트만 라이브 로그/보드에 반영(크로스-프로젝트 누수 방지).
       if (pid && pid === selectedIdRef.current) {
         setLog((prev) => [...prev, { type: e.type, message: e.message }])
         liveDuringLoadRef.current += 1 // 진행 중 로드가 끝날 때 스냅샷 뒤로 보존할 라이브 행 카운트(아래 선택 effect 가 리셋·소비)
-        if (e.type !== 'task.progress') void refreshTasks(pid) // 보드는 마일스톤에서만 갱신
+        if (e.type !== 'task.progress') {
+          liveTaskUpdateDuringLoadRef.current += 1 // 로드 중 보드를 갱신한 마일스톤 — 스냅샷 setTasks 스킵 신호
+          void refreshTasks(pid) // 보드는 마일스톤에서만 갱신
+        }
       }
     })
     return unsub
@@ -106,17 +115,24 @@ export function ProjectPanel({ sessions }: Props) {
     }
     void window.fleet.setLastActiveProject(selectedId)
     liveDuringLoadRef.current = 0 // 이 로드 동안 도착하는 라이브 행만 카운트
+    liveTaskUpdateDuringLoadRef.current = 0
+    setSummary('') // 방 전환 즉시 이전 라이브 요약 제거(스냅샷 로드 완료를 기다리지 않아 엉뚱한 방 귀속 방지)
     void (async () => {
       const [t, ev] = await Promise.all([
         window.fleet.getProjectTasks(selectedId),
         window.fleet.listProjectEvents(selectedId),
       ])
       if (selectedIdRef.current !== selectedId) return // 응답 도착 시 다른 방이면 무시
-      setTasks(t)
+      // 로드 중 라이브 마일스톤이 보드를 더 최신으로 갱신했다면, 오래된 스냅샷으로 덮어쓰지 않는다.
+      if (liveTaskUpdateDuringLoadRef.current === 0) setTasks(t)
       const snapshot = ev.map((e) => ({ type: e.type, message: e.message ?? '' }))
-      // 로드 중 도착한 라이브 행(스냅샷에 아직 반영 안 된 마일스톤·진행)을 스냅샷 뒤에 보존 — 덮어쓰기 유실 방지.
-      setLog((prev) => [...snapshot, ...prev.slice(prev.length - liveDuringLoadRef.current)])
-      setSummary('') // 다른 방으로 전환 시 라이브 요약 초기화
+      // 로드 중 도착한 라이브 행을 스냅샷 뒤에 보존하되, 스냅샷에 이미 영속된 동일 행(type·message)은
+      // 중복이라 제외한다. task.progress 는 영속되지 않아 스냅샷에 없으므로 항상 보존된다.
+      setLog((prev) => {
+        const tail = prev.slice(prev.length - liveDuringLoadRef.current)
+        const fresh = tail.filter((r) => !snapshot.some((s) => s.type === r.type && s.message === r.message))
+        return [...snapshot, ...fresh]
+      })
     })()
   }, [selectedId])
 
