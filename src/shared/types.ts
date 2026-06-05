@@ -282,6 +282,7 @@ export interface RunProjectRequest {
   assignments?: RoleAssignment[]
   maxReviewRounds?: number
   taskTimeoutMs?: number
+  /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
   continueOnFailure?: boolean
 }
 

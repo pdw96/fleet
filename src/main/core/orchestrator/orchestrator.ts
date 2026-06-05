@@ -32,7 +32,7 @@ export interface RunOptions {
   maxVerifyFixRounds?: number
   /** 작업 LLM 호출 타임아웃(편집 에이전트는 길다). send 에 전달. */
   taskTimeoutMs?: number
-  /** true면 작업 실패가 의존 없는 다른 작업을 막지 않는다(부분 진행). */
+  /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
   continueOnFailure?: boolean
   /** 실행 취소 신호. abort 시 진행 중 작업을 revert 하고 중단한다. */
   signal?: AbortSignal
@@ -169,7 +169,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
       if (!approved) {
         await ws.revert(base)
-        store.updateTask(task.id, { status: 'failed', output: '미승인(재검토 한도 초과)' })
+        store.updateTask(task.id, { status: 'failed', output: '미승인(재검토 한도 초과)', changedFiles: [] })
         emit({ type: 'task.failed', message: `${task.title}: 미승인(재검토 한도 초과)`, data: { taskId: task.id } })
         failed.add(task.id)
         return
@@ -182,7 +182,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           : 'rejected'
         if (decision !== 'approved') {
           await ws.revert(base)
-          store.updateTask(task.id, { status: 'failed', output: `위험 변경 미승인: ${dr.reasons.join('; ')}` })
+          store.updateTask(task.id, { status: 'failed', output: `위험 변경 미승인: ${dr.reasons.join('; ')}`, changedFiles: [] })
           emit({ type: 'task.failed', message: `${task.title}: 위험 변경 미승인`, data: { taskId: task.id } })
           failed.add(task.id)
           return

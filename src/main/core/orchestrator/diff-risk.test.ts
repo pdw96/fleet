@@ -16,4 +16,9 @@ describe('classifyDiffRisk', () => {
     const r = classifyDiffRisk({ files: ['src/a.ts'], patch: '+const x = 1', truncated: false }, 10)
     expect(r.risk).toBe('caution')
   })
+  it('treats a truncated diff as destructive (cannot fully inspect)', () => {
+    const r = classifyDiffRisk({ files: ['src/a.ts'], patch: '+x', truncated: true }, 10)
+    expect(r.risk).toBe('destructive')
+    expect(r.reasons.join(' ')).toContain('절단')
+  })
 })

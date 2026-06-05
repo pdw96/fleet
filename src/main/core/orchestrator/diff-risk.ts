@@ -12,5 +12,7 @@ export function classifyDiffRisk(diff: DiffResult, deleteThreshold = 5): DiffRis
   if (sensitive.length > 0) reasons.push(`민감 파일 변경: ${sensitive.join(', ')}`)
   const deletions = (diff.patch.match(/^deleted file mode/gm) ?? []).length
   if (deletions > deleteThreshold) reasons.push(`대량 삭제 ${deletions}건`)
+  // patch 가 절단(60KB)된 경우 삭제 마커가 잘려 과소분류될 수 있으므로 안전하게 destructive 처리.
+  if (diff.truncated) reasons.push('diff 절단(전체 검증 불가)')
   return { risk: reasons.length > 0 ? 'destructive' : 'caution', reasons }
 }
