@@ -40,6 +40,10 @@ describe('parsePlannedTasks', () => {
     expect(tasks[0].title).toBe('작업 1')
     expect(tasks[0].role).toBeUndefined()
   })
+
+  it('throws when the task list is empty', () => {
+    expect(() => parsePlannedTasks('[]')).toThrow()
+  })
 })
 
 describe('buildPlannerPrompt', () => {

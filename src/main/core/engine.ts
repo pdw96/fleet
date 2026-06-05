@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AgentRole,
   ApiProviderConfig,
+  ApprovalRequest,
   AssignmentPolicy,
   ChatMessage,
   ChatRoom,
@@ -18,15 +19,19 @@ import { ASSIGNABLE_ROLES } from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
 import { createCliRegistry, type CliRegistry } from './cli/registry'
+import { createFileOps } from './fileops/fileops'
 import { assignRoles } from './orchestrator/assignment'
 import { runProject, type OrchestratorEvent, type RunResult } from './orchestrator/orchestrator'
 import { createApiProvider } from './providers/registry'
+import { createResilientHttp } from './providers/resilient'
 import { defaultHttp, type HttpClient } from './providers/types'
+import { createApprovalGate } from './safety/approval'
 import { createApiSession } from './session/api-session'
 import { createCliSession } from './session/cli-session'
 import { createSessionManager, type SessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
 import type { Store } from './store/types'
+import { npmVerifyCommands, runAllVerifications, type VerifyRunner } from './verify/run'
 
 /**
  * CLI 어댑터 id / API provider 별 기본 적합 역할 시드.
@@ -53,6 +58,12 @@ export interface FleetEngineOptions {
   onOrchestratorEvent?: (e: OrchestratorEvent) => void
   /** 채팅 응답 토큰 스트림 싱크(미지정 시 버퍼링: end 에서 최종 메시지만). */
   onChatStream?: (e: ChatStreamEvent) => void
+  /** 산출물 기록·검증의 워크스페이스 루트. 미지정 시 파일 기록/검증 비활성(기존 동작 보존). */
+  workspaceDir?: string
+  /** 위험(destructive) 작업 승인 콜백. 미지정 시 위험 작업은 거부된다(안전 기본값). */
+  approver?: (req: ApprovalRequest) => Promise<boolean>
+  /** 검증 실행기 주입(테스트용). 기본은 child_process 기반. */
+  verifyRunner?: VerifyRunner
 }
 
 export interface RunProjectInput {
@@ -81,6 +92,9 @@ export interface FleetEngine {
   listProjects(): Project[]
   getProjectTasks(projectId: string): Task[]
   runProjectFlow(input: RunProjectInput): Promise<RunResult>
+  /** 산출물 기록·검증 워크스페이스 조회/설정(null 이면 비활성). */
+  getWorkspace(): string | null
+  setWorkspace(dir: string | null): void
 
   // ── 채팅 ──
   createRoom(title: string, participants?: string[]): ChatRoom
@@ -99,8 +113,23 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const store = opts.store ?? createMemoryStore()
   const sessions = opts.sessions ?? createSessionManager()
   const cliRegistry = opts.cliRegistry ?? createCliRegistry()
-  const http = opts.http ?? defaultHttp
+  // 주입이 없으면 타임아웃·재시도를 갖춘 기본 HTTP 를 쓴다(네트워크 무한 대기/일시 오류 방어).
+  const http = opts.http ?? createResilientHttp(defaultHttp)
   const runner = opts.runner ?? defaultRunner
+
+  // 안전 계층: 파일 쓰기는 caution(자동승인), 민감/삭제는 destructive(approver 필요)로 게이트한다.
+  const appendAudit = (type: string, data: Record<string, unknown>): void => {
+    store.appendEvent({ type, data })
+  }
+  const gate = createApprovalGate({ autoApprove: ['safe', 'caution'], approver: opts.approver, onEvent: appendAudit })
+  // 워크스페이스는 런타임에 바꿀 수 있다(렌더러에서 선택). null 이면 파일 기록/검증 비활성.
+  let workspaceDir: string | null = opts.workspaceDir ?? null
+  const currentFileOps = () =>
+    workspaceDir ? createFileOps({ root: workspaceDir, gate, onEvent: appendAudit }) : undefined
+  const currentVerify = () => {
+    const dir = workspaceDir
+    return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner }) : undefined
+  }
 
   /**
    * 한 발언(askLlm 1회)을 스트리밍 이벤트로 감싼다 — 채팅 단일 질문과 AI 토론이 균일하게 흐른다.
@@ -212,8 +241,19 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         sessions,
         assignments,
         maxReviewRounds: input.maxReviewRounds,
+        fileWriter: currentFileOps(),
+        verify: currentVerify(),
         onEvent: opts.onOrchestratorEvent,
       })
+    },
+
+    getWorkspace() {
+      return workspaceDir
+    },
+
+    setWorkspace(dir) {
+      workspaceDir = dir
+      store.appendEvent({ type: 'workspace.set', data: { dir } })
     },
 
     createRoom(title, participants = []) {
@@ -241,7 +281,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const out: ChatMessage[] = []
       for (let r = 0; r < rounds; r++) {
         for (const id of llmIds) {
-          out.push(await streamedAsk(controller, roomId, id))
+          try {
+            out.push(await streamedAsk(controller, roomId, id))
+          } catch {
+            // 한 LLM 의 실패가 나머지 토론을 중단시키지 않게 격리한다(에러는 streamedAsk 가 스트림 이벤트로 방출).
+          }
         }
       }
       return out

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ChatStreamEvent, FleetBridge, OrchestratorEvent } from '../shared/types'
+import type { ApprovalRequest, ChatStreamEvent, FleetBridge, OrchestratorEvent } from '../shared/types'
 
 const api: FleetBridge = {
   getAppInfo: () => ipcRenderer.invoke('fleet:app:info'),
@@ -17,6 +17,8 @@ const api: FleetBridge = {
   listProjects: () => ipcRenderer.invoke('fleet:project:list'),
   getProjectTasks: (projectId) => ipcRenderer.invoke('fleet:project:tasks', projectId),
   runProject: (req) => ipcRenderer.invoke('fleet:project:run', req),
+  getWorkspace: () => ipcRenderer.invoke('fleet:workspace:get'),
+  selectWorkspace: () => ipcRenderer.invoke('fleet:workspace:select'),
 
   // 채팅
   createRoom: (title, participants) => ipcRenderer.invoke('fleet:chat:createRoom', title, participants),
@@ -42,6 +44,14 @@ const api: FleetBridge = {
       ipcRenderer.removeListener('fleet:chat:stream', listener)
     }
   },
+  onApprovalRequest: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, req: ApprovalRequest): void => callback(req)
+    ipcRenderer.on('fleet:approval:request', listener)
+    return () => {
+      ipcRenderer.removeListener('fleet:approval:request', listener)
+    }
+  },
+  respondApproval: (id, approved) => ipcRenderer.invoke('fleet:approval:respond', id, approved),
 }
 
 contextBridge.exposeInMainWorld('fleet', api)

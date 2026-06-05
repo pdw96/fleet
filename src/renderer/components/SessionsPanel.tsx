@@ -22,6 +22,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const asError = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
   useEffect(() => {
     void detect()
@@ -29,28 +32,52 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
 
   async function detect() {
     setDetecting(true)
+    setError(null)
     try {
       setClis(await window.fleet.detectClis())
+    } catch (e) {
+      setError(`CLI 감지 실패: ${asError(e)}`)
     } finally {
       setDetecting(false)
     }
   }
 
   async function registerCli(id: string) {
-    await window.fleet.registerCliSession(id, { stateful })
-    onRefresh()
+    setError(null)
+    try {
+      await window.fleet.registerCliSession(id, { stateful })
+      onRefresh()
+    } catch (e) {
+      setError(`세션 등록 실패: ${asError(e)}`)
+    }
   }
 
   async function toggleCapability(s: LlmDescriptor, role: AgentRole) {
     const current = s.capabilities ?? []
     const next = current.includes(role) ? current.filter((r) => r !== role) : [...current, role]
-    await window.fleet.setSessionCapabilities(s.id, next)
-    onRefresh()
+    setError(null)
+    try {
+      await window.fleet.setSessionCapabilities(s.id, next)
+      onRefresh()
+    } catch (e) {
+      setError(`역량 변경 실패: ${asError(e)}`)
+    }
+  }
+
+  async function removeSession(id: string) {
+    setError(null)
+    try {
+      await window.fleet.removeSession(id)
+      onRefresh()
+    } catch (e) {
+      setError(`세션 제거 실패: ${asError(e)}`)
+    }
   }
 
   async function registerApi() {
     if (!apiKey.trim()) return
     setBusy(true)
+    setError(null)
     try {
       const config: ApiProviderConfig = {
         id: `${provider}-${Date.now()}`,
@@ -62,6 +89,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
       await window.fleet.registerApiSession(config)
       setApiKey('')
       onRefresh()
+    } catch (e) {
+      setError(`API 세션 등록 실패: ${asError(e)}`)
     } finally {
       setBusy(false)
     }
@@ -69,6 +98,11 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
 
   return (
     <div className="stack">
+      {error && (
+        <p className="note-bad" role="alert">
+          {error}
+        </p>
+      )}
       <section className="panel">
         <div className="panel-head">
           <span className="eyebrow">01 — CLI</span>
@@ -175,10 +209,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               <button
                 className="btn btn-danger btn-sm"
                 style={{ marginLeft: 'auto' }}
-                onClick={async () => {
-                  await window.fleet.removeSession(s.id)
-                  onRefresh()
-                }}
+                onClick={() => void removeSession(s.id)}
               >
                 제거
               </button>

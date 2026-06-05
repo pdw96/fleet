@@ -40,6 +40,7 @@ export function extractJsonArray(text: string): unknown {
 export function parsePlannedTasks(text: string): PlannedTask[] {
   const arr = extractJsonArray(text)
   if (!Array.isArray(arr)) throw new Error('계획은 JSON 배열이어야 합니다.')
+  if (arr.length === 0) throw new Error('분해된 작업이 없습니다(빈 계획).')
 
   return arr.map((raw, i): PlannedTask => {
     const o = (raw ?? {}) as Record<string, unknown>

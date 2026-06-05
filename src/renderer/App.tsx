@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AppInfo, LlmDescriptor } from '../shared/types'
+import { ApprovalModal } from './components/ApprovalModal'
 import { ChatPanel } from './components/ChatPanel'
 import { ProjectPanel } from './components/ProjectPanel'
 import { SessionsPanel } from './components/SessionsPanel'
@@ -18,7 +19,11 @@ export function App() {
   const [info, setInfo] = useState<AppInfo | null>(null)
 
   const refreshSessions = useCallback(async () => {
-    setSessions(await window.fleet.listSessions())
+    try {
+      setSessions(await window.fleet.listSessions())
+    } catch {
+      // 세션 목록 새로고침 실패는 조용히 무시한다(다음 액션에서 재시도).
+    }
   }, [])
 
   useEffect(() => {
@@ -70,6 +75,8 @@ export function App() {
           <span className="sep">/</span>Chrome {info.chrome}
         </footer>
       )}
+
+      <ApprovalModal />
     </div>
   )
 }

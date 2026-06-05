@@ -220,6 +220,9 @@ export interface ApprovalRequest {
 
 export type ApprovalDecision = 'approved' | 'rejected'
 
+/** destructive 승인 무응답 시 자동 거부까지의 시간(메인 측 권위 + 렌더러 카운트다운 공용). */
+export const APPROVAL_TIMEOUT_MS = 60_000
+
 // ── 감사 로그 (요구사항 6) ────────────────────────────────────────────────
 export interface FleetEvent {
   id: string
@@ -234,6 +237,8 @@ export interface RunResult {
   projectId: string
   tasks: Task[]
   summary: string
+  /** 검증 단계가 실행된 경우의 결과(요구사항 5). 미실행이면 undefined. */
+  verifications?: VerificationResult[]
 }
 
 export type OrchestratorEventType =
@@ -245,6 +250,10 @@ export type OrchestratorEventType =
   | 'task.review'
   | 'task.done'
   | 'task.failed'
+  | 'task.artifacts'
+  | 'verify.passed'
+  | 'verify.failed'
+  | 'verify.fixing'
   | 'summary'
   | 'project.done'
 
@@ -300,6 +309,10 @@ export interface FleetBridge {
   listProjects(): Promise<Project[]>
   getProjectTasks(projectId: string): Promise<Task[]>
   runProject(req: RunProjectRequest): Promise<RunResult>
+  /** 산출물 기록·검증 워크스페이스 조회. null 이면 비활성(파일 기록/검증 안 함). */
+  getWorkspace(): Promise<string | null>
+  /** 워크스페이스 디렉터리 선택(취소 시 기존 값 유지). 적용된 경로(또는 null) 반환. */
+  selectWorkspace(): Promise<string | null>
 
   // 채팅
   createRoom(title: string, participants?: string[]): Promise<ChatRoom>
@@ -315,4 +328,8 @@ export interface FleetBridge {
   onOrchestratorEvent(callback: (event: OrchestratorEvent) => void): () => void
   /** 채팅 응답 토큰 스트림 구독 (해제 함수 반환). */
   onChatStream(callback: (event: ChatStreamEvent) => void): () => void
+  /** destructive 작업 승인 요청 구독 (해제 함수 반환). */
+  onApprovalRequest(callback: (req: ApprovalRequest) => void): () => void
+  /** 승인 모달 결정 회신(메인이 id 로 상관). */
+  respondApproval(id: string, approved: boolean): Promise<void>
 }

@@ -1,20 +1,28 @@
+import type { VerificationResult } from '../../../shared/types'
+
 export interface ReviewVerdict {
   approved: boolean
   feedback: string
 }
 
-/** 구현 작업 프롬프트 (선택적 이전 피드백 반영). */
+/** 구현 작업 프롬프트 (선택적 이전 피드백 반영, 선택적 파일 아티팩트 형식 요청). */
 export function buildImplementPrompt(
   goal: string,
   taskTitle: string,
   taskDescription: string,
   feedback?: string,
+  wantsArtifacts = false,
 ): string {
   const parts = [
     `프로젝트 목표:\n${goal}`,
     `\n담당 작업: ${taskTitle}\n${taskDescription}`,
     '\n이 작업을 수행하고 산출물을 구체적으로 제시하라.',
   ]
+  if (wantsArtifacts) {
+    parts.push(
+      '\n파일을 생성/수정하려면 각 파일을 다음 형식의 코드펜스로 출력하라(워크스페이스 상대경로):\n```file:상대/경로.ext\n<파일 전체 내용>\n```',
+    )
+  }
   if (feedback && feedback.trim()) {
     parts.push(`\n이전 검토 피드백을 반드시 반영하라:\n${feedback.trim()}`)
   }
@@ -38,9 +46,11 @@ export function buildReviewPrompt(taskTitle: string, taskDescription: string, ou
 
 /** 리뷰 출력 파싱: 첫 토큰 APPROVE/REVISE + 피드백. */
 export function parseReviewVerdict(text: string): ReviewVerdict {
-  const trimmed = text.trim()
-  const approved = /^\s*APPROVE\b/i.test(trimmed)
-  const feedback = trimmed.replace(/^\s*(APPROVE|REVISE)\b[:\s]*/i, '').trim()
+  // 앞쪽의 마크다운 강조·인용부호·리스트 마커·공백을 벗겨 판정 토큰을 노출시킨다
+  // (예: "**APPROVE**", '"APPROVE"', "- APPROVE" 도 승인으로 인식). 'APPROVED' 변형도 허용.
+  const normalized = text.trim().replace(/^[\s*_`"'>•-]+/, '')
+  const approved = /^APPROVED?\b/i.test(normalized)
+  const feedback = normalized.replace(/^(APPROVED?|REVISE[DS]?)\b[:\s]*/i, '').trim()
   return { approved, feedback }
 }
 
@@ -57,5 +67,53 @@ export function buildSummaryPrompt(
     lines,
     '',
     '최종 결과가 원래 목표를 충족하는지 평가하고, 누락되거나 미흡한 부분을 구체적으로 지적하라.',
+  ].join('\n')
+}
+
+const FIX_DETAIL_CAP = 2_000
+const FIX_ARTIFACTS_CAP = 12_000
+
+/**
+ * verify 실패 → implementer 재구현 프롬프트(요구사항 5 후속).
+ * 실패한 검증의 분석(없으면 stderr)과 현재 워크스페이스 파일 내용(총량 상한)을 실어,
+ * 교정본 전체를 ```file:상대경로``` 형식으로 출력하도록 요청한다.
+ */
+export function buildVerifyFixPrompt(
+  goal: string,
+  failures: ReadonlyArray<VerificationResult>,
+  artifacts: ReadonlyMap<string, string>,
+): string {
+  const failBlock = failures
+    .map((f) => {
+      const detail = (f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP)
+      return `- [${f.kind}] ${f.command}\n  ${detail.replace(/\n/g, '\n  ')}`
+    })
+    .join('\n')
+
+  let budget = FIX_ARTIFACTS_CAP
+  const artBlocks: string[] = []
+  for (const [path, content] of artifacts) {
+    if (budget <= 0) {
+      artBlocks.push(`\`\`\`file:${path}\n…(생략: 길이 초과)\n\`\`\``)
+      continue
+    }
+    const slice = content.slice(0, budget)
+    const body = slice.length < content.length ? `${slice}\n…(절단)` : slice
+    budget -= slice.length
+    artBlocks.push(`\`\`\`file:${path}\n${body}\n\`\`\``)
+  }
+  const artText = artBlocks.length > 0 ? artBlocks.join('\n') : '(기록된 파일 없음)'
+
+  return [
+    `프로젝트 목표:\n${goal}`,
+    '',
+    '검증(verify)이 실패했다. 아래 실패를 모두 해결하라:',
+    failBlock,
+    '',
+    '현재 워크스페이스 파일:',
+    artText,
+    '',
+    '수정된 파일 전체를 다음 형식의 코드펜스로 출력하라(워크스페이스 상대경로):',
+    '```file:상대/경로.ext\n<파일 전체 내용>\n```',
   ].join('\n')
 }
