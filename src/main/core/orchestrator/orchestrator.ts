@@ -100,7 +100,20 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   }
 
   // 직접 편집 모델: 작업 루프 전에 워크스페이스가 git 저장소인지 보장한다.
-  if (opts.workspace) await opts.workspace.ensureRepo()
+  // 초기화 실패는 'executing' 상태로 방치하지 않고 project failed + 종료 이벤트를 남긴 뒤 rethrow 한다.
+  if (opts.workspace) {
+    try {
+      await opts.workspace.ensureRepo()
+    } catch (err) {
+      store.updateProject(project.id, { status: 'failed' })
+      emit({
+        type: 'project.done',
+        message: `워크스페이스 초기화 실패: ${err instanceof Error ? err.message : String(err)}`,
+        data: { projectId: project.id },
+      })
+      throw err
+    }
+  }
 
   // ── 2) 작업별 직접 편집 + diff 교차 리뷰 (dependsOn 위상 순서, 실패 격리) ──
   const tasks = store.listTasks(project.id)

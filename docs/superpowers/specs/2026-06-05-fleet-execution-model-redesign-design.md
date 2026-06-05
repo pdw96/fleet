@@ -194,3 +194,12 @@ keep 직전 diff를 검사해 다음이면 `ApprovalGate` destructive → 사용
 - diff의 그래픽 3-way 머지 UI(텍스트 미리보기로 충분).
 - 작업별 사용자 승인(결정: 리뷰어 1차 + 위험/최종만).
 - 원격/멀티 워크스페이스, 커밋 푸시 자동화.
+
+## 알려진 한계
+- **gitignore 된 파일은 diff 모델 밖이다.** 체크포인트/diff 수집은 `git add -A` 기반이라
+  `.gitignore` 로 무시되는 경로(예: gitignore 된 `.env`)에 대한 에이전트 편집은 스테이징되지
+  않는다. 따라서 (a) diff 위험 게이트(`classifyDiffRisk`)에 노출되지 않아 검토 없이 변경될 수
+  있고, (b) revert 의 `git clean -fd` 가 untracked-but-ignored 파일을 지우지 않아 되돌려지지도
+  않는다. 완화책: Fleet 워크스페이스에서는 민감 파일을 gitignore 하지 말 것.
+  완전한 해결은 범위 밖이다 — 무시 파일을 강제 스테이징(`git add -f`)하면 `node_modules` 까지
+  커밋되고, `git clean -fdx` 로 지우면 사용자의 기존 무시 파일까지 삭제된다.

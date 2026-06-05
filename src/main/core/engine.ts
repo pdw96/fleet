@@ -137,9 +137,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const activeRuns = new Map<string, AbortController>()
   const currentWorkspace = () =>
     workspaceDir ? createWorkspace(workspaceDir, opts.gitRunner) : undefined
-  const currentVerify = () => {
+  const currentVerify = (signal?: AbortSignal) => {
     const dir = workspaceDir
-    return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner, timeoutMs: VERIFY_TIMEOUT_MS }) : undefined
+    return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner, timeoutMs: VERIFY_TIMEOUT_MS, signal }) : undefined
   }
 
   /**
@@ -275,7 +275,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           workspace: currentWorkspace(),
           workspaceRoot: workspaceDir ?? undefined,
           gate,
-          verify: currentVerify(),
+          verify: currentVerify(controller.signal),
           signal: controller.signal,
           onEvent,
         })

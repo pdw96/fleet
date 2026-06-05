@@ -281,6 +281,46 @@ describe('runProject', () => {
     expect(ws.commits).toHaveLength(0) // 미승인 → keep 없음
   })
 
+  it('marks the project failed (not stuck executing) when ensureRepo throws', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    // ensureRepo 가 거부하는 워크스페이스: 계획(executing) 이후 초기화에서 실패한다.
+    const ws: Workspace = {
+      async ensureRepo() {
+        throw new Error('git init 실패')
+      },
+      async checkpoint() {
+        return 'base'
+      },
+      async collectDiff(): Promise<DiffResult> {
+        return { files: [], patch: '', truncated: false }
+      },
+      async keep() {
+        return 'commit'
+      },
+      async revert() {},
+    }
+    await expect(
+      runProject('goal', {
+        store,
+        sessions,
+        assignments: [
+          { role: 'planner', llmId: 'planner' },
+          { role: 'implementer', llmId: 'impl' },
+          { role: 'reviewer', llmId: 'rev' },
+        ],
+        workspace: ws,
+        workspaceRoot: '/ws',
+      }),
+    ).rejects.toThrow('git init 실패')
+    // 프로젝트는 ensureRepo 전에 생성됐다 — 거부 후 'executing' 으로 방치되지 않고 failed 여야 한다.
+    const projectId = store.listProjects()[0]?.id
+    expect(store.getProject(projectId)?.status).toBe('failed')
+  })
+
   it('throws when planner is not assigned', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

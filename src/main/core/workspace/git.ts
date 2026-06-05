@@ -104,6 +104,8 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       return r.stdout.trim()
     },
     async collectDiff(base) {
+      // 알려진 한계: `add -A` 는 .gitignore 된 경로를 스테이징하지 않는다 — gitignore 된 파일(예: 무시된 .env)에
+      // 대한 에이전트 편집은 이 diff(및 위험 게이트)에 잡히지 않고 revert 의 `clean -fd` 로도 지워지지 않는다(spec §알려진 한계).
       await ok(['add', '-A'])
       const names = await ok(['diff', '--cached', '--name-only', base])
       const files = names.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)

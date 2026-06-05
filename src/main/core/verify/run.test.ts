@@ -36,6 +36,17 @@ describe('runVerification', () => {
     expect(r.passed).toBe(false)
     expect(r.analysis).toContain('ENOENT')
   })
+
+  it('forwards the abort signal to the injected runner', async () => {
+    let received: AbortSignal | undefined
+    const controller = new AbortController()
+    const runner: VerifyRunner = async (_cmd, _timeout, signal) => {
+      received = signal
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    await runVerification({ kind: 'test', command: 'npm', args: ['test'] }, { runner, signal: controller.signal })
+    expect(received).toBe(controller.signal)
+  })
 })
 
 describe('defaultVerifyRunner', () => {
@@ -45,6 +56,17 @@ describe('defaultVerifyRunner', () => {
       200,
     )
     expect(res.spawnError).toBe('ETIMEDOUT')
+  }, 10_000)
+
+  it('reports an aborted run as spawnError ABORTED, not a normal failure', async () => {
+    // 이미 abort 된 신호를 넘기면 자식이 즉시 죽고 ABORTED 로 보고돼야 한다(타임아웃 만료를 기다리지 않음).
+    const res = await defaultVerifyRunner(
+      { kind: 'custom', command: 'node', args: ['-e', 'setTimeout(()=>{},5000)'] },
+      30_000,
+      AbortSignal.abort(),
+    )
+    expect(res.spawnError).toBe('ABORTED')
+    expect(res.code).toBeNull()
   }, 10_000)
 })
 

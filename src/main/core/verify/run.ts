@@ -15,21 +15,26 @@ export interface VerifyExecResult {
   spawnError?: string
 }
 
-export type VerifyRunner = (cmd: VerifyCommand, timeoutMs: number) => Promise<VerifyExecResult>
+export type VerifyRunner = (cmd: VerifyCommand, timeoutMs: number, signal?: AbortSignal) => Promise<VerifyExecResult>
 
 const MAX_BUFFER = 10 * 1024 * 1024
 
-/** 기본 실행기: child_process.execFile. */
-export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs) =>
+/** 기본 실행기: child_process.execFile. signal abort 시 자식 프로세스를 종료한다(취소 전파). */
+export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs, signal) =>
   new Promise<VerifyExecResult>((resolve) => {
     execFile(
       cmd.command,
       cmd.args,
-      { cwd: cmd.cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: MAX_BUFFER },
+      { cwd: cmd.cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: MAX_BUFFER, signal },
       (err, stdout, stderr) => {
         const e = err as
           | (NodeJS.ErrnoException & { code?: number | string; killed?: boolean; signal?: NodeJS.Signals | null })
           | null
+        // 취소(AbortSignal) 로 죽은 자식은 정상 실패가 아니라 ABORTED 로 보고한다(timeout 검사보다 먼저).
+        if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) {
+          resolve({ code: null, stdout: '', stderr: '', spawnError: 'ABORTED' })
+          return
+        }
         if (e && e.code === 'ENOENT') {
           resolve({ code: null, stdout: '', stderr: '', spawnError: 'ENOENT' })
           return
@@ -58,6 +63,8 @@ export interface RunVerifyOptions {
   runner?: VerifyRunner
   now?: () => number
   timeoutMs?: number
+  /** 실행 취소 신호. abort 시 검증 자식 프로세스를 종료하고 ABORTED 로 보고한다. */
+  signal?: AbortSignal
 }
 
 /** 단일 검증 명령 실행 → VerificationResult. */
@@ -68,7 +75,7 @@ export async function runVerification(cmd: VerifyCommand, opts: RunVerifyOptions
   const fullCommand = `${cmd.command} ${cmd.args.join(' ')}`.trim()
 
   const started = now()
-  const res = await runner(cmd, timeoutMs)
+  const res = await runner(cmd, timeoutMs, opts.signal)
   const durationMs = now() - started
 
   if (res.spawnError) {
