@@ -19,7 +19,6 @@ import { ASSIGNABLE_ROLES } from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
 import { createCliRegistry, type CliRegistry } from './cli/registry'
-import { createFileOps } from './fileops/fileops'
 import { assignRoles } from './orchestrator/assignment'
 import { runProject, type OrchestratorEvent, type RunResult } from './orchestrator/orchestrator'
 import { createApiProvider } from './providers/registry'
@@ -32,6 +31,7 @@ import { createSessionManager, type SessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
 import type { Store } from './store/types'
 import { npmVerifyCommands, runAllVerifications, type VerifyRunner } from './verify/run'
+import { createWorkspace, type GitRunner } from './workspace/git'
 
 /**
  * CLI 어댑터 id / API provider 별 기본 적합 역할 시드.
@@ -64,6 +64,8 @@ export interface FleetEngineOptions {
   approver?: (req: ApprovalRequest) => Promise<boolean>
   /** 검증 실행기 주입(테스트용). 기본은 child_process 기반. */
   verifyRunner?: VerifyRunner
+  /** git 실행기 주입(테스트용). 기본은 child_process 기반 defaultGitRunner. */
+  gitRunner?: GitRunner
 }
 
 export interface RunProjectInput {
@@ -124,8 +126,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const gate = createApprovalGate({ autoApprove: ['safe', 'caution'], approver: opts.approver, onEvent: appendAudit })
   // 워크스페이스는 런타임에 바꿀 수 있다(렌더러에서 선택). null 이면 파일 기록/검증 비활성.
   let workspaceDir: string | null = opts.workspaceDir ?? null
-  const currentFileOps = () =>
-    workspaceDir ? createFileOps({ root: workspaceDir, gate, onEvent: appendAudit }) : undefined
+  const currentWorkspace = () =>
+    workspaceDir ? createWorkspace(workspaceDir, opts.gitRunner) : undefined
   const currentVerify = () => {
     const dir = workspaceDir
     return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner }) : undefined
@@ -241,7 +243,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         sessions,
         assignments,
         maxReviewRounds: input.maxReviewRounds,
-        fileWriter: currentFileOps(),
+        workspace: currentWorkspace(),
+        workspaceRoot: workspaceDir ?? undefined,
+        gate,
         verify: currentVerify(),
         onEvent: opts.onOrchestratorEvent,
       })

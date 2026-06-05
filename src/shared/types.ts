@@ -260,7 +260,6 @@ export type OrchestratorEventType =
   | 'task.review'
   | 'task.done'
   | 'task.failed'
-  | 'task.artifacts'
   | 'task.progress'
   | 'task.skipped'
   | 'run.cancelled'
