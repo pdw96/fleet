@@ -73,6 +73,8 @@ export interface RunProjectInput {
   assignments?: RoleAssignment[]
   policy?: AssignmentPolicy
   maxReviewRounds?: number
+  taskTimeoutMs?: number
+  continueOnFailure?: boolean
 }
 
 /**
@@ -94,6 +96,8 @@ export interface FleetEngine {
   listProjects(): Project[]
   getProjectTasks(projectId: string): Task[]
   runProjectFlow(input: RunProjectInput): Promise<RunResult>
+  /** 진행 중인 프로젝트 실행을 취소한다(현재 작업 revert 후 중단). 미존재 id 는 무시. */
+  cancelRun(projectId: string): void
   /** 산출물 기록·검증 워크스페이스 조회/설정(null 이면 비활성). */
   getWorkspace(): string | null
   setWorkspace(dir: string | null): void
@@ -126,6 +130,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const gate = createApprovalGate({ autoApprove: ['safe', 'caution'], approver: opts.approver, onEvent: appendAudit })
   // 워크스페이스는 런타임에 바꿀 수 있다(렌더러에서 선택). null 이면 파일 기록/검증 비활성.
   let workspaceDir: string | null = opts.workspaceDir ?? null
+  // 진행 중 실행: projectId → AbortController. project.created 에서 등록, project.done 에서 해제.
+  const activeRuns = new Map<string, AbortController>()
   const currentWorkspace = () =>
     workspaceDir ? createWorkspace(workspaceDir, opts.gitRunner) : undefined
   const currentVerify = () => {
@@ -231,6 +237,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     async runProjectFlow(input) {
       const llmIds = sessions.list().map((s) => s.id)
       if (llmIds.length === 0) throw new Error('등록된 LLM 세션이 없습니다. 먼저 세션을 등록하세요.')
+      // 직접 편집 모델은 산출물 워크스페이스가 필수다(없으면 작업이 전부 skip 되어 의미가 없다).
+      if (!workspaceDir) throw new Error('워크스페이스가 선택되지 않았습니다. 먼저 산출물 워크스페이스를 선택하세요.')
       // 세션별 적합 역할을 capability-scored 채점 맵으로 모은다(끊겼던 연결고리). 역량 없는 세션은 제외.
       const capabilities = Object.fromEntries(
         sessions.descriptors().flatMap((d) => (d.capabilities?.length ? [[d.id, d.capabilities]] : [])),
@@ -238,17 +246,42 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const assignments =
         input.assignments ??
         assignRoles({ roles: ASSIGNABLE_ROLES, llmIds, policy: input.policy ?? 'round-robin', capabilities })
-      return runProject(input.goal, {
-        store,
-        sessions,
-        assignments,
-        maxReviewRounds: input.maxReviewRounds,
-        workspace: currentWorkspace(),
-        workspaceRoot: workspaceDir ?? undefined,
-        gate,
-        verify: currentVerify(),
-        onEvent: opts.onOrchestratorEvent,
-      })
+      // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
+      const controller = new AbortController()
+      const onEvent = (e: OrchestratorEvent) => {
+        const pid = e.data?.['projectId']
+        if (e.type === 'project.created' && typeof pid === 'string') activeRuns.set(pid, controller)
+        if (e.type === 'project.done' && typeof pid === 'string') activeRuns.delete(pid)
+        opts.onOrchestratorEvent?.(e)
+      }
+      try {
+        return await runProject(input.goal, {
+          store,
+          sessions,
+          assignments,
+          maxReviewRounds: input.maxReviewRounds,
+          taskTimeoutMs: input.taskTimeoutMs,
+          continueOnFailure: input.continueOnFailure,
+          workspace: currentWorkspace(),
+          workspaceRoot: workspaceDir ?? undefined,
+          gate,
+          verify: currentVerify(),
+          signal: controller.signal,
+          onEvent,
+        })
+      } finally {
+        // 정상 경로는 project.done 에서 제거되지만, 조기 throw 시에도 누수 없이 정리한다.
+        for (const [pid, c] of activeRuns) if (c === controller) activeRuns.delete(pid)
+      }
+    },
+
+    cancelRun(projectId) {
+      const c = activeRuns.get(projectId)
+      if (!c) return // 미존재 id 는 무해한 no-op
+      c.abort()
+      activeRuns.delete(projectId)
+      store.appendEvent({ type: 'run.cancelled', data: { projectId } })
+      opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
     },
 
     getWorkspace() {

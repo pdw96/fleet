@@ -114,6 +114,84 @@ describe('FleetEngine', () => {
     await expect(engine.runProjectFlow({ goal: 'x' })).rejects.toThrow('세션이 없습니다')
   })
 
+  it('throws when running a project without a selected workspace', async () => {
+    // 세션은 있으나 워크스페이스 미선택 — 직접 편집 모델은 워크스페이스 필수라 거부해야 한다.
+    const engine = createFleetEngine({ runner: roleRunner })
+    engine.registerCliSession('claude')
+    await expect(engine.runProjectFlow({ goal: 'g' })).rejects.toThrow('워크스페이스')
+  })
+
+  it('cancelRun aborts an in-flight run: task ends not-done and run.cancelled is emitted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-cancel-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const sessions = createSessionManager()
+      // 구현 호출(opts.workspace 지정)은 전달된 AbortSignal 에서 abort 될 때까지 대기하다 거부한다.
+      // 그 외(plan JSON / 검토 / 요약) 호출은 즉시 응답해 작업 루프까지 도달하게 한다.
+      sessions.add({
+        id: 'cli:claude',
+        descriptor: { id: 'cli:claude', kind: 'cli', displayName: 'Claude', ref: 'claude', model: '', capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'] },
+        async send(prompt, opts) {
+          if (prompt.includes('JSON')) return '[{"title":"작업1","description":"d1"}]'
+          if (prompt.includes('검토')) return 'APPROVE'
+          if (prompt.includes('누락')) return '요약'
+          if (opts?.workspace) {
+            // 편집(구현) 호출: abort 까지 hang → cancelRun 이 신호를 보내면 reject.
+            return await new Promise<string>((_resolve, reject) => {
+              const signal = opts.signal
+              if (signal?.aborted) return reject(new Error('aborted'))
+              signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+            })
+          }
+          return '응답'
+        },
+        async dispose() {},
+      })
+
+      const events: { type: string; data?: Record<string, unknown> }[] = []
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
+
+      // 실행을 await 하지 않고 띄운 뒤, project.created 에서 projectId 를 잡아 취소한다.
+      const runPromise = engine.runProjectFlow({ goal: 'g' })
+      const pid = await new Promise<string>((resolve) => {
+        const timer = setInterval(() => {
+          const created = events.find((e) => e.type === 'project.created')
+          const id = created?.data?.['projectId']
+          if (typeof id === 'string') {
+            clearInterval(timer)
+            resolve(id)
+          }
+        }, 5)
+      })
+
+      engine.cancelRun(pid)
+
+      const result = await runPromise
+
+      // abort 된 구현 호출 → 작업이 done 이 아니어야 한다(revert 후 failed).
+      expect(result.tasks).toHaveLength(1)
+      expect(result.tasks[0].status).not.toBe('done')
+      // run.cancelled 가 콜백으로 방출되고 감사 로그(store)에도 남는다.
+      expect(events.some((e) => e.type === 'run.cancelled')).toBe(true)
+      expect(store.listEvents().some((e) => e.type === 'run.cancelled')).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('cancelRun on an unknown projectId is a harmless no-op', () => {
+    const engine = createFleetEngine({ runner: roleRunner })
+    expect(() => engine.cancelRun('does-not-exist')).not.toThrow()
+    // 미존재 id 는 어떤 이벤트도 남기지 않는다.
+    expect(engine.listEvents().some((e) => e.type === 'run.cancelled')).toBe(false)
+  })
+
   it('runs the implementer as a direct-edit agent in the workspace and verifies when workspaceDir is set', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-'))
     try {
