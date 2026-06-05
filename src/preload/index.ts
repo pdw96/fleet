@@ -16,6 +16,9 @@ const api: FleetBridge = {
   // 프로젝트 / 오케스트레이션
   listProjects: () => ipcRenderer.invoke('fleet:project:list'),
   getProjectTasks: (projectId) => ipcRenderer.invoke('fleet:project:tasks', projectId),
+  listProjectEvents: (projectId) => ipcRenderer.invoke('fleet:project:events', projectId),
+  getLastActiveProject: () => ipcRenderer.invoke('fleet:project:lastActive:get'),
+  setLastActiveProject: (projectId) => ipcRenderer.invoke('fleet:project:lastActive:set', projectId),
   runProject: (req) => ipcRenderer.invoke('fleet:project:run', req),
   cancelRun: (projectId) => ipcRenderer.invoke('fleet:project:cancel', projectId),
   getWorkspace: () => ipcRenderer.invoke('fleet:workspace:get'),
