@@ -31,6 +31,7 @@ const api: FleetBridge = {
   postUserMessage: (roomId, content) => ipcRenderer.invoke('fleet:chat:postUser', roomId, content),
   askLlm: (roomId, llmId) => ipcRenderer.invoke('fleet:chat:askLlm', roomId, llmId),
   discussRoom: (roomId, llmIds, rounds) => ipcRenderer.invoke('fleet:chat:discuss', roomId, llmIds, rounds),
+  getChatActivity: () => ipcRenderer.invoke('fleet:chat:activity'),
 
   // 감사 / 이벤트
   listEvents: () => ipcRenderer.invoke('fleet:events:list'),

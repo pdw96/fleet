@@ -12,6 +12,7 @@ import type {
 import { createFleetEngine, type FleetEngine } from './core/engine'
 import { createIpcApprover, type IpcApprover } from './core/safety/approval-bridge'
 import { createJsonFileStore } from './core/store/json-file'
+import { e2eRunner, seedE2eFixtures } from './e2e'
 
 function broadcastOrchestratorEvent(event: OrchestratorEvent): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -32,6 +33,7 @@ function broadcastApprovalRequest(req: ApprovalRequest): void {
 }
 
 function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover } {
+  const e2e = !!process.env['FLEET_E2E']
   const store = createJsonFileStore(join(app.getPath('userData'), 'fleet'))
   const ipcApprover = createIpcApprover({
     send: broadcastApprovalRequest,
@@ -42,7 +44,10 @@ function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover } {
     onOrchestratorEvent: broadcastOrchestratorEvent,
     onChatStream: broadcastChatStream,
     approver: ipcApprover.approver,
+    // E2E: 실제 CLI 대신 결정론적 페이크 러너를 주입(FLEET_E2E 일 때만). 프로덕션은 기본 러너.
+    runner: e2e ? e2eRunner : undefined,
   })
+  if (e2e) seedE2eFixtures(engine) // 페이크 세션 2개 + 방 1개 시드
   return { engine, ipcApprover }
 }
 
@@ -103,6 +108,7 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   ipcMain.handle('fleet:chat:discuss', (_e, roomId: string, llmIds: string[], rounds?: number) =>
     engine.discussRoom(roomId, llmIds, rounds),
   )
+  ipcMain.handle('fleet:chat:activity', () => engine.getChatActivity())
 
   // 감사
   ipcMain.handle('fleet:events:list', () => engine.listEvents())

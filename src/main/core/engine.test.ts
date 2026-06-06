@@ -1,7 +1,7 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ChatStreamEvent } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
@@ -444,6 +444,10 @@ const streamRunner: CommandRunner = async (_cmd, _args, _t, onStdout) => {
   return { code: 0, stdout: '안녕', stderr: '' }
 }
 
+/** 스트림 스코프 이벤트(streamId 보유)만 통과시키는 가드 — 방 단위 busy/idle 봉투를 분리한다. */
+const hasStreamId = (e: ChatStreamEvent): e is Extract<ChatStreamEvent, { streamId: string }> =>
+  e.kind === 'start' || e.kind === 'delta' || e.kind === 'end' || e.kind === 'error'
+
 describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
   it('askLlm 은 start → delta* → end 를 동일 streamId 로 방출하고 end 에 영속 메시지를 싣는다', async () => {
     const events: ChatStreamEvent[] = []
@@ -454,14 +458,16 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
 
     const msg = await engine.askLlm(room.id, 'cli:claude')
 
-    expect(events[0].kind).toBe('start')
-    const sid = events[0].streamId
-    expect(events.every((e) => e.streamId === sid)).toBe(true) // 한 발언 = 한 streamId
+    // 방 단위 busy/idle 봉투를 제외한 스트림 이벤트만으로 발언 시퀀스를 검증한다.
+    const streamEvents = events.filter(hasStreamId)
+    expect(streamEvents[0].kind).toBe('start')
+    const sid = streamEvents[0].streamId
+    expect(streamEvents.every((e) => e.streamId === sid)).toBe(true) // 한 발언 = 한 streamId
 
-    const deltas = events.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
+    const deltas = streamEvents.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
     expect(deltas).toEqual(['안', '녕']) // 토큰 델타 순서 보존
 
-    const end = events.at(-1)
+    const end = streamEvents.at(-1)
     expect(end?.kind).toBe('end')
     expect(end?.kind === 'end' && end.message.id).toBe(msg.id) // end 메시지 = 반환된 영속 메시지
     expect(msg.content).toBe('안녕')
@@ -477,8 +483,9 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
 
     await expect(engine.askLlm(room.id, 'cli:claude')).rejects.toThrow('종료코드 1')
 
-    expect(events[0].kind).toBe('start')
-    const last = events.at(-1)
+    const streamEvents = events.filter(hasStreamId)
+    expect(streamEvents[0].kind).toBe('start')
+    const last = streamEvents.at(-1)
     expect(last?.kind).toBe('error')
     expect(last?.kind === 'error' && last.message).toContain('종료코드 1')
   })
@@ -533,11 +540,12 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
 
     const msg = await engine.askLlm(room.id, 'fake')
 
-    const deltas = events.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
+    const streamEvents = events.filter(hasStreamId)
+    const deltas = streamEvents.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
     expect(deltas).toEqual(['전체응답']) // 정확히 1회, 전체 텍스트
     expect(deltas[0]).toBe(msg.content) // delta = 영속 메시지 본문
-    expect(events[0].kind).toBe('start')
-    expect(events.at(-1)?.kind).toBe('end')
+    expect(streamEvents[0].kind).toBe('start')
+    expect(streamEvents.at(-1)?.kind).toBe('end')
   })
 
   it('codex-jsonl 포맷도 streamedAsk → onChatStream delta 로 흐른다(이벤트 단위 단일 델타)', async () => {
@@ -578,5 +586,101 @@ describe('FleetEngine — 프로젝트 영속 읽기', () => {
     expect(engine.getLastActiveProject()).toBe('p7')
     engine.setLastActiveProject(null)
     expect(engine.getLastActiveProject()).toBeNull()
+  })
+})
+
+describe('FleetEngine 채팅 진행 상태(getChatActivity / busy·idle)', () => {
+  it('초기 상태는 진행 중 방도 라이브 스트림도 없다', () => {
+    const engine = createFleetEngine()
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
+  })
+
+  it('in-flight 발언 동안 방을 busy 로, 누적 델타 텍스트를 스트림으로 노출하고 완료 후 비운다', async () => {
+    const events: ChatStreamEvent[] = []
+    const sessions = createSessionManager()
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    sessions.add({
+      id: 'a',
+      descriptor: { id: 'a', kind: 'api', displayName: 'A', ref: 'a', model: '' },
+      async send(_prompt, opts) {
+        opts?.onChunk?.('부분텍스트') // 델타 1회 흘린 뒤 gate 가 풀릴 때까지 in-flight 유지
+        await gate
+        return '부분텍스트'
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ sessions, onChatStream: (e) => events.push(e) })
+    const room = engine.createRoom('방', ['a'])
+
+    const p = engine.askLlm(room.id, 'a') // await 하지 않고 in-flight 로 띄움
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'delta')).toBe(true))
+
+    const mid = engine.getChatActivity()
+    expect(mid.busyRooms).toEqual([room.id])
+    expect(mid.streams).toHaveLength(1)
+    expect(mid.streams[0]).toMatchObject({ roomId: room.id, llmId: 'a', text: '부분텍스트' })
+
+    release()
+    await p
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
+  })
+
+  it('방 단위 busy/idle 이벤트를 진행 경계에서 방출한다(start 전 busy, end 후 idle)', async () => {
+    const events: ChatStreamEvent[] = []
+    const engine = createFleetEngine({
+      runner: async () => ({ code: 0, stdout: '응답', stderr: '' }),
+      onChatStream: (e) => events.push(e),
+    })
+    engine.registerCliSession('claude')
+    const room = engine.createRoom('방', ['cli:claude'])
+
+    await engine.askLlm(room.id, 'cli:claude')
+
+    expect(events[0].kind).toBe('busy') // 진행 시작 경계 — start 보다 먼저
+    expect(events.at(-1)?.kind).toBe('idle') // 진행 종료 경계 — end 보다 나중
+    const busy = events.find((e) => e.kind === 'busy')
+    expect(busy?.kind === 'busy' && busy.roomId).toBe(room.id)
+  })
+
+  it('discuss 는 여러 턴 내내 단일 busy 구간을 유지한다(턴 사이 idle 깜빡임 없음)', async () => {
+    const events: ChatStreamEvent[] = []
+    const engine = createFleetEngine({
+      runner: async () => ({ code: 0, stdout: '응답', stderr: '' }),
+      onChatStream: (e) => events.push(e),
+    })
+    engine.registerCliSession('claude')
+    engine.registerCliSession('codex')
+    const room = engine.createRoom('방', ['cli:claude', 'cli:codex'])
+
+    await engine.discussRoom(room.id, ['cli:claude', 'cli:codex'], 2)
+
+    // 4 턴(2 LLM × 2 라운드)이어도 busy/idle 은 정확히 1회씩(전체 토론 경계).
+    expect(events.filter((e) => e.kind === 'busy')).toHaveLength(1)
+    expect(events.filter((e) => e.kind === 'idle')).toHaveLength(1)
+    expect(events[0].kind).toBe('busy')
+    expect(events.at(-1)?.kind).toBe('idle')
+  })
+
+  it('발언이 실패해도 idle 로 진행 상태를 정리한다(finally 경로)', async () => {
+    const events: ChatStreamEvent[] = []
+    const sessions = createSessionManager()
+    sessions.add({
+      id: 'bad',
+      descriptor: { id: 'bad', kind: 'api', displayName: 'bad', ref: 'bad', model: '' },
+      async send() {
+        throw new Error('boom')
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ sessions, onChatStream: (e) => events.push(e) })
+    const room = engine.createRoom('방', ['bad'])
+
+    await expect(engine.askLlm(room.id, 'bad')).rejects.toThrow('boom')
+
+    expect(events.at(-1)?.kind).toBe('idle')
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
   })
 })

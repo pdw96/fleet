@@ -306,15 +306,43 @@ export interface RunProjectRequest {
  *  - delta : 토큰/이벤트 증분 텍스트. 누적해 말풍선에 이어 붙인다.
  *  - end   : 발언 완료. 영속된 최종 메시지를 싣는다(스트리밍 말풍선 → 확정 메시지로 교체).
  *  - error : 발언 실패. 렌더러는 말풍선을 에러 표시로 바꾸거나 제거한다.
+ *  - busy  : 방에서 ask/discuss 연산이 시작됨(첫 연산 경계). 렌더러는 진행 표시를 켠다.
+ *  - idle  : 방의 마지막 연산이 끝남(연산 경계). 렌더러는 진행 표시를 끈다.
  *
- * 모든 변형에 roomId 를 실어 렌더러가 활성 방이 아닌 이벤트를 쉽게 거른다.
- * 비스트리밍 세션(API/스트리밍 미지원 CLI)은 delta 가 최종 텍스트 1회로 도착한다.
+ * start/delta/end/error 는 한 발언(streamId)에 매인 스트림 이벤트, busy/idle 은 방(roomId)
+ * 단위 진행 경계 이벤트다. 모든 변형에 roomId 를 실어 렌더러가 활성 방이 아닌 이벤트를 쉽게 거른다.
+ * busy/idle 의 권위 소스는 main 이며(getChatActivity), 탭 언마운트로 렌더러가 이벤트를 놓쳐도
+ * 재마운트 시 스냅샷 재조회로 메운다. 비스트리밍 세션은 delta 가 최종 텍스트 1회로 도착한다.
  */
 export type ChatStreamEvent =
   | { kind: 'start'; streamId: string; roomId: string; llmId: string; role?: AgentRole }
   | { kind: 'delta'; streamId: string; roomId: string; delta: string }
   | { kind: 'end'; streamId: string; roomId: string; message: ChatMessage }
   | { kind: 'error'; streamId: string; roomId: string; message: string }
+  | { kind: 'busy'; roomId: string }
+  | { kind: 'idle'; roomId: string }
+
+/** main 이 보유한 in-flight 스트림 스냅샷(렌더러 재마운트 catch-up 용). */
+export interface ActiveChatStream {
+  streamId: string
+  roomId: string
+  llmId: string
+  role?: AgentRole
+  /** 지금까지 누적된 델타 텍스트. */
+  text: string
+}
+
+/**
+ * 채팅 진행 상태 스냅샷(단일 소스 오브 트루스). 렌더러가 ChatPanel 마운트 시 1회 조회해
+ * 진행 표시(busyRooms)와 라이브 말풍선(streams)을 복원한다 — 탭 전환으로 컴포넌트가
+ * 언마운트돼 로컬 state 가 날아가도 진행 상태가 살아남게 한다.
+ */
+export interface ChatActivity {
+  /** 진행 중(ask/discuss)인 방 id 목록. */
+  busyRooms: string[]
+  /** 현재 타이핑 중인 라이브 스트림들. */
+  streams: ActiveChatStream[]
+}
 
 // ── preload 가 노출하는 브리지 계약 ────────────────────────────────────────
 export interface FleetBridge {
@@ -354,6 +382,8 @@ export interface FleetBridge {
   postUserMessage(roomId: string, content: string): Promise<ChatMessage>
   askLlm(roomId: string, llmId: string): Promise<ChatMessage>
   discussRoom(roomId: string, llmIds: string[], rounds?: number): Promise<ChatMessage[]>
+  /** 채팅 진행 상태 스냅샷(진행 중 방 + 라이브 스트림). ChatPanel 마운트 시 복원용. */
+  getChatActivity(): Promise<ChatActivity>
 
   // 감사 / 이벤트 스트림
   listEvents(): Promise<FleetEvent[]>

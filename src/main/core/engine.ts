@@ -4,6 +4,7 @@ import type {
   ApiProviderConfig,
   ApprovalRequest,
   AssignmentPolicy,
+  ChatActivity,
   ChatMessage,
   ChatRoom,
   ChatStreamEvent,
@@ -119,6 +120,11 @@ export interface FleetEngine {
   askLlm(roomId: string, llmId: string, opts?: AskOptions): Promise<ChatMessage>
   /** 여러 LLM 이 방의 대화를 보고 rounds 회 순차 발언 (AI 간 자동 토론). */
   discussRoom(roomId: string, llmIds: string[], rounds?: number): Promise<ChatMessage[]>
+  /**
+   * 채팅 진행 상태 스냅샷(단일 소스 오브 트루스). 렌더러가 ChatPanel 마운트 시 조회해
+   * 진행 표시·라이브 말풍선을 복원한다. 탭 전환으로 렌더러 state 가 날아가도 main 이 권위.
+   */
+  getChatActivity(): ChatActivity
 
   // ── 감사 ──
   listEvents(): FleetEvent[]
@@ -148,11 +154,36 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner, timeoutMs: VERIFY_TIMEOUT_MS, signal }) : undefined
   }
 
+  // ── 채팅 진행 상태(단일 소스 오브 트루스) ──────────────────────────────────
+  // 렌더러는 ChatPanel 마운트 시 getChatActivity 로 복원하고 busy/idle·delta 로 라이브 동기화한다.
+  // 탭 언마운트로 렌더러 state(busy/streams)가 날아가도 진행의 권위는 항상 main 에 있다.
+  const emitChat = opts.onChatStream
+  /** in-flight 스트림의 누적 텍스트 버퍼. start 에서 생성, delta 에서 누적, end/error 에서 제거. */
+  const activeStreams = new Map<string, { roomId: string; llmId: string; role?: AgentRole; text: string }>()
+  /** roomId → 진행 중 ask/discuss 연산 수. 0→1 에서 busy, 1→0 에서 idle 을 방출한다. */
+  const activeOps = new Map<string, number>()
+
+  const enterOp = (roomId: string): void => {
+    const n = (activeOps.get(roomId) ?? 0) + 1
+    activeOps.set(roomId, n)
+    if (n === 1) emitChat?.({ kind: 'busy', roomId }) // 첫 연산 경계
+  }
+  const exitOp = (roomId: string): void => {
+    const n = (activeOps.get(roomId) ?? 1) - 1
+    if (n <= 0) {
+      activeOps.delete(roomId)
+      emitChat?.({ kind: 'idle', roomId }) // 마지막 연산 경계
+    } else {
+      activeOps.set(roomId, n)
+    }
+  }
+
   /**
    * 한 발언(askLlm 1회)을 스트리밍 이벤트로 감싼다 — 채팅 단일 질문과 AI 토론이 균일하게 흐른다.
    * onChatStream 싱크가 없으면 그대로 위임(스트리밍 비활성). 있으면 streamId 를 발급해
    * start → delta* → end(영속 메시지) 를 방출하고, 실패 시 error 를 방출한 뒤 그대로 rethrow 한다
    * (호출자 IPC 가 여전히 reject 되어 렌더러의 busy 해제 경로가 정상 동작하도록).
+   * 진행 중에는 activeStreams 에 누적 텍스트를 보관해 재마운트한 렌더러가 catch-up 할 수 있게 한다.
    */
   const streamedAsk = async (
     controller: ChatController,
@@ -160,18 +191,25 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     llmId: string,
     askOpts?: AskOptions,
   ): Promise<ChatMessage> => {
-    const emit = opts.onChatStream
+    const emit = emitChat
     if (!emit) return controller.askLlm(llmId, askOpts)
     const streamId = randomUUID()
+    activeStreams.set(streamId, { roomId, llmId, role: askOpts?.role, text: '' })
     emit({ kind: 'start', streamId, roomId, llmId, role: askOpts?.role })
     try {
       const message = await controller.askLlm(llmId, {
         ...askOpts,
-        onToken: (delta) => emit({ kind: 'delta', streamId, roomId, delta }),
+        onToken: (delta) => {
+          const cur = activeStreams.get(streamId)
+          if (cur) cur.text += delta // 재마운트 catch-up 용 누적
+          emit({ kind: 'delta', streamId, roomId, delta })
+        },
       })
+      activeStreams.delete(streamId)
       emit({ kind: 'end', streamId, roomId, message })
       return message
     } catch (err) {
+      activeStreams.delete(streamId)
       emit({ kind: 'error', streamId, roomId, message: err instanceof Error ? err.message : String(err) })
       throw err
     }
@@ -347,22 +385,45 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     askLlm(roomId, llmId, askOpts) {
-      return streamedAsk(createChatController({ store, sessions, roomId }), roomId, llmId, askOpts)
+      // 연산 경계(busy/idle)는 한 발언 전체를 감싼다 — 단일 질문도 진행 표시 대상.
+      enterOp(roomId)
+      return streamedAsk(createChatController({ store, sessions, roomId }), roomId, llmId, askOpts).finally(() =>
+        exitOp(roomId),
+      )
     },
 
     async discussRoom(roomId, llmIds, rounds = 1) {
-      const controller = createChatController({ store, sessions, roomId })
-      const out: ChatMessage[] = []
-      for (let r = 0; r < rounds; r++) {
-        for (const id of llmIds) {
-          try {
-            out.push(await streamedAsk(controller, roomId, id))
-          } catch {
-            // 한 LLM 의 실패가 나머지 토론을 중단시키지 않게 격리한다(에러는 streamedAsk 가 스트림 이벤트로 방출).
+      // busy 는 토론 시작에 1회, idle 은 전체 토론 종료에 1회 — 턴 사이 공백에도 진행 표시가 유지된다.
+      enterOp(roomId)
+      try {
+        const controller = createChatController({ store, sessions, roomId })
+        const out: ChatMessage[] = []
+        for (let r = 0; r < rounds; r++) {
+          for (const id of llmIds) {
+            try {
+              out.push(await streamedAsk(controller, roomId, id))
+            } catch {
+              // 한 LLM 의 실패가 나머지 토론을 중단시키지 않게 격리한다(에러는 streamedAsk 가 스트림 이벤트로 방출).
+            }
           }
         }
+        return out
+      } finally {
+        exitOp(roomId)
       }
-      return out
+    },
+
+    getChatActivity() {
+      return {
+        busyRooms: [...activeOps.keys()],
+        streams: [...activeStreams.entries()].map(([streamId, s]) => ({
+          streamId,
+          roomId: s.roomId,
+          llmId: s.llmId,
+          role: s.role,
+          text: s.text,
+        })),
+      }
     },
 
     listEvents() {
