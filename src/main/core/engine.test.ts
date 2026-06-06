@@ -50,7 +50,8 @@ function fakeGit(): GitRunner {
  * 편집 모드(opts.cwd 지정)에선 워크스페이스에 파일을 직접 만들어 실제 git diff 를 발생시킨다.
  */
 const roleRunner: CommandRunner = async (_cmd, args, opts) => {
-  const prompt = args.join(' ')
+  // 프롬프트는 stdin 으로 오므로(promptVia='stdin') argv 와 stdin 을 함께 보고 역할을 판별한다.
+  const prompt = [...args, opts.stdinInput ?? ''].join(' ')
   if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
   if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
   if (prompt.includes('누락')) return { code: 0, stdout: '요약: 목표 충족, 누락 없음', stderr: '' }
@@ -244,7 +245,7 @@ describe('FleetEngine', () => {
     try {
       // 편집 모드(opts.cwd 지정)에서 에이전트가 워크스페이스에 파일을 직접 만든다 → 실제 git diff 발생.
       const runner: CommandRunner = async (_cmd, args, opts) => {
-        const prompt = args.join(' ')
+        const prompt = [...args, opts.stdinInput ?? ''].join(' ')
         if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
         if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
@@ -288,7 +289,7 @@ describe('FleetEngine', () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-ws-'))
     try {
       const runner: CommandRunner = async (_c, args, opts) => {
-        const p = args.join(' ')
+        const p = [...args, opts.stdinInput ?? ''].join(' ')
         if (p.includes('JSON')) return { code: 0, stdout: '[{"title":"T","description":"d"}]', stderr: '' }
         if (p.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (p.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
@@ -394,10 +395,11 @@ describe('FleetEngine', () => {
   })
 
   it('stateful 로 등록한 CLI 세션은 채팅에서 세션 재개(--session-id→--resume)와 델타를 사용한다', async () => {
-    const calls: string[][] = []
+    // 프롬프트는 stdin 으로 가므로(promptVia='stdin') argv 와 stdin 을 함께 캡처한다.
+    const calls: { args: string[]; stdin?: string }[] = []
     const engine = createFleetEngine({
-      runner: async (_cmd, args) => {
-        calls.push(args)
+      runner: async (_cmd, args, opts) => {
+        calls.push({ args, stdin: opts.stdinInput })
         return { code: 0, stdout: '답변', stderr: '' }
       },
     })
@@ -410,17 +412,16 @@ describe('FleetEngine', () => {
     engine.postUserMessage(room.id, '둘째 질문')
     await engine.askLlm(room.id, 'cli:claude') // 둘째 턴 → --resume <같은 uuid>
 
-    // 첫 호출: 새 세션 시작
-    expect(calls[0][0]).toBe('-p')
-    expect(calls[0][1]).toBe('--session-id')
-    const sid = calls[0][2]
+    // 첫 호출: 새 세션 시작 (프롬프트는 argv 가 아닌 stdin)
+    const sid = calls[0].args[2]
+    expect(calls[0].args).toEqual(['-p', '--session-id', sid])
     expect(sid).toMatch(/^[0-9a-f-]{36}$/)
-    expect(calls[0][3]).toContain('첫 질문') // 첫 턴엔 전체 맥락
+    expect(calls[0].stdin).toContain('첫 질문') // 첫 턴엔 전체 맥락
 
     // 둘째 호출: 같은 id 로 재개 + 델타(첫 질문 재전송 없음)
-    expect(calls[1].slice(0, 3)).toEqual(['-p', '--resume', sid])
-    expect(calls[1][3]).toContain('둘째 질문')
-    expect(calls[1][3]).not.toContain('첫 질문')
+    expect(calls[1].args).toEqual(['-p', '--resume', sid])
+    expect(calls[1].stdin).toContain('둘째 질문')
+    expect(calls[1].stdin).not.toContain('첫 질문')
   })
 
   it('supports a live chat room with a registered LLM', async () => {

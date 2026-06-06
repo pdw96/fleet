@@ -82,6 +82,16 @@ describe('defaultRunner (integration)', () => {
     expect(res.stdout).toContain('done:0')
   }, 15_000)
 
+  // 회귀: stdinInput 이 주어지면 자식 stdin 으로 그대로 전달된 뒤 EOF 된다(긴 프롬프트 argv 한도 우회 경로).
+  it('writes stdinInput to the child process stdin (UTF-8)', async () => {
+    const script =
+      "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write('GOT:'+d))"
+    const payload = '안녕 stdin '.repeat(2000) // argv 한도(>8191자)를 넘는 큰 입력도 stdin 으론 통과
+    const res = await defaultRunner('node', ['-e', script], { timeoutMs: 10_000, stdinInput: payload })
+    expect(res.code).toBe(0)
+    expect(res.stdout).toBe('GOT:' + payload)
+  }, 15_000)
+
   // 회귀: maxBuffer 초과 시 child 를 죽이고 명시적 에러를 반환해야 한다(조용한 truncation / 무한 매달림 방지).
   it('errors with ENOBUFS when output exceeds the max buffer', async () => {
     const script = "process.stdout.write('x'.repeat(11*1024*1024))"
@@ -159,5 +169,21 @@ describe('createCliRegistry', () => {
     reg.register({ id: 'cursor', displayName: 'Cursor CLI', command: 'cursor-agent', versionArgs: ['--version'] })
     expect(reg.get('cursor')?.command).toBe('cursor-agent')
     expect(reg.list()).toHaveLength(4)
+  })
+
+  // 회귀(gemini 침묵 버그): 긴 전사를 argv 로 넘기면 Windows 명령줄 한도에 걸린다(.cmd 셰임 cmd.exe ~8191자).
+  // 기본 어댑터는 프롬프트를 stdin 으로 보내야 하며, 어떤 인자 템플릿에도 '{prompt}' 토큰이 남아 있으면 안 된다.
+  it('default adapters send the prompt via stdin (no {prompt} token in any arg template)', () => {
+    const promptTemplates = (a: (typeof DEFAULT_CLI_ADAPTERS)[number]): string[] => [
+      ...(a.headless?.args ?? []),
+      ...(a.session?.startArgs ?? []),
+      ...(a.session?.resumeArgs ?? []),
+      ...(a.streaming?.args ?? []),
+      ...(a.edit?.args ?? []),
+    ]
+    for (const a of DEFAULT_CLI_ADAPTERS) {
+      expect(a.promptVia).toBe('stdin')
+      expect(promptTemplates(a)).not.toContain('{prompt}')
+    }
   })
 })
