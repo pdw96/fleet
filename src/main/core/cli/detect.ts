@@ -17,6 +17,12 @@ export interface RunOpts {
   cwd?: string
   /** 외부 취소 신호 — abort 시 자식을 죽이고 ABORTED 로 종료한다. */
   signal?: AbortSignal
+  /**
+   * 자식 stdin 으로 보낼 입력(없으면 즉시 EOF). 긴 프롬프트를 argv 대신 stdin 으로 넘겨
+   * Windows 명령줄 길이 한도(.cmd 셰임 cmd.exe ~8191자 / 네이티브 exe ~32767자)를 우회한다.
+   * UTF-8 로 인코딩되어 한 번에 write 후 stdin 을 닫는다.
+   */
+  stdinInput?: string
 }
 
 /**
@@ -44,7 +50,7 @@ const MAX_BUFFER = 10 * 1024 * 1024
  */
 export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
   new Promise<CommandResult>((resolve) => {
-    const { timeoutMs, cwd, signal } = opts
+    const { timeoutMs, cwd, signal, stdinInput } = opts
     const outChunks: Buffer[] = []
     const errChunks: Buffer[] = []
     let outLen = 0
@@ -114,8 +120,13 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
       finish({ code })
     })
 
-    // 헤드리스 CLI(claude -p 등)가 stdin 입력을 기다리며 멈추지 않도록 즉시 EOF 를 보낸다.
-    child.stdin?.end()
+    // 자식이 stdin 을 읽기 전에 죽으면 write 가 EPIPE 를 낼 수 있다 — 실제 결과는
+    // error/close 핸들러가 처리하므로 여기서는 미처리 예외만 막는다.
+    child.stdin?.on('error', () => {})
+    // 프롬프트가 있으면 stdin 으로 보낸 뒤 EOF, 없으면 헤드리스 CLI(claude -p 등)가
+    // stdin 입력을 기다리며 멈추지 않도록 즉시 EOF 를 보낸다.
+    if (stdinInput != null) child.stdin?.end(stdinInput)
+    else child.stdin?.end()
   })
 
 const SEMVER = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/

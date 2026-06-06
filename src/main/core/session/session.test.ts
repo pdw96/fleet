@@ -89,6 +89,66 @@ describe('createCliSession', () => {
     expect(captured).toEqual(['-p', '질문'])
   })
 
+  // 회귀(gemini 침묵 버그): promptVia='stdin' 어댑터는 프롬프트를 argv 가 아닌 자식 stdin 으로 보낸다.
+  it("promptVia='stdin' 어댑터는 프롬프트를 argv 가 아닌 stdin 으로 보낸다", async () => {
+    let captured: string[] = []
+    let stdinSeen: string | undefined
+    const runner: CommandRunner = async (_cmd, args, opts) => {
+      captured = args
+      stdinSeen = opts.stdinInput
+      return { code: 0, stdout: '응답\n', stderr: '' }
+    }
+    const stdinAdapter: CliAdapter = {
+      id: 'gemini', displayName: 'Gemini', command: 'gemini', versionArgs: ['--version'],
+      promptVia: 'stdin',
+      headless: { args: ['-p', ''] },
+    }
+    const s = createCliSession(cliDesc, stdinAdapter, runner)
+    expect(await s.send('아주 긴 질문')).toBe('응답')
+    expect(captured).toEqual(['-p', '']) // 프롬프트가 argv 에 없다(헤드리스 트리거만)
+    expect(stdinSeen).toBe('아주 긴 질문') // 프롬프트는 stdin 으로
+  })
+
+  // 하위호환: promptVia 미지정(arg 모드)은 stdin 으로 프롬프트를 보내지 않는다(기존 동작 보존).
+  it('promptVia 미지정(arg 모드)은 stdinInput 을 넘기지 않는다', async () => {
+    let stdinSeen: string | undefined = 'SENTINEL'
+    const runner: CommandRunner = async (_c, _args, opts) => {
+      stdinSeen = opts.stdinInput
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const s = createCliSession(cliDesc, claudeAdapter, runner) // claudeAdapter: promptVia 미지정
+    await s.send('질문')
+    expect(stdinSeen).toBeUndefined()
+  })
+
+  // 회귀: promptVia='stdin' + stateful — 세션 인자엔 프롬프트가 없고 stdin 으로 전달된다(채팅 경로).
+  it("promptVia='stdin' stateful 세션은 프롬프트를 stdin 으로, 세션 인자엔 두지 않는다", async () => {
+    const calls: { args: string[]; stdin?: string }[] = []
+    const runner: CommandRunner = async (_c, args, opts) => {
+      calls.push({ args, stdin: opts.stdinInput })
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      id: 'gemini', displayName: 'Gemini', command: 'gemini', versionArgs: ['--version'],
+      promptVia: 'stdin',
+      headless: { args: ['-p', ''] },
+      session: {
+        startArgs: ['-p', '', '--session-id', '{sessionId}'],
+        resumeArgs: ['-p', '', '--resume', '{sessionId}'],
+        idSource: 'preassigned',
+      },
+    }
+    const s = createCliSession(cliDesc, adapter, runner, undefined, { stateful: true })
+    await s.send('첫 질문')
+    await s.send('둘째 질문')
+    const id = calls[0].args[3]
+    expect(id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(calls[0].args).toEqual(['-p', '', '--session-id', id]) // 프롬프트 토큰 없음
+    expect(calls[0].stdin).toBe('첫 질문') // 프롬프트는 stdin
+    expect(calls[1].args).toEqual(['-p', '', '--resume', id]) // 같은 id 로 재개
+    expect(calls[1].stdin).toBe('둘째 질문')
+  })
+
   it('throws on non-zero exit', async () => {
     const runner: CommandRunner = async () => ({ code: 1, stdout: '', stderr: 'boom' })
     const s = createCliSession(cliDesc, claudeAdapter, runner)

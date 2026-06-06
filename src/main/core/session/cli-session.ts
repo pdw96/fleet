@@ -53,12 +53,18 @@ export function createCliSession(
    * 아니면 버퍼링 후 최종 텍스트를 1회 onChunk 한다. 두 경우 모두 {res, text} 를 반환한다
    * (res.stdout 은 codex thread_id 추출 등에 쓰인다).
    */
+  // promptVia==='stdin' 어댑터는 프롬프트를 argv 가 아닌 자식 stdin 으로 보낸다(명령줄 길이 한도 우회).
+  const stdinFor = (prompt: string): string | undefined =>
+    adapter.promptVia === 'stdin' ? prompt : undefined
+
   const execute = async (
     args: string[],
     sendOpts: SendOptions,
     // 버퍼 정제에 쓸 파싱 포맷. 기본은 헤드리스 포맷이며, 편집 모드는 adapter.edit.parse 를 넘긴다
     // (스트리밍 델타 파서는 별개로 adapter.streaming.parse 를 그대로 쓴다).
     parseFmt = adapter.headless?.parse,
+    // promptVia==='stdin' 일 때 자식 stdin 으로 보낼 프롬프트(미지정이면 argv 전달 어댑터).
+    stdinInput?: string,
   ): Promise<{ res: CommandResult; text: string }> => {
     const stream = adapter.streaming
     if (stream && sendOpts.onChunk) {
@@ -84,7 +90,7 @@ export function createCliSession(
       const res = await runner(
         adapter.command,
         [...args, ...stream.args],
-        { timeoutMs: sendOpts.timeoutMs ?? timeoutMs, cwd: sendOpts.workspace, signal: sendOpts.signal },
+        { timeoutMs: sendOpts.timeoutMs ?? timeoutMs, cwd: sendOpts.workspace, signal: sendOpts.signal, stdinInput },
         onStdout,
       )
       emitLine(buf) // 마지막 개행 없는 잔여 라인
@@ -96,6 +102,7 @@ export function createCliSession(
       timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
       cwd: sendOpts.workspace,
       signal: sendOpts.signal,
+      stdinInput,
     })
     assertRunOk(adapter.command, res)
     const text = cleanCliOutput(parseFmt, res.stdout)
@@ -107,7 +114,7 @@ export function createCliSession(
     if (!adapter.headless) {
       throw new Error(`${adapter.displayName}는 헤드리스 1회 실행을 지원하지 않습니다.`)
     }
-    const { text } = await execute(buildHeadlessArgs(adapter, prompt), sendOpts)
+    const { text } = await execute(buildHeadlessArgs(adapter, prompt), sendOpts, adapter.headless?.parse, stdinFor(prompt))
     return text
   }
 
@@ -119,6 +126,7 @@ export function createCliSession(
       buildEditArgs(adapter.edit, prompt, workspace),
       sendOpts,
       adapter.edit.parse ?? adapter.headless?.parse,
+      stdinFor(prompt),
     )
     return text
   }
@@ -130,7 +138,8 @@ export function createCliSession(
     const template = resuming ? s.resumeArgs : s.startArgs
     // {sessionId} 를 먼저 치환하고 사용자 프롬프트를 마지막에 주입 → 프롬프트 내 리터럴 토큰 충돌 방지.
     const args = template.map((a) => a.replaceAll('{sessionId}', sessionId ?? '').replaceAll('{prompt}', prompt))
-    const { res, text } = await execute(args, sendOpts) // execute 내 assertRunOk → 실패 시 started 미전환
+    // execute 내 assertRunOk → 실패 시 started 미전환. stdin 어댑터는 프롬프트를 stdin 으로 보낸다.
+    const { res, text } = await execute(args, sendOpts, adapter.headless?.parse, stdinFor(prompt))
     if (!resuming && s.idSource === 'codex-thread') {
       const tid = extractCodexThreadId(res.stdout)
       if (!tid) throw new Error(`${adapter.command}: 응답에서 thread_id 를 찾지 못해 세션을 시작할 수 없습니다.`)

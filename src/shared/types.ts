@@ -67,6 +67,14 @@ export interface CliAdapter {
   /** TUI 세션 spawn 시 인자 (없으면 대화형 기본 실행) */
   spawnArgs?: string[]
   /**
+   * 프롬프트 전달 경로.
+   * - 'arg'(기본/미지정): 프롬프트를 인자 템플릿의 '{prompt}' 토큰에 치환해 argv 로 전달.
+   * - 'stdin': 프롬프트를 자식 stdin 으로 전달. 인자 템플릿에는 '{prompt}' 토큰을 두지 않는다
+   *   (긴 프롬프트를 argv 로 넘기면 Windows 명령줄 길이 한도에 걸린다 — 특히 npm .cmd 셰임은
+   *   cmd.exe 경유라 ~8191자, 네이티브 exe 도 ~32767자. stdin 은 한도가 없다).
+   */
+  promptVia?: 'arg' | 'stdin'
+  /**
    * 헤드리스(비대화형) 1회 실행 인자 템플릿. '{prompt}' 토큰이 프롬프트로 치환된다.
    * `parse` 로 stdout 정제 전략을 지정한다(미지정 시 'text' = 트림만).
    */
