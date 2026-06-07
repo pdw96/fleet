@@ -12,7 +12,7 @@ interface Props {
 const PROVIDER_DEFAULTS: Record<ApiProviderConfig['provider'], string> = {
   anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-5.5',
-  google: 'gemini-3-flash',
+  google: 'gemini-3.5-flash',
 }
 
 export function SessionsPanel({ sessions, onRefresh }: Props) {

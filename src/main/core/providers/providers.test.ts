@@ -305,7 +305,7 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"안"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"text":"녕"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2}}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
     const deltas: string[] = []
     const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: (d) => deltas.push(d) })
     expect(deltas).toEqual(['안', '녕'])
