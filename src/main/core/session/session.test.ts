@@ -381,6 +381,39 @@ describe('createCliSession', () => {
     expect(seenArgs).toEqual(['agent', '-C', '/ws', 'do it'])
   })
 
+  it('descriptor.model 이 있으면 modelFlag 로 --model 을 모든 실행에 덧붙인다(#8)', async () => {
+    let seenArgs: string[] = []
+    const runner: CommandRunner = async (_cmd, args) => {
+      seenArgs = args
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      id: 'x', displayName: 'X', command: 'x', versionArgs: ['--version'], modelFlag: '--model',
+      headless: { args: ['-p', '{prompt}'] },
+    }
+    const withModel = createCliSession(
+      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: 'claude-opus-4-8' },
+      adapter,
+      runner,
+    )
+    await withModel.send('hi')
+    expect(seenArgs).toEqual(['-p', 'hi', '--model', 'claude-opus-4-8'])
+
+    // 빈 모델이면 플래그를 생략한다(CLI 기본 모델 사용 — 기존 동작 보존).
+    const noModel = createCliSession({ id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' }, adapter, runner)
+    await noModel.send('hi')
+    expect(seenArgs).toEqual(['-p', 'hi'])
+
+    // modelFlag 미지정 어댑터는 model 이 있어도 덧붙이지 않는다.
+    const noFlag = createCliSession(
+      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: 'm' },
+      { ...adapter, modelFlag: undefined },
+      runner,
+    )
+    await noFlag.send('hi')
+    expect(seenArgs).toEqual(['-p', 'hi'])
+  })
+
   it("편집 모드는 adapter.edit.parse 로 stdout 을 정제한다(headless.parse 가 아니라)", async () => {
     // headless.parse='text' 면 JSONL 원문이 그대로 나오지만, edit.parse='codex-jsonl' 이면 agent_message 만 추출돼야 한다.
     const agentLine = '{"type":"item.completed","item":{"type":"agent_message","text":"편집 결과"}}'

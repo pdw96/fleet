@@ -10,6 +10,7 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     displayName: 'Claude Code',
     command: 'claude',
     versionArgs: ['--version'],
+    modelFlag: '--model',
     // 프롬프트는 stdin 으로 전달(claude -p 는 stdin 을 프롬프트로 읽는다). 긴 전사도 argv 길이 한도에 안 걸린다.
     promptVia: 'stdin',
     headless: { args: ['-p'] },
@@ -29,6 +30,7 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     displayName: 'Codex CLI',
     command: 'codex',
     versionArgs: ['--version'],
+    modelFlag: '--model',
     // 프롬프트는 stdin 으로(codex exec 는 프롬프트 미지정 시 stdin 을 읽는다 — "Reading prompt from stdin...").
     promptVia: 'stdin',
     // --json: 사람용 배너/thinking/토큰 메타 대신 JSONL 이벤트로 출력 → agent_message 만 정제.
@@ -50,6 +52,7 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     displayName: 'Gemini CLI',
     command: 'gemini',
     versionArgs: ['--version'],
+    modelFlag: '--model',
     // 프롬프트는 stdin 으로. gemini 는 npm .cmd 셰임이라 cross-spawn 이 cmd.exe 경유 → argv 한도 ~8191자로
     // 가장 빨리 걸린다. `-p ""`(빈 값)로 비대화형(헤드리스) 모드만 켜고 프롬프트는 stdin 에 싣는다
     // (gemini: -p 값은 "Appended to input on stdin"). 실측: 코드워드 왕복 통과.

@@ -19,6 +19,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [clis, setClis] = useState<CliDetectionResult[]>([])
   const [detecting, setDetecting] = useState(false)
   const [stateful, setStateful] = useState(false)
+  // CLI 세션 모델 오버라이드(비우면 CLI 기본 모델 사용).
+  const [cliModel, setCliModel] = useState('')
 
   const [provider, setProvider] = useState<ApiProviderConfig['provider']>('anthropic')
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
@@ -47,7 +49,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   async function registerCli(id: string) {
     setError(null)
     try {
-      await window.fleet.registerCliSession(id, { stateful })
+      const model = cliModel.trim()
+      await window.fleet.registerCliSession(id, { stateful, model: model || undefined })
       onRefresh()
     } catch (e) {
       setError(`세션 등록 실패: ${asError(e)}`)
@@ -116,13 +119,25 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
           </div>
         </div>
 
-        <label className="check" style={{ marginBottom: 14 }}>
+        <label className="check" style={{ marginBottom: 10 }}>
           <input type="checkbox" checked={stateful} onChange={(e) => setStateful(e.target.checked)} />
           <span>
             세션 재개(대화 맥락 유지) — CLI 자체 --resume 으로 멀티턴.{' '}
             <span className="note-warn">⚠ 오케스트레이터와 공유 시 검증용.</span>
           </span>
         </label>
+
+        <label className="field-label" htmlFor="cli-model">
+          모델 (선택)
+        </label>
+        <input
+          id="cli-model"
+          className="field"
+          style={{ marginBottom: 14 }}
+          value={cliModel}
+          onChange={(e) => setCliModel(e.target.value)}
+          placeholder="비우면 CLI 기본 모델 (예: claude-sonnet-4-6)"
+        />
 
         <ul className="list">
           {clis.map((c) => (

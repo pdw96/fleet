@@ -89,7 +89,7 @@ export interface FleetEngine {
   // ── CLI / 세션 ──
   detectClis(): Promise<CliDetectionResult[]>
   listAdapters(): CliAdapter[]
-  registerCliSession(adapterId: string, opts?: { stateful?: boolean }): LlmDescriptor
+  registerCliSession(adapterId: string, opts?: { stateful?: boolean; model?: string }): LlmDescriptor
   registerApiSession(config: ApiProviderConfig): LlmDescriptor
   listSessions(): LlmDescriptor[]
   removeSession(id: string): Promise<void>
@@ -238,7 +238,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         kind: 'cli',
         displayName: adapter.displayName,
         ref: adapterId,
-        model: '',
+        // 모델 미지정(빈 값)이면 CLI 기본 모델을 쓴다. 지정 시 cli-session 이 --model 로 전달.
+        model: sessionOpts?.model?.trim() || '',
         stateful: !!sessionOpts?.stateful,
         capabilities: seedCapabilities(adapterId),
       }

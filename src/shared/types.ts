@@ -64,6 +64,11 @@ export interface CliAdapter {
   command: string
   /** 버전 확인 인자 (예: ['--version']) */
   versionArgs: string[]
+  /**
+   * 모델 지정 플래그 (예: '--model'). descriptor.model 이 비어있지 않으면 모든 실행 인자 끝에
+   * `[modelFlag, model]` 이 덧붙는다. 미지정이거나 model 이 빈 값이면 생략(CLI 기본 모델 사용).
+   */
+  modelFlag?: string
   /** TUI 세션 spawn 시 인자 (없으면 대화형 기본 실행) */
   spawnArgs?: string[]
   /**
@@ -354,7 +359,7 @@ export interface FleetBridge {
   // 세션 / CLI
   detectClis(): Promise<CliDetectionResult[]>
   listAdapters(): Promise<CliAdapter[]>
-  registerCliSession(adapterId: string, opts?: { stateful?: boolean }): Promise<LlmDescriptor>
+  registerCliSession(adapterId: string, opts?: { stateful?: boolean; model?: string }): Promise<LlmDescriptor>
   registerApiSession(config: ApiProviderConfig): Promise<LlmDescriptor>
   listSessions(): Promise<LlmDescriptor[]>
   removeSession(id: string): Promise<void>

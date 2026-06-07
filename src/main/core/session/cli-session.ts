@@ -57,6 +57,13 @@ export function createCliSession(
   const stdinFor = (prompt: string): string | undefined =>
     adapter.promptVia === 'stdin' ? prompt : undefined
 
+  // 세션 모델이 지정돼 있고 어댑터가 모델 플래그를 노출하면 모든 실행에 `--model <model>` 을 덧붙인다.
+  // 빈 값이면 생략 → CLI 기본 모델 사용(기존 동작 보존).
+  const modelArgs = (): string[] => {
+    const m = descriptor.model?.trim()
+    return m && adapter.modelFlag ? [adapter.modelFlag, m] : []
+  }
+
   const execute = async (
     args: string[],
     sendOpts: SendOptions,
@@ -89,7 +96,7 @@ export function createCliSession(
       }
       const res = await runner(
         adapter.command,
-        [...args, ...stream.args],
+        [...args, ...modelArgs(), ...stream.args],
         { timeoutMs: sendOpts.timeoutMs ?? timeoutMs, cwd: sendOpts.workspace, signal: sendOpts.signal, stdinInput },
         onStdout,
       )
@@ -98,7 +105,7 @@ export function createCliSession(
       // 델타가 비어 있으면(이벤트 단위 CLI 등) 버퍼 정제로 폴백해 응답을 잃지 않는다.
       return { res, text: full || cleanCliOutput(parseFmt, res.stdout) }
     }
-    const res = await runner(adapter.command, args, {
+    const res = await runner(adapter.command, [...args, ...modelArgs()], {
       timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
       cwd: sendOpts.workspace,
       signal: sendOpts.signal,
