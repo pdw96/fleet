@@ -33,7 +33,9 @@ function broadcastApprovalRequest(req: ApprovalRequest): void {
 }
 
 function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover } {
-  const e2e = !!process.env['FLEET_E2E']
+  // 명시적 '1' 만 E2E 로 활성화 — FLEET_E2E=0/false 나 상속된 빈 값으로 프로덕션 런치가
+  // 페이크 러너(영구 in-flight)·픽스처 시드로 새지 않게 한다.
+  const e2e = process.env['FLEET_E2E'] === '1'
   const store = createJsonFileStore(join(app.getPath('userData'), 'fleet'))
   const ipcApprover = createIpcApprover({
     send: broadcastApprovalRequest,
