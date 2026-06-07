@@ -303,7 +303,8 @@ export interface RunProjectRequest {
  * 메인이 발급한 `streamId` 로 식별한다. 한 발언(askLlm 1회)이 한 streamId 다.
  *
  *  - start : 발언 시작. 렌더러는 빈 말풍선(작성자/역할 표시)을 즉시 띄운다.
- *  - delta : 토큰/이벤트 증분 텍스트. 누적해 말풍선에 이어 붙인다.
+ *  - delta : 토큰/이벤트 증분 텍스트. 누적해 말풍선에 이어 붙인다. `seq`(streamId 별 1부터
+ *            증가)로 멱등 적용·하이드레이션 레이스 정렬을 보장한다(스냅샷 seq 보다 큰 델타만 적용).
  *  - end   : 발언 완료. 영속된 최종 메시지를 싣는다(스트리밍 말풍선 → 확정 메시지로 교체).
  *  - error : 발언 실패. 렌더러는 말풍선을 에러 표시로 바꾸거나 제거한다.
  *  - busy  : 방에서 ask/discuss 연산이 시작됨(첫 연산 경계). 렌더러는 진행 표시를 켠다.
@@ -316,7 +317,7 @@ export interface RunProjectRequest {
  */
 export type ChatStreamEvent =
   | { kind: 'start'; streamId: string; roomId: string; llmId: string; role?: AgentRole }
-  | { kind: 'delta'; streamId: string; roomId: string; delta: string }
+  | { kind: 'delta'; streamId: string; roomId: string; delta: string; seq: number }
   | { kind: 'end'; streamId: string; roomId: string; message: ChatMessage }
   | { kind: 'error'; streamId: string; roomId: string; message: string }
   | { kind: 'busy'; roomId: string }
@@ -330,6 +331,8 @@ export interface ActiveChatStream {
   role?: AgentRole
   /** 지금까지 누적된 델타 텍스트. */
   text: string
+  /** text 에 반영된 델타 수(= 마지막 델타의 seq). 렌더러가 이보다 큰 버퍼 델타만 이어 붙인다. */
+  seq: number
 }
 
 /**

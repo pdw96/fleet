@@ -466,6 +466,8 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
 
     const deltas = streamEvents.flatMap((e) => (e.kind === 'delta' ? [e.delta] : []))
     expect(deltas).toEqual(['안', '녕']) // 토큰 델타 순서 보존
+    const deltaSeqs = streamEvents.flatMap((e) => (e.kind === 'delta' ? [e.seq] : []))
+    expect(deltaSeqs).toEqual([1, 2]) // streamId 별 1부터 증가(렌더러 멱등·레이스 정렬용)
 
     const end = streamEvents.at(-1)
     expect(end?.kind).toBe('end')
@@ -621,7 +623,7 @@ describe('FleetEngine 채팅 진행 상태(getChatActivity / busy·idle)', () =>
     const mid = engine.getChatActivity()
     expect(mid.busyRooms).toEqual([room.id])
     expect(mid.streams).toHaveLength(1)
-    expect(mid.streams[0]).toMatchObject({ roomId: room.id, llmId: 'a', text: '부분텍스트' })
+    expect(mid.streams[0]).toMatchObject({ roomId: room.id, llmId: 'a', text: '부분텍스트', seq: 1 })
 
     release()
     await p

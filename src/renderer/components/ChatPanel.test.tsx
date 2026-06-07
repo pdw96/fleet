@@ -53,7 +53,7 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     mockFleet({
       getChatActivity: vi.fn().mockResolvedValue({
         busyRooms: ['r1'],
-        streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '복원된 부분 응답' }],
+        streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '복원된 부분 응답', seq: 2 }],
       } satisfies ChatActivity),
     })
     render(<ChatPanel sessions={SESSIONS} />)
@@ -115,9 +115,47 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
       message: { id: 'm1', roomId: 'r1', author: { type: 'llm', llmId: 'llm-1' }, content: '끝난 응답', ts: 1 },
     })
     await act(async () =>
-      resolveActivity({ busyRooms: [], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '좀비 타이핑' }] }),
+      resolveActivity({ busyRooms: [], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '좀비 타이핑', seq: 1 }] }),
     )
 
     expect(screen.queryByText('좀비 타이핑')).toBeNull() // 종료된 스트림은 되살아나지 않음
+  })
+
+  it('하이드레이션 윈도우 중 도착한 미상 스트림 델타를 버퍼링해 스냅샷 머지 후 복원한다', async () => {
+    let resolveActivity: (a: ChatActivity) => void = () => {}
+    const fleet = mockFleet({
+      getChatActivity: vi.fn(() => new Promise<ChatActivity>((res) => (resolveActivity = res))),
+    })
+    render(<ChatPanel sessions={SESSIONS} />)
+    await screen.findByText('🤖 AI 자동 토론')
+
+    // start 를 못 받은 스트림 s1 의 델타가 스냅샷 resolve 전 먼저 도착(레이스)
+    fleet.fire({ kind: 'delta', streamId: 's1', roomId: 'r1', delta: '실시간 토큰', seq: 1 })
+    expect(screen.queryByText('실시간 토큰')).toBeNull() // 아직 미상 — 버블 없음
+
+    // 스냅샷은 델타 이전(seq 0, 빈 텍스트)을 보고 → 버퍼된 델타가 머지 후 이어 붙어야 한다
+    await act(async () =>
+      resolveActivity({ busyRooms: ['r1'], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '', seq: 0 }] }),
+    )
+
+    expect(screen.getByText('실시간 토큰')).toBeTruthy() // 유실되지 않고 복원
+  })
+
+  it('스냅샷이 이미 반영한 델타는 버퍼가 중복 적용하지 않는다(seq 가드)', async () => {
+    let resolveActivity: (a: ChatActivity) => void = () => {}
+    const fleet = mockFleet({
+      getChatActivity: vi.fn(() => new Promise<ChatActivity>((res) => (resolveActivity = res))),
+    })
+    render(<ChatPanel sessions={SESSIONS} />)
+    await screen.findByText('🤖 AI 자동 토론')
+
+    fleet.fire({ kind: 'delta', streamId: 's1', roomId: 'r1', delta: '가', seq: 1 }) // 버퍼됨
+    // 스냅샷이 이 델타까지 이미 반영(seq 1, text '가') — 버퍼가 다시 붙이면 '가가' 가 된다
+    await act(async () =>
+      resolveActivity({ busyRooms: ['r1'], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '가', seq: 1 }] }),
+    )
+
+    expect(screen.getByText('가')).toBeTruthy()
+    expect(screen.queryByText('가가')).toBeNull() // seq 가드로 이중 집계 안 됨
   })
 })

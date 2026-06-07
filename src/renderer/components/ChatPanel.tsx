@@ -13,6 +13,8 @@ interface StreamBubble {
   llmId: string
   role?: AgentRole
   text: string
+  /** text 에 반영된 마지막 델타 seq. 이보다 큰 델타만 이어 붙여 멱등·정렬을 보장한다. */
+  seq: number
   /** 방출된 에러 메시지(있으면 말풍선을 에러 표시로 렌더). */
   error?: string
 }
@@ -47,6 +49,11 @@ export function ChatPanel({ sessions }: Props) {
   // 스테일 스냅샷이 이미 끝난 스트림/방을 되살리지 않게 한다(라이브 우선). 마운트 1회용이라 누적은 무해.
   const endedStreamsRef = useRef<Set<string>>(new Set())
   const idledRoomsRef = useRef<Set<string>>(new Set())
+  // 하이드레이션 레이스 가드(델타 유실 방지): start 를 못 받은 스트림으로 스냅샷 resolve 전 도착한
+  // 델타를 streamId 별로 버퍼링했다가, 머지 시 스냅샷 seq 보다 큰 것만 이어 붙인다(이중 집계 방지).
+  // 스냅샷 머지 완료 후엔 더 버퍼링하지 않는다(이후의 미상 델타는 진짜 고아 → 무시).
+  const pendingDeltasRef = useRef<Record<string, { seq: number; delta: string }[]>>({})
+  const hydratedRef = useRef(false)
 
   useEffect(() => {
     void refreshRooms()
@@ -63,14 +70,20 @@ export function ChatPanel({ sessions }: Props) {
       if (e.kind === 'start') {
         setStreams((prev) => ({
           ...prev,
-          [e.streamId]: { streamId: e.streamId, roomId: e.roomId, llmId: e.llmId, role: e.role, text: '' },
+          [e.streamId]: { streamId: e.streamId, roomId: e.roomId, llmId: e.llmId, role: e.role, text: '', seq: 0 },
         }))
       } else if (e.kind === 'delta') {
-        // start 를 못 받은 스트림(탭 언마운트 등)은 무시 — 작성자 미상 합성 말풍선을 만들지 않는다.
+        // start 를 못 받은 스트림(탭 언마운트 등)은 합성 말풍선을 만들지 않는다 — 작성자 미상이므로.
+        // 다만 하이드레이션 윈도우에선 버퍼링해(setStreams 갱신부 밖, StrictMode 이중호출 무관)
+        // 스냅샷 머지가 작성자 정보와 함께 복원할 때 이어 붙일 수 있게 한다.
+        if (!hydratedRef.current) {
+          ;(pendingDeltasRef.current[e.streamId] ??= []).push({ seq: e.seq, delta: e.delta })
+        }
         setStreams((prev) => {
           const cur = prev[e.streamId]
           if (!cur) return prev
-          return { ...prev, [e.streamId]: { ...cur, text: cur.text + e.delta } }
+          if (e.seq <= cur.seq) return prev // 멱등: 이미 반영한(중복/역순) 델타는 무시
+          return { ...prev, [e.streamId]: { ...cur, text: cur.text + e.delta, seq: e.seq } }
         })
       } else if (e.kind === 'end') {
         endedStreamsRef.current.add(e.streamId) // 하이드레이션 레이스 가드(스냅샷 되살림 방지)
@@ -116,6 +129,11 @@ export function ChatPanel({ sessions }: Props) {
     void window.fleet.getChatActivity().then((a) => {
       // 스냅샷은 조회 시점값이라 resolve 전 도착한 라이브 이벤트보다 스테일할 수 있다.
       // 항상 라이브 우선: 윈도우 중 끝난(idle/end) 건 되살리지 않고, 이미 아는 키는 덮어쓰지 않는다.
+      // 버퍼는 setStreams 갱신부가 지연 실행되므로 지금 지역 변수로 캡처한 뒤 윈도우를 닫는다
+      // (갱신부 안에서 ref 를 비우면 캡처 전에 사라질 수 있다).
+      const pending = pendingDeltasRef.current
+      pendingDeltasRef.current = {}
+      hydratedRef.current = true
       setBusyRooms((prev) => {
         const next = new Set(prev) // 윈도우 중 도착한 busy 반영분 유지
         for (const r of a.busyRooms) if (!idledRoomsRef.current.has(r)) next.add(r)
@@ -126,7 +144,15 @@ export function ChatPanel({ sessions }: Props) {
         for (const s of a.streams) {
           if (s.streamId in merged) continue // 라이브가 이미 아는 스트림 — 덮어쓰지 않음
           if (endedStreamsRef.current.has(s.streamId)) continue // 윈도우 중 종료됨 — 되살리지 않음
-          merged[s.streamId] = { ...s }
+          // 스냅샷(seq 까지 반영) + 윈도우 중 버퍼된 더 새로운 델타(seq>스냅샷)만 이어 붙인다.
+          let { text, seq } = s
+          for (const d of (pending[s.streamId] ?? []).slice().sort((x, y) => x.seq - y.seq)) {
+            if (d.seq > seq) {
+              text += d.delta
+              seq = d.seq
+            }
+          }
+          merged[s.streamId] = { ...s, text, seq }
         }
         return merged
       })
