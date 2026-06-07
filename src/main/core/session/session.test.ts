@@ -47,12 +47,30 @@ describe('createApiSession', () => {
     expect(seen[1][2].content).toBe('echo:hi')
   })
 
-  it('invokes onChunk with the reply', async () => {
+  it('invokes onChunk with the reply (비스트리밍: 최종 1회)', async () => {
     const { provider } = fakeProvider()
     const s = createApiSession(apiDesc, provider)
     let chunk = ''
     await s.send('x', { onChunk: (c) => (chunk = c) })
     expect(chunk).toBe('echo:x')
+  })
+
+  it('스트리밍 provider 는 onChunk 로 토큰 델타를 흘리고 끝에서 중복 방출하지 않는다(#6)', async () => {
+    const provider: ApiProvider = {
+      id: 's',
+      provider: 'openai',
+      model: 'm',
+      async chat(_messages, callOpts) {
+        callOpts?.onToken?.('가')
+        callOpts?.onToken?.('나')
+        return { text: '가나', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    const chunks: string[] = []
+    const reply = await s.send('x', { onChunk: (c) => chunks.push(c) })
+    expect(chunks).toEqual(['가', '나']) // 델타만 — 최종 텍스트 중복 방출 없음
+    expect(reply).toBe('가나')
   })
 
   it('차단된 응답(빈 텍스트 + content_filter)은 조용히 흡수하지 않고 에러로 표면화한다(#7)', async () => {

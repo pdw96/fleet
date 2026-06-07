@@ -1,4 +1,5 @@
 import type { ApiProviderConfig } from '../../../shared/types'
+import { sseData } from './sse'
 import {
   ApiProviderError,
   defaultHttp,
@@ -64,6 +65,39 @@ function mapFinish(reason: string | undefined): FinishReason {
   }
 }
 
+/** SSE 스트림(streamGenerateContent?alt=sse)을 읽어 델타를 흘리고 최종 ChatResult 를 만든다. */
+async function readStream(
+  body: AsyncIterable<Uint8Array>,
+  onToken: (delta: string) => void,
+): Promise<ChatResult> {
+  let text = ''
+  let finish: string | undefined
+  let usage: { inputTokens?: number; outputTokens?: number } | undefined
+  for await (const data of sseData(body)) {
+    let ev: GoogleResponse
+    try {
+      ev = JSON.parse(data)
+    } catch {
+      continue
+    }
+    const cand = ev.candidates?.[0]
+    for (const p of cand?.content?.parts ?? []) {
+      if (p.text) {
+        text += p.text
+        onToken(p.text)
+      }
+    }
+    if (cand?.finishReason) finish = cand.finishReason
+    if (ev.usageMetadata) {
+      usage = {
+        inputTokens: ev.usageMetadata.promptTokenCount,
+        outputTokens: ev.usageMetadata.candidatesTokenCount,
+      }
+    }
+  }
+  return { text, toolCalls: [], finishReason: mapFinish(finish), rawFinishReason: finish, usage }
+}
+
 /** Google Gemini generateContent API provider. */
 export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient = defaultHttp): ApiProvider {
   return {
@@ -103,14 +137,19 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
         body.toolConfig = { functionCallingConfig: { mode: mapMode(opts.toolChoice) } }
       }
 
+      // 도구 미사용 + onToken 이 있으면 SSE 스트리밍 엔드포인트로 요청한다.
+      const streaming = !!opts.onToken && !opts.tools?.length
+      const method = streaming ? 'streamGenerateContent?alt=sse' : 'generateContent'
       // API 키는 쿼리스트링(?key=) 대신 헤더로 전송한다 — URL/로그 노출과 키 제한 정책 리스크를 피한다.
-      const url = `${BASE}/${encodeURIComponent(config.model)}:generateContent`
+      const url = `${BASE}/${encodeURIComponent(config.model)}:${method}`
       const res = await http(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify(body),
         signal: opts.signal,
       })
+
+      if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
       const raw = await res.text()
       if (!res.ok) throw new ApiProviderError('google', res.status, raw)

@@ -1,4 +1,5 @@
 import type { ApiProviderConfig } from '../../../shared/types'
+import { sseData } from './sse'
 import {
   ApiProviderError,
   defaultHttp,
@@ -71,6 +72,38 @@ function mapFinish(reason: string | undefined): FinishReason {
   }
 }
 
+/** SSE 스트림(messages stream)을 읽어 텍스트 델타를 onToken 으로 흘리고 최종 ChatResult 를 만든다. */
+async function readStream(
+  body: AsyncIterable<Uint8Array>,
+  onToken: (delta: string) => void,
+): Promise<ChatResult> {
+  let text = ''
+  let stop: string | undefined
+  const usage: { inputTokens?: number; outputTokens?: number } = {}
+  for await (const data of sseData(body)) {
+    let ev: {
+      type?: string
+      delta?: { type?: string; text?: string; stop_reason?: string }
+      message?: { usage?: { input_tokens?: number } }
+      usage?: { output_tokens?: number }
+    }
+    try {
+      ev = JSON.parse(data)
+    } catch {
+      continue
+    }
+    if (ev.type === 'message_start') usage.inputTokens = ev.message?.usage?.input_tokens ?? usage.inputTokens
+    else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
+      text += ev.delta.text
+      onToken(ev.delta.text)
+    } else if (ev.type === 'message_delta') {
+      if (ev.delta?.stop_reason) stop = ev.delta.stop_reason
+      if (ev.usage?.output_tokens != null) usage.outputTokens = ev.usage.output_tokens
+    }
+  }
+  return { text, toolCalls: [], finishReason: mapFinish(stop), rawFinishReason: stop, usage }
+}
+
 /** Anthropic Messages API provider. */
 export function createAnthropicProvider(config: ApiProviderConfig, http: HttpClient = defaultHttp): ApiProvider {
   return {
@@ -100,6 +133,9 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         const tc = mapToolChoice(opts.toolChoice)
         if (tc) body.tool_choice = tc
       }
+      // 도구 미사용 + onToken 이 있으면 SSE 스트리밍으로 요청한다(도구 호출 경로는 버퍼링 유지).
+      const streaming = !!opts.onToken && !opts.tools?.length
+      if (streaming) body.stream = true
 
       const res = await http(ENDPOINT, {
         method: 'POST',
@@ -111,6 +147,8 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         body: JSON.stringify(body),
         signal: opts.signal,
       })
+
+      if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
       const raw = await res.text()
       if (!res.ok) throw new ApiProviderError('anthropic', res.status, raw)

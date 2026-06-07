@@ -1,4 +1,5 @@
 import type { ApiProviderConfig } from '../../../shared/types'
+import { sseData } from './sse'
 import {
   ApiProviderError,
   defaultHttp,
@@ -63,6 +64,36 @@ function mapFinish(reason: string | undefined): FinishReason {
   }
 }
 
+/** SSE 스트림(chat completions, stream:true)을 읽어 델타를 흘리고 최종 ChatResult 를 만든다. */
+async function readStream(
+  body: AsyncIterable<Uint8Array>,
+  onToken: (delta: string) => void,
+): Promise<ChatResult> {
+  let text = ''
+  let finish: string | undefined
+  let usage: { inputTokens?: number; outputTokens?: number } | undefined
+  for await (const data of sseData(body)) {
+    let ev: {
+      choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
+      usage?: { prompt_tokens?: number; completion_tokens?: number }
+    }
+    try {
+      ev = JSON.parse(data)
+    } catch {
+      continue
+    }
+    const choice = ev.choices?.[0]
+    const delta = choice?.delta?.content
+    if (delta) {
+      text += delta
+      onToken(delta)
+    }
+    if (choice?.finish_reason) finish = choice.finish_reason
+    if (ev.usage) usage = { inputTokens: ev.usage.prompt_tokens, outputTokens: ev.usage.completion_tokens }
+  }
+  return { text, toolCalls: [], finishReason: mapFinish(finish), rawFinishReason: finish, usage }
+}
+
 /** OpenAI Chat Completions API provider. */
 export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient = defaultHttp): ApiProvider {
   return {
@@ -93,6 +124,12 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         }))
         if (opts.toolChoice) body.tool_choice = opts.toolChoice
       }
+      // 도구 미사용 + onToken 이 있으면 SSE 스트리밍. include_usage 로 마지막 청크에 usage 를 받는다.
+      const streaming = !!opts.onToken && !opts.tools?.length
+      if (streaming) {
+        body.stream = true
+        body.stream_options = { include_usage: true }
+      }
 
       const res = await http(ENDPOINT, {
         method: 'POST',
@@ -103,6 +140,8 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         body: JSON.stringify(body),
         signal: opts.signal,
       })
+
+      if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
       const raw = await res.text()
       if (!res.ok) throw new ApiProviderError('openai', res.status, raw)

@@ -100,6 +100,11 @@ export interface ApiCallOptions {
   tools?: ToolDefinition[]
   /** 도구 선택 강제. 'auto'(기본)/'none'/'required'. */
   toolChoice?: 'auto' | 'none' | 'required'
+  /**
+   * 토큰 델타 콜백. 지정 시(그리고 tools 미사용 시) provider 는 SSE 스트리밍으로 요청해
+   * 부분 텍스트가 도착하는 즉시 호출한다. 미지정이면 버퍼링(최종 1회 파싱).
+   */
+  onToken?: (delta: string) => void
 }
 
 // ── 주입 가능한 최소 HTTP 클라이언트 (테스트에서 mock) ──────────────────────
@@ -114,6 +119,8 @@ export interface HttpResponse {
   ok: boolean
   status: number
   text(): Promise<string>
+  /** SSE/스트리밍 본문(있으면). 청크 단위 바이트 스트림 — text() 와 둘 중 하나만 소비한다. */
+  body?: AsyncIterable<Uint8Array> | null
 }
 
 export type HttpClient = (url: string, init: HttpInit) => Promise<HttpResponse>
@@ -121,7 +128,13 @@ export type HttpClient = (url: string, init: HttpInit) => Promise<HttpResponse>
 /** 기본 HTTP 클라이언트: Node 전역 fetch 래핑. */
 export const defaultHttp: HttpClient = async (url, init) => {
   const res = await fetch(url, init)
-  return { ok: res.ok, status: res.status, text: () => res.text() }
+  // Node 의 fetch Response.body 는 async-iterable 한 ReadableStream<Uint8Array> 다.
+  return {
+    ok: res.ok,
+    status: res.status,
+    text: () => res.text(),
+    body: res.body as unknown as AsyncIterable<Uint8Array> | null,
+  }
 }
 
 /** API provider 통합 인터페이스 (요구사항 2B). */

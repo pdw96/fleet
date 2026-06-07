@@ -23,6 +23,26 @@ function mockHttp(
   return { http, calls }
 }
 
+/** 문자열 청크를 UTF-8 바이트 async-iterable(fetch body 모사)로 변환. */
+function bodyOf(chunks: string[]): AsyncIterable<Uint8Array> {
+  const enc = new TextEncoder()
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const c of chunks) yield enc.encode(c)
+    },
+  }
+}
+
+/** SSE body 를 돌려주는 mock — 스트리밍 경로 검증용. */
+function mockStreamHttp(chunks: string[]): { http: HttpClient; calls: Captured[] } {
+  const calls: Captured[] = []
+  const http: HttpClient = async (url, init) => {
+    calls.push({ url, init })
+    return { ok: true, status: 200, text: async () => chunks.join(''), body: bodyOf(chunks) }
+  }
+  return { http, calls }
+}
+
 const baseAnthropic: ApiProviderConfig = {
   id: 'a1',
   provider: 'anthropic',
@@ -240,6 +260,72 @@ describe('GoogleProvider', () => {
     }
     expect(body.tools[0].functionDeclarations[0]).toMatchObject({ name: 'lookup' })
     expect(body.toolConfig.functionCallingConfig.mode).toBe('AUTO')
+  })
+})
+
+describe('provider streaming (SSE)', () => {
+  it('Anthropic: onToken 으로 텍스트 델타를 흘리고 usage/finish 를 누적한다', async () => {
+    const { http, calls } = mockStreamHttp([
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":9}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"안"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"녕"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: (d) => deltas.push(d) })
+    expect(deltas).toEqual(['안', '녕'])
+    expect(out.text).toBe('안녕')
+    expect(out.finishReason).toBe('stop')
+    expect(out.usage).toEqual({ inputTokens: 9, outputTokens: 2 })
+    expect((JSON.parse(calls[0].init.body) as { stream?: boolean }).stream).toBe(true)
+  })
+
+  it('OpenAI: stream:true + include_usage, 델타와 usage 파싱', async () => {
+    const { http, calls } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"content":"H"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"i"},"finish_reason":"stop"}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n',
+      'data: [DONE]\n\n',
+    ])
+    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: (d) => deltas.push(d) })
+    expect(deltas).toEqual(['H', 'i'])
+    expect(out.text).toBe('Hi')
+    expect(out.finishReason).toBe('stop')
+    expect(out.usage).toEqual({ inputTokens: 3, outputTokens: 2 })
+    const body = JSON.parse(calls[0].init.body) as { stream?: boolean; stream_options?: { include_usage?: boolean } }
+    expect(body.stream).toBe(true)
+    expect(body.stream_options?.include_usage).toBe(true)
+  })
+
+  it('Google: streamGenerateContent?alt=sse 로 요청하고 델타/usage 파싱', async () => {
+    const { http, calls } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"안"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"녕"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2}}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-flash', apiKey: 'k' }, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: (d) => deltas.push(d) })
+    expect(deltas).toEqual(['안', '녕'])
+    expect(out.text).toBe('안녕')
+    expect(out.finishReason).toBe('stop')
+    expect(out.usage).toEqual({ inputTokens: 5, outputTokens: 2 })
+    expect(calls[0].url).toContain('streamGenerateContent?alt=sse')
+  })
+
+  it('tools 가 있으면 스트리밍하지 않고 버퍼링 경로를 쓴다(도구 호출 보존)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn' }),
+    }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const deltas: string[] = []
+    await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: (d) => deltas.push(d),
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+    })
+    expect((JSON.parse(calls[0].init.body) as { stream?: boolean }).stream).toBeUndefined()
   })
 })
 
