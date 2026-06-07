@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
 import type { ApiProvider, ChatTurn } from '../providers/types'
+import { createToolRegistry } from '../tools/registry'
 import { createApiSession } from './api-session'
 import { buildHeadlessArgs, createCliSession } from './cli-session'
 import { createSessionManager } from './manager'
@@ -84,6 +85,32 @@ describe('createApiSession', () => {
     }
     const s = createApiSession(apiDesc, provider)
     await expect(s.send('위험한 질문')).rejects.toThrow(/안전 필터|content_filter|SAFETY/)
+  })
+
+  it('toolDeps 가 있으면 도구 루프로 처리해 최종 텍스트를 반환한다', async () => {
+    let n = 0
+    const provider: ApiProvider = {
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return n++ === 0
+          ? { text: '', toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }], finishReason: 'tool_use' }
+          : { text: '최종', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const registry = createToolRegistry([
+      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+    ])
+    const gate = { async request() { return 'approved' as const } }
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
+    expect(await s.send('go')).toBe('최종')
+  })
+
+  it('toolDeps 가 undefined 를 반환하면(워크스페이스 없음) 단발 chat 으로 동작한다(회귀)', async () => {
+    const { provider } = fakeProvider()
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => undefined })
+    expect(await s.send('hi')).toBe('echo:hi')
   })
 
   it('fresh: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립 호출)', async () => {
