@@ -27,6 +27,8 @@ import { createResilientHttp } from './providers/resilient'
 import { defaultHttp, type HttpClient } from './providers/types'
 import { createApprovalGate } from './safety/approval'
 import { createApiSession } from './session/api-session'
+import { createToolRegistry } from './tools/registry'
+import { createWorkspaceReadTools } from './tools/workspace-tools'
 import { createCliSession } from './session/cli-session'
 import { createSessionManager, type SessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
@@ -263,7 +265,20 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         model: config.model,
         capabilities: seedCapabilities(config.provider),
       }
-      sessions.add(createApiSession(descriptor, createApiProvider(config, http)))
+      sessions.add(
+        createApiSession(descriptor, createApiProvider(config, http), {
+          // 워크스페이스가 설정돼 있을 때만 읽기전용 도구를 노출한다. 클로저로 런타임 변경을 추종.
+          toolDeps: () =>
+            workspaceDir
+              ? {
+                  registry: createToolRegistry(createWorkspaceReadTools(workspaceDir)),
+                  gate,
+                  onAudit: appendAudit,
+                  maxIterations: 8,
+                }
+              : undefined,
+        }),
+      )
       store.appendEvent({ type: 'session.registered', data: { id, kind: 'api', provider: config.provider } })
       return descriptor
     },
