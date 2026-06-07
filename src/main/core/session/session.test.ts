@@ -25,7 +25,9 @@ function fakeProvider(): { provider: ApiProvider; seen: ChatTurn[][] } {
     model: 'm',
     async chat(messages) {
       seen.push(structuredClone(messages))
-      return `echo:${messages.at(-1)?.content ?? ''}`
+      const last = messages.at(-1)?.content ?? ''
+      const text = typeof last === 'string' ? last : ''
+      return { text: `echo:${text}`, toolCalls: [], finishReason: 'stop' }
     },
   }
   return { provider, seen }
@@ -51,6 +53,19 @@ describe('createApiSession', () => {
     let chunk = ''
     await s.send('x', { onChunk: (c) => (chunk = c) })
     expect(chunk).toBe('echo:x')
+  })
+
+  it('차단된 응답(빈 텍스트 + content_filter)은 조용히 흡수하지 않고 에러로 표면화한다(#7)', async () => {
+    const provider: ApiProvider = {
+      id: 'blocked',
+      provider: 'google',
+      model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [], finishReason: 'content_filter', rawFinishReason: 'SAFETY' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('위험한 질문')).rejects.toThrow(/안전 필터|content_filter|SAFETY/)
   })
 
   it('fresh: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립 호출)', async () => {
