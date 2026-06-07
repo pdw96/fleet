@@ -43,7 +43,7 @@ export function createApiSession(
     async send(prompt: string, sendOpts: SendOptions = {}): Promise<string> {
       // onChunk 가 있으면 provider 의 토큰 델타를 그대로 전달(스트리밍). 호출 여부를 추적해
       // 스트리밍된 경우 끝에서 중복 방출하지 않고, 비스트리밍이면 최종 텍스트를 1회 방출한다.
-      // (도구 루프 경로는 tools 동봉으로 provider 가 버퍼링하므로 onToken 이 호출되지 않음 → 최종 1회.)
+      // (도구 루프 경로는 tools 동봉으로 provider 가 일반적으로 버퍼링하므로 onToken 이 대개 호출되지 않음 → 최종 1회.)
       let streamed = false
       const onToken = sendOpts.onChunk
         ? (delta: string): void => {
@@ -64,9 +64,14 @@ export function createApiSession(
           : [{ role: 'user', content: prompt }]
         return emit(unwrap(provider.provider, await runChat(turns, callOpts)))
       }
-      history.push({ role: 'user', content: prompt })
-      const reply = unwrap(provider.provider, await runChat(history, callOpts))
-      history.push({ role: 'assistant', content: reply })
+      // 누적 경로: 성공 시에만 history 에 원자적으로 커밋한다. runChat 은 작업 복사본을 in-place
+      // 확장(도구 왕복 턴 포함)하므로, 루프가 중간에 throw 해도 history 가 부분 확장 상태로 남지
+      // 않는다(다음 send 의 역할 시퀀스 오염 방지).
+      const working: ChatTurn[] = [...history, { role: 'user', content: prompt }]
+      const reply = unwrap(provider.provider, await runChat(working, callOpts))
+      working.push({ role: 'assistant', content: reply })
+      history.length = 0
+      history.push(...working)
       return emit(reply)
     },
     async dispose(): Promise<void> {
