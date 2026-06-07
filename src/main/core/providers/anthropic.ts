@@ -86,11 +86,17 @@ async function readStream(
       delta?: { type?: string; text?: string; stop_reason?: string }
       message?: { usage?: { input_tokens?: number } }
       usage?: { output_tokens?: number }
+      error?: { type?: string; message?: string }
     }
     try {
       ev = JSON.parse(data)
     } catch {
       continue
+    }
+    // HTTP 200 스트림 중에도 error 이벤트(overloaded_error 등)가 올 수 있다. 부분 응답을
+    // 성공으로 위장하지 않고 즉시 에러로 표면화한다(silent truncation 방지 — #7).
+    if (ev.type === 'error') {
+      throw new ApiProviderError('anthropic', 200, JSON.stringify(ev.error ?? { type: 'stream_error' }))
     }
     if (ev.type === 'message_start') usage.inputTokens = ev.message?.usage?.input_tokens ?? usage.inputTokens
     else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {

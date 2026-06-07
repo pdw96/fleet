@@ -51,13 +51,13 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   async function registerCli(id: string) {
     setError(null)
     try {
+      // 빈 선택 필드는 키 자체를 넣지 않는다(IPC 페이로드를 깔끔히 유지).
+      const opts: { stateful: boolean; model?: string; mcpConfig?: string } = { stateful }
       const model = cliModel.trim()
       const mcpConfig = cliMcp.trim()
-      await window.fleet.registerCliSession(id, {
-        stateful,
-        model: model || undefined,
-        mcpConfig: mcpConfig || undefined,
-      })
+      if (model) opts.model = model
+      if (mcpConfig) opts.mcpConfig = mcpConfig
+      await window.fleet.registerCliSession(id, opts)
       onRefresh()
     } catch (e) {
       setError(`세션 등록 실패: ${asError(e)}`)

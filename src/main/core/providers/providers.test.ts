@@ -327,6 +327,30 @@ describe('provider streaming (SSE)', () => {
     })
     expect((JSON.parse(calls[0].init.body) as { stream?: boolean }).stream).toBeUndefined()
   })
+
+  it('Anthropic streaming: 중간 error 이벤트는 ApiProviderError 로 throw(부분응답 위장 방지)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"부분"}}\n\n',
+      'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+  })
+
+  it('Google: 프롬프트 차단(promptFeedback, 후보 없음)은 content_filter 로 표면화한다', async () => {
+    const { http } = mockHttp(() => ({ body: JSON.stringify({ promptFeedback: { blockReason: 'SAFETY' } }) }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }])
+    expect(out.text).toBe('')
+    expect(out.finishReason).toBe('content_filter')
+  })
+
+  it('Google streaming: 프롬프트 차단도 content_filter 로 표면화한다', async () => {
+    const { http } = mockStreamHttp(['data: {"promptFeedback":{"blockReason":"OTHER"}}\n\n'])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })
+    expect(out.finishReason).toBe('content_filter')
+  })
 })
 
 describe('createApiProvider (registry)', () => {

@@ -24,6 +24,19 @@ interface GooglePart {
 interface GoogleResponse {
   candidates?: Array<{ content?: { parts?: GooglePart[] }; finishReason?: string }>
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
+  /** 프롬프트 자체가 차단되면 candidates 없이 여기에 사유가 온다. */
+  promptFeedback?: { blockReason?: string }
+}
+
+/**
+ * 응답에서 종료 사유를 해소한다. 후보가 없고 promptFeedback.blockReason 이 있으면
+ * 프롬프트 차단으로 보고 content_filter 로 매핑한다(silent 빈응답 방지 — #7).
+ */
+function resolveFinish(parsed: GoogleResponse): { finishReason: FinishReason; raw?: string } {
+  const cand = parsed.candidates?.[0]
+  const blockReason = parsed.promptFeedback?.blockReason
+  if (!cand && blockReason) return { finishReason: 'content_filter', raw: `PROMPT_BLOCKED:${blockReason}` }
+  return { finishReason: mapFinish(cand?.finishReason), raw: cand?.finishReason }
 }
 
 /** ChatTurn.content → Gemini parts 배열. */
@@ -72,6 +85,7 @@ async function readStream(
 ): Promise<ChatResult> {
   let text = ''
   let finish: string | undefined
+  let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
   for await (const data of sseData(body)) {
     let ev: GoogleResponse
@@ -88,6 +102,7 @@ async function readStream(
       }
     }
     if (cand?.finishReason) finish = cand.finishReason
+    if (!cand && ev.promptFeedback?.blockReason) blockReason = ev.promptFeedback.blockReason
     if (ev.usageMetadata) {
       usage = {
         inputTokens: ev.usageMetadata.promptTokenCount,
@@ -95,6 +110,8 @@ async function readStream(
       }
     }
   }
+  // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).
+  if (blockReason) return { text, toolCalls: [], finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
   return { text, toolCalls: [], finishReason: mapFinish(finish), rawFinishReason: finish, usage }
 }
 
@@ -166,11 +183,12 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
           name: p.functionCall?.name ?? '',
           input: p.functionCall?.args,
         }))
+      const finish = resolveFinish(parsed)
       return {
         text,
         toolCalls,
-        finishReason: mapFinish(cand?.finishReason),
-        rawFinishReason: cand?.finishReason,
+        finishReason: finish.finishReason,
+        rawFinishReason: finish.raw,
         usage: {
           inputTokens: parsed.usageMetadata?.promptTokenCount,
           outputTokens: parsed.usageMetadata?.candidatesTokenCount,
