@@ -44,13 +44,14 @@ function mapContent(content: string | ContentBlock[]): string | unknown[] {
   return content.flatMap((b): unknown[] => {
     if (b.type === 'text') return [{ type: 'text', text: b.text }]
     if (b.type === 'image') return [{ type: 'image_url', image_url: { url: `data:${b.mimeType};base64,${b.data}` } }]
-    // tool_use/tool_result 는 Chat Completions 에선 별도 메시지 구조가 필요하다(도구 루프 도입 시 확장).
+    // tool_use/tool_result 는 buildMessages 가 별도 메시지(tool_calls·role:'tool')로 처리한다.
+    // 여기로 오는 경우는 없지만(buildMessages 가 우회) 방어적 텍스트 폴백을 남긴다.
     return [{ type: 'text', text: textOf([b]) }]
   })
 }
 
 interface OpenAiMessage {
-  role: string
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | unknown[] | null
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   tool_call_id?: string
@@ -66,6 +67,7 @@ function buildMessages(turns: ChatTurn[]): OpenAiMessage[] {
   const out: OpenAiMessage[] = []
   for (const m of turns) {
     const blocks: ContentBlock[] | null = typeof m.content === 'string' ? null : m.content
+    // 루프는 tool_result 만 담은 user 턴을 만든다. 혼합 턴(텍스트+tool_result)이면 텍스트가 tool 메시지 뒤로 온다.
     if (blocks?.some((b) => b.type === 'tool_result')) {
       for (const b of blocks) {
         if (b.type === 'tool_result') out.push({ role: 'tool', tool_call_id: b.toolUseId, content: b.content })
