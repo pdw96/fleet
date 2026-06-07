@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
 import type { ApiProvider, ChatTurn } from '../providers/types'
@@ -461,6 +461,49 @@ describe('createCliSession', () => {
     )
     await s2.send('hi')
     expect(seenArgs).toEqual(['-p', 'hi'])
+  })
+
+  it('스트림 파서가 델타를 0개 뽑으면(exit-0, 원시출력 존재) 드리프트 경고를 낸다(#11)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // onStdout 으로 스키마에 안 맞는 줄을 흘림 → parseStreamLine 이 델타 0개 → full=''.
+      const runner: CommandRunner = async (_c, _a, _o, onStdout) => {
+        onStdout?.('{"type":"noise"}\n')
+        return { code: 0, stdout: '{"type":"noise"}\n', stderr: '' }
+      }
+      const adapter: CliAdapter = {
+        id: 'claude', displayName: 'Claude', command: 'claude', versionArgs: ['--version'],
+        headless: { args: ['-p', '{prompt}'], parse: 'text' },
+        streaming: { args: [], parse: 'claude-stream' },
+      }
+      const s = createCliSession({ id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '' }, adapter, runner)
+      await s.send('hi', { onChunk: () => {} }) // onChunk → 스트리밍 경로 활성화
+      expect(warn).toHaveBeenCalledOnce()
+      expect(String(warn.mock.calls[0][0])).toMatch(/드리프트/)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('스트림 델타가 정상 추출되면 드리프트 경고를 내지 않는다', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const line = '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"안녕"}}}'
+      const runner: CommandRunner = async (_c, _a, _o, onStdout) => {
+        onStdout?.(line + '\n')
+        return { code: 0, stdout: line + '\n', stderr: '' }
+      }
+      const adapter: CliAdapter = {
+        id: 'claude', displayName: 'Claude', command: 'claude', versionArgs: ['--version'],
+        headless: { args: ['-p', '{prompt}'], parse: 'text' },
+        streaming: { args: [], parse: 'claude-stream' },
+      }
+      const s = createCliSession({ id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '' }, adapter, runner)
+      expect(await s.send('hi', { onChunk: () => {} })).toBe('안녕')
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it("편집 모드는 adapter.edit.parse 로 stdout 을 정제한다(headless.parse 가 아니라)", async () => {

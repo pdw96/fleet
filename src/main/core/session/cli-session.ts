@@ -113,6 +113,14 @@ export function createCliSession(
       )
       emitLine(buf) // 마지막 개행 없는 잔여 라인
       assertRunOk(adapter.command, res)
+      // 파서 드리프트 관측(#11): exit-0 인데 스트림 파서가 델타를 0개 뽑았고 원시 출력은 있으면
+      // CLI 출력 이벤트 스키마가 바뀌었을 가능성이 높다 — 버퍼 정제 폴백 전에 경고를 남긴다.
+      if (full === '' && res.stdout.trim() !== '') {
+        console.warn(
+          `[fleet] ${adapter.command}: 스트림 파서(${stream.parse})가 델타를 0개 추출했습니다 ` +
+            `(exit 0, 원시 ${res.stdout.length}바이트). CLI 출력 형식 변경 의심(파서 드리프트) — 버퍼 정제로 폴백합니다.`,
+        )
+      }
       // 델타가 비어 있으면(이벤트 단위 CLI 등) 버퍼 정제로 폴백해 응답을 잃지 않는다.
       return { res, text: full || cleanCliOutput(parseFmt, res.stdout) }
     }
