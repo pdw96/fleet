@@ -14,6 +14,7 @@ const KIND_TITLE: Record<ApprovalRequest['kind'], string> = {
   'file-delete': '위험 작업 승인',
   shell: '위험 작업 승인',
   'apply-diff': '변경 적용 승인',
+  'tool-call': '도구 호출 승인',
 }
 
 /** destructive 작업 승인 모달. App 레벨에 상시 마운트되어 메인의 승인 요청을 큐로 순차 처리한다. */
