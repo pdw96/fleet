@@ -67,6 +67,18 @@ describe('createWorkspaceReadTools', () => {
     expect(out).toContain('sub/b.ts')
   })
 
+  it('glob 은 민감 파일을 결과에서 제외한다', async () => {
+    const out = await pick(createWorkspaceReadTools(root), 'glob').execute({ pattern: '**' }, {})
+    expect(out).toContain('a.txt')
+    expect(out).not.toContain('.env')
+  })
+
+  it('list_directory 는 워크스페이스 밖 경로를 거부한다(경로 탈출)', async () => {
+    await expect(
+      pick(createWorkspaceReadTools(root), 'list_directory').execute({ path: '../..' }, {}),
+    ).rejects.toThrow(/워크스페이스 밖/)
+  })
+
   it('심볼릭 링크로 워크스페이스를 벗어나는 읽기를 차단한다', async () => {
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-out-'))
     await fs.writeFile(path.join(outside, 'secret.txt'), 'top secret')

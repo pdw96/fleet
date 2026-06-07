@@ -24,7 +24,12 @@ async function resolveWithin(root: string, p: string): Promise<string> {
   throw new Error(`경로가 워크스페이스 밖입니다: ${p}`)
 }
 
-/** root 하위 파일을 재귀 순회(스킵 디렉터리 제외). */
+/**
+ * root 하위 파일을 재귀 순회(스킵 디렉터리 제외).
+ * 심볼릭 링크는 건너뛴다 — readdir(withFileTypes) 의 Dirent.isFile()/isDirectory() 는 심볼릭 링크에
+ * false 를 반환하므로 링크 파일은 yield 되지 않고 링크 디렉터리는 재귀하지 않는다(샌드박스 보장).
+ * 이 가정에 grep/glob 의 격리가 의존하므로 walk 를 symlink-follow 로 바꾸면 격리를 재점검할 것.
+ */
 async function* walk(dir: string): AsyncGenerator<string> {
   const entries = await fs.readdir(dir, { withFileTypes: true })
   for (const e of entries) {
@@ -122,8 +127,8 @@ function grepTool(root: string): FleetTool {
       for await (const file of walk(start)) {
         if (scanned >= MAX_GREP_FILES || out.length >= MAX_GREP_MATCHES) break
         const rel = path.relative(rootReal, file).split(path.sep).join('/')
+        scanned++ // 민감파일 스킵도 스캔 한도에 포함(다수 민감파일로 한도 우회 방지)
         if (SENSITIVE_FILE.test(rel)) continue // 민감파일 제외
-        scanned++
         let content: string
         try {
           const buf = await fs.readFile(file)
@@ -220,13 +225,10 @@ function globMatchSegments(segs: GlobSegment[], si: number, str: string, ci: num
   // starstar: 0개 이상의 경로 컴포넌트를 건너뜀
   // 남은 패턴이 현재 위치부터 맞는지 먼저 시도하고, 다음 '/' 이후로 점프 반복
   if (seg.kind === 'starstar') {
-    let j = ci
-    while (j <= str.length) {
+    // ** : 0개 이상의 임의 문자(슬래시 포함)를 건너뛴다. 현재 위치부터 끝까지 모든 분기를 시도해
+    // bare '**'(전체 매칭)와 '**/x'(선택적 디렉터리) 양쪽을 올바르게 처리한다.
+    for (let j = ci; j <= str.length; j++) {
       if (globMatchSegments(segs, si + 1, str, j)) return true
-      // 다음 슬래시 이후로 이동
-      const next = str.indexOf('/', j)
-      if (next === -1) break
-      j = next + 1
     }
     return false
   }
