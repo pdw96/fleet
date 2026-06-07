@@ -112,6 +112,14 @@ describe('runToolLoop', () => {
     expect(r.content).toMatch(/거부/)
   })
 
+  it('finishReason 가 tool_use 라도 toolCalls 가 비면 종료한다', async () => {
+    const { provider } = scriptedProvider([{ text: '빈툴', toolCalls: [], finishReason: 'tool_use' }])
+    const turns: ChatTurn[] = [{ role: 'user', content: 'go' }]
+    const out = await runToolLoop(provider, turns, {}, { registry: createToolRegistry([echoTool]), gate: approveAll })
+    expect(out.text).toBe('빈툴')
+    expect(turns).toHaveLength(1)
+  })
+
   it('미존재 도구는 게이트 없이 isError 로 회신한다', async () => {
     const gate = { request: vi.fn(async () => 'approved' as const) }
     const { provider, calls } = scriptedProvider([
