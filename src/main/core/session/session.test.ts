@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
 import type { ApiProvider, ChatTurn } from '../providers/types'
@@ -25,7 +25,9 @@ function fakeProvider(): { provider: ApiProvider; seen: ChatTurn[][] } {
     model: 'm',
     async chat(messages) {
       seen.push(structuredClone(messages))
-      return `echo:${messages.at(-1)?.content ?? ''}`
+      const last = messages.at(-1)?.content ?? ''
+      const text = typeof last === 'string' ? last : ''
+      return { text: `echo:${text}`, toolCalls: [], finishReason: 'stop' }
     },
   }
   return { provider, seen }
@@ -45,12 +47,43 @@ describe('createApiSession', () => {
     expect(seen[1][2].content).toBe('echo:hi')
   })
 
-  it('invokes onChunk with the reply', async () => {
+  it('invokes onChunk with the reply (비스트리밍: 최종 1회)', async () => {
     const { provider } = fakeProvider()
     const s = createApiSession(apiDesc, provider)
     let chunk = ''
     await s.send('x', { onChunk: (c) => (chunk = c) })
     expect(chunk).toBe('echo:x')
+  })
+
+  it('스트리밍 provider 는 onChunk 로 토큰 델타를 흘리고 끝에서 중복 방출하지 않는다(#6)', async () => {
+    const provider: ApiProvider = {
+      id: 's',
+      provider: 'openai',
+      model: 'm',
+      async chat(_messages, callOpts) {
+        callOpts?.onToken?.('가')
+        callOpts?.onToken?.('나')
+        return { text: '가나', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    const chunks: string[] = []
+    const reply = await s.send('x', { onChunk: (c) => chunks.push(c) })
+    expect(chunks).toEqual(['가', '나']) // 델타만 — 최종 텍스트 중복 방출 없음
+    expect(reply).toBe('가나')
+  })
+
+  it('차단된 응답(빈 텍스트 + content_filter)은 조용히 흡수하지 않고 에러로 표면화한다(#7)', async () => {
+    const provider: ApiProvider = {
+      id: 'blocked',
+      provider: 'google',
+      model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [], finishReason: 'content_filter', rawFinishReason: 'SAFETY' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('위험한 질문')).rejects.toThrow(/안전 필터|content_filter|SAFETY/)
   })
 
   it('fresh: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립 호출)', async () => {
@@ -364,6 +397,113 @@ describe('createCliSession', () => {
     expect(text).toBe('ok')
     expect(seenCwd).toBe('/ws')
     expect(seenArgs).toEqual(['agent', '-C', '/ws', 'do it'])
+  })
+
+  it('descriptor.model 이 있으면 modelFlag 로 --model 을 모든 실행에 덧붙인다(#8)', async () => {
+    let seenArgs: string[] = []
+    const runner: CommandRunner = async (_cmd, args) => {
+      seenArgs = args
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      id: 'x', displayName: 'X', command: 'x', versionArgs: ['--version'], modelFlag: '--model',
+      headless: { args: ['-p', '{prompt}'] },
+    }
+    const withModel = createCliSession(
+      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: 'claude-opus-4-8' },
+      adapter,
+      runner,
+    )
+    await withModel.send('hi')
+    expect(seenArgs).toEqual(['-p', 'hi', '--model', 'claude-opus-4-8'])
+
+    // 빈 모델이면 플래그를 생략한다(CLI 기본 모델 사용 — 기존 동작 보존).
+    const noModel = createCliSession({ id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' }, adapter, runner)
+    await noModel.send('hi')
+    expect(seenArgs).toEqual(['-p', 'hi'])
+
+    // modelFlag 미지정 어댑터는 model 이 있어도 덧붙이지 않는다.
+    const noFlag = createCliSession(
+      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: 'm' },
+      { ...adapter, modelFlag: undefined },
+      runner,
+    )
+    await noFlag.send('hi')
+    expect(seenArgs).toEqual(['-p', 'hi'])
+  })
+
+  it('mcpConfig 가 있으면 mcpConfigFlag(+strict)로 MCP 설정을 패스스루한다(#9)', async () => {
+    let seenArgs: string[] = []
+    const runner: CommandRunner = async (_cmd, args) => {
+      seenArgs = args
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const claudeLike: CliAdapter = {
+      id: 'claude', displayName: 'Claude', command: 'claude', versionArgs: ['--version'],
+      mcpConfigFlag: '--mcp-config', mcpStrictArg: '--strict-mcp-config',
+      headless: { args: ['-p', '{prompt}'] },
+    }
+    const cfg = '{"mcpServers":{"x":{"command":"npx"}}}'
+    const s = createCliSession(
+      { id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '', mcpConfig: cfg },
+      claudeLike,
+      runner,
+    )
+    await s.send('hi')
+    expect(seenArgs).toEqual(['-p', 'hi', '--mcp-config', cfg, '--strict-mcp-config'])
+
+    // 플래그 없는 어댑터(codex/gemini)는 mcpConfig 가 있어도 무시한다.
+    const noFlag: CliAdapter = { ...claudeLike, mcpConfigFlag: undefined, mcpStrictArg: undefined }
+    const s2 = createCliSession(
+      { id: 'c', kind: 'cli', displayName: 'C', ref: 'codex', model: '', mcpConfig: cfg },
+      noFlag,
+      runner,
+    )
+    await s2.send('hi')
+    expect(seenArgs).toEqual(['-p', 'hi'])
+  })
+
+  it('스트림 파서가 델타를 0개 뽑으면(exit-0, 원시출력 존재) 드리프트 경고를 낸다(#11)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // onStdout 으로 스키마에 안 맞는 줄을 흘림 → parseStreamLine 이 델타 0개 → full=''.
+      const runner: CommandRunner = async (_c, _a, _o, onStdout) => {
+        onStdout?.('{"type":"noise"}\n')
+        return { code: 0, stdout: '{"type":"noise"}\n', stderr: '' }
+      }
+      const adapter: CliAdapter = {
+        id: 'claude', displayName: 'Claude', command: 'claude', versionArgs: ['--version'],
+        headless: { args: ['-p', '{prompt}'], parse: 'text' },
+        streaming: { args: [], parse: 'claude-stream' },
+      }
+      const s = createCliSession({ id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '' }, adapter, runner)
+      await s.send('hi', { onChunk: () => {} }) // onChunk → 스트리밍 경로 활성화
+      expect(warn).toHaveBeenCalledOnce()
+      expect(String(warn.mock.calls[0][0])).toMatch(/드리프트/)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('스트림 델타가 정상 추출되면 드리프트 경고를 내지 않는다', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const line = '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"안녕"}}}'
+      const runner: CommandRunner = async (_c, _a, _o, onStdout) => {
+        onStdout?.(line + '\n')
+        return { code: 0, stdout: line + '\n', stderr: '' }
+      }
+      const adapter: CliAdapter = {
+        id: 'claude', displayName: 'Claude', command: 'claude', versionArgs: ['--version'],
+        headless: { args: ['-p', '{prompt}'], parse: 'text' },
+        streaming: { args: [], parse: 'claude-stream' },
+      }
+      const s = createCliSession({ id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '' }, adapter, runner)
+      expect(await s.send('hi', { onChunk: () => {} })).toBe('안녕')
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it("편집 모드는 adapter.edit.parse 로 stdout 을 정제한다(headless.parse 가 아니라)", async () => {

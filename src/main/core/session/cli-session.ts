@@ -57,6 +57,24 @@ export function createCliSession(
   const stdinFor = (prompt: string): string | undefined =>
     adapter.promptVia === 'stdin' ? prompt : undefined
 
+  // 세션 모델이 지정돼 있고 어댑터가 모델 플래그를 노출하면 모든 실행에 `--model <model>` 을 덧붙인다.
+  // 빈 값이면 생략 → CLI 기본 모델 사용(기존 동작 보존).
+  const modelArgs = (): string[] => {
+    const m = descriptor.model?.trim()
+    return m && adapter.modelFlag ? [adapter.modelFlag, m] : []
+  }
+
+  // 세션에 MCP 설정(경로/인라인 JSON)이 있고 어댑터가 패스스루 플래그를 노출하면 모든 실행에 덧붙인다.
+  // strict 플래그가 있으면 전달된 설정만 쓰게 격리한다. 플래그 없는 어댑터(codex/gemini)는 무시.
+  const mcpArgs = (): string[] => {
+    const c = descriptor.mcpConfig?.trim()
+    if (!c || !adapter.mcpConfigFlag) return []
+    return adapter.mcpStrictArg ? [adapter.mcpConfigFlag, c, adapter.mcpStrictArg] : [adapter.mcpConfigFlag, c]
+  }
+
+  /** 모든 실행 인자 끝에 공통으로 붙는 부가 인자(모델·MCP). */
+  const extraArgs = (): string[] => [...modelArgs(), ...mcpArgs()]
+
   const execute = async (
     args: string[],
     sendOpts: SendOptions,
@@ -89,16 +107,24 @@ export function createCliSession(
       }
       const res = await runner(
         adapter.command,
-        [...args, ...stream.args],
+        [...args, ...extraArgs(), ...stream.args],
         { timeoutMs: sendOpts.timeoutMs ?? timeoutMs, cwd: sendOpts.workspace, signal: sendOpts.signal, stdinInput },
         onStdout,
       )
       emitLine(buf) // 마지막 개행 없는 잔여 라인
       assertRunOk(adapter.command, res)
+      // 파서 드리프트 관측(#11): exit-0 인데 스트림 파서가 델타를 0개 뽑았고 원시 출력은 있으면
+      // CLI 출력 이벤트 스키마가 바뀌었을 가능성이 높다 — 버퍼 정제 폴백 전에 경고를 남긴다.
+      if (full === '' && res.stdout.trim() !== '') {
+        console.warn(
+          `[fleet] ${adapter.command}: 스트림 파서(${stream.parse})가 델타를 0개 추출했습니다 ` +
+            `(exit 0, 원시 ${res.stdout.length}바이트). CLI 출력 형식 변경 의심(파서 드리프트) — 버퍼 정제로 폴백합니다.`,
+        )
+      }
       // 델타가 비어 있으면(이벤트 단위 CLI 등) 버퍼 정제로 폴백해 응답을 잃지 않는다.
       return { res, text: full || cleanCliOutput(parseFmt, res.stdout) }
     }
-    const res = await runner(adapter.command, args, {
+    const res = await runner(adapter.command, [...args, ...extraArgs()], {
       timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
       cwd: sendOpts.workspace,
       signal: sendOpts.signal,

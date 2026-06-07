@@ -7,16 +7,22 @@ interface Props {
   onRefresh: () => void
 }
 
+// 현재 세대(2026-06) 기본 모델 ID. 사용자가 입력란에서 자유롭게 덮어쓸 수 있다.
+// 장기적으로는 provider 의 모델 목록 API 로 라이브 조회하는 것이 이상적(하드코딩 표류 방지).
 const PROVIDER_DEFAULTS: Record<ApiProviderConfig['provider'], string> = {
-  anthropic: 'claude-sonnet-4',
-  openai: 'gpt-4o',
-  google: 'gemini-1.5-pro',
+  anthropic: 'claude-sonnet-4-6',
+  openai: 'gpt-5.5',
+  google: 'gemini-3.5-flash',
 }
 
 export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [clis, setClis] = useState<CliDetectionResult[]>([])
   const [detecting, setDetecting] = useState(false)
   const [stateful, setStateful] = useState(false)
+  // CLI 세션 모델 오버라이드(비우면 CLI 기본 모델 사용).
+  const [cliModel, setCliModel] = useState('')
+  // MCP 설정(경로 또는 인라인 JSON). 현재 패스스루 지원 CLI 는 claude(--mcp-config).
+  const [cliMcp, setCliMcp] = useState('')
 
   const [provider, setProvider] = useState<ApiProviderConfig['provider']>('anthropic')
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
@@ -45,7 +51,13 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   async function registerCli(id: string) {
     setError(null)
     try {
-      await window.fleet.registerCliSession(id, { stateful })
+      // 빈 선택 필드는 키 자체를 넣지 않는다(IPC 페이로드를 깔끔히 유지).
+      const opts: { stateful: boolean; model?: string; mcpConfig?: string } = { stateful }
+      const model = cliModel.trim()
+      const mcpConfig = cliMcp.trim()
+      if (model) opts.model = model
+      if (mcpConfig) opts.mcpConfig = mcpConfig
+      await window.fleet.registerCliSession(id, opts)
       onRefresh()
     } catch (e) {
       setError(`세션 등록 실패: ${asError(e)}`)
@@ -114,13 +126,37 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
           </div>
         </div>
 
-        <label className="check" style={{ marginBottom: 14 }}>
+        <label className="check" style={{ marginBottom: 10 }}>
           <input type="checkbox" checked={stateful} onChange={(e) => setStateful(e.target.checked)} />
           <span>
             세션 재개(대화 맥락 유지) — CLI 자체 --resume 으로 멀티턴.{' '}
             <span className="note-warn">⚠ 오케스트레이터와 공유 시 검증용.</span>
           </span>
         </label>
+
+        <label className="field-label" htmlFor="cli-model">
+          모델 (선택)
+        </label>
+        <input
+          id="cli-model"
+          className="field"
+          style={{ marginBottom: 10 }}
+          value={cliModel}
+          onChange={(e) => setCliModel(e.target.value)}
+          placeholder="비우면 CLI 기본 모델 (예: claude-sonnet-4-6)"
+        />
+
+        <label className="field-label" htmlFor="cli-mcp">
+          MCP 설정 (선택 · claude --mcp-config)
+        </label>
+        <input
+          id="cli-mcp"
+          className="field"
+          style={{ marginBottom: 14 }}
+          value={cliMcp}
+          onChange={(e) => setCliMcp(e.target.value)}
+          placeholder='파일 경로 또는 인라인 JSON ({"mcpServers":{…}})'
+        />
 
         <ul className="list">
           {clis.map((c) => (

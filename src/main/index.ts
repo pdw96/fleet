@@ -68,8 +68,10 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   // 세션 / CLI
   ipcMain.handle('fleet:cli:detect', () => engine.detectClis())
   ipcMain.handle('fleet:cli:adapters', () => engine.listAdapters())
-  ipcMain.handle('fleet:session:registerCli', (_e, adapterId: string, opts?: { stateful?: boolean }) =>
-    engine.registerCliSession(adapterId, opts),
+  ipcMain.handle(
+    'fleet:session:registerCli',
+    (_e, adapterId: string, opts?: { stateful?: boolean; model?: string; mcpConfig?: string }) =>
+      engine.registerCliSession(adapterId, opts),
   )
   ipcMain.handle('fleet:session:registerApi', (_e, config: ApiProviderConfig) => engine.registerApiSession(config))
   ipcMain.handle('fleet:session:list', () => engine.listSessions())

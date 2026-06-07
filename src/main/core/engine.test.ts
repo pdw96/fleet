@@ -74,7 +74,7 @@ describe('FleetEngine', () => {
       id: 'a',
       provider: 'anthropic',
       displayName: 'Claude API',
-      model: 'claude-sonnet-4',
+      model: 'claude-sonnet-4-6',
       apiKey: 'k',
     })
     expect(d.id).toBe('api:a')

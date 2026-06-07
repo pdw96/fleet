@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# 동일 ref 의 이전 실행은 취소(최신 커밋만 검증).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: typecheck · lint · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (vitest)
+        run: npm test
+
+      # 산출물 생성 = 기동 가능성 smoke (DESIGN.md §12).
+      - name: Build (smoke)
+        run: npm run build
+
+# NOTE: E2E(test:e2e)는 electron 빌드 + playwright 로 느리고 환경 의존이 커
+# 이 게이트에 넣지 않는다. 필요 시 별도 워크플로(스케줄/수동 dispatch)로 분리한다.
