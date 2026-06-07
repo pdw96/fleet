@@ -69,6 +69,16 @@ export interface CliAdapter {
    * `[modelFlag, model]` 이 덧붙는다. 미지정이거나 model 이 빈 값이면 생략(CLI 기본 모델 사용).
    */
   modelFlag?: string
+  /**
+   * MCP 설정 패스스루 플래그 (예: claude '--mcp-config'). descriptor.mcpConfig(경로 또는 인라인 JSON)
+   * 가 있으면 `[mcpConfigFlag, mcpConfig]` 이 덧붙는다. CLI 마다 메커니즘이 달라(claude 만 플래그;
+   * codex 는 ~/.codex/config.toml [mcp_servers], gemini 는 .gemini/settings.json mcpServers)
+   * 플래그가 없는 어댑터는 mcpConfig 를 무시한다.
+   * ⚠ CliAdapter 는 IPC 로 직렬화되므로 함수가 아닌 데이터 필드만 둔다.
+   */
+  mcpConfigFlag?: string
+  /** mcpConfig 전달 시 함께 붙일 격리 플래그(예: claude '--strict-mcp-config'). 미지정이면 생략. */
+  mcpStrictArg?: string
   /** TUI 세션 spawn 시 인자 (없으면 대화형 기본 실행) */
   spawnArgs?: string[]
   /**
@@ -134,6 +144,8 @@ export interface LlmDescriptor {
   model?: string
   /** CLI 세션이 맥락 유지(세션 재개) 모드로 등록되었는지. */
   stateful?: boolean
+  /** CLI 세션에 전달할 MCP 설정(파일 경로 또는 인라인 JSON). adapter.mcpConfigFlag 가 있을 때만 적용. */
+  mcpConfig?: string
   /** 이 LLM 이 잘하는 역할들 (capability-scored 배정 정책의 선호 근거). 세션 수명 동안 유지. */
   capabilities?: AgentRole[]
 }
@@ -359,7 +371,10 @@ export interface FleetBridge {
   // 세션 / CLI
   detectClis(): Promise<CliDetectionResult[]>
   listAdapters(): Promise<CliAdapter[]>
-  registerCliSession(adapterId: string, opts?: { stateful?: boolean; model?: string }): Promise<LlmDescriptor>
+  registerCliSession(
+    adapterId: string,
+    opts?: { stateful?: boolean; model?: string; mcpConfig?: string },
+  ): Promise<LlmDescriptor>
   registerApiSession(config: ApiProviderConfig): Promise<LlmDescriptor>
   listSessions(): Promise<LlmDescriptor[]>
   removeSession(id: string): Promise<void>

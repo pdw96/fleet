@@ -11,6 +11,11 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     command: 'claude',
     versionArgs: ['--version'],
     modelFlag: '--model',
+    // MCP 패스스루(실측: --mcp-config 는 파일 경로 또는 인라인 JSON 수용). --strict-mcp-config 로
+    // 전달된 설정만 쓰게 격리(Fleet 의 독립 호출 철학과 일치). codex/gemini 는 CLI 플래그가 아닌
+    // 설정파일(config.toml / settings.json)로 MCP 를 받으므로 여기서 패스스루하지 않는다.
+    mcpConfigFlag: '--mcp-config',
+    mcpStrictArg: '--strict-mcp-config',
     // 프롬프트는 stdin 으로 전달(claude -p 는 stdin 을 프롬프트로 읽는다). 긴 전사도 argv 길이 한도에 안 걸린다.
     promptVia: 'stdin',
     headless: { args: ['-p'] },

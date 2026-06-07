@@ -21,6 +21,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [stateful, setStateful] = useState(false)
   // CLI 세션 모델 오버라이드(비우면 CLI 기본 모델 사용).
   const [cliModel, setCliModel] = useState('')
+  // MCP 설정(경로 또는 인라인 JSON). 현재 패스스루 지원 CLI 는 claude(--mcp-config).
+  const [cliMcp, setCliMcp] = useState('')
 
   const [provider, setProvider] = useState<ApiProviderConfig['provider']>('anthropic')
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
@@ -50,7 +52,12 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
     setError(null)
     try {
       const model = cliModel.trim()
-      await window.fleet.registerCliSession(id, { stateful, model: model || undefined })
+      const mcpConfig = cliMcp.trim()
+      await window.fleet.registerCliSession(id, {
+        stateful,
+        model: model || undefined,
+        mcpConfig: mcpConfig || undefined,
+      })
       onRefresh()
     } catch (e) {
       setError(`세션 등록 실패: ${asError(e)}`)
@@ -133,10 +140,22 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
         <input
           id="cli-model"
           className="field"
-          style={{ marginBottom: 14 }}
+          style={{ marginBottom: 10 }}
           value={cliModel}
           onChange={(e) => setCliModel(e.target.value)}
           placeholder="비우면 CLI 기본 모델 (예: claude-sonnet-4-6)"
+        />
+
+        <label className="field-label" htmlFor="cli-mcp">
+          MCP 설정 (선택 · claude --mcp-config)
+        </label>
+        <input
+          id="cli-mcp"
+          className="field"
+          style={{ marginBottom: 14 }}
+          value={cliMcp}
+          onChange={(e) => setCliMcp(e.target.value)}
+          placeholder='파일 경로 또는 인라인 JSON ({"mcpServers":{…}})'
         />
 
         <ul className="list">

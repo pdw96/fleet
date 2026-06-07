@@ -64,6 +64,17 @@ export function createCliSession(
     return m && adapter.modelFlag ? [adapter.modelFlag, m] : []
   }
 
+  // 세션에 MCP 설정(경로/인라인 JSON)이 있고 어댑터가 패스스루 플래그를 노출하면 모든 실행에 덧붙인다.
+  // strict 플래그가 있으면 전달된 설정만 쓰게 격리한다. 플래그 없는 어댑터(codex/gemini)는 무시.
+  const mcpArgs = (): string[] => {
+    const c = descriptor.mcpConfig?.trim()
+    if (!c || !adapter.mcpConfigFlag) return []
+    return adapter.mcpStrictArg ? [adapter.mcpConfigFlag, c, adapter.mcpStrictArg] : [adapter.mcpConfigFlag, c]
+  }
+
+  /** 모든 실행 인자 끝에 공통으로 붙는 부가 인자(모델·MCP). */
+  const extraArgs = (): string[] => [...modelArgs(), ...mcpArgs()]
+
   const execute = async (
     args: string[],
     sendOpts: SendOptions,
@@ -96,7 +107,7 @@ export function createCliSession(
       }
       const res = await runner(
         adapter.command,
-        [...args, ...modelArgs(), ...stream.args],
+        [...args, ...extraArgs(), ...stream.args],
         { timeoutMs: sendOpts.timeoutMs ?? timeoutMs, cwd: sendOpts.workspace, signal: sendOpts.signal, stdinInput },
         onStdout,
       )
@@ -105,7 +116,7 @@ export function createCliSession(
       // 델타가 비어 있으면(이벤트 단위 CLI 등) 버퍼 정제로 폴백해 응답을 잃지 않는다.
       return { res, text: full || cleanCliOutput(parseFmt, res.stdout) }
     }
-    const res = await runner(adapter.command, [...args, ...modelArgs()], {
+    const res = await runner(adapter.command, [...args, ...extraArgs()], {
       timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
       cwd: sendOpts.workspace,
       signal: sendOpts.signal,

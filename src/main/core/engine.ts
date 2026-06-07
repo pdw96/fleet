@@ -89,7 +89,10 @@ export interface FleetEngine {
   // ── CLI / 세션 ──
   detectClis(): Promise<CliDetectionResult[]>
   listAdapters(): CliAdapter[]
-  registerCliSession(adapterId: string, opts?: { stateful?: boolean; model?: string }): LlmDescriptor
+  registerCliSession(
+    adapterId: string,
+    opts?: { stateful?: boolean; model?: string; mcpConfig?: string },
+  ): LlmDescriptor
   registerApiSession(config: ApiProviderConfig): LlmDescriptor
   listSessions(): LlmDescriptor[]
   removeSession(id: string): Promise<void>
@@ -241,6 +244,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         // 모델 미지정(빈 값)이면 CLI 기본 모델을 쓴다. 지정 시 cli-session 이 --model 로 전달.
         model: sessionOpts?.model?.trim() || '',
         stateful: !!sessionOpts?.stateful,
+        // MCP 설정(경로/인라인 JSON). adapter.mcpConfigFlag 가 있는 CLI(claude)에만 적용된다.
+        mcpConfig: sessionOpts?.mcpConfig?.trim() || undefined,
         capabilities: seedCapabilities(adapterId),
       }
       sessions.add(createCliSession(descriptor, adapter, runner, undefined, { stateful: sessionOpts?.stateful }))
