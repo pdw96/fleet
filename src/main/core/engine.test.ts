@@ -450,24 +450,28 @@ describe('FleetEngine', () => {
 
   it('워크스페이스가 설정되면 API 세션이 도구 루프로 워크스페이스 파일을 읽는다 (#10 SP1)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-tools-'))
-    writeFileSync(join(dir, 'note.txt'), '메모 내용')
-    const { http, calls } = scriptedHttp([
-      JSON.stringify({
-        content: [{ type: 'tool_use', id: 'tu1', name: 'read_file', input: { path: 'note.txt' } }],
-        stop_reason: 'tool_use',
-      }),
-      JSON.stringify({ content: [{ type: 'text', text: '확인 완료' }], stop_reason: 'end_turn' }),
-    ])
-    const engine = createFleetEngine({ http })
-    engine.setWorkspace(dir)
-    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
-    const room = engine.createRoom('r', ['api:a'])
-    const msg = await engine.askLlm(room.id, 'api:a')
+    try {
+      writeFileSync(join(dir, 'note.txt'), '메모 내용')
+      const { http, calls } = scriptedHttp([
+        JSON.stringify({
+          content: [{ type: 'tool_use', id: 'tu1', name: 'read_file', input: { path: 'note.txt' } }],
+          stop_reason: 'tool_use',
+        }),
+        JSON.stringify({ content: [{ type: 'text', text: '확인 완료' }], stop_reason: 'end_turn' }),
+      ])
+      const engine = createFleetEngine({ http })
+      engine.setWorkspace(dir)
+      engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+      const room = engine.createRoom('r', ['api:a'])
+      engine.postUserMessage(room.id, 'note.txt 를 읽어줘')
+      const msg = await engine.askLlm(room.id, 'api:a')
 
-    expect(msg.content).toBe('확인 완료')
-    expect(calls).toHaveLength(2) // 도구 왕복 = chat 2회
-    expect(calls[1]).toContain('메모 내용') // 2번째 요청에 tool_result(파일 내용) 포함
-    rmSync(dir, { recursive: true, force: true })
+      expect(msg.content).toBe('확인 완료')
+      expect(calls).toHaveLength(2) // 도구 왕복 = chat 2회
+      expect(calls[1]).toContain('메모 내용') // 2번째 요청에 tool_result(파일 내용) 포함
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
