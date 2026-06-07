@@ -9,3 +9,6 @@ build/
 fleet-data/
 coverage/
 *.tsbuildinfo
+test-results/
+playwright-report/
+e2e/__screenshots__/
