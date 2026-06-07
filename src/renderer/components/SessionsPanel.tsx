@@ -7,10 +7,12 @@ interface Props {
   onRefresh: () => void
 }
 
+// 현재 세대(2026-06) 기본 모델 ID. 사용자가 입력란에서 자유롭게 덮어쓸 수 있다.
+// 장기적으로는 provider 의 모델 목록 API 로 라이브 조회하는 것이 이상적(하드코딩 표류 방지).
 const PROVIDER_DEFAULTS: Record<ApiProviderConfig['provider'], string> = {
-  anthropic: 'claude-sonnet-4',
-  openai: 'gpt-4o',
-  google: 'gemini-1.5-pro',
+  anthropic: 'claude-sonnet-4-6',
+  openai: 'gpt-5.5',
+  google: 'gemini-3-flash',
 }
 
 export function SessionsPanel({ sessions, onRefresh }: Props) {
