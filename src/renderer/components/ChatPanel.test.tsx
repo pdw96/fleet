@@ -9,6 +9,7 @@ const SESSIONS: LlmDescriptor[] = [
   { id: 'llm-2', kind: 'cli', displayName: 'Codex', ref: 'codex' },
 ]
 const ROOM: ChatRoom = { id: 'r1', title: '토론방', participants: ['llm-1', 'llm-2'], createdAt: 1 }
+const ROOM2: ChatRoom = { id: 'r2', title: '토론방2', participants: ['llm-1', 'llm-2'], createdAt: 2 }
 
 function mockFleet(overrides: Record<string, unknown> = {}) {
   let emit: ((e: ChatStreamEvent) => void) | undefined
@@ -119,6 +120,27 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     )
 
     expect(screen.queryByText('좀비 타이핑')).toBeNull() // 종료된 스트림은 되살아나지 않음
+  })
+
+  it('새 ask 는 활성 방 말풍선만 정리하고 다른 방의 진행 중 스트림은 보존한다', async () => {
+    const fleet = mockFleet({ listRooms: vi.fn().mockResolvedValue([ROOM, ROOM2]) })
+    render(<ChatPanel sessions={SESSIONS} />)
+    await screen.findByText('🤖 AI 자동 토론') // r1 활성
+
+    // 배경 방(r2)에서 스트림이 진행 중
+    fleet.fire({ kind: 'start', streamId: 's2', roomId: 'r2', llmId: 'llm-1' })
+    fleet.fire({ kind: 'delta', streamId: 's2', roomId: 'r2', delta: '배경 응답', seq: 1 })
+
+    // 활성 방(r1)에서 ask 시작 → r1 만 정리(전역 비우기 아님)
+    await act(async () => {
+      screen.getByText('Claude에게 묻기').click()
+    })
+
+    // r2 로 전환하면 배경 스트림이 살아있어야 한다(예전엔 setStreams({}) 로 유실)
+    await act(async () => {
+      screen.getByText('토론방2').click()
+    })
+    expect(screen.getByText('배경 응답')).toBeTruthy()
   })
 
   it('하이드레이션 윈도우 중 도착한 미상 스트림 델타를 버퍼링해 스냅샷 머지 후 복원한다', async () => {

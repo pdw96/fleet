@@ -192,11 +192,25 @@ export function ChatPanel({ sessions }: Props) {
     setBusyRooms((prev) => (prev.has(roomId) ? prev : new Set(prev).add(roomId)))
   }
 
+  // 새 ask/discuss 시작 시 해당 방의 직전 말풍선(에러 등)만 정리하고, 다른 방의 진행 중 스트림은 보존한다.
+  // (전역 비우기는 백그라운드 방의 라이브 버블을 없애 — 복귀 시 진행 표시가 유실됐다.)
+  function clearRoomStreams(roomId: string) {
+    setStreams((prev) => {
+      let changed = false
+      const next: Record<string, StreamBubble> = {}
+      for (const [id, s] of Object.entries(prev)) {
+        if (s.roomId === roomId) changed = true
+        else next[id] = s
+      }
+      return changed ? next : prev
+    })
+  }
+
   async function ask(llmId: string) {
     if (!activeRoom) return
     const room = activeRoom
     markBusy(room)
-    setStreams({}) // 직전 에러 말풍선 정리
+    clearRoomStreams(room) // 이 방의 직전 에러 말풍선만 정리(다른 방 스트림 보존)
     try {
       await window.fleet.askLlm(room, llmId)
       await refreshMessages(room) // 성공 시에만 store 기준 정합(에러 시 'error' 말풍선 유지)
@@ -209,7 +223,7 @@ export function ChatPanel({ sessions }: Props) {
     if (!activeRoom || sessions.length < 2) return
     const room = activeRoom
     markBusy(room)
-    setStreams({})
+    clearRoomStreams(room)
     try {
       await window.fleet.discussRoom(room, sessions.map((s) => s.id), rounds)
       await refreshMessages(room)
