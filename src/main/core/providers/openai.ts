@@ -12,6 +12,7 @@ import {
   type ContentBlock,
   type FinishReason,
   type HttpClient,
+  type TextBlock,
   type ToolUseBlock,
 } from './types'
 
@@ -46,6 +47,44 @@ function mapContent(content: string | ContentBlock[]): string | unknown[] {
     // tool_use/tool_result 는 Chat Completions 에선 별도 메시지 구조가 필요하다(도구 루프 도입 시 확장).
     return [{ type: 'text', text: textOf([b]) }]
   })
+}
+
+interface OpenAiMessage {
+  role: string
+  content: string | unknown[] | null
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+  tool_call_id?: string
+}
+
+/**
+ * ChatTurn[] → OpenAI Chat Completions 메시지 배열.
+ * - tool_result 블록을 가진 user 턴 → 블록당 role:'tool' 메시지로 평탄화(1턴이 N메시지).
+ * - tool_use 블록을 가진 assistant 턴 → content + tool_calls 필드.
+ * - 그 외(텍스트/이미지) → 기존 mapContent 로 단일 메시지.
+ */
+function buildMessages(turns: ChatTurn[]): OpenAiMessage[] {
+  const out: OpenAiMessage[] = []
+  for (const m of turns) {
+    const blocks: ContentBlock[] | null = typeof m.content === 'string' ? null : m.content
+    if (blocks?.some((b) => b.type === 'tool_result')) {
+      for (const b of blocks) {
+        if (b.type === 'tool_result') out.push({ role: 'tool', tool_call_id: b.toolUseId, content: b.content })
+      }
+      const text = blocks.filter((b): b is TextBlock => b.type === 'text').map((b) => b.text).join('')
+      if (text) out.push({ role: 'user', content: text })
+      continue
+    }
+    if (blocks?.some((b) => b.type === 'tool_use')) {
+      const toolCalls = blocks
+        .filter((b): b is ToolUseBlock => b.type === 'tool_use')
+        .map((b) => ({ id: b.id, type: 'function' as const, function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) } }))
+      const text = blocks.filter((b): b is TextBlock => b.type === 'text').map((b) => b.text).join('')
+      out.push({ role: 'assistant', content: text || null, tool_calls: toolCalls })
+      continue
+    }
+    out.push({ role: m.role, content: mapContent(m.content) })
+  }
+  return out
 }
 
 function mapFinish(reason: string | undefined): FinishReason {
@@ -106,7 +145,7 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
 
       const body: Record<string, unknown> = {
         model: config.model,
-        messages: messages.map((m) => ({ role: m.role, content: mapContent(m.content) })),
+        messages: buildMessages(messages),
       }
       const maxTokens = opts.maxTokens ?? config.maxTokens
       if (maxTokens !== undefined) {

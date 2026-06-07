@@ -30,6 +30,8 @@ export interface ToolUseBlock {
 export interface ToolResultBlock {
   type: 'tool_result'
   toolUseId: string
+  /** 도구 이름. Anthropic/OpenAI 는 toolUseId 로 correlate 하지만 Gemini 는 함수 name 으로 correlate 한다. */
+  name?: string
   content: string
   isError?: boolean
 }
