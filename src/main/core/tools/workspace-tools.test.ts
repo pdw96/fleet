@@ -1,0 +1,83 @@
+import { promises as fs } from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { createWorkspaceReadTools } from './workspace-tools'
+import type { FleetTool } from './types'
+
+let root: string
+const pick = (tools: FleetTool[], name: string): FleetTool => {
+  const t = tools.find((x) => x.definition.name === name)
+  if (!t) throw new Error(`no tool ${name}`)
+  return t
+}
+
+beforeEach(async () => {
+  root = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-ws-'))
+  await fs.writeFile(path.join(root, 'a.txt'), 'hello world\nsecond line')
+  await fs.mkdir(path.join(root, 'sub'))
+  await fs.writeFile(path.join(root, 'sub', 'b.ts'), 'export const x = 1')
+  await fs.writeFile(path.join(root, '.env'), 'SECRET=123')
+})
+afterEach(async () => {
+  await fs.rm(root, { recursive: true, force: true })
+})
+
+describe('createWorkspaceReadTools', () => {
+  it('exposes read_file/list_directory/grep/glob', () => {
+    expect(createWorkspaceReadTools(root).map((t) => t.definition.name).sort()).toEqual([
+      'glob',
+      'grep',
+      'list_directory',
+      'read_file',
+    ])
+  })
+
+  it('read_file 은 워크스페이스 내 파일을 읽는다', async () => {
+    const out = await pick(createWorkspaceReadTools(root), 'read_file').execute({ path: 'a.txt' }, {})
+    expect(out).toContain('hello world')
+  })
+
+  it('read_file 은 워크스페이스 밖 경로를 거부한다(경로 탈출)', async () => {
+    await expect(
+      pick(createWorkspaceReadTools(root), 'read_file').execute({ path: '../../etc/hosts' }, {}),
+    ).rejects.toThrow(/워크스페이스 밖/)
+  })
+
+  it('민감 파일 read 는 destructive, 일반 파일은 safe 로 분류된다', () => {
+    const tool = pick(createWorkspaceReadTools(root), 'read_file')
+    expect(tool.classify({ path: '.env' })).toBe('destructive')
+    expect(tool.classify({ path: 'a.txt' })).toBe('safe')
+  })
+
+  it('list_directory 는 항목을 나열한다(디렉터리는 / 접미사)', async () => {
+    const out = await pick(createWorkspaceReadTools(root), 'list_directory').execute({ path: '.' }, {})
+    expect(out).toContain('a.txt')
+    expect(out).toContain('sub/')
+  })
+
+  it('grep 은 내용을 검색하고 민감파일을 제외한다', async () => {
+    const tool = pick(createWorkspaceReadTools(root), 'grep')
+    expect(await tool.execute({ pattern: 'hello' }, {})).toContain('a.txt:1:')
+    expect(await tool.execute({ pattern: 'SECRET' }, {})).toBe('(일치 없음)')
+  })
+
+  it('glob 은 패턴으로 파일을 찾는다', async () => {
+    const out = await pick(createWorkspaceReadTools(root), 'glob').execute({ pattern: '**/*.ts' }, {})
+    expect(out).toContain('sub/b.ts')
+  })
+
+  it('심볼릭 링크로 워크스페이스를 벗어나는 읽기를 차단한다', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-out-'))
+    await fs.writeFile(path.join(outside, 'secret.txt'), 'top secret')
+    try {
+      await fs.symlink(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'))
+    } catch {
+      return // 심볼릭 링크 생성 권한 없음(Windows 비관리자) → 스킵
+    }
+    await expect(
+      pick(createWorkspaceReadTools(root), 'read_file').execute({ path: 'link.txt' }, {}),
+    ).rejects.toThrow(/워크스페이스 밖/)
+    await fs.rm(outside, { recursive: true, force: true })
+  })
+})
