@@ -281,6 +281,45 @@ describe('createMcpHost', () => {
     await Promise.all([p, d])
   })
 
+  it('dispose 는 initialize 에서 멈춘(spawn 된) in-flight 자식도 닫고 즉시 반환한다', async () => {
+    // 'slow' 는 initialize 응답을 보내지 않아 connect 가 멈춘다. entries 에 들어가기 전이라
+    // in-flight 추적이 없으면 dispose 가 자식을 못 닫고 요청 타임아웃(30s)까지 매달린다.
+    const kills: string[] = []
+    const spawns: string[] = []
+    const spawn: SpawnFn = (spec) => {
+      spawns.push(spec.name)
+      let out: (chunk: string) => void = () => {}
+      let close: (err?: Error) => void = () => {}
+      return {
+        write: (line) => {
+          const msg = JSON.parse(line) as { id?: number; method: string }
+          if (msg.id == null) return
+          if (spec.name === 'slow') return // 응답 없음 → initialize 가 매달림
+          queueMicrotask(() => out(`${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: echoReply(spec, msg.method) })}\n`))
+        },
+        onStdout: (h) => {
+          out = h
+        },
+        onClose: (h) => {
+          close = h
+        },
+        kill: () => {
+          kills.push(spec.name)
+          close()
+        },
+      }
+    }
+    const host = createMcpHost({ spawn })
+    const p = host.setServers([{ name: 'slow', command: 'slow-cmd' }]) // initialize 에서 멈춤
+    await new Promise<void>((r) => setTimeout(r, 0)) // connect 가 spawn→initialize 까지 진행하도록 양보
+    expect(spawns).toEqual(['slow']) // spawn 은 됨(게이트 없음)
+    await host.dispose() // 멈춘 in-flight 자식을 닫고 즉시 반환(30s 타임아웃 기다리지 않음)
+    expect(kills).toContain('slow') // entries 에 없던 in-flight 자식도 종료
+    await p // 정리: connect 가 close 로 reject → doSetServers catch → queue resolve
+    expect(host.tools()).toHaveLength(0)
+    expect(host.status()).toHaveLength(0)
+  })
+
   it('승자 서버가 종료되면 가려졌던 서버의 도구·status 가 복원된다', async () => {
     const { spawn, closers } = fakeSpawn((_spec, method) => {
       if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }

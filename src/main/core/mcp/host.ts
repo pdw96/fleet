@@ -42,6 +42,9 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
   const audit = opts.onAudit ?? NOOP_AUDIT
   const gate = opts.gate
   const entries = new Map<string, Entry>()
+  // connect() 진행 중(entries 등록 전) spawn 된 client 추적. dispose 가 initialize/tools/list 에서
+  // 멈춘 자식까지 즉시 닫아 종료 창(will-quit fire-and-forget, 3s)에 orphan 이 남지 않게 한다.
+  const inflight = new Set<McpClient>()
   // setServers 직렬화 큐 — 겹치는 호출이 entries 를 인터리브해 중복 spawn·stale 덮어쓰기를 내지 않게 한다.
   let queue: Promise<unknown> = Promise.resolve()
   // dispose 후 큐에 남은/진행 중 setServers 가 새 자식을 spawn 하지 않도록 막는 플래그.
@@ -89,6 +92,8 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
   /** 서버 1개에 연결(spawn→initialize→tools/list→도구 wrap). 실패 시 부분 연결을 정리하고 throw. */
   async function connect(spec: McpServerSpec): Promise<Entry> {
     const client = createMcpClient(createStdioTransport(spec, spawn), opts.clientOptions)
+    // entries 에 들어가기 전까지 dispose 가 닫을 수 있도록 추적. 성공·실패 후 finally 에서 해제한다.
+    inflight.add(client)
     let entry: Entry | undefined
     let closedEarly = false
     // close 핸들러를 initialize/list 전에 등록한다 — list 응답 직후~핸들러 등록 사이의 close 유실 창을
@@ -130,6 +135,8 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     } catch (err) {
       client.close() // 부분 연결 정리
       throw err
+    } finally {
+      inflight.delete(client)
     }
   }
 
@@ -224,10 +231,12 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     },
     async dispose() {
       disposed = true
-      // 1) 이미 연결된 자식을 먼저 즉시 닫는다 — 다른 연결이 initialize/tools/list 에서 멈춰 있어도
-      //    (will-quit fire-and-forget) 기존 서버가 종료 전까지 살아남지 않도록.
+      // 1) 이미 연결된 자식 + connect() 진행 중(아직 entries 에 없는) 자식을 먼저 즉시 닫는다 — 다른
+      //    연결이 initialize/tools/list 에서 멈춰 있어도 (will-quit fire-and-forget) 기존 서버가 종료
+      //    전까지 살아남지 않도록. in-flight close 는 멈춘 요청의 pending 을 reject 해 아래 queue 도 푼다.
       for (const [, e] of entries) e.client?.close()
       entries.clear()
+      for (const c of inflight) c.close()
       // 2) 진행 중/큐된 setServers 가 끝나길 기다린 뒤(그 사이 spawn 된 late 자식까지) 한 번 더 정리.
       await queue.catch(() => {})
       for (const [, e] of entries) e.client?.close()
