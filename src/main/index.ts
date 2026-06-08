@@ -155,8 +155,17 @@ function createWindow(): void {
 void app.whenReady().then(() => {
   const { engine, ipcApprover } = buildEngine()
   registerIpc(engine, ipcApprover)
-  app.on('will-quit', () => {
-    void engine.dispose() // 세션·MCP 자식 프로세스 정리(좀비 방지)
+  // 종료 시 세션·MCP 자식 프로세스를 정리한다(좀비 방지). dispose 는 비동기(큐 대기 후 late 자식 정리)라
+  // will-quit 를 preventDefault 로 잡고 dispose 완료 후 재-quit 한다 — fire-and-forget 이면 그 사이
+  // 막 시작된 MCP 서버가 orphan 으로 남을 수 있다.
+  let quitting = false
+  app.on('will-quit', (e) => {
+    if (quitting) return
+    e.preventDefault()
+    quitting = true
+    const done = (): void => app.quit() // quitting 가드로 재진입은 무해(기본 종료 진행)
+    void engine.dispose().finally(done)
+    setTimeout(done, 3000) // dispose 가 지연/멈춰도 종료 보장(연결 자식은 dispose 동기 1단계에서 이미 정리)
   })
   createWindow()
 

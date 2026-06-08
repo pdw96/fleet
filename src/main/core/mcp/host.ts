@@ -71,9 +71,32 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     }
   }
 
+  /** entry 를 죽은 상태로 표시한다(idle 크래시·종료). status 도 노출 기준 재계산. */
+  function invalidate(entry: Entry): void {
+    if (!entry.status.connected) return
+    entry.tools = []
+    entry.status = {
+      name: entry.spec.name,
+      connected: false,
+      toolCount: 0,
+      tools: [],
+      error: '서버 연결이 종료되었습니다.',
+    }
+    audit('mcp.server.disconnected', { name: entry.spec.name, reason: 'exit' })
+    recomputeExposure()
+  }
+
   /** 서버 1개에 연결(spawn→initialize→tools/list→도구 wrap). 실패 시 부분 연결을 정리하고 throw. */
   async function connect(spec: McpServerSpec): Promise<Entry> {
     const client = createMcpClient(createStdioTransport(spec, spawn), opts.clientOptions)
+    let entry: Entry | undefined
+    let closedEarly = false
+    // close 핸들러를 initialize/list 전에 등록한다 — list 응답 직후~핸들러 등록 사이의 close 유실 창을
+    // 구조적으로 없앤다. entry 가 아직 없으면 플래그만 세우고, 생긴 뒤(idle 크래시)엔 직접 무효화한다.
+    client.onClose(() => {
+      closedEarly = true
+      if (entry) invalidate(entry)
+    })
     try {
       await client.initialize()
       const infos = await client.listTools()
@@ -95,24 +118,14 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
         tools.push(wrapped)
         names.push(wrapped.definition.name)
       }
-      // entry 객체를 먼저 만들어 onClose 가 이를 직접 잡게 한다 — entries.set 이전에 자식이 죽는
-      // startup 종료 레이스에서도, 저장될 바로 그 entry 가 disconnected 로 갱신된다(이벤트 유실 없음).
-      // 재연결 후 옛 client 의 onClose 는 옛 entry 만 건드리므로 새 entry 를 오염시키지 않는다.
-      const entry: Entry = {
+      entry = {
         spec,
         client,
         tools,
         status: { name: spec.name, connected: true, toolCount: tools.length, tools: names },
       }
-      // 연결 후 자식이 죽으면(idle 크래시·재설정 중 close) 죽은 도구를 계속 광고하지 않도록 무효화하고,
-      // 서버 간 충돌로 가려졌던 다른 서버의 도구가 다시 노출되도록 status 를 재계산한다.
-      client.onClose(() => {
-        if (!entry.status.connected) return
-        entry.tools = []
-        entry.status = { name: spec.name, connected: false, toolCount: 0, tools: [], error: '서버 연결이 종료되었습니다.' }
-        audit('mcp.server.disconnected', { name: spec.name, reason: 'exit' })
-        recomputeExposure()
-      })
+      // initialize/list 도중·직후 이미 닫혔으면 connected 로 광고하지 않는다(stale tools 방지).
+      if (closedEarly) invalidate(entry)
       return entry
     } catch (err) {
       client.close() // 부분 연결 정리
