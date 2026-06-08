@@ -12,6 +12,19 @@ const DEFAULT_MAX_ITERATIONS = 8
 
 const NOOP_AUDIT = (): void => {}
 
+/** 도구 입력을 승인 요청에 보여줄 짧은 문자열로 요약한다(안전 절단, 최대 200자). */
+function previewInput(input: unknown): string {
+  if (input == null) return ''
+  let s: string
+  try {
+    s = typeof input === 'string' ? input : JSON.stringify(input)
+  } catch {
+    return ''
+  }
+  if (!s || s === '{}') return ''
+  return s.length > 200 ? `${s.slice(0, 200)}…` : s
+}
+
 /**
  * provider.chat 를 도구 호출이 끝날 때까지 반복한다. turns 를 in-place 로 확장
  * (assistant tool_use + user tool_result)하고 최종 ChatResult 를 반환한다.
@@ -32,7 +45,9 @@ export async function runToolLoop(
 
   for (let iter = 0; iter < max; iter++) {
     const result = await provider.chat(turns, { ...opts, tools, toolChoice: 'auto' })
-    if (result.finishReason !== 'tool_use' || result.toolCalls.length === 0) return result
+    // 종료는 finishReason 가 아니라 toolCalls 유무로 판단한다 — Gemini 는 functionCall 응답에도
+    // finishReason 를 'stop'(STOP)으로 주므로 finishReason 게이팅은 Gemini 도구호출을 통째로 건너뛴다.
+    if (result.toolCalls.length === 0) return result
 
     // 어시스턴트 턴 재구성: (텍스트 있으면) + tool_use 블록들.
     const assistant: ContentBlock[] = []
@@ -58,11 +73,11 @@ export async function runToolLoop(
 
       const risk = tool.classify(call.input)
       audit('tool.requested', { name: call.name, risk })
-
+      const argPreview = previewInput(call.input)
       const decision = await deps.gate.request({
         kind: 'tool-call',
-        summary: `도구 호출: ${call.name}`,
-        target: call.name,
+        summary: argPreview ? `도구 호출: ${call.name} ${argPreview}` : `도구 호출: ${call.name}`,
+        target: argPreview || call.name,
         risk,
       })
       if (decision !== 'approved') {

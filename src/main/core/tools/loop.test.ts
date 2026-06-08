@@ -133,4 +133,29 @@ describe('runToolLoop', () => {
     expect(gate.request).not.toHaveBeenCalled()
     expect(firstResult(calls[1])).toMatchObject({ isError: true, name: 'nope' })
   })
+
+  it('finishReason 가 stop 이어도 toolCalls 가 있으면 실행한다(Gemini: functionCall + STOP)', async () => {
+    const { provider, calls } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('lookup-0', 'echo', { q: 1 })], finishReason: 'stop' },
+      { text: '완료', toolCalls: [], finishReason: 'stop' },
+    ])
+    const out = await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    expect(out.text).toBe('완료')
+    expect(calls).toHaveLength(2) // 도구 실행 후 재호출
+  })
+
+  it('승인 요청에 도구 인자를 포함한다', async () => {
+    const reqs: Array<{ summary: string; target: string }> = []
+    const gate = { async request(r: { summary: string; target: string }) { reqs.push(r); return 'approved' as const } }
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'echo', { path: 'a.txt' })], finishReason: 'tool_use' },
+      { text: 'ok', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, { registry: createToolRegistry([echoTool]), gate })
+    expect(reqs[0].summary).toContain('a.txt')
+    expect(reqs[0].target).toContain('a.txt')
+  })
 })
