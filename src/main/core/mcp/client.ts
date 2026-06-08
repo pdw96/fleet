@@ -3,6 +3,8 @@ import type { McpCallResult, McpClient, McpClientOptions, McpToolInfo, McpTransp
 /** 우리가 보내는 MCP 프로토콜 버전. 서버가 더 낮은 버전을 echo 해도 하드 실패하지 않는다. */
 const PROTOCOL_VERSION = '2025-06-18'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+/** tools/list 페이지네이션 추종 상한 — 악의/버그 서버의 무한 페이지네이션을 결정론적으로 끊는다. */
+const MAX_TOOLS_LIST_PAGES = 100
 /** clientInfo.version — package.json 과 동기화(드리프트 시 수정). */
 const CLIENT_VERSION = '0.1.0'
 
@@ -111,13 +113,30 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
       transport.send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
     },
     async listTools(): Promise<McpToolInfo[]> {
-      const result = await request('tools/list', {})
-      if (result['nextCursor'] != null) {
-        // 페이지네이션 미구현(후속) — 첫 페이지만 사용한다. 잘림을 조용히 넘기지 않고 경고로 표면화(#7).
-        console.warn('MCP tools/list 가 페이지네이션으로 잘렸습니다(nextCursor 존재) — 첫 페이지 도구만 노출됩니다.')
+      // nextCursor 를 따라 모든 페이지를 모은다(MCP 페이지네이션). 결정론적 종료:
+      // (a) nextCursor 가 문자열이 아니거나 비면 끝, (b) 같은 커서 반복(서버 버그) 시 중단,
+      // (c) 페이지 상한 초과 시 중단 — 악의/버그 서버의 무한 페이지네이션을 막는다.
+      const all: McpToolInfo[] = []
+      const seenCursors = new Set<string>()
+      let cursor: string | undefined
+      for (let page = 1; ; page++) {
+        const result = await request('tools/list', cursor != null ? { cursor } : {})
+        const tools = result['tools']
+        if (Array.isArray(tools)) all.push(...(tools as McpToolInfo[]))
+        const next = result['nextCursor']
+        if (typeof next !== 'string' || next === '') break // 더 이상 페이지 없음
+        if (seenCursors.has(next)) {
+          console.warn('MCP tools/list 가 동일 nextCursor 를 반복했습니다 — 페이지네이션 추종을 중단합니다(서버 버그 의심).')
+          break
+        }
+        if (page >= MAX_TOOLS_LIST_PAGES) {
+          console.warn(`MCP tools/list 페이지가 상한(${MAX_TOOLS_LIST_PAGES})을 초과했습니다 — 이후 페이지는 생략합니다.`)
+          break
+        }
+        seenCursors.add(next)
+        cursor = next
       }
-      const tools = result['tools']
-      return Array.isArray(tools) ? (tools as McpToolInfo[]) : []
+      return all
     },
     async callTool(name, args, callOpts): Promise<McpCallResult> {
       const result = await request('tools/call', { name, arguments: args ?? {} }, callOpts?.signal)

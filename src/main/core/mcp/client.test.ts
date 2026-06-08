@@ -83,14 +83,81 @@ describe('createMcpClient', () => {
     await expect(p).rejects.toThrow(/취소/)
   })
 
-  it('tools/list 가 nextCursor 로 잘리면 경고를 표면화한다', async () => {
+  it('tools/list 의 nextCursor 를 따라 모든 페이지를 모은다(커서를 params 로 전달)', async () => {
+    const pages: Record<string, { tools: { name: string }[]; nextCursor?: string }> = {
+      '': { tools: [{ name: 'a' }], nextCursor: 'c1' },
+      c1: { tools: [{ name: 'b' }], nextCursor: 'c2' },
+      c2: { tools: [{ name: 'c' }] },
+    }
+    let onMsg: (m: Record<string, unknown>) => void = () => {}
+    const sentCursors: (string | undefined)[] = []
+    const transport: McpTransport = {
+      send: (m) => {
+        if (m['method'] !== 'tools/list') return
+        const cursor = (m['params'] as { cursor?: string }).cursor
+        sentCursors.push(cursor)
+        queueMicrotask(() => onMsg({ jsonrpc: '2.0', id: m['id'], result: pages[cursor ?? ''] }))
+      },
+      onMessage: (h) => {
+        onMsg = h
+      },
+      onClose: () => {},
+      close: () => {},
+    }
+    const c = createMcpClient(transport)
+    expect(await c.listTools()).toEqual([{ name: 'a' }, { name: 'b' }, { name: 'c' }])
+    expect(sentCursors).toEqual([undefined, 'c1', 'c2'])
+  })
+
+  it('tools/list 가 동일 nextCursor 를 반복하면 추종을 멈춘다(무한루프 방지)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const f = fakeTransport()
-    const c = createMcpClient(f.transport)
-    const p = c.listTools()
-    f.reply({ jsonrpc: '2.0', id: 1, result: { tools: [{ name: 't' }], nextCursor: 'next' } })
-    expect(await p).toEqual([{ name: 't' }])
+    let onMsg: (m: Record<string, unknown>) => void = () => {}
+    let count = 0
+    const transport: McpTransport = {
+      send: (m) => {
+        if (m['method'] !== 'tools/list') return
+        count++
+        const id = m['id']
+        queueMicrotask(() => onMsg({ jsonrpc: '2.0', id, result: { tools: [{ name: `t${count}` }], nextCursor: 'same' } }))
+      },
+      onMessage: (h) => {
+        onMsg = h
+      },
+      onClose: () => {},
+      close: () => {},
+    }
+    const c = createMcpClient(transport)
+    const tools = await c.listTools()
+    // 1페이지(커서 없음)→'same', 2페이지(커서 'same')→또 'same' → 반복 감지 후 중단.
+    expect(count).toBe(2)
+    expect(tools).toHaveLength(2)
     expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('tools/list 페이지가 상한을 넘으면 경고하고 멈춘다(결정론적 종료)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let onMsg: (m: Record<string, unknown>) => void = () => {}
+    let count = 0
+    const transport: McpTransport = {
+      send: (m) => {
+        if (m['method'] !== 'tools/list') return
+        count++
+        const id = m['id']
+        // 매 페이지 새 고유 커서 → 상한이 없으면 무한. 상한에서 멈춰야 한다.
+        queueMicrotask(() => onMsg({ jsonrpc: '2.0', id, result: { tools: [{ name: `t${count}` }], nextCursor: `c${count}` } }))
+      },
+      onMessage: (h) => {
+        onMsg = h
+      },
+      onClose: () => {},
+      close: () => {},
+    }
+    const c = createMcpClient(transport)
+    const tools = await c.listTools()
+    expect(count).toBe(100) // MAX_TOOLS_LIST_PAGES
+    expect(tools).toHaveLength(100)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('상한'))
     warn.mockRestore()
   })
 

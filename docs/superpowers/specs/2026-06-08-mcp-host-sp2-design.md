@@ -147,7 +147,7 @@ export interface McpClientOptions {
 ```
 - JSON-RPC 2.0: 요청 `{jsonrpc:'2.0', id, method, params}`, 응답을 `id` 로 상관. pending 맵 `id → {resolve, reject, timer}`.
 - `initialize` params: `{ protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name:'fleet', version } }`. 결과 수신 후 `notifications/initialized`(id 없는 알림) 전송. 서버가 더 낮은 protocolVersion 을 echo 해도 하드 실패하지 않고 진행(로그).
-- `tools/list` → `result.tools: McpToolInfo[]`(없으면 `[]`). (페이지네이션 `nextCursor` 는 후속 — 첫 페이지만, 잘림 시 감사 경고로 표면화.)
+- `tools/list` → `result.tools: McpToolInfo[]`(없으면 `[]`). **nextCursor 를 따라 모든 페이지를 모은다**(#19) — 결정론적 종료: 동일 커서 반복·페이지 상한(100) 초과 시 경고 후 중단해 무한 페이지네이션을 막는다.
 - `tools/call` params `{ name, arguments }` → `result: McpCallResult`. 응답 `error` 필드면 reject.
 - **요청 타임아웃**: pending 마다 타이머; 초과 시 reject(`'MCP 요청 타임아웃'`)하고 pending 제거.
 - **abort**: `opts.signal` → 즉시 reject + pending 제거(서버측 cancel 알림은 후속).
@@ -241,7 +241,7 @@ export interface McpHost {
 ## 테스트 (게이트: typecheck/lint/test/build 모두 통과)
 
 - `mcp/stdio.test.ts` — fake `McpChild` 주입: 개행 프레이밍(여러 메시지 한 청크/한 메시지 여러 청크), 부분 라인 버퍼링, 잘못된 JSON 라인 스킵, 자식 close 전파, send 직렬화(+개행).
-- `mcp/client.test.ts` — fake transport(인메모리): initialize→initialized 순서, tools/list 파싱, tools/call 결과·`error`→reject, 요청 타임아웃(setTimer 주입), abort→reject, transport close→pending reject.
+- `mcp/client.test.ts` — fake transport(인메모리): initialize→initialized 순서, tools/list 파싱·페이지네이션(nextCursor 추종·동일 커서 반복 중단·페이지 상한), tools/call 결과·`error`→reject, 요청 타임아웃(setTimer 주입), abort→reject, transport close→pending reject.
 - `mcp/wrap.test.ts` — 이름 프리픽스·sanitize·64자 초과 null·빈 이름 null, description/parameters 매핑, 항상 destructive(annotations untrusted), content 매핑(text/image/resource/혼합), 길이 바운드, isError→throw.
 - `mcp/host.test.ts` — fake spawn(JSON-RPC 응답 스크립트): 다중 서버 연결·`tools()` 평탄화·서버 하나 실패 격리·중복 서버명 throw·re-setServers diff(미변경 유지·제거 close·변경 재연결)·dispose 전부 close·감사 이벤트.
 - `engine.test.ts` 확장 — `mcpHost`(fake spawn) 주입: `setMcpServers` 후 API 세션 send 가 `mcp__*` 도구를 루프로 호출(워크스페이스 없이)·tool_result 회신·최종 텍스트; 워크스페이스+MCP 병합 시 비충돌; `getMcpStatus` 반환; `dispose` 가 client.close 호출.
@@ -250,6 +250,6 @@ export interface McpHost {
 
 - SSE/Streamable HTTP transport(stdio 외).
 - `store` 기반 MCP 서버 설정 영속(현재는 세션처럼 런타임 제공).
-- MCP roots/sampling/prompts/resources, `tools/list` 페이지네이션, 서버측 `notifications/cancelled`, 도구 변경 알림(`notifications/tools/list_changed`).
+- MCP roots/sampling/prompts/resources, 서버측 `notifications/cancelled`, 도구 변경 알림(`notifications/tools/list_changed`). (`tools/list` 페이지네이션은 #19 에서 구현됨.)
 - 본격 렌더러 UX(서버 추가/제거 폼·연결 토글·도구 미리보기).
 - SP3 — 도구 사용 중 스트리밍.
