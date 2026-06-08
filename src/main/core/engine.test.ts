@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ChatStreamEvent } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
+import type { HttpClient } from './providers/types'
 import { createSessionManager } from './session/manager'
 import { createMemoryStore } from './store/memory'
 import type { GitRunner } from './workspace/git'
@@ -43,6 +44,17 @@ function fakeGit(): GitRunner {
       return { code: 0, stdout: '', stderr: '' }
     },
   }
+}
+
+/** 호출 순서대로 응답 본문을 돌려주는 mock HTTP(요청 본문 캡처). */
+function scriptedHttp(bodies: string[]): { http: HttpClient; calls: string[] } {
+  const calls: string[] = []
+  let i = 0
+  const http: HttpClient = async (_url, init) => {
+    calls.push(init.body)
+    return { ok: true, status: 200, text: async () => bodies[Math.min(i++, bodies.length - 1)] }
+  }
+  return { http, calls }
 }
 
 /**
@@ -434,6 +446,32 @@ describe('FleetEngine', () => {
     expect(msg.content).toBe('LLM 답변')
     expect(engine.roomHistory(room.id)).toHaveLength(2)
     expect(engine.listRooms()).toHaveLength(1)
+  })
+
+  it('워크스페이스가 설정되면 API 세션이 도구 루프로 워크스페이스 파일을 읽는다 (#10 SP1)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-tools-'))
+    try {
+      writeFileSync(join(dir, 'note.txt'), '메모 내용')
+      const { http, calls } = scriptedHttp([
+        JSON.stringify({
+          content: [{ type: 'tool_use', id: 'tu1', name: 'read_file', input: { path: 'note.txt' } }],
+          stop_reason: 'tool_use',
+        }),
+        JSON.stringify({ content: [{ type: 'text', text: '확인 완료' }], stop_reason: 'end_turn' }),
+      ])
+      const engine = createFleetEngine({ http })
+      engine.setWorkspace(dir)
+      engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+      const room = engine.createRoom('r', ['api:a'])
+      engine.postUserMessage(room.id, 'note.txt 를 읽어줘')
+      const msg = await engine.askLlm(room.id, 'api:a')
+
+      expect(msg.content).toBe('확인 완료')
+      expect(calls).toHaveLength(2) // 도구 왕복 = chat 2회
+      expect(calls[1]).toContain('메모 내용') // 2번째 요청에 tool_result(파일 내용) 포함
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

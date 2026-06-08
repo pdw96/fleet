@@ -245,7 +245,7 @@ export type RiskLevel = 'safe' | 'caution' | 'destructive'
 
 export interface ApprovalRequest {
   id: string
-  kind: 'file-write' | 'file-delete' | 'shell' | 'apply-diff'
+  kind: 'file-write' | 'file-delete' | 'shell' | 'apply-diff' | 'tool-call'
   summary: string
   /** 대상 경로 또는 명령 */
   target: string

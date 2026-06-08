@@ -180,6 +180,45 @@ describe('OpenAiProvider', () => {
     }
   })
 
+  it('tool_use/tool_result 블록을 tool_calls + role:tool 메시지로 평탄화한다', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: '끝' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: '검색해' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'search', input: { q: 'x' } }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'c1', name: 'search', content: '결과' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { messages: Array<Record<string, unknown>> }
+    expect(body.messages[1]).toEqual({
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } }],
+    })
+    expect(body.messages[2]).toEqual({ role: 'tool', tool_call_id: 'c1', content: '결과' })
+  })
+
+  it('텍스트와 tool_use 가 함께 있는 assistant 턴을 content + tool_calls 로 매핑한다', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: '끝' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: '검색해' },
+      { role: 'assistant', content: [
+        { type: 'text', text: '검색할게요' },
+        { type: 'tool_use', id: 'c1', name: 'search', input: { q: 'x' } },
+      ] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { messages: Array<Record<string, unknown>> }
+    expect(body.messages[1]).toEqual({
+      role: 'assistant',
+      content: '검색할게요',
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } }],
+    })
+  })
+
   it('sends function tools and parses tool_calls', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({
@@ -241,6 +280,36 @@ describe('GoogleProvider', () => {
     const out = await p.chat([{ role: 'user', content: 'x' }])
     expect(out.text).toBe('')
     expect(out.finishReason).toBe('content_filter')
+  })
+
+  it('tool_result 를 functionResponse.name(도구 이름)으로 매핑한다', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: '조회' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'lookup-0', name: 'lookup', input: { id: 1 } }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'lookup-0', name: 'lookup', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
+    expect(body.contents.at(-1)!.parts[0]).toEqual({
+      functionResponse: { name: 'lookup', response: { result: '값' } },
+    })
+  })
+
+  it('tool_result 에 name 이 없으면 functionResponse.name 이 toolUseId 로 폴백한다', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fallback-id', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
+    expect(body.contents.at(-1)!.parts[0]).toEqual({
+      functionResponse: { name: 'fallback-id', response: { result: '값' } },
+    })
   })
 
   it('sends functionDeclarations and parses functionCall', async () => {

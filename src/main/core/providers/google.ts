@@ -51,7 +51,7 @@ function mapParts(content: string | ContentBlock[]): unknown[] {
       case 'tool_use':
         return { functionCall: { name: b.name, args: b.input } }
       case 'tool_result':
-        return { functionResponse: { name: b.toolUseId, response: { result: b.content } } }
+        return { functionResponse: { name: b.name ?? b.toolUseId, response: { result: b.content } } }
     }
   })
 }

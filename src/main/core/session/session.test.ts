@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
 import type { ApiProvider, ChatTurn } from '../providers/types'
+import { createToolRegistry } from '../tools/registry'
 import { createApiSession } from './api-session'
 import { buildHeadlessArgs, createCliSession } from './cli-session'
 import { createSessionManager } from './manager'
@@ -84,6 +85,65 @@ describe('createApiSession', () => {
     }
     const s = createApiSession(apiDesc, provider)
     await expect(s.send('위험한 질문')).rejects.toThrow(/안전 필터|content_filter|SAFETY/)
+  })
+
+  it('toolDeps 가 있으면 도구 루프로 처리해 최종 텍스트를 반환한다', async () => {
+    let n = 0
+    const provider: ApiProvider = {
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return n++ === 0
+          ? { text: '', toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }], finishReason: 'tool_use' }
+          : { text: '최종', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const registry = createToolRegistry([
+      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+    ])
+    const gate = { async request() { return 'approved' as const } }
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
+    expect(await s.send('go')).toBe('최종')
+  })
+
+  it('fresh + toolDeps: 도구 루프가 누적 history 를 오염시키지 않는다', async () => {
+    const seen: ChatTurn[][] = []
+    let n = 0
+    const provider: ApiProvider = {
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
+      async chat(messages) {
+        seen.push(structuredClone(messages))
+        return n++ === 0
+          ? { text: '', toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }], finishReason: 'tool_use' }
+          : { text: 'ok', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const registry = createToolRegistry([
+      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+    ])
+    const gate = { async request() { return 'approved' as const } }
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
+    await s.send('독립질문', { fresh: true }) // 도구 왕복(2회 chat) — history 미오염이어야 함
+    await s.send('다음') // 누적 경로: fresh 질문/도구 턴 없이 '다음'만 보여야 한다
+    expect(seen.at(-1)!.map((m) => m.content)).toEqual(['다음'])
+  })
+
+  it('toolDeps 가 undefined 를 반환하면(워크스페이스 없음) 단발 chat 으로 동작한다(회귀)', async () => {
+    const { provider } = fakeProvider()
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => undefined })
+    expect(await s.send('hi')).toBe('echo:hi')
+  })
+
+  it('동시 비-fresh send 를 직렬화해 history 를 잃지 않는다', async () => {
+    const { provider, seen } = fakeProvider()
+    const s = createApiSession(apiDesc, provider)
+    // 같은 세션에 두 send 동시 진입 — 직렬화 없으면 늦게 끝난 쪽이 상대 턴을 덮어쓴다.
+    await Promise.all([s.send('A'), s.send('B')])
+    await s.send('C') // 세 번째 호출이 보는 history 에 A·B 왕복이 모두 남아야 함
+    expect(seen.at(-1)!.map((m) => m.content)).toEqual(['A', 'echo:A', 'B', 'echo:B', 'C'])
   })
 
   it('fresh: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립 호출)', async () => {
