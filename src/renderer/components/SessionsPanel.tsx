@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AgentRole, ApiProviderConfig, CliDetectionResult, LlmDescriptor } from '../../shared/types'
+import type { AgentRole, ApiProviderConfig, CliDetectionResult, LlmDescriptor, McpServerStatus } from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
 
 interface Props {
@@ -83,6 +83,30 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
       onRefresh()
     } catch (e) {
       setError(`세션 제거 실패: ${asError(e)}`)
+    }
+  }
+
+  // ── MCP 서버(최소) ──
+  const [mcpJson, setMcpJson] = useState('')
+  const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([])
+
+  async function applyMcp() {
+    setError(null)
+    let specs: unknown
+    try {
+      specs = JSON.parse(mcpJson)
+    } catch {
+      setError('MCP 서버 JSON 파싱 실패: 유효한 JSON 배열을 입력하세요.')
+      return
+    }
+    if (!Array.isArray(specs)) {
+      setError('MCP 서버 설정은 배열이어야 합니다([{ name, command, args }]).')
+      return
+    }
+    try {
+      setMcpStatus(await window.fleet.setMcpServers(specs))
+    } catch (e) {
+      setError(`MCP 적용 실패: ${asError(e)}`)
     }
   }
 
@@ -276,6 +300,41 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             </li>
           ))}
         </ul>
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <span className="eyebrow">04 — MCP</span>
+          <h2 className="panel-title">MCP 서버 (API 세션 도구)</h2>
+        </div>
+        <label className="field-label" htmlFor="mcp-servers">
+          MCP 서버 (JSON 배열)
+        </label>
+        <textarea
+          id="mcp-servers"
+          className="field"
+          style={{ minHeight: 96, fontFamily: 'monospace' }}
+          value={mcpJson}
+          onChange={(e) => setMcpJson(e.target.value)}
+          placeholder='[{"name":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}]'
+        />
+        <button className="btn" style={{ marginTop: 12 }} onClick={() => void applyMcp()}>
+          MCP 적용
+        </button>
+        {mcpStatus.length > 0 && (
+          <ul className="list" style={{ marginTop: 12 }}>
+            {mcpStatus.map((s) => (
+              <li key={s.name} className="line-item">
+                <span className="dot" style={{ background: s.connected ? 'var(--ok)' : 'var(--faint)' }} />
+                <span className="name" style={{ minWidth: 116 }}>
+                  {s.name}
+                </span>
+                <span className="meta">{s.connected ? `${s.toolCount} tools` : (s.error ?? '연결 실패')}</span>
+                {s.tools.length > 0 && <code className="id">{s.tools.join(', ')}</code>}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   )
