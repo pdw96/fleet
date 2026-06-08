@@ -142,7 +142,7 @@ export interface FleetEngine {
   setMcpServers(servers: McpServerSpec[]): Promise<McpServerStatus[]>
   /** 현재 MCP 서버 연결 상태/도구 목록. */
   getMcpStatus(): McpServerStatus[]
-  /** 엔진 종료 — MCP 자식 프로세스 등 정리. */
+  /** 엔진 종료 — 세션·MCP 자식 프로세스 정리. */
   dispose(): Promise<void>
 
   // ── 감사 ──
@@ -482,6 +482,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     async dispose() {
+      await sessions.disposeAll()
       await mcpHost.dispose()
     },
 

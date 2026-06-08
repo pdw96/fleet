@@ -504,6 +504,29 @@ describe('FleetEngine', () => {
     expect(seen).toEqual(['set', 'dispose'])
   })
 
+  it('dispose 는 세션과 mcpHost 를 모두 정리한다 (#10 SP2)', async () => {
+    const order: string[] = []
+    const sessions = createSessionManager()
+    const realDisposeAll = sessions.disposeAll.bind(sessions)
+    sessions.disposeAll = async () => {
+      order.push('sessions')
+      await realDisposeAll()
+    }
+    const fakeMcpHost: McpHost = {
+      async setServers() {
+        return []
+      },
+      tools: () => [],
+      status: () => [],
+      async dispose() {
+        order.push('mcp')
+      },
+    }
+    const engine = createFleetEngine({ sessions, mcpHost: fakeMcpHost })
+    await engine.dispose()
+    expect(order).toEqual(['sessions', 'mcp'])
+  })
+
   it('워크스페이스가 설정되면 API 세션이 도구 루프로 워크스페이스 파일을 읽는다 (#10 SP1)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-tools-'))
     try {
