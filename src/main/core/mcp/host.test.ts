@@ -170,6 +170,38 @@ describe('createMcpHost', () => {
     )
   })
 
+  it('승인 target 에 cwd·env 키를 포함한다(env 값은 노출 안 함)', async () => {
+    const { spawn } = fakeSpawn(echoReply)
+    const request = vi.fn(async () => 'approved' as const)
+    const host = createMcpHost({ spawn, gate: { request } })
+    await host.setServers([{ name: 'srv', command: 'node', args: ['s.js'], cwd: '/tmp/work', env: { SECRET: 'xyz' } }])
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ target: 'node s.js (cwd: /tmp/work) (env: SECRET)' }),
+    )
+  })
+
+  it('서버 간 이름 충돌은 한 서버만 노출하고 진 서버를 status·감사로 표면화한다', async () => {
+    const { spawn } = fakeSpawn((_spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'tools/list') return { tools: [{ name: 'x' }] }
+      return {}
+    })
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, onAudit: audit })
+    // 두 서버명 모두 sanitize → 'foo_bar' → 도구 mcp__foo_bar__x 충돌. 먼저 등록(foo.bar)이 이긴다.
+    const status = await host.setServers([
+      { name: 'foo.bar', command: 'a' },
+      { name: 'foo_bar', command: 'b' },
+    ])
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__foo_bar__x'])
+    expect(status.find((s) => s.name === 'foo.bar')?.toolCount).toBe(1)
+    expect(status.find((s) => s.name === 'foo_bar')?.toolCount).toBe(0) // 진 서버는 status 에서도 0
+    expect(audit).toHaveBeenCalledWith(
+      'mcp.tool.skipped',
+      expect.objectContaining({ reason: 'duplicate name (cross-server)' }),
+    )
+  })
+
   it('sanitize 후 충돌하는 도구는 하나만 노출하고 나머지는 skip 한다', async () => {
     const { spawn } = fakeSpawn((_spec, method) => {
       if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }

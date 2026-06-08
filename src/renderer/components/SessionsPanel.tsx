@@ -90,6 +90,14 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [mcpJson, setMcpJson] = useState('')
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([])
 
+  // 탭 재마운트 시 main 이 보유한 현재 연결 상태를 복원한다(상태는 main 이 권위 — 패널 로컬은 표시용).
+  useEffect(() => {
+    void window.fleet
+      .getMcpStatus()
+      .then(setMcpStatus)
+      .catch(() => {})
+  }, [])
+
   async function applyMcp() {
     setError(null)
     let specs: unknown

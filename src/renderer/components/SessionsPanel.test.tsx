@@ -20,6 +20,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     setSessionCapabilities: vi.fn().mockResolvedValue(undefined),
     removeSession: vi.fn().mockResolvedValue(undefined),
     registerApiSession: vi.fn().mockResolvedValue(undefined),
+    getMcpStatus: vi.fn().mockResolvedValue([]), // 마운트 시 하이드레이트 호출
     ...overrides,
   }
   ;(window as unknown as { fleet: unknown }).fleet = fleet
@@ -82,5 +83,17 @@ describe('SessionsPanel', () => {
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('MCP')
     expect(fleet.setMcpServers).not.toHaveBeenCalled()
+  })
+
+  it('마운트 시 현재 MCP 상태를 하이드레이트한다(탭 재마운트 복원)', async () => {
+    const fleet = mockFleet({
+      getMcpStatus: vi
+        .fn()
+        .mockResolvedValue([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }]),
+    })
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
+    expect(fleet.getMcpStatus).toHaveBeenCalled()
   })
 })

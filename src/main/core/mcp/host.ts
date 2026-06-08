@@ -23,9 +23,17 @@ function sameSpec(a: McpServerSpec, b: McpServerSpec): boolean {
   )
 }
 
-/** 실행 명령줄(승인 표시·감사용). */
+/**
+ * 실행 명령줄 + 효과적 cwd/env(승인 표시·감사용). 사용자가 무엇이 실행되는지(다른 작업 디렉터리·
+ * PATH/env 오버라이드 포함) 보고 승인하도록 cwd 와 env 키를 함께 노출한다. env 값은 비밀일 수
+ * 있어 키만 보여준다.
+ */
 function commandLine(spec: McpServerSpec): string {
-  return [spec.command, ...(spec.args ?? [])].join(' ')
+  let line = [spec.command, ...(spec.args ?? [])].join(' ')
+  if (spec.cwd) line += ` (cwd: ${spec.cwd})`
+  const envKeys = Object.keys(spec.env ?? {})
+  if (envKeys.length > 0) line += ` (env: ${envKeys.join(', ')})`
+  return line
 }
 
 /** 다중 MCP 서버 연결을 관리하고 도구를 FleetTool 로 노출한다. setServers 에서 pre-warm 한다. */
@@ -61,21 +69,23 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
         tools.push(wrapped)
         names.push(wrapped.definition.name)
       }
-      // 연결 후 자식이 죽으면(idle 크래시·재설정 중 close) 죽은 도구를 계속 광고하지 않도록 무효화한다.
-      client.onClose(() => {
-        const e = entries.get(spec.name)
-        if (e && e.client === client) {
-          e.tools = []
-          e.status = { name: spec.name, connected: false, toolCount: 0, tools: [], error: '서버 연결이 종료되었습니다.' }
-          audit('mcp.server.disconnected', { name: spec.name, reason: 'exit' })
-        }
-      })
-      return {
+      // entry 객체를 먼저 만들어 onClose 가 이를 직접 잡게 한다 — entries.set 이전에 자식이 죽는
+      // startup 종료 레이스에서도, 저장될 바로 그 entry 가 disconnected 로 갱신된다(이벤트 유실 없음).
+      // 재연결 후 옛 client 의 onClose 는 옛 entry 만 건드리므로 새 entry 를 오염시키지 않는다.
+      const entry: Entry = {
         spec,
         client,
         tools,
         status: { name: spec.name, connected: true, toolCount: tools.length, tools: names },
       }
+      // 연결 후 자식이 죽으면(idle 크래시·재설정 중 close) 죽은 도구를 계속 광고하지 않도록 무효화한다.
+      client.onClose(() => {
+        if (!entry.status.connected) return
+        entry.tools = []
+        entry.status = { name: spec.name, connected: false, toolCount: 0, tools: [], error: '서버 연결이 종료되었습니다.' }
+        audit('mcp.server.disconnected', { name: spec.name, reason: 'exit' })
+      })
+      return entry
     } catch (err) {
       client.close() // 부분 연결 정리
       throw err
@@ -136,6 +146,23 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
         })
         audit('mcp.server.failed', { name: spec.name, error: message })
       }
+    }
+    // 서버 간 sanitize 이름 충돌: 먼저 등록된 서버가 이긴다. 진 도구는 노출되지 않으므로(레지스트리
+    // 전역 유일) status 에서도 빼고 감사로 표면화한다 — connected 인데 호출 불가한 도구를 silent 로
+    // 광고하지 않는다(#7). entry.tools 원본은 보존하고(서버 제거 시 복원) status 만 노출 기준 재계산.
+    const exposed = new Set<string>()
+    for (const e of entries.values()) {
+      if (!e.status.connected) continue
+      const names: string[] = []
+      for (const t of e.tools) {
+        if (exposed.has(t.definition.name)) {
+          audit('mcp.tool.skipped', { server: e.spec.name, tool: t.definition.name, reason: 'duplicate name (cross-server)' })
+          continue
+        }
+        exposed.add(t.definition.name)
+        names.push(t.definition.name)
+      }
+      e.status = { ...e.status, tools: names, toolCount: names.length }
     }
     return statusList()
   }
