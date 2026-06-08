@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentRole, ChatMessage, ChatRoom, ChatStreamEvent, LlmDescriptor } from '../../shared/types'
+import type { AgentRole, ChatMessage, ChatRoom, ChatStreamEvent, LlmDescriptor, ToolStep } from '../../shared/types'
 import { agentHue, cx, vars } from '../ui'
 
 interface Props {
@@ -13,11 +13,16 @@ interface StreamBubble {
   llmId: string
   role?: AgentRole
   text: string
-  /** text 에 반영된 마지막 델타 seq. 이보다 큰 델타만 이어 붙여 멱등·정렬을 보장한다. */
+  /** text·steps 에 반영된 마지막 이벤트 seq(델타·도구 단계 공유). 이보다 큰 것만 적용해 멱등·정렬을 보장한다. */
   seq: number
+  /** 관측된 도구 단계(id 로 in-place 갱신된 최신 상태). 라이브 도구 칩 렌더용. */
+  steps: ToolStep[]
   /** 방출된 에러 메시지(있으면 말풍선을 에러 표시로 렌더). */
   error?: string
 }
+
+/** 도구 단계 phase 별 아이콘(라이브 칩). */
+const STEP_ICON: Record<ToolStep['phase'], string> = { running: '⏳', ok: '✓', error: '⚠' }
 
 function llmName(llmId: string, sessions: LlmDescriptor[]): string {
   return sessions.find((s) => s.id === llmId)?.displayName ?? llmId
@@ -72,8 +77,18 @@ export function ChatPanel({ sessions }: Props) {
       if (e.kind === 'start') {
         setStreams((prev) => ({
           ...prev,
-          [e.streamId]: { streamId: e.streamId, roomId: e.roomId, llmId: e.llmId, role: e.role, text: '', seq: 0 },
+          [e.streamId]: { streamId: e.streamId, roomId: e.roomId, llmId: e.llmId, role: e.role, text: '', seq: 0, steps: [] },
         }))
+      } else if (e.kind === 'tool') {
+        // 도구 단계: id 로 칩을 in-place 갱신(running→ok/error). seq 멱등은 텍스트 델타와 공유 카운터.
+        setStreams((prev) => {
+          const cur = prev[e.streamId]
+          if (!cur) return prev // start 못 받은 스트림 — 스냅샷 catch-up 이 steps 를 복원한다
+          if (e.seq <= cur.seq) return prev // 멱등: 이미 반영한(중복/역순) 이벤트 무시
+          const i = cur.steps.findIndex((s) => s.id === e.step.id)
+          const steps = i >= 0 ? cur.steps.map((s, j) => (j === i ? e.step : s)) : [...cur.steps, e.step]
+          return { ...prev, [e.streamId]: { ...cur, steps, seq: e.seq } }
+        })
       } else if (e.kind === 'delta') {
         // start 를 못 받은 스트림(탭 언마운트 등)은 합성 말풍선을 만들지 않는다 — 작성자 미상이므로.
         // 다만 하이드레이션 윈도우에선 버퍼링해(setStreams 갱신부 밖, StrictMode 이중호출 무관)
@@ -295,6 +310,15 @@ export function ChatPanel({ sessions }: Props) {
                     <span className="msg-author">{llmName(s.llmId, sessions)}</span>
                     {s.role && <span className="msg-role">· {s.role}</span>}
                   </div>
+                  {s.steps.length > 0 && (
+                    <div className="tool-steps">
+                      {s.steps.map((step) => (
+                        <span key={step.id} className={cx('tool-chip', step.phase)} title={step.summary}>
+                          {STEP_ICON[step.phase]} {step.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {s.error ? (
                     <div className="stream-err">⚠ {s.error}</div>
                   ) : (

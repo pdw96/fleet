@@ -1,10 +1,12 @@
-import type { LlmDescriptor } from '../../../shared/types'
+import type { LlmDescriptor, ToolStep } from '../../../shared/types'
 
 export interface SendOptions {
   /** 실행 취소용. abort 시 자식 프로세스를 종료한다. */
   signal?: AbortSignal
   /** 스트리밍/부분 출력 콜백 (MVP: 최종 텍스트 1회 전달). */
   onChunk?: (chunk: string) => void
+  /** 도구 단계 콜백. API 세션의 도구 루프가 도구 실행 단계를 라이브로 흘린다(SP3). CLI 세션은 무시. */
+  onToolStep?: (step: ToolStep) => void
   /**
    * stateful 세션이라도 이 호출만은 맥락 없이 독립 1회 실행한다.
    * 오케스트레이터가 작업 간 맥락 오염 없이 깨끗한 독립 호출(독립 검증)을 보장하는 데 쓴다.

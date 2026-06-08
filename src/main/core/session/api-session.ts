@@ -54,7 +54,8 @@ export function createApiSession(
             sendOpts.onChunk!(delta)
           }
         : undefined
-      const callOpts: ApiCallOptions = { signal: sendOpts.signal, onToken }
+      // onToolStep 은 provider 가 쓰지 않고 runToolLoop 이 도구 단계를 라이브로 흘리는 데 쓴다(SP3).
+      const callOpts: ApiCallOptions = { signal: sendOpts.signal, onToken, onToolStep: sendOpts.onToolStep }
       const emit = (reply: string): string => {
         if (sendOpts.onChunk && !streamed) sendOpts.onChunk(reply)
         return reply

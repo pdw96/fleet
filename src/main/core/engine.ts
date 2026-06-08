@@ -17,6 +17,7 @@ import type {
   Project,
   RoleAssignment,
   Task,
+  ToolStep,
 } from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
@@ -180,8 +181,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   // 렌더러는 ChatPanel 마운트 시 getChatActivity 로 복원하고 busy/idle·delta 로 라이브 동기화한다.
   // 탭 언마운트로 렌더러 state(busy/streams)가 날아가도 진행의 권위는 항상 main 에 있다.
   const emitChat = opts.onChatStream
-  /** in-flight 스트림의 누적 텍스트 버퍼. start 에서 생성, delta 에서 누적(seq++), end/error 에서 제거. */
-  const activeStreams = new Map<string, { roomId: string; llmId: string; role?: AgentRole; text: string; seq: number }>()
+  /** in-flight 스트림의 누적 버퍼(텍스트·도구 단계). start 에서 생성, delta/tool 에서 누적(seq++), end/error 에서 제거. */
+  const activeStreams = new Map<
+    string,
+    { roomId: string; llmId: string; role?: AgentRole; text: string; seq: number; steps: ToolStep[] }
+  >()
   /** roomId → 진행 중 ask/discuss 연산 수. 0→1 에서 busy, 1→0 에서 idle 을 방출한다. */
   const activeOps = new Map<string, number>()
 
@@ -216,7 +220,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     const emit = emitChat
     if (!emit) return controller.askLlm(llmId, askOpts)
     const streamId = randomUUID()
-    activeStreams.set(streamId, { roomId, llmId, role: askOpts?.role, text: '', seq: 0 })
+    activeStreams.set(streamId, { roomId, llmId, role: askOpts?.role, text: '', seq: 0, steps: [] })
     emit({ kind: 'start', streamId, roomId, llmId, role: askOpts?.role })
     try {
       const message = await controller.askLlm(llmId, {
@@ -229,6 +233,17 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           }
           // seq(1부터 증가)로 렌더러가 멱등 적용·하이드레이션 레이스를 정렬한다.
           emit({ kind: 'delta', streamId, roomId, delta, seq: cur?.seq ?? 0 })
+        },
+        // 도구 단계: id 로 in-place 갱신(running→ok/error)하고 텍스트와 공유 seq 로 흘린다(SP3).
+        onToolStep: (step) => {
+          const cur = activeStreams.get(streamId)
+          if (cur) {
+            const i = cur.steps.findIndex((s) => s.id === step.id)
+            if (i >= 0) cur.steps[i] = step
+            else cur.steps.push(step)
+            cur.seq += 1
+          }
+          emit({ kind: 'tool', streamId, roomId, step, seq: cur?.seq ?? 0 })
         },
       })
       activeStreams.delete(streamId)
@@ -468,6 +483,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           role: s.role,
           text: s.text,
           seq: s.seq,
+          steps: s.steps,
         })),
       }
     },

@@ -107,6 +107,28 @@ describe('createApiSession', () => {
     expect(await s.send('go')).toBe('최종')
   })
 
+  it('send 의 onToolStep 이 도구 루프까지 전달돼 도구 단계를 흘린다 (#10 SP3)', async () => {
+    let n = 0
+    const provider: ApiProvider = {
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return n++ === 0
+          ? { text: '', toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }], finishReason: 'tool_use' }
+          : { text: '최종', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const registry = createToolRegistry([
+      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+    ])
+    const gate = { async request() { return 'approved' as const } }
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
+    const steps: string[] = []
+    await s.send('go', { onToolStep: (st) => steps.push(`${st.name}:${st.phase}`) })
+    expect(steps).toEqual(['echo:running', 'echo:ok'])
+  })
+
   it('fresh + toolDeps: 도구 루프가 누적 history 를 오염시키지 않는다', async () => {
     const seen: ChatTurn[][] = []
     let n = 0

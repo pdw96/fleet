@@ -54,7 +54,7 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     mockFleet({
       getChatActivity: vi.fn().mockResolvedValue({
         busyRooms: ['r1'],
-        streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '복원된 부분 응답', seq: 2 }],
+        streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '복원된 부분 응답', seq: 2, steps: [] }],
       } satisfies ChatActivity),
     })
     render(<ChatPanel sessions={SESSIONS} />)
@@ -116,7 +116,7 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
       message: { id: 'm1', roomId: 'r1', author: { type: 'llm', llmId: 'llm-1' }, content: '끝난 응답', ts: 1 },
     })
     await act(async () =>
-      resolveActivity({ busyRooms: [], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '좀비 타이핑', seq: 1 }] }),
+      resolveActivity({ busyRooms: [], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '좀비 타이핑', seq: 1, steps: [] }] }),
     )
 
     expect(screen.queryByText('좀비 타이핑')).toBeNull() // 종료된 스트림은 되살아나지 않음
@@ -157,7 +157,7 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
 
     // 스냅샷은 델타 이전(seq 0, 빈 텍스트)을 보고 → 버퍼된 델타가 머지 후 이어 붙어야 한다
     await act(async () =>
-      resolveActivity({ busyRooms: ['r1'], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '', seq: 0 }] }),
+      resolveActivity({ busyRooms: ['r1'], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '', seq: 0, steps: [] }] }),
     )
 
     expect(screen.getByText('실시간 토큰')).toBeTruthy() // 유실되지 않고 복원
@@ -174,10 +174,45 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     fleet.fire({ kind: 'delta', streamId: 's1', roomId: 'r1', delta: '가', seq: 1 }) // 버퍼됨
     // 스냅샷이 이 델타까지 이미 반영(seq 1, text '가') — 버퍼가 다시 붙이면 '가가' 가 된다
     await act(async () =>
-      resolveActivity({ busyRooms: ['r1'], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '가', seq: 1 }] }),
+      resolveActivity({ busyRooms: ['r1'], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '가', seq: 1, steps: [] }] }),
     )
 
     expect(screen.getByText('가')).toBeTruthy()
     expect(screen.queryByText('가가')).toBeNull() // seq 가드로 이중 집계 안 됨
+  })
+
+  it('tool 이벤트로 도구 칩을 렌더하고 같은 id 는 phase 를 in-place 전이한다 (#10 SP3)', async () => {
+    const fleet = mockFleet()
+    render(<ChatPanel sessions={SESSIONS} />)
+    await screen.findByText('🤖 AI 자동 토론')
+
+    fleet.fire({ kind: 'start', streamId: 's1', roomId: 'r1', llmId: 'llm-1' })
+    fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'read_file', phase: 'running' }, seq: 1 })
+    expect(screen.getByText('⏳ read_file')).toBeTruthy()
+
+    // 같은 id 의 ok 이벤트 → 칩이 추가되지 않고 phase 만 전이(running 사라지고 ok 1개)
+    fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'read_file', phase: 'ok' }, seq: 2 })
+    expect(screen.queryByText('⏳ read_file')).toBeNull()
+    expect(screen.getByText('✓ read_file')).toBeTruthy()
+  })
+
+  it('마운트 시 스냅샷의 steps 로 도구 칩을 복원한다 (#10 SP3)', async () => {
+    mockFleet({
+      getChatActivity: vi.fn().mockResolvedValue({
+        busyRooms: ['r1'],
+        streams: [
+          {
+            streamId: 's1',
+            roomId: 'r1',
+            llmId: 'llm-1',
+            text: '',
+            seq: 2,
+            steps: [{ id: 't1', name: 'grep', phase: 'ok' }],
+          },
+        ],
+      } satisfies ChatActivity),
+    })
+    render(<ChatPanel sessions={SESSIONS} />)
+    expect(await screen.findByText('✓ grep')).toBeTruthy()
   })
 })

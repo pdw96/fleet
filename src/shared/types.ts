@@ -356,9 +356,25 @@ export interface RunProjectRequest {
  * busy/idle 의 권위 소스는 main 이며(getChatActivity), 탭 언마운트로 렌더러가 이벤트를 놓쳐도
  * 재마운트 시 스냅샷 재조회로 메운다. 비스트리밍 세션은 delta 가 최종 텍스트 1회로 도착한다.
  */
+/**
+ * 도구 실행 단계(라이브 진행 관측용 — 대화 기록이 아니라 in-flight 표시 전용). 한 발언(streamId)
+ * 안에서 텍스트 델타와 interleave 되어 흐른다. id 로 칩을 in-place 갱신한다(running → ok/error).
+ */
+export interface ToolStep {
+  /** tool_use id(없으면 도구명 기반 합성). 칩 식별자. */
+  id: string
+  name: string
+  /** running: 실행 시작 · ok: 성공 · error: 실패/거부/미존재. */
+  phase: 'running' | 'ok' | 'error'
+  risk?: RiskLevel
+  /** 인자 요약(running 시) 또는 짧은 오류 요지(error 시). */
+  summary?: string
+}
+
 export type ChatStreamEvent =
   | { kind: 'start'; streamId: string; roomId: string; llmId: string; role?: AgentRole }
   | { kind: 'delta'; streamId: string; roomId: string; delta: string; seq: number }
+  | { kind: 'tool'; streamId: string; roomId: string; step: ToolStep; seq: number }
   | { kind: 'end'; streamId: string; roomId: string; message: ChatMessage }
   | { kind: 'error'; streamId: string; roomId: string; message: string }
   | { kind: 'busy'; roomId: string }
@@ -372,8 +388,10 @@ export interface ActiveChatStream {
   role?: AgentRole
   /** 지금까지 누적된 델타 텍스트. */
   text: string
-  /** text 에 반영된 델타 수(= 마지막 델타의 seq). 렌더러가 이보다 큰 버퍼 델타만 이어 붙인다. */
+  /** text·steps 에 반영된 마지막 이벤트 seq(델타·도구 단계 공유 카운터). 이보다 큰 것만 적용한다. */
   seq: number
+  /** 지금까지 관측된 도구 단계들(id 로 in-place 갱신된 최신 상태). 재마운트 catch-up 용. */
+  steps: ToolStep[]
 }
 
 /**

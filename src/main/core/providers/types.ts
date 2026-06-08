@@ -1,4 +1,4 @@
-import type { ApiProviderConfig } from '../../../shared/types'
+import type { ApiProviderConfig, ToolStep } from '../../../shared/types'
 
 // ── 콘텐츠 블록 (멀티모달 · 도구 호출 대비) ─────────────────────────────────
 /**
@@ -103,10 +103,15 @@ export interface ApiCallOptions {
   /** 도구 선택 강제. 'auto'(기본)/'none'/'required'. */
   toolChoice?: 'auto' | 'none' | 'required'
   /**
-   * 토큰 델타 콜백. 지정 시(그리고 tools 미사용 시) provider 는 SSE 스트리밍으로 요청해
-   * 부분 텍스트가 도착하는 즉시 호출한다. 미지정이면 버퍼링(최종 1회 파싱).
+   * 토큰 델타 콜백. 지정 시 provider 는 SSE 스트리밍으로 요청해 부분 텍스트가 도착하는 즉시
+   * 호출한다(도구 동봉 요청도 스트리밍 — SP3). 미지정이면 버퍼링(최종 1회 파싱).
    */
   onToken?: (delta: string) => void
+  /**
+   * 도구 단계 콜백. provider 는 소비하지 않는다 — 도구 실행 루프(runToolLoop)가 도구 1개를
+   * 실행할 때마다 running → ok/error 단계를 방출하는 라이브 진행 싱크다(SP3).
+   */
+  onToolStep?: (step: ToolStep) => void
 }
 
 // ── 주입 가능한 최소 HTTP 클라이언트 (테스트에서 mock) ──────────────────────

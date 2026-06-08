@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { ToolStep } from '../../../shared/types'
 import type { ApiProvider, ChatResult, ChatTurn, ToolResultBlock, ToolUseBlock } from '../providers/types'
 import type { ApprovalGate } from '../safety/approval'
 import { createToolRegistry } from './registry'
@@ -145,6 +146,70 @@ describe('runToolLoop', () => {
     })
     expect(out.text).toBe('완료')
     expect(calls).toHaveLength(2) // 도구 실행 후 재호출
+  })
+
+  it('도구 단계를 running→ok 로 방출한다 (#10 SP3)', async () => {
+    const steps: ToolStep[] = []
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'echo', { path: 'a.txt' })], finishReason: 'tool_use' },
+      { text: '완료', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], { onToolStep: (s) => steps.push({ ...s }) }, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    expect(steps.map((s) => s.phase)).toEqual(['running', 'ok'])
+    expect(steps[0]).toMatchObject({ id: 't1', name: 'echo', phase: 'running', risk: 'safe' })
+    expect(steps[0].summary).toContain('a.txt')
+    expect(steps[1]).toMatchObject({ id: 't1', name: 'echo', phase: 'ok' })
+  })
+
+  it('거부된 도구는 running 없이 error 단계만 방출한다 (#10 SP3)', async () => {
+    const steps: ToolStep[] = []
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'echo', {})], finishReason: 'tool_use' },
+      { text: 'ok', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], { onToolStep: (s) => steps.push({ ...s }) }, {
+      registry: createToolRegistry([echoTool]),
+      gate: rejectAll,
+    })
+    expect(steps.map((s) => s.phase)).toEqual(['error'])
+    expect(steps[0]).toMatchObject({ id: 't1', name: 'echo', phase: 'error' })
+  })
+
+  it('미존재 도구는 게이트 없이 error 단계를 방출한다 (#10 SP3)', async () => {
+    const steps: ToolStep[] = []
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'nope', {})], finishReason: 'tool_use' },
+      { text: 'ok', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], { onToolStep: (s) => steps.push({ ...s }) }, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    expect(steps).toEqual([{ id: 't1', name: 'nope', phase: 'error', summary: expect.any(String) }])
+  })
+
+  it('도구 실행 throw 는 running→error 를 방출하고 오류 요지를 싣는다 (#10 SP3)', async () => {
+    const boom: FleetTool = {
+      definition: { name: 'boom', parameters: { type: 'object' } },
+      classify: () => 'safe',
+      async execute() {
+        throw new Error('펑')
+      },
+    }
+    const steps: ToolStep[] = []
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'boom', {})], finishReason: 'tool_use' },
+      { text: 'x', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], { onToolStep: (s) => steps.push({ ...s }) }, {
+      registry: createToolRegistry([boom]),
+      gate: approveAll,
+    })
+    expect(steps.map((s) => s.phase)).toEqual(['running', 'error'])
+    expect(steps[1].summary).toContain('펑')
   })
 
   it('승인 요청에 도구 인자를 포함한다', async () => {
