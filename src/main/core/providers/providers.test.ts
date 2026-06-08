@@ -132,6 +132,32 @@ describe('AnthropicProvider', () => {
     const p = createAnthropicProvider({ ...baseAnthropic, apiKey: undefined }, http)
     await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow('API 키')
   })
+
+  it('responseSchema → output_config.format(json_schema) 를 body 에 싣는다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'verdict', schema } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.output_config).toEqual({ format: { type: 'json_schema', schema } })
+  })
+
+  it('구조화-출력 400 → output_config 없이 1회 재시도(graceful degradation)', async () => {
+    let n = 0
+    const { http, calls } = mockHttp(() => {
+      n++
+      return n === 1
+        ? { ok: false, status: 400, body: 'unsupported field output_config' }
+        : { body: JSON.stringify({ content: [{ type: 'text', text: '[]' }], stop_reason: 'end_turn' }) }
+    })
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const schema = { type: 'object', additionalProperties: false, properties: {} }
+    const out = await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema } })
+    expect(calls).toHaveLength(2)
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).output_config).toBeDefined()
+    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toBeUndefined()
+    expect(out.text).toBe('[]')
+  })
 })
 
 describe('OpenAiProvider', () => {
