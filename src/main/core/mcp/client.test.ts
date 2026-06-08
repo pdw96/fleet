@@ -109,6 +109,31 @@ describe('createMcpClient', () => {
     expect(sentCursors).toEqual([undefined, 'c1', 'c2'])
   })
 
+  it('존재하는 빈 문자열 nextCursor 는 유효한 커서로 취급해 다음 페이지를 요청한다(스펙: 존재=더 있음)', async () => {
+    let onMsg: (m: Record<string, unknown>) => void = () => {}
+    const sentCursors: (string | undefined)[] = []
+    let n = 0
+    const transport: McpTransport = {
+      send: (m) => {
+        if (m['method'] !== 'tools/list') return
+        sentCursors.push((m['params'] as { cursor?: string }).cursor)
+        n++
+        const id = m['id']
+        // 1번째 응답: 빈 문자열 커서(끝 아님). 2번째 응답: 커서 없음(끝).
+        const result = n === 1 ? { tools: [{ name: 'a' }], nextCursor: '' } : { tools: [{ name: 'b' }] }
+        queueMicrotask(() => onMsg({ jsonrpc: '2.0', id, result }))
+      },
+      onMessage: (h) => {
+        onMsg = h
+      },
+      onClose: () => {},
+      close: () => {},
+    }
+    const c = createMcpClient(transport)
+    expect(await c.listTools()).toEqual([{ name: 'a' }, { name: 'b' }])
+    expect(sentCursors).toEqual([undefined, '']) // 빈 커서로 2페이지를 요청했다(누락 없음)
+  })
+
   it('tools/list 가 동일 nextCursor 를 반복하면 추종을 멈춘다(무한루프 방지)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     let onMsg: (m: Record<string, unknown>) => void = () => {}

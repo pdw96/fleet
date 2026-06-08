@@ -114,8 +114,10 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
     },
     async listTools(): Promise<McpToolInfo[]> {
       // nextCursor 를 따라 모든 페이지를 모은다(MCP 페이지네이션). 결정론적 종료:
-      // (a) nextCursor 가 문자열이 아니거나 비면 끝, (b) 같은 커서 반복(서버 버그) 시 중단,
-      // (c) 페이지 상한 초과 시 중단 — 악의/버그 서버의 무한 페이지네이션을 막는다.
+      // (a) nextCursor 가 문자열이 아니면(부재 포함) 끝 — 단 '존재하는' 빈 문자열은 유효한 불투명
+      //     커서로 취급한다(스펙: nextCursor 가 존재하면 더 있음; 커서는 불투명이라 ''도 토큰일 수 있음),
+      // (b) 같은 커서 반복(서버 버그) 시 중단, (c) 페이지 상한 초과 시 중단
+      //  — (b)·(c) 가드가 ''를 토큰으로 따라가더라도 무한 페이지네이션을 막는다.
       const all: McpToolInfo[] = []
       const seenCursors = new Set<string>()
       let cursor: string | undefined
@@ -124,7 +126,7 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
         const tools = result['tools']
         if (Array.isArray(tools)) all.push(...(tools as McpToolInfo[]))
         const next = result['nextCursor']
-        if (typeof next !== 'string' || next === '') break // 더 이상 페이지 없음
+        if (typeof next !== 'string') break // nextCursor 부재/비문자열 = 더 이상 페이지 없음
         if (seenCursors.has(next)) {
           console.warn('MCP tools/list 가 동일 nextCursor 를 반복했습니다 — 페이지네이션 추종을 중단합니다(서버 버그 의심).')
           break
