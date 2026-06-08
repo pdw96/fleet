@@ -78,7 +78,11 @@ function mapFinish(reason: string | undefined): FinishReason {
   }
 }
 
-/** SSE 스트림(streamGenerateContent?alt=sse)을 읽어 델타를 흘리고 최종 ChatResult 를 만든다. */
+/**
+ * SSE 스트림(streamGenerateContent?alt=sse)을 읽어 델타를 흘리고 최종 ChatResult 를 만든다.
+ * 도구 동봉 요청도 스트리밍하므로(SP3) functionCall part 를 순서대로 모아 toolCalls 로 변환한다
+ * (Gemini 의 functionCall 은 보통 분할되지 않고 part 단위로 통째 도착한다).
+ */
 async function readStream(
   body: AsyncIterable<Uint8Array>,
   onToken: (delta: string) => void,
@@ -87,6 +91,7 @@ async function readStream(
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
+  const funcs: Array<{ name?: string; args?: unknown }> = []
   for await (const data of sseData(body)) {
     let ev: GoogleResponse
     try {
@@ -99,6 +104,8 @@ async function readStream(
       if (p.text) {
         text += p.text
         onToken(p.text)
+      } else if (p.functionCall) {
+        funcs.push(p.functionCall)
       }
     }
     if (cand?.finishReason) finish = cand.finishReason
@@ -110,9 +117,15 @@ async function readStream(
       }
     }
   }
+  const toolCalls: ToolUseBlock[] = funcs.map((fc, i) => ({
+    type: 'tool_use',
+    id: `${fc.name ?? 'call'}-${i}`,
+    name: fc.name ?? '',
+    input: fc.args,
+  }))
   // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).
-  if (blockReason) return { text, toolCalls: [], finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
-  return { text, toolCalls: [], finishReason: mapFinish(finish), rawFinishReason: finish, usage }
+  if (blockReason) return { text, toolCalls, finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
+  return { text, toolCalls, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
 }
 
 /** Google Gemini generateContent API provider. */
@@ -154,8 +167,8 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
         body.toolConfig = { functionCallingConfig: { mode: mapMode(opts.toolChoice) } }
       }
 
-      // 도구 미사용 + onToken 이 있으면 SSE 스트리밍 엔드포인트로 요청한다.
-      const streaming = !!opts.onToken && !opts.tools?.length
+      // onToken 이 있으면 SSE 스트리밍 엔드포인트로 요청한다 — 도구 동봉 요청도 스트리밍하며 functionCall 을 모은다(SP3).
+      const streaming = !!opts.onToken
       const method = streaming ? 'streamGenerateContent?alt=sse' : 'generateContent'
       // API 키는 쿼리스트링(?key=) 대신 헤더로 전송한다 — URL/로그 노출과 키 제한 정책 리스크를 피한다.
       const url = `${BASE}/${encodeURIComponent(config.model)}:${method}`

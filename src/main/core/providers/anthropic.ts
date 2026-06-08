@@ -72,7 +72,21 @@ function mapFinish(reason: string | undefined): FinishReason {
   }
 }
 
-/** SSE 스트림(messages stream)을 읽어 텍스트 델타를 onToken 으로 흘리고 최종 ChatResult 를 만든다. */
+/** 누적된 input_json 문자열을 객체로 파싱한다(빈/실패 시 {}). */
+function parseToolInput(json: string): unknown {
+  if (!json) return {}
+  try {
+    return JSON.parse(json)
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * SSE 스트림(messages stream)을 읽어 텍스트 델타를 onToken 으로 흘리고 최종 ChatResult 를 만든다.
+ * 도구 동봉 요청도 스트리밍하므로(SP3) tool_use 블록을 인덱스별로 누적한다:
+ * content_block_start(tool_use) 로 시작, input_json_delta 로 인자 조각을 이어붙여 종료 시 파싱한다.
+ */
 async function readStream(
   body: AsyncIterable<Uint8Array>,
   onToken: (delta: string) => void,
@@ -80,10 +94,14 @@ async function readStream(
   let text = ''
   let stop: string | undefined
   const usage: { inputTokens?: number; outputTokens?: number } = {}
+  // 인덱스 → tool_use 누적기(시작 순서 보존). 텍스트 블록과 인덱스가 섞여도 정렬해 복원한다.
+  const toolAccum = new Map<number, { id: string; name: string; json: string }>()
   for await (const data of sseData(body)) {
     let ev: {
       type?: string
-      delta?: { type?: string; text?: string; stop_reason?: string }
+      index?: number
+      content_block?: { type?: string; id?: string; name?: string }
+      delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string }
       message?: { usage?: { input_tokens?: number } }
       usage?: { output_tokens?: number }
       error?: { type?: string; message?: string }
@@ -99,15 +117,23 @@ async function readStream(
       throw new ApiProviderError('anthropic', 200, JSON.stringify(ev.error ?? { type: 'stream_error' }))
     }
     if (ev.type === 'message_start') usage.inputTokens = ev.message?.usage?.input_tokens ?? usage.inputTokens
-    else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
+    else if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && typeof ev.index === 'number') {
+      toolAccum.set(ev.index, { id: ev.content_block.id ?? '', name: ev.content_block.name ?? '', json: '' })
+    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
       text += ev.delta.text
       onToken(ev.delta.text)
+    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta' && typeof ev.index === 'number') {
+      const acc = toolAccum.get(ev.index)
+      if (acc) acc.json += ev.delta.partial_json ?? ''
     } else if (ev.type === 'message_delta') {
       if (ev.delta?.stop_reason) stop = ev.delta.stop_reason
       if (ev.usage?.output_tokens != null) usage.outputTokens = ev.usage.output_tokens
     }
   }
-  return { text, toolCalls: [], finishReason: mapFinish(stop), rawFinishReason: stop, usage }
+  const toolCalls: ToolUseBlock[] = [...toolAccum.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, t]) => ({ type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) }))
+  return { text, toolCalls, finishReason: mapFinish(stop), rawFinishReason: stop, usage }
 }
 
 /** Anthropic Messages API provider. */
@@ -139,8 +165,8 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         const tc = mapToolChoice(opts.toolChoice)
         if (tc) body.tool_choice = tc
       }
-      // 도구 미사용 + onToken 이 있으면 SSE 스트리밍으로 요청한다(도구 호출 경로는 버퍼링 유지).
-      const streaming = !!opts.onToken && !opts.tools?.length
+      // onToken 이 있으면 SSE 스트리밍으로 요청한다 — 도구 동봉 요청도 스트리밍하며 tool_use 를 누적한다(SP3).
+      const streaming = !!opts.onToken
       if (streaming) body.stream = true
 
       const res = await http(ENDPOINT, {
