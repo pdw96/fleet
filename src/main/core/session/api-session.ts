@@ -30,6 +30,9 @@ export function createApiSession(
 ): LlmSession {
   const history: ChatTurn[] = []
   if (opts.system) history.push({ role: 'system', content: opts.system })
+  // 비-fresh 누적 경로 직렬화 체인 — 같은 세션의 동시 send 가 history 를 읽기-수정-쓰기 레이스로
+  // 덮어쓰지 않게 순서를 보장한다(cli-session 과 동일 패턴). fresh 경로는 history 불변이라 미적용.
+  let chain: Promise<unknown> = Promise.resolve()
 
   // 도구 의존성이 활성이면 루프, 아니면 단발 chat. turns 는 루프가 in-place 확장(도구 왕복 턴).
   const runChat = (turns: ChatTurn[], callOpts: ApiCallOptions): Promise<ChatResult> => {
@@ -64,15 +67,21 @@ export function createApiSession(
           : [{ role: 'user', content: prompt }]
         return emit(unwrap(provider.provider, await runChat(turns, callOpts)))
       }
-      // 누적 경로: 성공 시에만 history 에 원자적으로 커밋한다. runChat 은 작업 복사본을 in-place
-      // 확장(도구 왕복 턴 포함)하므로, 루프가 중간에 throw 해도 history 가 부분 확장 상태로 남지
-      // 않는다(다음 send 의 역할 시퀀스 오염 방지).
-      const working: ChatTurn[] = [...history, { role: 'user', content: prompt }]
-      const reply = unwrap(provider.provider, await runChat(working, callOpts))
-      working.push({ role: 'assistant', content: reply })
-      history.length = 0
-      history.push(...working)
-      return emit(reply)
+      // 누적 경로: 직렬화 체인에 올려 동시 send 끼리 순서를 보장한다(앞 호출의 성공/실패와 무관하게
+      // 순서만). 성공 시에만 history 에 원자적으로 커밋하므로 루프 중간 throw 가 history 를 부분 확장
+      // 상태로 남기지 않는다(역할 시퀀스 오염 방지). 직렬화로 동시 호출의 read-modify-write 레이스도 제거.
+      const prior = chain
+      const result = (async (): Promise<string> => {
+        await prior.catch(() => {})
+        const working: ChatTurn[] = [...history, { role: 'user', content: prompt }]
+        const reply = unwrap(provider.provider, await runChat(working, callOpts))
+        working.push({ role: 'assistant', content: reply })
+        history.length = 0
+        history.push(...working)
+        return emit(reply)
+      })()
+      chain = result.catch(() => {}) // 체인은 에러로 끊기지 않게 흡수
+      return result
     },
     async dispose(): Promise<void> {
       history.length = 0

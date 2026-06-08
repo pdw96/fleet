@@ -137,6 +137,15 @@ describe('createApiSession', () => {
     expect(await s.send('hi')).toBe('echo:hi')
   })
 
+  it('동시 비-fresh send 를 직렬화해 history 를 잃지 않는다', async () => {
+    const { provider, seen } = fakeProvider()
+    const s = createApiSession(apiDesc, provider)
+    // 같은 세션에 두 send 동시 진입 — 직렬화 없으면 늦게 끝난 쪽이 상대 턴을 덮어쓴다.
+    await Promise.all([s.send('A'), s.send('B')])
+    await s.send('C') // 세 번째 호출이 보는 history 에 A·B 왕복이 모두 남아야 함
+    expect(seen.at(-1)!.map((m) => m.content)).toEqual(['A', 'echo:A', 'B', 'echo:B', 'C'])
+  })
+
   it('fresh: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립 호출)', async () => {
     const { provider, seen } = fakeProvider()
     const s = createApiSession(apiDesc, provider, { system: 'sys' })

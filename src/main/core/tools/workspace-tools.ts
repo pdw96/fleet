@@ -40,13 +40,15 @@ async function resolveWithin(root: string, p: string): Promise<string> {
 
 /**
  * root 하위 파일을 재귀 순회(스킵 디렉터리 제외).
- * 심볼릭 링크는 건너뛴다 — readdir(withFileTypes) 의 Dirent.isFile()/isDirectory() 는 심볼릭 링크에
- * false 를 반환하므로 링크 파일은 yield 되지 않고 링크 디렉터리는 재귀하지 않는다(샌드박스 보장).
- * 이 가정에 grep/glob 의 격리가 의존하므로 walk 를 symlink-follow 로 바꾸면 격리를 재점검할 것.
+ * opendir 스트리밍으로 디렉터리당 메모리를 O(1)로 바운드한다 — readdir 는 거대 디렉터리(수십만 엔트리)
+ * 전체를 한 번에 적재해 스캔 캡 적용 전에 메모리 스파이크를 낼 수 있다. for await 종료/예외/소비측
+ * break(이터레이터 return) 시 핸들이 자동 close 되어 fd 누수가 없다.
+ * 심볼릭 링크는 건너뛴다 — Dirent.isFile()/isDirectory() 는 심볼릭 링크에 false 를 반환하므로
+ * 링크 파일은 yield 되지 않고 링크 디렉터리는 재귀하지 않는다(샌드박스 보장). symlink-follow 로 바꾸면 격리 재점검.
  */
 async function* walk(dir: string): AsyncGenerator<string> {
-  const entries = await fs.readdir(dir, { withFileTypes: true })
-  for (const e of entries) {
+  const handle = await fs.opendir(dir)
+  for await (const e of handle) {
     const full = path.join(dir, e.name)
     if (e.isDirectory()) {
       if (!SKIP_DIRS.has(e.name)) yield* walk(full)
@@ -145,7 +147,7 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
       },
     },
     classify: () => 'safe',
-    async execute(input) {
+    async execute(input, ctx) {
       const pattern = asStr((input as { pattern?: unknown })?.pattern)
       if (!pattern) throw new Error('grep: pattern 인자가 필요합니다.')
       if (pattern.length > 200) throw new Error('grep: pattern 이 너무 깁니다(최대 200자).')
@@ -167,6 +169,7 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
       let scanned = 0
       let truncated = false
       for await (const file of walk(start)) {
+        if (ctx.signal?.aborted) throw new Error('grep: 취소되었습니다.') // 취소 시 즉시 중단(fast-fail)
         if (scanned >= lim.maxGrepFiles || out.length >= lim.maxGrepMatches) {
           truncated = true
           break
@@ -241,53 +244,56 @@ function parseGlob(glob: string): GlobSegment[] {
 }
 
 /**
- * 글롭 세그먼트 배열로 경로 문자열을 매칭한다(재귀).
- * new RegExp 를 전혀 사용하지 않아 semgrep "non-literal RegExp" 경고가 없다.
+ * 글롭 세그먼트 배열로 경로 문자열을 매칭한다(재귀 + (si,ci) 실패상태 메모이제이션).
+ * new RegExp 를 쓰지 않는다. 메모이제이션으로 다중 starstar 의 지수 백트래킹을 O(segs×len) 으로
+ * 바운드해, starstar 세그먼트가 여러 개인 비매칭 패턴이 한 경로에서 메인 프로세스를 freeze 하는 것을 막는다.
+ * (매칭 결과는 (si,ci) 에만 의존 — segs/str 은 호출 내 불변 — 이라 실패만 캐시해도 정확하다.)
  */
-function globMatchSegments(segs: GlobSegment[], si: number, str: string, ci: number): boolean {
-  // 세그먼트 소진
+function globMatchSegments(
+  segs: GlobSegment[],
+  si: number,
+  str: string,
+  ci: number,
+  failed: Set<number>,
+  stride: number,
+): boolean {
   if (si === segs.length) return ci === str.length
+  const key = si * stride + ci
+  if (failed.has(key)) return false
 
   const seg = segs[si]
-
+  let ok = false
   if (seg.kind === 'literal') {
-    const v = seg.value
-    if (str.startsWith(v, ci)) return globMatchSegments(segs, si + 1, str, ci + v.length)
-    return false
-  }
-
-  if (seg.kind === 'question') {
-    if (ci >= str.length || str[ci] === '/') return false
-    return globMatchSegments(segs, si + 1, str, ci + 1)
-  }
-
-  if (seg.kind === 'star') {
+    ok = str.startsWith(seg.value, ci) && globMatchSegments(segs, si + 1, str, ci + seg.value.length, failed, stride)
+  } else if (seg.kind === 'question') {
+    ok = ci < str.length && str[ci] !== '/' && globMatchSegments(segs, si + 1, str, ci + 1, failed, stride)
+  } else if (seg.kind === 'star') {
     // * 는 슬래시를 넘을 수 없음 — 현재 세그먼트 내에서만 탐색
     for (let j = ci; j <= str.length; j++) {
       if (j > ci && str[j - 1] === '/') break // 슬래시 직전까지만
-      if (globMatchSegments(segs, si + 1, str, j)) return true
+      if (globMatchSegments(segs, si + 1, str, j, failed, stride)) {
+        ok = true
+        break
+      }
     }
-    return false
-  }
-
-  // starstar: 0개 이상의 경로 컴포넌트를 건너뜀
-  // 남은 패턴이 현재 위치부터 맞는지 먼저 시도하고, 다음 '/' 이후로 점프 반복
-  if (seg.kind === 'starstar') {
+  } else {
     // ** : 0개 이상의 임의 문자(슬래시 포함)를 건너뛴다. 현재 위치부터 끝까지 모든 분기를 시도해
     // bare '**'(전체 매칭)와 '**/x'(선택적 디렉터리) 양쪽을 올바르게 처리한다.
     for (let j = ci; j <= str.length; j++) {
-      if (globMatchSegments(segs, si + 1, str, j)) return true
+      if (globMatchSegments(segs, si + 1, str, j, failed, stride)) {
+        ok = true
+        break
+      }
     }
-    return false
   }
-
-  return false
+  if (!ok) failed.add(key) // 실패상태 캐시 → 동일 (si,ci) 재탐색 차단
+  return ok
 }
 
-/** 글롭 패턴으로 상대경로를 매칭한다. new RegExp 를 사용하지 않는다. */
+/** 글롭 패턴으로 상대경로를 매칭한다. new RegExp 를 사용하지 않는다. 호출마다 실패 캐시는 새로 만든다. */
 function globMatch(pattern: string, relPath: string): boolean {
   const segs = parseGlob(pattern)
-  return globMatchSegments(segs, 0, relPath, 0)
+  return globMatchSegments(segs, 0, relPath, 0, new Set<number>(), relPath.length + 1)
 }
 
 function globTool(root: string, lim: ResolvedLimits): FleetTool {
@@ -302,7 +308,7 @@ function globTool(root: string, lim: ResolvedLimits): FleetTool {
       },
     },
     classify: () => 'safe',
-    async execute(input) {
+    async execute(input, ctx) {
       const pattern = asStr((input as { pattern?: unknown })?.pattern)
       if (!pattern) throw new Error('glob: pattern 인자가 필요합니다.')
       const rootReal = await fs.realpath(root)
@@ -310,6 +316,7 @@ function globTool(root: string, lim: ResolvedLimits): FleetTool {
       let scanned = 0
       let truncated = false
       for await (const file of walk(rootReal)) {
+        if (ctx.signal?.aborted) throw new Error('glob: 취소되었습니다.') // 취소 시 즉시 중단(fast-fail)
         if (scanned >= lim.maxGlobScan || out.length >= lim.maxGlobResults) {
           truncated = true // 매치가 적어도 순회를 바운드 — 불완전으로 표시(silent false-negative 방지)
           break

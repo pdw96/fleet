@@ -53,6 +53,27 @@ describe('createWorkspaceReadTools', () => {
     expect(out).toContain('불완전')
   })
 
+  it('glob 은 다중 ** 패턴을 메모이제이션으로 정확히 매칭한다', async () => {
+    const out = await pick(createWorkspaceReadTools(root), 'glob').execute({ pattern: '**/**/b.ts' }, {})
+    expect(out).toContain('sub/b.ts')
+  })
+
+  it('grep 은 취소 신호가 켜져 있으면 즉시 중단한다', async () => {
+    const ctrl = new AbortController()
+    ctrl.abort()
+    await expect(
+      pick(createWorkspaceReadTools(root), 'grep').execute({ pattern: 'hello' }, { signal: ctrl.signal }),
+    ).rejects.toThrow(/취소/)
+  })
+
+  it('glob 은 취소 신호가 켜져 있으면 즉시 중단한다', async () => {
+    const ctrl = new AbortController()
+    ctrl.abort()
+    await expect(
+      pick(createWorkspaceReadTools(root), 'glob').execute({ pattern: '**/*' }, { signal: ctrl.signal }),
+    ).rejects.toThrow(/취소/)
+  })
+
   it('read_file 은 워크스페이스 밖 경로를 거부한다(경로 탈출)', async () => {
     await expect(
       pick(createWorkspaceReadTools(root), 'read_file').execute({ path: '../../etc/hosts' }, {}),
