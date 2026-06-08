@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ChatStreamEvent } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
+import type { McpHost } from './mcp/types'
 import type { HttpClient } from './providers/types'
 import { createSessionManager } from './session/manager'
+import type { FleetTool } from './tools/types'
 import { createMemoryStore } from './store/memory'
 import type { GitRunner } from './workspace/git'
 
@@ -446,6 +448,104 @@ describe('FleetEngine', () => {
     expect(msg.content).toBe('LLM 답변')
     expect(engine.roomHistory(room.id)).toHaveLength(2)
     expect(engine.listRooms()).toHaveLength(1)
+  })
+
+  it('MCP 도구가 있으면 워크스페이스 없이도 API 세션이 도구 루프로 호출한다 (#10 SP2)', async () => {
+    const pingTool: FleetTool = {
+      definition: { name: 'mcp__demo__ping', parameters: { type: 'object' } },
+      classify: () => 'safe',
+      async execute() {
+        return 'pong'
+      },
+    }
+    const fakeMcpHost: McpHost = {
+      async setServers() {
+        return []
+      },
+      tools: () => [pingTool],
+      status: () => [],
+      async dispose() {},
+    }
+    const { http, calls } = scriptedHttp([
+      JSON.stringify({
+        content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__demo__ping', input: {} }],
+        stop_reason: 'tool_use',
+      }),
+      JSON.stringify({ content: [{ type: 'text', text: '응답 완료' }], stop_reason: 'end_turn' }),
+    ])
+    const engine = createFleetEngine({ http, mcpHost: fakeMcpHost }) // 워크스페이스 미설정
+    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    const room = engine.createRoom('r', ['api:a'])
+    const msg = await engine.askLlm(room.id, 'api:a')
+
+    expect(msg.content).toBe('응답 완료')
+    expect(calls).toHaveLength(2) // 도구 왕복 = chat 2회
+    expect(calls[1]).toContain('pong') // 2번째 요청에 tool_result 포함
+  })
+
+  it('setMcpServers/getMcpStatus/dispose 가 mcpHost 에 위임한다 (#10 SP2)', async () => {
+    const seen: string[] = []
+    const fakeMcpHost: McpHost = {
+      async setServers(specs) {
+        seen.push('set')
+        return [{ name: specs[0].name, connected: true, toolCount: 0, tools: [] }]
+      },
+      tools: () => [],
+      status: () => [{ name: 'x', connected: true, toolCount: 0, tools: [] }],
+      async dispose() {
+        seen.push('dispose')
+      },
+    }
+    const engine = createFleetEngine({ mcpHost: fakeMcpHost })
+    const status = await engine.setMcpServers([{ name: 'x', command: 'c' }])
+    expect(status[0].name).toBe('x')
+    expect(engine.getMcpStatus()).toHaveLength(1)
+    await engine.dispose()
+    expect(seen).toEqual(['set', 'dispose'])
+  })
+
+  it('dispose 는 세션과 mcpHost 를 모두 정리한다 (#10 SP2)', async () => {
+    const order: string[] = []
+    const sessions = createSessionManager()
+    const realDisposeAll = sessions.disposeAll.bind(sessions)
+    sessions.disposeAll = async () => {
+      order.push('sessions')
+      await realDisposeAll()
+    }
+    const fakeMcpHost: McpHost = {
+      async setServers() {
+        return []
+      },
+      tools: () => [],
+      status: () => [],
+      async dispose() {
+        order.push('mcp')
+      },
+    }
+    const engine = createFleetEngine({ sessions, mcpHost: fakeMcpHost })
+    await engine.dispose()
+    expect(order).toEqual(['sessions', 'mcp'])
+  })
+
+  it('dispose 는 세션 정리가 실패해도 mcpHost 를 정리한다 (#10 SP2)', async () => {
+    let mcpDisposed = false
+    const sessions = createSessionManager()
+    sessions.disposeAll = async () => {
+      throw new Error('세션 정리 실패')
+    }
+    const fakeMcpHost: McpHost = {
+      async setServers() {
+        return []
+      },
+      tools: () => [],
+      status: () => [],
+      async dispose() {
+        mcpDisposed = true
+      },
+    }
+    const engine = createFleetEngine({ sessions, mcpHost: fakeMcpHost })
+    await engine.dispose() // reject 를 전파하지 않아야 한다
+    expect(mcpDisposed).toBe(true)
   })
 
   it('워크스페이스가 설정되면 API 세션이 도구 루프로 워크스페이스 파일을 읽는다 (#10 SP1)', async () => {

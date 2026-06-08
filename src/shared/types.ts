@@ -123,6 +123,30 @@ export interface CliDetectionResult {
   error?: string
 }
 
+// ── MCP 호스트 (Track 2) ────────────────────────────────────────────────────
+/** 등록할 MCP 서버 사양(stdio JSON-RPC). 도구 이름은 mcp__<name>__<tool> 로 프리픽스된다. */
+export interface McpServerSpec {
+  /** 고유 서버 식별자(도구 이름 프리픽스에 사용). */
+  name: string
+  command: string
+  args?: string[]
+  /** process.env 위에 병합할 환경변수. */
+  env?: Record<string, string>
+  cwd?: string
+}
+
+/** MCP 서버 연결 상태(IPC 로 렌더러에 전달). */
+export interface McpServerStatus {
+  name: string
+  connected: boolean
+  /** 노출된(프리픽스된) 도구 수. */
+  toolCount: number
+  /** 노출된 도구 이름(프리픽스 포함). */
+  tools: string[]
+  /** 연결 실패/오류 메시지(있으면). */
+  error?: string
+}
+
 /** API provider 설정 (요구사항 2B). */
 export interface ApiProviderConfig {
   id: string
@@ -407,6 +431,12 @@ export interface FleetBridge {
   discussRoom(roomId: string, llmIds: string[], rounds?: number): Promise<ChatMessage[]>
   /** 채팅 진행 상태 스냅샷(진행 중 방 + 라이브 스트림). ChatPanel 마운트 시 복원용. */
   getChatActivity(): Promise<ChatActivity>
+
+  // MCP 호스트
+  /** MCP 서버 목록 설정(전체 교체). 연결 후 서버별 상태 반환. */
+  setMcpServers(servers: McpServerSpec[]): Promise<McpServerStatus[]>
+  /** 현재 MCP 서버 연결 상태/도구 목록. */
+  getMcpStatus(): Promise<McpServerStatus[]>
 
   // 감사 / 이벤트 스트림
   listEvents(): Promise<FleetEvent[]>

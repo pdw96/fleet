@@ -12,6 +12,8 @@ import type {
   CliDetectionResult,
   FleetEvent,
   LlmDescriptor,
+  McpServerSpec,
+  McpServerStatus,
   Project,
   RoleAssignment,
   Task,
@@ -29,6 +31,8 @@ import { createApprovalGate } from './safety/approval'
 import { createApiSession } from './session/api-session'
 import { createCliSession } from './session/cli-session'
 import { createSessionManager, type SessionManager } from './session/manager'
+import { createMcpHost } from './mcp/host'
+import type { McpHost } from './mcp/types'
 import { createToolRegistry } from './tools/registry'
 import { createWorkspaceReadTools } from './tools/workspace-tools'
 import { createMemoryStore } from './store/memory'
@@ -72,6 +76,8 @@ export interface FleetEngineOptions {
   verifyRunner?: VerifyRunner
   /** git 실행기 주입(테스트용). 기본은 child_process 기반 defaultGitRunner. */
   gitRunner?: GitRunner
+  /** MCP 호스트 주입(테스트용). 기본은 stdio 기반 createMcpHost. */
+  mcpHost?: McpHost
 }
 
 export interface RunProjectInput {
@@ -131,6 +137,14 @@ export interface FleetEngine {
    */
   getChatActivity(): ChatActivity
 
+  // ── MCP 호스트 ──
+  /** MCP 서버 목록 설정(전체 교체). 연결 후 서버별 상태 반환. */
+  setMcpServers(servers: McpServerSpec[]): Promise<McpServerStatus[]>
+  /** 현재 MCP 서버 연결 상태/도구 목록. */
+  getMcpStatus(): McpServerStatus[]
+  /** 엔진 종료 — 세션·MCP 자식 프로세스 정리. */
+  dispose(): Promise<void>
+
   // ── 감사 ──
   listEvents(): FleetEvent[]
 }
@@ -148,6 +162,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     store.appendEvent({ type, data })
   }
   const gate = createApprovalGate({ autoApprove: ['safe', 'caution'], approver: opts.approver, onEvent: appendAudit })
+  // MCP 호스트: 외부 MCP 서버의 도구를 FleetTool 로 노출한다(setMcpServers 로 연결).
+  // gate 를 주입해 새 서버 spawn(임의 로컬 프로세스 실행)이 승인 게이트를 통과하게 한다(안전 우선).
+  const mcpHost = opts.mcpHost ?? createMcpHost({ onAudit: appendAudit, gate })
   // 워크스페이스는 런타임에 바꿀 수 있다(렌더러에서 선택). null 이면 파일 기록/검증 비활성.
   let workspaceDir: string | null = opts.workspaceDir ?? null
   // 진행 중 실행: projectId → AbortController. project.created 에서 등록, project.done 에서 해제.
@@ -267,16 +284,19 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       }
       sessions.add(
         createApiSession(descriptor, createApiProvider(config, http), {
-          // 워크스페이스가 설정돼 있을 때만 읽기전용 도구를 노출한다. 클로저로 런타임 변경을 추종.
-          toolDeps: () =>
-            workspaceDir
-              ? {
-                  registry: createToolRegistry(createWorkspaceReadTools(workspaceDir)),
-                  gate,
-                  onAudit: appendAudit,
-                  maxIterations: 8,
-                }
-              : undefined,
+          // 워크스페이스 도구 + MCP 도구를 병합 노출한다. 둘 다 없으면 단발 chat(완전 하위호환).
+          // 클로저라 런타임 워크스페이스/MCP 변경을 추종한다.
+          toolDeps: () => {
+            const wsTools = workspaceDir ? createWorkspaceReadTools(workspaceDir) : []
+            const mcpTools = mcpHost.tools()
+            if (wsTools.length === 0 && mcpTools.length === 0) return undefined
+            return {
+              registry: createToolRegistry([...wsTools, ...mcpTools]),
+              gate,
+              onAudit: appendAudit,
+              maxIterations: 8,
+            }
+          },
         }),
       )
       store.appendEvent({ type: 'session.registered', data: { id, kind: 'api', provider: config.provider } })
@@ -450,6 +470,21 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           seq: s.seq,
         })),
       }
+    },
+
+    async setMcpServers(servers) {
+      const status = await mcpHost.setServers(servers)
+      store.appendEvent({ type: 'mcp.servers.set', data: { count: servers.length, names: servers.map((s) => s.name) } })
+      return status
+    },
+
+    getMcpStatus() {
+      return mcpHost.status()
+    },
+
+    async dispose() {
+      // 한쪽 정리 실패가 다른 쪽(특히 MCP 자식 프로세스) 정리를 막지 않도록 격리한다 — 좀비 방지가 목적.
+      await Promise.allSettled([sessions.disposeAll(), mcpHost.dispose()])
     },
 
     listEvents() {

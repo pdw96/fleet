@@ -56,12 +56,14 @@ export function ChatPanel({ sessions }: Props) {
   const hydratedRef = useRef(false)
 
   useEffect(() => {
-    void refreshRooms()
+    // fire-and-forget 갱신은 reject 를 직접 처리해야 한다 — 안 그러면 일시적 IPC 실패가
+    // unhandled rejection 으로 샌다(앱·테스트 양쪽). 최선노력 갱신이라 로그만 남기고 무시한다.
+    refreshRooms().catch((e) => console.error('방 목록 갱신 실패', e))
   }, [])
 
   useEffect(() => {
     activeRoomRef.current = activeRoom
-    if (activeRoom) void refreshMessages(activeRoom)
+    if (activeRoom) refreshMessages(activeRoom).catch((e) => console.error('메시지 갱신 실패', e))
   }, [activeRoom])
 
   // 채팅 토큰 스트림 구독 — 마운트 1회. 방 필터는 렌더에서 하므로 activeRoom 클로저에 의존하지 않는다.
