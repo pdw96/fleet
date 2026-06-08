@@ -2,7 +2,7 @@ import type { McpServerSpec, McpServerStatus } from '../../../shared/types'
 import type { FleetTool } from '../tools/types'
 import { createMcpClient } from './client'
 import { createStdioTransport, defaultSpawn } from './stdio'
-import type { McpClient, McpHost, McpHostOptions } from './types'
+import type { McpClient, McpHost, McpHostOptions, McpToolInfo } from './types'
 import { wrapMcpTool } from './wrap'
 
 interface Entry {
@@ -47,6 +47,9 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
   const inflight = new Set<McpClient>()
   // setServers 직렬화 큐 — 겹치는 호출이 entries 를 인터리브해 중복 spawn·stale 덮어쓰기를 내지 않게 한다.
   let queue: Promise<unknown> = Promise.resolve()
+  // 서버명 → tools/list_changed 새로고침 직렬화 체인. 연속 알림의 listTools 응답이 뒤섞여
+  // 오래된 결과가 마지막에 적용되지 않도록 서버별로 순차 실행한다(setServers queue 와 동형).
+  const refreshChains = new Map<string, Promise<void>>()
   // dispose 후 큐에 남은/진행 중 setServers 가 새 자식을 spawn 하지 않도록 막는 플래그.
   let disposed = false
 
@@ -89,6 +92,62 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     recomputeExposure()
   }
 
+  /**
+   * tools/list 결과를 FleetTool[] 로 감싼다(이름 sanitize·서버 내 중복·길이 제약 + 감사 경고).
+   * connect 의 최초 발견과 tools/list_changed 새로고침이 공유해 래핑 규칙을 한 곳에 둔다.
+   */
+  function buildTools(spec: McpServerSpec, infos: McpToolInfo[], client: McpClient): { tools: FleetTool[]; names: string[] } {
+    const tools: FleetTool[] = []
+    const names: string[] = []
+    const seen = new Set<string>()
+    for (const info of infos) {
+      const wrapped = wrapMcpTool(spec.name, info, client)
+      if (!wrapped) {
+        audit('mcp.tool.skipped', { server: spec.name, tool: info.name, reason: 'invalid name' })
+        continue
+      }
+      // sanitize 후 같은 이름으로 붕괴하는 도구는 skip — 레지스트리 중복 throw(세션 전체 실패) 방지.
+      if (seen.has(wrapped.definition.name)) {
+        audit('mcp.tool.skipped', { server: spec.name, tool: info.name, reason: 'duplicate name' })
+        continue
+      }
+      seen.add(wrapped.definition.name)
+      tools.push(wrapped)
+      names.push(wrapped.definition.name)
+    }
+    return { tools, names }
+  }
+
+  /**
+   * 서버의 notifications/tools/list_changed 를 받아 도구 목록을 다시 가져와 노출을 갱신한다.
+   * 같은 서버의 연속 알림은 refreshChains 로 직렬화해 마지막 결과가 반영되게 한다(out-of-order 방지).
+   */
+  function scheduleRefresh(name: string, client: McpClient): void {
+    const prev = refreshChains.get(name) ?? Promise.resolve()
+    const next = prev.then(() => refreshTools(name, client)).catch(() => {})
+    refreshChains.set(name, next)
+  }
+
+  async function refreshTools(name: string, client: McpClient): Promise<void> {
+    // 알림 시점에 이미 교체/제거/종료됐으면 무시 — stale client 의 알림이 새 entry 를 건드리지 않게.
+    const before = entries.get(name)
+    if (disposed || !before || before.client !== client || !before.status.connected) return
+    let infos: McpToolInfo[]
+    try {
+      infos = await client.listTools()
+    } catch (err) {
+      // 새로고침 실패(타임아웃·error 응답·연결 종료)는 기존 도구를 유지하고 표면화만 한다.
+      audit('mcp.tools.refresh_failed', { name, error: err instanceof Error ? err.message : String(err) })
+      return
+    }
+    // listTools 왕복 동안 교체/제거/종료됐으면 결과를 버린다(stale 덮어쓰기 방지).
+    const after = entries.get(name)
+    if (disposed || !after || after.client !== client || !after.status.connected) return
+    after.tools = buildTools(after.spec, infos, client).tools
+    recomputeExposure() // 서버 간 노출 재계산(충돌/복원 반영) — status.tools/toolCount 갱신
+    audit('mcp.tools.changed', { name, toolCount: after.status.toolCount })
+  }
+
   /** 서버 1개에 연결(spawn→initialize→tools/list→도구 wrap). 실패 시 부분 연결을 정리하고 throw. */
   async function connect(spec: McpServerSpec): Promise<Entry> {
     const client = createMcpClient(createStdioTransport(spec, spawn), opts.clientOptions)
@@ -102,27 +161,14 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
       closedEarly = true
       if (entry) invalidate(entry)
     })
+    // 런타임 도구 목록 변경 통지 — 핸들러는 entries 에서 현재 entry 를 다시 찾는다(entry 교체에 무관).
+    // entry 저장 전(connect 진행 중)에 온 알림은 무시되지만, 초기 listTools 가 그 시점 목록을 이미
+    // 잡고 그 사이 변경은 다음 list_changed 로 자가 수복되므로 안전하다(좁은 자가수복 창).
+    client.onToolsChanged(() => scheduleRefresh(spec.name, client))
     try {
       await client.initialize()
       const infos = await client.listTools()
-      const tools: FleetTool[] = []
-      const names: string[] = []
-      const seen = new Set<string>()
-      for (const info of infos) {
-        const wrapped = wrapMcpTool(spec.name, info, client)
-        if (!wrapped) {
-          audit('mcp.tool.skipped', { server: spec.name, tool: info.name, reason: 'invalid name' })
-          continue
-        }
-        // sanitize 후 같은 이름으로 붕괴하는 도구는 skip — 레지스트리 중복 throw(세션 전체 실패) 방지.
-        if (seen.has(wrapped.definition.name)) {
-          audit('mcp.tool.skipped', { server: spec.name, tool: info.name, reason: 'duplicate name' })
-          continue
-        }
-        seen.add(wrapped.definition.name)
-        tools.push(wrapped)
-        names.push(wrapped.definition.name)
-      }
+      const { tools, names } = buildTools(spec, infos, client)
       entry = {
         spec,
         client,
@@ -157,6 +203,7 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
       if (!next || !sameSpec(entry.spec, next) || !entry.status.connected) {
         entry.client?.close()
         entries.delete(name)
+        refreshChains.delete(name) // entries 와 보조를 맞춰 새로고침 체인도 회수(이름 churn 누수 방지)
         if (!next) audit('mcp.server.disconnected', { name })
       }
     }
@@ -241,6 +288,7 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
       await queue.catch(() => {})
       for (const [, e] of entries) e.client?.close()
       entries.clear()
+      refreshChains.clear() // 새로고침 체인도 회수(엔트리 정리와 보조 일치)
     },
   }
 }

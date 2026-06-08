@@ -51,6 +51,8 @@ export interface McpClient {
   callTool(name: string, args: unknown, opts?: { signal?: AbortSignal }): Promise<McpCallResult>
   /** 연결 종료(자식 종료/명시적 close) 통지. 호스트가 죽은 서버의 도구를 무효화하는 데 쓴다. */
   onClose(handler: (err?: Error) => void): void
+  /** 서버의 notifications/tools/list_changed 통지. 호스트가 도구 목록을 다시 가져오는 데 쓴다. */
+  onToolsChanged(handler: () => void): void
   close(): void
 }
 

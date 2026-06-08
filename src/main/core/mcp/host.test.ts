@@ -12,11 +12,14 @@ function fakeSpawn(reply: (spec: McpServerSpec, method: string, params: unknown)
   const spawns: string[] = []
   // 서버명 → 자식 종료 트리거(idle 크래시 시뮬레이트용).
   const closers = new Map<string, () => void>()
+  // 서버명 → 서버 발신 메시지 주입(알림 등). 클로저가 최신 out 을 참조하므로 onStdout 이후 동작한다.
+  const notifiers = new Map<string, (msg: Record<string, unknown>) => void>()
   const spawn: SpawnFn = (spec) => {
     spawns.push(spec.name)
     let out: (chunk: string) => void = () => {}
     let close: (err?: Error) => void = () => {}
     closers.set(spec.name, () => close())
+    notifiers.set(spec.name, (msg) => out(`${JSON.stringify(msg)}\n`))
     return {
       write: (line) => {
         const msg = JSON.parse(line) as { id?: number; method: string; params: unknown }
@@ -41,8 +44,56 @@ function fakeSpawn(reply: (spec: McpServerSpec, method: string, params: unknown)
       },
     }
   }
-  return { spawn, kills, spawns, closers }
+  return { spawn, kills, spawns, closers, notifiers }
 }
+
+/** 서버 발신 tools/list_changed 알림 메시지(id 없는 JSON-RPC 알림). */
+const LIST_CHANGED = { jsonrpc: '2.0', method: 'notifications/tools/list_changed' }
+
+/**
+ * tools/list 응답을 테스트가 직접 풀어주는 spawn — 새로고침 직렬화(순서 보장) 검증용.
+ * initialize 는 자동 응답하고, tools/list 는 큐에 쌓아 resolveList 로 가장 오래된 것부터 응답한다.
+ * 이렇게 응답 시점을 제어해야 "1차 새로고침이 끝나기 전엔 2차가 tools/list 를 보내지 않는다"를 검증할 수 있다.
+ */
+function deferredSpawn() {
+  const outs = new Map<string, (chunk: string) => void>()
+  const notifiers = new Map<string, (msg: Record<string, unknown>) => void>()
+  const pendingLists = new Map<string, number[]>() // 서버 → 응답 대기 중인 tools/list 요청 id 큐
+  const spawn: SpawnFn = (spec) => {
+    let out: (chunk: string) => void = () => {}
+    return {
+      write: (line) => {
+        const msg = JSON.parse(line) as { id?: number; method: string }
+        if (msg.id == null) return // 알림
+        if (msg.method === 'initialize') {
+          queueMicrotask(() =>
+            out(`${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: {} } })}\n`),
+          )
+        } else if (msg.method === 'tools/list') {
+          pendingLists.set(spec.name, [...(pendingLists.get(spec.name) ?? []), msg.id!])
+        }
+      },
+      onStdout: (h) => {
+        out = h
+        outs.set(spec.name, h)
+        notifiers.set(spec.name, (msg) => h(`${JSON.stringify(msg)}\n`))
+      },
+      onClose: () => {},
+      kill: () => {},
+    }
+  }
+  /** 서버의 가장 오래된 tools/list 요청을 주어진 도구 이름들로 응답한다. */
+  const resolveList = (server: string, toolNames: string[]): void => {
+    const id = (pendingLists.get(server) ?? []).shift()
+    if (id == null) throw new Error(`대기 중인 tools/list 가 없습니다: ${server}`)
+    outs.get(server)!(`${JSON.stringify({ jsonrpc: '2.0', id, result: { tools: toolNames.map((name) => ({ name })) } })}\n`)
+  }
+  const pendingListCount = (server: string): number => (pendingLists.get(server) ?? []).length
+  return { spawn, notifiers, resolveList, pendingListCount }
+}
+
+/** 보류 중인 마이크로태스크를 모두 비운다(매크로태스크 경계). */
+const flush = (): Promise<void> => new Promise<void>((r) => setTimeout(r, 0))
 
 /** 항상 승인/거부하는 최소 ApprovalGate. */
 const approveAll = { request: async () => 'approved' as const }
@@ -318,6 +369,137 @@ describe('createMcpHost', () => {
     await p // 정리: connect 가 close 로 reject → doSetServers catch → queue resolve
     expect(host.tools()).toHaveLength(0)
     expect(host.status()).toHaveLength(0)
+  })
+
+  it('서버가 tools/list_changed 를 보내면 도구 목록을 다시 가져와 노출을 갱신한다', async () => {
+    let toolSet: { name: string }[] = [{ name: 'a' }]
+    const { spawn, notifiers } = fakeSpawn((_spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'tools/list') return { tools: toolSet }
+      return {}
+    })
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, onAudit: audit })
+    await host.setServers([{ name: 'srv', command: 'x' }])
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a'])
+    // 서버가 런타임에 도구를 추가하고 변경 알림을 보낸다.
+    toolSet = [{ name: 'a' }, { name: 'b' }]
+    notifiers.get('srv')!(LIST_CHANGED)
+    // 새로고침은 비동기(listTools 왕복)다 — 반영될 때까지 기다린다.
+    await vi.waitFor(() => expect(host.tools()).toHaveLength(2))
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a', 'mcp__srv__b'])
+    expect(host.status()[0]).toMatchObject({ name: 'srv', connected: true, toolCount: 2 })
+    expect(audit).toHaveBeenCalledWith('mcp.tools.changed', expect.objectContaining({ name: 'srv', toolCount: 2 }))
+  })
+
+  it('tools/list_changed 로 도구가 줄면 제거된 도구는 더 이상 노출하지 않는다', async () => {
+    let toolSet: { name: string }[] = [{ name: 'a' }, { name: 'b' }]
+    const { spawn, notifiers } = fakeSpawn((_spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'tools/list') return { tools: toolSet }
+      return {}
+    })
+    const host = createMcpHost({ spawn })
+    await host.setServers([{ name: 'srv', command: 'x' }])
+    expect(host.tools()).toHaveLength(2)
+    toolSet = [{ name: 'a' }] // b 제거
+    notifiers.get('srv')!(LIST_CHANGED)
+    await vi.waitFor(() => expect(host.tools()).toHaveLength(1))
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a'])
+  })
+
+  it('tools/list_changed 새로고침이 실패하면 기존 도구를 유지하고 감사한다', async () => {
+    let failList = false
+    const { spawn, notifiers } = fakeSpawn((_spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'tools/list') {
+        if (failList) throw new Error('list boom')
+        return { tools: [{ name: 'a' }] }
+      }
+      return {}
+    })
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, onAudit: audit })
+    await host.setServers([{ name: 'srv', command: 'x' }])
+    failList = true
+    notifiers.get('srv')!(LIST_CHANGED)
+    await vi.waitFor(() =>
+      expect(audit).toHaveBeenCalledWith('mcp.tools.refresh_failed', expect.objectContaining({ name: 'srv' })),
+    )
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a']) // 기존 유지
+    expect(audit).not.toHaveBeenCalledWith('mcp.tools.changed', expect.anything()) // 실패 경로는 changed 미방출
+    expect(host.status()[0].toolCount).toBe(1) // 노출 수 불변
+  })
+
+  it('연속 tools/list_changed 를 직렬화한다 — 새로고침이 겹치지 않고 마지막 결과가 이긴다', async () => {
+    const { spawn, notifiers, resolveList, pendingListCount } = deferredSpawn()
+    const host = createMcpHost({ spawn })
+    const setP = host.setServers([{ name: 'srv', command: 'x' }])
+    await flush() // connect 가 initialize→tools/list 까지 진행하도록
+    resolveList('srv', ['a']) // 초기 연결 tools/list 응답
+    await setP
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a'])
+
+    // 알림 2개를 연달아 발사 — 2차는 1차 새로고침 뒤로 체이닝되어야 한다(직렬화).
+    notifiers.get('srv')!(LIST_CHANGED)
+    notifiers.get('srv')!(LIST_CHANGED)
+    await flush()
+    // 직렬화 증거: 1차 새로고침만 tools/list 를 보냈고 2차는 체인에서 대기 중이다(겹침 없음).
+    expect(pendingListCount('srv')).toBe(1)
+
+    resolveList('srv', ['a', 'b']) // 1차 새로고침 응답
+    await flush()
+    expect(pendingListCount('srv')).toBe(1) // 1차가 끝난 뒤에야 2차가 tools/list 를 보낸다
+
+    resolveList('srv', ['a', 'b', 'c']) // 2차(마지막) 새로고침 응답 — 이게 최종 상태여야 한다
+    await vi.waitFor(() => expect(host.tools()).toHaveLength(3))
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a', 'mcp__srv__b', 'mcp__srv__c'])
+    expect(host.status()[0].toolCount).toBe(3)
+  })
+
+  it('tools/list_changed 가 서버 간 이름 충돌을 새로 만들면 진 서버 도구를 가린다', async () => {
+    const tools: Record<string, { name: string }[]> = { 'foo.bar': [{ name: 'x' }], foo_bar: [{ name: 'y' }] }
+    const { spawn, notifiers } = fakeSpawn((spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'tools/list') return { tools: tools[spec.name] }
+      if (method === 'tools/call') return { content: [{ type: 'text', text: `hi from ${spec.name}` }] }
+      return {}
+    })
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, onAudit: audit })
+    // 두 서버명 모두 sanitize → 'foo_bar'. 먼저 등록(foo.bar)이 승자. 초기엔 도구가 겹치지 않는다.
+    await host.setServers([
+      { name: 'foo.bar', command: 'a' },
+      { name: 'foo_bar', command: 'b' },
+    ])
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__foo_bar__x', 'mcp__foo_bar__y'])
+    expect(host.status().find((s) => s.name === 'foo_bar')?.toolCount).toBe(1)
+    // 승자(foo.bar)가 'y' 를 추가 → 패자의 mcp__foo_bar__y 와 런타임 충돌. 승자가 가져간다.
+    tools['foo.bar'] = [{ name: 'x' }, { name: 'y' }]
+    notifiers.get('foo.bar')!(LIST_CHANGED)
+    await vi.waitFor(() => expect(host.status().find((s) => s.name === 'foo_bar')?.toolCount).toBe(0))
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__foo_bar__x', 'mcp__foo_bar__y'])
+    // 충돌한 y 는 승자(foo.bar)의 것이어야 한다 — 패자 도구는 가려진다.
+    const y = host.tools().find((t) => t.definition.name === 'mcp__foo_bar__y')!
+    expect(await y.execute({}, {})).toBe('hi from foo.bar')
+    expect(audit).toHaveBeenCalledWith('mcp.tool.skipped', expect.objectContaining({ reason: 'duplicate name (cross-server)' }))
+  })
+
+  it('연결이 종료된 뒤 도착한 tools/list_changed 는 무시한다(죽은 서버 미새로고침)', async () => {
+    let toolSet: { name: string }[] = [{ name: 'a' }]
+    const { spawn, notifiers, closers } = fakeSpawn((_spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'tools/list') return { tools: toolSet }
+      return {}
+    })
+    const host = createMcpHost({ spawn })
+    await host.setServers([{ name: 'srv', command: 'x' }])
+    closers.get('srv')!() // 자식 종료 → 도구 무효화
+    expect(host.tools()).toHaveLength(0)
+    toolSet = [{ name: 'a' }, { name: 'b' }]
+    notifiers.get('srv')!(LIST_CHANGED) // 종료 후 늦게 도착
+    await new Promise<void>((r) => setTimeout(r, 0))
+    expect(host.tools()).toHaveLength(0) // 죽은 서버는 새로고침하지 않는다
   })
 
   it('승자 서버가 종료되면 가려졌던 서버의 도구·status 가 복원된다', async () => {

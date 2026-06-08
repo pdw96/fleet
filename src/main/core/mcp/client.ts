@@ -29,6 +29,7 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
   let closed = false
   let closeError: Error | undefined
   let closeHandler: ((err?: Error) => void) | undefined
+  let toolsChangedHandler: (() => void) | undefined
 
   /**
    * 대기 요청 1개를 정리한다 — pending 제거 + 타이머 클리어 + abort 리스너 해제. 모든 종료 경로
@@ -49,7 +50,12 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
     // 서버 요청 id 가 우리 pending id 와 겹칠 때 엉뚱한 요청을 resolve 해버린다.
     if (typeof msg['method'] === 'string') {
       const reqId = msg['id']
-      if (reqId == null) return // 알림(notifications/*) — 무시
+      if (reqId == null) {
+        // 서버 발신 알림(notifications/*) — 아는 것만 처리하고 나머지는 무시한다.
+        // 알림에는 응답을 보내지 않는다(JSON-RPC). 도구 목록 변경은 호스트가 다시 가져온다(#19).
+        if (msg['method'] === 'notifications/tools/list_changed') toolsChangedHandler?.()
+        return
+      }
       // 서버 발신 요청: ping 만 빈 결과로 응답하고, 그 외 미지원 메서드는 method-not-found 로 회신.
       if (msg['method'] === 'ping') {
         transport.send({ jsonrpc: '2.0', id: reqId, result: {} })
@@ -185,6 +191,9 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
     },
     onClose(handler) {
       closeHandler = handler
+    },
+    onToolsChanged(handler) {
+      toolsChangedHandler = handler
     },
     close() {
       transport.close()
