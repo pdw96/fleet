@@ -339,6 +339,27 @@ describe('createMcpClient', () => {
     expect(f.sent.at(-1)).toEqual({ jsonrpc: '2.0', id: 7, result: {} })
   })
 
+  it('notifications/tools/list_changed 수신 시 onToolsChanged 핸들러를 호출한다(응답 없음)', () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const onChanged = vi.fn()
+    c.onToolsChanged(onChanged)
+    // 서버 발신 알림(id 없음) — 런타임 도구 목록이 바뀌었음을 통지(MCP tools.listChanged).
+    f.reply({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
+    expect(onChanged).toHaveBeenCalledTimes(1)
+    expect(f.sent).toHaveLength(0) // 알림에는 응답하지 않는다(JSON-RPC)
+  })
+
+  it('알 수 없는 알림은 무시한다(onToolsChanged 미호출·응답 없음)', () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const onChanged = vi.fn()
+    c.onToolsChanged(onChanged)
+    f.reply({ jsonrpc: '2.0', method: 'notifications/resources/list_changed' })
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(f.sent).toHaveLength(0)
+  })
+
   it('미지원 서버 요청은 method-not-found 로 회신하고 같은 id 의 pending 을 건드리지 않는다', async () => {
     const f = fakeTransport()
     const c = createMcpClient(f.transport)

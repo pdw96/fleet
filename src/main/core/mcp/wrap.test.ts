@@ -13,6 +13,7 @@ function fakeClient(over: Partial<McpClient> = {}): McpClient {
       return { content: [{ type: 'text', text: 'result' }] }
     },
     onClose() {},
+    onToolsChanged() {},
     close() {},
     ...over,
   }

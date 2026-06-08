@@ -250,6 +250,6 @@ export interface McpHost {
 
 - SSE/Streamable HTTP transport(stdio 외).
 - `store` 기반 MCP 서버 설정 영속(현재는 세션처럼 런타임 제공).
-- MCP roots/sampling/prompts/resources, 도구 변경 알림(`notifications/tools/list_changed`). (서버측 `notifications/cancelled`·`tools/list` 페이지네이션은 #19 에서 구현됨.)
+- MCP roots/sampling/prompts/resources. (서버측 `notifications/cancelled`·`tools/list` 페이지네이션·`notifications/tools/list_changed` 구독은 #19 에서 구현됨.)
 - 본격 렌더러 UX(서버 추가/제거 폼·연결 토글·도구 미리보기).
 - SP3 — 도구 사용 중 스트리밍.
