@@ -4,6 +4,7 @@ import {
   ApiProviderError,
   defaultHttp,
   requireApiKey,
+  sendWithSchemaFallback,
   textOf,
   type ApiCallOptions,
   type ApiProvider,
@@ -12,6 +13,7 @@ import {
   type ContentBlock,
   type FinishReason,
   type HttpClient,
+  type HttpResponse,
   type TextBlock,
   type ToolUseBlock,
 } from './types'
@@ -187,6 +189,12 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         }))
         if (opts.toolChoice) body.tool_choice = opts.toolChoice
       }
+      if (opts.responseSchema) {
+        body.response_format = {
+          type: 'json_schema',
+          json_schema: { name: opts.responseSchema.name, schema: opts.responseSchema.schema, strict: true },
+        }
+      }
       // onToken 이 있으면 SSE 스트리밍 — 도구 동봉 요청도 스트리밍하며 tool_calls 를 누적한다(SP3).
       // include_usage 로 마지막 청크에 usage 를 받는다.
       const streaming = !!opts.onToken
@@ -195,15 +203,12 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         body.stream_options = { include_usage: true }
       }
 
-      const res = await http(ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: opts.signal,
-      })
+      const headers = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }
+      const send = (): Promise<HttpResponse> =>
+        http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
+      const res = streaming
+        ? await send()
+        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.response_format })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
