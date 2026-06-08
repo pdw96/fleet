@@ -22,9 +22,13 @@ SP1에서 도구 실행 루프(`runToolLoop`)·도구 레지스트리(`createToo
 |---|---|---|
 | 클라이언트 구현 | **직접 구현**(hand-rolled stdio JSON-RPC). 공식 SDK 미사용 | 외부 의존 0·순수 코어·electron 비의존·vitest 전 계층 검증(AGENTS.md 아키텍처 규칙). 필요한 서브셋(initialize/tools/list/tools/call)만 소유 |
 | 설정·생명주기 | **엔진 레벨 공유**. `setMcpServers` 로 pre-warm(연결·도구 발견) 후 캐시, 연결 재사용, 모든 API 세션 공용 | `setWorkspace` 패턴과 동형. pre-warm 으로 SP1 `registry.list()` 동기 계약 유지(루프 무수정) |
-| 위험도 기본 | **`destructive` 기본**. `annotations.readOnlyHint===true` → `caution`(자동승인) | 안전 우선(AGENTS.md). 게이트가 `caution` 자동승인이므로 미상 부작용 도구의 조용한 실행 차단 |
+| 위험도 기본 | **`destructive` 기본**. ~~`annotations.readOnlyHint===true` → `caution`(자동승인)~~ → **항상 destructive 로 강화**(아래 변경 이력) | 안전 우선(AGENTS.md). 게이트가 `caution` 자동승인이므로 미상 부작용 도구의 조용한 실행 차단 |
 | 범위 | **코어+엔진+IPC**, 렌더러 최소. `store` 영속·본격 UX 는 후속 | SP1 과 동일한 "순수 코어 우선·최소 IPC 표면" 전략. 세션처럼 런타임 제공 |
 | transport | stdio 만 | 이슈가 stdio JSON-RPC 로 명시. SSE/HTTP 는 후속 |
+
+> **변경 이력 (PR [#18](https://github.com/pdw96/fleet/pull/18) Codex 리뷰 반영, 2026-06-08):** 아래 두 안전 결정을 구현 중 강화했다 — 이 절의 원안보다 코드/PR 이 우선한다.
+> - **위험도**: `readOnlyHint===true → caution`(자동승인) 폐기. MCP annotations 는 신뢰 서버 외엔 untrusted 다(MCP 스펙)이므로 **모든 MCP 도구를 항상 `destructive`** 로 분류한다(승인 게이트 강제).
+> - **spawn 게이팅**: 새 MCP 서버 spawn 은 임의 로컬 프로세스 실행이라 `ApprovalGate({kind:'shell', risk:'destructive'})` 를 통과해야 한다(AGENTS.md "shell→ApprovalGate"). "신뢰 경계=등록"만으로는 부족 — 등록 시점에 사용자 승인을 강제한다.
 
 ---
 
@@ -156,7 +160,7 @@ export function wrapMcpTool(serverName: string, tool: McpToolInfo, client: McpCl
 ```
 - `definition.name = mcp__<sanitize(serverName)>__<sanitize(tool.name)>`. sanitize = `[^A-Za-z0-9_-]` → `_`. 최종 이름 길이 > 64 면 **null 반환**(호출자가 skip + 감사 경고; provider 이름 제약 위반을 silent 로 넘기지 않음 — #7).
 - `definition.description = tool.description`, `definition.parameters = tool.inputSchema ?? { type:'object' }`.
-- `classify`: `tool.annotations?.readOnlyHint === true ? 'caution' : 'destructive'`.
+- `classify`: 항상 `'destructive'`(annotations 는 untrusted — 변경 이력 참조).
 - `execute(input, ctx)`: `const r = await client.callTool(tool.name, input, { signal: ctx.signal })`. `r.content` → 문자열(아래 §결과 매핑). `r.isError` → throw(루프가 isError tool_result 로 회신).
 
 **`host.ts`** — `createMcpHost({ spawn? }): McpHost`.
@@ -222,9 +226,9 @@ export interface McpHost {
 ## 안전 (AGENTS.md "안전 우선")
 
 - 모든 MCP 도구 실행은 SP1 루프의 `gate.request({kind:'tool-call', ...})` 를 통과한다(SP2 신규 게이팅 없음 — 계약 재사용).
-- 기본 `destructive`(approver 필요). `readOnlyHint` 광고 도구만 `caution`(자동승인). 게이트의 `autoApprove:['safe','caution']` 정책상 readOnly 외 MCP 도구는 사용자 승인 모달을 띄운다.
+- **모든 MCP 도구는 `destructive`**(approver 필요) — annotations(readOnlyHint)는 untrusted 라 자동승인 강등에 쓰지 않는다(변경 이력). 게이트의 `autoApprove:['safe','caution']` 정책상 모든 MCP 도구 호출은 사용자 승인 모달을 띄운다.
 - 이름 프리픽스 `mcp__<server>__<tool>` 로 워크스페이스 도구·타 서버와 충돌 차단. 서버명 유일(host diff 에서 강제) + 서버 내 도구명 유일(MCP 규약) → 전역 유일. provider 이름 제약(`[A-Za-z0-9_-]{1,64}`) 초과 도구는 skip + 감사 경고.
-- 자식 프로세스는 `command/args/env` 가 그대로 실행되므로(임의 바이너리) **승인 정책의 신뢰 경계는 "어떤 서버를 등록하는가"** 에 있다 — 등록은 사용자가 IPC 로 명시. 도구 호출 자체는 위 게이트로 추가 게이팅.
+- 자식 프로세스는 `command/args/env` 가 그대로 실행되므로(임의 바이너리) **새 서버 spawn 은 `ApprovalGate({kind:'shell', risk:'destructive'})` 를 통과해야 한다**(변경 이력) — 등록은 사용자 IPC 명시 + spawn 시점 승인. 도구 호출 자체도 위 게이트로 추가 게이팅.
 - 모든 연결/실패/도구 호출을 감사 로그로 남긴다(관측성).
 
 ## 에러 / 종료 (결정론적)
@@ -238,7 +242,7 @@ export interface McpHost {
 
 - `mcp/stdio.test.ts` — fake `McpChild` 주입: 개행 프레이밍(여러 메시지 한 청크/한 메시지 여러 청크), 부분 라인 버퍼링, 잘못된 JSON 라인 스킵, 자식 close 전파, send 직렬화(+개행).
 - `mcp/client.test.ts` — fake transport(인메모리): initialize→initialized 순서, tools/list 파싱, tools/call 결과·`error`→reject, 요청 타임아웃(setTimer 주입), abort→reject, transport close→pending reject.
-- `mcp/wrap.test.ts` — 이름 프리픽스·sanitize·64자 초과 null, description/parameters 매핑, `readOnlyHint`→caution / 기본 destructive, content 매핑(text/image/resource/혼합), 길이 바운드, isError→throw.
+- `mcp/wrap.test.ts` — 이름 프리픽스·sanitize·64자 초과 null·빈 이름 null, description/parameters 매핑, 항상 destructive(annotations untrusted), content 매핑(text/image/resource/혼합), 길이 바운드, isError→throw.
 - `mcp/host.test.ts` — fake spawn(JSON-RPC 응답 스크립트): 다중 서버 연결·`tools()` 평탄화·서버 하나 실패 격리·중복 서버명 throw·re-setServers diff(미변경 유지·제거 close·변경 재연결)·dispose 전부 close·감사 이벤트.
 - `engine.test.ts` 확장 — `mcpHost`(fake spawn) 주입: `setMcpServers` 후 API 세션 send 가 `mcp__*` 도구를 루프로 호출(워크스페이스 없이)·tool_result 회신·최종 텍스트; 워크스페이스+MCP 병합 시 비충돌; `getMcpStatus` 반환; `dispose` 가 client.close 호출.
 
