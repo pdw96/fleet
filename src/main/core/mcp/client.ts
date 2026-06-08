@@ -10,6 +10,8 @@ interface Pending {
   resolve: (value: Record<string, unknown>) => void
   reject: (err: Error) => void
   timer: unknown
+  /** abort 리스너 해제(있으면). settle 이 호출해 공유 signal 에 리스너가 누적되지 않게 한다. */
+  detach?: () => void
 }
 
 /**
@@ -25,6 +27,20 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
   let closed = false
   let closeError: Error | undefined
   let closeHandler: ((err?: Error) => void) | undefined
+
+  /**
+   * 대기 요청 1개를 정리한다 — pending 제거 + 타이머 클리어 + abort 리스너 해제. 모든 종료 경로
+   * (응답 수신·타임아웃·abort)가 이 한 곳을 거쳐 타이머/리스너 누수와 이중 settle 을 막는다.
+   * 이미 정리됐으면 undefined 를 돌려 중복 호출이 no-op 이 되게 한다(이중 취소 알림 방지).
+   */
+  function settle(id: number): Pending | undefined {
+    const p = pending.get(id)
+    if (!p) return undefined
+    pending.delete(id)
+    clearTimer(p.timer)
+    p.detach?.()
+    return p
+  }
 
   transport.onMessage((msg) => {
     // 서버 발신 요청/알림은 method 를 가진다 — 응답(result/error)과 구분한다. 이걸 안 하면
@@ -44,13 +60,11 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
       }
       return
     }
-    // 응답: id 로 pending 요청과 상관한다.
+    // 응답: id 로 pending 요청과 상관한다. settle 이 타이머/abort 리스너까지 정리한다.
     const id = msg['id']
     if (typeof id !== 'number') return
-    const p = pending.get(id)
+    const p = settle(id)
     if (!p) return
-    pending.delete(id)
-    clearTimer(p.timer)
     if (msg['error']) {
       const e = msg['error'] as { message?: string; code?: number }
       p.reject(new Error(`MCP 오류 ${e.code ?? ''}: ${e.message ?? 'unknown'}`.trim()))
@@ -64,11 +78,24 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
     closeError = err ?? new Error('MCP 연결이 종료되었습니다.')
     for (const [, p] of pending) {
       clearTimer(p.timer)
+      p.detach?.() // abort 리스너 해제(공유 signal 누수 방지)
       p.reject(closeError)
     }
     pending.clear()
     closeHandler?.(closeError) // 외부(호스트) 구독자에게 종료를 통지
   })
+
+  /**
+   * 진행 중 요청을 서버측에서도 중단시킨다(MCP cancellation). abort/타임아웃으로 로컬 pending 을
+   * 버릴 때만 호출 — 알림을 안 보내면 long-running/destructive 도구가 서버측에서 계속 실행된다.
+   * 호출부에서 (a) 아직 in-flight 인 요청에 대해서만, (b) initialize 가 아닐 때만, (c) 연결이
+   * 닫히기 전에만 부르므로 스펙의 전송 조건을 만족한다. closed 가드는 방어적 중복.
+   * 스펙: https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/cancellation
+   */
+  function notifyCancelled(id: number, reason: string): void {
+    if (closed) return
+    transport.send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id, reason } })
+  }
 
   function request(
     method: string,
@@ -78,25 +105,33 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
     if (closed) return Promise.reject(closeError ?? new Error('MCP 연결이 닫혔습니다.'))
     if (signal?.aborted) return Promise.reject(new Error('요청이 취소되었습니다.'))
     const id = nextId++
+    // initialize 는 취소 대상이 아니다(MCP 스펙) — 그 외 요청만 abort/타임아웃 시 서버에 취소 알림.
+    const cancellable = method !== 'initialize'
     return new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimer(() => {
-        if (pending.delete(id)) reject(new Error(`MCP 요청 타임아웃(${method}, ${timeoutMs}ms).`))
-      }, timeoutMs)
-      pending.set(id, { resolve, reject, timer })
-      if (signal) {
-        signal.addEventListener(
-          'abort',
-          () => {
-            const p = pending.get(id)
-            if (p) {
-              pending.delete(id)
-              clearTimer(p.timer)
-              p.reject(new Error('요청이 취소되었습니다.'))
-            }
-          },
-          { once: true },
-        )
+      // abort 핸들러 — settle 로 정리(중복 settle no-op)하고 in-flight 였으면 서버에 취소 알림.
+      // AbortSignal 은 'abort' 를 최대 1회만 dispatch 하므로 once 옵션 없이도 중복 발화는 없다.
+      const onAbort = (): void => {
+        const p = settle(id)
+        if (p) {
+          if (cancellable) notifyCancelled(id, '클라이언트가 요청을 취소했습니다.')
+          p.reject(new Error('요청이 취소되었습니다.'))
+        }
       }
+      const timer = setTimer(() => {
+        const p = settle(id)
+        if (p) {
+          if (cancellable) notifyCancelled(id, `요청 타임아웃(${timeoutMs}ms)`)
+          p.reject(new Error(`MCP 요청 타임아웃(${method}, ${timeoutMs}ms).`))
+        }
+      }, timeoutMs)
+      // detach 로 정상 종료 경로에서도 리스너를 제거한다(공유 per-run signal 에 리스너 누적 방지).
+      pending.set(id, {
+        resolve,
+        reject,
+        timer,
+        detach: signal ? () => signal.removeEventListener('abort', onAbort) : undefined,
+      })
+      if (signal) signal.addEventListener('abort', onAbort)
       transport.send({ jsonrpc: '2.0', id, method, params })
     })
   }
