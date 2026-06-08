@@ -12,6 +12,7 @@ function fakeClient(over: Partial<McpClient> = {}): McpClient {
     async callTool() {
       return { content: [{ type: 'text', text: 'result' }] }
     },
+    onClose() {},
     close() {},
     ...over,
   }
@@ -27,9 +28,10 @@ describe('wrapMcpTool', () => {
     expect(wrapMcpTool('s', { name: 'x'.repeat(70) }, fakeClient())).toBeNull()
   })
 
-  it('readOnlyHint 는 caution, 그 외는 destructive 로 분류한다', () => {
+  it('모든 MCP 도구를 destructive 로 분류한다(annotations 는 untrusted)', () => {
+    // readOnlyHint 는 서버 자기신고라 신뢰하지 않는다(MCP 스펙). 항상 destructive.
     expect(wrapMcpTool('s', { name: 'r', annotations: { readOnlyHint: true } }, fakeClient())?.classify({})).toBe(
-      'caution',
+      'destructive',
     )
     expect(wrapMcpTool('s', { name: 'w' }, fakeClient())?.classify({})).toBe('destructive')
   })

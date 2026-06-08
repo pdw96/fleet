@@ -63,4 +63,15 @@ describe('createStdioTransport', () => {
     f.end(new Error('dead'))
     expect((err as unknown as Error)?.message).toBe('dead')
   })
+
+  it('close() 가 onClose 를 통지한다(진행 중 요청을 즉시 종료하도록)', () => {
+    const f = fakeChild()
+    const t = createStdioTransport(spec, () => f.child)
+    let notified = 0
+    t.onClose(() => {
+      notified += 1
+    })
+    t.close()
+    expect(notified).toBe(1) // close() 가 closeHandler 를 정확히 1회 호출(타임아웃 매달림 방지)
+  })
 })

@@ -1,4 +1,5 @@
 import type { McpServerSpec, McpServerStatus } from '../../../shared/types'
+import type { ApprovalGate } from '../safety/approval'
 import type { FleetTool } from '../tools/types'
 
 /**
@@ -31,7 +32,7 @@ export interface McpToolInfo {
   name: string
   description?: string
   inputSchema?: Record<string, unknown>
-  /** MCP 도구 annotations. readOnlyHint 로 위험도를 낮춘다. */
+  /** MCP 도구 annotations. 신뢰 서버 외엔 untrusted 라 위험도 강등에 쓰지 않는다(MCP 스펙). */
   annotations?: { readOnlyHint?: boolean; [k: string]: unknown }
 }
 
@@ -48,6 +49,8 @@ export interface McpClient {
   initialize(): Promise<void>
   listTools(): Promise<McpToolInfo[]>
   callTool(name: string, args: unknown, opts?: { signal?: AbortSignal }): Promise<McpCallResult>
+  /** 연결 종료(자식 종료/명시적 close) 통지. 호스트가 죽은 서버의 도구를 무효화하는 데 쓴다. */
+  onClose(handler: (err?: Error) => void): void
   close(): void
 }
 
@@ -74,4 +77,6 @@ export interface McpHostOptions {
   spawn?: SpawnFn
   onAudit?: (type: string, data: Record<string, unknown>) => void
   clientOptions?: McpClientOptions
+  /** 새 MCP 서버 spawn 전 통과할 승인 게이트(shell 실행 = ApprovalGate, AGENTS.md 안전 우선). 미주입 시 게이팅 생략(테스트용). */
+  gate?: ApprovalGate
 }

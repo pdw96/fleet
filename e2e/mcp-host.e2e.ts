@@ -43,6 +43,9 @@ test('MCP 서버를 연결하고 도구 노출·감사 이벤트를 관측한다
   await page.getByLabel(/MCP 서버/).fill(specJson)
   await page.getByRole('button', { name: 'MCP 적용' }).click()
 
+  // 새 MCP 서버 spawn 은 ApprovalGate(shell)를 통과해야 한다 — 승인 모달을 승인한다.
+  await page.getByRole('button', { name: '승인' }).click()
+
   // UI 관측: 연결 상태(도구 수) + 프리픽스된 도구 이름.
   await expect(page.getByText('mcp__mock__echo')).toBeVisible()
   await expect(page.getByText('1 tools')).toBeVisible()

@@ -24,6 +24,7 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
   let nextId = 1
   let closed = false
   let closeError: Error | undefined
+  let closeHandler: ((err?: Error) => void) | undefined
 
   transport.onMessage((msg) => {
     const id = msg['id']
@@ -48,6 +49,7 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
       p.reject(closeError)
     }
     pending.clear()
+    closeHandler?.(closeError) // 외부(호스트) 구독자에게 종료를 통지
   })
 
   function request(
@@ -106,6 +108,9 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
         content: Array.isArray(content) ? (content as Array<Record<string, unknown>>) : [],
         isError: result['isError'] === true,
       }
+    },
+    onClose(handler) {
+      closeHandler = handler
     },
     close() {
       transport.close()

@@ -39,14 +39,16 @@ export function contentToString(content: Array<Record<string, unknown>>): string
 /**
  * MCP 도구 1개를 FleetTool 로 감싼다. 이름은 mcp__<server>__<tool> 로 프리픽스한다.
  * provider 이름 제약(64자)을 넘으면 null 을 반환한다(호출자가 skip + 감사 경고).
- * 기본 위험도 destructive, annotations.readOnlyHint===true 면 caution.
+ * 위험도는 항상 destructive — annotations(readOnlyHint)는 서버 자기신고라 신뢰하지 않는다(MCP 스펙).
  */
 export function wrapMcpTool(serverName: string, tool: McpToolInfo, client: McpClient): FleetTool | null {
   const toolPart = sanitize(tool.name)
   if (toolPart.length === 0) return null // 빈 도구 이름 — 식별·호출 불가
   const name = `mcp__${sanitize(serverName)}__${toolPart}`
   if (name.length > MAX_TOOL_NAME_LEN) return null
-  const risk: RiskLevel = tool.annotations?.readOnlyHint === true ? 'caution' : 'destructive'
+  // 안전 우선: MCP 도구는 임의 부작용이 가능하고 annotations(readOnlyHint)는 서버 자기신고라
+  // 신뢰할 수 없다(MCP 스펙). 전부 destructive 로 분류해 승인 게이트를 강제한다.
+  const risk: RiskLevel = 'destructive'
   return {
     definition: {
       name,

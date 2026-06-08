@@ -9,9 +9,14 @@ import type { SpawnFn } from './types'
  */
 function fakeSpawn(reply: (spec: McpServerSpec, method: string, params: unknown) => unknown) {
   const kills: string[] = []
+  const spawns: string[] = []
+  // 서버명 → 자식 종료 트리거(idle 크래시 시뮬레이트용).
+  const closers = new Map<string, () => void>()
   const spawn: SpawnFn = (spec) => {
+    spawns.push(spec.name)
     let out: (chunk: string) => void = () => {}
     let close: (err?: Error) => void = () => {}
+    closers.set(spec.name, () => close())
     return {
       write: (line) => {
         const msg = JSON.parse(line) as { id?: number; method: string; params: unknown }
@@ -36,8 +41,12 @@ function fakeSpawn(reply: (spec: McpServerSpec, method: string, params: unknown)
       },
     }
   }
-  return { spawn, kills }
+  return { spawn, kills, spawns, closers }
 }
+
+/** 항상 승인/거부하는 최소 ApprovalGate. */
+const approveAll = { request: async () => 'approved' as const }
+const rejectAll = { request: async () => 'rejected' as const }
 
 const echoReply = (spec: McpServerSpec, method: string): unknown => {
   if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
@@ -129,5 +138,74 @@ describe('createMcpHost', () => {
     status = await host.setServers([{ name: 'srv', command: 'x' }])
     expect(status[0].connected).toBe(true)
     expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__echo'])
+  })
+
+  it('gate 가 승인하면 spawn 하고 연결한다', async () => {
+    const { spawn, spawns } = fakeSpawn(echoReply)
+    const host = createMcpHost({ spawn, gate: approveAll })
+    const status = await host.setServers([{ name: 'srv', command: 'x' }])
+    expect(status[0].connected).toBe(true)
+    expect(spawns).toEqual(['srv'])
+  })
+
+  it('gate 가 거부하면 spawn 하지 않고 거부 상태로 둔다', async () => {
+    const { spawn, spawns } = fakeSpawn(echoReply)
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, gate: rejectAll, onAudit: audit })
+    const status = await host.setServers([{ name: 'srv', command: 'x' }])
+    expect(status[0]).toMatchObject({ name: 'srv', connected: false })
+    expect(status[0].error).toMatch(/거부/)
+    expect(spawns).toEqual([]) // spawn 안 됨 — 게이트 이전에 막힘
+    expect(host.tools()).toHaveLength(0)
+    expect(audit).toHaveBeenCalledWith('mcp.server.rejected', expect.objectContaining({ name: 'srv' }))
+  })
+
+  it('gate 에 shell·destructive·명령줄로 승인을 요청한다', async () => {
+    const { spawn } = fakeSpawn(echoReply)
+    const request = vi.fn(async () => 'approved' as const)
+    const host = createMcpHost({ spawn, gate: { request } })
+    await host.setServers([{ name: 'srv', command: 'node', args: ['s.js'] }])
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'shell', risk: 'destructive', target: 'node s.js' }),
+    )
+  })
+
+  it('sanitize 후 충돌하는 도구는 하나만 노출하고 나머지는 skip 한다', async () => {
+    const { spawn } = fakeSpawn((_spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'tools/list') return { tools: [{ name: 'do.thing' }, { name: 'do_thing' }] } // 둘 다 mcp__srv__do_thing
+      return {}
+    })
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, onAudit: audit })
+    const status = await host.setServers([{ name: 'srv', command: 'x' }])
+    expect(status[0].toolCount).toBe(1)
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__do_thing'])
+    expect(audit).toHaveBeenCalledWith('mcp.tool.skipped', expect.objectContaining({ reason: 'duplicate name' }))
+  })
+
+  it('연결된 서버가 종료되면 도구를 무효화하고 disconnected 로 표시한다', async () => {
+    const { spawn, closers } = fakeSpawn(echoReply)
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, onAudit: audit })
+    await host.setServers([{ name: 'srv', command: 'x' }])
+    expect(host.tools()).toHaveLength(1)
+    closers.get('srv')!() // 자식이 스스로 종료(idle 크래시) 시뮬레이트
+    expect(host.tools()).toHaveLength(0)
+    expect(host.status()[0]).toMatchObject({ name: 'srv', connected: false })
+    expect(audit).toHaveBeenCalledWith(
+      'mcp.server.disconnected',
+      expect.objectContaining({ name: 'srv', reason: 'exit' }),
+    )
+  })
+
+  it('겹치는 setServers 를 직렬화한다(중복 spawn 없음)', async () => {
+    const { spawn, spawns } = fakeSpawn(echoReply)
+    const host = createMcpHost({ spawn })
+    const p1 = host.setServers([{ name: 'srv', command: 'x' }])
+    const p2 = host.setServers([{ name: 'srv', command: 'x' }]) // 즉시 두 번째 호출(미변경)
+    await Promise.all([p1, p2])
+    expect(spawns).toEqual(['srv']) // 한 번만 spawn
+    expect(host.status().map((s) => s.name)).toEqual(['srv'])
   })
 })

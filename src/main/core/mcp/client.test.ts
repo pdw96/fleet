@@ -93,4 +93,15 @@ describe('createMcpClient', () => {
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
   })
+
+  it('연결 종료를 onClose 핸들러로 통지한다(호스트의 죽은 서버 무효화용)', () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    let err: Error | undefined
+    c.onClose((e) => {
+      err = e
+    })
+    f.kill(new Error('죽음'))
+    expect(err?.message).toBe('죽음')
+  })
 })

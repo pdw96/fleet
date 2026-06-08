@@ -60,11 +60,15 @@ export function createStdioTransport(spec: McpServerSpec, spawnFn: SpawnFn): Mcp
       nl = buffer.indexOf('\n')
     }
   })
-  child.onClose((err) => {
+  // 종료 통지를 단일 지점으로 일원화한다. 우리가 close() 로 죽이든 자식이 스스로 죽든
+  // closeHandler 가 정확히 한 번 불려야 한다(과거엔 close() 가 closed 를 먼저 세워 child.onClose 를
+  // early-return 시켜, 진행 중 요청이 30초 타임아웃까지 매달리는 버그가 있었다).
+  const notifyClose = (err?: Error): void => {
     if (closed) return
     closed = true
     closeHandler?.(err)
-  })
+  }
+  child.onClose((err) => notifyClose(err))
 
   return {
     send: (message) => {
@@ -78,8 +82,8 @@ export function createStdioTransport(spec: McpServerSpec, spawnFn: SpawnFn): Mcp
     },
     close: () => {
       if (closed) return
-      closed = true
       child.kill()
+      notifyClose(new Error('MCP 연결을 닫았습니다.'))
     },
   }
 }
