@@ -88,6 +88,19 @@ describe('createWorkspaceReadTools', () => {
     expect(pick(createWorkspaceReadTools(root), 'read_file').classify({ path: 'config.txt' })).toBe('destructive')
   })
 
+  it('read_file 은 대형 파일을 전체 적재 없이 앞부분만 반환한다', async () => {
+    await fs.writeFile(path.join(root, 'big.txt'), 'x'.repeat(300 * 1024))
+    const out = await pick(createWorkspaceReadTools(root), 'read_file').execute({ path: 'big.txt' }, {})
+    expect(out).toContain('바이트만 표시)')
+    expect(out.length).toBeLessThan(300 * 1024)
+  })
+
+  it('grep 은 대형 파일을 읽기 전에 건너뛴다', async () => {
+    await fs.writeFile(path.join(root, 'big.txt'), 'NEEDLE'.padEnd(300 * 1024, '_'))
+    const out = await pick(createWorkspaceReadTools(root), 'grep').execute({ pattern: 'NEEDLE' }, {})
+    expect(out).toBe('(일치 없음)') // 대형 파일은 스캔 제외
+  })
+
   it('grep 은 파국적 백트래킹 패턴(ReDoS)을 거부한다', async () => {
     await expect(
       pick(createWorkspaceReadTools(root), 'grep').execute({ pattern: '(a+)+$' }, {}),

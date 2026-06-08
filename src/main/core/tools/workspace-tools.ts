@@ -8,6 +8,7 @@ const MAX_FILE_BYTES = 256 * 1024
 const MAX_GREP_FILES = 2000
 const MAX_GREP_MATCHES = 200
 const MAX_GLOB_RESULTS = 500
+const MAX_GLOB_SCAN = 20000
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', '.next', 'coverage'])
 
 /** 입력 경로를 root 내부로 격리한다. realpath 로 심볼릭 링크 탈출까지 차단. 밖이면 throw. */
@@ -74,10 +75,18 @@ function readFileTool(root: string): FleetTool {
       const abs = await resolveWithin(root, p)
       const stat = await fs.stat(abs)
       if (!stat.isFile()) throw new Error(`read_file: 파일이 아닙니다: ${p}`)
-      const buf = await fs.readFile(abs)
-      if (buf.byteLength > MAX_FILE_BYTES) {
-        return `${buf.subarray(0, MAX_FILE_BYTES).toString('utf8')}\n…(${buf.byteLength}바이트 중 ${MAX_FILE_BYTES}바이트만 표시)`
+      if (stat.size > MAX_FILE_BYTES) {
+        // 대형 파일은 전체를 메모리에 적재하지 않고 앞부분(MAX_FILE_BYTES)만 읽는다.
+        const fh = await fs.open(abs, 'r')
+        try {
+          const head = Buffer.alloc(MAX_FILE_BYTES)
+          const { bytesRead } = await fh.read(head, 0, MAX_FILE_BYTES, 0)
+          return `${head.subarray(0, bytesRead).toString('utf8')}\n…(${stat.size}바이트 중 ${MAX_FILE_BYTES}바이트만 표시)`
+        } finally {
+          await fh.close()
+        }
       }
+      const buf = await fs.readFile(abs)
       return buf.toString('utf8')
     },
   }
@@ -146,9 +155,9 @@ function grepTool(root: string): FleetTool {
         if (SENSITIVE_FILE.test(rel)) continue // 민감파일 제외
         let content: string
         try {
-          const buf = await fs.readFile(file)
-          if (buf.byteLength > MAX_FILE_BYTES) continue // 대형/바이너리 추정 스킵
-          content = buf.toString('utf8')
+          const st = await fs.stat(file)
+          if (st.size > MAX_FILE_BYTES) continue // 대형/바이너리 추정 — 전체 적재 전에 스킵
+          content = (await fs.readFile(file)).toString('utf8')
         } catch {
           continue
         }
@@ -274,8 +283,10 @@ function globTool(root: string): FleetTool {
       if (!pattern) throw new Error('glob: pattern 인자가 필요합니다.')
       const rootReal = await fs.realpath(root)
       const out: string[] = []
+      let scanned = 0
       for await (const file of walk(rootReal)) {
-        if (out.length >= MAX_GLOB_RESULTS) break
+        if (scanned >= MAX_GLOB_SCAN || out.length >= MAX_GLOB_RESULTS) break // 매치가 적어도 순회를 바운드
+        scanned++
         const rel = path.relative(rootReal, file).split(path.sep).join('/')
         if (SENSITIVE_FILE.test(rel)) continue
         if (globMatch(pattern, rel)) out.push(rel)
