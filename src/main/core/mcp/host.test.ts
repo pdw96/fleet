@@ -114,4 +114,20 @@ describe('createMcpHost', () => {
     expect(host.tools()).toHaveLength(0)
     expect(host.status()).toHaveLength(0)
   })
+
+  it('실패한 서버는 다음 setServers 에서 재연결을 시도한다', async () => {
+    let healthy = false
+    const { spawn } = fakeSpawn((spec, method) => {
+      if (method === 'initialize' && !healthy) throw new Error('down')
+      return echoReply(spec, method)
+    })
+    const host = createMcpHost({ spawn })
+    let status = await host.setServers([{ name: 'srv', command: 'x' }])
+    expect(status[0].connected).toBe(false)
+    expect(host.tools()).toHaveLength(0)
+    healthy = true
+    status = await host.setServers([{ name: 'srv', command: 'x' }])
+    expect(status[0].connected).toBe(true)
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__echo'])
+  })
 })
