@@ -384,17 +384,127 @@ describe('provider streaming (SSE)', () => {
     expect(calls[0].url).toContain('streamGenerateContent?alt=sse')
   })
 
-  it('tools 가 있으면 스트리밍하지 않고 버퍼링 경로를 쓴다(도구 호출 보존)', async () => {
+  it('tools + onToken 이면 스트리밍하면서 tool_use 블록을 누적한다 (#10 SP3)', async () => {
+    const { http, calls } = mockStreamHttp([
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":5}}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"검색"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"search"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"q\\":"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\"hi\\"}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: (d) => deltas.push(d),
+      tools: [{ name: 'search', parameters: { type: 'object' } }],
+    })
+    expect(deltas).toEqual(['검색'])
+    expect(out.text).toBe('검색')
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'search', input: { q: 'hi' } }])
+    expect(out.finishReason).toBe('tool_use')
+    expect((JSON.parse(calls[0].init.body) as { stream?: boolean }).stream).toBe(true)
+  })
+
+  it('tools 가 있어도 onToken 미지정이면 버퍼링 경로를 쓴다(비스트리밍 보존)', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn' }),
     }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    const deltas: string[] = []
-    await p.chat([{ role: 'user', content: 'q' }], {
-      onToken: (d) => deltas.push(d),
-      tools: [{ name: 't', parameters: { type: 'object' } }],
-    })
+    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }] })
     expect((JSON.parse(calls[0].init.body) as { stream?: boolean }).stream).toBeUndefined()
+  })
+
+  it('OpenAI: 스트리밍 중 delta.tool_calls 를 인덱스별로 누적한다 (#10 SP3)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"content":"날씨"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":"{\\"city\\":"}}]},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"seoul\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":6}}\n\n',
+      'data: [DONE]\n\n',
+    ])
+    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: (d) => deltas.push(d),
+      tools: [{ name: 'get_weather', parameters: { type: 'object' } }],
+    })
+    expect(deltas).toEqual(['날씨'])
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'seoul' } }])
+    expect(out.finishReason).toBe('tool_use')
+    expect(out.usage).toEqual({ inputTokens: 4, outputTokens: 6 })
+  })
+
+  it('Google: 스트리밍 중 functionCall part 를 toolCalls 로 모은다 (#10 SP3)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"찾아"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"id":7}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":5}}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: (d) => deltas.push(d),
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
+    expect(deltas).toEqual(['찾아'])
+    expect(out.text).toBe('찾아')
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'lookup-0', name: 'lookup', input: { id: 7 } }])
+  })
+
+  it('Anthropic: 스트리밍 중 여러 tool_use 블록을 인덱스 순서로 누적한다 (#10 SP3)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"read"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"p\\":1}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu2","name":"write"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"p\\":2}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'read', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'tu1', name: 'read', input: { p: 1 } },
+      { type: 'tool_use', id: 'tu2', name: 'write', input: { p: 2 } },
+    ])
+  })
+
+  it('Anthropic: 스트리밍 tool_use 의 깨진 input_json 은 {} 로 복구한다 (#10 SP3)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"x"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{깨진"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'x', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'x', input: {} }])
+  })
+
+  it('OpenAI: 스트리밍 중 여러 tool_calls 를 인덱스별로 누적한다 (#10 SP3)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{}"}}]},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"write","arguments":"{\\"x\\":1}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      'data: [DONE]\n\n',
+    ])
+    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'read', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'c1', name: 'read', input: {} },
+      { type: 'tool_use', id: 'c2', name: 'write', input: { x: 1 } },
+    ])
   })
 
   it('Anthropic streaming: 중간 error 이벤트는 ApiProviderError 로 throw(부분응답 위장 방지)', async () => {

@@ -779,6 +779,37 @@ code.id {
   animation: blink 1s steps(2, start) infinite;
 }
 
+/* 라이브 도구 단계 칩 (SP3) — 도구 실행 진행을 말풍선 안에 표시 */
+.tool-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 2px 0 6px;
+}
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--surface-2);
+  color: var(--dim);
+}
+.tool-chip.running {
+  border-color: rgba(79, 224, 192, 0.4);
+  color: var(--live);
+}
+.tool-chip.ok {
+  color: var(--text);
+}
+.tool-chip.error {
+  border-color: rgba(255, 111, 111, 0.4);
+  color: var(--bad);
+}
+
 /* 채팅 컨트롤 */
 .controls {
   display: grid;

@@ -1,4 +1,4 @@
-import type { AgentRole, ChatMessage } from '../../../shared/types'
+import type { AgentRole, ChatMessage, ToolStep } from '../../../shared/types'
 import type { SessionManager } from '../session/manager'
 import type { Store } from '../store/types'
 
@@ -12,6 +12,8 @@ export interface AskOptions {
    * 미지정 시 send 는 버퍼링(최종 1회) — 기존 비스트리밍 동작을 그대로 보존한다.
    */
   onToken?: (delta: string) => void
+  /** 도구 단계 콜백. session.send 의 onToolStep 으로 연결돼 도구 실행 단계를 라이브로 흘린다(SP3). */
+  onToolStep?: (step: ToolStep) => void
 }
 
 /**
@@ -95,7 +97,8 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
         `${instruction}당신(${session.descriptor.displayName})의 다음 발언:`
 
       // onToken 이 있으면 onChunk 로 연결돼 스트리밍 활성화(없으면 onChunk=undefined → 버퍼링).
-      const reply = await session.send(prompt, { onChunk: opts.onToken })
+      // onToolStep 은 API 세션 도구 루프의 라이브 도구 단계 싱크로 연결된다(CLI 세션은 무시).
+      const reply = await session.send(prompt, { onChunk: opts.onToken, onToolStep: opts.onToolStep })
       return store.appendMessage({ roomId, author: { type: 'llm', llmId }, role: opts.role, content: reply })
     },
 

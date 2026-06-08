@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentRole, ChatMessage, ChatRoom, ChatStreamEvent, LlmDescriptor } from '../../shared/types'
+import type { AgentRole, ChatMessage, ChatRoom, ChatStreamEvent, LlmDescriptor, ToolStep } from '../../shared/types'
 import { agentHue, cx, vars } from '../ui'
 
 interface Props {
@@ -13,11 +13,16 @@ interface StreamBubble {
   llmId: string
   role?: AgentRole
   text: string
-  /** text 에 반영된 마지막 델타 seq. 이보다 큰 델타만 이어 붙여 멱등·정렬을 보장한다. */
+  /** text·steps 에 반영된 마지막 이벤트 seq(델타·도구 단계 공유). 이보다 큰 것만 적용해 멱등·정렬을 보장한다. */
   seq: number
+  /** 관측된 도구 단계(id 로 in-place 갱신된 최신 상태). 라이브 도구 칩 렌더용. */
+  steps: ToolStep[]
   /** 방출된 에러 메시지(있으면 말풍선을 에러 표시로 렌더). */
   error?: string
 }
+
+/** 도구 단계 phase 별 아이콘(라이브 칩). */
+const STEP_ICON: Record<ToolStep['phase'], string> = { running: '⏳', ok: '✓', error: '⚠' }
 
 function llmName(llmId: string, sessions: LlmDescriptor[]): string {
   return sessions.find((s) => s.id === llmId)?.displayName ?? llmId
@@ -53,6 +58,9 @@ export function ChatPanel({ sessions }: Props) {
   // 델타를 streamId 별로 버퍼링했다가, 머지 시 스냅샷 seq 보다 큰 것만 이어 붙인다(이중 집계 방지).
   // 스냅샷 머지 완료 후엔 더 버퍼링하지 않는다(이후의 미상 델타는 진짜 고아 → 무시).
   const pendingDeltasRef = useRef<Record<string, { seq: number; delta: string }[]>>({})
+  // 도구 단계의 동형 버퍼 — start 를 못 받은 스트림으로 하이드레이션 윈도우 중 도착한 단계 이벤트를
+  // 보관했다가, 스냅샷 머지 시 텍스트 델타와 함께 seq 순으로 재생한다(ok 유실로 칩이 running 에 멈추는 것 방지).
+  const pendingToolsRef = useRef<Record<string, { seq: number; step: ToolStep }[]>>({})
   const hydratedRef = useRef(false)
 
   useEffect(() => {
@@ -72,8 +80,23 @@ export function ChatPanel({ sessions }: Props) {
       if (e.kind === 'start') {
         setStreams((prev) => ({
           ...prev,
-          [e.streamId]: { streamId: e.streamId, roomId: e.roomId, llmId: e.llmId, role: e.role, text: '', seq: 0 },
+          [e.streamId]: { streamId: e.streamId, roomId: e.roomId, llmId: e.llmId, role: e.role, text: '', seq: 0, steps: [] },
         }))
+      } else if (e.kind === 'tool') {
+        // 도구 단계: id 로 칩을 in-place 갱신(running→ok/error). seq 멱등은 텍스트 델타와 공유 카운터.
+        // 하이드레이션 윈도우엔 델타와 동형으로 버퍼링해(setStreams 갱신부 밖) start 미수신 스트림의
+        // 단계 이벤트(특히 ok 전이) 유실로 칩이 running 에 멈추지 않게 한다.
+        if (!hydratedRef.current) {
+          ;(pendingToolsRef.current[e.streamId] ??= []).push({ seq: e.seq, step: e.step })
+        }
+        setStreams((prev) => {
+          const cur = prev[e.streamId]
+          if (!cur) return prev // start 못 받은 스트림 — 스냅샷 catch-up(+버퍼)이 steps 를 복원한다
+          if (e.seq <= cur.seq) return prev // 멱등: 이미 반영한(중복/역순) 이벤트 무시
+          const i = cur.steps.findIndex((s) => s.id === e.step.id)
+          const steps = i >= 0 ? cur.steps.map((s, j) => (j === i ? e.step : s)) : [...cur.steps, e.step]
+          return { ...prev, [e.streamId]: { ...cur, steps, seq: e.seq } }
+        })
       } else if (e.kind === 'delta') {
         // start 를 못 받은 스트림(탭 언마운트 등)은 합성 말풍선을 만들지 않는다 — 작성자 미상이므로.
         // 다만 하이드레이션 윈도우에선 버퍼링해(setStreams 갱신부 밖, StrictMode 이중호출 무관)
@@ -135,6 +158,8 @@ export function ChatPanel({ sessions }: Props) {
       // (갱신부 안에서 ref 를 비우면 캡처 전에 사라질 수 있다).
       const pending = pendingDeltasRef.current
       pendingDeltasRef.current = {}
+      const pendingTools = pendingToolsRef.current
+      pendingToolsRef.current = {}
       hydratedRef.current = true
       setBusyRooms((prev) => {
         const next = new Set(prev) // 윈도우 중 도착한 busy 반영분 유지
@@ -146,15 +171,26 @@ export function ChatPanel({ sessions }: Props) {
         for (const s of a.streams) {
           if (s.streamId in merged) continue // 라이브가 이미 아는 스트림 — 덮어쓰지 않음
           if (endedStreamsRef.current.has(s.streamId)) continue // 윈도우 중 종료됨 — 되살리지 않음
-          // 스냅샷(seq 까지 반영) + 윈도우 중 버퍼된 더 새로운 델타(seq>스냅샷)만 이어 붙인다.
+          // 스냅샷(seq 까지 반영) + 윈도우 중 버퍼된 더 새로운 이벤트(seq>스냅샷)를 seq 순으로 재생한다.
+          // 델타는 텍스트로, 도구 단계는 id in-place 로 적용하며 공유 seq 를 전진시킨다(이중 집계 방지).
           let { text, seq } = s
-          for (const d of (pending[s.streamId] ?? []).slice().sort((x, y) => x.seq - y.seq)) {
-            if (d.seq > seq) {
-              text += d.delta
-              seq = d.seq
+          const steps = [...s.steps]
+          const buffered: ({ seq: number; delta: string } | { seq: number; step: ToolStep })[] = [
+            ...(pending[s.streamId] ?? []),
+            ...(pendingTools[s.streamId] ?? []),
+          ].sort((x, y) => x.seq - y.seq)
+          for (const ev of buffered) {
+            if (ev.seq <= seq) continue // 스냅샷이 이미 반영 — 이중 집계 방지
+            if ('step' in ev) {
+              const i = steps.findIndex((x) => x.id === ev.step.id)
+              if (i >= 0) steps[i] = ev.step
+              else steps.push(ev.step)
+            } else {
+              text += ev.delta
             }
+            seq = ev.seq
           }
-          merged[s.streamId] = { ...s, text, seq }
+          merged[s.streamId] = { ...s, text, seq, steps }
         }
         return merged
       })
@@ -295,6 +331,15 @@ export function ChatPanel({ sessions }: Props) {
                     <span className="msg-author">{llmName(s.llmId, sessions)}</span>
                     {s.role && <span className="msg-role">· {s.role}</span>}
                   </div>
+                  {s.steps.length > 0 && (
+                    <div className="tool-steps">
+                      {s.steps.map((step) => (
+                        <span key={step.id} className={cx('tool-chip', step.phase)} title={step.summary}>
+                          {STEP_ICON[step.phase]} {step.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {s.error ? (
                     <div className="stream-err">⚠ {s.error}</div>
                   ) : (

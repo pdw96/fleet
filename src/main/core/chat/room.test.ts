@@ -144,4 +144,22 @@ describe('ChatController', () => {
     await ctrl.askLlm('s')
     expect(seen?.onChunk).toBeUndefined() // 스트리밍 미요청 → 기존 동작
   })
+
+  it('onToolStep 을 지정하면 session.send 의 onToolStep 으로 연결한다 (#10 SP3)', async () => {
+    const { sessions, ctrl } = setup()
+    const session: LlmSession = {
+      id: 's',
+      descriptor: { id: 's', kind: 'api', displayName: 'S', ref: 's', model: '' },
+      async send(_prompt, opts) {
+        opts?.onToolStep?.({ id: 't1', name: 'read_file', phase: 'running' })
+        return 'ok'
+      },
+      async dispose() {},
+    }
+    sessions.add(session)
+
+    const steps: string[] = []
+    await ctrl.askLlm('s', { onToolStep: (s) => steps.push(`${s.name}:${s.phase}`) })
+    expect(steps).toEqual(['read_file:running'])
+  })
 })

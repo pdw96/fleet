@@ -25,13 +25,18 @@ function previewInput(input: unknown): string {
   return s.length > 200 ? `${s.slice(0, 200)}…` : s
 }
 
+/** 도구 단계 요지를 짧게 절단한다(라이브 UI 용, 최대 200자). */
+function shortText(s: string): string {
+  return s.length > 200 ? `${s.slice(0, 200)}…` : s
+}
+
 /**
  * provider.chat 를 도구 호출이 끝날 때까지 반복한다. turns 를 in-place 로 확장
  * (assistant tool_use + user tool_result)하고 최종 ChatResult 를 반환한다.
  * 최대 반복을 넘겨도 여전히 tool_use 면 미완성 응답을 성공으로 위장하지 않고 throw 한다(#7).
  * 도구 목록(registry.list())은 루프 시작 시 1회 스냅샷한다 — 한 send 동안 도구 집합은 불변이다.
- * 주의: tools 동봉 요청은 대부분 provider 가 버퍼링(비스트리밍)하므로 opts.onToken 은 도구 루프
- * 중에는 호출되지 않을 수 있다(최종 비-tool_use 응답에서만 흐를 수 있음).
+ * 참고: tools 동봉 요청도 onToken 이 있으면 SSE 스트리밍하므로(SP3) 도구 루프 중에도 텍스트 델타가
+ * onToken 으로 라이브로 흐른다. 도구 실행 단계는 opts.onToolStep(running→ok/error)으로 방출한다.
  */
 export async function runToolLoop(
   provider: ApiProvider,
@@ -41,6 +46,7 @@ export async function runToolLoop(
 ): Promise<ChatResult> {
   const max = deps.maxIterations ?? DEFAULT_MAX_ITERATIONS
   const audit = deps.onAudit ?? NOOP_AUDIT
+  const onToolStep = opts.onToolStep
   const tools = deps.registry.list()
 
   for (let iter = 0; iter < max; iter++) {
@@ -57,10 +63,13 @@ export async function runToolLoop(
 
     const results: ToolResultBlock[] = []
     for (const call of result.toolCalls) {
+      // 칩 식별자: tool_use id(없으면 도구명). 한 단계의 running→ok/error 가 같은 id 로 갱신된다.
+      const stepId = call.id || call.name
       const tool = deps.registry.get(call.name)
       if (!tool) {
         // 미존재 도구 — 게이트 통과 없이 즉시 에러 회신
         audit('tool.failed', { name: call.name, reason: 'unknown' })
+        onToolStep?.({ id: stepId, name: call.name, phase: 'error', summary: '알 수 없는 도구' })
         results.push({
           type: 'tool_result',
           toolUseId: call.id,
@@ -82,6 +91,7 @@ export async function runToolLoop(
       })
       if (decision !== 'approved') {
         audit('tool.failed', { name: call.name, reason: 'rejected' })
+        onToolStep?.({ id: stepId, name: call.name, phase: 'error', summary: '승인 거부됨' })
         results.push({
           type: 'tool_result',
           toolUseId: call.id,
@@ -92,13 +102,17 @@ export async function runToolLoop(
         continue
       }
 
+      // 승인 후 실행 직전 running 칩을 띄운다(인자 요약 포함).
+      onToolStep?.({ id: stepId, name: call.name, phase: 'running', risk, summary: argPreview || undefined })
       try {
         const content = await tool.execute(call.input, { signal: opts.signal })
         audit('tool.executed', { name: call.name })
+        onToolStep?.({ id: stepId, name: call.name, phase: 'ok' })
         results.push({ type: 'tool_result', toolUseId: call.id, name: call.name, content })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         audit('tool.failed', { name: call.name, reason: message })
+        onToolStep?.({ id: stepId, name: call.name, phase: 'error', summary: shortText(message) })
         results.push({
           type: 'tool_result',
           toolUseId: call.id,

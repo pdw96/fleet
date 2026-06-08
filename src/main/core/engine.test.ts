@@ -584,7 +584,7 @@ const streamRunner: CommandRunner = async (_cmd, _args, _t, onStdout) => {
 
 /** 스트림 스코프 이벤트(streamId 보유)만 통과시키는 가드 — 방 단위 busy/idle 봉투를 분리한다. */
 const hasStreamId = (e: ChatStreamEvent): e is Extract<ChatStreamEvent, { streamId: string }> =>
-  e.kind === 'start' || e.kind === 'delta' || e.kind === 'end' || e.kind === 'error'
+  e.kind === 'start' || e.kind === 'delta' || e.kind === 'tool' || e.kind === 'end' || e.kind === 'error'
 
 describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
   it('askLlm 은 start → delta* → end 를 동일 streamId 로 방출하고 end 에 영속 메시지를 싣는다', async () => {
@@ -706,6 +706,42 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
     expect(deltas).toEqual(['코덱스 응답']) // codex 는 토큰이 아닌 이벤트 단위 → 단일 델타
     expect(msg.content).toBe('코덱스 응답')
   })
+
+  it('도구 루프 발언이 kind:"tool" 단계 이벤트(running→ok)를 방출한다 (#10 SP3)', async () => {
+    const pingTool: FleetTool = {
+      definition: { name: 'mcp__demo__ping', parameters: { type: 'object' } },
+      classify: () => 'safe',
+      async execute() {
+        return 'pong'
+      },
+    }
+    const fakeMcpHost: McpHost = {
+      async setServers() {
+        return []
+      },
+      tools: () => [pingTool],
+      status: () => [],
+      async dispose() {},
+    }
+    const { http } = scriptedHttp([
+      JSON.stringify({
+        content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__demo__ping', input: {} }],
+        stop_reason: 'tool_use',
+      }),
+      JSON.stringify({ content: [{ type: 'text', text: '끝' }], stop_reason: 'end_turn' }),
+    ])
+    const events: ChatStreamEvent[] = []
+    const engine = createFleetEngine({ http, mcpHost: fakeMcpHost, onChatStream: (e) => events.push(e) })
+    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    const room = engine.createRoom('r', ['api:a'])
+    await engine.askLlm(room.id, 'api:a')
+
+    const toolEvents = events.filter((e): e is Extract<ChatStreamEvent, { kind: 'tool' }> => e.kind === 'tool')
+    expect(toolEvents.map((e) => e.step.phase)).toEqual(['running', 'ok'])
+    expect(toolEvents[0].step).toMatchObject({ id: 'tu1', name: 'mcp__demo__ping', phase: 'running' })
+    // seq 는 텍스트 델타와 공유 카운터로 단조 증가한다.
+    expect(toolEvents[1].seq).toBeGreaterThan(toolEvents[0].seq)
+  })
 })
 
 describe('FleetEngine — 프로젝트 영속 읽기', () => {
@@ -762,6 +798,39 @@ describe('FleetEngine 채팅 진행 상태(getChatActivity / busy·idle)', () =>
     expect(mid.busyRooms).toEqual([room.id])
     expect(mid.streams).toHaveLength(1)
     expect(mid.streams[0]).toMatchObject({ roomId: room.id, llmId: 'a', text: '부분텍스트', seq: 1 })
+
+    release()
+    await p
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
+  })
+
+  it('in-flight 도구 단계를 steps 로 노출하고 id 로 in-place 갱신한다 (#10 SP3)', async () => {
+    const events: ChatStreamEvent[] = []
+    const sessions = createSessionManager()
+    let release!: () => void
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    sessions.add({
+      id: 'a',
+      descriptor: { id: 'a', kind: 'api', displayName: 'A', ref: 'a', model: '' },
+      async send(_prompt, opts) {
+        opts?.onToolStep?.({ id: 'tu1', name: 'read_file', phase: 'running', risk: 'safe' })
+        opts?.onToolStep?.({ id: 'tu1', name: 'read_file', phase: 'ok' }) // 같은 id → in-place 갱신
+        await gate
+        return '응답'
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ sessions, onChatStream: (e) => events.push(e) })
+    const room = engine.createRoom('방', ['a'])
+
+    const p = engine.askLlm(room.id, 'a')
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'tool')).toBe(true))
+
+    const mid = engine.getChatActivity()
+    expect(mid.streams[0].steps).toEqual([{ id: 'tu1', name: 'read_file', phase: 'ok' }]) // 1개로 합쳐짐
+    expect(mid.streams[0].seq).toBe(2) // running·ok 2 이벤트 공유 카운터
 
     release()
     await p

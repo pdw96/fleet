@@ -105,7 +105,11 @@ function mapFinish(reason: string | undefined): FinishReason {
   }
 }
 
-/** SSE 스트림(chat completions, stream:true)을 읽어 델타를 흘리고 최종 ChatResult 를 만든다. */
+/**
+ * SSE 스트림(chat completions, stream:true)을 읽어 델타를 흘리고 최종 ChatResult 를 만든다.
+ * 도구 동봉 요청도 스트리밍하므로(SP3) delta.tool_calls 를 인덱스별로 누적한다 —
+ * id/name 은 처음 도착분, arguments(문자열 조각)는 이어붙여 종료 시 파싱한다.
+ */
 async function readStream(
   body: AsyncIterable<Uint8Array>,
   onToken: (delta: string) => void,
@@ -113,9 +117,16 @@ async function readStream(
   let text = ''
   let finish: string | undefined
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
+  const toolAccum = new Map<number, { id: string; name: string; args: string }>()
   for await (const data of sseData(body)) {
     let ev: {
-      choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>
+      choices?: Array<{
+        delta?: {
+          content?: string
+          tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
+        }
+        finish_reason?: string
+      }>
       usage?: { prompt_tokens?: number; completion_tokens?: number }
     }
     try {
@@ -129,10 +140,21 @@ async function readStream(
       text += delta
       onToken(delta)
     }
+    for (const tc of choice?.delta?.tool_calls ?? []) {
+      const idx = tc.index ?? 0
+      const acc = toolAccum.get(idx) ?? { id: '', name: '', args: '' }
+      if (tc.id) acc.id = tc.id
+      if (tc.function?.name) acc.name = tc.function.name
+      if (tc.function?.arguments) acc.args += tc.function.arguments
+      toolAccum.set(idx, acc)
+    }
     if (choice?.finish_reason) finish = choice.finish_reason
     if (ev.usage) usage = { inputTokens: ev.usage.prompt_tokens, outputTokens: ev.usage.completion_tokens }
   }
-  return { text, toolCalls: [], finishReason: mapFinish(finish), rawFinishReason: finish, usage }
+  const toolCalls: ToolUseBlock[] = [...toolAccum.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, t]) => ({ type: 'tool_use', id: t.id, name: t.name, input: parseArgs(t.args) }))
+  return { text, toolCalls, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
 }
 
 /** OpenAI Chat Completions API provider. */
@@ -165,8 +187,9 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         }))
         if (opts.toolChoice) body.tool_choice = opts.toolChoice
       }
-      // 도구 미사용 + onToken 이 있으면 SSE 스트리밍. include_usage 로 마지막 청크에 usage 를 받는다.
-      const streaming = !!opts.onToken && !opts.tools?.length
+      // onToken 이 있으면 SSE 스트리밍 — 도구 동봉 요청도 스트리밍하며 tool_calls 를 누적한다(SP3).
+      // include_usage 로 마지막 청크에 usage 를 받는다.
+      const streaming = !!opts.onToken
       if (streaming) {
         body.stream = true
         body.stream_options = { include_usage: true }
