@@ -56,6 +56,10 @@ const baseOpenai: ApiProviderConfig = {
   id: 'o1', provider: 'openai', displayName: 'GPT', model: 'gpt-4o', apiKey: 'key-o', maxTokens: 256,
 }
 
+const baseGoogle: ApiProviderConfig = {
+  id: 'g1', provider: 'google', displayName: 'Gemini', model: 'gemini-2.5-pro', apiKey: 'key-g', maxTokens: 256,
+}
+
 describe('AnthropicProvider', () => {
   it('splits system, maps turns, parses text blocks + usage + finishReason', async () => {
     const { http, calls } = mockHttp(() => ({
@@ -384,6 +388,33 @@ describe('GoogleProvider', () => {
     }
     expect(body.tools[0].functionDeclarations[0]).toMatchObject({ name: 'lookup' })
     expect(body.toolConfig.functionCallingConfig.mode).toBe('AUTO')
+  })
+
+  it('responseSchema → generationConfig.responseSchema + responseMimeType 를 싣는다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '{}' }] }, finishReason: 'STOP' }] }) }))
+    const p = createGoogleProvider(baseGoogle, http)
+    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'verdict', schema } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: Record<string, unknown> }
+    expect(body.generationConfig?.responseMimeType).toBe('application/json')
+    expect(body.generationConfig?.responseSchema).toEqual(schema)
+  })
+
+  it('구조화-출력 400 → responseSchema/responseMimeType 없이 1회 재시도', async () => {
+    let n = 0
+    const { http, calls } = mockHttp(() => {
+      n++
+      return n === 1
+        ? { ok: false, status: 400, body: 'responseSchema unsupported' }
+        : { body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '[]' }] }, finishReason: 'STOP' }] }) }
+    })
+    const p = createGoogleProvider(baseGoogle, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema: { type: 'object' } } })
+    expect(calls).toHaveLength(2)
+    const b1 = JSON.parse(calls[1].init.body) as { generationConfig?: Record<string, unknown> }
+    expect(b1.generationConfig?.responseSchema).toBeUndefined()
+    expect(b1.generationConfig?.responseMimeType).toBeUndefined()
+    expect(out.text).toBe('[]')
   })
 })
 

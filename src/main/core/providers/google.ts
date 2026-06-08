@@ -4,6 +4,7 @@ import {
   ApiProviderError,
   defaultHttp,
   requireApiKey,
+  sendWithSchemaFallback,
   textOf,
   type ApiCallOptions,
   type ApiProvider,
@@ -12,6 +13,7 @@ import {
   type ContentBlock,
   type FinishReason,
   type HttpClient,
+  type HttpResponse,
   type ToolUseBlock,
 } from './types'
 
@@ -150,6 +152,10 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const generationConfig: Record<string, unknown> = {}
       if (temperature !== undefined) generationConfig.temperature = temperature
       if (maxTokens !== undefined) generationConfig.maxOutputTokens = maxTokens
+      if (opts.responseSchema) {
+        generationConfig.responseMimeType = 'application/json'
+        generationConfig.responseSchema = opts.responseSchema.schema
+      }
 
       const body: Record<string, unknown> = { contents }
       if (systemText) body.systemInstruction = { parts: [{ text: systemText }] }
@@ -172,12 +178,19 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const method = streaming ? 'streamGenerateContent?alt=sse' : 'generateContent'
       // API 키는 쿼리스트링(?key=) 대신 헤더로 전송한다 — URL/로그 노출과 키 제한 정책 리스크를 피한다.
       const url = `${BASE}/${encodeURIComponent(config.model)}:${method}`
-      const res = await http(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify(body),
-        signal: opts.signal,
-      })
+      const headers = { 'content-type': 'application/json', 'x-goog-api-key': apiKey }
+      const send = (): Promise<HttpResponse> =>
+        http(url, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
+      const res = streaming
+        ? await send()
+        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => {
+            const gc = body.generationConfig as Record<string, unknown> | undefined
+            if (gc) {
+              delete gc.responseMimeType
+              delete gc.responseSchema
+              if (Object.keys(gc).length === 0) delete body.generationConfig
+            }
+          })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
