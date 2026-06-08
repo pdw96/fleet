@@ -9,7 +9,19 @@ const MAX_GREP_FILES = 2000
 const MAX_GREP_MATCHES = 200
 const MAX_GLOB_RESULTS = 500
 const MAX_GLOB_SCAN = 20000
+const MAX_DIR_ENTRIES = 1000
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', '.next', 'coverage'])
+
+/** 워크스페이스 도구의 자원/출력 한도. 미지정 시 기본값을 쓴다(테스트에서 작은 값 주입 가능). */
+export interface WorkspaceToolLimits {
+  maxFileBytes?: number
+  maxGrepFiles?: number
+  maxGrepMatches?: number
+  maxGlobResults?: number
+  maxGlobScan?: number
+  maxDirEntries?: number
+}
+type ResolvedLimits = Required<WorkspaceToolLimits>
 
 /** 입력 경로를 root 내부로 격리한다. realpath 로 심볼릭 링크 탈출까지 차단. 밖이면 throw. */
 async function resolveWithin(root: string, p: string): Promise<string> {
@@ -46,7 +58,7 @@ async function* walk(dir: string): AsyncGenerator<string> {
 
 const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
 
-function readFileTool(root: string): FleetTool {
+function readFileTool(root: string, lim: ResolvedLimits): FleetTool {
   return {
     definition: {
       name: 'read_file',
@@ -75,13 +87,13 @@ function readFileTool(root: string): FleetTool {
       const abs = await resolveWithin(root, p)
       const stat = await fs.stat(abs)
       if (!stat.isFile()) throw new Error(`read_file: 파일이 아닙니다: ${p}`)
-      if (stat.size > MAX_FILE_BYTES) {
-        // 대형 파일은 전체를 메모리에 적재하지 않고 앞부분(MAX_FILE_BYTES)만 읽는다.
+      if (stat.size > lim.maxFileBytes) {
+        // 대형 파일은 전체를 메모리에 적재하지 않고 앞부분만 읽는다.
         const fh = await fs.open(abs, 'r')
         try {
-          const head = Buffer.alloc(MAX_FILE_BYTES)
-          const { bytesRead } = await fh.read(head, 0, MAX_FILE_BYTES, 0)
-          return `${head.subarray(0, bytesRead).toString('utf8')}\n…(${stat.size}바이트 중 ${MAX_FILE_BYTES}바이트만 표시)`
+          const head = Buffer.alloc(lim.maxFileBytes)
+          const { bytesRead } = await fh.read(head, 0, lim.maxFileBytes, 0)
+          return `${head.subarray(0, bytesRead).toString('utf8')}\n…(${stat.size}바이트 중 ${lim.maxFileBytes}바이트만 표시)`
         } finally {
           await fh.close()
         }
@@ -92,7 +104,7 @@ function readFileTool(root: string): FleetTool {
   }
 }
 
-function listDirectoryTool(root: string): FleetTool {
+function listDirectoryTool(root: string, lim: ResolvedLimits): FleetTool {
   return {
     definition: {
       name: 'list_directory',
@@ -108,12 +120,17 @@ function listDirectoryTool(root: string): FleetTool {
       const abs = await resolveWithin(root, p)
       const entries = await fs.readdir(abs, { withFileTypes: true })
       const lines = entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).sort()
-      return lines.length ? lines.join('\n') : '(빈 디렉터리)'
+      if (lines.length === 0) return '(빈 디렉터리)'
+      // 거대 디렉터리의 무제한 출력(메인 프로세스 블록 + 거대 프롬프트) 방지 — 캡 + 절단 마커.
+      if (lines.length > lim.maxDirEntries) {
+        return `${lines.slice(0, lim.maxDirEntries).join('\n')}\n…(${lines.length}개 항목 중 ${lim.maxDirEntries}개만 표시 — 목록 불완전)`
+      }
+      return lines.join('\n')
     },
   }
 }
 
-function grepTool(root: string): FleetTool {
+function grepTool(root: string, lim: ResolvedLimits): FleetTool {
   return {
     definition: {
       name: 'grep',
@@ -148,25 +165,32 @@ function grepTool(root: string): FleetTool {
       const start = await resolveWithin(root, asStr((input as { path?: unknown })?.path) ?? '.')
       const out: string[] = []
       let scanned = 0
+      let truncated = false
       for await (const file of walk(start)) {
-        if (scanned >= MAX_GREP_FILES || out.length >= MAX_GREP_MATCHES) break
+        if (scanned >= lim.maxGrepFiles || out.length >= lim.maxGrepMatches) {
+          truncated = true
+          break
+        }
         const rel = path.relative(rootReal, file).split(path.sep).join('/')
         scanned++ // 민감파일 스킵도 스캔 한도에 포함(다수 민감파일로 한도 우회 방지)
         if (SENSITIVE_FILE.test(rel)) continue // 민감파일 제외
         let content: string
         try {
           const st = await fs.stat(file)
-          if (st.size > MAX_FILE_BYTES) continue // 대형/바이너리 추정 — 전체 적재 전에 스킵
+          if (st.size > lim.maxFileBytes) continue // 대형/바이너리 추정 — 전체 적재 전에 스킵
           content = (await fs.readFile(file)).toString('utf8')
         } catch {
           continue
         }
         const lines = content.split('\n')
-        for (let i = 0; i < lines.length && out.length < MAX_GREP_MATCHES; i++) {
+        for (let i = 0; i < lines.length && out.length < lim.maxGrepMatches; i++) {
           if (re.test(lines[i])) out.push(`${rel}:${i + 1}:${lines[i].slice(0, 300)}`)
         }
       }
-      return out.length ? out.join('\n') : '(일치 없음)'
+      // 매치 캡에 정확히 도달한 채 순회가 끝난 경우도 불완전으로 표시한다(silent partial 방지 — #7).
+      if (out.length >= lim.maxGrepMatches) truncated = true
+      if (out.length === 0) return truncated ? '(일치 없음 — 스캔 한도 도달로 결과 불완전)' : '(일치 없음)'
+      return truncated ? `${out.join('\n')}\n…(스캔/매치 한도 도달 — 결과 불완전)` : out.join('\n')
     },
   }
 }
@@ -266,7 +290,7 @@ function globMatch(pattern: string, relPath: string): boolean {
   return globMatchSegments(segs, 0, relPath, 0)
 }
 
-function globTool(root: string): FleetTool {
+function globTool(root: string, lim: ResolvedLimits): FleetTool {
   return {
     definition: {
       name: 'glob',
@@ -284,19 +308,33 @@ function globTool(root: string): FleetTool {
       const rootReal = await fs.realpath(root)
       const out: string[] = []
       let scanned = 0
+      let truncated = false
       for await (const file of walk(rootReal)) {
-        if (scanned >= MAX_GLOB_SCAN || out.length >= MAX_GLOB_RESULTS) break // 매치가 적어도 순회를 바운드
+        if (scanned >= lim.maxGlobScan || out.length >= lim.maxGlobResults) {
+          truncated = true // 매치가 적어도 순회를 바운드 — 불완전으로 표시(silent false-negative 방지)
+          break
+        }
         scanned++
         const rel = path.relative(rootReal, file).split(path.sep).join('/')
         if (SENSITIVE_FILE.test(rel)) continue
         if (globMatch(pattern, rel)) out.push(rel)
       }
-      return out.length ? out.sort().join('\n') : '(일치 없음)'
+      if (out.length === 0) return truncated ? '(일치 없음 — 스캔 한도 도달로 결과 불완전)' : '(일치 없음)'
+      return truncated ? `${out.sort().join('\n')}\n…(스캔/결과 한도 도달 — 목록 불완전)` : out.sort().join('\n')
     },
   }
 }
 
-/** 워크스페이스 루트(root)를 기준으로 한 읽기전용 도구 세트. 모두 root 내부로 격리된다. */
-export function createWorkspaceReadTools(root: string): FleetTool[] {
-  return [readFileTool(root), listDirectoryTool(root), grepTool(root), globTool(root)]
+/** 워크스페이스 루트(root)를 기준으로 한 읽기전용 도구 세트. 모두 root 내부로 격리된다.
+ *  한도(limits)는 미지정 시 기본값을 쓴다(테스트에서 작은 값 주입 가능). */
+export function createWorkspaceReadTools(root: string, limits: WorkspaceToolLimits = {}): FleetTool[] {
+  const lim: ResolvedLimits = {
+    maxFileBytes: limits.maxFileBytes ?? MAX_FILE_BYTES,
+    maxGrepFiles: limits.maxGrepFiles ?? MAX_GREP_FILES,
+    maxGrepMatches: limits.maxGrepMatches ?? MAX_GREP_MATCHES,
+    maxGlobResults: limits.maxGlobResults ?? MAX_GLOB_RESULTS,
+    maxGlobScan: limits.maxGlobScan ?? MAX_GLOB_SCAN,
+    maxDirEntries: limits.maxDirEntries ?? MAX_DIR_ENTRIES,
+  }
+  return [readFileTool(root, lim), listDirectoryTool(root, lim), grepTool(root, lim), globTool(root, lim)]
 }

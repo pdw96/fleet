@@ -38,6 +38,21 @@ describe('createWorkspaceReadTools', () => {
     expect(out).toContain('hello world')
   })
 
+  it('list_directory 는 항목 수가 한도를 넘으면 절단 마커를 붙인다', async () => {
+    const out = await pick(createWorkspaceReadTools(root, { maxDirEntries: 2 }), 'list_directory').execute({ path: '.' }, {})
+    expect(out).toContain('목록 불완전')
+  })
+
+  it('grep 은 매치 한도 도달 시 불완전 마커를 붙인다', async () => {
+    const out = await pick(createWorkspaceReadTools(root, { maxGrepMatches: 1 }), 'grep').execute({ pattern: 'e' }, {})
+    expect(out).toContain('결과 불완전')
+  })
+
+  it('glob 은 스캔 한도 도달 시 불완전 마커를 붙인다', async () => {
+    const out = await pick(createWorkspaceReadTools(root, { maxGlobScan: 1 }), 'glob').execute({ pattern: '**/*' }, {})
+    expect(out).toContain('불완전')
+  })
+
   it('read_file 은 워크스페이스 밖 경로를 거부한다(경로 탈출)', async () => {
     await expect(
       pick(createWorkspaceReadTools(root), 'read_file').execute({ path: '../../etc/hosts' }, {}),
