@@ -482,8 +482,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     async dispose() {
-      await sessions.disposeAll()
-      await mcpHost.dispose()
+      // 한쪽 정리 실패가 다른 쪽(특히 MCP 자식 프로세스) 정리를 막지 않도록 격리한다 — 좀비 방지가 목적.
+      await Promise.allSettled([sessions.disposeAll(), mcpHost.dispose()])
     },
 
     listEvents() {

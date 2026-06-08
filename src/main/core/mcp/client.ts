@@ -92,6 +92,10 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
     },
     async listTools(): Promise<McpToolInfo[]> {
       const result = await request('tools/list', {})
+      if (result['nextCursor'] != null) {
+        // 페이지네이션 미구현(후속) — 첫 페이지만 사용한다. 잘림을 조용히 넘기지 않고 경고로 표면화(#7).
+        console.warn('MCP tools/list 가 페이지네이션으로 잘렸습니다(nextCursor 존재) — 첫 페이지 도구만 노출됩니다.')
+      }
       const tools = result['tools']
       return Array.isArray(tools) ? (tools as McpToolInfo[]) : []
     },

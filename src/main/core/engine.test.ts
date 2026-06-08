@@ -527,6 +527,27 @@ describe('FleetEngine', () => {
     expect(order).toEqual(['sessions', 'mcp'])
   })
 
+  it('dispose 는 세션 정리가 실패해도 mcpHost 를 정리한다 (#10 SP2)', async () => {
+    let mcpDisposed = false
+    const sessions = createSessionManager()
+    sessions.disposeAll = async () => {
+      throw new Error('세션 정리 실패')
+    }
+    const fakeMcpHost: McpHost = {
+      async setServers() {
+        return []
+      },
+      tools: () => [],
+      status: () => [],
+      async dispose() {
+        mcpDisposed = true
+      },
+    }
+    const engine = createFleetEngine({ sessions, mcpHost: fakeMcpHost })
+    await engine.dispose() // reject 를 전파하지 않아야 한다
+    expect(mcpDisposed).toBe(true)
+  })
+
   it('워크스페이스가 설정되면 API 세션이 도구 루프로 워크스페이스 파일을 읽는다 (#10 SP1)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-tools-'))
     try {

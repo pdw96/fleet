@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createMcpClient } from './client'
 import type { McpTransport } from './types'
 
@@ -81,5 +81,16 @@ describe('createMcpClient', () => {
     const p = c.callTool('t', {}, { signal: ac.signal })
     ac.abort()
     await expect(p).rejects.toThrow(/취소/)
+  })
+
+  it('tools/list 가 nextCursor 로 잘리면 경고를 표면화한다', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const p = c.listTools()
+    f.reply({ jsonrpc: '2.0', id: 1, result: { tools: [{ name: 't' }], nextCursor: 'next' } })
+    expect(await p).toEqual([{ name: 't' }])
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })
