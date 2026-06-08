@@ -6,6 +6,7 @@ import type {
   ApprovalRequest,
   AppInfo,
   ChatStreamEvent,
+  McpServerSpec,
   OrchestratorEvent,
   RunProjectRequest,
 } from '../shared/types'
@@ -114,6 +115,10 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   )
   ipcMain.handle('fleet:chat:activity', () => engine.getChatActivity())
 
+  // MCP 호스트
+  ipcMain.handle('fleet:mcp:setServers', (_e, servers: McpServerSpec[]) => engine.setMcpServers(servers))
+  ipcMain.handle('fleet:mcp:getStatus', () => engine.getMcpStatus())
+
   // 감사
   ipcMain.handle('fleet:events:list', () => engine.listEvents())
 
@@ -150,6 +155,9 @@ function createWindow(): void {
 void app.whenReady().then(() => {
   const { engine, ipcApprover } = buildEngine()
   registerIpc(engine, ipcApprover)
+  app.on('will-quit', () => {
+    void engine.dispose() // 세션·MCP 자식 프로세스 정리(좀비 방지)
+  })
   createWindow()
 
   app.on('activate', () => {

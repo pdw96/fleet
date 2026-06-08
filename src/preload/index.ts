@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ApprovalRequest, ChatStreamEvent, FleetBridge, OrchestratorEvent } from '../shared/types'
+import type { ApprovalRequest, ChatStreamEvent, FleetBridge, McpServerSpec, OrchestratorEvent } from '../shared/types'
 
 const api: FleetBridge = {
   getAppInfo: () => ipcRenderer.invoke('fleet:app:info'),
@@ -32,6 +32,10 @@ const api: FleetBridge = {
   askLlm: (roomId, llmId) => ipcRenderer.invoke('fleet:chat:askLlm', roomId, llmId),
   discussRoom: (roomId, llmIds, rounds) => ipcRenderer.invoke('fleet:chat:discuss', roomId, llmIds, rounds),
   getChatActivity: () => ipcRenderer.invoke('fleet:chat:activity'),
+
+  // MCP 호스트
+  setMcpServers: (servers: McpServerSpec[]) => ipcRenderer.invoke('fleet:mcp:setServers', servers),
+  getMcpStatus: () => ipcRenderer.invoke('fleet:mcp:getStatus'),
 
   // 감사 / 이벤트
   listEvents: () => ipcRenderer.invoke('fleet:events:list'),

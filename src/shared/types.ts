@@ -432,6 +432,12 @@ export interface FleetBridge {
   /** 채팅 진행 상태 스냅샷(진행 중 방 + 라이브 스트림). ChatPanel 마운트 시 복원용. */
   getChatActivity(): Promise<ChatActivity>
 
+  // MCP 호스트
+  /** MCP 서버 목록 설정(전체 교체). 연결 후 서버별 상태 반환. */
+  setMcpServers(servers: McpServerSpec[]): Promise<McpServerStatus[]>
+  /** 현재 MCP 서버 연결 상태/도구 목록. */
+  getMcpStatus(): Promise<McpServerStatus[]>
+
   // 감사 / 이벤트 스트림
   listEvents(): Promise<FleetEvent[]>
   /** 오케스트레이터 진행 이벤트 구독 (해제 함수 반환). */
