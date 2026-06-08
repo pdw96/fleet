@@ -42,7 +42,9 @@ export function contentToString(content: Array<Record<string, unknown>>): string
  * 기본 위험도 destructive, annotations.readOnlyHint===true 면 caution.
  */
 export function wrapMcpTool(serverName: string, tool: McpToolInfo, client: McpClient): FleetTool | null {
-  const name = `mcp__${sanitize(serverName)}__${sanitize(tool.name)}`
+  const toolPart = sanitize(tool.name)
+  if (toolPart.length === 0) return null // 빈 도구 이름 — 식별·호출 불가
+  const name = `mcp__${sanitize(serverName)}__${toolPart}`
   if (name.length > MAX_TOOL_NAME_LEN) return null
   const risk: RiskLevel = tool.annotations?.readOnlyHint === true ? 'caution' : 'destructive'
   return {

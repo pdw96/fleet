@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { wrapMcpTool } from './wrap'
+import { contentToString, wrapMcpTool } from './wrap'
 import type { McpClient } from './types'
 
 /** 기본 fake client — callTool 만 오버라이드해 결과를 조정. */
@@ -76,5 +76,21 @@ describe('wrapMcpTool', () => {
     const ac = new AbortController()
     await wrapMcpTool('s', { name: 'orig' }, client)?.execute({ q: 1 }, { signal: ac.signal })
     expect(seen[0]).toEqual({ name: 'orig', args: { q: 1 }, hasSignal: true })
+  })
+
+  it('빈 도구 이름은 null 을 반환한다', () => {
+    expect(wrapMcpTool('s', { name: '' }, fakeClient())).toBeNull()
+  })
+})
+
+describe('contentToString', () => {
+  it('필드 누락·미상 타입을 안전하게 처리한다', () => {
+    expect(
+      contentToString([
+        { type: 'text' }, // text 필드 없음 → ''
+        { type: 'resource', resource: {} }, // uri 없음 → '[resource ]'
+        { type: 'audio' }, // 미상 타입 → '[audio]'
+      ]),
+    ).toBe('\n[resource ]\n[audio]')
   })
 })
