@@ -220,4 +220,30 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     render(<ChatPanel sessions={SESSIONS} />)
     expect(await screen.findByText('✓ grep')).toBeTruthy()
   })
+
+  it('하이드레이션 윈도우 중 도착한 미상 스트림 도구 단계를 버퍼링해 스냅샷 머지 후 복원한다 (#10 SP3)', async () => {
+    let resolveActivity: (a: ChatActivity) => void = () => {}
+    const fleet = mockFleet({
+      getChatActivity: vi.fn(() => new Promise<ChatActivity>((res) => (resolveActivity = res))),
+    })
+    render(<ChatPanel sessions={SESSIONS} />)
+    await screen.findByText('🤖 AI 자동 토론')
+
+    // start 못 받은 s1 의 ok 단계(seq=2)가 스냅샷 resolve 전 먼저 도착(레이스) — 버블이 아직 없어 드롭될 위험
+    fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'grep', phase: 'ok' }, seq: 2 })
+    expect(screen.queryByText('✓ grep')).toBeNull() // 아직 미상 — 버블 없음
+
+    // 스냅샷은 running(seq=1)까지만 봄 → 버퍼된 ok(seq=2)가 머지 후 칩을 ok 로 전이시켜야 한다(running 멈춤 방지)
+    await act(async () =>
+      resolveActivity({
+        busyRooms: ['r1'],
+        streams: [
+          { streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '', seq: 1, steps: [{ id: 't1', name: 'grep', phase: 'running' }] },
+        ],
+      }),
+    )
+
+    expect(screen.getByText('✓ grep')).toBeTruthy() // 유실되지 않고 ok 로 복원
+    expect(screen.queryByText('⏳ grep')).toBeNull() // running 에 멈추지 않음
+  })
 })
