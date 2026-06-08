@@ -83,6 +83,141 @@ describe('createMcpClient', () => {
     await expect(p).rejects.toThrow(/취소/)
   })
 
+  it('abort 시 진행 중 요청에 notifications/cancelled 를 보낸다(requestId 상관, 알림이라 id 없음)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const ac = new AbortController()
+    const p = c.callTool('t', {}, { signal: ac.signal })
+    expect(f.sent[0]).toMatchObject({ method: 'tools/call', id: 1 })
+    ac.abort()
+    await expect(p).rejects.toThrow(/취소/)
+    // 서버측이 long-running/destructive 도구 실행을 중단하도록 같은 id 로 취소 알림을 보낸다.
+    expect(f.sent.at(-1)).toMatchObject({ method: 'notifications/cancelled', params: { requestId: 1 } })
+    expect(typeof f.sent.at(-1)?.['params']).toBe('object')
+    expect((f.sent.at(-1)?.['params'] as { reason?: unknown })['reason']).toEqual(expect.any(String))
+    expect(f.sent.at(-1)?.['id']).toBeUndefined()
+  })
+
+  it('요청 타임아웃 시 notifications/cancelled 를 보낸다', async () => {
+    const f = fakeTransport()
+    let fire: (() => void) | undefined
+    const c = createMcpClient(f.transport, { setTimer: (fn) => ((fire = fn), 1), clearTimer: () => {} })
+    const p = c.callTool('t', {})
+    fire!()
+    await expect(p).rejects.toThrow(/타임아웃/)
+    expect(f.sent.at(-1)).toMatchObject({ method: 'notifications/cancelled', params: { requestId: 1 } })
+  })
+
+  it('initialize 는 타임아웃돼도 취소 알림을 보내지 않는다(스펙: initialize 취소 불가)', async () => {
+    const f = fakeTransport()
+    let fire: (() => void) | undefined
+    const c = createMcpClient(f.transport, { setTimer: (fn) => ((fire = fn), 1), clearTimer: () => {} })
+    const p = c.initialize()
+    fire!()
+    await expect(p).rejects.toThrow(/타임아웃/)
+    expect(f.sent.some((m) => m['method'] === 'notifications/cancelled')).toBe(false)
+  })
+
+  it('이미 응답이 도착한 요청은 이후 abort 해도 취소 알림을 보내지 않는다(완료 요청 미취소)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const ac = new AbortController()
+    const p = c.callTool('t', {}, { signal: ac.signal })
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    await p
+    ac.abort()
+    expect(f.sent.some((m) => m['method'] === 'notifications/cancelled')).toBe(false)
+  })
+
+  it('transport 종료 후 abort 해도 취소 알림을 보내지 않는다(닫힌 연결엔 미전송)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const ac = new AbortController()
+    const p = c.callTool('t', {}, { signal: ac.signal })
+    f.kill(new Error('child died'))
+    await expect(p).rejects.toThrow(/child died/)
+    ac.abort()
+    expect(f.sent.some((m) => m['method'] === 'notifications/cancelled')).toBe(false)
+  })
+
+  it('동시 in-flight 요청 중 abort 된 요청의 id 로만 취소 알림을 보낸다(requestId 상관)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const ac1 = new AbortController()
+    const ac2 = new AbortController()
+    const p1 = c.callTool('a', {}, { signal: ac1.signal }) // id 1
+    const p2 = c.callTool('b', {}, { signal: ac2.signal }) // id 2
+    ac2.abort()
+    await expect(p2).rejects.toThrow(/취소/)
+    // 마지막 id·nextId-1 이 아니라 '취소된 그 요청(2)'의 id 여야 한다 — 엉뚱한 요청을 취소하면 안 됨.
+    expect(f.sent.at(-1)).toMatchObject({ method: 'notifications/cancelled', params: { requestId: 2 } })
+    expect(
+      f.sent.some((m) => m['method'] === 'notifications/cancelled' && (m['params'] as { requestId?: number }).requestId === 1),
+    ).toBe(false)
+    // p1 은 살아있어 정상 응답으로 resolve 된다(잘못 취소되지 않음).
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    expect(await p1).toEqual({ content: [], isError: false })
+  })
+
+  it('동시 요청 중 첫 요청만 abort 하면 첫 요청 id 로만 취소 알림을 보낸다(대칭)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const ac1 = new AbortController()
+    const ac2 = new AbortController()
+    const p1 = c.callTool('a', {}, { signal: ac1.signal }) // id 1
+    const p2 = c.callTool('b', {}, { signal: ac2.signal }) // id 2
+    ac1.abort()
+    await expect(p1).rejects.toThrow(/취소/)
+    expect(f.sent.at(-1)).toMatchObject({ method: 'notifications/cancelled', params: { requestId: 1 } })
+    f.reply({ jsonrpc: '2.0', id: 2, result: { content: [] } })
+    expect(await p2).toEqual({ content: [], isError: false })
+  })
+
+  it('취소 후 늦게 도착한 동일 id 응답은 무시한다(스펙 규칙4: 이중 settle 금지)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const ac = new AbortController()
+    const p = c.callTool('t', {}, { signal: ac.signal })
+    ac.abort()
+    await expect(p).rejects.toThrow(/취소/)
+    // 취소 후 서버가 뒤늦게 같은 id 로 결과를 보내도 throw 없이 무시되어야 한다(pending 비어 있음).
+    expect(() => f.reply({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'late' }] } })).not.toThrow()
+    await expect(p).rejects.toThrow(/취소/) // 재-resolve 되지 않는다
+  })
+
+  it('abort 와 타임아웃이 같은 요청에 겹쳐도 취소 알림은 한 번만 보낸다(idempotency)', async () => {
+    const f = fakeTransport()
+    let fire: (() => void) | undefined
+    const c = createMcpClient(f.transport, { setTimer: (fn) => ((fire = fn), 1), clearTimer: () => {} })
+    const ac = new AbortController()
+    const p = c.callTool('t', {}, { signal: ac.signal })
+    fire!() // 타임아웃 먼저
+    ac.abort() // 이어서 abort — 두 번째 settle 은 no-op
+    await expect(p).rejects.toThrow()
+    expect(f.sent.filter((m) => m['method'] === 'notifications/cancelled')).toHaveLength(1)
+  })
+
+  it('initialize 가 아닌 요청(listTools)도 타임아웃 시 취소 알림을 보낸다(per-request 취소)', async () => {
+    const f = fakeTransport()
+    let fire: (() => void) | undefined
+    const c = createMcpClient(f.transport, { setTimer: (fn) => ((fire = fn), 1), clearTimer: () => {} })
+    const p = c.listTools()
+    fire!()
+    await expect(p).rejects.toThrow(/타임아웃/)
+    expect(f.sent.at(-1)).toMatchObject({ method: 'notifications/cancelled', params: { requestId: 1 } })
+  })
+
+  it('요청 완료 시 abort 리스너를 제거한다(공유 signal 리스너 누수 방지)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const ac = new AbortController()
+    const remove = vi.spyOn(ac.signal, 'removeEventListener')
+    const p = c.callTool('t', {}, { signal: ac.signal })
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    await p
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
+  })
+
   it('tools/list 의 nextCursor 를 따라 모든 페이지를 모은다(커서를 params 로 전달)', async () => {
     const pages: Record<string, { tools: { name: string }[]; nextCursor?: string }> = {
       '': { tools: [{ name: 'a' }], nextCursor: 'c1' },

@@ -149,8 +149,8 @@ export interface McpClientOptions {
 - `initialize` params: `{ protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name:'fleet', version } }`. 결과 수신 후 `notifications/initialized`(id 없는 알림) 전송. 서버가 더 낮은 protocolVersion 을 echo 해도 하드 실패하지 않고 진행(로그).
 - `tools/list` → `result.tools: McpToolInfo[]`(없으면 `[]`). **nextCursor 를 따라 모든 페이지를 모은다**(#19) — 결정론적 종료: 동일 커서 반복·페이지 상한(100) 초과 시 경고 후 중단해 무한 페이지네이션을 막는다.
 - `tools/call` params `{ name, arguments }` → `result: McpCallResult`. 응답 `error` 필드면 reject.
-- **요청 타임아웃**: pending 마다 타이머; 초과 시 reject(`'MCP 요청 타임아웃'`)하고 pending 제거.
-- **abort**: `opts.signal` → 즉시 reject + pending 제거(서버측 cancel 알림은 후속).
+- **요청 타임아웃**: pending 마다 타이머; 초과 시 reject(`'MCP 요청 타임아웃'`)하고 pending 제거. 진행 중이던 요청엔 `notifications/cancelled`(아래 abort 참조) 전송.
+- **abort/취소**: `opts.signal` 또는 타임아웃 → 로컬 reject + pending 제거 후, in-flight 였던 요청에 `notifications/cancelled{requestId, reason}` 전송(서버측 long-running/destructive 도구 중단 — #19). `initialize` 는 취소 불가(스펙)이며, 이미 완료/연결 종료된 요청엔 보내지 않는다. 스펙: https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/cancellation
 - **transport close**(자식 크래시 등): 모든 pending reject, 이후 호출은 즉시 reject.
 - `PROTOCOL_VERSION = '2025-06-18'` 상수.
 
@@ -235,7 +235,7 @@ export interface McpHost {
 
 - 서버 연결 실패(spawn 오류·initialize 타임아웃) → 해당 서버만 `connected:false`+error, 나머지 격리 진행. 도구 0개.
 - 도구 호출 타임아웃(기본 30s)·`isError`·자식 크래시 → 해당 호출 isError tool_result(루프 계속, 모델이 대응). 호스트/엔진은 크래시하지 않는다.
-- abort 신호 → pending reject 전파.
+- abort 신호/타임아웃 → pending reject 전파 + 서버에 `notifications/cancelled` 전송(#19, in-flight·non-initialize 한정).
 - `dispose` 로 모든 자식 종료(좀비 프로세스 방지). main 의 app 종료에 배선.
 
 ## 테스트 (게이트: typecheck/lint/test/build 모두 통과)
@@ -250,6 +250,6 @@ export interface McpHost {
 
 - SSE/Streamable HTTP transport(stdio 외).
 - `store` 기반 MCP 서버 설정 영속(현재는 세션처럼 런타임 제공).
-- MCP roots/sampling/prompts/resources, 서버측 `notifications/cancelled`, 도구 변경 알림(`notifications/tools/list_changed`). (`tools/list` 페이지네이션은 #19 에서 구현됨.)
+- MCP roots/sampling/prompts/resources, 도구 변경 알림(`notifications/tools/list_changed`). (서버측 `notifications/cancelled`·`tools/list` 페이지네이션은 #19 에서 구현됨.)
 - 본격 렌더러 UX(서버 추가/제거 폼·연결 토글·도구 미리보기).
 - SP3 — 도구 사용 중 스트리밍.
