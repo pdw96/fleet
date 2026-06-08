@@ -255,6 +255,32 @@ describe('createMcpHost', () => {
     expect(host.tools()).toHaveLength(0)
   })
 
+  it('dispose 는 진행 중 연결을 기다리기 전에 이미 연결된 자식을 먼저 닫는다', async () => {
+    const { spawn, kills } = fakeSpawn(echoReply)
+    let hold: ((d: 'approved') => void) | undefined
+    // 'good' 은 즉시 승인, 'slow' 는 승인 보류로 setServers 를 멈춰 둔다.
+    const gate = {
+      request: (req: { target: string }) =>
+        req.target.includes('slow')
+          ? new Promise<'approved'>((res) => {
+              hold = res
+            })
+          : Promise.resolve<'approved'>('approved'),
+    }
+    const host = createMcpHost({ spawn, gate })
+    await host.setServers([{ name: 'good', command: 'good-cmd' }]) // good 연결
+    const p = host.setServers([
+      { name: 'good', command: 'good-cmd' },
+      { name: 'slow', command: 'slow-cmd' },
+    ]) // slow 가 gate 에서 멈춤
+    await new Promise<void>((r) => setTimeout(r, 0))
+    const d = host.dispose() // slow 미해결 상태에서 종료
+    await new Promise<void>((r) => setTimeout(r, 0))
+    expect(kills).toContain('good') // queue(slow) 를 기다리지 않고 good 을 먼저 닫음
+    hold?.('approved') // 정리: slow 승인 해제 → doSetServers 재개(disposed break) → queue resolve
+    await Promise.all([p, d])
+  })
+
   it('승자 서버가 종료되면 가려졌던 서버의 도구·status 가 복원된다', async () => {
     const { spawn, closers } = fakeSpawn((_spec, method) => {
       if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }

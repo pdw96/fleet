@@ -211,7 +211,11 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     },
     async dispose() {
       disposed = true
-      // 진행 중/큐된 setServers 가 끝나길 기다린다 — 그래야 그 사이 spawn 된 자식까지 정리한다(좀비 방지).
+      // 1) 이미 연결된 자식을 먼저 즉시 닫는다 — 다른 연결이 initialize/tools/list 에서 멈춰 있어도
+      //    (will-quit fire-and-forget) 기존 서버가 종료 전까지 살아남지 않도록.
+      for (const [, e] of entries) e.client?.close()
+      entries.clear()
+      // 2) 진행 중/큐된 setServers 가 끝나길 기다린 뒤(그 사이 spawn 된 late 자식까지) 한 번 더 정리.
       await queue.catch(() => {})
       for (const [, e] of entries) e.client?.close()
       entries.clear()
