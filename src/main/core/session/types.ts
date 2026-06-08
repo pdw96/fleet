@@ -17,6 +17,8 @@ export interface SendOptions {
   workspace?: string
   /** 이 호출의 타임아웃(ms). 미지정 시 세션 기본값. 편집 에이전트는 길게 잡는다. */
   timeoutMs?: number
+  /** 응답을 JSON 스키마로 강제(네이티브 구조화 출력). API 세션만 적용; CLI 세션은 무시. */
+  responseSchema?: { name: string; schema: Record<string, unknown> }
 }
 
 /** createCliSession 동작 옵션. */

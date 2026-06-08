@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
-import type { ApiProvider, ChatTurn } from '../providers/types'
+import type { ApiCallOptions, ApiProvider, ChatTurn } from '../providers/types'
 import { createToolRegistry } from '../tools/registry'
 import { createApiSession } from './api-session'
 import { buildHeadlessArgs, createCliSession } from './cli-session'
@@ -151,6 +151,21 @@ describe('createApiSession', () => {
     await s.send('독립질문', { fresh: true }) // 도구 왕복(2회 chat) — history 미오염이어야 함
     await s.send('다음') // 누적 경로: fresh 질문/도구 턴 없이 '다음'만 보여야 한다
     expect(seen.at(-1)!.map((m) => m.content)).toEqual(['다음'])
+  })
+
+  it('send 의 responseSchema 를 provider 로 전달한다(구조화 출력)', async () => {
+    let seenOpts: ApiCallOptions | undefined
+    const provider: ApiProvider = {
+      id: 'fake', provider: 'anthropic', model: 'm',
+      async chat(_messages, opts) {
+        seenOpts = opts
+        return { text: '{}', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    const schema = { type: 'object', additionalProperties: false, properties: {} }
+    await s.send('x', { responseSchema: { name: 'v', schema } })
+    expect(seenOpts?.responseSchema).toEqual({ name: 'v', schema })
   })
 
   it('toolDeps 가 undefined 를 반환하면(워크스페이스 없음) 단발 chat 으로 동작한다(회귀)', async () => {
