@@ -112,6 +112,11 @@ export interface ApiCallOptions {
    * 실행할 때마다 running → ok/error 단계를 방출하는 라이브 진행 싱크다(SP3).
    */
   onToolStep?: (step: ToolStep) => void
+  /**
+   * 응답을 JSON 스키마로 강제(네이티브 구조화 출력). 지정 시 provider 는 네이티브 필드를 싣고
+   * text 는 마크다운/산문 없는 JSON 문자열이 된다. 미지원 모델(400)은 스키마 없이 1회 재시도한다.
+   */
+  responseSchema?: { name: string; schema: Record<string, unknown> }
 }
 
 // ── 주입 가능한 최소 HTTP 클라이언트 (테스트에서 mock) ──────────────────────
@@ -169,4 +174,20 @@ export function requireApiKey(config: ApiProviderConfig): string {
     throw new Error(`[${config.provider}] API 키가 설정되지 않았습니다 (id=${config.id}).`)
   }
   return config.apiKey
+}
+
+/**
+ * 비스트리밍 요청을 구조화-출력 400 graceful degradation 으로 감싼다.
+ * send() 가 400 을 반환하고 스키마가 있었으면 stripSchema() 로 스키마 필드를 제거한 뒤 1회 재시도한다.
+ * (구형 모델이 구조화-출력 필드를 거부해도 폴백 파싱으로 계속 동작하게 — 회귀 차단.)
+ */
+export async function sendWithSchemaFallback(
+  send: () => Promise<HttpResponse>,
+  hasSchema: boolean,
+  stripSchema: () => void,
+): Promise<HttpResponse> {
+  const res = await send()
+  if (!hasSchema || res.ok || res.status !== 400) return res
+  stripSchema()
+  return send()
 }

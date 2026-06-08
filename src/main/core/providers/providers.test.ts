@@ -4,7 +4,7 @@ import { createAnthropicProvider } from './anthropic'
 import { createGoogleProvider } from './google'
 import { createOpenAiProvider } from './openai'
 import { createApiProvider } from './registry'
-import { ApiProviderError, type HttpClient, type HttpInit } from './types'
+import { ApiProviderError, sendWithSchemaFallback, type HttpClient, type HttpInit, type HttpResponse } from './types'
 
 interface Captured {
   url: string
@@ -540,5 +540,37 @@ describe('createApiProvider (registry)', () => {
     expect(a.provider).toBe('anthropic')
     expect(o.provider).toBe('openai')
     expect(g.provider).toBe('google')
+  })
+})
+
+describe('sendWithSchemaFallback', () => {
+  const ok = (): HttpResponse => ({ ok: true, status: 200, text: async () => 'ok' })
+  const bad400 = (): HttpResponse => ({ ok: false, status: 400, text: async () => 'unsupported' })
+
+  it('성공(200)이면 재시도 없이 그대로 반환', async () => {
+    let n = 0
+    const res = await sendWithSchemaFallback(async () => { n++; return ok() }, true, () => { throw new Error('strip 호출 금지') })
+    expect(res.status).toBe(200)
+    expect(n).toBe(1)
+  })
+
+  it('스키마 있고 400 이면 stripSchema 후 1회 재시도', async () => {
+    let n = 0
+    let stripped = false
+    const res = await sendWithSchemaFallback(
+      async () => { n++; return n === 1 ? bad400() : ok() },
+      true,
+      () => { stripped = true },
+    )
+    expect(stripped).toBe(true)
+    expect(n).toBe(2)
+    expect(res.status).toBe(200)
+  })
+
+  it('스키마 없으면 400 이라도 재시도하지 않는다', async () => {
+    let n = 0
+    const res = await sendWithSchemaFallback(async () => { n++; return bad400() }, false, () => { throw new Error('strip 금지') })
+    expect(n).toBe(1)
+    expect(res.status).toBe(400)
   })
 })
