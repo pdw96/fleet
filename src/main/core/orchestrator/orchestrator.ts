@@ -13,7 +13,7 @@ import type { Workspace } from '../workspace/git'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
 import { planTasks } from './plan'
-import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict } from './review'
+import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict, REVIEW_SCHEMA } from './review'
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
 
@@ -204,7 +204,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           break
         }
         const verdict = parseReviewVerdict(
-          await reviewer.send(buildReviewPrompt(task.title, task.description, diff.patch), { fresh: true, signal: opts.signal }),
+          await reviewer.send(buildReviewPrompt(task.title, task.description, diff.patch), {
+            fresh: true,
+            signal: opts.signal,
+            responseSchema: { name: 'review', schema: REVIEW_SCHEMA },
+          }),
         )
         emit({ type: 'task.review', message: verdict.approved ? '리뷰 승인' : '수정 요청', data: { taskId: task.id, approved: verdict.approved, round } })
         if (verdict.approved) {
