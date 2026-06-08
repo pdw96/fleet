@@ -240,4 +240,36 @@ describe('createMcpHost', () => {
     expect(spawns).toEqual(['srv']) // 한 번만 spawn
     expect(host.status().map((s) => s.name)).toEqual(['srv'])
   })
+
+  it('승인 대기 중 dispose 되면 그 후로 spawn 하지 않는다', async () => {
+    const { spawn, spawns } = fakeSpawn(echoReply)
+    let release!: (d: 'approved' | 'rejected') => void
+    const gate = { request: () => new Promise<'approved' | 'rejected'>((res) => (release = res)) }
+    const host = createMcpHost({ spawn, gate })
+    const p = host.setServers([{ name: 'srv', command: 'x' }]) // gate 에서 멈춤
+    await new Promise<void>((r) => setTimeout(r, 0)) // doSetServers 가 gate.request 까지 진행하도록 양보
+    const d = host.dispose() // 승인 대기 중 dispose
+    release('approved') // 승인이 늦게 도착
+    await Promise.all([p, d])
+    expect(spawns).toEqual([]) // dispose 후라 spawn 안 함(좀비 방지)
+    expect(host.tools()).toHaveLength(0)
+  })
+
+  it('승자 서버가 종료되면 가려졌던 서버의 도구·status 가 복원된다', async () => {
+    const { spawn, closers } = fakeSpawn((_spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'tools/list') return { tools: [{ name: 'x' }] }
+      return {}
+    })
+    const host = createMcpHost({ spawn })
+    await host.setServers([
+      { name: 'foo.bar', command: 'a' }, // 승자(먼저 등록)
+      { name: 'foo_bar', command: 'b' }, // 패자(같은 mcp__foo_bar__x 로 가려짐)
+    ])
+    expect(host.status().find((s) => s.name === 'foo_bar')?.toolCount).toBe(0)
+    closers.get('foo.bar')!() // 승자 종료
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__foo_bar__x']) // 패자 도구 노출
+    expect(host.status().find((s) => s.name === 'foo_bar')?.toolCount).toBe(1) // status 복원
+    expect(host.status().find((s) => s.name === 'foo.bar')?.connected).toBe(false)
+  })
 })

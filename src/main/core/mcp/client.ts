@@ -27,8 +27,26 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
   let closeHandler: ((err?: Error) => void) | undefined
 
   transport.onMessage((msg) => {
+    // 서버 발신 요청/알림은 method 를 가진다 — 응답(result/error)과 구분한다. 이걸 안 하면
+    // 서버 요청 id 가 우리 pending id 와 겹칠 때 엉뚱한 요청을 resolve 해버린다.
+    if (typeof msg['method'] === 'string') {
+      const reqId = msg['id']
+      if (reqId == null) return // 알림(notifications/*) — 무시
+      // 서버 발신 요청: ping 만 빈 결과로 응답하고, 그 외 미지원 메서드는 method-not-found 로 회신.
+      if (msg['method'] === 'ping') {
+        transport.send({ jsonrpc: '2.0', id: reqId, result: {} })
+      } else {
+        transport.send({
+          jsonrpc: '2.0',
+          id: reqId,
+          error: { code: -32601, message: `method not found: ${String(msg['method'])}` },
+        })
+      }
+      return
+    }
+    // 응답: id 로 pending 요청과 상관한다.
     const id = msg['id']
-    if (typeof id !== 'number') return // 알림/미상 응답 — 무시
+    if (typeof id !== 'number') return
     const p = pending.get(id)
     if (!p) return
     pending.delete(id)

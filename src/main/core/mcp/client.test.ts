@@ -104,4 +104,23 @@ describe('createMcpClient', () => {
     f.kill(new Error('죽음'))
     expect(err?.message).toBe('죽음')
   })
+
+  it('서버가 보낸 ping 요청에 빈 결과로 응답한다', () => {
+    const f = fakeTransport()
+    createMcpClient(f.transport)
+    f.reply({ jsonrpc: '2.0', id: 7, method: 'ping' })
+    expect(f.sent.at(-1)).toEqual({ jsonrpc: '2.0', id: 7, result: {} })
+  })
+
+  it('미지원 서버 요청은 method-not-found 로 회신하고 같은 id 의 pending 을 건드리지 않는다', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const p = c.callTool('t', {}) // pending id 1
+    // 서버가 우리 pending 과 같은 id(1)로 요청을 보내도 응답으로 오인해 resolve 하면 안 된다.
+    f.reply({ jsonrpc: '2.0', id: 1, method: 'sampling/createMessage' })
+    expect(f.sent.at(-1)).toMatchObject({ id: 1, error: { code: -32601 } })
+    // pending 은 살아있어야 한다 — 실제 응답(method 없음)으로만 resolve.
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    expect(await p).toEqual({ content: [], isError: false })
+  })
 })

@@ -44,6 +44,32 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
   const entries = new Map<string, Entry>()
   // setServers 직렬화 큐 — 겹치는 호출이 entries 를 인터리브해 중복 spawn·stale 덮어쓰기를 내지 않게 한다.
   let queue: Promise<unknown> = Promise.resolve()
+  // dispose 후 큐에 남은/진행 중 setServers 가 새 자식을 spawn 하지 않도록 막는 플래그.
+  let disposed = false
+
+  /**
+   * 연결된 서버들의 노출 도구를 전역 유일로 재계산하고 status 를 갱신한다(서버 간 sanitize 충돌 표면화).
+   * 먼저 등록된 서버가 이긴다. 진 도구는 레지스트리에 노출되지 않으므로 status 에서도 빼고 감사로
+   * 표면화한다 — connected 인데 호출 불가한 도구를 silent 로 광고하지 않는다(#7). entry.tools 원본은
+   * 보존하므로(승자 서버 제거/종료 시) 패자 도구가 다시 노출되며 status 도 함께 복원된다.
+   */
+  function recomputeExposure(): void {
+    if (disposed) return
+    const exposed = new Set<string>()
+    for (const e of entries.values()) {
+      if (!e.status.connected) continue
+      const names: string[] = []
+      for (const t of e.tools) {
+        if (exposed.has(t.definition.name)) {
+          audit('mcp.tool.skipped', { server: e.spec.name, tool: t.definition.name, reason: 'duplicate name (cross-server)' })
+          continue
+        }
+        exposed.add(t.definition.name)
+        names.push(t.definition.name)
+      }
+      e.status = { ...e.status, tools: names, toolCount: names.length }
+    }
+  }
 
   /** 서버 1개에 연결(spawn→initialize→tools/list→도구 wrap). 실패 시 부분 연결을 정리하고 throw. */
   async function connect(spec: McpServerSpec): Promise<Entry> {
@@ -78,12 +104,14 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
         tools,
         status: { name: spec.name, connected: true, toolCount: tools.length, tools: names },
       }
-      // 연결 후 자식이 죽으면(idle 크래시·재설정 중 close) 죽은 도구를 계속 광고하지 않도록 무효화한다.
+      // 연결 후 자식이 죽으면(idle 크래시·재설정 중 close) 죽은 도구를 계속 광고하지 않도록 무효화하고,
+      // 서버 간 충돌로 가려졌던 다른 서버의 도구가 다시 노출되도록 status 를 재계산한다.
       client.onClose(() => {
         if (!entry.status.connected) return
         entry.tools = []
         entry.status = { name: spec.name, connected: false, toolCount: 0, tools: [], error: '서버 연결이 종료되었습니다.' }
         audit('mcp.server.disconnected', { name: spec.name, reason: 'exit' })
+        recomputeExposure()
       })
       return entry
     } catch (err) {
@@ -97,6 +125,7 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
   }
 
   async function doSetServers(specs: McpServerSpec[]): Promise<McpServerStatus[]> {
+    if (disposed) return statusList() // 종료된 호스트는 더 이상 연결하지 않는다
     const seen = new Set<string>()
     for (const s of specs) {
       if (seen.has(s.name)) throw new Error(`MCP 서버 이름 충돌: '${s.name}'`)
@@ -114,6 +143,7 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     // 추가·변경 서버 연결(미변경 연결은 유지). 새 spawn 은 ApprovalGate(shell)를 통과해야 한다.
     for (const spec of specs) {
       if (entries.has(spec.name)) continue
+      if (disposed) break // 승인/연결 대기 중 dispose 됐으면 더 이상 spawn 하지 않는다
       const cmd = commandLine(spec)
       // 안전 우선(AGENTS.md): 임의 로컬 프로세스 실행은 ApprovalGate 를 통과한다(destructive).
       if (gate) {
@@ -133,8 +163,13 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
           continue
         }
       }
+      if (disposed) break // 승인 대기 중 dispose 됐으면 spawn 하지 않는다
       try {
         const entry = await connect(spec)
+        if (disposed) {
+          entry.client?.close() // 연결 대기 중 dispose — 갓 spawn 한 자식을 정리하고 저장하지 않는다
+          break
+        }
         entries.set(spec.name, entry)
         audit('mcp.server.connected', { name: spec.name, toolCount: entry.tools.length })
       } catch (err) {
@@ -147,23 +182,7 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
         audit('mcp.server.failed', { name: spec.name, error: message })
       }
     }
-    // 서버 간 sanitize 이름 충돌: 먼저 등록된 서버가 이긴다. 진 도구는 노출되지 않으므로(레지스트리
-    // 전역 유일) status 에서도 빼고 감사로 표면화한다 — connected 인데 호출 불가한 도구를 silent 로
-    // 광고하지 않는다(#7). entry.tools 원본은 보존하고(서버 제거 시 복원) status 만 노출 기준 재계산.
-    const exposed = new Set<string>()
-    for (const e of entries.values()) {
-      if (!e.status.connected) continue
-      const names: string[] = []
-      for (const t of e.tools) {
-        if (exposed.has(t.definition.name)) {
-          audit('mcp.tool.skipped', { server: e.spec.name, tool: t.definition.name, reason: 'duplicate name (cross-server)' })
-          continue
-        }
-        exposed.add(t.definition.name)
-        names.push(t.definition.name)
-      }
-      e.status = { ...e.status, tools: names, toolCount: names.length }
-    }
+    recomputeExposure() // 서버 간 이름 충돌 표면화(status 를 노출 기준으로 재계산)
     return statusList()
   }
 
@@ -191,6 +210,9 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
       return statusList()
     },
     async dispose() {
+      disposed = true
+      // 진행 중/큐된 setServers 가 끝나길 기다린다 — 그래야 그 사이 spawn 된 자식까지 정리한다(좀비 방지).
+      await queue.catch(() => {})
       for (const [, e] of entries) e.client?.close()
       entries.clear()
     },
