@@ -79,6 +79,21 @@ describe('createWorkspaceReadTools', () => {
     ).rejects.toThrow(/워크스페이스 밖/)
   })
 
+  it('심볼릭 링크가 민감 파일을 가리키면 read_file 을 destructive 로 분류한다(자동승인 우회 방지)', async () => {
+    try {
+      await fs.symlink(path.join(root, '.env'), path.join(root, 'config.txt'))
+    } catch {
+      return // 심볼릭 링크 생성 권한 없음(Windows 비관리자) → 스킵
+    }
+    expect(pick(createWorkspaceReadTools(root), 'read_file').classify({ path: 'config.txt' })).toBe('destructive')
+  })
+
+  it('grep 은 파국적 백트래킹 패턴(ReDoS)을 거부한다', async () => {
+    await expect(
+      pick(createWorkspaceReadTools(root), 'grep').execute({ pattern: '(a+)+$' }, {}),
+    ).rejects.toThrow(/ReDoS|백트래킹/)
+  })
+
   it('심볼릭 링크로 워크스페이스를 벗어나는 읽기를 차단한다', async () => {
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-out-'))
     await fs.writeFile(path.join(outside, 'secret.txt'), 'top secret')

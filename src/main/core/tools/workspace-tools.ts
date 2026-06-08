@@ -1,5 +1,6 @@
-import { promises as fs } from 'node:fs'
+import { promises as fs, realpathSync } from 'node:fs'
 import * as path from 'node:path'
+import safe from 'safe-regex'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { FleetTool } from './types'
 
@@ -57,7 +58,15 @@ function readFileTool(root: string): FleetTool {
     },
     classify(input) {
       const p = asStr((input as { path?: unknown })?.path) ?? ''
-      return SENSITIVE_FILE.test(p) ? 'destructive' : 'safe'
+      if (SENSITIVE_FILE.test(p)) return 'destructive'
+      // 심볼릭 링크가 민감 파일을 가리키면(원 인자는 무해해 보여도) 실제 대상 기준으로 destructive 로 승격한다.
+      // (자동승인 우회 방지 — execute 의 realpath 해소와 위험도 분류를 일치시킨다.)
+      try {
+        if (SENSITIVE_FILE.test(realpathSync(path.resolve(root, p)))) return 'destructive'
+      } catch {
+        // 미존재 등은 무시 — execute 의 resolveWithin/stat 가 처리한다.
+      }
+      return 'safe'
     },
     async execute(input) {
       const p = asStr((input as { path?: unknown })?.path)
@@ -114,9 +123,15 @@ function grepTool(root: string): FleetTool {
       const pattern = asStr((input as { pattern?: unknown })?.pattern)
       if (!pattern) throw new Error('grep: pattern 인자가 필요합니다.')
       if (pattern.length > 200) throw new Error('grep: pattern 이 너무 깁니다(최대 200자).')
+      // ReDoS 방어: 파국적 백트래킹(중첩 수량자 등) 패턴을 사전 거부한다. 길이 제한만으로는
+      // (a+)+$ 같은 짧은 패턴이 긴 라인에서 메인 프로세스를 멈출 수 있어 safe-regex 로 차단한다.
+      // (safe-regex 는 휴리스틱이라 모든 케이스를 잡지는 않으나 대표적 파국 클래스를 막는다.)
+      if (!safe(pattern)) {
+        throw new Error('grep: 잠재적 ReDoS(파국적 백트래킹) 패턴이라 거부합니다. 더 단순한 정규식을 쓰세요.')
+      }
       let re: RegExp
       try {
-        re = new RegExp(pattern) // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- 패턴 작성자는 오케스트레이션 모델(준신뢰), 대상은 사용자 워크스페이스 파일. 길이 200자 제한 + 스캔/매치 바운드로 ReDoS 영향 한정.
+        re = new RegExp(pattern) // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- 패턴 작성자는 오케스트레이션 모델(준신뢰), 대상은 사용자 워크스페이스 파일. 길이 200자 제한 + 스캔/매치 바운드로 ReDoS 영향 한정. + safe-regex 사전검증
       } catch (err) {
         throw new Error(`grep: 잘못된 정규식: ${err instanceof Error ? err.message : String(err)}`)
       }
