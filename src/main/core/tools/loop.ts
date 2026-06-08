@@ -35,8 +35,8 @@ function shortText(s: string): string {
  * (assistant tool_use + user tool_result)하고 최종 ChatResult 를 반환한다.
  * 최대 반복을 넘겨도 여전히 tool_use 면 미완성 응답을 성공으로 위장하지 않고 throw 한다(#7).
  * 도구 목록(registry.list())은 루프 시작 시 1회 스냅샷한다 — 한 send 동안 도구 집합은 불변이다.
- * 주의: tools 동봉 요청은 대부분 provider 가 버퍼링(비스트리밍)하므로 opts.onToken 은 도구 루프
- * 중에는 호출되지 않을 수 있다(최종 비-tool_use 응답에서만 흐를 수 있음).
+ * 참고: tools 동봉 요청도 onToken 이 있으면 SSE 스트리밍하므로(SP3) 도구 루프 중에도 텍스트 델타가
+ * onToken 으로 라이브로 흐른다. 도구 실행 단계는 opts.onToolStep(running→ok/error)으로 방출한다.
  */
 export async function runToolLoop(
   provider: ApiProvider,

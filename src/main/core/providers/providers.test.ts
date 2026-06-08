@@ -454,6 +454,59 @@ describe('provider streaming (SSE)', () => {
     expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'lookup-0', name: 'lookup', input: { id: 7 } }])
   })
 
+  it('Anthropic: 스트리밍 중 여러 tool_use 블록을 인덱스 순서로 누적한다 (#10 SP3)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"read"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"p\\":1}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu2","name":"write"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"p\\":2}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'read', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'tu1', name: 'read', input: { p: 1 } },
+      { type: 'tool_use', id: 'tu2', name: 'write', input: { p: 2 } },
+    ])
+  })
+
+  it('Anthropic: 스트리밍 tool_use 의 깨진 input_json 은 {} 로 복구한다 (#10 SP3)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"x"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{깨진"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'x', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'x', input: {} }])
+  })
+
+  it('OpenAI: 스트리밍 중 여러 tool_calls 를 인덱스별로 누적한다 (#10 SP3)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{}"}}]},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"write","arguments":"{\\"x\\":1}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      'data: [DONE]\n\n',
+    ])
+    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'read', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'c1', name: 'read', input: {} },
+      { type: 'tool_use', id: 'c2', name: 'write', input: { x: 1 } },
+    ])
+  })
+
   it('Anthropic streaming: 중간 error 이벤트는 ApiProviderError 로 throw(부분응답 위장 방지)', async () => {
     const { http } = mockStreamHttp([
       'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"부분"}}\n\n',

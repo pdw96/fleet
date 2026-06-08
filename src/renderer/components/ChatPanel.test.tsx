@@ -194,6 +194,11 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'read_file', phase: 'ok' }, seq: 2 })
     expect(screen.queryByText('⏳ read_file')).toBeNull()
     expect(screen.getByText('✓ read_file')).toBeTruthy()
+
+    // 역순/중복 도착(seq=1 running 재도착)은 seq 가드로 무시 — ok 로 유지(running 으로 회귀 안 함)
+    fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'read_file', phase: 'running' }, seq: 1 })
+    expect(screen.getByText('✓ read_file')).toBeTruthy()
+    expect(screen.queryByText('⏳ read_file')).toBeNull()
   })
 
   it('마운트 시 스냅샷의 steps 로 도구 칩을 복원한다 (#10 SP3)', async () => {
