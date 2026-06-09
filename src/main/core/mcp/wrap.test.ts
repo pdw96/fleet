@@ -96,4 +96,15 @@ describe('contentToString', () => {
       ]),
     ).toBe('\n[resource ]\n[audio]')
   })
+
+  it('resource_link 의 name·uri·mimeType 을 보존한다', () => {
+    // resource_link 는 최상위에 uri/name/mimeType 을 둔다(중첩 resource 와 다름).
+    expect(
+      contentToString([
+        { type: 'resource_link', uri: 'file://a.txt', name: 'a.txt', mimeType: 'text/plain' },
+        { type: 'resource_link', uri: 'file://b' }, // name·mime 없음
+        { type: 'resource_link' }, // uri 도 없음 → 폴백 [resource ] 가 아니라 빈 링크
+      ]),
+    ).toBe('[resource_link a.txt file://a.txt text/plain]\n[resource_link file://b]\n[resource_link ]')
+  })
 })

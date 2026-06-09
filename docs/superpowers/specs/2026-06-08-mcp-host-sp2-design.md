@@ -219,6 +219,7 @@ export interface McpHost {
 - `{type:'text', text}` → `text` 그대로.
 - `{type:'image', mimeType, data}` → `[image <mimeType> <base64 길이>바이트]` placeholder(본문 미포함 — 컨텍스트 폭주 방지).
 - `{type:'resource', resource}` → `[resource <uri 또는 요약>]`.
+- `{type:'resource_link', uri, name?, mimeType?}` → `[resource_link <name?> <uri> <mimeType?>]` 참조 메타 보존(필드는 중첩 `resource` 와 달리 최상위; #20). 본문 데이터는 없는 링크라 placeholder 로 충분.
 - 그 외 미상 타입 → `[<type>]`.
 - 항목들을 `\n` 으로 결합. **총 길이 바운드**(예: 64KB) 초과 시 잘라내고 `…(N바이트 중 …표시)` 표기(워크스페이스 `read_file` 과 동일 관용).
 - `isError === true` → `execute` 가 결합 문자열(없으면 'MCP 도구 오류')로 throw.
@@ -250,6 +251,6 @@ export interface McpHost {
 
 - SSE/Streamable HTTP transport(stdio 외).
 - `store` 기반 MCP 서버 설정 영속(현재는 세션처럼 런타임 제공).
-- MCP roots/sampling/prompts/resources. (서버측 `notifications/cancelled`·`tools/list` 페이지네이션·`notifications/tools/list_changed` 구독은 #19 에서 구현됨.)
+- MCP roots/sampling/prompts/resources 캐퍼빌리티(`resources/list`·`resources/read` 등). (단, tool 결과의 `resource_link` content 항목은 참조 메타를 보존한다 — #20, 위 §결과 매핑. 서버측 `notifications/cancelled`·`tools/list` 페이지네이션·`notifications/tools/list_changed` 구독은 #19 에서 구현됨.)
 - 본격 렌더러 UX(서버 추가/제거 폼·연결 토글·도구 미리보기).
 - SP3 — 도구 사용 중 스트리밍.
