@@ -23,6 +23,8 @@ const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 interface GooglePart {
   text?: string
   functionCall?: { id?: string; name?: string; args?: unknown }
+  /** Part 레벨 thought signature(functionCall 의 형제). thinking 모델 함수호출에서 첫 FC 파트에 붙는다(#17-P1). */
+  thoughtSignature?: string
 }
 interface GoogleResponse {
   candidates?: Array<{ content?: { parts?: GooglePart[] }; finishReason?: string }>
@@ -38,6 +40,16 @@ interface GoogleResponse {
  */
 function toolUseId(fc: { id?: unknown }): string {
   return typeof fc.id === 'string' && fc.id ? fc.id : ''
+}
+
+/**
+ * Gemini functionCall 파트 → ToolUseBlock. Part 레벨 thoughtSignature 가 있으면 providerMeta.google 에
+ * verbatim 보존한다(#17-P1) — 멀티턴 tool 루프에서 mapParts 가 같은 Part 에 그대로 echo 한다(누락 시 400).
+ */
+function toToolUse(fc: { id?: string; name?: string; args?: unknown }, thoughtSignature?: string): ToolUseBlock {
+  const block: ToolUseBlock = { type: 'tool_use', id: toolUseId(fc), name: fc.name ?? '', input: fc.args }
+  if (thoughtSignature !== undefined) block.providerMeta = { google: { thoughtSignature } }
+  return block
 }
 
 /**
@@ -124,7 +136,7 @@ async function readStream(
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
-  const funcs: Array<{ id?: string; name?: string; args?: unknown }> = []
+  const funcs: Array<{ fc: { id?: string; name?: string; args?: unknown }; sig?: string }> = []
   for await (const data of sseData(body)) {
     let ev: GoogleResponse
     try {
@@ -138,7 +150,7 @@ async function readStream(
         text += p.text
         onToken(p.text)
       } else if (p.functionCall) {
-        funcs.push(p.functionCall)
+        funcs.push({ fc: p.functionCall, sig: p.thoughtSignature })
       }
     }
     if (cand?.finishReason) finish = cand.finishReason
@@ -150,12 +162,7 @@ async function readStream(
       }
     }
   }
-  const toolCalls: ToolUseBlock[] = funcs.map((fc) => ({
-    type: 'tool_use',
-    id: toolUseId(fc),
-    name: fc.name ?? '',
-    input: fc.args,
-  }))
+  const toolCalls: ToolUseBlock[] = funcs.map((f) => toToolUse(f.fc, f.sig))
   // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).
   if (blockReason) return { text, toolCalls, finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
   return { text, toolCalls, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
@@ -234,12 +241,7 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const text = parts.map((p) => p.text ?? '').join('')
       const toolCalls: ToolUseBlock[] = parts
         .filter((p) => p.functionCall)
-        .map((p) => ({
-          type: 'tool_use',
-          id: toolUseId(p.functionCall!),
-          name: p.functionCall?.name ?? '',
-          input: p.functionCall?.args,
-        }))
+        .map((p) => toToolUse(p.functionCall!, p.thoughtSignature))
       const finish = resolveFinish(parsed)
       return {
         text,
