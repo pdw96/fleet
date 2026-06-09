@@ -2,6 +2,7 @@ import type { ApiProviderConfig } from '../../../shared/types'
 import { sseData } from './sse'
 import {
   ApiProviderError,
+  assertNever,
   defaultHttp,
   requireApiKey,
   sendWithSchemaFallback,
@@ -63,7 +64,12 @@ function mapParts(content: string | ContentBlock[]): unknown[] {
         // 실제 Gemini id 가 있을 때만 회신한다(합성/부재면 '' → 미전송). 2.x 에 임의 id 를 보내지 않는다.
         const functionCall: Record<string, unknown> = { name: b.name, args: b.input }
         if (b.id) functionCall.id = b.id
-        return { functionCall }
+        // thoughtSignature 는 functionCall 의 형제인 Part 레벨 필드다(functionCall 안이 아님 — Gemini wire 계약).
+        // 실제 있을 때만 echo(echo-only-when-present, #29 규율). byte-exact 보존.
+        const part: Record<string, unknown> = { functionCall }
+        const sig = b.providerMeta?.google?.thoughtSignature
+        if (sig !== undefined) part.thoughtSignature = sig
+        return part
       }
       case 'tool_result': {
         const functionResponse: Record<string, unknown> = {
@@ -73,6 +79,12 @@ function mapParts(content: string | ContentBlock[]): unknown[] {
         if (b.toolUseId) functionResponse.id = b.toolUseId // 실제 id 만 회신(병렬 상관)
         return { functionResponse }
       }
+      case 'thinking':
+        // Gemini thought 파트 재방출은 후속(#11-Gemini-thinking). 현재 Gemini 는 ThinkingBlock 을
+        // 생성하지 않아 도달 불가 — exhaustiveness 만족용 방어 텍스트 파트.
+        return { text: b.text }
+      default:
+        return assertNever(b)
     }
   })
 }

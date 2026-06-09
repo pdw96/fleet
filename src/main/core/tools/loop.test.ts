@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolStep } from '../../../shared/types'
-import type { ApiProvider, ChatResult, ChatTurn, ToolResultBlock, ToolUseBlock } from '../providers/types'
+import type { ApiProvider, ChatResult, ChatTurn, ContentBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock } from '../providers/types'
 import type { ApprovalGate } from '../safety/approval'
 import { createToolRegistry } from './registry'
 import { runToolLoop } from './loop'
@@ -245,5 +245,52 @@ describe('runToolLoop', () => {
     await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, { registry: createToolRegistry([echoTool]), gate })
     expect(reqs[0].summary).toContain('a.txt')
     expect(reqs[0].target).toContain('a.txt')
+  })
+
+  it('어시스턴트 재구성 시 ToolUseBlock.providerMeta 를 보존한다 (키스톤 seam 패스스루)', async () => {
+    const meta = { google: { thoughtSignature: 'SIG' } }
+    const call: ToolUseBlock = { type: 'tool_use', id: 't1', name: 'echo', input: { a: 1 }, providerMeta: meta }
+    const { provider, calls } = scriptedProvider([
+      { text: '', toolCalls: [call], finishReason: 'tool_use' },
+      { text: '완료', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    const assistant = calls[1][1] // [user, assistant, user]
+    const block = (assistant.content as ContentBlock[]).find((b): b is ToolUseBlock => b.type === 'tool_use')!
+    expect(block.providerMeta).toEqual(meta)
+  })
+
+  it('result.content 가 있으면 원본 순서(thinking→tool_use)로 어시스턴트 턴을 재구성한다 (키스톤 ordered)', async () => {
+    const thinking: ThinkingBlock = { type: 'thinking', text: '사고', providerMeta: { anthropic: { signature: 'TS' } } }
+    const call: ToolUseBlock = { type: 'tool_use', id: 't1', name: 'echo', input: {} }
+    const ordered: ContentBlock[] = [thinking, { type: 'text', text: '말' }, call]
+    const { provider, calls } = scriptedProvider([
+      { text: '말', toolCalls: [call], content: ordered, finishReason: 'tool_use' },
+      { text: '완료', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    const assistant = calls[1][1]
+    expect((assistant.content as ContentBlock[]).map((b) => b.type)).toEqual(['thinking', 'text', 'tool_use'])
+    expect((assistant.content as ContentBlock[])[0]).toEqual(thinking) // 서명 보존
+  })
+
+  it('result.content 가 없으면 text+toolCalls 로 재구성한다(현행 동작 유지)', async () => {
+    const call: ToolUseBlock = { type: 'tool_use', id: 't1', name: 'echo', input: {} }
+    const { provider, calls } = scriptedProvider([
+      { text: '말', toolCalls: [call], finishReason: 'tool_use' },
+      { text: '완료', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    const assistant = calls[1][1]
+    expect((assistant.content as ContentBlock[]).map((b) => b.type)).toEqual(['text', 'tool_use'])
   })
 })

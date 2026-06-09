@@ -2,6 +2,7 @@ import type { ApiProviderConfig } from '../../../shared/types'
 import { sseData } from './sse'
 import {
   ApiProviderError,
+  assertNever,
   defaultHttp,
   requireApiKey,
   sendWithSchemaFallback,
@@ -48,6 +49,11 @@ function mapContent(content: string | ContentBlock[]): unknown {
         return { type: 'tool_use', id: b.id, name: b.name, input: b.input }
       case 'tool_result':
         return { type: 'tool_result', tool_use_id: b.toolUseId, content: b.content, is_error: b.isError }
+      case 'thinking':
+        // Anthropic 은 도구 사용 중 thinking 블록을 signature 와 함께 tool_use 앞에 echo 해야 한다(순서·byte-exact).
+        return { type: 'thinking', thinking: b.text, signature: b.providerMeta?.anthropic?.signature }
+      default:
+        return assertNever(b)
     }
   })
 }
