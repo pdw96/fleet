@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { AgentRole, ApiProviderConfig, CliDetectionResult, LlmDescriptor, McpServerStatus } from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
 
@@ -14,6 +14,9 @@ const PROVIDER_DEFAULTS: Record<ApiProviderConfig['provider'], string> = {
   openai: 'gpt-5.5',
   google: 'gemini-3.5-flash',
 }
+
+// MCP 상태 경량 폴링 간격(ms). 포커스 유지 중 서버 종료/크래시도 반영하기 위한 보조 경로(#21 옵션B).
+const MCP_POLL_INTERVAL_MS = 5000
 
 export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [clis, setClis] = useState<CliDetectionResult[]>([])
@@ -90,13 +93,40 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [mcpJson, setMcpJson] = useState('')
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([])
 
-  // 탭 재마운트 시 main 이 보유한 현재 연결 상태를 복원한다(상태는 main 이 권위 — 패널 로컬은 표시용).
-  useEffect(() => {
+  // main 이 보유한 권위 상태로 표시를 동기화한다(상태는 main 이 권위 — 패널 로컬은 표시용).
+  const refreshMcpStatus = useCallback(() => {
     void window.fleet
       .getMcpStatus()
       .then(setMcpStatus)
       .catch(() => {})
   }, [])
+
+  // 마운트 하이드레이트(탭 재마운트 복원) + 포커스/가시성 복귀 재조회.
+  // 마운트 1회로는 마운트 이후 서버 종료/크래시를 못 잡아 stale(connected=true) 표시가 남으므로,
+  // 앱으로 돌아올 때마다 권위 상태를 다시 끌어온다(#21 옵션B — 새 IPC 표면 없이 최소 변경).
+  // 다른 라이브 갱신부(ChatPanel onChatStream·ProjectPanel onOrchestratorEvent)는 main push 구독을
+  // 쓰지만, MCP disconnect push 채널을 새로 깔면 preload/IPC 표면이 늘어 재시작 함정(AGENTS.md)을
+  // 부른다. main host 가 권위 상태를 보유하니 멱등 재조회로 충분 — 그래서 의도적으로 구독 대신 폴링.
+  useEffect(() => {
+    refreshMcpStatus()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshMcpStatus()
+    }
+    window.addEventListener('focus', refreshMcpStatus)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', refreshMcpStatus)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [refreshMcpStatus])
+
+  // 활성 서버가 있을 때만 경량 폴링(포커스 유지 중 크래시도 반영). 서버 미설정 시 타이머 없음.
+  const hasMcpServers = mcpStatus.length > 0
+  useEffect(() => {
+    if (!hasMcpServers) return
+    const timer = setInterval(refreshMcpStatus, MCP_POLL_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [hasMcpServers, refreshMcpStatus])
 
   async function applyMcp() {
     setError(null)

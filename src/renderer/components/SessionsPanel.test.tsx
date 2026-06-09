@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CliDetectionResult } from '../../shared/types'
 import { SessionsPanel } from './SessionsPanel'
@@ -29,6 +29,9 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
 
 afterEach(() => {
   delete (window as unknown as { fleet?: unknown }).fleet
+  // jsdom 은 visibilityState 를 기본 'visible' 로 두지만, hidden 분기 테스트가 인스턴스 프로퍼티로
+  // 덮어쓰므로 매 테스트 후 'visible' 로 되돌려 누수를 막는다.
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   vi.restoreAllMocks()
 })
 
@@ -95,5 +98,147 @@ describe('SessionsPanel', () => {
 
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
     expect(fleet.getMcpStatus).toHaveBeenCalled()
+  })
+
+  // 종료/크래시로 stale 상태를 재조회로 갱신하는 동적 상태 mock(처음=연결, 이후=종료).
+  function dyingServerStatus() {
+    return vi
+      .fn()
+      .mockResolvedValueOnce([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }])
+      .mockResolvedValue([{ name: 'fs', connected: false, toolCount: 0, tools: [], error: 'exit' }])
+  }
+
+  it('윈도우 포커스 복귀 시 MCP 상태를 재조회해 stale 표시를 갱신한다', async () => {
+    const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    // 마운트 하이드레이트: 연결 상태(도구 노출) 표시
+    expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
+
+    // 윈도우 포커스 복귀 → 재조회 → 종료 상태 반영
+    fireEvent(window, new Event('focus'))
+
+    expect(await screen.findByText('exit')).toBeTruthy()
+    expect(screen.queryByText(/mcp__fs__read/)).toBeNull()
+    expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('탭 가시성 복귀 시 MCP 상태를 재조회한다', async () => {
+    const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
+
+    fireEvent(document, new Event('visibilitychange'))
+
+    expect(await screen.findByText('exit')).toBeTruthy()
+    expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('활성 MCP 서버가 있으면 경량 폴링으로 상태를 갱신한다', async () => {
+    vi.useFakeTimers()
+    try {
+      const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
+      render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+      // 마운트 하이드레이트 promise flush → 연결 상태 + 폴링 타이머 가동
+      await act(async () => {})
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1)
+
+      // 폴링 간격 경과 → 재조회
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2)
+
+      // 두 번째 틱 → '반복' 인터벌임을 증명(setInterval→setTimeout 1회성 회귀 차단).
+      // dyingServerStatus 는 종료 후에도 길이 1 배열을 반환 → hasMcpServers 유지 → 인터벌 지속.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('활성 서버가 사라지면(빈 배열 수신) 폴링을 중단한다', async () => {
+    vi.useFakeTimers()
+    try {
+      const fleet = mockFleet({
+        getMcpStatus: vi
+          .fn()
+          .mockResolvedValueOnce([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }])
+          .mockResolvedValue([]),
+      })
+      render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+      await act(async () => {})
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 마운트(연결)
+
+      // 1회 폴링 → 빈 배열 수신 → hasMcpServers false 전이 → clearInterval
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2)
+
+      // 더 advance 해도 폴링 없음(타이머 해제 확인)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000)
+      })
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('MCP 서버 미설정 시 폴링 타이머를 만들지 않는다', async () => {
+    vi.useFakeTimers()
+    try {
+      const fleet = mockFleet({ getMcpStatus: vi.fn().mockResolvedValue([]) })
+      render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+      await act(async () => {})
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 마운트 1회만
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000)
+      })
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 폴링 없음
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('탭이 숨김(hidden)으로 전환될 때는 재조회하지 않는다(visibility 가드)', async () => {
+    const fleet = mockFleet({
+      getMcpStatus: vi.fn().mockResolvedValue([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }]),
+    })
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
+    expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 마운트 1회
+
+    // 숨김 전환 → 가드가 재조회를 막아야 한다(가드 제거 시 이 단언이 깨진다)
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    fireEvent(document, new Event('visibilitychange'))
+    expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1)
+
+    // 가시성 복귀(visible) → 재조회
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    fireEvent(document, new Event('visibilitychange'))
+    await waitFor(() => expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2))
+  })
+
+  it('재조회가 실패(IPC reject)해도 기존 표시를 유지하고 크래시하지 않는다', async () => {
+    const fleet = mockFleet({
+      getMcpStatus: vi
+        .fn()
+        .mockResolvedValueOnce([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }])
+        .mockRejectedValue(new Error('ipc down')),
+    })
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
+
+    // 포커스 재조회가 reject → .catch 로 무음 흡수, 직전 권위 상태를 그대로 유지
+    fireEvent(window, new Event('focus'))
+    await waitFor(() => expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2))
+    expect(screen.queryByText(/mcp__fs__read/)).toBeTruthy()
   })
 })
