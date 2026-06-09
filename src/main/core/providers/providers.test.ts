@@ -912,6 +912,58 @@ describe('provider streaming (SSE)', () => {
     expect(out.finishReason).toBe('content_filter')
   })
 
+  it('Anthropic 스트림: thinking_delta+signature_delta 를 ordered content 로 누적하고 onToken 엔 안 흘린다 (#11-thinking)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"사고"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG_S"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"답"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: (d) => deltas.push(d) })
+    expect(deltas).toEqual(['답']) // thinking 은 onToken 으로 안 흐른다
+    expect(out.text).toBe('답')
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '사고', providerMeta: { anthropic: { signature: 'SIG_S' } } },
+      { type: 'text', text: '답' },
+    ])
+  })
+
+  it('Anthropic 스트림: display:omitted (signature_delta 만) 도 thinking 블록을 보존한다 (#11-thinking)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG_O"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"lookup"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'SIG_O' } } },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: {} },
+    ])
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'lookup', input: {} }])
+  })
+
+  it('Anthropic 스트림: thinking 이 없으면 content 를 설정하지 않는다(무회귀)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
+    expect(out.content).toBeUndefined()
+    expect(out.text).toBe('hi')
+  })
+
   it('OpenAI streaming: 구조화 출력 거부(delta.refusal)도 content_filter 로 표면화한다(#7)', async () => {
     const { http } = mockStreamHttp([
       'data: {"choices":[{"delta":{"refusal":"안전상 "},"finish_reason":null}]}\n\n',

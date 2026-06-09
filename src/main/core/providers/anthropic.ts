@@ -108,12 +108,14 @@ async function readStream(
   const usage: { inputTokens?: number; outputTokens?: number } = {}
   // 인덱스 → tool_use 누적기(시작 순서 보존). 텍스트 블록과 인덱스가 섞여도 정렬해 복원한다.
   const toolAccum = new Map<number, { id: string; name: string; json: string }>()
+  // 인덱스 → thinking 누적기(thinking_delta 텍스트 + signature_delta 서명). 순서보존 content 적재용.
+  const thinkingAccum = new Map<number, { text: string; signature: string }>()
   for await (const data of sseData(body)) {
     let ev: {
       type?: string
       index?: number
       content_block?: { type?: string; id?: string; name?: string }
-      delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string }
+      delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string; thinking?: string; signature?: string }
       message?: { usage?: { input_tokens?: number } }
       usage?: { output_tokens?: number }
       error?: { type?: string; message?: string }
@@ -131,12 +133,21 @@ async function readStream(
     if (ev.type === 'message_start') usage.inputTokens = ev.message?.usage?.input_tokens ?? usage.inputTokens
     else if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && typeof ev.index === 'number') {
       toolAccum.set(ev.index, { id: ev.content_block.id ?? '', name: ev.content_block.name ?? '', json: '' })
+    } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'thinking' && typeof ev.index === 'number') {
+      thinkingAccum.set(ev.index, { text: '', signature: '' })
     } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
       text += ev.delta.text
       onToken(ev.delta.text)
     } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta' && typeof ev.index === 'number') {
       const acc = toolAccum.get(ev.index)
       if (acc) acc.json += ev.delta.partial_json ?? ''
+    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'thinking_delta' && typeof ev.index === 'number') {
+      // thinking 은 onToken 으로 흘리지 않는다(reasoning 은 가시 응답 토큰 아님 — textOf 규율과 일치).
+      const acc = thinkingAccum.get(ev.index)
+      if (acc) acc.text += ev.delta.thinking ?? ''
+    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'signature_delta' && typeof ev.index === 'number') {
+      const acc = thinkingAccum.get(ev.index)
+      if (acc) acc.signature = ev.delta.signature ?? ''
     } else if (ev.type === 'message_delta') {
       if (ev.delta?.stop_reason) stop = ev.delta.stop_reason
       if (ev.usage?.output_tokens != null) usage.outputTokens = ev.usage.output_tokens
@@ -145,7 +156,17 @@ async function readStream(
   const toolCalls: ToolUseBlock[] = [...toolAccum.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([, t]) => ({ type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) }))
-  return { text, toolCalls, finishReason: mapFinish(stop), rawFinishReason: stop, usage }
+  // thinking 이 하나라도 있으면 순서보존 content 를 재구성한다. Anthropic 은 thinking 을 항상 먼저
+  // 방출하므로 [thinking…, text, tool_use…] 순서가 'thinking 이 tool_use 앞' 하드 제약을 충족한다.
+  let content: ContentBlock[] | undefined
+  if (thinkingAccum.size > 0) {
+    content = [...thinkingAccum.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, t]): ContentBlock => ({ type: 'thinking', text: t.text, providerMeta: t.signature ? { anthropic: { signature: t.signature } } : undefined }))
+    if (text) content.push({ type: 'text', text })
+    content.push(...toolCalls)
+  }
+  return { text, toolCalls, content, finishReason: mapFinish(stop), rawFinishReason: stop, usage }
 }
 
 /** Anthropic Messages API provider. */
