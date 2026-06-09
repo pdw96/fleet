@@ -12,7 +12,7 @@ import type { Store } from '../store/types'
 import type { Workspace } from '../workspace/git'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
-import { planTasks } from './plan'
+import { planCorrectiveTasks, planTasks, type PlannedTask } from './plan'
 import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict, REVIEW_SCHEMA } from './review'
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
@@ -30,6 +30,8 @@ export interface RunOptions {
   gate?: ApprovalGate
   verify?: () => Promise<VerificationResult[]>
   maxVerifyFixRounds?: number
+  /** 검증 실패 시 planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/음수/NaN → 0(비활성). */
+  maxReplanRounds?: number
   /** 작업 LLM 호출 타임아웃(편집 에이전트는 길다). send 에 전달. */
   taskTimeoutMs?: number
   /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
@@ -384,6 +386,60 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           data: { projectId: project.id, round },
         })
         break
+      }
+      verifications = await verifyOnce()
+      emitVerify(verifications)
+    }
+
+    // ── 5) (옵션) append-only 보정 replan ──
+    // verify-fix 가 소진된 뒤에도 검증이 실패하면, planner 에게 검증 실패를 되먹여 '보정 작업'을
+    // 받아 store 에 append(기존 작업 불변)하고 기존 runTask 로 순차 실행한 뒤 재검증한다.
+    // 최대 maxReplanRounds 회(기본 0=비활성). planner 가 빈 목록을 주면 조기 종료(결정론).
+    // 워크스페이스/CLI implementer 없거나 취소되면 생략(verify-fix 루프와 동일 가드).
+    const requestedReplan = Math.floor(opts.maxReplanRounds ?? 0)
+    const maxReplan = Number.isFinite(requestedReplan) && requestedReplan >= 0 ? requestedReplan : 0
+    for (
+      let round = 1;
+      round <= maxReplan &&
+      verifications.some((v) => !v.passed) &&
+      !!opts.workspace &&
+      !!fixImplementer &&
+      fixImplementer.descriptor.kind === 'cli' &&
+      !opts.signal?.aborted;
+      round++
+    ) {
+      const failing = verifications.filter((v) => !v.passed)
+      let corrective: PlannedTask[]
+      try {
+        corrective = await planCorrectiveTasks(goal, failing, planner, opts.signal)
+      } catch (err) {
+        // 보정 계획 실패는 완료된 작업을 무효화하지 않는다 — 표면화(비-silent)하고 replan 중단.
+        emit({
+          type: 'replan',
+          message: `보정 계획 실패: ${err instanceof Error ? err.message : String(err)}`,
+          data: { projectId: project.id, round },
+        })
+        break
+      }
+      if (corrective.length === 0) {
+        emit({ type: 'replan', message: '보정 작업 없음 — replan 종료', data: { projectId: project.id, round, count: 0 } })
+        break
+      }
+      emit({
+        type: 'replan',
+        message: `보정 작업 ${corrective.length}개 추가 (라운드 ${round})`,
+        data: { projectId: project.id, round, count: corrective.length },
+      })
+      // append-only: 보정 작업은 의존성 없는 평면 목록 → store 에 추가하고 순차 실행(위상 sweep 불필요).
+      for (const ct of corrective) {
+        if (opts.signal?.aborted) break
+        const created = store.createTask({
+          projectId: project.id,
+          title: ct.title,
+          description: ct.description,
+          role: ct.role ?? 'implementer',
+        })
+        await runTask(created)
       }
       verifications = await verifyOnce()
       emitVerify(verifications)
