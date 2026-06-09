@@ -104,6 +104,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   // 마운트 하이드레이트(탭 재마운트 복원) + 포커스/가시성 복귀 재조회.
   // 마운트 1회로는 마운트 이후 서버 종료/크래시를 못 잡아 stale(connected=true) 표시가 남으므로,
   // 앱으로 돌아올 때마다 권위 상태를 다시 끌어온다(#21 옵션B — 새 IPC 표면 없이 최소 변경).
+  // 다른 라이브 갱신부(ChatPanel onChatStream·ProjectPanel onOrchestratorEvent)는 main push 구독을
+  // 쓰지만, MCP disconnect push 채널을 새로 깔면 preload/IPC 표면이 늘어 재시작 함정(AGENTS.md)을
+  // 부른다. main host 가 권위 상태를 보유하니 멱등 재조회로 충분 — 그래서 의도적으로 구독 대신 폴링.
   useEffect(() => {
     refreshMcpStatus()
     const onVisible = () => {
