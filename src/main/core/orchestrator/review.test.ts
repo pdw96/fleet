@@ -37,6 +37,11 @@ describe('parseReviewVerdict', () => {
   it('approved:true JSON 을 승인으로 본다', () => {
     expect(parseReviewVerdict('{"approved":true,"feedback":""}').approved).toBe(true)
   })
+
+  it('코드펜스로 감싼 JSON 도 파싱한다(CLI 폴백 견고화)', () => {
+    const v = parseReviewVerdict('```json\n{"approved":true,"feedback":""}\n```')
+    expect(v.approved).toBe(true)
+  })
 })
 
 describe('prompt builders', () => {

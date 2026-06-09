@@ -52,8 +52,11 @@ export function buildReviewPrompt(taskTitle: string, taskDescription: string, di
 
 /** 리뷰 출력 파싱: 구조화 JSON {approved,feedback} 우선, 실패 시 APPROVE/REVISE 토큰 폴백. */
 export function parseReviewVerdict(text: string): ReviewVerdict {
+  // 코드펜스(```json … ```)로 감싼 출력은 본문만 떼어 파싱한다(CLI 폴백 견고화 — planner 경로와 대칭).
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidate = (fence ? fence[1] : text).trim()
   try {
-    const parsed = JSON.parse(text) as unknown
+    const parsed = JSON.parse(candidate) as unknown
     if (parsed && typeof parsed === 'object') {
       const o = parsed as Record<string, unknown>
       if (typeof o.approved === 'boolean') {
@@ -64,7 +67,7 @@ export function parseReviewVerdict(text: string): ReviewVerdict {
     // 깨끗한 JSON 이 아니면(CLI 산문/토큰 등) 폴백으로 진행
   }
   // 폴백: 앞쪽 마크다운/인용/리스트 마커를 벗기고 첫 토큰 APPROVE/REVISE 를 인식.
-  const normalized = text.trim().replace(/^[\s*_`"'>•-]+/, '')
+  const normalized = candidate.replace(/^[\s*_`"'>•-]+/, '')
   const approved = /^APPROVED?\b/i.test(normalized)
   const feedback = normalized.replace(/^(APPROVED?|REVISE[DS]?)\b[:\s]*/i, '').trim()
   return { approved, feedback }
