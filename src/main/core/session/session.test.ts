@@ -87,6 +87,32 @@ describe('createApiSession', () => {
     await expect(s.send('위험한 질문')).rejects.toThrow(/안전 필터|content_filter|SAFETY/)
   })
 
+  it('잘린 응답(빈 텍스트 + length)은 조용히 흡수하지 않고 에러로 표면화한다(#7)', async () => {
+    const provider: ApiProvider = {
+      id: 'truncated',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [], finishReason: 'length', rawFinishReason: 'max_tokens' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('아주 긴 답변 요청')).rejects.toThrow(/잘렸|truncat|length|max_tokens|토큰/)
+  })
+
+  it('부분 텍스트가 있는 length 응답은 그대로 반환한다(정상 긴 답변 보호)', async () => {
+    const provider: ApiProvider = {
+      id: 'partial',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return { text: '부분 답변', toolCalls: [], finishReason: 'length', rawFinishReason: 'max_tokens' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    expect(await s.send('x')).toBe('부분 답변')
+  })
+
   it('toolDeps 가 있으면 도구 루프로 처리해 최종 텍스트를 반환한다', async () => {
     let n = 0
     const provider: ApiProvider = {

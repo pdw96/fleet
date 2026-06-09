@@ -6,12 +6,18 @@ import type { LlmSession, SendOptions } from './types'
 
 /**
  * ChatResult 를 레거시 string send() 계약으로 환원한다.
- * 텍스트도 도구호출도 없는데 콘텐츠/안전 필터로 차단된 경우(과거 조용히 '' 로 흡수되던 케이스)는
- * 명확한 에러로 표면화한다 — silent truncation/refusal 방지(#7).
+ * 텍스트도 도구호출도 없는데 콘텐츠/안전 필터(content_filter)로 차단되거나 토큰 한도(length)로
+ * 잘려 빈 응답이 된 경우(과거 조용히 '' 로 흡수되던 케이스)는 명확한 에러로 표면화한다
+ * — silent truncation/refusal 방지(#7). 부분 텍스트가 있는 length 응답은 그대로 통과시킨다.
  */
 function unwrap(provider: string, result: ChatResult): string {
-  if (result.text === '' && result.toolCalls.length === 0 && result.finishReason === 'content_filter') {
-    throw new Error(`[${provider}] 응답이 콘텐츠/안전 필터로 차단되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}).`)
+  if (result.text === '' && result.toolCalls.length === 0) {
+    if (result.finishReason === 'content_filter') {
+      throw new Error(`[${provider}] 응답이 콘텐츠/안전 필터로 차단되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}).`)
+    }
+    if (result.finishReason === 'length') {
+      throw new Error(`[${provider}] 응답이 토큰 한도로 잘려 빈 응답이 되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리세요.`)
+    }
   }
   return result.text
 }
