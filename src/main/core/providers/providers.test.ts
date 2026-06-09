@@ -218,6 +218,22 @@ describe('AnthropicProvider', () => {
     expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toEqual({ effort: 'medium' })
   })
 
+  it('thinking 켜지면 temperature 를 전송하지 않는다(reasoning 모드 정규화) (#11-thinking)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3 }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.temperature).toBeUndefined()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+  })
+
+  it('thinking 미지정이면 temperature 를 그대로 전송한다(현행 동작)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3 }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBe(0.3)
+  })
+
   it('thinking 켜지면 강제 도구사용(toolChoice:required)을 auto 로 낮춘다(확장 thinking 비호환) (#11-thinking)', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
     const p = createAnthropicProvider(baseAnthropic, http)

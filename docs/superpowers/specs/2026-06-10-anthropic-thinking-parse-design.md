@@ -115,8 +115,11 @@ if (Object.keys(outputConfig).length > 0) body.output_config = outputConfig
 - **tool_choice 비호환 가드(codex P2-1a)**: 확장 thinking 은 강제 도구사용(`tool_choice` any/tool)과 비호환
   (문서 명시 400). thinking 켜지면 `toolChoice:'required'`(→any)를 기본 auto 로 낮춘다(`none`/`auto` 는 호환 유지).
   runToolLoop 은 항상 auto 라 실무 경로 무영향 — 직접 chat 호출 방어.
-- temperature 무변경(현행 문서상 thinking+temperature 비호환 근거 없음). Opus 4.7/4.8의 sampling-param 400은
-  thinking과 무관한 전역 규칙=선재 이슈 → 별도 비범위.
+- **reasoning 모드 정규화 — temperature(codex P2 재제기 반영)**: thinking 켜지면 temperature 를 생략한다.
+  현행 문서엔 thinking+temperature 비호환 명시가 없으나, 구형 extended thinking 은 temperature=1 을 요구했고
+  Opus 4.7/4.8 은 temperature 를 전역 거부한다 → 생략이 항상 안전(400 불가)하고 활성화 시 footgun 제거.
+  tool_choice 비호환 가드와 동일한 'reasoning 모드 정규화' 원칙. (단 top_p/top_k 는 현 anthropic.ts 가 애초에
+  전송 안 함. 비-thinking 경로의 Opus 4.7/4.8 temperature 전역 거부는 여전히 별도 위생 작업.)
 
 ### 버퍼 파싱 (`:199-214`)
 

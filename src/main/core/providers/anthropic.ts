@@ -197,7 +197,9 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         messages: turns,
       }
       if (system) body.system = system
-      if (temperature !== undefined) body.temperature = temperature
+      // reasoning 모드(thinking) 정규화: 확장 thinking 은 sampling 파라미터와 충돌할 수 있고(구형은 temperature=1
+      // 요구, Opus 4.7/4.8 은 temperature 자체를 거부) → thinking 켜지면 temperature 를 생략한다(생략은 항상 안전).
+      if (temperature !== undefined && !opts.thinking) body.temperature = temperature
       if (opts.tools?.length) {
         body.tools = opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }))
         // 확장 thinking 은 강제 도구사용(tool_choice any/tool)과 비호환(400) → thinking 켜지면 'required'(any)를
