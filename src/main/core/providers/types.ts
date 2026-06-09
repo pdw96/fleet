@@ -1,4 +1,7 @@
-import type { ApiProviderConfig, ToolStep } from '../../../shared/types'
+import type { ApiProviderConfig, ReasoningEffort, ToolStep } from '../../../shared/types'
+
+// ReasoningEffort 는 렌더러 설정 UI 와 공유돼 shared/types.ts 로 이동(단일 진실 원천) — 기존 import 경로 호환 재export.
+export type { ReasoningEffort }
 
 // ── 콘텐츠 블록 (멀티모달 · 도구 호출 대비) ─────────────────────────────────
 /**
@@ -119,13 +122,6 @@ export interface ChatResult {
   rawFinishReason?: string
 }
 
-/**
- * 모델 reasoning(extended thinking) 깊이. provider-중립 공통집합. Anthropic 은 output_config.effort,
- * OpenAI 는 reasoning_effort 로 매핑(후속). Anthropic 전용 상위 티어(xhigh=Opus4.7/4.8, max=Opus계열)는
- * 모델별 가용성이 달라 이 중립 타입에서 제외 — 모델-인지 활성화 배선 시 재도입한다.
- */
-export type ReasoningEffort = 'low' | 'medium' | 'high'
-
 export interface ApiCallOptions {
   temperature?: number
   maxTokens?: number
@@ -150,7 +146,8 @@ export interface ApiCallOptions {
    */
   responseSchema?: { name: string; schema: Record<string, unknown> }
   /**
-   * 모델 reasoning(extended thinking) 노브. 지정 시 provider 가 네이티브 reasoning 을 켠다(미지정=off).
+   * 모델 reasoning(extended thinking) per-call 노브. 미지정이면 provider 가 config.thinking(세션 기본값)으로
+   * 폴백한다(temperature/maxTokens 관용구와 동일). 모델-인지 정규화(미지원 모델/티어 하향·생략)는 provider 책임.
    * 현 슬라이스는 Anthropic 만 adaptive thinking 으로 매핑한다(OpenAI/Gemini 는 후속). #11-thinking.
    */
   thinking?: { effort?: ReasoningEffort }

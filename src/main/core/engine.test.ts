@@ -453,6 +453,28 @@ describe('FleetEngine', () => {
     expect(engine.listRooms()).toHaveLength(1)
   })
 
+  it('registerApiSession 의 thinking 설정이 세션 기본값으로 실제 요청 body 에 반영된다 (#11-thinking 활성화)', async () => {
+    const { http, calls } = scriptedHttp([
+      JSON.stringify({ content: [{ type: 'text', text: '응답' }], stop_reason: 'end_turn' }),
+    ])
+    const engine = createFleetEngine({ http })
+    engine.registerApiSession({
+      id: 'a',
+      provider: 'anthropic',
+      displayName: 'A',
+      model: 'claude-opus-4-8',
+      apiKey: 'k',
+      thinking: { effort: 'xhigh' },
+    })
+    const room = engine.createRoom('r', ['api:a'])
+    const msg = await engine.askLlm(room.id, 'api:a')
+
+    expect(msg.content).toBe('응답')
+    const body = JSON.parse(calls[0]) as { thinking?: unknown; output_config?: { effort?: string } }
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config?.effort).toBe('xhigh')
+  })
+
   it('MCP 도구가 있으면 워크스페이스 없이도 API 세션이 도구 루프로 호출한다 (#10 SP2)', async () => {
     const pingTool: FleetTool = {
       definition: { name: 'mcp__demo__ping', parameters: { type: 'object' } },

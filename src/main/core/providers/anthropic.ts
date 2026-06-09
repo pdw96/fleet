@@ -15,6 +15,7 @@ import {
   type FinishReason,
   type HttpClient,
   type HttpResponse,
+  type ReasoningEffort,
   type ToolUseBlock,
 } from './types'
 
@@ -22,6 +23,36 @@ const ENDPOINT = 'https://api.anthropic.com/v1/messages'
 const API_VERSION = '2023-06-01'
 /** 기본 max_tokens. 과거 1024 는 현대 모델에서 쉽게 truncation 을 유발한다. */
 const DEFAULT_MAX_TOKENS = 4096
+/**
+ * thinking 활성 시 기본 max_tokens — 사고 토큰이 max_tokens 예산을 소모하므로 4096 으론 thinking 만으로
+ * 한도를 쳐 빈-응답 truncation(unwrap throw)이 잦다. 비스트리밍은 HTTP 타임아웃 위험 한계인 ~16K,
+ * 스트리밍은 타임아웃 부담이 없어 Sonnet 4.6 출력 상한(64K) 이내로 상향한다. 명시 설정은 항상 존중.
+ */
+const THINKING_BUFFERED_MAX_TOKENS = 16_384
+const THINKING_STREAMING_MAX_TOKENS = 64_000
+
+// ── 모델-인지 thinking 정규화 (오프라인 화이트리스트 — MODEL LAUNCH 시 동기화) ─────────────
+// adaptive thinking·effort(max 포함)는 현행 세대 전용: Fable · Opus 4.6+ · Sonnet 4.6. 구형
+// (Opus 4.5 이하·Sonnet 4.5·Haiku)은 adaptive/effort 가 400 → thinking 통째 생략(=off).
+// 생략은 항상 안전 — temperature 가드와 동일한 보수 원칙. 미래 모델(opus-4-9 등)도 화이트리스트
+// 밖이면 무해하게 off 로 동작한다(장기적으론 Models API capability 조회가 정답 — #13 계열 후속).
+const ADAPTIVE_MODELS = /claude-(fable|opus-4-(6|7|8)|sonnet-4-6)/
+// xhigh effort 와 thinking.display 필드는 Opus 4.7 도입. 4.6 세대는 summarized 가 기본 동작이라
+// display 생략이 행동 보존이고, xhigh 는 effort 생략(=서버 기본 high)으로 하향한다.
+const OPUS_47_PLUS = /claude-(fable|opus-4-(7|8))/
+
+/**
+ * per-call/config thinking 노브를 모델 가용성으로 정규화한다.
+ * 반환 undefined = thinking 미전송(off). 지원 모델에서 미지원 effort 티어는 생략으로 하향한다.
+ */
+function resolveThinking(
+  model: string,
+  knob: ApiCallOptions['thinking'],
+): { effort?: ReasoningEffort } | undefined {
+  if (!knob || !ADAPTIVE_MODELS.test(model)) return undefined
+  const effort = knob.effort === 'xhigh' && !OPUS_47_PLUS.test(model) ? undefined : knob.effort
+  return { effort }
+}
 
 interface AnthropicContent {
   type: string
@@ -203,20 +234,30 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         .map((m) => ({ role: m.role, content: mapContent(m.content) }))
 
       const temperature = opts.temperature ?? config.temperature
+      // per-call 노브 우선, 미지정이면 세션 기본값(config.thinking) — temperature/maxTokens 관용구와 동일.
+      // 모델-인지 정규화: 미지원 모델이면 여기서 undefined 가 되어 아래 가드 전부가 off 경로로 동작한다.
+      const thinking = resolveThinking(config.model, opts.thinking ?? config.thinking)
+      // onToken 이 있으면 SSE 스트리밍으로 요청한다 — 도구 동봉 요청도 스트리밍하며 tool_use 를 누적한다(SP3).
+      const streaming = !!opts.onToken
+      const defaultMaxTokens = thinking
+        ? streaming
+          ? THINKING_STREAMING_MAX_TOKENS
+          : THINKING_BUFFERED_MAX_TOKENS
+        : DEFAULT_MAX_TOKENS
       const body: Record<string, unknown> = {
         model: config.model,
-        max_tokens: opts.maxTokens ?? config.maxTokens ?? DEFAULT_MAX_TOKENS,
+        max_tokens: opts.maxTokens ?? config.maxTokens ?? defaultMaxTokens,
         messages: turns,
       }
       if (system) body.system = system
       // reasoning 모드(thinking) 정규화: 확장 thinking 은 sampling 파라미터와 충돌할 수 있고(구형은 temperature=1
       // 요구, Opus 4.7/4.8 은 temperature 자체를 거부) → thinking 켜지면 temperature 를 생략한다(생략은 항상 안전).
-      if (temperature !== undefined && !opts.thinking) body.temperature = temperature
+      if (temperature !== undefined && !thinking) body.temperature = temperature
       if (opts.tools?.length) {
         body.tools = opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }))
         // 확장 thinking 은 강제 도구사용(tool_choice any/tool)과 비호환(400) → thinking 켜지면 'required'(any)를
         // 기본 auto 로 낮춘다. 'none'/'auto' 는 thinking 과 호환되므로 유지.
-        const effectiveChoice = opts.thinking && opts.toolChoice === 'required' ? 'auto' : opts.toolChoice
+        const effectiveChoice = thinking && opts.toolChoice === 'required' ? 'auto' : opts.toolChoice
         const tc = mapToolChoice(effectiveChoice)
         if (tc) body.tool_choice = tc
       }
@@ -225,15 +266,15 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       if (opts.responseSchema) {
         outputConfig.format = { type: 'json_schema', schema: opts.responseSchema.schema }
       }
-      if (opts.thinking) {
-        // adaptive 는 현행 모델(4.6/4.7/4.8·Sonnet4.6) 전용 모드. display:'summarized' 로 thinking 텍스트까지
-        // 캡처한다(4.7/4.8 기본 omitted 보정). signature 는 display 와 무관하게 항상 온다.
-        body.thinking = { type: 'adaptive', display: 'summarized' }
-        if (opts.thinking.effort) outputConfig.effort = opts.thinking.effort
+      if (thinking) {
+        // display:'summarized' 는 4.7 도입 필드 — 4.7+ 에서만 동봉해 thinking 텍스트를 캡처한다(기본 omitted 보정).
+        // 4.6 세대는 summarized 가 기본 동작이라 생략이 행동 보존. signature 는 display 와 무관하게 항상 온다.
+        body.thinking = OPUS_47_PLUS.test(config.model)
+          ? { type: 'adaptive', display: 'summarized' }
+          : { type: 'adaptive' }
+        if (thinking.effort) outputConfig.effort = thinking.effort
       }
       if (Object.keys(outputConfig).length > 0) body.output_config = outputConfig
-      // onToken 이 있으면 SSE 스트리밍으로 요청한다 — 도구 동봉 요청도 스트리밍하며 tool_use 를 누적한다(SP3).
-      const streaming = !!opts.onToken
       if (streaming) body.stream = true
 
       const headers = {
