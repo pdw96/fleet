@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import type { VerificationResult } from '../../../shared/types'
 import type { LlmSession } from '../session/types'
-import { buildPlannerPrompt, extractJsonArray, parsePlannedTasks, planTasks, PLANNER_SCHEMA } from './plan'
+import {
+  buildPlannerPrompt,
+  buildReplanPrompt,
+  extractJsonArray,
+  parsePlannedTasks,
+  planCorrectiveTasks,
+  planTasks,
+  PLANNER_SCHEMA,
+} from './plan'
 
 function fakeSession(reply: string): LlmSession {
   return {
@@ -101,5 +110,32 @@ describe('PLANNER_SCHEMA', () => {
   it('item 스키마는 모든 property 를 required 로 둔다(OpenAI strict 호환)', () => {
     const items = (PLANNER_SCHEMA.properties as { tasks: { items: { required: string[] } } }).tasks.items
     expect([...items.required].sort()).toEqual(['dependsOn', 'description', 'role', 'title'])
+  })
+})
+
+describe('buildReplanPrompt', () => {
+  it('목표와 검증 실패 요약(kind/command/analysis)을 포함한다', () => {
+    const p = buildReplanPrompt('목표X', [
+      { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'boom', analysis: '테스트 깨짐', durationMs: 1 },
+    ])
+    expect(p).toContain('목표X')
+    expect(p).toContain('npm test')
+    expect(p).toContain('테스트 깨짐')
+    expect(p).toContain('tasks')
+  })
+})
+
+describe('planCorrectiveTasks', () => {
+  const fail: VerificationResult = { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', durationMs: 1 }
+
+  it('보정 작업 목록을 분해한다', async () => {
+    const tasks = await planCorrectiveTasks('g', [fail], fakeSession('{"tasks":[{"title":"수정","description":"d"}]}'))
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0].title).toBe('수정')
+  })
+
+  it('보정 불필요({tasks:[]})면 빈 배열을 반환한다', async () => {
+    const tasks = await planCorrectiveTasks('g', [fail], fakeSession('{"tasks":[]}'))
+    expect(tasks).toEqual([])
   })
 })

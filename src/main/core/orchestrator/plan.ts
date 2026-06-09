@@ -1,4 +1,4 @@
-import type { AgentRole } from '../../../shared/types'
+import type { AgentRole, VerificationResult } from '../../../shared/types'
 import type { LlmSession } from '../session/types'
 import { ALL_ROLES } from './assignment'
 
@@ -107,4 +107,40 @@ export async function planTasks(goal: string, planner: LlmSession, signal?: Abor
     bypassTools: true,
   })
   return parsePlannedTasks(reply)
+}
+
+/** 검증 실패를 planner 에 되먹여 '추가 보정 작업'만 분해하도록 요청한다(풀 재계획 아님 — append-only). */
+export function buildReplanPrompt(goal: string, failures: readonly VerificationResult[]): string {
+  const failureText = failures
+    .map((f) => `- [${f.kind}] ${f.command}\n${(f.analysis ?? f.stderr ?? '').trim()}`)
+    .join('\n')
+  return [
+    '너는 소프트웨어 프로젝트 플래너다. 아래 목표의 구현이 끝났으나 검증(테스트/빌드/린트 등)이 실패했다.',
+    '실패를 해소하기 위한 추가 보정 작업만 분해하라(기존 작업 재작성 금지). 보정이 불필요하면 빈 배열을 반환하라.',
+    '반드시 아래 형식의 JSON 객체만 출력하라(설명/마크다운 금지):',
+    '{"tasks":[{"title":"작업명","description":"무엇을 어떻게","role":"implementer","dependsOn":[]}]}',
+    '보정이 필요 없으면 {"tasks":[]} 를 출력하라.',
+    '',
+    '목표:',
+    goal,
+    '',
+    '검증 실패:',
+    failureText,
+  ].join('\n')
+}
+
+/** planner 세션으로 검증 실패에 대한 보정 작업을 분해한다. 보정 불필요면 빈 배열(allowEmpty). */
+export async function planCorrectiveTasks(
+  goal: string,
+  failures: readonly VerificationResult[],
+  planner: LlmSession,
+  signal?: AbortSignal,
+): Promise<PlannedTask[]> {
+  const reply = await planner.send(buildReplanPrompt(goal, failures), {
+    fresh: true,
+    signal,
+    responseSchema: { name: 'plan', schema: PLANNER_SCHEMA },
+    bypassTools: true,
+  })
+  return parsePlannedTasks(reply, { allowEmpty: true })
 }
