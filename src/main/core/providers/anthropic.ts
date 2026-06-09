@@ -200,7 +200,10 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       if (temperature !== undefined) body.temperature = temperature
       if (opts.tools?.length) {
         body.tools = opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }))
-        const tc = mapToolChoice(opts.toolChoice)
+        // 확장 thinking 은 강제 도구사용(tool_choice any/tool)과 비호환(400) → thinking 켜지면 'required'(any)를
+        // 기본 auto 로 낮춘다. 'none'/'auto' 는 thinking 과 호환되므로 유지.
+        const effectiveChoice = opts.thinking && opts.toolChoice === 'required' ? 'auto' : opts.toolChoice
+        const tc = mapToolChoice(effectiveChoice)
         if (tc) body.tool_choice = tc
       }
       // output_config 는 responseSchema(format) 와 thinking(effort) 가 공유 → 단일 객체로 병합.

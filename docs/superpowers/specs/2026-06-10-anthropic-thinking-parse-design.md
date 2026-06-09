@@ -74,9 +74,10 @@ extended-thinking/adaptive-thinking 문서.) thinking을 켜고 도구를 쓰는
 (키스톤). **추가는 `ApiCallOptions`의 노브 하나뿐**:
 
 ```ts
-/** 모델 reasoning(extended thinking) 깊이. provider-중립. Anthropic: output_config.effort 로 매핑.
- *  OpenAI(reasoning_effort)/Gemini(thinkingConfig) 는 후속에서 low/medium/high 부분집합으로 클램프. */
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+/** 모델 reasoning(extended thinking) 깊이. provider-중립 공통집합. Anthropic: output_config.effort 로 매핑.
+ *  Anthropic 전용 상위 티어(xhigh=Opus4.7/4.8, max)는 모델별 가용성이 달라 제외 — 모델-인지 활성화 시 재도입.
+ *  (codex P2-3: 중립 타입이 xhigh 를 모든 모델에 노출하면 4.6/Sonnet4.6 에서 400.) */
+export type ReasoningEffort = 'low' | 'medium' | 'high'
 
 // ApiCallOptions 에 추가:
 /**
@@ -111,8 +112,11 @@ if (Object.keys(outputConfig).length > 0) body.output_config = outputConfig
 - **stripSchema 교정**: 구조화-출력 400 폴백(`sendWithSchemaFallback`)의 strip 콜백을 **필드 단위**로
   바꾼다 — `output_config.format`만 제거하고 effort는 보존, 비면 `output_config` 삭제(google.ts 방식 복제).
   기존엔 `delete body.output_config`(통째)였지만 effort가 끼면 함께 날아가므로 교정.
-- temperature 무변경(adaptive는 temperature 허용). Opus 4.7/4.8의 sampling-param 400은 thinking과 무관한
-  선재 이슈 → 비범위.
+- **tool_choice 비호환 가드(codex P2-1a)**: 확장 thinking 은 강제 도구사용(`tool_choice` any/tool)과 비호환
+  (문서 명시 400). thinking 켜지면 `toolChoice:'required'`(→any)를 기본 auto 로 낮춘다(`none`/`auto` 는 호환 유지).
+  runToolLoop 은 항상 auto 라 실무 경로 무영향 — 직접 chat 호출 방어.
+- temperature 무변경(현행 문서상 thinking+temperature 비호환 근거 없음). Opus 4.7/4.8의 sampling-param 400은
+  thinking과 무관한 전역 규칙=선재 이슈 → 별도 비범위.
 
 ### 버퍼 파싱 (`:199-214`)
 

@@ -218,6 +218,31 @@ describe('AnthropicProvider', () => {
     expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toEqual({ effort: 'medium' })
   })
 
+  it('thinking 켜지면 강제 도구사용(toolChoice:required)을 auto 로 낮춘다(확장 thinking 비호환) (#11-thinking)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {}, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.tool_choice).toBeUndefined() // 'any' 미전송 = auto(기본)
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+  })
+
+  it('thinking 켜져도 toolChoice:none 은 유지한다(none 은 thinking 과 호환)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {}, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'none' })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.tool_choice).toEqual({ type: 'none' })
+  })
+
+  it('thinking 미지정이면 toolChoice:required 는 그대로 any 로 전송한다(현행 동작)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.tool_choice).toEqual({ type: 'any' })
+  })
+
   it('ThinkingBlock 을 tool_use 앞에 thinking 블록으로 재방출하고 signature 를 보존한다 (#11-thinking 채널)', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }),

@@ -120,10 +120,11 @@ export interface ChatResult {
 }
 
 /**
- * 모델 reasoning(extended thinking) 깊이. provider-중립. Anthropic 은 output_config.effort 로 매핑한다.
- * OpenAI(reasoning_effort)/Gemini(thinkingConfig) 매핑은 후속 — low/medium/high 부분집합으로 클램프 예정.
+ * 모델 reasoning(extended thinking) 깊이. provider-중립 공통집합. Anthropic 은 output_config.effort,
+ * OpenAI 는 reasoning_effort 로 매핑(후속). Anthropic 전용 상위 티어(xhigh=Opus4.7/4.8, max=Opus계열)는
+ * 모델별 가용성이 달라 이 중립 타입에서 제외 — 모델-인지 활성화 배선 시 재도입한다.
  */
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ReasoningEffort = 'low' | 'medium' | 'high'
 
 export interface ApiCallOptions {
   temperature?: number
