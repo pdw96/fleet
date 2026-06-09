@@ -167,6 +167,98 @@ describe('AnthropicProvider', () => {
     expect(out.text).toBe('[]')
   })
 
+  it('thinking 노브 → adaptive thinking + display:summarized + effort 를 body 에 싣는다 (#11-thinking)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config).toEqual({ effort: 'high' })
+  })
+
+  it('effort 없이 thinking 만 주면 thinking 만 싣고 output_config 는 없다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config).toBeUndefined()
+  })
+
+  it('thinking 미지정이면 body 에 thinking/output_config 가 없다(현행 동작)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toBeUndefined()
+    expect(body.output_config).toBeUndefined()
+  })
+
+  it('responseSchema 와 thinking.effort 공존 시 output_config 에 format+effort 를 병합한다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema }, thinking: { effort: 'low' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.output_config).toEqual({ format: { type: 'json_schema', schema }, effort: 'low' })
+  })
+
+  it('구조화-출력 400 폴백 시 format 만 제거하고 effort 는 보존한다', async () => {
+    let n = 0
+    const { http, calls } = mockHttp(() => {
+      n++
+      return n === 1
+        ? { ok: false, status: 400, body: 'unsupported field output_config' }
+        : { body: JSON.stringify({ content: [{ type: 'text', text: '[]' }], stop_reason: 'end_turn' }) }
+    })
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const schema = { type: 'object', additionalProperties: false, properties: {} }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema }, thinking: { effort: 'medium' } })
+    expect(calls).toHaveLength(2)
+    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toEqual({ effort: 'medium' })
+  })
+
+  it('thinking 켜지면 temperature 를 전송하지 않는다(reasoning 모드 정규화) (#11-thinking)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3 }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.temperature).toBeUndefined()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+  })
+
+  it('thinking 미지정이면 temperature 를 그대로 전송한다(현행 동작)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3 }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBe(0.3)
+  })
+
+  it('thinking 켜지면 강제 도구사용(toolChoice:required)을 auto 로 낮춘다(확장 thinking 비호환) (#11-thinking)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {}, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.tool_choice).toBeUndefined() // 'any' 미전송 = auto(기본)
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+  })
+
+  it('thinking 켜져도 toolChoice:none 은 유지한다(none 은 thinking 과 호환)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {}, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'none' })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.tool_choice).toEqual({ type: 'none' })
+  })
+
+  it('thinking 미지정이면 toolChoice:required 는 그대로 any 로 전송한다(현행 동작)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.tool_choice).toEqual({ type: 'any' })
+  })
+
   it('ThinkingBlock 을 tool_use 앞에 thinking 블록으로 재방출하고 signature 를 보존한다 (#11-thinking 채널)', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }),
@@ -187,6 +279,76 @@ describe('AnthropicProvider', () => {
     const assistant = body.messages.find((m) => m.role === 'assistant')!
     expect(assistant.content).toEqual([
       { type: 'thinking', thinking: '사고', signature: 'SIG' },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+    ])
+  })
+
+  it('비스트림 thinking 블록을 순서보존 content 로 파싱하고 signature 를 providerMeta 에 보존한다 (#11-thinking)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        content: [
+          { type: 'thinking', thinking: '사고 과정', signature: 'SIG_T' },
+          { type: 'text', text: '답변' },
+          { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+        ],
+        stop_reason: 'tool_use',
+      }),
+    }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.text).toBe('답변') // thinking 은 가시 텍스트에서 제외
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } }])
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '사고 과정', providerMeta: { anthropic: { signature: 'SIG_T' } } },
+      { type: 'text', text: '답변' },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+    ])
+  })
+
+  it('비스트림 thinking 블록이 없으면 content 를 설정하지 않는다(무회귀)', async () => {
+    const { http } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }])
+    expect(out.content).toBeUndefined()
+    expect(out.text).toBe('hi')
+  })
+
+  it('비스트림 redacted_thinking 블록을 보존한다(data 를 providerMeta 로) (#11-thinking)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        content: [
+          { type: 'redacted_thinking', data: 'RD_ENC' },
+          { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+        ],
+        stop_reason: 'tool_use',
+      }),
+    }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: 'RD_ENC' } } },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+    ])
+  })
+
+  it('redacted_thinking(providerMeta.anthropic.redactedData)을 redacted_thinking 블록으로 재방출한다 (#11-thinking)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: 'RD_ENC' } } },
+          { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'tu1', name: 'lookup', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { messages: Array<{ role: string; content: unknown }> }
+    const assistant = body.messages.find((m) => m.role === 'assistant')!
+    expect(assistant.content).toEqual([
+      { type: 'redacted_thinking', data: 'RD_ENC' },
       { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
     ])
   })
@@ -829,6 +991,103 @@ describe('provider streaming (SSE)', () => {
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
     const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })
     expect(out.finishReason).toBe('content_filter')
+  })
+
+  it('Anthropic 스트림: thinking_delta+signature_delta 를 ordered content 로 누적하고 onToken 엔 안 흘린다 (#11-thinking)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"사고"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG_S"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"답"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: (d) => deltas.push(d) })
+    expect(deltas).toEqual(['답']) // thinking 은 onToken 으로 안 흐른다
+    expect(out.text).toBe('답')
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '사고', providerMeta: { anthropic: { signature: 'SIG_S' } } },
+      { type: 'text', text: '답' },
+    ])
+  })
+
+  it('Anthropic 스트림: display:omitted (signature_delta 만) 도 thinking 블록을 보존한다 (#11-thinking)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG_O"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"lookup"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'SIG_O' } } },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: {} },
+    ])
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'lookup', input: {} }])
+  })
+
+  it('Anthropic 스트림: thinking 이 없으면 content 를 설정하지 않는다(무회귀)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
+    expect(out.content).toBeUndefined()
+    expect(out.text).toBe('hi')
+  })
+
+  it('Anthropic 스트림: 블록을 content_block 인덱스 순서로 복원한다(interleaved thinking/tool_use) (#11-thinking)', async () => {
+    // adaptive 는 interleaved thinking 을 켠다 — 방어적으로 thinking↔tool_use 교차 순서를 그대로 보존하는지 잠근다.
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"S0"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"a"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":2,"delta":{"type":"signature_delta","signature":"S2"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":2}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"t3","name":"b"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":3}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'a', parameters: { type: 'object' } }] })
+    expect((out.content ?? []).map((b) => b.type)).toEqual(['thinking', 'tool_use', 'thinking', 'tool_use'])
+    expect(out.content?.[0]).toEqual({ type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'S0' } } })
+    expect(out.content?.[2]).toEqual({ type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'S2' } } })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 't1', name: 'a', input: {} },
+      { type: 'tool_use', id: 't3', name: 'b', input: {} },
+    ])
+  })
+
+  it('Anthropic 스트림: redacted_thinking 블록(content_block_start.data)을 보존한다 (#11-thinking)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"RD_S"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"lookup"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: 'RD_S' } } },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: {} },
+    ])
   })
 
   it('OpenAI streaming: 구조화 출력 거부(delta.refusal)도 content_filter 로 표면화한다(#7)', async () => {

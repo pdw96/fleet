@@ -29,6 +29,12 @@ interface AnthropicContent {
   id?: string
   name?: string
   input?: unknown
+  /** extended thinking 블록의 가시 reasoning(요약). display:omitted 면 부재. */
+  thinking?: string
+  /** thinking 블록의 불투명 서명(byte-exact). display 와 무관하게 항상 존재. */
+  signature?: string
+  /** redacted_thinking 블록의 불투명 암호화 payload(byte-exact 왕복 필수). */
+  data?: string
 }
 interface AnthropicResponse {
   content?: AnthropicContent[]
@@ -49,9 +55,13 @@ function mapContent(content: string | ContentBlock[]): unknown {
         return { type: 'tool_use', id: b.id, name: b.name, input: b.input }
       case 'tool_result':
         return { type: 'tool_result', tool_use_id: b.toolUseId, content: b.content, is_error: b.isError }
-      case 'thinking':
+      case 'thinking': {
+        // redacted_thinking 은 가시 텍스트/서명 없이 불투명 data 만 — redactedData 로 보존됐으면 그대로 재방출.
+        const redacted = b.providerMeta?.anthropic?.redactedData
+        if (redacted !== undefined) return { type: 'redacted_thinking', data: redacted }
         // Anthropic 은 도구 사용 중 thinking 블록을 signature 와 함께 tool_use 앞에 echo 해야 한다(순서·byte-exact).
         return { type: 'thinking', thinking: b.text, signature: b.providerMeta?.anthropic?.signature }
+      }
       default:
         return assertNever(b)
     }
@@ -104,12 +114,19 @@ async function readStream(
   const usage: { inputTokens?: number; outputTokens?: number } = {}
   // 인덱스 → tool_use 누적기(시작 순서 보존). 텍스트 블록과 인덱스가 섞여도 정렬해 복원한다.
   const toolAccum = new Map<number, { id: string; name: string; json: string }>()
+  // 인덱스 → thinking 누적기(thinking_delta 텍스트 + signature_delta 서명). 순서보존 content 적재용.
+  const thinkingAccum = new Map<number, { text: string; signature: string }>()
+  // 인덱스 → text 누적기. content 순서 복원 전용(ChatResult.text 는 아래 평면 text 가 담당).
+  // 인덱스 있는 text_delta 만 채운다 → thinking 동반(rich) 응답에서만 쓰이며, 인덱스 없는 델타엔 영향 없음.
+  const textByIndex = new Map<number, string>()
+  // 인덱스 → redacted_thinking 의 불투명 data(content_block_start 에 통째로 옴, 델타 없음).
+  const redactedAccum = new Map<number, string>()
   for await (const data of sseData(body)) {
     let ev: {
       type?: string
       index?: number
-      content_block?: { type?: string; id?: string; name?: string }
-      delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string }
+      content_block?: { type?: string; id?: string; name?: string; data?: string }
+      delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string; thinking?: string; signature?: string }
       message?: { usage?: { input_tokens?: number } }
       usage?: { output_tokens?: number }
       error?: { type?: string; message?: string }
@@ -127,12 +144,24 @@ async function readStream(
     if (ev.type === 'message_start') usage.inputTokens = ev.message?.usage?.input_tokens ?? usage.inputTokens
     else if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && typeof ev.index === 'number') {
       toolAccum.set(ev.index, { id: ev.content_block.id ?? '', name: ev.content_block.name ?? '', json: '' })
+    } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'thinking' && typeof ev.index === 'number') {
+      thinkingAccum.set(ev.index, { text: '', signature: '' })
+    } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'redacted_thinking' && typeof ev.index === 'number') {
+      redactedAccum.set(ev.index, ev.content_block.data ?? '')
     } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
       text += ev.delta.text
       onToken(ev.delta.text)
+      if (typeof ev.index === 'number') textByIndex.set(ev.index, (textByIndex.get(ev.index) ?? '') + ev.delta.text)
     } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta' && typeof ev.index === 'number') {
       const acc = toolAccum.get(ev.index)
       if (acc) acc.json += ev.delta.partial_json ?? ''
+    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'thinking_delta' && typeof ev.index === 'number') {
+      // thinking 은 onToken 으로 흘리지 않는다(reasoning 은 가시 응답 토큰 아님 — textOf 규율과 일치).
+      const acc = thinkingAccum.get(ev.index)
+      if (acc) acc.text += ev.delta.thinking ?? ''
+    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'signature_delta' && typeof ev.index === 'number') {
+      const acc = thinkingAccum.get(ev.index)
+      if (acc) acc.signature = ev.delta.signature ?? ''
     } else if (ev.type === 'message_delta') {
       if (ev.delta?.stop_reason) stop = ev.delta.stop_reason
       if (ev.usage?.output_tokens != null) usage.outputTokens = ev.usage.output_tokens
@@ -141,7 +170,20 @@ async function readStream(
   const toolCalls: ToolUseBlock[] = [...toolAccum.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([, t]) => ({ type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) }))
-  return { text, toolCalls, finishReason: mapFinish(stop), rawFinishReason: stop, usage }
+  // thinking 이 하나라도 있으면 순서보존 content 를 재구성한다. 모든 블록을 content_block 인덱스로
+  // 병합·정렬해 원본 wire 순서를 그대로 복원한다(버퍼 경로와 동일 — interleaved thinking 도 안전).
+  let content: ContentBlock[] | undefined
+  if (thinkingAccum.size > 0 || redactedAccum.size > 0) {
+    const byIndex = new Map<number, ContentBlock>()
+    for (const [i, t] of thinkingAccum)
+      byIndex.set(i, { type: 'thinking', text: t.text, providerMeta: t.signature ? { anthropic: { signature: t.signature } } : undefined })
+    for (const [i, d] of redactedAccum)
+      byIndex.set(i, { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: d } } })
+    for (const [i, tx] of textByIndex) if (tx) byIndex.set(i, { type: 'text', text: tx })
+    for (const [i, t] of toolAccum) byIndex.set(i, { type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) })
+    content = [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b)
+  }
+  return { text, toolCalls, content, finishReason: mapFinish(stop), rawFinishReason: stop, usage }
 }
 
 /** Anthropic Messages API provider. */
@@ -167,15 +209,29 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         messages: turns,
       }
       if (system) body.system = system
-      if (temperature !== undefined) body.temperature = temperature
+      // reasoning 모드(thinking) 정규화: 확장 thinking 은 sampling 파라미터와 충돌할 수 있고(구형은 temperature=1
+      // 요구, Opus 4.7/4.8 은 temperature 자체를 거부) → thinking 켜지면 temperature 를 생략한다(생략은 항상 안전).
+      if (temperature !== undefined && !opts.thinking) body.temperature = temperature
       if (opts.tools?.length) {
         body.tools = opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }))
-        const tc = mapToolChoice(opts.toolChoice)
+        // 확장 thinking 은 강제 도구사용(tool_choice any/tool)과 비호환(400) → thinking 켜지면 'required'(any)를
+        // 기본 auto 로 낮춘다. 'none'/'auto' 는 thinking 과 호환되므로 유지.
+        const effectiveChoice = opts.thinking && opts.toolChoice === 'required' ? 'auto' : opts.toolChoice
+        const tc = mapToolChoice(effectiveChoice)
         if (tc) body.tool_choice = tc
       }
+      // output_config 는 responseSchema(format) 와 thinking(effort) 가 공유 → 단일 객체로 병합.
+      const outputConfig: Record<string, unknown> = {}
       if (opts.responseSchema) {
-        body.output_config = { format: { type: 'json_schema', schema: opts.responseSchema.schema } }
+        outputConfig.format = { type: 'json_schema', schema: opts.responseSchema.schema }
       }
+      if (opts.thinking) {
+        // adaptive 는 현행 모델(4.6/4.7/4.8·Sonnet4.6) 전용 모드. display:'summarized' 로 thinking 텍스트까지
+        // 캡처한다(4.7/4.8 기본 omitted 보정). signature 는 display 와 무관하게 항상 온다.
+        body.thinking = { type: 'adaptive', display: 'summarized' }
+        if (opts.thinking.effort) outputConfig.effort = opts.thinking.effort
+      }
+      if (Object.keys(outputConfig).length > 0) body.output_config = outputConfig
       // onToken 이 있으면 SSE 스트리밍으로 요청한다 — 도구 동봉 요청도 스트리밍하며 tool_use 를 누적한다(SP3).
       const streaming = !!opts.onToken
       if (streaming) body.stream = true
@@ -189,7 +245,14 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
       const res = streaming
         ? await send()
-        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.output_config })
+        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => {
+            // 구조화-출력 400 폴백: format 만 제거하고 effort 등 다른 output_config 필드는 보존한다.
+            const oc = body.output_config as Record<string, unknown> | undefined
+            if (oc) {
+              delete oc.format
+              if (Object.keys(oc).length === 0) delete body.output_config
+            }
+          })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
@@ -205,9 +268,23 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       const toolCalls: ToolUseBlock[] = blocks
         .filter((c) => c.type === 'tool_use')
         .map((c) => ({ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }))
+      // thinking 이 하나라도 있으면 순서보존 content 를 적재한다(멀티턴 tool 루프 signature 왕복용).
+      // 없으면 미설정 → loop 는 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
+      const content: ContentBlock[] | undefined = blocks.some((c) => c.type === 'thinking' || c.type === 'redacted_thinking')
+        ? blocks.flatMap((c): ContentBlock[] => {
+            if (c.type === 'thinking')
+              return [{ type: 'thinking', text: c.thinking ?? '', providerMeta: c.signature ? { anthropic: { signature: c.signature } } : undefined }]
+            if (c.type === 'redacted_thinking')
+              return [{ type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: c.data } } }]
+            if (c.type === 'text' && typeof c.text === 'string') return [{ type: 'text', text: c.text }]
+            if (c.type === 'tool_use') return [{ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }]
+            return [] // 미지 블록은 content 에서 제외(어시스턴트 응답엔 image 등 없음)
+          })
+        : undefined
       return {
         text,
         toolCalls,
+        content,
         finishReason: mapFinish(parsed.stop_reason),
         rawFinishReason: parsed.stop_reason,
         usage: { inputTokens: parsed.usage?.input_tokens, outputTokens: parsed.usage?.output_tokens },
