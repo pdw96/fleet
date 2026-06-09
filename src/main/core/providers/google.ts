@@ -21,13 +21,22 @@ const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
 interface GooglePart {
   text?: string
-  functionCall?: { name?: string; args?: unknown }
+  functionCall?: { id?: string; name?: string; args?: unknown }
 }
 interface GoogleResponse {
   candidates?: Array<{ content?: { parts?: GooglePart[] }; finishReason?: string }>
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
   /** 프롬프트 자체가 차단되면 candidates 없이 여기에 사유가 온다. */
   promptFeedback?: { blockReason?: string }
+}
+
+/**
+ * 응답 functionCall.id 를 ToolUseBlock.id 로 보존한다(#17-P2). Gemini 3.x 는 호출마다 고유 id 를
+ * 부여하므로 멀티턴에서 functionResponse.id 로 되돌려 병렬 동일함수 호출을 정확히 상관시킨다.
+ * 2.x 는 id 를 안 줄 수 있다 → 합성 id 를 지어내지 않고 빈 문자열을 둔다(회신 시 미전송, name 으로 상관).
+ */
+function toolUseId(fc: { id?: unknown }): string {
+  return typeof fc.id === 'string' && fc.id ? fc.id : ''
 }
 
 /**
@@ -50,10 +59,20 @@ function mapParts(content: string | ContentBlock[]): unknown[] {
         return { text: b.text }
       case 'image':
         return { inlineData: { mimeType: b.mimeType, data: b.data } }
-      case 'tool_use':
-        return { functionCall: { name: b.name, args: b.input } }
-      case 'tool_result':
-        return { functionResponse: { name: b.name ?? b.toolUseId, response: { result: b.content } } }
+      case 'tool_use': {
+        // 실제 Gemini id 가 있을 때만 회신한다(합성/부재면 '' → 미전송). 2.x 에 임의 id 를 보내지 않는다.
+        const functionCall: Record<string, unknown> = { name: b.name, args: b.input }
+        if (b.id) functionCall.id = b.id
+        return { functionCall }
+      }
+      case 'tool_result': {
+        const functionResponse: Record<string, unknown> = {
+          name: b.name ?? b.toolUseId,
+          response: { result: b.content },
+        }
+        if (b.toolUseId) functionResponse.id = b.toolUseId // 실제 id 만 회신(병렬 상관)
+        return { functionResponse }
+      }
     }
   })
 }
@@ -93,7 +112,7 @@ async function readStream(
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
-  const funcs: Array<{ name?: string; args?: unknown }> = []
+  const funcs: Array<{ id?: string; name?: string; args?: unknown }> = []
   for await (const data of sseData(body)) {
     let ev: GoogleResponse
     try {
@@ -119,9 +138,9 @@ async function readStream(
       }
     }
   }
-  const toolCalls: ToolUseBlock[] = funcs.map((fc, i) => ({
+  const toolCalls: ToolUseBlock[] = funcs.map((fc) => ({
     type: 'tool_use',
-    id: `${fc.name ?? 'call'}-${i}`,
+    id: toolUseId(fc),
     name: fc.name ?? '',
     input: fc.args,
   }))
@@ -203,9 +222,9 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const text = parts.map((p) => p.text ?? '').join('')
       const toolCalls: ToolUseBlock[] = parts
         .filter((p) => p.functionCall)
-        .map((p, i) => ({
+        .map((p) => ({
           type: 'tool_use',
-          id: `${p.functionCall?.name ?? 'call'}-${i}`,
+          id: toolUseId(p.functionCall!),
           name: p.functionCall?.name ?? '',
           input: p.functionCall?.args,
         }))

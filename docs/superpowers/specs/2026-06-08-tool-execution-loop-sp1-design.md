@@ -119,7 +119,7 @@ export interface ToolLoopDeps {
   - assistant 턴이 tool_use 블록 포함 → `{ role:'assistant', content: <text|null>, tool_calls:[{ id, type:'function', function:{ name, arguments: JSON.stringify(input) } }] }`
   - tool_result 블록 포함 user 턴 → tool_result 당 `{ role:'tool', tool_call_id, content }` 메시지 N개
   - text/image content 매핑은 불변
-- **`providers/google.ts`** — `mapParts`의 tool_result 분기를 `{ functionResponse: { name: b.name ?? b.toolUseId, response: { result: b.content } } }`로 수정.
+- **`providers/google.ts`** — `mapParts`의 tool_result 분기를 `{ functionResponse: { name: b.name ?? b.toolUseId, response: { result: b.content } } }`로 수정. (후속 #17-P2: Gemini 3.x 가 준 실제 `functionCall.id` 가 있으면 `functionCall`·`functionResponse` 양쪽에 `id` 를 추가 echo 해 병렬 동일함수 호출을 상관시킨다 — id 부재(2.x) 시 합성하지 않고 name 으로만 상관.)
 - **`session/api-session.ts`** — `createApiSession(descriptor, provider, opts)`의 `opts`에
   `toolDeps?: () => ToolLoopDeps | undefined` 추가. `send()`는 `toolDeps?.()`가 truthy면
   `runToolLoop`로, 아니면 기존 `provider.chat` 단발로 분기(완전 하위호환). non-fresh는 history를

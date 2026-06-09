@@ -350,23 +350,44 @@ describe('GoogleProvider', () => {
     expect(out.finishReason).toBe('content_filter')
   })
 
-  it('tool_result 를 functionResponse.name(도구 이름)으로 매핑한다', async () => {
+  it('실제 functionCall.id 가 있으면 functionCall·functionResponse 양쪽에 id 를 echo 한다 (#17-P2 병렬 상관)', async () => {
+    // Gemini 3.x 는 functionCall 마다 고유 id 를 부여한다 → 멀티턴 history 재전송 시 model 턴의
+    // functionCall 과 user 턴의 functionResponse 에 같은 id 를 실어 병렬 동일함수 호출을 정확히 상관시킨다.
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: '조회' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 } }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
+    expect(body.contents.at(-2)!.parts[0]).toEqual({
+      functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc_a1' },
+    })
+    expect(body.contents.at(-1)!.parts[0]).toEqual({
+      functionResponse: { name: 'lookup', id: 'fc_a1', response: { result: '값' } },
+    })
+  })
+
+  it('실제 id 가 없으면(빈 문자열) functionCall·functionResponse 에 id 를 싣지 않는다 (Gemini 2.x 호환)', async () => {
+    // 2.x 는 functionCall.id 를 안 줄 수 있다 → 합성 id 를 만들어 보내지 않고 name 으로만 상관한다.
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
     }))
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
     await p.chat([
       { role: 'user', content: '조회' },
-      { role: 'assistant', content: [{ type: 'tool_use', id: 'lookup-0', name: 'lookup', input: { id: 1 } }] },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'lookup-0', name: 'lookup', content: '값' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: '', name: 'lookup', input: { id: 1 } }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: '', name: 'lookup', content: '값' }] },
     ])
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
-    expect(body.contents.at(-1)!.parts[0]).toEqual({
-      functionResponse: { name: 'lookup', response: { result: '값' } },
-    })
+    expect(body.contents.at(-2)!.parts[0]).toEqual({ functionCall: { name: 'lookup', args: { id: 1 } } })
+    expect(body.contents.at(-1)!.parts[0]).toEqual({ functionResponse: { name: 'lookup', response: { result: '값' } } })
   })
 
-  it('tool_result 에 name 이 없으면 functionResponse.name 이 toolUseId 로 폴백한다', async () => {
+  it('tool_result 에 name 이 없으면 functionResponse.name 이 toolUseId 로 폴백한다(id 도 echo)', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
     }))
@@ -375,8 +396,9 @@ describe('GoogleProvider', () => {
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fallback-id', content: '값' }] },
     ])
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
+    // name 부재 시 toolUseId 로 폴백(방어적; 실무 흐름은 항상 name 동반). 실제 id 라 functionResponse.id 도 회신.
     expect(body.contents.at(-1)!.parts[0]).toEqual({
-      functionResponse: { name: 'fallback-id', response: { result: '값' } },
+      functionResponse: { name: 'fallback-id', id: 'fallback-id', response: { result: '값' } },
     })
   })
 
@@ -390,13 +412,50 @@ describe('GoogleProvider', () => {
     const out = await p.chat([{ role: 'user', content: 'q' }], {
       tools: [{ name: 'lookup', parameters: { type: 'object' } }],
     })
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'lookup-0', name: 'lookup', input: { id: 1 } }])
+    // id 미부여 응답(2.x) → 합성하지 않고 빈 문자열(회신 시 미전송).
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: '', name: 'lookup', input: { id: 1 } }])
     const body = JSON.parse(calls[0].init.body) as {
       tools: Array<{ functionDeclarations: Array<Record<string, unknown>> }>
       toolConfig: { functionCallingConfig: { mode: string } }
     }
     expect(body.tools[0].functionDeclarations[0]).toMatchObject({ name: 'lookup' })
     expect(body.toolConfig.functionCallingConfig.mode).toBe('AUTO')
+  })
+
+  it('응답 functionCall.id 를 ToolUseBlock.id 로 보존한다 (#17-P2)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ functionCall: { id: 'fc_xyz', name: 'lookup', args: { id: 1 } } }] }, finishReason: 'STOP' }],
+      }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'fc_xyz', name: 'lookup', input: { id: 1 } }])
+  })
+
+  it('병렬 동일함수 functionCall 들을 각자의 id 로 구분 보존한다 (#17-P2 핵심)', async () => {
+    // 같은 함수를 한 턴에 병렬 호출해도 functionCall.id 로 응답을 정확히 상관시킬 수 있어야 한다.
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                { functionCall: { id: 'fc_1', name: 'get_weather', args: { city: '서울' } } },
+                { functionCall: { id: 'fc_2', name: 'get_weather', args: { city: '부산' } } },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+      }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'get_weather', parameters: { type: 'object' } }] })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'fc_1', name: 'get_weather', input: { city: '서울' } },
+      { type: 'tool_use', id: 'fc_2', name: 'get_weather', input: { city: '부산' } },
+    ])
   })
 
   it('responseSchema → generationConfig.responseSchema + responseMimeType 를 싣는다', async () => {
@@ -546,7 +605,19 @@ describe('provider streaming (SSE)', () => {
     })
     expect(deltas).toEqual(['찾아'])
     expect(out.text).toBe('찾아')
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'lookup-0', name: 'lookup', input: { id: 7 } }])
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: '', name: 'lookup', input: { id: 7 } }])
+  })
+
+  it('Google: 스트리밍 functionCall.id 를 ToolUseBlock.id 로 보존한다 (#17-P2)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_s1","name":"lookup","args":{"id":7}}}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 } }])
   })
 
   it('Anthropic: 스트리밍 중 여러 tool_use 블록을 인덱스 순서로 누적한다 (#10 SP3)', async () => {
