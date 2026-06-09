@@ -123,6 +123,13 @@ describe('buildReplanPrompt', () => {
     expect(p).toContain('테스트 깨짐')
     expect(p).toContain('tasks')
   })
+
+  it('analysis 가 없으면 stderr 로 폴백한다', () => {
+    const p = buildReplanPrompt('목표', [
+      { kind: 'lint', command: 'npm run lint', passed: false, exitCode: 1, stdout: '', stderr: 'lint error text', durationMs: 1 },
+    ])
+    expect(p).toContain('lint error text')
+  })
 })
 
 describe('planCorrectiveTasks', () => {
@@ -137,5 +144,21 @@ describe('planCorrectiveTasks', () => {
   it('보정 불필요({tasks:[]})면 빈 배열을 반환한다', async () => {
     const tasks = await planCorrectiveTasks('g', [fail], fakeSession('{"tasks":[]}'))
     expect(tasks).toEqual([])
+  })
+
+  it('실패가 없으면 planner 호출 없이 빈 배열을 반환한다(방어적 가드)', async () => {
+    let called = false
+    const guardSession: LlmSession = {
+      id: 'p',
+      descriptor: { id: 'p', kind: 'api', displayName: 'p', ref: 'p', model: '' },
+      async send() {
+        called = true
+        return '{"tasks":[]}'
+      },
+      async dispose() {},
+    }
+    const tasks = await planCorrectiveTasks('g', [], guardSession)
+    expect(tasks).toEqual([])
+    expect(called).toBe(false) // 실패 없으면 planner 를 호출하지 않는다
   })
 })

@@ -114,6 +114,7 @@ export function buildReplanPrompt(goal: string, failures: readonly VerificationR
   const failureText = failures
     .map((f) => `- [${f.kind}] ${f.command}\n${(f.analysis ?? f.stderr ?? '').trim()}`)
     .join('\n')
+  // 보정 작업은 오케스트레이터가 항상 implementer 로 실행한다(task.role 은 표시용 라벨) → 예시 role 도 implementer 로 고정.
   return [
     '너는 소프트웨어 프로젝트 플래너다. 아래 목표의 구현이 끝났으나 검증(테스트/빌드/린트 등)이 실패했다.',
     '실패를 해소하기 위한 추가 보정 작업만 분해하라(기존 작업 재작성 금지). 보정이 불필요하면 빈 배열을 반환하라.',
@@ -136,6 +137,7 @@ export async function planCorrectiveTasks(
   planner: LlmSession,
   signal?: AbortSignal,
 ): Promise<PlannedTask[]> {
+  if (failures.length === 0) return [] // 실패 없으면 보정 불필요(방어적 — 호출자가 이미 거르지만 export 계약 안전)
   const reply = await planner.send(buildReplanPrompt(goal, failures), {
     fresh: true,
     signal,
