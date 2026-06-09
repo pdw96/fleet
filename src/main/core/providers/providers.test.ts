@@ -696,6 +696,21 @@ describe('provider streaming (SSE)', () => {
     const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })
     expect(out.finishReason).toBe('content_filter')
   })
+
+  it('OpenAI streaming: 구조화 출력 거부(delta.refusal)도 content_filter 로 표면화한다(#7)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"refusal":"안전상 "},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"refusal":"거부합니다"},"finish_reason":"stop"}]}\n\n',
+      'data: [DONE]\n\n',
+    ])
+    const p = createOpenAiProvider(baseOpenai, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: (d) => deltas.push(d) })
+    expect(out.finishReason).toBe('content_filter')
+    expect(out.text).toBe('')
+    expect(out.rawFinishReason).toContain('거부')
+    expect(deltas).toEqual([]) // 거부는 content 토큰으로 흘리지 않는다(빈 응답 위장 방지와 대칭)
+  })
 })
 
 describe('createApiProvider (registry)', () => {

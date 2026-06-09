@@ -117,6 +117,7 @@ async function readStream(
   onToken: (delta: string) => void,
 ): Promise<ChatResult> {
   let text = ''
+  let refusal = ''
   let finish: string | undefined
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
   const toolAccum = new Map<number, { id: string; name: string; args: string }>()
@@ -125,6 +126,7 @@ async function readStream(
       choices?: Array<{
         delta?: {
           content?: string
+          refusal?: string
           tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
         }
         finish_reason?: string
@@ -142,6 +144,8 @@ async function readStream(
       text += delta
       onToken(delta)
     }
+    // 구조화 출력 거부는 content 가 아니라 delta.refusal 로 스트리밍된다. content 토큰으로 흘리지 않고 누적만 한다.
+    if (choice?.delta?.refusal) refusal += choice.delta.refusal
     for (const tc of choice?.delta?.tool_calls ?? []) {
       const idx = tc.index ?? 0
       const acc = toolAccum.get(idx) ?? { id: '', name: '', args: '' }
@@ -156,6 +160,10 @@ async function readStream(
   const toolCalls: ToolUseBlock[] = [...toolAccum.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([, t]) => ({ type: 'tool_use', id: t.id, name: t.name, input: parseArgs(t.args) }))
+  // 거부가 누적됐고 도구 호출이 없으면 빈 응답으로 흡수하지 않고 content_filter 로 표면화한다(#7, 버퍼 경로와 대칭).
+  if (refusal && toolCalls.length === 0) {
+    return { text: '', toolCalls: [], finishReason: 'content_filter', rawFinishReason: `refusal: ${refusal}`, usage }
+  }
   return { text, toolCalls, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
 }
 
