@@ -1150,6 +1150,106 @@ describe('runProject', () => {
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
+  it('skips re-verification when cancelled during a corrective task', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    const controller = new AbortController()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        return plannerCalls === 1 ? '[{"title":"T","description":"d"}]' : '{"tasks":[{"title":"보정","description":"fix"}]}'
+      }),
+    )
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          if (implCalls === 2) controller.abort() // 보정 작업 실행 중 취소
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+      maxVerifyFixRounds: 0,
+      maxReplanRounds: 2,
+      verify: async () => {
+        verifyCalls++
+        return [
+          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        ]
+      },
+    })
+    expect(verifyCalls).toBe(1) // 최초 검증만 — 취소 후 재검증(전체 verify 스위트) 생략
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('refreshes the summary after replan appends corrective tasks', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        return plannerCalls === 1 ? '[{"title":"T","description":"d"}]' : '{"tasks":[{"title":"보정","description":"fix"}]}'
+      }),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const summaryPrompts: string[] = []
+    const sumSession: LlmSession = {
+      id: 'sum',
+      descriptor: { id: 'sum', kind: 'api', displayName: 'sum', ref: 'sum', model: '' },
+      async send(prompt: string) {
+        summaryPrompts.push(prompt)
+        return `요약(${summaryPrompts.length})`
+      },
+      async dispose() {},
+    }
+    sessions.add(sumSession)
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      maxReplanRounds: 1,
+      verify: async () => {
+        verifyCalls++
+        const passed = verifyCalls >= 2 // 1차 실패 → replan → 2차 통과
+        return [
+          { kind: 'test', command: 'npm test', passed, exitCode: passed ? 0 : 1, stdout: '', stderr: passed ? '' : 'x', analysis: passed ? undefined : 'x', durationMs: 1 },
+        ]
+      },
+    })
+    expect(summaryPrompts).toHaveLength(2) // 최초(보정 전) + replan 후 갱신
+    expect(summaryPrompts[1]).toContain('보정') // 갱신본은 append 된 보정 작업을 포함
+    expect(result.summary).toBe('요약(2)') // 최종 summary 는 갱신본
+    expect(store.getProject(result.projectId)?.status).toBe('done')
+  })
+
   it('marks the project failed when verify fixes are exhausted', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

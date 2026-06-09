@@ -294,9 +294,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   }
 
   // ── 3) 최종 요약 / 누락 점검 ── (취소 시 생략)
+  // closure 로 둔다 — replan 이 작업을 append 하면(아래 6) 최종 작업 목록으로 한 번 더 갱신한다.
   let summary = ''
   const summarizer = sessionForRole('summarizer', 'reviewer')
-  if (summarizer && !opts.signal?.aborted) {
+  const summarize = async (): Promise<void> => {
+    if (!summarizer || opts.signal?.aborted) return
     try {
       const finalTasks = store.listTasks(project.id)
       summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), { fresh: true, signal: opts.signal, bypassTools: true })
@@ -306,6 +308,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       emit({ type: 'summary', message: `요약 실패: ${err instanceof Error ? err.message : String(err)}`, data: { projectId: project.id } })
     }
   }
+  await summarize()
+  // replan 이 보정 작업을 append 했는지 추적 — 했다면 아래 6 에서 요약을 갱신한다.
+  let replanAppended = false
 
   // ── 4) 검증 + 자동 수정-루프 (요구사항 5 후속) ──
   // verify 실패 시 implementer 에이전트를 워크스페이스에서 재실행해 직접 수정·커밋하고 재검증한다.
@@ -431,6 +436,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         message: `보정 작업 ${corrective.length}개 추가 (라운드 ${round})`,
         data: { projectId: project.id, round, count: corrective.length },
       })
+      replanAppended = true
       // append-only: 보정 작업은 의존성 없는 평면 목록 → store 에 추가하고 순차 실행(위상 sweep 불필요).
       for (const ct of corrective) {
         if (opts.signal?.aborted) break
@@ -442,10 +448,16 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         })
         await runTask(created)
       }
+      // 보정 작업 실행 중 취소되면 재검증을 건너뛴다(abort 계약: 취소 시 verify 생략 — verify-fix catch-break 와 대칭).
+      if (opts.signal?.aborted) break
       verifications = await verifyOnce()
       emitVerify(verifications)
     }
   }
+
+  // ── 6) 보정 replan 후 요약 갱신 ── replan 이 작업을 추가했으면 최종 작업 목록으로 요약을 다시 만든다
+  // (섹션 3 요약은 보정 작업 생성 전이라 누락된다). 취소 시 생략.
+  if (replanAppended && !opts.signal?.aborted) await summarize()
 
   // 취소되면 검증·요약을 건너뛰었으므로 무조건 failed 로 종료한다(misleading done 방지).
   // run.cancelled 는 engine 이 별도로 방출하므로 오케스트레이터는 일을 멈추기만 하면 된다.

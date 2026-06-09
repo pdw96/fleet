@@ -130,6 +130,15 @@ describe('buildReplanPrompt', () => {
     ])
     expect(p).toContain('lint error text')
   })
+
+  it('거대한 실패 상세는 2000자로 잘라 planner 컨텍스트 폭주를 막는다', () => {
+    const huge = 'x'.repeat(10_000)
+    const p = buildReplanPrompt('목표', [
+      { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: huge, durationMs: 1 },
+    ])
+    expect(p).toContain('x'.repeat(2_000)) // 캡 이내는 포함
+    expect(p).not.toContain('x'.repeat(2_001)) // 캡 초과분은 잘림
+  })
 })
 
 describe('planCorrectiveTasks', () => {

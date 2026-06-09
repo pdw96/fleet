@@ -1,6 +1,7 @@
 import type { AgentRole, VerificationResult } from '../../../shared/types'
 import type { LlmSession } from '../session/types'
 import { ALL_ROLES } from './assignment'
+import { FIX_DETAIL_CAP } from './review'
 
 export interface PlannedTask {
   title: string
@@ -111,8 +112,9 @@ export async function planTasks(goal: string, planner: LlmSession, signal?: Abor
 
 /** 검증 실패를 planner 에 되먹여 '추가 보정 작업'만 분해하도록 요청한다(풀 재계획 아님 — append-only). */
 export function buildReplanPrompt(goal: string, failures: readonly VerificationResult[]): string {
+  // 실패 상세(analysis 없으면 stderr)는 매우 클 수 있어 verify-fix 와 동일한 캡으로 자른다 — planner 컨텍스트 폭주 방지.
   const failureText = failures
-    .map((f) => `- [${f.kind}] ${f.command}\n${(f.analysis ?? f.stderr ?? '').trim()}`)
+    .map((f) => `- [${f.kind}] ${f.command}\n${(f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP).trim()}`)
     .join('\n')
   // 보정 작업은 오케스트레이터가 항상 implementer 로 실행한다(task.role 은 표시용 라벨) → 예시 role 도 implementer 로 고정.
   return [
