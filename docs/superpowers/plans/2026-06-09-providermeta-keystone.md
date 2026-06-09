@@ -164,8 +164,10 @@ Expected: PASS (additive 변경 — 기존 switch는 thinking에 undefined 반�
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }] },
     ])
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
+    // thoughtSignature 는 Part 레벨(functionCall 의 형제)에 실린다 — Gemini wire 계약.
     expect(body.contents.at(-2)!.parts[0]).toEqual({
-      functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc_a1', thoughtSignature: 'SIG_XYZ' },
+      functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc_a1' },
+      thoughtSignature: 'SIG_XYZ',
     })
   })
 
@@ -200,10 +202,12 @@ Expected: FAIL — 첫 테스트가 `functionCall`에 `thoughtSignature`가 없�
         // 실제 Gemini id 가 있을 때만 회신한다(합성/부재면 '' → 미전송). 2.x 에 임의 id 를 보내지 않는다.
         const functionCall: Record<string, unknown> = { name: b.name, args: b.input }
         if (b.id) functionCall.id = b.id
-        // thoughtSignature 는 실제 있을 때만 echo(echo-only-when-present, #29 규율). byte-exact 보존.
+        // thoughtSignature 는 functionCall 의 형제인 Part 레벨 필드다(functionCall 안이 아님 — Gemini wire 계약).
+        // 실제 있을 때만 echo(echo-only-when-present, #29 규율). byte-exact 보존.
+        const part: Record<string, unknown> = { functionCall }
         const sig = b.providerMeta?.google?.thoughtSignature
-        if (sig !== undefined) functionCall.thoughtSignature = sig
-        return { functionCall }
+        if (sig !== undefined) part.thoughtSignature = sig
+        return part
       }
       case 'thinking':
         // Gemini thought 파트 재방출은 후속(#11-Gemini-thinking). 현재 Gemini 는 ThinkingBlock 을

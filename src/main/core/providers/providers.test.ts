@@ -437,8 +437,10 @@ describe('GoogleProvider', () => {
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }] },
     ])
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
+    // thoughtSignature 는 Part 레벨(functionCall 의 형제)에 실린다 — Gemini wire 계약.
     expect(body.contents.at(-2)!.parts[0]).toEqual({
-      functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc_a1', thoughtSignature: 'SIG_XYZ' },
+      functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc_a1' },
+      thoughtSignature: 'SIG_XYZ',
     })
   })
 

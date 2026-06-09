@@ -64,10 +64,12 @@ function mapParts(content: string | ContentBlock[]): unknown[] {
         // 실제 Gemini id 가 있을 때만 회신한다(합성/부재면 '' → 미전송). 2.x 에 임의 id 를 보내지 않는다.
         const functionCall: Record<string, unknown> = { name: b.name, args: b.input }
         if (b.id) functionCall.id = b.id
-        // thoughtSignature 는 실제 있을 때만 echo(echo-only-when-present, #29 규율). byte-exact 보존.
+        // thoughtSignature 는 functionCall 의 형제인 Part 레벨 필드다(functionCall 안이 아님 — Gemini wire 계약).
+        // 실제 있을 때만 echo(echo-only-when-present, #29 규율). byte-exact 보존.
+        const part: Record<string, unknown> = { functionCall }
         const sig = b.providerMeta?.google?.thoughtSignature
-        if (sig !== undefined) functionCall.thoughtSignature = sig
-        return { functionCall }
+        if (sig !== undefined) part.thoughtSignature = sig
+        return part
       }
       case 'tool_result': {
         const functionResponse: Record<string, unknown> = {

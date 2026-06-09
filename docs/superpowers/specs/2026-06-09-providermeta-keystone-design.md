@@ -131,10 +131,10 @@ export function assertNever(x: never): never {
 - `GooglePart`(:22-25)에 `thoughtSignature?: string` 추가. `funcs[]`(:115) 원소 타입 확장
   (**파싱은 후속 #17-P1**).
 - 파싱(:223-230 비스트림 / :141-146 스트림)은 thoughtSignature 미적재(무동작).
-- **`mapParts`(:54-78) 재방출**: `case 'tool_use'`에서 `if(b.id) functionCall.id=b.id`(:65) 다음,
-  `return {functionCall}`(:66) 전에
-  `if (b.providerMeta?.google?.thoughtSignature) functionCall.thoughtSignature = b.providerMeta.google.thoughtSignature`
-  추가(echo-only-when-present, PR #29 규율 동일) + **`default: assertNever(b)`**. inert(providerMeta 부재).
+- **`mapParts`(:54-78) 재방출**: `case 'tool_use'`에서 `thoughtSignature`는 **Part 레벨 필드**(functionCall
+  의 형제, functionCall 안이 아님 — Gemini wire 계약)로 실어 `{ functionCall, thoughtSignature }`를 반환한다.
+  `if (b.providerMeta?.google?.thoughtSignature)` 일 때만 추가(echo-only-when-present, PR #29 규율 동일)
+  + **`default: assertNever(b)`**. inert(providerMeta 부재).
 
 ### cross-model 격리는 공짜
 
