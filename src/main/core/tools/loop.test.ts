@@ -212,6 +212,29 @@ describe('runToolLoop', () => {
     expect(steps[1].summary).toContain('펑')
   })
 
+  it('빈 id 의 병렬 동일함수 호출은 루프 인덱스로 칩 stepId 를 구별한다 (#17-P2)', async () => {
+    // Gemini 2.x 는 functionCall.id 가 없을 수 있다(빈 id). 같은 도구를 한 턴에 병렬 호출해도 라이브
+    // 칩이 충돌하지 않도록 stepId 를 루프 인덱스로 구별한다. 단 회신 toolUseId 는 여전히 빈 id —
+    // 합성 id 를 wire(functionResponse)로 보내지 않는다(2.x 거부 회피, #17-P2 설계).
+    const steps: ToolStep[] = []
+    const { provider, calls } = scriptedProvider([
+      {
+        text: '',
+        toolCalls: [toolUse('', 'echo', { city: '서울' }), toolUse('', 'echo', { city: '부산' })],
+        finishReason: 'stop',
+      },
+      { text: '완료', toolCalls: [], finishReason: 'stop' },
+    ])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], { onToolStep: (s) => steps.push({ ...s }) }, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    // 순차 실행: call0 running→ok, call1 running→ok. 두 호출의 stepId 가 구별돼야 한다.
+    expect(steps.map((s) => s.id)).toEqual(['echo-0', 'echo-0', 'echo-1', 'echo-1'])
+    // wire 회신 id 는 빈 문자열 유지(합성 id 미전송).
+    expect((calls[1][2].content as ToolResultBlock[]).map((r) => r.toolUseId)).toEqual(['', ''])
+  })
+
   it('승인 요청에 도구 인자를 포함한다', async () => {
     const reqs: Array<{ summary: string; target: string }> = []
     const gate = { async request(r: { summary: string; target: string }) { reqs.push(r); return 'approved' as const } }

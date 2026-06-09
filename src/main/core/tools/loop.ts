@@ -62,9 +62,12 @@ export async function runToolLoop(
     turns.push({ role: 'assistant', content: assistant })
 
     const results: ToolResultBlock[] = []
-    for (const call of result.toolCalls) {
-      // 칩 식별자: tool_use id(없으면 도구명). 한 단계의 running→ok/error 가 같은 id 로 갱신된다.
-      const stepId = call.id || call.name
+    for (const [i, call] of result.toolCalls.entries()) {
+      // 칩 식별자(표시 전용): tool_use id, 없으면 `도구명-인덱스`. 한 단계의 running→ok/error 가 같은
+      // id 로 갱신된다. 인덱스를 섞어 빈 id(Gemini 2.x) 병렬 동일함수 호출의 칩 충돌을 막는다(#17-P2).
+      // 이는 칩 상관 전용 — wire 회신(tool_result.toolUseId)에는 여전히 call.id(빈 값)를 써서 합성
+      // id 를 provider 로 보내지 않는다.
+      const stepId = call.id || `${call.name}-${i}`
       const tool = deps.registry.get(call.name)
       if (!tool) {
         // 미존재 도구 — 게이트 통과 없이 즉시 에러 회신
