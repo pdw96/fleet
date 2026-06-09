@@ -75,11 +75,14 @@ export function extractJsonArray(text: string): unknown {
   return JSON.parse(candidate.slice(start, end + 1))
 }
 
-/** LLM 계획 출력 → PlannedTask[] (불완전 입력에 관대하게). */
-export function parsePlannedTasks(text: string): PlannedTask[] {
+/** LLM 계획 출력 → PlannedTask[] (불완전 입력에 관대하게). allowEmpty 면 빈 계획을 [] 로 허용(보정 맥락). */
+export function parsePlannedTasks(text: string, opts?: { allowEmpty?: boolean }): PlannedTask[] {
   const arr = coerceTaskArray(text)
   if (!Array.isArray(arr)) throw new Error('계획은 JSON 배열이어야 합니다.')
-  if (arr.length === 0) throw new Error('분해된 작업이 없습니다(빈 계획).')
+  if (arr.length === 0) {
+    if (opts?.allowEmpty) return []
+    throw new Error('분해된 작업이 없습니다(빈 계획).')
+  }
 
   return arr.map((raw, i): PlannedTask => {
     const o = (raw ?? {}) as Record<string, unknown>

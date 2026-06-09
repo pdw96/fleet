@@ -61,6 +61,15 @@ describe('parsePlannedTasks', () => {
     const tasks = parsePlannedTasks('[{"title":"B","description":"d"}]')
     expect(tasks[0].title).toBe('B')
   })
+
+  it('allowEmpty 옵션이면 빈 목록을 [] 로 반환한다(보정 맥락)', () => {
+    expect(parsePlannedTasks('{"tasks":[]}', { allowEmpty: true })).toEqual([])
+    expect(parsePlannedTasks('[]', { allowEmpty: true })).toEqual([])
+  })
+
+  it('allowEmpty 없이는 빈 {tasks:[]} 도 throw 한다(기존 동작 보존)', () => {
+    expect(() => parsePlannedTasks('{"tasks":[]}')).toThrow()
+  })
 })
 
 describe('buildPlannerPrompt', () => {
