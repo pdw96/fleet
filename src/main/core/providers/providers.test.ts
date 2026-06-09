@@ -522,6 +522,37 @@ describe('GoogleProvider', () => {
     expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'fc_xyz', name: 'lookup', input: { id: 1 } }])
   })
 
+  it('응답 part 레벨 thoughtSignature 를 providerMeta.google 로 캡처한다 (#17-P1, 비스트림)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ functionCall: { id: 'fc_a1', name: 'lookup', args: { id: 1 } }, thoughtSignature: 'SIG_A' }] }, finishReason: 'STOP' }],
+      }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'SIG_A' } } },
+    ])
+  })
+
+  it('병렬 functionCall 중 첫 파트만 thoughtSignature 를 가지면 첫 ToolUseBlock 에만 providerMeta 가 붙는다 (#17-P1)', async () => {
+    // Gemini wire 계약: 병렬 호출 시 thoughtSignature 는 첫 functionCall 파트에만 붙는다.
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [
+          { functionCall: { id: 'fc_1', name: 'lookup', args: { city: '서울' } }, thoughtSignature: 'SIG_A' },
+          { functionCall: { id: 'fc_2', name: 'lookup', args: { city: '부산' } } },
+        ] }, finishReason: 'STOP' }],
+      }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'fc_1', name: 'lookup', input: { city: '서울' }, providerMeta: { google: { thoughtSignature: 'SIG_A' } } },
+      { type: 'tool_use', id: 'fc_2', name: 'lookup', input: { city: '부산' } },
+    ])
+  })
+
   it('병렬 동일함수 functionCall 들을 각자의 id 로 구분 보존한다 (#17-P2 핵심)', async () => {
     // 같은 함수를 한 턴에 병렬 호출해도 functionCall.id 로 응답을 정확히 상관시킬 수 있어야 한다.
     const { http } = mockHttp(() => ({
@@ -707,6 +738,20 @@ describe('provider streaming (SSE)', () => {
       tools: [{ name: 'lookup', parameters: { type: 'object' } }],
     })
     expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 } }])
+  })
+
+  it('Google: 스트리밍 part 레벨 thoughtSignature 를 providerMeta.google 로 캡처한다 (#17-P1)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_s1","name":"lookup","args":{"id":7}},"thoughtSignature":"SIG_S"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 }, providerMeta: { google: { thoughtSignature: 'SIG_S' } } },
+    ])
   })
 
   it('Anthropic: 스트리밍 중 여러 tool_use 블록을 인덱스 순서로 누적한다 (#10 SP3)', async () => {
