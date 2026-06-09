@@ -89,7 +89,7 @@ export function buildSummaryPrompt(
   ].join('\n')
 }
 
-const FIX_DETAIL_CAP = 2_000
+export const FIX_DETAIL_CAP = 2_000
 
 /**
  * verify 실패 → 에이전트 수정 프롬프트.

@@ -317,6 +317,7 @@ export type OrchestratorEventType =
   | 'verify.passed'
   | 'verify.failed'
   | 'verify.fixing'
+  | 'replan'
   | 'summary'
   | 'project.done'
 

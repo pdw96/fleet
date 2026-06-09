@@ -912,6 +912,344 @@ describe('runProject', () => {
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
+  it('replans (append corrective task) and re-verifies to pass when maxReplanRounds > 0', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        return plannerCalls === 1
+          ? '[{"title":"T","description":"d"}]' // 초기 계획
+          : '{"tasks":[{"title":"보정","description":"fix"}]}' // 보정 계획
+      }),
+    )
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const events: OrchestratorEvent[] = []
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0, // verify-fix 격리 — replan 경로만 검증
+      maxReplanRounds: 1,
+      onEvent: (e) => events.push(e),
+      verify: async () => {
+        verifyCalls++
+        const passed = verifyCalls >= 2 // 1차 실패, 보정 실행 후 2차 통과
+        return [
+          { kind: 'test', command: 'npm test', passed, exitCode: passed ? 0 : 1, stdout: '', stderr: passed ? '' : 'boom', analysis: passed ? undefined : 'boom', durationMs: 1 },
+        ]
+      },
+    })
+
+    expect(verifyCalls).toBe(2) // 최초 + 보정 후 재검증
+    expect(implCalls).toBe(2) // 초기 작업 + 보정 작업
+    expect(events.some((e) => e.type === 'replan')).toBe(true)
+    const tasks = store.listTasks(result.projectId)
+    expect(tasks.map((t) => t.title)).toEqual(expect.arrayContaining(['T', '보정'])) // append-only
+    expect(tasks.find((t) => t.title === 'T')?.status).toBe('done') // 기존 작업 불변
+    expect(store.getProject(result.projectId)?.status).toBe('done')
+  })
+
+  it('does not replan when maxReplanRounds is unset (default 0)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        return '[{"title":"T","description":"d"}]'
+      }),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      // maxReplanRounds 미지정 → 기본 0(비활성)
+      verify: async () => [
+        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+      ],
+    })
+    expect(plannerCalls).toBe(1) // 초기 계획만, 보정 계획 호출 없음
+    expect(store.listTasks(result.projectId)).toHaveLength(1)
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('runs exactly maxReplanRounds replan cycles before giving up', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        return '{"tasks":[{"title":"보정","description":"fix"}]}' // 초기·보정 모두 1개
+      }),
+    )
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      maxReplanRounds: 2,
+      verify: async () => {
+        verifyCalls++
+        return [
+          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        ]
+      },
+    })
+    expect(plannerCalls).toBe(3) // 초기 1 + 보정 2라운드 (off-by-one 이면 4)
+    expect(verifyCalls).toBe(3) // 최초 + 보정 2라운드 재검증
+    expect(implCalls).toBe(3) // 초기 작업 1 + 보정 작업 2
+    expect(store.listTasks(result.projectId)).toHaveLength(3) // 초기 1 + 보정 2 append
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('stops replanning early when the planner returns no corrective tasks', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        return plannerCalls === 1 ? '[{"title":"T","description":"d"}]' : '{"tasks":[]}'
+      }),
+    )
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      maxReplanRounds: 3,
+      verify: async () => {
+        verifyCalls++
+        return [
+          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        ]
+      },
+    })
+    expect(plannerCalls).toBe(2) // 초기 + 보정계획 1회(빈 목록) → 조기 break
+    expect(implCalls).toBe(1) // 초기 작업만, 보정 작업 실행 0
+    expect(store.listTasks(result.projectId)).toHaveLength(1)
+    expect(verifyCalls).toBe(1) // 빈 보정이라 재검증 없음
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('surfaces a replan-planning error and stops (does not swallow)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        if (plannerCalls === 1) return '[{"title":"T","description":"d"}]'
+        throw new Error('planner timeout') // 보정 계획 호출에서 실패
+      }),
+    )
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      maxReplanRounds: 2,
+      onEvent: (e) => events.push(e),
+      verify: async () => [
+        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+      ],
+    })
+    const replanEvent = events.find((e) => e.type === 'replan')
+    expect(replanEvent?.message).toContain('보정 계획 실패') // 에러를 이벤트로 표면화(비-silent)
+    expect(replanEvent?.message).toContain('planner timeout')
+    expect(implCalls).toBe(1) // 보정 작업은 실행되지 않음
+    expect(store.listTasks(result.projectId)).toHaveLength(1)
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('skips re-verification when cancelled during a corrective task', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    const controller = new AbortController()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        return plannerCalls === 1 ? '[{"title":"T","description":"d"}]' : '{"tasks":[{"title":"보정","description":"fix"}]}'
+      }),
+    )
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          if (implCalls === 2) controller.abort() // 보정 작업 실행 중 취소
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+      maxVerifyFixRounds: 0,
+      maxReplanRounds: 2,
+      verify: async () => {
+        verifyCalls++
+        return [
+          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        ]
+      },
+    })
+    expect(verifyCalls).toBe(1) // 최초 검증만 — 취소 후 재검증(전체 verify 스위트) 생략
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('refreshes the summary after replan appends corrective tasks', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        return plannerCalls === 1 ? '[{"title":"T","description":"d"}]' : '{"tasks":[{"title":"보정","description":"fix"}]}'
+      }),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const summaryPrompts: string[] = []
+    const sumSession: LlmSession = {
+      id: 'sum',
+      descriptor: { id: 'sum', kind: 'api', displayName: 'sum', ref: 'sum', model: '' },
+      async send(prompt: string) {
+        summaryPrompts.push(prompt)
+        return `요약(${summaryPrompts.length})`
+      },
+      async dispose() {},
+    }
+    sessions.add(sumSession)
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      maxReplanRounds: 1,
+      verify: async () => {
+        verifyCalls++
+        const passed = verifyCalls >= 2 // 1차 실패 → replan → 2차 통과
+        return [
+          { kind: 'test', command: 'npm test', passed, exitCode: passed ? 0 : 1, stdout: '', stderr: passed ? '' : 'x', analysis: passed ? undefined : 'x', durationMs: 1 },
+        ]
+      },
+    })
+    expect(summaryPrompts).toHaveLength(2) // 최초(보정 전) + replan 후 갱신
+    expect(summaryPrompts[1]).toContain('보정') // 갱신본은 append 된 보정 작업을 포함
+    expect(result.summary).toBe('요약(2)') // 최종 summary 는 갱신본
+    expect(store.getProject(result.projectId)?.status).toBe('done')
+  })
+
   it('marks the project failed when verify fixes are exhausted', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

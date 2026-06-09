@@ -12,7 +12,7 @@ import type { Store } from '../store/types'
 import type { Workspace } from '../workspace/git'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
-import { planTasks } from './plan'
+import { planCorrectiveTasks, planTasks, type PlannedTask } from './plan'
 import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict, REVIEW_SCHEMA } from './review'
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
@@ -30,6 +30,8 @@ export interface RunOptions {
   gate?: ApprovalGate
   verify?: () => Promise<VerificationResult[]>
   maxVerifyFixRounds?: number
+  /** 검증 실패 시 planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/음수/NaN → 0(비활성). */
+  maxReplanRounds?: number
   /** 작업 LLM 호출 타임아웃(편집 에이전트는 길다). send 에 전달. */
   taskTimeoutMs?: number
   /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
@@ -292,9 +294,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   }
 
   // ── 3) 최종 요약 / 누락 점검 ── (취소 시 생략)
+  // closure 로 둔다 — replan 이 작업을 append 하면(아래 6) 최종 작업 목록으로 한 번 더 갱신한다.
   let summary = ''
   const summarizer = sessionForRole('summarizer', 'reviewer')
-  if (summarizer && !opts.signal?.aborted) {
+  const summarize = async (): Promise<void> => {
+    if (!summarizer || opts.signal?.aborted) return
     try {
       const finalTasks = store.listTasks(project.id)
       summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), { fresh: true, signal: opts.signal, bypassTools: true })
@@ -304,6 +308,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       emit({ type: 'summary', message: `요약 실패: ${err instanceof Error ? err.message : String(err)}`, data: { projectId: project.id } })
     }
   }
+  await summarize()
+  // replan 이 보정 작업을 append 했는지 추적 — 했다면 아래 6 에서 요약을 갱신한다.
+  let replanAppended = false
 
   // ── 4) 검증 + 자동 수정-루프 (요구사항 5 후속) ──
   // verify 실패 시 implementer 에이전트를 워크스페이스에서 재실행해 직접 수정·커밋하고 재검증한다.
@@ -388,7 +395,69 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       verifications = await verifyOnce()
       emitVerify(verifications)
     }
+
+    // ── 5) (옵션) append-only 보정 replan ──
+    // verify-fix 가 소진된 뒤에도 검증이 실패하면, planner 에게 검증 실패를 되먹여 '보정 작업'을
+    // 받아 store 에 append(기존 작업 불변)하고 기존 runTask 로 순차 실행한 뒤 재검증한다.
+    // 최대 maxReplanRounds 회(기본 0=비활성). planner 가 빈 목록을 주면 조기 종료(결정론).
+    // 워크스페이스/CLI implementer 없거나 취소되면 생략(verify-fix 루프와 동일 가드).
+    // verifyOnce 가 예외로 빈 배열을 돌려주면 .some()=false → 진입 없음(정보 없는 보정 불가, 의도된 동작).
+    const requestedReplan = Math.floor(opts.maxReplanRounds ?? 0)
+    const maxReplan = Number.isFinite(requestedReplan) && requestedReplan >= 0 ? requestedReplan : 0
+    for (
+      let round = 1;
+      round <= maxReplan &&
+      verifications.some((v) => !v.passed) &&
+      !!opts.workspace &&
+      !!fixImplementer &&
+      fixImplementer.descriptor.kind === 'cli' &&
+      !opts.signal?.aborted;
+      round++
+    ) {
+      const failing = verifications.filter((v) => !v.passed)
+      let corrective: PlannedTask[]
+      try {
+        corrective = await planCorrectiveTasks(goal, failing, planner, opts.signal)
+      } catch (err) {
+        // 보정 계획 실패는 완료된 작업을 무효화하지 않는다 — 표면화(비-silent)하고 replan 중단.
+        emit({
+          type: 'replan',
+          message: `보정 계획 실패: ${err instanceof Error ? err.message : String(err)}`,
+          data: { projectId: project.id, round },
+        })
+        break
+      }
+      if (corrective.length === 0) {
+        emit({ type: 'replan', message: '보정 작업 없음 — replan 종료', data: { projectId: project.id, round, count: 0 } })
+        break
+      }
+      emit({
+        type: 'replan',
+        message: `보정 작업 ${corrective.length}개 추가 (라운드 ${round})`,
+        data: { projectId: project.id, round, count: corrective.length },
+      })
+      replanAppended = true
+      // append-only: 보정 작업은 의존성 없는 평면 목록 → store 에 추가하고 순차 실행(위상 sweep 불필요).
+      for (const ct of corrective) {
+        if (opts.signal?.aborted) break
+        const created = store.createTask({
+          projectId: project.id,
+          title: ct.title,
+          description: ct.description,
+          role: ct.role ?? 'implementer', // 표시용 라벨 — runTask 는 task.role 무시하고 항상 implementer 로 실행
+        })
+        await runTask(created)
+      }
+      // 보정 작업 실행 중 취소되면 재검증을 건너뛴다(abort 계약: 취소 시 verify 생략 — verify-fix catch-break 와 대칭).
+      if (opts.signal?.aborted) break
+      verifications = await verifyOnce()
+      emitVerify(verifications)
+    }
   }
+
+  // ── 6) 보정 replan 후 요약 갱신 ── replan 이 작업을 추가했으면 최종 작업 목록으로 요약을 다시 만든다
+  // (섹션 3 요약은 보정 작업 생성 전이라 누락된다). 취소 시 생략.
+  if (replanAppended && !opts.signal?.aborted) await summarize()
 
   // 취소되면 검증·요약을 건너뛰었으므로 무조건 failed 로 종료한다(misleading done 방지).
   // run.cancelled 는 engine 이 별도로 방출하므로 오케스트레이터는 일을 멈추기만 하면 된다.
