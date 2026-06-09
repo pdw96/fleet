@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CliDetectionResult } from '../../shared/types'
 import { SessionsPanel } from './SessionsPanel'
@@ -95,5 +95,76 @@ describe('SessionsPanel', () => {
 
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
     expect(fleet.getMcpStatus).toHaveBeenCalled()
+  })
+
+  // 종료/크래시로 stale 상태를 재조회로 갱신하는 동적 상태 mock(처음=연결, 이후=종료).
+  function dyingServerStatus() {
+    return vi
+      .fn()
+      .mockResolvedValueOnce([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }])
+      .mockResolvedValue([{ name: 'fs', connected: false, toolCount: 0, tools: [], error: 'exit' }])
+  }
+
+  it('윈도우 포커스 복귀 시 MCP 상태를 재조회해 stale 표시를 갱신한다', async () => {
+    const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    // 마운트 하이드레이트: 연결 상태(도구 노출) 표시
+    expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
+
+    // 윈도우 포커스 복귀 → 재조회 → 종료 상태 반영
+    fireEvent(window, new Event('focus'))
+
+    expect(await screen.findByText('exit')).toBeTruthy()
+    expect(screen.queryByText(/mcp__fs__read/)).toBeNull()
+    expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('탭 가시성 복귀 시 MCP 상태를 재조회한다', async () => {
+    const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
+
+    fireEvent(document, new Event('visibilitychange'))
+
+    expect(await screen.findByText('exit')).toBeTruthy()
+    expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('활성 MCP 서버가 있으면 경량 폴링으로 상태를 갱신한다', async () => {
+    vi.useFakeTimers()
+    try {
+      const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
+      render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+      // 마운트 하이드레이트 promise flush → 연결 상태 + 폴링 타이머 가동
+      await act(async () => {})
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1)
+
+      // 폴링 간격 경과 → 재조회
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('MCP 서버 미설정 시 폴링 타이머를 만들지 않는다', async () => {
+    vi.useFakeTimers()
+    try {
+      const fleet = mockFleet({ getMcpStatus: vi.fn().mockResolvedValue([]) })
+      render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+      await act(async () => {})
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 마운트 1회만
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000)
+      })
+      expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 폴링 없음
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
