@@ -33,6 +33,8 @@ interface AnthropicContent {
   thinking?: string
   /** thinking 블록의 불투명 서명(byte-exact). display 와 무관하게 항상 존재. */
   signature?: string
+  /** redacted_thinking 블록의 불투명 암호화 payload(byte-exact 왕복 필수). */
+  data?: string
 }
 interface AnthropicResponse {
   content?: AnthropicContent[]
@@ -53,9 +55,13 @@ function mapContent(content: string | ContentBlock[]): unknown {
         return { type: 'tool_use', id: b.id, name: b.name, input: b.input }
       case 'tool_result':
         return { type: 'tool_result', tool_use_id: b.toolUseId, content: b.content, is_error: b.isError }
-      case 'thinking':
+      case 'thinking': {
+        // redacted_thinking 은 가시 텍스트/서명 없이 불투명 data 만 — redactedData 로 보존됐으면 그대로 재방출.
+        const redacted = b.providerMeta?.anthropic?.redactedData
+        if (redacted !== undefined) return { type: 'redacted_thinking', data: redacted }
         // Anthropic 은 도구 사용 중 thinking 블록을 signature 와 함께 tool_use 앞에 echo 해야 한다(순서·byte-exact).
         return { type: 'thinking', thinking: b.text, signature: b.providerMeta?.anthropic?.signature }
+      }
       default:
         return assertNever(b)
     }
@@ -113,11 +119,13 @@ async function readStream(
   // 인덱스 → text 누적기. content 순서 복원 전용(ChatResult.text 는 아래 평면 text 가 담당).
   // 인덱스 있는 text_delta 만 채운다 → thinking 동반(rich) 응답에서만 쓰이며, 인덱스 없는 델타엔 영향 없음.
   const textByIndex = new Map<number, string>()
+  // 인덱스 → redacted_thinking 의 불투명 data(content_block_start 에 통째로 옴, 델타 없음).
+  const redactedAccum = new Map<number, string>()
   for await (const data of sseData(body)) {
     let ev: {
       type?: string
       index?: number
-      content_block?: { type?: string; id?: string; name?: string }
+      content_block?: { type?: string; id?: string; name?: string; data?: string }
       delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string; thinking?: string; signature?: string }
       message?: { usage?: { input_tokens?: number } }
       usage?: { output_tokens?: number }
@@ -138,6 +146,8 @@ async function readStream(
       toolAccum.set(ev.index, { id: ev.content_block.id ?? '', name: ev.content_block.name ?? '', json: '' })
     } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'thinking' && typeof ev.index === 'number') {
       thinkingAccum.set(ev.index, { text: '', signature: '' })
+    } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'redacted_thinking' && typeof ev.index === 'number') {
+      redactedAccum.set(ev.index, ev.content_block.data ?? '')
     } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
       text += ev.delta.text
       onToken(ev.delta.text)
@@ -163,10 +173,12 @@ async function readStream(
   // thinking 이 하나라도 있으면 순서보존 content 를 재구성한다. 모든 블록을 content_block 인덱스로
   // 병합·정렬해 원본 wire 순서를 그대로 복원한다(버퍼 경로와 동일 — interleaved thinking 도 안전).
   let content: ContentBlock[] | undefined
-  if (thinkingAccum.size > 0) {
+  if (thinkingAccum.size > 0 || redactedAccum.size > 0) {
     const byIndex = new Map<number, ContentBlock>()
     for (const [i, t] of thinkingAccum)
       byIndex.set(i, { type: 'thinking', text: t.text, providerMeta: t.signature ? { anthropic: { signature: t.signature } } : undefined })
+    for (const [i, d] of redactedAccum)
+      byIndex.set(i, { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: d } } })
     for (const [i, tx] of textByIndex) if (tx) byIndex.set(i, { type: 'text', text: tx })
     for (const [i, t] of toolAccum) byIndex.set(i, { type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) })
     content = [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b)
@@ -258,10 +270,12 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         .map((c) => ({ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }))
       // thinking 이 하나라도 있으면 순서보존 content 를 적재한다(멀티턴 tool 루프 signature 왕복용).
       // 없으면 미설정 → loop 는 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
-      const content: ContentBlock[] | undefined = blocks.some((c) => c.type === 'thinking')
+      const content: ContentBlock[] | undefined = blocks.some((c) => c.type === 'thinking' || c.type === 'redacted_thinking')
         ? blocks.flatMap((c): ContentBlock[] => {
             if (c.type === 'thinking')
               return [{ type: 'thinking', text: c.thinking ?? '', providerMeta: c.signature ? { anthropic: { signature: c.signature } } : undefined }]
+            if (c.type === 'redacted_thinking')
+              return [{ type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: c.data } } }]
             if (c.type === 'text' && typeof c.text === 'string') return [{ type: 'text', text: c.text }]
             if (c.type === 'tool_use') return [{ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }]
             return [] // 미지 블록은 content 에서 제외(어시스턴트 응답엔 image 등 없음)

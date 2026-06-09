@@ -66,7 +66,10 @@ extended-thinking/adaptive-thinking 문서.) thinking을 켜고 도구를 쓰는
   `content_block_delta`(`delta:{type:"thinking_delta", thinking}`) → `content_block_delta`
   (`delta:{type:"signature_delta", signature}`) → `content_block_stop`. `display:"omitted"`이면
   `thinking_delta` 없이 `signature_delta`만 온다.
-- `redacted_thinking`: 현 문서 계약에 **별도 블록 타입 없음**(전부 `thinking` + `display` 제어). 비범위.
+- `redacted_thinking`: 현행 adaptive 문서엔 별도 블록 타입이 명시돼 있지 않으나(암호화는 `thinking.signature`로
+  운반), 안전-redacted reasoning 으로 방출될 가능성(codex P1)에 대비해 **방어적으로 보존**한다 — 불투명 `data`를
+  `providerMeta.anthropic.redactedData`로 byte-exact 캡처(버퍼+스트림), `mapContent`가 `{type:'redacted_thinking',
+  data}`로 재방출. 블록이 없으면 발동 안 함(무해). ContentBlock union 확장 없이 opaque providerMeta 채널 재사용.
 
 ## 계약 (단일 진실 원천 — `src/main/core/providers/types.ts`)
 
@@ -203,7 +206,7 @@ OpenAI `reasoning_effort`·Gemini `thinkingConfig`로 매핑. 회귀 테스트�
 - **레거시 `budget_tokens`**(Sonnet 4.5/Opus 4.5 구형) — adaptive 미지원 모델용. 수요 증거 시 후속.
 - **OpenAI `reasoning_effort` · Gemini `thinkingConfig`** 노브 매핑 — 같은 `ApiCallOptions.thinking`을
   소비하는 후속 슬라이스.
-- **`redacted_thinking`** 블록 — 현 문서 계약에 별도 타입 없음. 재등장 시 `ThinkingBlock`/echo 확장 동반.
+- ~~`redacted_thinking` 블록~~ — codex P1 반영으로 **범위에 편입**(방어적 보존, 위 'provider 배선' 참조).
 - **Opus 4.7/4.8 temperature/top_p/top_k 400 스트립** — thinking과 무관한 선재 이슈(현 anthropic.ts가
   temperature를 무조건 전송). 별도 위생 작업.
 - **orchestrator/IPC/렌더러 배선** — `opts.thinking`을 실제로 지정하는 활성화. 프로덕션 off 착지(키스톤/#12 동일).

@@ -312,6 +312,46 @@ describe('AnthropicProvider', () => {
     expect(out.content).toBeUndefined()
     expect(out.text).toBe('hi')
   })
+
+  it('비스트림 redacted_thinking 블록을 보존한다(data 를 providerMeta 로) (#11-thinking)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        content: [
+          { type: 'redacted_thinking', data: 'RD_ENC' },
+          { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+        ],
+        stop_reason: 'tool_use',
+      }),
+    }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: 'RD_ENC' } } },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+    ])
+  })
+
+  it('redacted_thinking(providerMeta.anthropic.redactedData)을 redacted_thinking 블록으로 재방출한다 (#11-thinking)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: 'RD_ENC' } } },
+          { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'tu1', name: 'lookup', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { messages: Array<{ role: string; content: unknown }> }
+    const assistant = body.messages.find((m) => m.role === 'assistant')!
+    expect(assistant.content).toEqual([
+      { type: 'redacted_thinking', data: 'RD_ENC' },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+    ])
+  })
 })
 
 describe('OpenAiProvider', () => {
@@ -1030,6 +1070,23 @@ describe('provider streaming (SSE)', () => {
     expect(out.toolCalls).toEqual([
       { type: 'tool_use', id: 't1', name: 'a', input: {} },
       { type: 'tool_use', id: 't3', name: 'b', input: {} },
+    ])
+  })
+
+  it('Anthropic 스트림: redacted_thinking 블록(content_block_start.data)을 보존한다 (#11-thinking)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"RD_S"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"lookup"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: 'RD_S' } } },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: {} },
     ])
   })
 
