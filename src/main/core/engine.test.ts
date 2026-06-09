@@ -65,8 +65,10 @@ function scriptedHttp(bodies: string[]): { http: HttpClient; calls: string[] } {
  */
 const roleRunner: CommandRunner = async (_cmd, args, opts) => {
   // 프롬프트는 stdin 으로 오므로(promptVia='stdin') argv 와 stdin 을 함께 보고 역할을 판별한다.
+  // planner·reviewer 프롬프트가 둘 다 구조화 출력 JSON 을 요청하므로(둘 다 'JSON' 포함),
+  // planner 는 고유어 '분해', reviewer 는 고유어 '검토' 로 판별한다.
   const prompt = [...args, opts.stdinInput ?? ''].join(' ')
-  if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+  if (prompt.includes('분해')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
   if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
   if (prompt.includes('누락')) return { code: 0, stdout: '요약: 목표 충족, 누락 없음', stderr: '' }
   if (opts.cwd) writeFileSync(join(opts.cwd, 'impl.txt'), '구현 결과물') // 직접 편집
@@ -189,7 +191,7 @@ describe('FleetEngine', () => {
         id: 'cli:claude',
         descriptor: { id: 'cli:claude', kind: 'cli', displayName: 'Claude', ref: 'claude', model: '', capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'] },
         async send(prompt, opts) {
-          if (prompt.includes('JSON')) return '[{"title":"작업1","description":"d1"}]'
+          if (prompt.includes('분해')) return '[{"title":"작업1","description":"d1"}]'
           if (prompt.includes('검토')) return 'APPROVE'
           if (prompt.includes('누락')) return '요약'
           if (opts?.workspace) {
@@ -260,7 +262,8 @@ describe('FleetEngine', () => {
       // 편집 모드(opts.cwd 지정)에서 에이전트가 워크스페이스에 파일을 직접 만든다 → 실제 git diff 발생.
       const runner: CommandRunner = async (_cmd, args, opts) => {
         const prompt = [...args, opts.stdinInput ?? ''].join(' ')
-        if (prompt.includes('JSON')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+        // planner·reviewer 둘 다 구조화 출력 JSON 을 요청하므로 planner 는 '분해', reviewer 는 '검토' 로 판별한다.
+        if (prompt.includes('분해')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
         if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
         if (opts.cwd) writeFileSync(join(opts.cwd, 'out.txt'), 'hello') // 직접 편집
@@ -304,7 +307,7 @@ describe('FleetEngine', () => {
     try {
       const runner: CommandRunner = async (_c, args, opts) => {
         const p = [...args, opts.stdinInput ?? ''].join(' ')
-        if (p.includes('JSON')) return { code: 0, stdout: '[{"title":"T","description":"d"}]', stderr: '' }
+        if (p.includes('분해')) return { code: 0, stdout: '[{"title":"T","description":"d"}]', stderr: '' }
         if (p.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (p.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
         if (opts.cwd) writeFileSync(join(opts.cwd, 'made.txt'), 'hi') // 직접 편집
