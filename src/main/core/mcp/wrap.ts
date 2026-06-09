@@ -27,6 +27,13 @@ export function contentToString(content: Array<Record<string, unknown>>): string
       const uri = res && typeof res.uri === 'string' ? res.uri : ''
       return `[resource ${uri}]`
     }
+    if (type === 'resource_link') {
+      // resource_link 는 uri/name/mimeType 을 최상위에 둔다(중첩 resource 분기로는 안 잡힘).
+      const uri = typeof item['uri'] === 'string' ? item['uri'] : ''
+      const name = typeof item['name'] === 'string' ? item['name'] : ''
+      const mime = typeof item['mimeType'] === 'string' ? ` ${item['mimeType']}` : ''
+      return `[resource_link ${name ? `${name} ` : ''}${uri}${mime}]`
+    }
     return `[${typeof type === 'string' ? type : 'unknown'}]`
   })
   const joined = parts.join('\n')
