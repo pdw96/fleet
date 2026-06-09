@@ -396,6 +396,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     // 받아 store 에 append(기존 작업 불변)하고 기존 runTask 로 순차 실행한 뒤 재검증한다.
     // 최대 maxReplanRounds 회(기본 0=비활성). planner 가 빈 목록을 주면 조기 종료(결정론).
     // 워크스페이스/CLI implementer 없거나 취소되면 생략(verify-fix 루프와 동일 가드).
+    // verifyOnce 가 예외로 빈 배열을 돌려주면 .some()=false → 진입 없음(정보 없는 보정 불가, 의도된 동작).
     const requestedReplan = Math.floor(opts.maxReplanRounds ?? 0)
     const maxReplan = Number.isFinite(requestedReplan) && requestedReplan >= 0 ? requestedReplan : 0
     for (
@@ -437,7 +438,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           projectId: project.id,
           title: ct.title,
           description: ct.description,
-          role: ct.role ?? 'implementer',
+          role: ct.role ?? 'implementer', // 표시용 라벨 — runTask 는 task.role 무시하고 항상 implementer 로 실행
         })
         await runTask(created)
       }

@@ -1101,6 +1101,55 @@ describe('runProject', () => {
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
+  it('surfaces a replan-planning error and stops (does not swallow)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    let plannerCalls = 0
+    sessions.add(
+      fakeSession('planner', () => {
+        plannerCalls++
+        if (plannerCalls === 1) return '[{"title":"T","description":"d"}]'
+        throw new Error('planner timeout') // 보정 계획 호출에서 실패
+      }),
+    )
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      maxReplanRounds: 2,
+      onEvent: (e) => events.push(e),
+      verify: async () => [
+        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+      ],
+    })
+    const replanEvent = events.find((e) => e.type === 'replan')
+    expect(replanEvent?.message).toContain('보정 계획 실패') // 에러를 이벤트로 표면화(비-silent)
+    expect(replanEvent?.message).toContain('planner timeout')
+    expect(implCalls).toBe(1) // 보정 작업은 실행되지 않음
+    expect(store.listTasks(result.projectId)).toHaveLength(1)
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
   it('marks the project failed when verify fixes are exhausted', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
