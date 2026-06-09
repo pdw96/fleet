@@ -110,6 +110,9 @@ async function readStream(
   const toolAccum = new Map<number, { id: string; name: string; json: string }>()
   // 인덱스 → thinking 누적기(thinking_delta 텍스트 + signature_delta 서명). 순서보존 content 적재용.
   const thinkingAccum = new Map<number, { text: string; signature: string }>()
+  // 인덱스 → text 누적기. content 순서 복원 전용(ChatResult.text 는 아래 평면 text 가 담당).
+  // 인덱스 있는 text_delta 만 채운다 → thinking 동반(rich) 응답에서만 쓰이며, 인덱스 없는 델타엔 영향 없음.
+  const textByIndex = new Map<number, string>()
   for await (const data of sseData(body)) {
     let ev: {
       type?: string
@@ -138,6 +141,7 @@ async function readStream(
     } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
       text += ev.delta.text
       onToken(ev.delta.text)
+      if (typeof ev.index === 'number') textByIndex.set(ev.index, (textByIndex.get(ev.index) ?? '') + ev.delta.text)
     } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta' && typeof ev.index === 'number') {
       const acc = toolAccum.get(ev.index)
       if (acc) acc.json += ev.delta.partial_json ?? ''
@@ -156,15 +160,16 @@ async function readStream(
   const toolCalls: ToolUseBlock[] = [...toolAccum.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([, t]) => ({ type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) }))
-  // thinking 이 하나라도 있으면 순서보존 content 를 재구성한다. Anthropic 은 thinking 을 항상 먼저
-  // 방출하므로 [thinking…, text, tool_use…] 순서가 'thinking 이 tool_use 앞' 하드 제약을 충족한다.
+  // thinking 이 하나라도 있으면 순서보존 content 를 재구성한다. 모든 블록을 content_block 인덱스로
+  // 병합·정렬해 원본 wire 순서를 그대로 복원한다(버퍼 경로와 동일 — interleaved thinking 도 안전).
   let content: ContentBlock[] | undefined
   if (thinkingAccum.size > 0) {
-    content = [...thinkingAccum.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([, t]): ContentBlock => ({ type: 'thinking', text: t.text, providerMeta: t.signature ? { anthropic: { signature: t.signature } } : undefined }))
-    if (text) content.push({ type: 'text', text })
-    content.push(...toolCalls)
+    const byIndex = new Map<number, ContentBlock>()
+    for (const [i, t] of thinkingAccum)
+      byIndex.set(i, { type: 'thinking', text: t.text, providerMeta: t.signature ? { anthropic: { signature: t.signature } } : undefined })
+    for (const [i, tx] of textByIndex) if (tx) byIndex.set(i, { type: 'text', text: tx })
+    for (const [i, t] of toolAccum) byIndex.set(i, { type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) })
+    content = [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b)
   }
   return { text, toolCalls, content, finishReason: mapFinish(stop), rawFinishReason: stop, usage }
 }

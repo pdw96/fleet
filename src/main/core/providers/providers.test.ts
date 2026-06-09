@@ -964,6 +964,34 @@ describe('provider streaming (SSE)', () => {
     expect(out.text).toBe('hi')
   })
 
+  it('Anthropic 스트림: 블록을 content_block 인덱스 순서로 복원한다(interleaved thinking/tool_use) (#11-thinking)', async () => {
+    // adaptive 는 interleaved thinking 을 켠다 — 방어적으로 thinking↔tool_use 교차 순서를 그대로 보존하는지 잠근다.
+    const { http } = mockStreamHttp([
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"S0"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"a"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":"","signature":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":2,"delta":{"type":"signature_delta","signature":"S2"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":2}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"t3","name":"b"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":3}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'a', parameters: { type: 'object' } }] })
+    expect((out.content ?? []).map((b) => b.type)).toEqual(['thinking', 'tool_use', 'thinking', 'tool_use'])
+    expect(out.content?.[0]).toEqual({ type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'S0' } } })
+    expect(out.content?.[2]).toEqual({ type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'S2' } } })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 't1', name: 'a', input: {} },
+      { type: 'tool_use', id: 't3', name: 'b', input: {} },
+    ])
+  })
+
   it('OpenAI streaming: 구조화 출력 거부(delta.refusal)도 content_filter 로 표면화한다(#7)', async () => {
     const { http } = mockStreamHttp([
       'data: {"choices":[{"delta":{"refusal":"안전상 "},"finish_reason":null}]}\n\n',
