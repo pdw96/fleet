@@ -173,9 +173,18 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         const tc = mapToolChoice(opts.toolChoice)
         if (tc) body.tool_choice = tc
       }
+      // output_config 는 responseSchema(format) 와 thinking(effort) 가 공유 → 단일 객체로 병합.
+      const outputConfig: Record<string, unknown> = {}
       if (opts.responseSchema) {
-        body.output_config = { format: { type: 'json_schema', schema: opts.responseSchema.schema } }
+        outputConfig.format = { type: 'json_schema', schema: opts.responseSchema.schema }
       }
+      if (opts.thinking) {
+        // adaptive 는 현행 모델(4.6/4.7/4.8·Sonnet4.6) 전용 모드. display:'summarized' 로 thinking 텍스트까지
+        // 캡처한다(4.7/4.8 기본 omitted 보정). signature 는 display 와 무관하게 항상 온다.
+        body.thinking = { type: 'adaptive', display: 'summarized' }
+        if (opts.thinking.effort) outputConfig.effort = opts.thinking.effort
+      }
+      if (Object.keys(outputConfig).length > 0) body.output_config = outputConfig
       // onToken 이 있으면 SSE 스트리밍으로 요청한다 — 도구 동봉 요청도 스트리밍하며 tool_use 를 누적한다(SP3).
       const streaming = !!opts.onToken
       if (streaming) body.stream = true
@@ -189,7 +198,14 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
       const res = streaming
         ? await send()
-        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.output_config })
+        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => {
+            // 구조화-출력 400 폴백: format 만 제거하고 effort 등 다른 output_config 필드는 보존한다.
+            const oc = body.output_config as Record<string, unknown> | undefined
+            if (oc) {
+              delete oc.format
+              if (Object.keys(oc).length === 0) delete body.output_config
+            }
+          })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 

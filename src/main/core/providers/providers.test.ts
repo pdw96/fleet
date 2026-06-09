@@ -167,6 +167,57 @@ describe('AnthropicProvider', () => {
     expect(out.text).toBe('[]')
   })
 
+  it('thinking 노브 → adaptive thinking + display:summarized + effort 를 body 에 싣는다 (#11-thinking)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config).toEqual({ effort: 'high' })
+  })
+
+  it('effort 없이 thinking 만 주면 thinking 만 싣고 output_config 는 없다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config).toBeUndefined()
+  })
+
+  it('thinking 미지정이면 body 에 thinking/output_config 가 없다(현행 동작)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toBeUndefined()
+    expect(body.output_config).toBeUndefined()
+  })
+
+  it('responseSchema 와 thinking.effort 공존 시 output_config 에 format+effort 를 병합한다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema }, thinking: { effort: 'low' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.output_config).toEqual({ format: { type: 'json_schema', schema }, effort: 'low' })
+  })
+
+  it('구조화-출력 400 폴백 시 format 만 제거하고 effort 는 보존한다', async () => {
+    let n = 0
+    const { http, calls } = mockHttp(() => {
+      n++
+      return n === 1
+        ? { ok: false, status: 400, body: 'unsupported field output_config' }
+        : { body: JSON.stringify({ content: [{ type: 'text', text: '[]' }], stop_reason: 'end_turn' }) }
+    })
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const schema = { type: 'object', additionalProperties: false, properties: {} }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema }, thinking: { effort: 'medium' } })
+    expect(calls).toHaveLength(2)
+    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toEqual({ effort: 'medium' })
+  })
+
   it('ThinkingBlock 을 tool_use 앞에 thinking 블록으로 재방출하고 signature 를 보존한다 (#11-thinking 채널)', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }),
