@@ -19,6 +19,8 @@ export interface SendOptions {
   timeoutMs?: number
   /** 응답을 JSON 스키마로 강제(네이티브 구조화 출력). API 세션만 적용; CLI 세션은 무시. */
   responseSchema?: { name: string; schema: Record<string, unknown> }
+  /** true 면 이 호출은 도구 루프를 건너뛰고 단발 chat 으로 실행한다(planner/reviewer 등 분석 호출). */
+  bypassTools?: boolean
 }
 
 /** createCliSession 동작 옵션. */

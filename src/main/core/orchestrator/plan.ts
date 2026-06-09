@@ -23,7 +23,7 @@ export const PLANNER_SCHEMA: Record<string, unknown> = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['title', 'description'],
+        required: ['title', 'description', 'role', 'dependsOn'],
         properties: {
           title: { type: 'string' },
           description: { type: 'string' },
@@ -41,6 +41,7 @@ export function buildPlannerPrompt(goal: string): string {
     '너는 소프트웨어 프로젝트 플래너다. 아래 목표를 실행 가능한 4~8개의 작업으로 분해하라.',
     '반드시 아래 형식의 JSON 객체만 출력하라(설명/마크다운 금지):',
     '{"tasks":[{"title":"작업명","description":"무엇을 어떻게","role":"architect|implementer|reviewer|tester","dependsOn":[의존작업인덱스]}]}',
+    '각 작업은 title·description·role·dependsOn 을 모두 포함하라. 의존이 없으면 dependsOn 은 빈 배열([])로 둔다.',
     '',
     '목표:',
     goal,
@@ -100,6 +101,7 @@ export async function planTasks(goal: string, planner: LlmSession, signal?: Abor
     fresh: true,
     signal,
     responseSchema: { name: 'plan', schema: PLANNER_SCHEMA },
+    bypassTools: true,
   })
   return parsePlannedTasks(reply)
 }

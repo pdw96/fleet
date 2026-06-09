@@ -168,6 +168,24 @@ describe('createApiSession', () => {
     expect(seenOpts?.responseSchema).toEqual({ name: 'v', schema })
   })
 
+  it('bypassTools 면 tool loop 를 건너뛰고 도구 없이 단발 chat 한다(분석 호출용)', async () => {
+    let seenTools: unknown = 'UNSET'
+    const provider: ApiProvider = {
+      id: 'fake', provider: 'anthropic', model: 'm',
+      async chat(_messages, opts) {
+        seenTools = opts?.tools
+        return { text: 'ok', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const registry = createToolRegistry([
+      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+    ])
+    const gate = { async request() { return 'approved' as const } }
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
+    expect(await s.send('go', { bypassTools: true })).toBe('ok')
+    expect(seenTools).toBeUndefined() // 루프 우회 → tools 미부착
+  })
+
   it('toolDeps 가 undefined 를 반환하면(워크스페이스 없음) 단발 chat 으로 동작한다(회귀)', async () => {
     const { provider } = fakeProvider()
     const s = createApiSession(apiDesc, provider, { toolDeps: () => undefined })

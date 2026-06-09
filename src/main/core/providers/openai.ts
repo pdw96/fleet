@@ -25,7 +25,7 @@ interface OpenAiToolCall {
   function?: { name?: string; arguments?: string }
 }
 interface OpenAiResponse {
-  choices?: Array<{ message?: { content?: string; tool_calls?: OpenAiToolCall[] }; finish_reason?: string }>
+  choices?: Array<{ message?: { content?: string; refusal?: string; tool_calls?: OpenAiToolCall[] }; finish_reason?: string }>
   usage?: { prompt_tokens?: number; completion_tokens?: number }
 }
 
@@ -223,6 +223,17 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         name: c.function?.name ?? '',
         input: parseArgs(c.function?.arguments),
       }))
+      // 구조화 출력 거부는 content 가 아니라 message.refusal 로 온다 — 빈 응답으로 흡수하지 않고 content_filter 로 표면화한다(#7).
+      const refusal = choice?.message?.refusal
+      if (typeof refusal === 'string' && refusal && toolCalls.length === 0) {
+        return {
+          text: '',
+          toolCalls: [],
+          finishReason: 'content_filter',
+          rawFinishReason: `refusal: ${refusal}`,
+          usage: { inputTokens: parsed.usage?.prompt_tokens, outputTokens: parsed.usage?.completion_tokens },
+        }
+      }
       return {
         text: choice?.message?.content ?? '',
         toolCalls,

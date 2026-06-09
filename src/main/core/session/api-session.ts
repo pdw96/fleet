@@ -35,8 +35,8 @@ export function createApiSession(
   let chain: Promise<unknown> = Promise.resolve()
 
   // 도구 의존성이 활성이면 루프, 아니면 단발 chat. turns 는 루프가 in-place 확장(도구 왕복 턴).
-  const runChat = (turns: ChatTurn[], callOpts: ApiCallOptions): Promise<ChatResult> => {
-    const deps = opts.toolDeps?.()
+  const runChat = (turns: ChatTurn[], callOpts: ApiCallOptions, bypassTools = false): Promise<ChatResult> => {
+    const deps = bypassTools ? undefined : opts.toolDeps?.()
     return deps ? runToolLoop(provider, turns, callOpts, deps) : provider.chat(turns, callOpts)
   }
 
@@ -71,7 +71,7 @@ export function createApiSession(
         const turns: ChatTurn[] = opts.system
           ? [{ role: 'system', content: opts.system }, { role: 'user', content: prompt }]
           : [{ role: 'user', content: prompt }]
-        return emit(unwrap(provider.provider, await runChat(turns, callOpts)))
+        return emit(unwrap(provider.provider, await runChat(turns, callOpts, sendOpts.bypassTools)))
       }
       // 누적 경로: 직렬화 체인에 올려 동시 send 끼리 순서를 보장한다(앞 호출의 성공/실패와 무관하게
       // 순서만). 성공 시에만 history 에 원자적으로 커밋하므로 루프 중간 throw 가 history 를 부분 확장
@@ -80,7 +80,7 @@ export function createApiSession(
       const result = (async (): Promise<string> => {
         await prior.catch(() => {})
         const working: ChatTurn[] = [...history, { role: 'user', content: prompt }]
-        const reply = unwrap(provider.provider, await runChat(working, callOpts))
+        const reply = unwrap(provider.provider, await runChat(working, callOpts, sendOpts.bypassTools))
         working.push({ role: 'assistant', content: reply })
         history.length = 0
         history.push(...working)

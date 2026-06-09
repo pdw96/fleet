@@ -283,6 +283,15 @@ describe('OpenAiProvider', () => {
     expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'verdict', schema, strict: true } })
   })
 
+  it('구조화 출력 거부(message.refusal)를 content_filter 로 표면화한다(#7)', async () => {
+    const { http } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { refusal: '안전상 거부합니다' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }])
+    expect(out.finishReason).toBe('content_filter')
+    expect(out.text).toBe('')
+    expect(out.rawFinishReason).toContain('거부')
+  })
+
   it('구조화-출력 400 → response_format 없이 1회 재시도', async () => {
     let n = 0
     const { http, calls } = mockHttp(() => {

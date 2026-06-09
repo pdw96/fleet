@@ -88,4 +88,9 @@ describe('PLANNER_SCHEMA', () => {
     expect((PLANNER_SCHEMA.properties as Record<string, { type?: string }>).tasks.type).toBe('array')
     expect(PLANNER_SCHEMA.additionalProperties).toBe(false)
   })
+
+  it('item 스키마는 모든 property 를 required 로 둔다(OpenAI strict 호환)', () => {
+    const items = (PLANNER_SCHEMA.properties as { tasks: { items: { required: string[] } } }).tasks.items
+    expect([...items.required].sort()).toEqual(['dependsOn', 'description', 'role', 'title'])
+  })
 })
