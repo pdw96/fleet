@@ -12,6 +12,8 @@ import type { ApiProviderConfig, ToolStep } from '../../../shared/types'
 export interface TextBlock {
   type: 'text'
   text: string
+  /** provider 네이티브 메타(Gemini 3 text-part signature 등). 현재 무동작. */
+  providerMeta?: ProviderMeta
 }
 export interface ImageBlock {
   type: 'image'
@@ -26,7 +28,25 @@ export interface ToolUseBlock {
   name: string
   /** 도구 입력 인자(JSON 파싱된 값). */
   input: unknown
+  /** provider 네이티브 메타(Gemini thoughtSignature 의 집). 현재 무동작. */
+  providerMeta?: ProviderMeta
 }
+/**
+ * provider 네이티브 메타의 불투명 패스스루 채널. 키=provider id, 값=provider 소유(불투명).
+ * 레이어는 값 내부를 모른다 — verbatim 보존, 재인코딩 금지(서명 byte-exact). 키 네임스페이스로
+ * cross-model 누수를 막는다: 각 provider 재방출은 자기 네임스페이스만 읽는다.
+ */
+export type ProviderMeta = Partial<Record<ApiProviderConfig['provider'], Record<string, unknown>>>
+
+/** 모델 reasoning(extended thinking) 블록. 어시스턴트 턴에서 tool_use 앞에 온다(Anthropic 순서 요구). */
+export interface ThinkingBlock {
+  type: 'thinking'
+  /** 가시 reasoning. redacted/omitted thinking 은 빈 문자열일 수 있다(서명만 보유). */
+  text: string
+  /** 예: { anthropic: { signature } }. 불투명. */
+  providerMeta?: ProviderMeta
+}
+
 export interface ToolResultBlock {
   type: 'tool_result'
   toolUseId: string
@@ -35,7 +55,7 @@ export interface ToolResultBlock {
   content: string
   isError?: boolean
 }
-export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock
+export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock
 
 /** 오케스트레이션 계층이 다루는 공통 대화 턴. content 는 문자열 또는 블록 배열. */
 export interface ChatTurn {
@@ -88,6 +108,11 @@ export interface ChatResult {
   text: string
   /** 모델이 요청한 도구 호출들(없으면 빈 배열). */
   toolCalls: ToolUseBlock[]
+  /**
+   * 원본 순서 보존 어시스턴트 블록 전체(thinking→text→tool_use). provider 가 순서/서명을 보존해야
+   * 할 때만 채운다. 미설정이면 loop 는 text+toolCalls 폴백(현행 동작 = 무동작 보장).
+   */
+  content?: ContentBlock[]
   finishReason: FinishReason
   usage?: TokenUsage
   /** 진단용 원본 종료 사유 문자열(provider 네이티브 값). */
@@ -190,4 +215,9 @@ export async function sendWithSchemaFallback(
   if (!hasSchema || res.ok || res.status !== 400) return res
   stripSchema()
   return send()
+}
+
+/** 분기 누락을 컴파일 타임에 잡는다 — 새 ContentBlock variant 추가 시 모든 switch default 가 TS 에러. */
+export function assertNever(x: never): never {
+  throw new Error(`Unhandled ContentBlock variant: ${JSON.stringify(x)}`)
 }

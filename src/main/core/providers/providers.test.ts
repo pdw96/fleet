@@ -166,6 +166,30 @@ describe('AnthropicProvider', () => {
     expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toBeUndefined()
     expect(out.text).toBe('[]')
   })
+
+  it('ThinkingBlock 을 tool_use 앞에 thinking 블록으로 재방출하고 signature 를 보존한다 (#11-thinking 채널)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }),
+    }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', text: '사고', providerMeta: { anthropic: { signature: 'SIG' } } },
+          { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'tu1', name: 'lookup', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { messages: Array<{ role: string; content: unknown }> }
+    const assistant = body.messages.find((m) => m.role === 'assistant')!
+    expect(assistant.content).toEqual([
+      { type: 'thinking', thinking: '사고', signature: 'SIG' },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+    ])
+  })
 })
 
 describe('OpenAiProvider', () => {
@@ -307,6 +331,32 @@ describe('OpenAiProvider', () => {
     expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).response_format).toBeUndefined()
     expect(out.text).toBe('[]')
   })
+
+  it('어시스턴트 턴의 ThinkingBlock 을 안전 무시하고 tool_calls 메시지를 그대로 만든다(무회귀)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    await p.chat([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', text: '사고', providerMeta: { anthropic: { signature: 'SIG' } } },
+          { type: 'tool_use', id: 'tc1', name: 'lookup', input: { id: 1 } },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'tc1', name: 'lookup', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { messages: Array<Record<string, unknown>> }
+    const assistant = body.messages.find((m) => m.role === 'assistant')!
+    // thinking 은 wire 로 새지 않는다(tool_calls + content 만). content 는 텍스트 없음 → null.
+    expect(assistant.tool_calls).toEqual([
+      { id: 'tc1', type: 'function', function: { name: 'lookup', arguments: '{"id":1}' } },
+    ])
+    expect(assistant.content).toBeNull()
+    expect(JSON.stringify(body)).not.toContain('SIG')
+  })
 })
 
 describe('GoogleProvider', () => {
@@ -368,6 +418,43 @@ describe('GoogleProvider', () => {
     })
     expect(body.contents.at(-1)!.parts[0]).toEqual({
       functionResponse: { name: 'lookup', id: 'fc_a1', response: { result: '값' } },
+    })
+  })
+
+  it('ToolUseBlock.providerMeta.google.thoughtSignature 를 functionCall 에 echo 한다 (#17-P1 채널)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: '조회' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'SIG_XYZ' } } },
+        ],
+      },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
+    expect(body.contents.at(-2)!.parts[0]).toEqual({
+      functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc_a1', thoughtSignature: 'SIG_XYZ' },
+    })
+  })
+
+  it('providerMeta 가 없으면 functionCall 에 thoughtSignature 를 싣지 않는다 (echo-only-when-present, #29 규율)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: '조회' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 } }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
+    expect(body.contents.at(-2)!.parts[0]).toEqual({
+      functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc_a1' },
     })
   })
 

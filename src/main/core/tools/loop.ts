@@ -55,10 +55,16 @@ export async function runToolLoop(
     // finishReason 를 'stop'(STOP)으로 주므로 finishReason 게이팅은 Gemini 도구호출을 통째로 건너뛴다.
     if (result.toolCalls.length === 0) return result
 
-    // 어시스턴트 턴 재구성: (텍스트 있으면) + tool_use 블록들.
-    const assistant: ContentBlock[] = []
-    if (result.text) assistant.push({ type: 'text', text: result.text })
-    assistant.push(...result.toolCalls)
+    // 어시스턴트 턴 재구성: provider 가 ordered content(순서·서명)를 보존했으면 그대로 사용하고
+    // (thinking→text→tool_use 순서·providerMeta 유지), 아니면 (텍스트 있으면) + tool_use 로 재구성한다.
+    let assistant: ContentBlock[]
+    if (result.content && result.content.length > 0) {
+      assistant = result.content
+    } else {
+      assistant = []
+      if (result.text) assistant.push({ type: 'text', text: result.text })
+      assistant.push(...result.toolCalls) // ToolUseBlock.providerMeta 는 스프레드로 자동 보존
+    }
     turns.push({ role: 'assistant', content: assistant })
 
     const results: ToolResultBlock[] = []
