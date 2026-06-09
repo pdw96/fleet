@@ -241,6 +241,36 @@ describe('AnthropicProvider', () => {
       { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
     ])
   })
+
+  it('비스트림 thinking 블록을 순서보존 content 로 파싱하고 signature 를 providerMeta 에 보존한다 (#11-thinking)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        content: [
+          { type: 'thinking', thinking: '사고 과정', signature: 'SIG_T' },
+          { type: 'text', text: '답변' },
+          { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+        ],
+        stop_reason: 'tool_use',
+      }),
+    }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.text).toBe('답변') // thinking 은 가시 텍스트에서 제외
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } }])
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '사고 과정', providerMeta: { anthropic: { signature: 'SIG_T' } } },
+      { type: 'text', text: '답변' },
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+    ])
+  })
+
+  it('비스트림 thinking 블록이 없으면 content 를 설정하지 않는다(무회귀)', async () => {
+    const { http } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }])
+    expect(out.content).toBeUndefined()
+    expect(out.text).toBe('hi')
+  })
 })
 
 describe('OpenAiProvider', () => {

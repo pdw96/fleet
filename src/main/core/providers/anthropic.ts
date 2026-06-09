@@ -29,6 +29,10 @@ interface AnthropicContent {
   id?: string
   name?: string
   input?: unknown
+  /** extended thinking 블록의 가시 reasoning(요약). display:omitted 면 부재. */
+  thinking?: string
+  /** thinking 블록의 불투명 서명(byte-exact). display 와 무관하게 항상 존재. */
+  signature?: string
 }
 interface AnthropicResponse {
   content?: AnthropicContent[]
@@ -221,9 +225,21 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       const toolCalls: ToolUseBlock[] = blocks
         .filter((c) => c.type === 'tool_use')
         .map((c) => ({ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }))
+      // thinking 이 하나라도 있으면 순서보존 content 를 적재한다(멀티턴 tool 루프 signature 왕복용).
+      // 없으면 미설정 → loop 는 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
+      const content: ContentBlock[] | undefined = blocks.some((c) => c.type === 'thinking')
+        ? blocks.flatMap((c): ContentBlock[] => {
+            if (c.type === 'thinking')
+              return [{ type: 'thinking', text: c.thinking ?? '', providerMeta: c.signature ? { anthropic: { signature: c.signature } } : undefined }]
+            if (c.type === 'text' && typeof c.text === 'string') return [{ type: 'text', text: c.text }]
+            if (c.type === 'tool_use') return [{ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }]
+            return [] // 미지 블록은 content 에서 제외(어시스턴트 응답엔 image 등 없음)
+          })
+        : undefined
       return {
         text,
         toolCalls,
+        content,
         finishReason: mapFinish(parsed.stop_reason),
         rawFinishReason: parsed.stop_reason,
         usage: { inputTokens: parsed.usage?.input_tokens, outputTokens: parsed.usage?.output_tokens },
