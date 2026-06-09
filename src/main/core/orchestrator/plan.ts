@@ -12,16 +12,55 @@ export interface PlannedTask {
 
 const VALID_ROLES = new Set<string>(ALL_ROLES)
 
+/** planner 구조화 출력 스키마(루트 object — OpenAI strict 호환). 수치/문자열 제약 미사용. */
+export const PLANNER_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['tasks'],
+  properties: {
+    tasks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'description', 'role', 'dependsOn'],
+        properties: {
+          title: { type: 'string' },
+          description: { type: 'string' },
+          role: { type: 'string', enum: ['architect', 'implementer', 'reviewer', 'tester'] },
+          dependsOn: { type: 'array', items: { type: 'integer' } },
+        },
+      },
+    },
+  },
+}
+
 /** 목표 분해를 요청하는 자기완결적 프롬프트 (CLI/API 세션 공통, system 비의존). */
 export function buildPlannerPrompt(goal: string): string {
   return [
     '너는 소프트웨어 프로젝트 플래너다. 아래 목표를 실행 가능한 4~8개의 작업으로 분해하라.',
-    '반드시 아래 형식의 JSON 배열만 출력하라(설명/마크다운 금지):',
-    '[{"title":"작업명","description":"무엇을 어떻게","role":"architect|implementer|reviewer|tester","dependsOn":[의존작업인덱스]}]',
+    '반드시 아래 형식의 JSON 객체만 출력하라(설명/마크다운 금지):',
+    '{"tasks":[{"title":"작업명","description":"무엇을 어떻게","role":"architect|implementer|reviewer|tester","dependsOn":[의존작업인덱스]}]}',
+    '각 작업은 title·description·role·dependsOn 을 모두 포함하라. 의존이 없으면 dependsOn 은 빈 배열([])로 둔다.',
     '',
     '목표:',
     goal,
   ].join('\n')
+}
+
+/** 구조화 출력(깨끗한 JSON)이면 strict 파싱, 아니면 산문 속 배열 슬라이싱으로 폴백한다. */
+function coerceTaskArray(text: string): unknown {
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (Array.isArray(parsed)) return parsed
+    if (parsed && typeof parsed === 'object') {
+      const tasks = (parsed as Record<string, unknown>).tasks
+      if (Array.isArray(tasks)) return tasks
+    }
+  } catch {
+    // 깨끗한 JSON 이 아니면(CLI 산문 등) 폴백으로 진행
+  }
+  return extractJsonArray(text)
 }
 
 /** LLM 출력 텍스트에서 JSON 배열을 견고하게 추출. */
@@ -38,7 +77,7 @@ export function extractJsonArray(text: string): unknown {
 
 /** LLM 계획 출력 → PlannedTask[] (불완전 입력에 관대하게). */
 export function parsePlannedTasks(text: string): PlannedTask[] {
-  const arr = extractJsonArray(text)
+  const arr = coerceTaskArray(text)
   if (!Array.isArray(arr)) throw new Error('계획은 JSON 배열이어야 합니다.')
   if (arr.length === 0) throw new Error('분해된 작업이 없습니다(빈 계획).')
 
@@ -58,6 +97,11 @@ export function parsePlannedTasks(text: string): PlannedTask[] {
 export async function planTasks(goal: string, planner: LlmSession, signal?: AbortSignal): Promise<PlannedTask[]> {
   // fresh: 분해는 독립 1회 호출(세션 맥락에 의존하지 않는 자기완결 프롬프트).
   // signal: 분해 진행 중 취소되면 planner 호출도 중단한다.
-  const reply = await planner.send(buildPlannerPrompt(goal), { fresh: true, signal })
+  const reply = await planner.send(buildPlannerPrompt(goal), {
+    fresh: true,
+    signal,
+    responseSchema: { name: 'plan', schema: PLANNER_SCHEMA },
+    bypassTools: true,
+  })
   return parsePlannedTasks(reply)
 }

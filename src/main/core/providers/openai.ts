@@ -4,6 +4,7 @@ import {
   ApiProviderError,
   defaultHttp,
   requireApiKey,
+  sendWithSchemaFallback,
   textOf,
   type ApiCallOptions,
   type ApiProvider,
@@ -12,6 +13,7 @@ import {
   type ContentBlock,
   type FinishReason,
   type HttpClient,
+  type HttpResponse,
   type TextBlock,
   type ToolUseBlock,
 } from './types'
@@ -23,7 +25,7 @@ interface OpenAiToolCall {
   function?: { name?: string; arguments?: string }
 }
 interface OpenAiResponse {
-  choices?: Array<{ message?: { content?: string; tool_calls?: OpenAiToolCall[] }; finish_reason?: string }>
+  choices?: Array<{ message?: { content?: string; refusal?: string; tool_calls?: OpenAiToolCall[] }; finish_reason?: string }>
   usage?: { prompt_tokens?: number; completion_tokens?: number }
 }
 
@@ -187,6 +189,12 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         }))
         if (opts.toolChoice) body.tool_choice = opts.toolChoice
       }
+      if (opts.responseSchema) {
+        body.response_format = {
+          type: 'json_schema',
+          json_schema: { name: opts.responseSchema.name, schema: opts.responseSchema.schema, strict: true },
+        }
+      }
       // onToken 이 있으면 SSE 스트리밍 — 도구 동봉 요청도 스트리밍하며 tool_calls 를 누적한다(SP3).
       // include_usage 로 마지막 청크에 usage 를 받는다.
       const streaming = !!opts.onToken
@@ -195,15 +203,12 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         body.stream_options = { include_usage: true }
       }
 
-      const res = await http(ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: opts.signal,
-      })
+      const headers = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }
+      const send = (): Promise<HttpResponse> =>
+        http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
+      const res = streaming
+        ? await send()
+        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.response_format })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
@@ -218,6 +223,17 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         name: c.function?.name ?? '',
         input: parseArgs(c.function?.arguments),
       }))
+      // 구조화 출력 거부는 content 가 아니라 message.refusal 로 온다 — 빈 응답으로 흡수하지 않고 content_filter 로 표면화한다(#7).
+      const refusal = choice?.message?.refusal
+      if (typeof refusal === 'string' && refusal && toolCalls.length === 0) {
+        return {
+          text: '',
+          toolCalls: [],
+          finishReason: 'content_filter',
+          rawFinishReason: `refusal: ${refusal}`,
+          usage: { inputTokens: parsed.usage?.prompt_tokens, outputTokens: parsed.usage?.completion_tokens },
+        }
+      }
       return {
         text: choice?.message?.content ?? '',
         toolCalls,

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
-import type { ApiProvider, ChatTurn } from '../providers/types'
+import type { ApiCallOptions, ApiProvider, ChatTurn } from '../providers/types'
 import { createToolRegistry } from '../tools/registry'
 import { createApiSession } from './api-session'
 import { buildHeadlessArgs, createCliSession } from './cli-session'
@@ -151,6 +151,39 @@ describe('createApiSession', () => {
     await s.send('독립질문', { fresh: true }) // 도구 왕복(2회 chat) — history 미오염이어야 함
     await s.send('다음') // 누적 경로: fresh 질문/도구 턴 없이 '다음'만 보여야 한다
     expect(seen.at(-1)!.map((m) => m.content)).toEqual(['다음'])
+  })
+
+  it('send 의 responseSchema 를 provider 로 전달한다(구조화 출력)', async () => {
+    let seenOpts: ApiCallOptions | undefined
+    const provider: ApiProvider = {
+      id: 'fake', provider: 'anthropic', model: 'm',
+      async chat(_messages, opts) {
+        seenOpts = opts
+        return { text: '{}', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    const schema = { type: 'object', additionalProperties: false, properties: {} }
+    await s.send('x', { responseSchema: { name: 'v', schema } })
+    expect(seenOpts?.responseSchema).toEqual({ name: 'v', schema })
+  })
+
+  it('bypassTools 면 tool loop 를 건너뛰고 도구 없이 단발 chat 한다(분석 호출용)', async () => {
+    let seenTools: unknown = 'UNSET'
+    const provider: ApiProvider = {
+      id: 'fake', provider: 'anthropic', model: 'm',
+      async chat(_messages, opts) {
+        seenTools = opts?.tools
+        return { text: 'ok', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const registry = createToolRegistry([
+      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+    ])
+    const gate = { async request() { return 'approved' as const } }
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
+    expect(await s.send('go', { bypassTools: true })).toBe('ok')
+    expect(seenTools).toBeUndefined() // 루프 우회 → tools 미부착
   })
 
   it('toolDeps 가 undefined 를 반환하면(워크스페이스 없음) 단발 chat 으로 동작한다(회귀)', async () => {

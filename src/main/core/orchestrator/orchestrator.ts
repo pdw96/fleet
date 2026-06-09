@@ -13,7 +13,7 @@ import type { Workspace } from '../workspace/git'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
 import { planTasks } from './plan'
-import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict } from './review'
+import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict, REVIEW_SCHEMA } from './review'
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
 
@@ -204,7 +204,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           break
         }
         const verdict = parseReviewVerdict(
-          await reviewer.send(buildReviewPrompt(task.title, task.description, diff.patch), { fresh: true, signal: opts.signal }),
+          await reviewer.send(buildReviewPrompt(task.title, task.description, diff.patch), {
+            fresh: true,
+            signal: opts.signal,
+            responseSchema: { name: 'review', schema: REVIEW_SCHEMA },
+            bypassTools: true,
+          }),
         )
         emit({ type: 'task.review', message: verdict.approved ? '리뷰 승인' : '수정 요청', data: { taskId: task.id, approved: verdict.approved, round } })
         if (verdict.approved) {
@@ -292,7 +297,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   if (summarizer && !opts.signal?.aborted) {
     try {
       const finalTasks = store.listTasks(project.id)
-      summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), { fresh: true, signal: opts.signal })
+      summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), { fresh: true, signal: opts.signal, bypassTools: true })
       emit({ type: 'summary', message: '최종 요약 완료', data: { projectId: project.id } })
     } catch (err) {
       // 요약 실패가 완료된 작업 결과를 무효화하지 않도록 격리한다(summary 는 빈 문자열로 둔다).

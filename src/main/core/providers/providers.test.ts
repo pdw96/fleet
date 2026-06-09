@@ -4,7 +4,7 @@ import { createAnthropicProvider } from './anthropic'
 import { createGoogleProvider } from './google'
 import { createOpenAiProvider } from './openai'
 import { createApiProvider } from './registry'
-import { ApiProviderError, type HttpClient, type HttpInit } from './types'
+import { ApiProviderError, sendWithSchemaFallback, type HttpClient, type HttpInit, type HttpResponse } from './types'
 
 interface Captured {
   url: string
@@ -50,6 +50,14 @@ const baseAnthropic: ApiProviderConfig = {
   model: 'claude-sonnet-4-6',
   apiKey: 'key-a',
   maxTokens: 256,
+}
+
+const baseOpenai: ApiProviderConfig = {
+  id: 'o1', provider: 'openai', displayName: 'GPT', model: 'gpt-4o', apiKey: 'key-o', maxTokens: 256,
+}
+
+const baseGoogle: ApiProviderConfig = {
+  id: 'g1', provider: 'google', displayName: 'Gemini', model: 'gemini-2.5-pro', apiKey: 'key-g', maxTokens: 256,
 }
 
 describe('AnthropicProvider', () => {
@@ -131,6 +139,32 @@ describe('AnthropicProvider', () => {
     const { http } = mockHttp(() => ({ body: '{}' }))
     const p = createAnthropicProvider({ ...baseAnthropic, apiKey: undefined }, http)
     await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow('API 키')
+  })
+
+  it('responseSchema → output_config.format(json_schema) 를 body 에 싣는다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'verdict', schema } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.output_config).toEqual({ format: { type: 'json_schema', schema } })
+  })
+
+  it('구조화-출력 400 → output_config 없이 1회 재시도(graceful degradation)', async () => {
+    let n = 0
+    const { http, calls } = mockHttp(() => {
+      n++
+      return n === 1
+        ? { ok: false, status: 400, body: 'unsupported field output_config' }
+        : { body: JSON.stringify({ content: [{ type: 'text', text: '[]' }], stop_reason: 'end_turn' }) }
+    })
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const schema = { type: 'object', additionalProperties: false, properties: {} }
+    const out = await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema } })
+    expect(calls).toHaveLength(2)
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).output_config).toBeDefined()
+    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toBeUndefined()
+    expect(out.text).toBe('[]')
   })
 })
 
@@ -239,6 +273,40 @@ describe('OpenAiProvider', () => {
     const body = JSON.parse(calls[0].init.body) as { tools: unknown[] }
     expect(body.tools[0]).toEqual({ type: 'function', function: { name: 'search', description: undefined, parameters: { type: 'object' } } })
   })
+
+  it('responseSchema → response_format(json_schema, strict) 를 body 에 싣는다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'verdict', schema } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'verdict', schema, strict: true } })
+  })
+
+  it('구조화 출력 거부(message.refusal)를 content_filter 로 표면화한다(#7)', async () => {
+    const { http } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { refusal: '안전상 거부합니다' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }])
+    expect(out.finishReason).toBe('content_filter')
+    expect(out.text).toBe('')
+    expect(out.rawFinishReason).toContain('거부')
+  })
+
+  it('구조화-출력 400 → response_format 없이 1회 재시도', async () => {
+    let n = 0
+    const { http, calls } = mockHttp(() => {
+      n++
+      return n === 1
+        ? { ok: false, status: 400, body: 'response_format json_schema not supported' }
+        : { body: JSON.stringify({ choices: [{ message: { content: '[]' }, finish_reason: 'stop' }] }) }
+    })
+    const p = createOpenAiProvider(baseOpenai, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema: { type: 'object' } } })
+    expect(calls).toHaveLength(2)
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).response_format).toBeDefined()
+    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).response_format).toBeUndefined()
+    expect(out.text).toBe('[]')
+  })
 })
 
 describe('GoogleProvider', () => {
@@ -329,6 +397,33 @@ describe('GoogleProvider', () => {
     }
     expect(body.tools[0].functionDeclarations[0]).toMatchObject({ name: 'lookup' })
     expect(body.toolConfig.functionCallingConfig.mode).toBe('AUTO')
+  })
+
+  it('responseSchema → generationConfig.responseSchema + responseMimeType 를 싣는다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '{}' }] }, finishReason: 'STOP' }] }) }))
+    const p = createGoogleProvider(baseGoogle, http)
+    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'verdict', schema } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: Record<string, unknown> }
+    expect(body.generationConfig?.responseMimeType).toBe('application/json')
+    expect(body.generationConfig?.responseSchema).toEqual(schema)
+  })
+
+  it('구조화-출력 400 → responseSchema/responseMimeType 없이 1회 재시도', async () => {
+    let n = 0
+    const { http, calls } = mockHttp(() => {
+      n++
+      return n === 1
+        ? { ok: false, status: 400, body: 'responseSchema unsupported' }
+        : { body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '[]' }] }, finishReason: 'STOP' }] }) }
+    })
+    const p = createGoogleProvider(baseGoogle, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema: { type: 'object' } } })
+    expect(calls).toHaveLength(2)
+    const b1 = JSON.parse(calls[1].init.body) as { generationConfig?: Record<string, unknown> }
+    expect(b1.generationConfig?.responseSchema).toBeUndefined()
+    expect(b1.generationConfig?.responseMimeType).toBeUndefined()
+    expect(out.text).toBe('[]')
   })
 })
 
@@ -540,5 +635,37 @@ describe('createApiProvider (registry)', () => {
     expect(a.provider).toBe('anthropic')
     expect(o.provider).toBe('openai')
     expect(g.provider).toBe('google')
+  })
+})
+
+describe('sendWithSchemaFallback', () => {
+  const ok = (): HttpResponse => ({ ok: true, status: 200, text: async () => 'ok' })
+  const bad400 = (): HttpResponse => ({ ok: false, status: 400, text: async () => 'unsupported' })
+
+  it('성공(200)이면 재시도 없이 그대로 반환', async () => {
+    let n = 0
+    const res = await sendWithSchemaFallback(async () => { n++; return ok() }, true, () => { throw new Error('strip 호출 금지') })
+    expect(res.status).toBe(200)
+    expect(n).toBe(1)
+  })
+
+  it('스키마 있고 400 이면 stripSchema 후 1회 재시도', async () => {
+    let n = 0
+    let stripped = false
+    const res = await sendWithSchemaFallback(
+      async () => { n++; return n === 1 ? bad400() : ok() },
+      true,
+      () => { stripped = true },
+    )
+    expect(stripped).toBe(true)
+    expect(n).toBe(2)
+    expect(res.status).toBe(200)
+  })
+
+  it('스키마 없으면 400 이라도 재시도하지 않는다', async () => {
+    let n = 0
+    const res = await sendWithSchemaFallback(async () => { n++; return bad400() }, false, () => { throw new Error('strip 금지') })
+    expect(n).toBe(1)
+    expect(res.status).toBe(400)
   })
 })

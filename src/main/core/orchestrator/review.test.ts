@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict } from './review'
+import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict, REVIEW_SCHEMA } from './review'
 import type { VerificationResult } from '../../../shared/types'
 
 describe('parseReviewVerdict', () => {
@@ -27,6 +27,21 @@ describe('parseReviewVerdict', () => {
   it('treats the "APPROVED" wording as approved', () => {
     expect(parseReviewVerdict('APPROVED — 좋습니다').approved).toBe(true)
   })
+
+  it('구조화 출력 JSON {approved,feedback} 를 파싱한다', () => {
+    const v = parseReviewVerdict('{"approved":false,"feedback":"타입을 고쳐라"}')
+    expect(v.approved).toBe(false)
+    expect(v.feedback).toBe('타입을 고쳐라')
+  })
+
+  it('approved:true JSON 을 승인으로 본다', () => {
+    expect(parseReviewVerdict('{"approved":true,"feedback":""}').approved).toBe(true)
+  })
+
+  it('코드펜스로 감싼 JSON 도 파싱한다(CLI 폴백 견고화)', () => {
+    const v = parseReviewVerdict('```json\n{"approved":true,"feedback":""}\n```')
+    expect(v.approved).toBe(true)
+  })
 })
 
 describe('prompt builders', () => {
@@ -42,10 +57,11 @@ describe('prompt builders', () => {
     expect(p).toContain('워크스페이스')
   })
 
-  it('buildReviewPrompt embeds the diff and asks APPROVE/REVISE', () => {
+  it('buildReviewPrompt embeds the diff and asks for approved/feedback JSON', () => {
     const p = buildReviewPrompt('작업', '설명', 'diff --git a/x b/x')
     expect(p).toContain('diff --git')
-    expect(p).toContain('APPROVE')
+    expect(p).toContain('approved')
+    expect(p).toContain('feedback')
   })
 
   it('summary prompt lists task statuses', () => {
@@ -88,5 +104,14 @@ describe('buildVerifyFixPrompt', () => {
   it('falls back to stderr when analysis is absent', () => {
     const prompt = buildVerifyFixPrompt('g', [fail({ analysis: undefined, stderr: 'STDERR-LINE' })])
     expect(prompt).toContain('STDERR-LINE')
+  })
+})
+
+describe('REVIEW_SCHEMA', () => {
+  it('approved(boolean)·feedback(string) 객체 스키마', () => {
+    const props = REVIEW_SCHEMA.properties as Record<string, { type?: string }>
+    expect(props.approved.type).toBe('boolean')
+    expect(props.feedback.type).toBe('string')
+    expect(REVIEW_SCHEMA.additionalProperties).toBe(false)
   })
 })

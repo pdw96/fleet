@@ -5,6 +5,17 @@ export interface ReviewVerdict {
   feedback: string
 }
 
+/** reviewer 구조화 출력 스키마. */
+export const REVIEW_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['approved', 'feedback'],
+  properties: {
+    approved: { type: 'boolean' },
+    feedback: { type: 'string' },
+  },
+}
+
 /** 구현 작업 프롬프트 (선택적 이전 피드백 반영). 에이전트가 워크스페이스를 직접 편집한다. */
 export function buildImplementPrompt(
   goal: string,
@@ -34,16 +45,29 @@ export function buildReviewPrompt(taskTitle: string, taskDescription: string, di
     '변경(diff):',
     diff || '(변경 없음)',
     '',
-    '승인하면 첫 줄에 "APPROVE" 만 쓰라. 수정이 필요하면 첫 줄에 "REVISE" 를 쓰고',
-    '다음 줄부터 무엇을 어떻게 고칠지 구체적으로 작성하라.',
+    '반드시 아래 형식의 JSON 객체만 출력하라(설명/마크다운 금지):',
+    '{"approved": true 또는 false, "feedback": "승인이면 빈 문자열, 수정이 필요하면 무엇을 어떻게 고칠지"}',
   ].join('\n')
 }
 
-/** 리뷰 출력 파싱: 첫 토큰 APPROVE/REVISE + 피드백. */
+/** 리뷰 출력 파싱: 구조화 JSON {approved,feedback} 우선, 실패 시 APPROVE/REVISE 토큰 폴백. */
 export function parseReviewVerdict(text: string): ReviewVerdict {
-  // 앞쪽의 마크다운 강조·인용부호·리스트 마커·공백을 벗겨 판정 토큰을 노출시킨다
-  // (예: "**APPROVE**", '"APPROVE"', "- APPROVE" 도 승인으로 인식). 'APPROVED' 변형도 허용.
-  const normalized = text.trim().replace(/^[\s*_`"'>•-]+/, '')
+  // 코드펜스(```json … ```)로 감싼 출력은 본문만 떼어 파싱한다(CLI 폴백 견고화 — planner 경로와 대칭).
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidate = (fence ? fence[1] : text).trim()
+  try {
+    const parsed = JSON.parse(candidate) as unknown
+    if (parsed && typeof parsed === 'object') {
+      const o = parsed as Record<string, unknown>
+      if (typeof o.approved === 'boolean') {
+        return { approved: o.approved, feedback: typeof o.feedback === 'string' ? o.feedback : '' }
+      }
+    }
+  } catch {
+    // 깨끗한 JSON 이 아니면(CLI 산문/토큰 등) 폴백으로 진행
+  }
+  // 폴백: 앞쪽 마크다운/인용/리스트 마커를 벗기고 첫 토큰 APPROVE/REVISE 를 인식.
+  const normalized = candidate.replace(/^[\s*_`"'>•-]+/, '')
   const approved = /^APPROVED?\b/i.test(normalized)
   const feedback = normalized.replace(/^(APPROVED?|REVISE[DS]?)\b[:\s]*/i, '').trim()
   return { approved, feedback }

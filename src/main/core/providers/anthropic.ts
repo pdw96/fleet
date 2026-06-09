@@ -4,6 +4,7 @@ import {
   ApiProviderError,
   defaultHttp,
   requireApiKey,
+  sendWithSchemaFallback,
   textOf,
   type ApiCallOptions,
   type ApiProvider,
@@ -12,6 +13,7 @@ import {
   type ContentBlock,
   type FinishReason,
   type HttpClient,
+  type HttpResponse,
   type ToolUseBlock,
 } from './types'
 
@@ -165,20 +167,23 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         const tc = mapToolChoice(opts.toolChoice)
         if (tc) body.tool_choice = tc
       }
+      if (opts.responseSchema) {
+        body.output_config = { format: { type: 'json_schema', schema: opts.responseSchema.schema } }
+      }
       // onToken 이 있으면 SSE 스트리밍으로 요청한다 — 도구 동봉 요청도 스트리밍하며 tool_use 를 누적한다(SP3).
       const streaming = !!opts.onToken
       if (streaming) body.stream = true
 
-      const res = await http(ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': API_VERSION,
-        },
-        body: JSON.stringify(body),
-        signal: opts.signal,
-      })
+      const headers = {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': API_VERSION,
+      }
+      const send = (): Promise<HttpResponse> =>
+        http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
+      const res = streaming
+        ? await send()
+        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.output_config })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
