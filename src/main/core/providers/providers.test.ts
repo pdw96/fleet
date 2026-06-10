@@ -334,6 +334,16 @@ describe('AnthropicProvider', () => {
     expect(body.output_config).toBeUndefined()
   })
 
+  it('화이트리스트 부분일치 함정 방지 — 마이너 버전 숫자가 번진 미지 ID(opus-4-60)는 off 로 강등한다', async () => {
+    // `(?![0-9])` 룩어헤드가 없으면 opus-4-60 이 opus-4-6 으로 부분일치돼 미지 모델에 thinking 을 보내 400 위험.
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-60' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toBeUndefined()
+    expect(body.output_config).toBeUndefined()
+  })
+
   it('thinking 활성 + max_tokens 미지정이면 기본을 상향한다(버퍼 16384, 스트리밍 64000) — 명시값은 존중', async () => {
     // 버퍼 경로: 사고 토큰이 4096 예산을 소진해 빈-응답 truncation 이 되는 것을 막는다.
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))

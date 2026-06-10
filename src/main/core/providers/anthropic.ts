@@ -36,10 +36,12 @@ const THINKING_STREAMING_MAX_TOKENS = 64_000
 // (Opus 4.5 이하·Sonnet 4.5·Haiku)은 adaptive/effort 가 400 → thinking 통째 생략(=off).
 // 생략은 항상 안전 — temperature 가드와 동일한 보수 원칙. 미래 모델(opus-4-9 등)도 화이트리스트
 // 밖이면 무해하게 off 로 동작한다(장기적으론 Models API capability 조회가 정답 — #13 계열 후속).
-const ADAPTIVE_MODELS = /claude-(fable|opus-4-(6|7|8)|sonnet-4-6)/
+// `(?![0-9])` 룩어헤드로 마이너 버전 숫자가 더 긴 숫자로 번지는 부분일치(opus-4-60 이 4-6 으로 매칭)를 막는다 —
+// 미지 모델을 off 로 안전 강등하는 게 화이트리스트의 목적이므로 substring 매칭은 그 목적을 무력화한다.
+const ADAPTIVE_MODELS = /claude-(fable|opus-4-(6|7|8)|sonnet-4-6)(?![0-9])/
 // xhigh effort 와 thinking.display 필드는 Opus 4.7 도입. 4.6 세대는 summarized 가 기본 동작이라
 // display 생략이 행동 보존이고, xhigh 는 effort 생략(=서버 기본 high)으로 하향한다.
-const OPUS_47_PLUS = /claude-(fable|opus-4-(7|8))/
+const OPUS_47_PLUS = /claude-(fable|opus-4-(7|8))(?![0-9])/
 
 /**
  * per-call/config thinking 노브를 모델 가용성으로 정규화한다.
