@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { AgentRole, ApiProviderConfig, CliDetectionResult, LlmDescriptor, McpServerStatus } from '../../shared/types'
+import type {
+  AgentRole,
+  ApiProviderConfig,
+  CliDetectionResult,
+  LlmDescriptor,
+  McpServerStatus,
+  ReasoningEffort,
+} from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
 
 interface Props {
@@ -30,6 +37,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [provider, setProvider] = useState<ApiProviderConfig['provider']>('anthropic')
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
   const [apiKey, setApiKey] = useState('')
+  // thinking effort 세션 기본값('' = 끄기). 현재 Anthropic 만 매핑(#11-thinking 활성화).
+  const [effort, setEffort] = useState<'' | ReasoningEffort>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -153,12 +162,16 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
     setBusy(true)
     setError(null)
     try {
+      // thinking 은 Anthropic 만 매핑 — 끄기('')면 키 자체를 넣지 않는다(IPC 페이로드 깔끔 유지).
+      // 세션 설정은 비영속·불가시라 displayName 에도 노출해 어느 세션이 thinking 인지 확인 가능하게 한다.
+      const thinkingOn = provider === 'anthropic' && effort !== ''
       const config: ApiProviderConfig = {
         id: `${provider}-${Date.now()}`,
         provider,
-        displayName: `${provider} (${model})`,
+        displayName: `${provider} (${model}${thinkingOn ? `, thinking:${effort}` : ''})`,
         model,
         apiKey: apiKey.trim(),
+        ...(thinkingOn ? { thinking: { effort } } : {}),
       }
       await window.fleet.registerApiSession(config)
       setApiKey('')
@@ -249,8 +262,11 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
         </div>
         <div className="grid-2">
           <div>
-            <label className="field-label">Provider</label>
+            <label className="field-label" htmlFor="api-provider">
+              Provider
+            </label>
             <select
+              id="api-provider"
               className="field"
               value={provider}
               onChange={(e) => {
@@ -269,6 +285,30 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             <input className="field" value={model} onChange={(e) => setModel(e.target.value)} />
           </div>
         </div>
+        {provider === 'anthropic' && (
+          <div style={{ marginTop: 12 }}>
+            <label className="field-label" htmlFor="api-thinking">
+              Thinking effort (선택)
+            </label>
+            <select
+              id="api-thinking"
+              className="field"
+              value={effort}
+              onChange={(e) => setEffort(e.target.value as '' | ReasoningEffort)}
+            >
+              <option value="">끄기 (기본)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh (Opus 4.7+)</option>
+              <option value="max">max</option>
+            </select>
+            <p className="meta" style={{ marginTop: 6 }}>
+              현행 세대(Opus 4.6+ · Sonnet 4.6)에서만 적용 — 미지원 모델은 자동 off, 미지원 티어는 기본(high)으로
+              동작합니다.
+            </p>
+          </div>
+        )}
         <div style={{ marginTop: 12 }}>
           <label className="field-label">API 키</label>
           <input

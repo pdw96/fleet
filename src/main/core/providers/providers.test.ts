@@ -167,12 +167,12 @@ describe('AnthropicProvider', () => {
     expect(out.text).toBe('[]')
   })
 
-  it('thinking 노브 → adaptive thinking + display:summarized + effort 를 body 에 싣는다 (#11-thinking)', async () => {
+  it('thinking 노브 → adaptive thinking + effort 를 body 에 싣는다 — 4.6 세대는 display 생략(4.7 도입 필드) (#11-thinking)', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }) }))
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
-    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.thinking).toEqual({ type: 'adaptive' })
     expect(body.output_config).toEqual({ effort: 'high' })
   })
 
@@ -181,7 +181,7 @@ describe('AnthropicProvider', () => {
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
-    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.thinking).toEqual({ type: 'adaptive' })
     expect(body.output_config).toBeUndefined()
   })
 
@@ -224,7 +224,7 @@ describe('AnthropicProvider', () => {
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.temperature).toBeUndefined()
-    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.thinking).toEqual({ type: 'adaptive' })
   })
 
   it('thinking 미지정이면 temperature 를 그대로 전송한다(현행 동작)', async () => {
@@ -240,7 +240,7 @@ describe('AnthropicProvider', () => {
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {}, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.tool_choice).toBeUndefined() // 'any' 미전송 = auto(기본)
-    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.thinking).toEqual({ type: 'adaptive' })
   })
 
   it('thinking 켜져도 toolChoice:none 은 유지한다(none 은 thinking 과 호환)', async () => {
@@ -257,6 +257,128 @@ describe('AnthropicProvider', () => {
     await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.tool_choice).toEqual({ type: 'any' })
+  })
+
+  // ── #11-thinking 프로덕션 활성화: config 기본값 + 모델-인지 정규화 ──────────
+
+  it('config.thinking 이 세션 기본값으로 동작한다 — per-call 미지정에도 thinking 활성 (#11-thinking 활성화)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'high' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toEqual({ type: 'adaptive' })
+    expect(body.output_config).toEqual({ effort: 'high' })
+  })
+
+  it('config.thinking 기본값 경로에서도 temperature 생략·toolChoice required→auto 가드가 동작한다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3, thinking: {} }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.temperature).toBeUndefined()
+    expect(body.tool_choice).toBeUndefined() // required → auto 하향
+    expect(body.thinking).toEqual({ type: 'adaptive' })
+  })
+
+  it('per-call opts.thinking 이 config.thinking 기본값을 이긴다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'low' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.output_config).toEqual({ effort: 'max' })
+  })
+
+  it('Opus 4.7+ 모델은 display:summarized 를 동봉하고 xhigh effort 를 통과시킨다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-8' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config).toEqual({ effort: 'xhigh' })
+  })
+
+  it('xhigh 는 4.7 미만(Sonnet 4.6)에서 effort 생략으로 하향한다 — thinking 은 켠 채(서버 기본 high)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http) // claude-sonnet-4-6
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toEqual({ type: 'adaptive' })
+    expect(body.output_config).toBeUndefined() // effort 자체 생략 = 기본 high 로 동작
+  })
+
+  it('max effort 는 Sonnet 4.6 에서 그대로 통과한다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.output_config).toEqual({ effort: 'max' })
+  })
+
+  it('adaptive 미지원 모델(Haiku 4.5 등 구형)은 thinking 을 통째로 생략한다(=off, 400 방지)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-haiku-4-5', temperature: 0.3 }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'low' }, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toBeUndefined()
+    expect(body.output_config).toBeUndefined()
+    expect(body.temperature).toBe(0.3) // thinking off 와 동일하게 동작(가드 미발동)
+    expect(body.tool_choice).toEqual({ type: 'any' })
+  })
+
+  it('Opus 4.5(adaptive 도입 전)도 thinking 생략 대상이다 — 날짜접미 풀 ID 포함', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-5-20251101' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toBeUndefined()
+    expect(body.output_config).toBeUndefined()
+  })
+
+  it('화이트리스트 부분일치 함정 방지 — 마이너 버전 숫자가 번진 미지 ID(opus-4-60)는 off 로 강등한다', async () => {
+    // `(?![0-9])` 룩어헤드가 없으면 opus-4-60 이 opus-4-6 으로 부분일치돼 미지 모델에 thinking 을 보내 400 위험.
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-60' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.thinking).toBeUndefined()
+    expect(body.output_config).toBeUndefined()
+  })
+
+  it('thinking 활성 + max_tokens 미지정이면 기본을 상향한다(버퍼 16384, 스트리밍 64000) — 명시값은 존중', async () => {
+    // 버퍼 경로: 사고 토큰이 4096 예산을 소진해 빈-응답 truncation 이 되는 것을 막는다.
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined, thinking: { effort: 'high' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(16384)
+
+    // 스트리밍 경로: HTTP 타임아웃 위험이 없어 더 크게(Sonnet 4.6 출력 상한 이내).
+    const stream = mockStreamHttp(['event: message_stop\ndata: {"type":"message_stop"}\n\n'])
+    const ps = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined, thinking: { effort: 'high' } }, stream.http)
+    await ps.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
+    expect((JSON.parse(stream.calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(64000)
+
+    // 명시 config.maxTokens 는 그대로(baseAnthropic=256 — 기존 thinking 테스트들이 이미 커버하는 계약의 명시화).
+    const { http: h2, calls: c2 } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p2 = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'high' } }, h2)
+    await p2.chat([{ role: 'user', content: 'q' }])
+    expect((JSON.parse(c2[0].init.body) as Record<string, unknown>).max_tokens).toBe(256)
+  })
+
+  it('config.thinking 기본값과 responseSchema 동시(planner 경로) → output_config 에 format+effort 병합', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'medium' } }, http)
+    const schema = { type: 'object', additionalProperties: false, properties: {} }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.output_config).toEqual({ format: { type: 'json_schema', schema }, effort: 'medium' })
+    expect(body.thinking).toEqual({ type: 'adaptive' })
+  })
+
+  it('thinking off 면 max_tokens 기본은 기존 4096 그대로다(무회귀)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(4096)
   })
 
   it('ThinkingBlock 을 tool_use 앞에 thinking 블록으로 재방출하고 signature 를 보존한다 (#11-thinking 채널)', async () => {

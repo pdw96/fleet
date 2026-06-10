@@ -60,6 +60,44 @@ describe('SessionsPanel', () => {
     expect(fleet.registerCliSession).toHaveBeenCalledWith('claude', { stateful: false })
   })
 
+  it('Anthropic thinking effort 를 선택하면 registerApiSession config 에 thinking 이 실린다 (#11-thinking 활성화)', async () => {
+    const fleet = mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'xhigh' } })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
+
+    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    expect(cfg.provider).toBe('anthropic')
+    expect(cfg.thinking).toEqual({ effort: 'xhigh' })
+    // 세션 설정은 비영속·불가시라 displayName 에 노출해 어느 세션이 thinking 인지 확인 가능하게 한다.
+    expect(String(cfg.displayName)).toContain('thinking:xhigh')
+  })
+
+  it('thinking 기본(끄기)이면 config 에 thinking 키 자체를 넣지 않는다', async () => {
+    const fleet = mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
+
+    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    expect('thinking' in cfg).toBe(false)
+    expect(String(cfg.displayName)).not.toContain('thinking')
+  })
+
+  it('provider 가 anthropic 이 아니면 thinking effort 셀렉트를 노출하지 않는다(현재 Anthropic 만 매핑)', async () => {
+    mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
+    expect(screen.queryByLabelText(/Thinking effort/i)).toBeNull()
+  })
+
   it('MCP 서버 JSON 을 적용하고 상태를 표시한다', async () => {
     const status = [{ name: 'fs', connected: true, toolCount: 2, tools: ['mcp__fs__read', 'mcp__fs__write'] }]
     const fleet = mockFleet({ setMcpServers: vi.fn().mockResolvedValue(status) })

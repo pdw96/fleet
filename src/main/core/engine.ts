@@ -60,6 +60,11 @@ const seedCapabilities = (key: string): AgentRole[] => [...(DEFAULT_CAPABILITIES
 // 오케스트레이션 검증은 실제 빌드/테스트라 채팅용 120s 로는 부족하다 — 10분으로 상향(spec §5 분리·상향).
 const VERIFY_TIMEOUT_MS = 600_000
 
+// 신호 미지정 LLM 호출(채팅 경로)의 기본 HTTP 타임아웃. thinking 활성 응답(사고 토큰 포함 스트림)은
+// 기존 120s 를 쉽게 넘기므로 5분으로 상향 — 무한 대기 방지 목적은 유지(#11-thinking 활성화).
+// 오케스트레이터 경로는 run AbortController 의 signal 이 있어 이 기본값과 무관하다.
+const LLM_HTTP_TIMEOUT_MS = 300_000
+
 export interface FleetEngineOptions {
   store?: Store
   sessions?: SessionManager
@@ -155,7 +160,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const sessions = opts.sessions ?? createSessionManager()
   const cliRegistry = opts.cliRegistry ?? createCliRegistry()
   // 주입이 없으면 타임아웃·재시도를 갖춘 기본 HTTP 를 쓴다(네트워크 무한 대기/일시 오류 방어).
-  const http = opts.http ?? createResilientHttp(defaultHttp)
+  const http = opts.http ?? createResilientHttp(defaultHttp, { timeoutMs: LLM_HTTP_TIMEOUT_MS })
   const runner = opts.runner ?? defaultRunner
 
   // 안전 계층: 파일 쓰기는 caution(자동승인), 민감/삭제는 destructive(approver 필요)로 게이트한다.
