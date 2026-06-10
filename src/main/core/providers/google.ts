@@ -219,16 +219,15 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const headers = { 'content-type': 'application/json', 'x-goog-api-key': apiKey }
       const send = (): Promise<HttpResponse> =>
         http(url, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
-      const res = streaming
-        ? await send()
-        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => {
-            const gc = body.generationConfig as Record<string, unknown> | undefined
-            if (gc) {
-              delete gc.responseMimeType
-              delete gc.responseSchema
-              if (Object.keys(gc).length === 0) delete body.generationConfig
-            }
-          })
+      // 스트리밍도 동일 가드 — 400 재시도 응답이 OK 면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
+      const res = await sendWithSchemaFallback(send, !!opts.responseSchema, () => {
+        const gc = body.generationConfig as Record<string, unknown> | undefined
+        if (gc) {
+          delete gc.responseMimeType
+          delete gc.responseSchema
+          if (Object.keys(gc).length === 0) delete body.generationConfig
+        }
+      })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
