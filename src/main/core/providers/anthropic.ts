@@ -286,16 +286,15 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       }
       const send = (): Promise<HttpResponse> =>
         http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
-      const res = streaming
-        ? await send()
-        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => {
-            // 구조화-출력 400 폴백: format 만 제거하고 effort 등 다른 output_config 필드는 보존한다.
-            const oc = body.output_config as Record<string, unknown> | undefined
-            if (oc) {
-              delete oc.format
-              if (Object.keys(oc).length === 0) delete body.output_config
-            }
-          })
+      // 스트리밍도 동일 가드 — 400 재시도 응답이 OK 면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
+      const res = await sendWithSchemaFallback(send, !!opts.responseSchema, () => {
+        // 구조화-출력 400 폴백: format 만 제거하고 effort 등 다른 output_config 필드는 보존한다.
+        const oc = body.output_config as Record<string, unknown> | undefined
+        if (oc) {
+          delete oc.format
+          if (Object.keys(oc).length === 0) delete body.output_config
+        }
+      })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 

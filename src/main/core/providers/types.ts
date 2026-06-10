@@ -211,7 +211,7 @@ export function requireApiKey(config: ApiProviderConfig): string {
 }
 
 /**
- * 비스트리밍 요청을 구조화-출력 400 graceful degradation 으로 감싼다.
+ * 요청을 구조화-출력 400 graceful degradation 으로 감싼다(버퍼·스트리밍 공통 — #26 후속 b).
  * send() 가 400 을 반환하고 스키마가 있었으면 stripSchema() 로 스키마 필드를 제거한 뒤 1회 재시도한다.
  * (구형 모델이 구조화-출력 필드를 거부해도 폴백 파싱으로 계속 동작하게 — 회귀 차단.)
  */

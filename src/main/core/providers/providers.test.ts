@@ -43,6 +43,17 @@ function mockStreamHttp(chunks: string[]): { http: HttpClient; calls: Captured[]
   return { http, calls }
 }
 
+/** 첫 호출은 400, 재시도부터 SSE 스트림을 돌려주는 mock — 스트리밍 구조화-출력 400 폴백 검증용. */
+function mock400ThenStream(chunks: string[]): { http: HttpClient; calls: Captured[] } {
+  const calls: Captured[] = []
+  const http: HttpClient = async (url, init) => {
+    calls.push({ url, init })
+    if (calls.length === 1) return { ok: false, status: 400, text: async () => 'schema unsupported' }
+    return { ok: true, status: 200, text: async () => chunks.join(''), body: bodyOf(chunks) }
+  }
+  return { http, calls }
+}
+
 const baseAnthropic: ApiProviderConfig = {
   id: 'a1',
   provider: 'anthropic',
@@ -1225,6 +1236,83 @@ describe('provider streaming (SSE)', () => {
     expect(out.text).toBe('')
     expect(out.rawFinishReason).toContain('거부')
     expect(deltas).toEqual([]) // 거부는 content 토큰으로 흘리지 않는다(빈 응답 위장 방지와 대칭)
+  })
+})
+
+describe('스트리밍 구조화-출력 400 graceful degradation (#26 후속 b)', () => {
+  const schemaOpt = { name: 'v', schema: { type: 'object' } }
+
+  it('Anthropic: 스트리밍+responseSchema 400 → format 제거 후 1회 재시도(스트리밍 유지)', async () => {
+    const { http, calls } = mock400ThenStream([
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{}"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      onToken: (d) => deltas.push(d),
+      responseSchema: schemaOpt,
+    })
+    expect(calls).toHaveLength(2)
+    const b0 = JSON.parse(calls[0].init.body) as { output_config?: Record<string, unknown>; stream?: boolean }
+    expect(b0.output_config?.format).toBeDefined()
+    const b1 = JSON.parse(calls[1].init.body) as { output_config?: Record<string, unknown>; stream?: boolean }
+    expect(b1.output_config).toBeUndefined()
+    expect(b1.stream).toBe(true) // 재시도도 스트리밍 요청 유지
+    expect(out.text).toBe('{}')
+    expect(deltas).toEqual(['{}'])
+  })
+
+  it('Anthropic: 재시도 strip 은 format 만 제거하고 output_config.effort(thinking)는 보존한다', async () => {
+    const { http, calls } = mock400ThenStream([
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'x' }], {
+      onToken: () => {},
+      responseSchema: schemaOpt,
+      thinking: { effort: 'low' },
+    })
+    const b1 = JSON.parse(calls[1].init.body) as { output_config?: Record<string, unknown> }
+    expect(b1.output_config?.format).toBeUndefined()
+    expect(b1.output_config?.effort).toBe('low')
+  })
+
+  it('OpenAI: 스트리밍+responseSchema 400 → response_format 제거 후 1회 재시도(스트리밍 유지)', async () => {
+    const { http, calls } = mock400ThenStream([
+      'data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}\n\n',
+      'data: [DONE]\n\n',
+    ])
+    const p = createOpenAiProvider(baseOpenai, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {}, responseSchema: schemaOpt })
+    expect(calls).toHaveLength(2)
+    const b0 = JSON.parse(calls[0].init.body) as { response_format?: unknown; stream?: boolean }
+    expect(b0.response_format).toBeDefined()
+    const b1 = JSON.parse(calls[1].init.body) as { response_format?: unknown; stream?: boolean }
+    expect(b1.response_format).toBeUndefined()
+    expect(b1.stream).toBe(true)
+    expect(out.text).toBe('{}')
+  })
+
+  it('Google: 스트리밍+responseSchema 400 → responseSchema/responseMimeType 제거 후 1회 재시도', async () => {
+    const { http, calls } = mock400ThenStream([
+      'data: {"candidates":[{"content":{"parts":[{"text":"{}"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider(baseGoogle, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {}, responseSchema: schemaOpt })
+    expect(calls).toHaveLength(2)
+    expect(calls[1].url).toContain('streamGenerateContent?alt=sse') // 재시도도 스트리밍 엔드포인트 유지
+    const b1 = JSON.parse(calls[1].init.body) as { generationConfig?: Record<string, unknown> }
+    expect(b1.generationConfig?.responseSchema).toBeUndefined()
+    expect(b1.generationConfig?.responseMimeType).toBeUndefined()
+    expect(out.text).toBe('{}')
+  })
+
+  it('스트리밍 400 이라도 responseSchema 가 없으면 재시도하지 않는다(에러 보존)', async () => {
+    const { http, calls } = mock400ThenStream([])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+    expect(calls).toHaveLength(1)
   })
 })
 

@@ -214,9 +214,8 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       const headers = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }
       const send = (): Promise<HttpResponse> =>
         http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
-      const res = streaming
-        ? await send()
-        : await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.response_format })
+      // 스트리밍도 동일 가드 — 400 재시도 응답이 OK 면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
+      const res = await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.response_format })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
