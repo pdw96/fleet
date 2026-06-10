@@ -354,6 +354,16 @@ describe('AnthropicProvider', () => {
     expect((JSON.parse(c2[0].init.body) as Record<string, unknown>).max_tokens).toBe(256)
   })
 
+  it('config.thinking 기본값과 responseSchema 동시(planner 경로) → output_config 에 format+effort 병합', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'medium' } }, http)
+    const schema = { type: 'object', additionalProperties: false, properties: {} }
+    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.output_config).toEqual({ format: { type: 'json_schema', schema }, effort: 'medium' })
+    expect(body.thinking).toEqual({ type: 'adaptive' })
+  })
+
   it('thinking off 면 max_tokens 기본은 기존 4096 그대로다(무회귀)', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
     const p = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined }, http)

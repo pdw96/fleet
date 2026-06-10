@@ -475,6 +475,46 @@ describe('FleetEngine', () => {
     expect(body.output_config?.effort).toBe('xhigh')
   })
 
+  it('도구 루프 반복에서도 세션 thinking 기본값이 매 호출 유지된다 (#11-thinking 활성화)', async () => {
+    const pingTool: FleetTool = {
+      definition: { name: 'mcp__demo__ping', parameters: { type: 'object' } },
+      classify: () => 'safe',
+      async execute() {
+        return 'pong'
+      },
+    }
+    const fakeMcpHost: McpHost = {
+      async setServers() {
+        return []
+      },
+      tools: () => [pingTool],
+      status: () => [],
+      async dispose() {},
+    }
+    const { http, calls } = scriptedHttp([
+      JSON.stringify({ content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__demo__ping', input: {} }], stop_reason: 'tool_use' }),
+      JSON.stringify({ content: [{ type: 'text', text: '끝' }], stop_reason: 'end_turn' }),
+    ])
+    const engine = createFleetEngine({ http, mcpHost: fakeMcpHost })
+    engine.registerApiSession({
+      id: 'a',
+      provider: 'anthropic',
+      displayName: 'A',
+      model: 'claude-sonnet-4-6',
+      apiKey: 'k',
+      thinking: { effort: 'high' },
+    })
+    const room = engine.createRoom('r', ['api:a'])
+    await engine.askLlm(room.id, 'api:a')
+
+    expect(calls).toHaveLength(2) // 도구 왕복 = chat 2회 — 두 호출 모두 thinking 유지
+    for (const c of calls) {
+      const body = JSON.parse(c) as { thinking?: unknown; output_config?: { effort?: string } }
+      expect(body.thinking).toEqual({ type: 'adaptive' }) // sonnet-4-6: display 생략(4.7 도입 필드)
+      expect(body.output_config?.effort).toBe('high')
+    }
+  })
+
   it('MCP 도구가 있으면 워크스페이스 없이도 API 세션이 도구 루프로 호출한다 (#10 SP2)', async () => {
     const pingTool: FleetTool = {
       definition: { name: 'mcp__demo__ping', parameters: { type: 'object' } },
