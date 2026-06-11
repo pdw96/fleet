@@ -50,11 +50,17 @@ function supportsReasoningEffort(model: string): boolean {
   if (/-chat/i.test(model) || /^o1-mini/i.test(model)) return false
   return isReasoningModel(model)
 }
-// 값 가용성도 모델별: 현행 reasoning 모델은 low/medium/high 공통, xhigh 는 GPT-5.4/5.5 세대 전용(미만은 400).
+// 값 가용성도 모델별: 현행 reasoning 모델은 low/medium/high 공통, xhigh 는 **GPT-5.2+ 세대**(codex 변종
+// 포함 — 5.2·5.2-codex·5.3-codex·5.4·5.5…) 전용이다. GPT-5.0/5.1 과 o-series 는 xhigh 미지원(전송 시 400).
 // 중립 ReasoningEffort 의 'max' 는 OpenAI 무효값이라 모델 최상위 티어(xhigh 가능 시 xhigh, 아니면 high)로
 // 매핑한다. 미지원 티어는 항상 high 로 안전 강등(생략 아님 — reasoning 모델 effort 기본은 medium 이라 high
-// 가 사용자 의도에 더 근접). `(?![0-9])` 로 마이너 버전 부분일치(gpt-5.40 이 5.4 로 매칭)를 막는다.
-const OPENAI_XHIGH_MODELS = /^gpt-5\.(4|5)(?![0-9])/i
+// 가 사용자 의도에 더 근접). 마이너 버전을 **숫자로 비교**해 5.2+ 를 빠짐없이 포함하고(정규식 열거의
+// under-match 로 5.2/5.3 가 high 로 무성 강등되던 회귀 차단 — codex P2) 두 자리 마이너(5.10+)도 안전 처리한다.
+// 비-reasoning chat 변종은 supportsReasoningEffort 가 이미 걸러 여기 도달하지 않는다(이중 게이트 불필요).
+function supportsXhigh(model: string): boolean {
+  const m = /^gpt-5\.(\d+)/i.exec(model)
+  return m ? Number(m[1]) >= 2 : false
+}
 
 /**
  * per-call/config thinking 노브를 OpenAI reasoning_effort 값으로 정규화한다.
@@ -63,7 +69,7 @@ const OPENAI_XHIGH_MODELS = /^gpt-5\.(4|5)(?![0-9])/i
 function resolveReasoningEffort(model: string, knob: ApiCallOptions['thinking']): string | undefined {
   if (!knob || knob.effort === undefined || !supportsReasoningEffort(model)) return undefined
   // 'max'(OpenAI 무효값)·'xhigh'(미지원 세대) 둘 다 모델 최상위 티어로 수렴. low/medium/high 는 그대로.
-  if (knob.effort === 'max' || knob.effort === 'xhigh') return OPENAI_XHIGH_MODELS.test(model) ? 'xhigh' : 'high'
+  if (knob.effort === 'max' || knob.effort === 'xhigh') return supportsXhigh(model) ? 'xhigh' : 'high'
   return knob.effort
 }
 

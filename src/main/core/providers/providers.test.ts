@@ -762,6 +762,21 @@ describe('OpenAiProvider', () => {
     expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
   })
 
+  it('xhigh 지원 세대는 GPT-5.2+(codex 변종 포함) — 5.2/5.2-codex/5.3-codex=xhigh, 5.1/5.0=high 강등 (codex P2)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    for (const model of ['gpt-5.2', 'gpt-5.2-codex', 'gpt-5.3-codex']) {
+      const p = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model, apiKey: 'k' }, http)
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+      expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('xhigh')
+    }
+    // 5.1/5.0(=plain gpt-5) 은 xhigh 미지원 세대 → high 로 안전 강등(400 방지).
+    for (const model of ['gpt-5.1', 'gpt-5']) {
+      const p = createOpenAiProvider({ id: 'l', provider: 'openai', displayName: 'L', model, apiKey: 'k' }, http)
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+      expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+    }
+  })
+
   it('중립 max 는 모델 최상위 티어로 매핑한다 — gpt-5.5=xhigh, o3-mini=high', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
     const xh = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model: 'gpt-5.5', apiKey: 'k' }, http)
