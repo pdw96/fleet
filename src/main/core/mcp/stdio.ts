@@ -1,5 +1,6 @@
 import spawn from 'cross-spawn'
 import type { McpServerSpec } from '../../../shared/types'
+import { killTree } from '../process/kill-tree'
 import type { McpChild, McpTransport, SpawnFn } from './types'
 
 /**
@@ -28,7 +29,8 @@ export const defaultSpawn: SpawnFn = (spec: McpServerSpec): McpChild => {
       child.on('close', () => handler())
     },
     kill: () => {
-      child.kill()
+      // Windows 에서 cross-spawn 은 cmd.exe 셰임 경유라 child.kill() 은 껍데기만 죽인다 → 트리 킬.
+      killTree(child)
     },
   }
 }

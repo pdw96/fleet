@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { defaultRunner, detectAll, detectCli, parseVersion, type CommandRunner } from './detect'
+import { defaultRunner, detectAll, detectCli, parseVersion, type CommandRunner, type RunOpts } from './detect'
 import { createCliRegistry, DEFAULT_CLI_ADAPTERS } from './registry'
+import * as killTreeMod from '../process/kill-tree'
 import type { CliAdapter } from '../../../shared/types'
 
 const claude: CliAdapter = {
@@ -99,6 +100,23 @@ describe('defaultRunner (integration)', () => {
     expect(res.spawnError).toBe('ENOBUFS')
   }, 15_000)
 
+  // 회귀(코드 리뷰 P2): overflow 가 여러 chunk 로 반복 트리거돼도 트리 킬은 한 번만 — 과거 child.kill()
+  // 은 저렴했지만 killTree 는 매번 taskkill 프로세스를 스폰하므로 가드가 없으면 종료 중 프로세스가 폭주한다.
+  it('overflow 가 반복돼도 트리 킬은 한 번만 한다', async () => {
+    const killSpy = vi.spyOn(killTreeMod, 'killTree')
+    try {
+      const script = "process.stdout.write('x'.repeat(11*1024*1024))"
+      const res = await defaultRunner('node', ['-e', script], { timeoutMs: 10_000 })
+      expect(res.spawnError).toBe('ENOBUFS')
+      // 미수정 시 finish 가 첫 overflow 에서 즉시 resolve 하고 남은 chunk 들이 백그라운드에서 onOverflow
+      // 를 반복 호출하므로, drain 을 잠시 기다려 그 폭주가 spy 에 쌓이게 한 뒤 카운트한다.
+      await new Promise((r) => setTimeout(r, 300))
+      expect(killSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      killSpy.mockRestore()
+    }
+  }, 15_000)
+
   it('runs the child in the given cwd', async () => {
     const res = await defaultRunner('node', ['-e', 'process.stdout.write(process.cwd())'], {
       timeoutMs: 10_000,
@@ -155,6 +173,95 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows .cmd shim 
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  }, 15_000)
+})
+
+describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세스 트리 킬)', () => {
+  // 회귀(이 버그의 본질): cross-spawn 은 .cmd 셰임을 cmd.exe 경유로 띄우므로 종료 시 child.kill() 은
+  // cmd.exe 껍데기만 죽이고 실제 CLI(node.exe 손자)는 살아남는다 → 취소 후에도 편집 에이전트가
+  // 워크스페이스를 계속 수정해 engine 의 revert 와 경합한다. 모든 종료 경로가 손자 트리까지 죽여야 한다.
+  const isAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const waitUntil = async (pred: () => boolean, ms: number) => {
+    const start = Date.now()
+    while (Date.now() - start < ms && !pred()) await new Promise((r) => setTimeout(r, 50))
+  }
+
+  // .cmd 셰임(cmd.exe) → node 손자를 띄우고, 주어진 종료 경로(abort/timeout)로 끝낸 뒤
+  // 손자까지 죽었는지 확인한다. 어서션이 (RED 처럼) 실패해도 finally 에서 손자를 정리한다(좀비 누수 방지).
+  async function expectTreeKilled(opts: RunOpts, expectError: string, afterStart?: () => void) {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-tree-'))
+    let grandchildPid = 0
+    try {
+      writeFileSync(
+        join(dir, 'sleeper.cmd'),
+        '@echo off\r\nnode -e "console.log(process.pid);setInterval(()=>{},1000)"\r\n',
+      )
+      const done = defaultRunner(join(dir, 'sleeper.cmd'), [], opts, (chunk) => {
+        const m = chunk.match(/\d+/)
+        if (m && !grandchildPid) grandchildPid = Number(m[0])
+      })
+      await waitUntil(() => grandchildPid > 0, 8000)
+      expect(grandchildPid).toBeGreaterThan(0)
+      expect(isAlive(grandchildPid)).toBe(true) // 손자 기동 확인
+
+      afterStart?.() // 손자 기동 후 종료 트리거(abort). timeout 경로는 timeoutMs 경과로 자연 발화.
+      const res = await done
+      expect(res.spawnError).toBe(expectError)
+
+      await waitUntil(() => !isAlive(grandchildPid), 5000)
+      expect(isAlive(grandchildPid)).toBe(false) // 손자까지 종료됨
+    } finally {
+      if (grandchildPid && isAlive(grandchildPid)) {
+        try {
+          process.kill(grandchildPid)
+        } catch {
+          /* 이미 종료 */
+        }
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('abort 시 .cmd 셰임이 띄운 손자(node)까지 종료한다', async () => {
+    const ac = new AbortController()
+    await expectTreeKilled({ timeoutMs: 30_000, signal: ac.signal }, 'ABORTED', () => ac.abort())
+  }, 25_000)
+
+  // overflow(ENOBUFS) 경로도 동일한 killTree(child) 를 호출한다(detect.ts) — abort/timeout 로 대표 커버.
+  it('timeout 시에도 손자(node)까지 종료한다', async () => {
+    await expectTreeKilled({ timeoutMs: 2000 }, 'ETIMEDOUT')
+  }, 25_000)
+})
+
+describe.skipIf(process.platform === 'win32')('defaultRunner (취소 시 close 대기 — POSIX)', () => {
+  // 회귀(코드 리뷰 P1): killTree 는 비동기(taskkill/SIGTERM)라 즉시 finish 하면 자식이 아직 살아
+  // 워크스페이스를 쓰는 동안 호출자가 ABORTED 를 받고 revert 를 시작해 경합한다. abort 는 자식이
+  // 실제로 close(트리 종료)된 뒤에 resolve 해야 한다 — SIGTERM 을 지연 처리하는 자식으로 경과시간 검증.
+  it('abort 는 자식이 실제로 종료(close)된 뒤에야 ABORTED 로 resolve 한다', async () => {
+    const script =
+      "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),250));process.stdout.write('up');setInterval(()=>{},1000)"
+    let up = false
+    const ac = new AbortController()
+    const p = defaultRunner('node', ['-e', script], { timeoutMs: 30_000, signal: ac.signal }, (c) => {
+      if (c.includes('up')) up = true
+    })
+    const start = Date.now()
+    while (Date.now() - start < 5000 && !up) await new Promise((r) => setTimeout(r, 20))
+    expect(up).toBe(true) // 자식 기동 확인
+
+    const abortAt = Date.now()
+    ac.abort()
+    const res = await p
+    expect(res.spawnError).toBe('ABORTED')
+    // 자식이 SIGTERM 후 250ms 뒤 종료하므로, finish 가 close 를 기다렸다면 경과 ≥ ~180ms.
+    expect(Date.now() - abortAt).toBeGreaterThanOrEqual(180)
   }, 15_000)
 })
 
