@@ -132,11 +132,17 @@ async function readStream(
         finish_reason?: string
       }>
       usage?: { prompt_tokens?: number; completion_tokens?: number }
+      error?: { message?: string; type?: string; code?: string }
     }
     try {
       ev = JSON.parse(data)
     } catch {
       continue
+    }
+    // HTTP 200 스트림 중에도 error 페이로드(rate limit·서버 과부하 등)가 올 수 있다. 부분 응답을
+    // 성공으로 위장하지 않고 즉시 에러로 표면화한다(silent truncation 방지 — #7, anthropic 과 대칭).
+    if (ev.error) {
+      throw new ApiProviderError('openai', 200, JSON.stringify(ev.error))
     }
     const choice = ev.choices?.[0]
     const delta = choice?.delta?.content
@@ -163,6 +169,11 @@ async function readStream(
   // 거부가 누적됐고 도구 호출이 없으면 빈 응답으로 흡수하지 않고 content_filter 로 표면화한다(#7, 버퍼 경로와 대칭).
   if (refusal && toolCalls.length === 0) {
     return { text: '', toolCalls: [], finishReason: 'content_filter', rawFinishReason: `refusal: ${refusal}`, usage }
+  }
+  // 클린 종료인데 finish_reason 미수신 = 비정상 종료(연결 끊김 등). mapFinish(undefined)='stop' 으로 위장하면
+  // 잘린 부분 응답이 성공으로 흡수된다 → silent truncation 표면화(#7, 3사 공통). 거부는 위에서 이미 종결.
+  if (finish === undefined) {
+    throw new ApiProviderError('openai', 200, 'stream ended without finish_reason (truncated)')
   }
   return { text, toolCalls, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
 }

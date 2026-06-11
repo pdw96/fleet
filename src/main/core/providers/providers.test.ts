@@ -363,7 +363,11 @@ describe('AnthropicProvider', () => {
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(16384)
 
     // 스트리밍 경로: HTTP 타임아웃 위험이 없어 더 크게(Sonnet 4.6 출력 상한 이내).
-    const stream = mockStreamHttp(['event: message_stop\ndata: {"type":"message_stop"}\n\n'])
+    // (message_delta 로 stop_reason 을 줘 클린 종료로 만든다 — stop_reason 미수신 잘림 가드와 무충돌.)
+    const stream = mockStreamHttp([
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ])
     const ps = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined, thinking: { effort: 'high' } }, stream.http)
     await ps.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
     expect((JSON.parse(stream.calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(64000)
@@ -1070,7 +1074,7 @@ describe('provider streaming (SSE)', () => {
     ])
   })
 
-  it('Anthropic: 스트리밍 tool_use 의 깨진 input_json 은 {} 로 복구한다 (#10 SP3)', async () => {
+  it('Anthropic: 스트리밍 tool_use 의 깨진 input_json 은 원문을 보존한다 (#10 SP3, OpenAI parseArgs 와 대칭)', async () => {
     const { http } = mockStreamHttp([
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"x"}}\n\n',
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{깨진"}}\n\n',
@@ -1082,7 +1086,21 @@ describe('provider streaming (SSE)', () => {
       onToken: () => {},
       tools: [{ name: 'x', parameters: { type: 'object' } }],
     })
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'x', input: {} }])
+    // {} 로 무성 흡수하지 않고 원문을 보존한다 — 다운스트림 진단성 향상(빈 인자 위장 방지).
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'x', input: '{깨진' }])
+  })
+
+  it('OpenAI: 스트리밍 tool_calls 의 깨진 arguments 도 원문을 보존한다 (#10 SP3, anthropic 과 대칭)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"x","arguments":"{깨진"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      'data: [DONE]\n\n',
+    ])
+    const p = createOpenAiProvider(baseOpenai, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'x', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'c1', name: 'x', input: '{깨진' }])
   })
 
   it('OpenAI: 스트리밍 중 여러 tool_calls 를 인덱스별로 누적한다 (#10 SP3)', async () => {
@@ -1107,6 +1125,63 @@ describe('provider streaming (SSE)', () => {
       'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"부분"}}\n\n',
       'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}\n\n',
     ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+  })
+
+  it('OpenAI streaming: 중간 error 페이로드는 ApiProviderError 로 throw(부분응답 위장 방지, anthropic 과 대칭)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"content":"부분"},"finish_reason":null}]}\n\n',
+      'data: {"error":{"message":"overloaded","type":"server_error"}}\n\n',
+    ])
+    const p = createOpenAiProvider(baseOpenai, http)
+    const err = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiProviderError)
+    expect(err).toMatchObject({ provider: 'openai', status: 200 })
+    expect((err as ApiProviderError).detail).toContain('overloaded')
+  })
+
+  it('Google streaming: 중간 error 페이로드는 ApiProviderError 로 throw(부분응답 위장 방지, anthropic 과 대칭)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"부분"}]}}]}\n\n',
+      'data: {"error":{"code":503,"message":"overloaded","status":"UNAVAILABLE"}}\n\n',
+    ])
+    const p = createGoogleProvider(baseGoogle, http)
+    const err = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiProviderError)
+    expect(err).toMatchObject({ provider: 'google', status: 200 })
+    expect((err as ApiProviderError).detail).toContain('overloaded')
+  })
+
+  it('OpenAI streaming: finish_reason 없이 끝나면 ApiProviderError 로 표면화한다(잘림 stop 위장 방지 — #7)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"content":"잘"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"림"},"finish_reason":null}]}\n\n',
+    ])
+    const p = createOpenAiProvider(baseOpenai, http)
+    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+  })
+
+  it('Google streaming: finishReason 없이 끝나면 ApiProviderError 로 표면화한다(잘림 stop 위장 방지 — #7)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"잘"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"림"}]}}]}\n\n',
+    ])
+    const p = createGoogleProvider(baseGoogle, http)
+    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+  })
+
+  it('Anthropic streaming: message_delta(stop_reason) 없이 끝나면 ApiProviderError 로 표면화한다(잘림 stop 위장 방지 — #7)', async () => {
+    const { http } = mockStreamHttp([
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"잘림"}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+  })
+
+  it('Anthropic streaming: 이벤트 0개(빈 200 스트림)도 ApiProviderError 로 표면화한다(잘림 stop 위장 방지 — #7)', async () => {
+    const { http } = mockStreamHttp([])
     const p = createAnthropicProvider(baseAnthropic, http)
     await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
   })

@@ -123,13 +123,16 @@ function mapFinish(reason: string | undefined): FinishReason {
   }
 }
 
-/** 누적된 input_json 문자열을 객체로 파싱한다(빈/실패 시 {}). */
+/**
+ * 누적된 input_json 문자열을 객체로 파싱한다. 빈 문자열은 빈 객체, 파싱 실패 시 원문을 보존한다
+ * (OpenAI parseArgs 와 대칭) — {} 로 무성 흡수하면 빈 인자와 구별되지 않아 다운스트림 진단성이 떨어진다.
+ */
 function parseToolInput(json: string): unknown {
   if (!json) return {}
   try {
     return JSON.parse(json)
   } catch {
-    return {}
+    return json
   }
 }
 
@@ -199,6 +202,11 @@ async function readStream(
       if (ev.delta?.stop_reason) stop = ev.delta.stop_reason
       if (ev.usage?.output_tokens != null) usage.outputTokens = ev.usage.output_tokens
     }
+  }
+  // 클린 종료인데 stop_reason 미수신 = 비정상 종료(연결 끊김 등). mapFinish(undefined)='stop' 으로 위장하면
+  // 잘린 부분 응답이 성공으로 흡수된다 → silent truncation 표면화(#7, error 이벤트 가드와 동일 원칙·3사 공통).
+  if (stop === undefined) {
+    throw new ApiProviderError('anthropic', 200, 'stream ended without stop_reason (truncated)')
   }
   const toolCalls: ToolUseBlock[] = [...toolAccum.entries()]
     .sort((a, b) => a[0] - b[0])
