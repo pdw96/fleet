@@ -309,7 +309,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             <p className="meta" style={{ marginTop: 6 }}>
               {provider === 'anthropic'
                 ? '현행 세대(Opus 4.6+ · Sonnet 4.6)에서만 적용 — 미지원 모델은 자동 off, 미지원 티어는 기본(high)으로 동작합니다.'
-                : 'reasoning 모델(o-series · GPT-5+, chat·o1-mini 제외)에서만 적용 — 그 외 모델은 미전송, xhigh/max 는 미지원 모델에서 high 로 하향됩니다.'}
+                : 'reasoning 모델(o-series · GPT-5+, chat·o1 초기 모델 제외)에서만 적용 — 그 외는 미전송, xhigh/max 는 미지원 모델에서 high 로, pro 모델은 지원 티어로 자동 정규화됩니다.'}
             </p>
           </div>
         )}
