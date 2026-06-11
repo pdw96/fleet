@@ -62,8 +62,10 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
     let errLen = 0
     let settled = false
     // 종료가 트리거되면(취소/타임아웃/overflow) 그 사유를 담는다. set 되면 killTree 는 1회만,
-    // 실제 finish 는 자식 'close'(트리 실제 종료)에서 수행한다.
+    // 실제 finish 는 트리 킬 확인(killTree resolve)과 자식 'close'(출력 드레인)를 둘 다 본 뒤 한다.
     let terminating: string | undefined
+    let killConfirmed = false // killTree 가 resolve 됨(win32 taskkill 종료 = 트리 force-kill 완료)
+    let streamClosed = false // 자식 'close'(stdout 파이프 EOF)
     let graceTimer: ReturnType<typeof setTimeout> | undefined
     // 스트리밍 시 멀티바이트 경계 안전 디코드(청크가 UTF-8 글자 중간에서 끊겨도 OK).
     const decoder = onStdout ? new StringDecoder('utf8') : null
@@ -86,15 +88,24 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
 
     const child = spawn(command, args, { windowsHide: true, cwd })
 
+    // 종료가 트리거됐을 때(취소/타임아웃/overflow) 트리 킬 확인과 stdout close 를 둘 다 본 뒤 종결한다.
+    const finishWhenTerminated = () => {
+      if (terminating && killConfirmed && streamClosed) finish({ code: null, spawnError: terminating })
+    }
+
     // 종료를 한 번만 트리거한다. killTree 는 비동기(특히 win32 taskkill 프로세스 스폰)이므로:
     //  - 트리 킬은 1회만 한다(반복 overflow chunk 가 taskkill 을 폭주 스폰하지 않게 가드).
-    //  - 즉시 finish 하지 않고 자식 'close'(프로세스 트리 실제 종료)에서 finish 한다 → 취소 반환이
-    //    "프로세스 종료 완료"를 보장해, 호출자(engine)의 후속 revert 가 살아있는 손자와 경합하지 않는다.
-    //  - close 가 끝내 안 오면 유예(KILL_GRACE_MS) 후 SIGKILL escalation + 강제 종결(무한 대기 방지).
+    //  - 즉시 finish 하지 않고 트리 킬 확인(killTree resolve = win32 taskkill 종료)과 자식 'close'를
+    //    둘 다 기다린 뒤 finish → 취소 반환이 "프로세스 트리 종료 완료"를 보장해, 호출자(engine)의
+    //    후속 revert 가 살아있는 손자(또는 분리된 자손)와 경합하지 않는다.
+    //  - 둘 다 끝내 안 오면 유예(KILL_GRACE_MS) 후 SIGKILL escalation + 강제 종결(무한 대기 방지).
     const terminate = (spawnError: string) => {
       if (settled || terminating) return
       terminating = spawnError
-      killTree(child)
+      void killTree(child).then(() => {
+        killConfirmed = true
+        finishWhenTerminated()
+      })
       graceTimer = setTimeout(() => {
         try {
           child.kill('SIGKILL')
@@ -138,8 +149,10 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
         const rest = decoder.end()
         if (rest) onStdout(rest)
       }
-      // 종료가 트리거됐으면(취소/타임아웃/overflow) 그 사유로, 아니면 정상 종료 코드로 종결한다.
-      finish(terminating ? { code: null, spawnError: terminating } : { code })
+      streamClosed = true
+      // 종료가 트리거됐으면(취소/타임아웃/overflow) 트리 킬 확인까지 본 뒤, 아니면 정상 종료 코드로 종결한다.
+      if (terminating) finishWhenTerminated()
+      else finish({ code })
     })
 
     // 자식이 stdin 을 읽기 전에 죽으면 write 가 EPIPE 를 낼 수 있다 — 실제 결과는

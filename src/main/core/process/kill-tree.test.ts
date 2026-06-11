@@ -18,56 +18,75 @@ function fakeChild(pid?: number) {
   return { child, killed: () => killed }
 }
 
-/** taskkill spawn 호출을 캡처하는 fake spawn. */
+/** taskkill spawn 호출을 캡처하고 이벤트를 발사하는 fake spawn. */
 function fakeSpawn() {
   const calls: Array<{ command: string; args: readonly string[]; options: unknown }> = []
-  let errorHandler: ((err: Error) => void) | undefined
+  const handlers: Record<string, (...a: unknown[]) => void> = {}
   const spawnFn: KillSpawnFn = (command, args, options) => {
     calls.push({ command, args, options })
     return {
-      on: (_event, handler) => {
-        errorHandler = handler
+      on: (event, handler) => {
+        handlers[event] = handler as (...a: unknown[]) => void
         return undefined
       },
       unref: () => {},
     }
   }
-  return { spawnFn, calls, fireError: () => errorHandler?.(new Error('taskkill 없음')) }
+  return { spawnFn, calls, fire: (event: string) => handlers[event]?.() }
 }
 
 describe('killTree', () => {
-  it('win32 에서는 taskkill /pid <pid> /T /F 로 트리 전체를 죽인다(셰임만 죽이는 child.kill 우회)', () => {
+  it('win32 에서는 시스템 taskkill 절대경로로 /pid <pid> /T /F 트리 전체를 죽인다', async () => {
     const { child, killed } = fakeChild(4242)
     const s = fakeSpawn()
-    killTree(child, { platform: 'win32', spawnFn: s.spawnFn })
+    const p = killTree(child, { platform: 'win32', spawnFn: s.spawnFn })
     expect(s.calls).toHaveLength(1)
-    expect(s.calls[0].command).toBe('taskkill')
+    // bare 'taskkill' 가 아니라 System32 절대경로여야 한다(workspace cwd/PATH 하이재킹 차단).
+    expect(s.calls[0].command.toLowerCase()).toContain('system32')
+    expect(s.calls[0].command.toLowerCase()).toContain('taskkill.exe')
     expect(s.calls[0].args).toEqual(['/pid', '4242', '/T', '/F'])
-    // taskkill 이 트리를 죽이므로 셰임 child.kill 은 호출하지 않는다.
-    expect(killed()).toBe(0)
+    expect(killed()).toBe(0) // taskkill 이 트리를 죽이므로 셰임 child.kill 은 안 한다
+    s.fire('exit')
+    await expect(p).resolves.toBeUndefined()
   })
 
-  it('win32 에서 taskkill spawn 자체가 실패하면 child.kill 로 폴백한다', () => {
+  it('win32 반환 Promise 는 taskkill 이 종료(=트리 force-kill 완료)한 뒤에야 resolve 한다', async () => {
+    const { child } = fakeChild(7)
+    const s = fakeSpawn()
+    let resolved = false
+    void killTree(child, { platform: 'win32', spawnFn: s.spawnFn }).then(() => {
+      resolved = true
+    })
+    await Promise.resolve() // 마이크로태스크 flush
+    expect(resolved).toBe(false) // taskkill 미종료 → 아직 resolve 안 함(호출자가 트리 종료를 기다릴 수 있게)
+    s.fire('exit')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolved).toBe(true)
+  })
+
+  it('win32 에서 taskkill spawn 자체가 실패하면 child.kill 로 폴백하고 resolve 한다', async () => {
     const { child, killed } = fakeChild(4242)
     const s = fakeSpawn()
-    killTree(child, { platform: 'win32', spawnFn: s.spawnFn })
+    const p = killTree(child, { platform: 'win32', spawnFn: s.spawnFn })
     expect(killed()).toBe(0)
-    s.fireError()
+    s.fire('error')
+    await p
     expect(killed()).toBe(1)
   })
 
-  it('win32 에서 pid 가 없으면(spawn 실패) taskkill 없이 child.kill 만 한다', () => {
+  it('win32 에서 pid 가 없으면(spawn 실패) taskkill 없이 child.kill 만 하고 즉시 resolve 한다', async () => {
     const { child, killed } = fakeChild(undefined)
     const s = fakeSpawn()
-    killTree(child, { platform: 'win32', spawnFn: s.spawnFn })
+    await killTree(child, { platform: 'win32', spawnFn: s.spawnFn })
     expect(s.calls).toHaveLength(0)
     expect(killed()).toBe(1)
   })
 
-  it('POSIX 에서는 셰임 경유가 없어 child.kill 로 충분하다(taskkill 미사용)', () => {
+  it('POSIX 에서는 셰임 경유가 없어 child.kill 로 충분하고 즉시 resolve 한다(taskkill 미사용)', async () => {
     const { child, killed } = fakeChild(4242)
     const s = fakeSpawn()
-    killTree(child, { platform: 'linux', spawnFn: s.spawnFn })
+    await killTree(child, { platform: 'linux', spawnFn: s.spawnFn })
     expect(s.calls).toHaveLength(0)
     expect(killed()).toBe(1)
   })
@@ -75,7 +94,7 @@ describe('killTree', () => {
   it('win32 taskkill 은 windowsHide + stdio ignore 로 조용히 띄운다', () => {
     const { child } = fakeChild(7)
     const s = fakeSpawn()
-    killTree(child, { platform: 'win32', spawnFn: s.spawnFn })
+    void killTree(child, { platform: 'win32', spawnFn: s.spawnFn })
     expect(s.calls[0].options).toMatchObject({ windowsHide: true, stdio: 'ignore' })
   })
 })
@@ -127,7 +146,7 @@ describe.skipIf(process.platform !== 'win32')('killTree (Windows 프로세스 �
       })
       expect(isAlive(grandchildPid)).toBe(true)
 
-      killTree(child)
+      await killTree(child) // taskkill 종료(=트리 force-kill 완료)까지 대기
 
       await waitUntil(() => !isAlive(grandchildPid), 5000)
       expect(isAlive(grandchildPid)).toBe(false)
