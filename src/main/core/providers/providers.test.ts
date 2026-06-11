@@ -695,6 +695,136 @@ describe('OpenAiProvider', () => {
     expect(assistant.content).toBeNull()
     expect(JSON.stringify(body)).not.toContain('SIG')
   })
+
+  // ── reasoning_effort 패리티 (thinking 크로스-프로바이더 1단계 — #11) ──────────
+  it('thinking.effort → reasoning_effort 를 reasoning 모델 body 에 싣는다 (reasoning_effort 패리티)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.1', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.reasoning_effort).toBe('high')
+  })
+
+  it('low/medium 는 그대로 매핑한다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' }, http)
+    for (const effort of ['low', 'medium'] as const) {
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
+      const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
+      expect(body.reasoning_effort).toBe(effort)
+    }
+  })
+
+  it('config.thinking 이 세션 기본값으로 동작한다 — per-call 미지정에도 reasoning_effort 활성', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k', thinking: { effort: 'medium' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.reasoning_effort).toBe('medium')
+  })
+
+  it('per-call opts.thinking 이 config.thinking 기본값을 이긴다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k', thinking: { effort: 'low' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.reasoning_effort).toBe('high')
+  })
+
+  it('비-reasoning 모델(gpt-4o)은 thinking 이 있어도 reasoning_effort 를 보내지 않는다(400 방지)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k', thinking: { effort: 'high' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.reasoning_effort).toBeUndefined()
+    expect(body.temperature).toBeUndefined() // 비-reasoning 이지만 temperature 미설정 config → 그대로 미전송
+  })
+
+  it('reasoning_effort 거부 모델(gpt-5-chat-latest · o1-mini · o1-preview)은 prefix 가 매칭돼도 미전송한다(400 방지)', async () => {
+    // gpt-5-chat-latest 는 비-reasoning chat 변종, o1-mini·o1-preview 는 reasoning_effort 도입 전 o1 초기 모델 —
+    // 셋 다 reasoning_effort 를 400 으로 거부. isReasoningModel(토큰 필드용) 은 prefix 로 셋 다 매칭하므로
+    // reasoning_effort 게이트는 별도 predicate 여야 한다(codex P2: o1-preview 누락 보강).
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    for (const model of ['gpt-5-chat-latest', 'o1-mini', 'o1-preview', 'o1-preview-2024-09-12']) {
+      const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model, apiKey: 'k', thinking: { effort: 'high' } }, http)
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+      expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+    }
+  })
+
+  it('pro 계열 effort 정규화 — gpt-5-pro=high 만, dotted pro(gpt-5.2/5.4-pro)는 low→medium 상향 (codex P2)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const eff = () => (JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort
+    // gpt-5-pro 는 high 만 지원 → low/medium/xhigh/max 전부 high(미정규화 시 low/medium 400).
+    const pro = createOpenAiProvider({ id: 'p', provider: 'openai', displayName: 'P', model: 'gpt-5-pro', apiKey: 'k' }, http)
+    for (const e of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      await pro.chat([{ role: 'user', content: 'q' }], { thinking: { effort: e } })
+      expect(eff()).toBe('high')
+    }
+    // dotted pro(검증 집합 {medium,high,xhigh}): low→medium 상향, medium/high 유지, xhigh/max→xhigh.
+    for (const model of ['gpt-5.2-pro', 'gpt-5.4-pro']) {
+      const p = createOpenAiProvider({ id: 'd', provider: 'openai', displayName: 'D', model, apiKey: 'k' }, http)
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'low' } })
+      expect(eff()).toBe('medium')
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
+      expect(eff()).toBe('medium')
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+      expect(eff()).toBe('xhigh')
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+      expect(eff()).toBe('xhigh')
+    }
+  })
+
+  it('xhigh 는 지원 모델(gpt-5.5)에선 xhigh, 미지원 reasoning 모델(o3-mini)에선 high 로 하향', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const xh = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model: 'gpt-5.5', apiKey: 'k' }, http)
+    await xh.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('xhigh')
+
+    const lo = createOpenAiProvider({ id: 'l', provider: 'openai', displayName: 'L', model: 'o3-mini', apiKey: 'k' }, http)
+    await lo.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+  })
+
+  it('xhigh 지원 세대는 GPT-5.2+(codex 변종 포함) — 5.2/5.2-codex/5.3-codex=xhigh, 5.1/5.0=high 강등 (codex P2)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    for (const model of ['gpt-5.2', 'gpt-5.2-codex', 'gpt-5.3-codex']) {
+      const p = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model, apiKey: 'k' }, http)
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+      expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('xhigh')
+    }
+    // 5.1/5.0(=plain gpt-5) 은 xhigh 미지원 세대 → high 로 안전 강등(400 방지).
+    for (const model of ['gpt-5.1', 'gpt-5']) {
+      const p = createOpenAiProvider({ id: 'l', provider: 'openai', displayName: 'L', model, apiKey: 'k' }, http)
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+      expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+    }
+  })
+
+  it('중립 max 는 모델 최상위 티어로 매핑한다 — gpt-5.5=xhigh, o3-mini=high', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const xh = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model: 'gpt-5.5', apiKey: 'k' }, http)
+    await xh.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('xhigh')
+
+    const lo = createOpenAiProvider({ id: 'l', provider: 'openai', displayName: 'L', model: 'o3-mini', apiKey: 'k' }, http)
+    await lo.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+  })
+
+  it('effort 없이 thinking 만 주면(thinking:{}) reasoning_effort 를 보내지 않는다(서버 기본 사용)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+  })
+
+  it('thinking 미지정이면 reasoning_effort 가 없다(현행 동작 무회귀)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+  })
 })
 
 describe('GoogleProvider', () => {

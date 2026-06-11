@@ -89,12 +89,51 @@ describe('SessionsPanel', () => {
     expect(String(cfg.displayName)).not.toContain('thinking')
   })
 
-  it('provider 가 anthropic 이 아니면 thinking effort 셀렉트를 노출하지 않는다(현재 Anthropic 만 매핑)', async () => {
+  it('OpenAI thinking effort 를 선택하면 config 에 thinking 이 실린다 (reasoning_effort 패리티)', async () => {
+    const fleet = mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
+    fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'high' } })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
+
+    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    expect(cfg.provider).toBe('openai')
+    expect(cfg.thinking).toEqual({ effort: 'high' })
+    expect(String(cfg.displayName)).toContain('thinking:high')
+  })
+
+  it('thinking 미지원 provider(google)로 전환하면 직전에 고른 effort 가 config 로 새지 않는다(원자 게이트 역방향)', async () => {
+    const fleet = mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    // openai 에서 effort 를 고른 뒤 google 로 전환 → 셀렉트는 숨지만 effort state 는 남는다.
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
+    fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'high' } })
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
+
+    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    expect(cfg.provider).toBe('google')
+    expect('thinking' in cfg).toBe(false) // thinkingSupported 가드가 stale effort 를 막는다(google 미매핑)
+    expect(String(cfg.displayName)).not.toContain('thinking')
+  })
+
+  it('anthropic·openai 는 thinking effort 셀렉트를 노출하고 google 은 노출하지 않는다(아직 미매핑)', async () => {
     mockFleet()
     render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
+    // anthropic(기본) 노출
     expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
+    // openai 도 노출(reasoning_effort 패리티)
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
+    expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
+    // google 은 아직 미매핑 → 미노출
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
     expect(screen.queryByLabelText(/Thinking effort/i)).toBeNull()
   })
 

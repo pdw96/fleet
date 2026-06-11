@@ -38,6 +38,50 @@ function isReasoningModel(model: string): boolean {
   return /^(o[0-9]|gpt-5)/i.test(model)
 }
 
+// ── 모델-인지 reasoning_effort 정규화 (오프라인 화이트리스트 — MODEL LAUNCH 시 동기화) ────────
+// reasoning_effort 지원 집합은 max_completion_tokens 집합(isReasoningModel)보다 *좁다* → isReasoningModel
+// 을 그대로 게이트로 재사용하면 안 된다(그 docstring 은 토큰 필드/temperature 경계용). 거부자(전송 시 400):
+//   • chat 변종(gpt-5-chat-latest 등)은 비-reasoning,
+//   • o1-mini·o1-preview 는 reasoning_effort 도입 전 o1 초기 모델(파라미터는 프로덕션 o1 부터 추가, codex P2).
+// 이들을 명시 배제한 별도 predicate 가 필요하다. 그 외 reasoning 계열(o-series·gpt-5+)만 받는다 — 비-reasoning
+// (gpt-4o 등)은 isReasoningModel 이 이미 false. 미지/미래 reasoning 모델은 받아주되 알려진 거부자만 배제
+// (Anthropic resolveThinking 의 'unknown→안전' 원칙과 동형 — 장기적으론 Models API capability 조회, #13 후속).
+function supportsReasoningEffort(model: string): boolean {
+  if (/-chat/i.test(model) || /^o1-(mini|preview)/i.test(model)) return false
+  return isReasoningModel(model)
+}
+// xhigh 가용성: **GPT-5.2+ 세대**(codex 변종 포함 — 5.2·5.2-codex·5.3-codex·5.4·5.5…) 전용. GPT-5.0/5.1 과
+// o-series 는 xhigh 미지원(전송 시 400). 마이너 버전을 **숫자로 비교**해 5.2+ 를 빠짐없이 포함하고(정규식
+// 열거의 under-match 로 5.2/5.3 가 high 로 무성 강등되던 회귀 차단 — codex P2) 두 자리 마이너(5.10+)도 안전 처리.
+function supportsXhigh(model: string): boolean {
+  const m = /^gpt-5\.(\d+)/i.exec(model)
+  return m ? Number(m[1]) >= 2 : false
+}
+// 'pro' 계열은 effort 집합이 제한적(검증: gpt-5-pro={high}, gpt-5.2-pro·gpt-5.4-pro={medium,high,xhigh}):
+//   • gpt-5-pro(마이너 없음)는 high 만 → 전부 high,
+//   • dotted pro(gpt-5.N-pro)는 low 미지원 → 최소 medium 으로 상향(나머지는 일반 규칙).
+// 미정규화 시 low/medium 이 gpt-5-pro 에서 400, low 가 dotted pro 에서 400 (codex P2). 정확한 per-pro 티어는 #13.
+function isProModel(model: string): boolean {
+  return /-pro\b/i.test(model)
+}
+
+/**
+ * per-call/config thinking 노브를 OpenAI reasoning_effort 값으로 정규화한다.
+ * 반환 undefined = reasoning_effort 미전송(미지원 모델 · effort 미지정 → 서버 기본 medium).
+ */
+function resolveReasoningEffort(model: string, knob: ApiCallOptions['thinking']): string | undefined {
+  if (!knob || knob.effort === undefined || !supportsReasoningEffort(model)) return undefined
+  const effort = knob.effort
+  if (isProModel(model)) {
+    if (!/^gpt-5\.\d/i.test(model)) return 'high' // gpt-5-pro: high 만 지원
+    if (effort === 'max' || effort === 'xhigh') return supportsXhigh(model) ? 'xhigh' : 'high'
+    return effort === 'low' ? 'medium' : effort // dotted pro: low 미지원 → medium 상향
+  }
+  // 'max'(OpenAI 무효값)·'xhigh'(미지원 세대) 둘 다 모델 최상위 티어로 수렴. low/medium/high 는 그대로.
+  if (effort === 'max' || effort === 'xhigh') return supportsXhigh(model) ? 'xhigh' : 'high'
+  return effort
+}
+
 /** ChatTurn.content → OpenAI 메시지 content(문자열 또는 멀티모달 part 배열). */
 function mapContent(content: string | ContentBlock[]): string | unknown[] {
   if (typeof content === 'string') return content
@@ -201,6 +245,10 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       // temperature 는 추론 모델에서 거부되므로 전송하지 않는다.
       const temperature = opts.temperature ?? config.temperature
       if (temperature !== undefined && !reasoning) body.temperature = temperature
+      // per-call 노브 우선, 미지정이면 세션 기본값(config.thinking) — temperature/maxTokens 관용구와 동일.
+      // 모델-인지 정규화: 비-reasoning 모델/effort 미지정이면 undefined 가 되어 reasoning_effort 미전송.
+      const reasoningEffort = resolveReasoningEffort(config.model, opts.thinking ?? config.thinking)
+      if (reasoningEffort) body.reasoning_effort = reasoningEffort
       if (opts.tools?.length) {
         body.tools = opts.tools.map((t) => ({
           type: 'function',
