@@ -235,8 +235,10 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세�
   }, 25_000)
 
   // overflow(ENOBUFS) 경로도 동일한 killTree(child) 를 호출한다(detect.ts) — abort/timeout 로 대표 커버.
+  // timeoutMs 는 손자(node)의 cold-start + pid 출력보다 넉넉해야 한다 — 부하 걸린 windows CI 러너에서
+  // 2s 면 timeout 이 pid 캡처 전에 발화해 false RED 가 날 수 있어 6s 로(25s 테스트 예산 내) 여유를 둔다.
   it('timeout 시에도 손자(node)까지 종료한다', async () => {
-    await expectTreeKilled({ timeoutMs: 2000 }, 'ETIMEDOUT')
+    await expectTreeKilled({ timeoutMs: 6000 }, 'ETIMEDOUT')
   }, 25_000)
 })
 
