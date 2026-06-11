@@ -152,7 +152,7 @@ export interface ApiCallOptions {
   /**
    * 모델 reasoning(extended thinking) per-call 노브. 미지정이면 provider 가 config.thinking(세션 기본값)으로
    * 폴백한다(temperature/maxTokens 관용구와 동일). 모델-인지 정규화(미지원 모델/티어 하향·생략)는 provider 책임.
-   * 현 슬라이스는 Anthropic 만 adaptive thinking 으로 매핑한다(OpenAI/Gemini 는 후속). #11-thinking.
+   * Anthropic(adaptive thinking)·OpenAI(reasoning_effort) 매핑. Gemini 는 후속. #11-thinking.
    */
   thinking?: { effort?: ReasoningEffort }
 }

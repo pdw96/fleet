@@ -37,10 +37,13 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [provider, setProvider] = useState<ApiProviderConfig['provider']>('anthropic')
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
   const [apiKey, setApiKey] = useState('')
-  // thinking effort 세션 기본값('' = 끄기). 현재 Anthropic 만 매핑(#11-thinking 활성화).
+  // thinking effort 세션 기본값('' = 끄기). Anthropic(adaptive thinking)·OpenAI(reasoning_effort) 매핑.
   const [effort, setEffort] = useState<'' | ReasoningEffort>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // thinking(reasoning) 노브를 매핑하는 provider — provider 별 모델-인지 정규화는 provider 책임(Gemini 후속).
+  const thinkingSupported = provider === 'anthropic' || provider === 'openai'
 
   const asError = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
@@ -162,9 +165,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
     setBusy(true)
     setError(null)
     try {
-      // thinking 은 Anthropic 만 매핑 — 끄기('')면 키 자체를 넣지 않는다(IPC 페이로드 깔끔 유지).
+      // thinking 은 Anthropic·OpenAI 만 매핑 — 끄기('')면 키 자체를 넣지 않는다(IPC 페이로드 깔끔 유지).
       // 세션 설정은 비영속·불가시라 displayName 에도 노출해 어느 세션이 thinking 인지 확인 가능하게 한다.
-      const thinkingOn = provider === 'anthropic' && effort !== ''
+      const thinkingOn = thinkingSupported && effort !== ''
       const config: ApiProviderConfig = {
         id: `${provider}-${Date.now()}`,
         provider,
@@ -285,7 +288,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             <input className="field" value={model} onChange={(e) => setModel(e.target.value)} />
           </div>
         </div>
-        {provider === 'anthropic' && (
+        {thinkingSupported && (
           <div style={{ marginTop: 12 }}>
             <label className="field-label" htmlFor="api-thinking">
               Thinking effort (선택)
@@ -300,12 +303,13 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               <option value="low">low</option>
               <option value="medium">medium</option>
               <option value="high">high</option>
-              <option value="xhigh">xhigh (Opus 4.7+)</option>
+              <option value="xhigh">xhigh</option>
               <option value="max">max</option>
             </select>
             <p className="meta" style={{ marginTop: 6 }}>
-              현행 세대(Opus 4.6+ · Sonnet 4.6)에서만 적용 — 미지원 모델은 자동 off, 미지원 티어는 기본(high)으로
-              동작합니다.
+              {provider === 'anthropic'
+                ? '현행 세대(Opus 4.6+ · Sonnet 4.6)에서만 적용 — 미지원 모델은 자동 off, 미지원 티어는 기본(high)으로 동작합니다.'
+                : 'reasoning 모델(o-series · GPT-5+, chat·o1-mini 제외)에서만 적용 — 그 외 모델은 미전송, xhigh/max 는 미지원 모델에서 high 로 하향됩니다.'}
             </p>
           </div>
         )}

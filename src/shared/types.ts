@@ -149,8 +149,9 @@ export interface McpServerStatus {
 
 /**
  * 모델 reasoning(extended thinking) 깊이. provider-중립 명목 집합 — Anthropic 은 output_config.effort,
- * OpenAI 는 reasoning_effort 로 매핑(후속). 상위 티어(xhigh=Opus 4.7+, max=Opus 4.6+/Sonnet 4.6)는
- * 모델별 가용성이 달라 각 provider 가 모델-인지 정규화(미지원 티어 하향/생략)를 책임진다.
+ * OpenAI 는 reasoning_effort 로 매핑(Gemini 는 후속). 상위 티어(xhigh, max)는 모델별 가용성이 달라
+ * 각 provider 가 모델-인지 정규화(미지원 티어 하향/생략)를 책임진다 — max 는 OpenAI 무효값이라 모델
+ * 최상위 티어(xhigh/high)로 매핑된다.
  */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
@@ -165,7 +166,7 @@ export interface ApiProviderConfig {
   maxTokens?: number
   /**
    * 모델 reasoning(extended thinking) 세션 기본값. 지정 시 이 세션의 모든 호출에 적용된다
-   * (per-call ApiCallOptions.thinking 이 우선). 미지정=off. 현재 Anthropic 만 매핑(#11-thinking 활성화).
+   * (per-call ApiCallOptions.thinking 이 우선). 미지정=off. Anthropic·OpenAI 매핑(Gemini 후속).
    */
   thinking?: { effort?: ReasoningEffort }
 }
