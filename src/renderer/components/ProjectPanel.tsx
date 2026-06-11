@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentRole, AssignmentPolicy, LlmDescriptor, Project, Task } from '../../shared/types'
-import { ASSIGNABLE_ROLES } from '../../shared/types'
+import { ASSIGNABLE_ROLES, MAX_REPLAN_ROUNDS } from '../../shared/types'
 import { statusColor } from '../ui'
 
 interface Props {
@@ -282,10 +282,12 @@ export function ProjectPanel({ sessions }: Props) {
                 value={maxReplanRounds}
                 onChange={(e) => setMaxReplanRounds(Number(e.target.value))}
               >
-                <option value={0}>비활성</option>
-                <option value={1}>1회</option>
-                <option value={2}>2회</option>
-                <option value={3}>3회</option>
+                {/* 옵션은 공유 상수 MAX_REPLAN_ROUNDS 에서 파생 — engine 클램프 상한과 단일 진실 원천(표류 방지). */}
+                {Array.from({ length: MAX_REPLAN_ROUNDS + 1 }, (_, n) => (
+                  <option key={n} value={n}>
+                    {n === 0 ? '비활성' : `${n}회`}
+                  </option>
+                ))}
               </select>
             </div>
             <button className="btn" style={{ marginLeft: 'auto' }} onClick={run} disabled={!canRun}>

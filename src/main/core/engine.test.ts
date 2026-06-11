@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentRole, ChatStreamEvent, OrchestratorEvent } from '../../shared/types'
+import { MAX_REPLAN_ROUNDS } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
 import type { McpHost } from './mcp/types'
@@ -437,6 +438,33 @@ describe('FleetEngine', () => {
       await engine.runProjectFlow({ goal: 'g' }) // maxReplanRounds 미지정 → 기본 0(비활성)
 
       expect(events.some((e) => e.type === 'replan')).toBe(false) // 보정 replan 미시도
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // codex P2: 렌더러는 main 기준 신뢰 경계 바깥 — devtools/커스텀 렌더러가 UI 셀렉트(0..MAX)를 우회해
+  // 임의 큰 maxReplanRounds 로 runaway 사이클을 돌리지 못하도록 engine 경계에서 상한을 강제한다.
+  it('clamps an over-range maxReplanRounds to MAX_REPLAN_ROUNDS at the engine boundary', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-clamp-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const events: OrchestratorEvent[] = []
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 1, stdout: '', stderr: 'boom' }), // 항상 실패 → replan 이 상한까지 반복
+        onOrchestratorEvent: (e) => events.push(e),
+      })
+      engine.registerCliSession('claude')
+
+      // UI 최대(MAX)를 훌쩍 넘는 값을 직접 주입(렌더러 우회 시나리오).
+      await engine.runProjectFlow({ goal: 'g', maxReplanRounds: MAX_REPLAN_ROUNDS + 2 })
+
+      // 검증이 매번 실패하므로 replan 은 상한 라운드만큼만 돌아야 한다(라운드당 'replan' 1회 방출).
+      expect(events.filter((e) => e.type === 'replan').length).toBe(MAX_REPLAN_ROUNDS)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

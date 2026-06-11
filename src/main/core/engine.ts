@@ -18,7 +18,7 @@ import type {
   Task,
   ToolStep,
 } from '../../shared/types'
-import { ASSIGNABLE_ROLES } from '../../shared/types'
+import { ASSIGNABLE_ROLES, MAX_REPLAN_ROUNDS } from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
 import { createCliRegistry, type CliRegistry } from './cli/registry'
@@ -379,6 +379,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         assignments = [...assignments.filter((a) => a.role !== 'implementer'), { role: 'implementer', llmId: cliId }]
         store.appendEvent({ type: 'assignment.implementer_reassigned', data: { to: cliId } })
       }
+      // 렌더러는 main 기준 신뢰 경계 바깥이다 — UI 셀렉트(0..MAX_REPLAN_ROUNDS)를 우회한 devtools/커스텀
+      // 렌더러가 임의 큰 값으로 무한정 planner/구현/검증 사이클(검증이 계속 실패하는 한)을 돌리지 못하도록
+      // engine 경계에서 상한을 강제한다(하한·정수·유한성도 함께 보정 — orchestrator 에 sane 값만 넘어가게).
+      const requestedReplan = Math.floor(input.maxReplanRounds ?? 0)
+      const maxReplanRounds = Number.isFinite(requestedReplan) ? Math.min(Math.max(requestedReplan, 0), MAX_REPLAN_ROUNDS) : 0
       // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
       const controller = new AbortController()
       const onEvent = (e: OrchestratorEvent) => {
@@ -393,7 +398,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           sessions,
           assignments,
           maxReviewRounds: input.maxReviewRounds,
-          maxReplanRounds: input.maxReplanRounds,
+          maxReplanRounds,
           taskTimeoutMs: input.taskTimeoutMs,
           continueOnFailure: input.continueOnFailure,
           workspace: currentWorkspace(),
