@@ -38,5 +38,29 @@ jobs:
       - name: Build (smoke)
         run: npm run build
 
+  # Windows 전용 보안 회귀(`.cmd` 셰임 명령주입·프로세스 트리 킬)는 `describe.skipIf(platform!=='win32')`
+  # 로 보호돼 ubuntu 단일 게이트에서 영구 skip 된다. 이 잡이 windows 러너에서 vitest 를 돌려 실제로 검증한다.
+  # typecheck/lint/build 는 플랫폼 무관이라 위 ubuntu 잡으로 충분 — 여기선 test 만(중복 회피).
+  windows-tests:
+    name: windows vitest (win32 보안 회귀)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # vitest 는 electron 바이너리가 필요 없다(테스트는 electron 모듈을 import 하지 않음, build 도 안 함).
+      # ELECTRON_SKIP_BINARY_DOWNLOAD 로 ~150MB 다운로드를 건너뛰어 설치 지연·네트워크 flakiness 를 없앤다.
+      - name: Install
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Test (vitest — win32 .cmd 셰임·트리 킬 회귀 실행)
+        run: npm test
+
 # NOTE: E2E(test:e2e)는 electron 빌드 + playwright 로 느리고 환경 의존이 커
 # 이 게이트에 넣지 않는다. 필요 시 별도 워크플로(스케줄/수동 dispatch)로 분리한다.

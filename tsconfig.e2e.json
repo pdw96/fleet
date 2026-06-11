@@ -1,0 +1,10 @@
+{
+  // e2e(playwright) + 루트 playwright.config 를 typecheck 범위에 넣는다.
+  // node(파일/경로/process) + DOM(page.evaluate 콜백 내부의 window/location) 둘 다 필요하다.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["e2e/**/*.ts", "playwright.config.ts"]
+}
