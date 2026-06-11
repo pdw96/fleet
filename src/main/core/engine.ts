@@ -359,6 +359,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     async runProjectFlow(input) {
+      // 동시 실행 권위 가드: 이미 진행 중인 실행이 있으면 거부한다 — 두 번째 실행이 같은 워크스페이스를
+      // 편집하며 첫 실행의 revert 와 경합해 워크스페이스를 파괴하는 것을 막는다(DESIGN.md 순차 전제).
+      // activeRuns 는 project.created(runProject 첫 await 이전 동기 방출)에서 채워지므로, 진입 시점에
+      // 이미 반영돼 있어 신뢰 가능하다. cancelRun/project.done/dispose 가 비우면 다음 실행이 허용된다.
+      if (activeRuns.size > 0) throw new Error('이미 진행 중인 프로젝트 실행이 있습니다. 완료 또는 취소 후 다시 시도하세요.')
       const llmIds = sessions.list().map((s) => s.id)
       if (llmIds.length === 0) throw new Error('등록된 LLM 세션이 없습니다. 먼저 세션을 등록하세요.')
       // 직접 편집 모델은 산출물 워크스페이스가 필수다(없으면 작업이 전부 skip 되어 의미가 없다).
@@ -504,6 +509,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     async dispose() {
+      // 진행 중 실행을 먼저 취소한다 — 종료 중에도 run 의 HTTP/CLI 가 계속 돌며 워크스페이스를
+      // 건드리거나 무한 대기(타임아웃 복원 전이라면)하는 것을 막는다. abort 는 동기라 정리보다 앞선다.
+      for (const c of activeRuns.values()) c.abort()
+      activeRuns.clear()
       // 한쪽 정리 실패가 다른 쪽(특히 MCP 자식 프로세스) 정리를 막지 않도록 격리한다 — 좀비 방지가 목적.
       await Promise.allSettled([sessions.disposeAll(), mcpHost.dispose()])
     },
