@@ -144,7 +144,8 @@ function createWindow(): void {
     },
   })
 
-  // 네비게이션 하드닝: 새 창/window.open 거부 + 드롭 file://·외부 링크·주입 location 네비 차단(안전 우선).
+  // 네비게이션 하드닝: 새 창/window.open 거부 + 모든 페이지발 네비게이션(드롭 file://·리다이렉트·
+  // 서브프레임·외부 링크·주입 location) 차단(안전 우선). 상세 계약은 window-guards.ts 참조.
   installNavigationGuards(win.webContents)
 
   win.on('ready-to-show', () => win.show())
