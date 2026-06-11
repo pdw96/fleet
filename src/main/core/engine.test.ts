@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { ChatStreamEvent } from '../../shared/types'
+import type { AgentRole, ChatStreamEvent } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
 import type { McpHost } from './mcp/types'
@@ -255,6 +255,99 @@ describe('FleetEngine', () => {
     // 미존재 id 는 어떤 이벤트도 남기지 않는다.
     expect(engine.listEvents().some((e) => e.type === 'run.cancelled')).toBe(false)
   })
+
+  // 구현(워크스페이스) 호출이 abort 까지 hang 하는 세션 — in-flight 실행 시뮬레이션용.
+  function hangingImplSession(onAbort?: () => void) {
+    return {
+      id: 'cli:claude',
+      descriptor: { id: 'cli:claude', kind: 'cli' as const, displayName: 'Claude', ref: 'claude', model: '', capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'] as AgentRole[] },
+      async send(prompt: string, opts?: { workspace?: string; signal?: AbortSignal }) {
+        if (prompt.includes('분해')) return '[{"title":"작업1","description":"d1"}]'
+        if (prompt.includes('검토')) return 'APPROVE'
+        if (prompt.includes('누락')) return '요약'
+        if (opts?.workspace) {
+          return await new Promise<string>((_resolve, reject) => {
+            const signal = opts.signal
+            const fail = () => {
+              onAbort?.()
+              reject(new Error('aborted'))
+            }
+            if (signal?.aborted) return fail()
+            signal?.addEventListener('abort', fail, { once: true })
+          })
+        }
+        return '응답'
+      },
+      async dispose() {},
+    }
+  }
+
+  const waitForCreated = (events: { type: string; data?: Record<string, unknown> }[]) =>
+    new Promise<string>((resolve) => {
+      const timer = setInterval(() => {
+        const id = events.find((e) => e.type === 'project.created')?.data?.['projectId']
+        if (typeof id === 'string') {
+          clearInterval(timer)
+          resolve(id)
+        }
+      }, 5)
+    })
+
+  it('dispose 는 진행 중 실행을 abort 한다(종료 중 run 이 워크스페이스를 계속 건드리지 않게)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-dispose-abort-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const sessions = createSessionManager()
+      let implAborted = false
+      sessions.add(hangingImplSession(() => { implAborted = true }))
+      const events: { type: string; data?: Record<string, unknown> }[] = []
+      const engine = createFleetEngine({ store, sessions, workspaceDir: dir, gitRunner: fakeGit(), onOrchestratorEvent: (e) => events.push(e) })
+
+      const runPromise = engine.runProjectFlow({ goal: 'g' })
+      await waitForCreated(events) // 구현 호출이 hang 상태가 되도록 진행을 기다린다
+
+      await engine.dispose() // activeRuns 를 abort 해야 hang 중인 구현 호출이 풀린다
+      // 미수정(dispose 가 abort 안 함) 시 abort 가 전파되지 않아 ~3s 만에 명시적 단언 실패(10s hang 회피).
+      await vi.waitFor(() => expect(implAborted).toBe(true), { timeout: 3000, interval: 20 })
+      const result = await runPromise // abort 가 전파됐으므로 곧 resolve
+
+      expect(result.tasks[0].status).not.toBe('done')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 10_000)
+
+  it('runProjectFlow 는 진행 중 실행이 있으면 두 번째 동시 실행을 거부한다(동시 편집 → 워크스페이스 파괴 방지)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-concurrent-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const sessions = createSessionManager()
+      sessions.add(hangingImplSession())
+      const events: { type: string; data?: Record<string, unknown> }[] = []
+      const engine = createFleetEngine({ store, sessions, workspaceDir: dir, gitRunner: fakeGit(), onOrchestratorEvent: (e) => events.push(e) })
+
+      const first = engine.runProjectFlow({ goal: 'g1' })
+      const pid = await waitForCreated(events) // 첫 실행이 activeRuns 에 등록될 때까지 대기
+
+      // 두 번째 동시 실행은 즉시(동기 가드로) 거부되어야 한다. 미수정(가드 없음) 시 두 번째가 hang 하므로
+      // 짧은 가드 타임아웃과 race 해 10s 대신 ~1.5s 만에 빠른 실패 신호를 낸다.
+      const second = engine.runProjectFlow({ goal: 'g2' }).then(
+        () => 'resolved-without-guard',
+        (e: Error) => e,
+      )
+      const outcome = await Promise.race([
+        second,
+        new Promise<string>((r) => setTimeout(() => r('hung-without-guard'), 1500)),
+      ])
+      expect(outcome).toBeInstanceOf(Error)
+      expect((outcome as Error).message).toMatch(/진행 중/)
+
+      engine.cancelRun(pid) // 정리: 첫 실행 취소
+      await first
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 10_000)
 
   it('runs the implementer as a direct-edit agent in the workspace and verifies when workspaceDir is set', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-'))
