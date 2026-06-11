@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { defaultRunner, detectAll, detectCli, parseVersion, type CommandRunner } from './detect'
+import { defaultRunner, detectAll, detectCli, parseVersion, type CommandRunner, type RunOpts } from './detect'
 import { createCliRegistry, DEFAULT_CLI_ADAPTERS } from './registry'
 import type { CliAdapter } from '../../../shared/types'
 
@@ -156,6 +156,70 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows .cmd shim 
       rmSync(dir, { recursive: true, force: true })
     }
   }, 15_000)
+})
+
+describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세스 트리 킬)', () => {
+  // 회귀(이 버그의 본질): cross-spawn 은 .cmd 셰임을 cmd.exe 경유로 띄우므로 종료 시 child.kill() 은
+  // cmd.exe 껍데기만 죽이고 실제 CLI(node.exe 손자)는 살아남는다 → 취소 후에도 편집 에이전트가
+  // 워크스페이스를 계속 수정해 engine 의 revert 와 경합한다. 모든 종료 경로가 손자 트리까지 죽여야 한다.
+  const isAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const waitUntil = async (pred: () => boolean, ms: number) => {
+    const start = Date.now()
+    while (Date.now() - start < ms && !pred()) await new Promise((r) => setTimeout(r, 50))
+  }
+
+  // .cmd 셰임(cmd.exe) → node 손자를 띄우고, 주어진 종료 경로(abort/timeout)로 끝낸 뒤
+  // 손자까지 죽었는지 확인한다. 어서션이 (RED 처럼) 실패해도 finally 에서 손자를 정리한다(좀비 누수 방지).
+  async function expectTreeKilled(opts: RunOpts, expectError: string, afterStart?: () => void) {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-tree-'))
+    let grandchildPid = 0
+    try {
+      writeFileSync(
+        join(dir, 'sleeper.cmd'),
+        '@echo off\r\nnode -e "console.log(process.pid);setInterval(()=>{},1000)"\r\n',
+      )
+      const done = defaultRunner(join(dir, 'sleeper.cmd'), [], opts, (chunk) => {
+        const m = chunk.match(/\d+/)
+        if (m && !grandchildPid) grandchildPid = Number(m[0])
+      })
+      await waitUntil(() => grandchildPid > 0, 8000)
+      expect(grandchildPid).toBeGreaterThan(0)
+      expect(isAlive(grandchildPid)).toBe(true) // 손자 기동 확인
+
+      afterStart?.() // 손자 기동 후 종료 트리거(abort). timeout 경로는 timeoutMs 경과로 자연 발화.
+      const res = await done
+      expect(res.spawnError).toBe(expectError)
+
+      await waitUntil(() => !isAlive(grandchildPid), 5000)
+      expect(isAlive(grandchildPid)).toBe(false) // 손자까지 종료됨
+    } finally {
+      if (grandchildPid && isAlive(grandchildPid)) {
+        try {
+          process.kill(grandchildPid)
+        } catch {
+          /* 이미 종료 */
+        }
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('abort 시 .cmd 셰임이 띄운 손자(node)까지 종료한다', async () => {
+    const ac = new AbortController()
+    await expectTreeKilled({ timeoutMs: 30_000, signal: ac.signal }, 'ABORTED', () => ac.abort())
+  }, 25_000)
+
+  // overflow(ENOBUFS) 경로도 동일한 killTree(child) 를 호출한다(detect.ts) — abort/timeout 로 대표 커버.
+  it('timeout 시에도 손자(node)까지 종료한다', async () => {
+    await expectTreeKilled({ timeoutMs: 2000 }, 'ETIMEDOUT')
+  }, 25_000)
 })
 
 describe('createCliRegistry', () => {

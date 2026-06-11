@@ -1,6 +1,7 @@
 import { StringDecoder } from 'node:string_decoder'
 import spawn from 'cross-spawn'
 import type { CliAdapter, CliDetectionResult } from '../../../shared/types'
+import { killTree } from '../process/kill-tree'
 
 export interface CommandResult {
   code: number | null
@@ -77,13 +78,13 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
     const child = spawn(command, args, { windowsHide: true, cwd })
 
     const timer = setTimeout(() => {
-      child.kill()
+      killTree(child)
       finish({ code: null, spawnError: 'ETIMEDOUT' })
     }, timeoutMs)
 
-    // 외부 취소 신호 처리: abort 시 자식을 죽이고 ABORTED 로 종료한다.
+    // 외부 취소 신호 처리: abort 시 자식 트리를 죽이고 ABORTED 로 종료한다.
     const onAbort = () => {
-      child.kill()
+      killTree(child)
       finish({ code: null, spawnError: 'ABORTED' })
     }
     if (signal) {
@@ -94,7 +95,7 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
     // 출력이 한도를 넘으면 child 를 죽이고 명시적 에러로 종료한다(과거 execFile maxBuffer 계약 유지).
     // 그대로 두면 조용한 truncation 또는 무한 출력 CLI 의 timeout 까지 매달림이 발생한다.
     const onOverflow = () => {
-      child.kill()
+      killTree(child)
       finish({ code: null, spawnError: 'ENOBUFS' })
     }
     child.stdout?.on('data', (c: Buffer) => {
