@@ -130,6 +130,27 @@ describe('ProjectPanel', () => {
     expect(await screen.findByText('구현 A 완료')).toBeTruthy()
   })
 
+  // Now ④(#12): 보정 재계획 라운드 셀렉트 값이 runProject 요청으로 전달돼야 한다(데드코드였던 maxReplanRounds 활성화).
+  it('passes the selected maxReplanRounds to runProject', async () => {
+    const fleet = mockFleet()
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    fireEvent.change(screen.getByLabelText('보정 재계획'), { target: { value: '2' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' })) })
+    expect(fleet.runProject).toHaveBeenCalledWith(expect.objectContaining({ maxReplanRounds: 2 }))
+  })
+
+  // 기본값(비활성=0)은 그대로 전달돼 무회귀(opt-in 유지).
+  it('defaults maxReplanRounds to 0 (replan disabled) when the select is untouched', async () => {
+    const fleet = mockFleet()
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' })) })
+    expect(fleet.runProject).toHaveBeenCalledWith(expect.objectContaining({ maxReplanRounds: 0 }))
+  })
+
   // ② 실행이 거부되면(예: planner 미배정) store 가 프로젝트를 failed 로 표시했을 수 있으니 사이드바/상태칩을 갱신한다.
   it('refreshes the project list when a run is rejected', async () => {
     const fleet = mockFleet({

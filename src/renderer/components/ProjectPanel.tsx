@@ -19,6 +19,8 @@ export function ProjectPanel({ sessions }: Props) {
   // 새 프로젝트 폼 상태
   const [goal, setGoal] = useState('')
   const [policy, setPolicy] = useState<AssignmentPolicy>('round-robin')
+  // 검증 실패가 verify-fix 로도 안 풀릴 때 planner 가 보정 작업을 분해해 재시도하는 라운드 수. 기본 0=비활성(opt-in).
+  const [maxReplanRounds, setMaxReplanRounds] = useState(0)
   const [manual, setManual] = useState<Partial<Record<AgentRole, string>>>({})
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -204,7 +206,7 @@ export function ProjectPanel({ sessions }: Props) {
         policy === 'manual'
           ? ASSIGNABLE_ROLES.map((role) => ({ role, llmId: manual[role] ?? sessions[0]?.id ?? '' }))
           : undefined
-      const r = await window.fleet.runProject({ goal: goal.trim(), policy, assignments })
+      const r = await window.fleet.runProject({ goal: goal.trim(), policy, assignments, maxReplanRounds })
       if (selectedIdRef.current === r.projectId) setSummary(r.summary) // 끝난 프로젝트가 아직 열려 있을 때만 요약 표시
       await refreshProjects()
       if (selectedIdRef.current) await refreshTasks(selectedIdRef.current)
@@ -268,6 +270,22 @@ export function ProjectPanel({ sessions }: Props) {
                 <option value="round-robin">round-robin</option>
                 <option value="capability-scored">capability-scored</option>
                 <option value="manual">manual</option>
+              </select>
+            </div>
+            <div style={{ width: 160 }}>
+              <label className="field-label" title="검증 실패가 verify-fix 로도 안 풀릴 때 planner 가 보정 작업을 추가 생성해 재시도하는 라운드 수">
+                보정 재계획
+              </label>
+              <select
+                className="field"
+                aria-label="보정 재계획"
+                value={maxReplanRounds}
+                onChange={(e) => setMaxReplanRounds(Number(e.target.value))}
+              >
+                <option value={0}>비활성</option>
+                <option value={1}>1회</option>
+                <option value={2}>2회</option>
+                <option value={3}>3회</option>
               </select>
             </div>
             <button className="btn" style={{ marginLeft: 'auto' }} onClick={run} disabled={!canRun}>

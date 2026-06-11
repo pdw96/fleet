@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentRole, ChatStreamEvent } from '../../shared/types'
+import type { AgentRole, ChatStreamEvent, OrchestratorEvent } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine } from './engine'
 import type { McpHost } from './mcp/types'
@@ -382,6 +382,61 @@ describe('FleetEngine', () => {
       expect((result.verifications ?? []).length).toBeGreaterThan(0)
       expect(result.verifications?.every((v) => v.passed)).toBe(true)
       expect(store.getProject(result.projectId)?.status).toBe('done')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Now ④(#12): maxReplanRounds 가 IPC→engine→runProject 로 배선됐는지 검증.
+  // verifyRunner 가 항상 실패하면 verify-fix(기본 2회) 소진 후 보정 replan 단계에 도달한다.
+  // maxReplanRounds 가 orchestrator 까지 전달돼야만 replan 이벤트가 방출된다(배선 증거).
+  it('forwards maxReplanRounds so the orchestrator replans when verification keeps failing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-replan-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const events: OrchestratorEvent[] = []
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 1, stdout: '', stderr: 'boom' }), // 항상 실패 → verify-fix 소진 후 replan
+        onOrchestratorEvent: (e) => events.push(e),
+      })
+      engine.registerCliSession('claude')
+
+      const result = await engine.runProjectFlow({ goal: 'g', maxReplanRounds: 1 })
+
+      // 단순 이벤트 존재가 아니라 '보정 작업 추가' 분기(count>=1)가 실제로 발화됐는지 단언한다 —
+      // maxReplanRounds 가 orchestrator 까지 배선돼 planCorrectiveTasks 가 호출됐다는 결정적 증거.
+      expect(
+        events.some((e) => e.type === 'replan' && typeof e.data?.['count'] === 'number' && (e.data['count'] as number) >= 1),
+      ).toBe(true)
+      // append-only: 초기 작업(1) + 보정 작업(>=1)으로 작업 수가 늘어난다.
+      expect(engine.getProjectTasks(result.projectId).length).toBeGreaterThan(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not replan when maxReplanRounds is unset (production default 0)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-noreplan-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const events: OrchestratorEvent[] = []
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 1, stdout: '', stderr: 'boom' }), // 항상 실패
+        onOrchestratorEvent: (e) => events.push(e),
+      })
+      engine.registerCliSession('claude')
+
+      await engine.runProjectFlow({ goal: 'g' }) // maxReplanRounds 미지정 → 기본 0(비활성)
+
+      expect(events.some((e) => e.type === 'replan')).toBe(false) // 보정 replan 미시도
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

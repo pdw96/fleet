@@ -3,7 +3,6 @@ import type {
   AgentRole,
   ApiProviderConfig,
   ApprovalRequest,
-  AssignmentPolicy,
   ChatActivity,
   ChatMessage,
   ChatRoom,
@@ -15,7 +14,7 @@ import type {
   McpServerSpec,
   McpServerStatus,
   Project,
-  RoleAssignment,
+  RunProjectRequest,
   Task,
   ToolStep,
 } from '../../shared/types'
@@ -86,15 +85,6 @@ export interface FleetEngineOptions {
   mcpHost?: McpHost
 }
 
-export interface RunProjectInput {
-  goal: string
-  assignments?: RoleAssignment[]
-  policy?: AssignmentPolicy
-  maxReviewRounds?: number
-  taskTimeoutMs?: number
-  continueOnFailure?: boolean
-}
-
 /**
  * Fleet 코어 파사드 — store / sessions / cli / providers / orchestrator / chat 를 묶어
  * IPC 계층에 단일 진입점을 제공한다. 전부 순수 TS 라 헤드리스로 검증 가능.
@@ -122,7 +112,7 @@ export interface FleetEngine {
   getLastActiveProject(): string | null
   /** 마지막으로 본 프로젝트 id 저장(null 이면 해제). */
   setLastActiveProject(projectId: string | null): void
-  runProjectFlow(input: RunProjectInput): Promise<RunResult>
+  runProjectFlow(input: RunProjectRequest): Promise<RunResult>
   /** 진행 중인 프로젝트 실행을 취소한다(현재 작업 revert 후 중단). 미존재 id 는 무시. */
   cancelRun(projectId: string): void
   /** 산출물 기록·검증 워크스페이스 조회/설정(null 이면 비활성). */
@@ -403,6 +393,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           sessions,
           assignments,
           maxReviewRounds: input.maxReviewRounds,
+          maxReplanRounds: input.maxReplanRounds,
           taskTimeoutMs: input.taskTimeoutMs,
           continueOnFailure: input.continueOnFailure,
           workspace: currentWorkspace(),

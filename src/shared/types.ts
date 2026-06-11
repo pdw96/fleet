@@ -345,6 +345,8 @@ export interface RunProjectRequest {
   /** manual 정책용 사용자 지정 역할↔LLM 배정. 지정 시 policy 보다 우선한다. */
   assignments?: RoleAssignment[]
   maxReviewRounds?: number
+  /** 검증 실패가 verify-fix 로도 안 풀릴 때, planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/미지정=비활성. */
+  maxReplanRounds?: number
   taskTimeoutMs?: number
   /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
   continueOnFailure?: boolean
