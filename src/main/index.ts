@@ -14,6 +14,7 @@ import { createFleetEngine, type FleetEngine } from './core/engine'
 import { createIpcApprover, type IpcApprover } from './core/safety/approval-bridge'
 import { createJsonFileStore } from './core/store/json-file'
 import { e2eRunner, seedE2eFixtures } from './e2e'
+import { installNavigationGuards } from './window-guards'
 
 function broadcastOrchestratorEvent(event: OrchestratorEvent): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -138,9 +139,13 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
-      sandbox: false,
+      // 렌더러 격리 강화 — preload 는 contextBridge/ipcRenderer 만 쓰므로 샌드박스와 호환된다(Node API 미사용).
+      sandbox: true,
     },
   })
+
+  // 네비게이션 하드닝: 새 창/window.open 거부 + 드롭 file://·외부 링크·주입 location 네비 차단(안전 우선).
+  installNavigationGuards(win.webContents)
 
   win.on('ready-to-show', () => win.show())
 
