@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { defaultRunner, detectAll, detectCli, parseVersion, type CommandRunner, type RunOpts } from './detect'
 import { createCliRegistry, DEFAULT_CLI_ADAPTERS } from './registry'
+import * as killTreeMod from '../process/kill-tree'
 import type { CliAdapter } from '../../../shared/types'
 
 const claude: CliAdapter = {
@@ -97,6 +98,23 @@ describe('defaultRunner (integration)', () => {
     const script = "process.stdout.write('x'.repeat(11*1024*1024))"
     const res = await defaultRunner('node', ['-e', script], { timeoutMs: 10_000 })
     expect(res.spawnError).toBe('ENOBUFS')
+  }, 15_000)
+
+  // 회귀(코드 리뷰 P2): overflow 가 여러 chunk 로 반복 트리거돼도 트리 킬은 한 번만 — 과거 child.kill()
+  // 은 저렴했지만 killTree 는 매번 taskkill 프로세스를 스폰하므로 가드가 없으면 종료 중 프로세스가 폭주한다.
+  it('overflow 가 반복돼도 트리 킬은 한 번만 한다', async () => {
+    const killSpy = vi.spyOn(killTreeMod, 'killTree')
+    try {
+      const script = "process.stdout.write('x'.repeat(11*1024*1024))"
+      const res = await defaultRunner('node', ['-e', script], { timeoutMs: 10_000 })
+      expect(res.spawnError).toBe('ENOBUFS')
+      // 미수정 시 finish 가 첫 overflow 에서 즉시 resolve 하고 남은 chunk 들이 백그라운드에서 onOverflow
+      // 를 반복 호출하므로, drain 을 잠시 기다려 그 폭주가 spy 에 쌓이게 한 뒤 카운트한다.
+      await new Promise((r) => setTimeout(r, 300))
+      expect(killSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      killSpy.mockRestore()
+    }
   }, 15_000)
 
   it('runs the child in the given cwd', async () => {
@@ -220,6 +238,31 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세�
   it('timeout 시에도 손자(node)까지 종료한다', async () => {
     await expectTreeKilled({ timeoutMs: 2000 }, 'ETIMEDOUT')
   }, 25_000)
+})
+
+describe.skipIf(process.platform === 'win32')('defaultRunner (취소 시 close 대기 — POSIX)', () => {
+  // 회귀(코드 리뷰 P1): killTree 는 비동기(taskkill/SIGTERM)라 즉시 finish 하면 자식이 아직 살아
+  // 워크스페이스를 쓰는 동안 호출자가 ABORTED 를 받고 revert 를 시작해 경합한다. abort 는 자식이
+  // 실제로 close(트리 종료)된 뒤에 resolve 해야 한다 — SIGTERM 을 지연 처리하는 자식으로 경과시간 검증.
+  it('abort 는 자식이 실제로 종료(close)된 뒤에야 ABORTED 로 resolve 한다', async () => {
+    const script =
+      "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),250));process.stdout.write('up');setInterval(()=>{},1000)"
+    let up = false
+    const ac = new AbortController()
+    const p = defaultRunner('node', ['-e', script], { timeoutMs: 30_000, signal: ac.signal }, (c) => {
+      if (c.includes('up')) up = true
+    })
+    const start = Date.now()
+    while (Date.now() - start < 5000 && !up) await new Promise((r) => setTimeout(r, 20))
+    expect(up).toBe(true) // 자식 기동 확인
+
+    const abortAt = Date.now()
+    ac.abort()
+    const res = await p
+    expect(res.spawnError).toBe('ABORTED')
+    // 자식이 SIGTERM 후 250ms 뒤 종료하므로, finish 가 close 를 기다렸다면 경과 ≥ ~180ms.
+    expect(Date.now() - abortAt).toBeGreaterThanOrEqual(180)
+  }, 15_000)
 })
 
 describe('createCliRegistry', () => {
