@@ -98,6 +98,45 @@ describe('AnthropicProvider', () => {
     expect(calls[0].init.headers['anthropic-version']).toBeDefined()
   })
 
+  it('재사용 프리픽스(도구 동봉·멀티턴)엔 top-level cache_control(ephemeral)를 싣는다 (#11 caching)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    // 도구 동봉 = tool loop 라운드 간 프리픽스 재사용 → 캐시 분기점.
+    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }] })
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).cache_control).toEqual({ type: 'ephemeral' })
+    // 멀티턴(history 누적) 도 재사용 프리픽스.
+    await p.chat([
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+      { role: 'user', content: 'c' },
+    ])
+    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).cache_control).toEqual({ type: 'ephemeral' })
+  })
+
+  it('fresh 단발(1턴·도구 없음)엔 cache_control 을 싣지 않는다 — 휘발성 프리픽스 캐시-쓰기 순손실 방지 (#11 caching)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    // planner/reviewer/summarizer 패턴: system + 단일 user 턴(휘발성). 다음 호출이 다른 프롬프트라 캐시 미적중.
+    await p.chat([
+      { role: 'system', content: '너는 평가자다' },
+      { role: 'user', content: 'q' },
+    ])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).cache_control).toBeUndefined()
+  })
+
+  it('응답 usage 의 cache_creation/cache_read 토큰을 파싱한다 (#11 caching)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 100, cache_read_input_tokens: 200 },
+      }),
+    }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }])
+    expect(out.usage).toEqual({ inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 100, cacheReadInputTokens: 200 })
+  })
+
   it('defaults max_tokens to 4096 when unset', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
     const p = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined }, http)
@@ -921,6 +960,17 @@ describe('provider streaming (SSE)', () => {
     expect(out.finishReason).toBe('stop')
     expect(out.usage).toEqual({ inputTokens: 9, outputTokens: 2 })
     expect((JSON.parse(calls[0].init.body) as { stream?: boolean }).stream).toBe(true)
+  })
+
+  it('Anthropic 스트림: message_start 의 cache_creation/cache_read 토큰을 usage 로 누적한다 (#11 caching)', async () => {
+    const { http } = mockStreamHttp([
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":9,"cache_creation_input_tokens":50,"cache_read_input_tokens":80}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n',
+    ])
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} })
+    expect(out.usage).toEqual({ inputTokens: 9, outputTokens: 2, cacheCreationInputTokens: 50, cacheReadInputTokens: 80 })
   })
 
   it('OpenAI: stream:true + include_usage, 델타와 usage 파싱', async () => {

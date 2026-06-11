@@ -69,10 +69,16 @@ interface AnthropicContent {
   /** redacted_thinking 블록의 불투명 암호화 payload(byte-exact 왕복 필수). */
   data?: string
 }
+interface AnthropicUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
+}
 interface AnthropicResponse {
   content?: AnthropicContent[]
   stop_reason?: string
-  usage?: { input_tokens?: number; output_tokens?: number }
+  usage?: AnthropicUsage
 }
 
 /** ChatTurn.content → Anthropic 메시지 content(문자열 또는 블록 배열). */
@@ -147,7 +153,7 @@ async function readStream(
 ): Promise<ChatResult> {
   let text = ''
   let stop: string | undefined
-  const usage: { inputTokens?: number; outputTokens?: number } = {}
+  const usage: { inputTokens?: number; outputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokens?: number } = {}
   // 인덱스 → tool_use 누적기(시작 순서 보존). 텍스트 블록과 인덱스가 섞여도 정렬해 복원한다.
   const toolAccum = new Map<number, { id: string; name: string; json: string }>()
   // 인덱스 → thinking 누적기(thinking_delta 텍스트 + signature_delta 서명). 순서보존 content 적재용.
@@ -163,7 +169,7 @@ async function readStream(
       index?: number
       content_block?: { type?: string; id?: string; name?: string; data?: string }
       delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string; thinking?: string; signature?: string }
-      message?: { usage?: { input_tokens?: number } }
+      message?: { usage?: AnthropicUsage }
       usage?: { output_tokens?: number }
       error?: { type?: string; message?: string }
     }
@@ -177,8 +183,12 @@ async function readStream(
     if (ev.type === 'error') {
       throw new ApiProviderError('anthropic', 200, JSON.stringify(ev.error ?? { type: 'stream_error' }))
     }
-    if (ev.type === 'message_start') usage.inputTokens = ev.message?.usage?.input_tokens ?? usage.inputTokens
-    else if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && typeof ev.index === 'number') {
+    if (ev.type === 'message_start') {
+      // 캐시 토큰은 입력측이라 message_start 의 usage 로 온다(message_delta 는 output_tokens 만).
+      usage.inputTokens = ev.message?.usage?.input_tokens ?? usage.inputTokens
+      usage.cacheCreationInputTokens = ev.message?.usage?.cache_creation_input_tokens ?? usage.cacheCreationInputTokens
+      usage.cacheReadInputTokens = ev.message?.usage?.cache_read_input_tokens ?? usage.cacheReadInputTokens
+    } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && typeof ev.index === 'number') {
       toolAccum.set(ev.index, { id: ev.content_block.id ?? '', name: ev.content_block.name ?? '', json: '' })
     } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'thinking' && typeof ev.index === 'number') {
       thinkingAccum.set(ev.index, { text: '', signature: '' })
@@ -259,6 +269,14 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         max_tokens: opts.maxTokens ?? config.maxTokens ?? defaultMaxTokens,
         messages: turns,
       }
+      // 프롬프트 캐시: top-level cache_control 은 분기점을 *마지막* 캐시 가능 블록(프롬프트 끝)에 둔다 → 캐시
+      // 엔트리가 프롬프트 전체를 덮는다. 따라서 **같은 프리픽스가 5분 안에 재전송될 때만** 이득이다: tool loop
+      // (최대 8라운드, 라운드마다 history+tools 프리픽스 반복)·멀티턴 chat(history 누적). 반대로 fresh 단발
+      // (planner/reviewer/summarizer — 1턴·도구 없음·휘발성 diff/프롬프트)은 다음 호출이 다른 프롬프트라 캐시가
+      // 절대 읽히지 않아 쓰기 1.25× 만 순손실이다 → 그 경로는 제외한다. (최소 프리픽스 미만은 어차피 무성 no-op.)
+      if (turns.length > 1 || (opts.tools?.length ?? 0) > 0) {
+        body.cache_control = { type: 'ephemeral' }
+      }
       if (system) body.system = system
       // reasoning 모드(thinking) 정규화: 확장 thinking 은 sampling 파라미터와 충돌할 수 있고(구형은 temperature=1
       // 요구, Opus 4.7/4.8 은 temperature 자체를 거부) → thinking 켜지면 temperature 를 생략한다(생략은 항상 안전).
@@ -337,7 +355,12 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         content,
         finishReason: mapFinish(parsed.stop_reason),
         rawFinishReason: parsed.stop_reason,
-        usage: { inputTokens: parsed.usage?.input_tokens, outputTokens: parsed.usage?.output_tokens },
+        usage: {
+          inputTokens: parsed.usage?.input_tokens,
+          outputTokens: parsed.usage?.output_tokens,
+          cacheCreationInputTokens: parsed.usage?.cache_creation_input_tokens,
+          cacheReadInputTokens: parsed.usage?.cache_read_input_tokens,
+        },
       }
     },
   }

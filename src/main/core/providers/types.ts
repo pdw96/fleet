@@ -93,6 +93,10 @@ export interface ToolDefinition {
 export interface TokenUsage {
   inputTokens?: number
   outputTokens?: number
+  /** 프롬프트 캐시에 새로 기록된 입력 토큰(쓰기 ~1.25× 과금). Anthropic 캐시 전용 — 미지원/미캐시면 미설정. */
+  cacheCreationInputTokens?: number
+  /** 프롬프트 캐시에서 읽은 입력 토큰(읽기 ~0.1× 과금). 0/미설정이면 캐시 미적중(무성 무효화 점검 신호). */
+  cacheReadInputTokens?: number
 }
 
 /**
