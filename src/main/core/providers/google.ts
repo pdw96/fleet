@@ -31,6 +31,8 @@ interface GoogleResponse {
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
   /** 프롬프트 자체가 차단되면 candidates 없이 여기에 사유가 온다. */
   promptFeedback?: { blockReason?: string }
+  /** HTTP 200 스트림(alt=sse) 중에도 올 수 있는 error 페이로드. 부분 응답 위장 방지용으로 표면화한다. */
+  error?: { code?: number; message?: string; status?: string }
 }
 
 /**
@@ -144,6 +146,11 @@ async function readStream(
     } catch {
       continue
     }
+    // HTTP 200 스트림(alt=sse) 중에도 error 페이로드(과부하·rate limit 등)가 올 수 있다. 부분 응답을
+    // 성공으로 위장하지 않고 즉시 에러로 표면화한다(silent truncation 방지 — #7, anthropic 과 대칭).
+    if (ev.error) {
+      throw new ApiProviderError('google', 200, JSON.stringify(ev.error))
+    }
     const cand = ev.candidates?.[0]
     for (const p of cand?.content?.parts ?? []) {
       if (p.text) {
@@ -165,6 +172,11 @@ async function readStream(
   const toolCalls: ToolUseBlock[] = funcs.map((f) => toToolUse(f.fc, f.sig))
   // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).
   if (blockReason) return { text, toolCalls, finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
+  // 클린 종료인데 finishReason 미수신 = 비정상 종료(연결 끊김 등). mapFinish(undefined)='stop' 으로 위장하면
+  // 잘린 부분 응답이 성공으로 흡수된다 → silent truncation 표면화(#7, 3사 공통). 프롬프트 차단은 위에서 이미 종결.
+  if (finish === undefined) {
+    throw new ApiProviderError('google', 200, 'stream ended without finishReason (truncated)')
+  }
   return { text, toolCalls, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
 }
 
