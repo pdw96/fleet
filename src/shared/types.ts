@@ -339,12 +339,21 @@ export interface OrchestratorEvent {
   data?: Record<string, unknown>
 }
 
+/**
+ * 보정 재계획(replan) 라운드 상한 — UI 셀렉트의 지원 범위(0..MAX)이자 engine 신뢰 경계의 안전 상한.
+ * 렌더러가 보낸 값은 main 기준 신뢰 경계를 넘어오므로(devtools/커스텀 렌더러가 UI 우회 가능) engine 이
+ * 이 값으로 클램프해, 검증이 계속 실패하는 한 무한정 planner/구현/검증 사이클이 도는 runaway 를 막는다.
+ */
+export const MAX_REPLAN_ROUNDS = 3
+
 export interface RunProjectRequest {
   goal: string
   policy?: AssignmentPolicy
   /** manual 정책용 사용자 지정 역할↔LLM 배정. 지정 시 policy 보다 우선한다. */
   assignments?: RoleAssignment[]
   maxReviewRounds?: number
+  /** 검증 실패가 verify-fix 로도 안 풀릴 때, planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/미지정=비활성. */
+  maxReplanRounds?: number
   taskTimeoutMs?: number
   /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
   continueOnFailure?: boolean

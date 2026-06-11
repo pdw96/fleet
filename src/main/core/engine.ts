@@ -3,7 +3,6 @@ import type {
   AgentRole,
   ApiProviderConfig,
   ApprovalRequest,
-  AssignmentPolicy,
   ChatActivity,
   ChatMessage,
   ChatRoom,
@@ -15,11 +14,11 @@ import type {
   McpServerSpec,
   McpServerStatus,
   Project,
-  RoleAssignment,
+  RunProjectRequest,
   Task,
   ToolStep,
 } from '../../shared/types'
-import { ASSIGNABLE_ROLES } from '../../shared/types'
+import { ASSIGNABLE_ROLES, MAX_REPLAN_ROUNDS } from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
 import { createCliRegistry, type CliRegistry } from './cli/registry'
@@ -86,15 +85,6 @@ export interface FleetEngineOptions {
   mcpHost?: McpHost
 }
 
-export interface RunProjectInput {
-  goal: string
-  assignments?: RoleAssignment[]
-  policy?: AssignmentPolicy
-  maxReviewRounds?: number
-  taskTimeoutMs?: number
-  continueOnFailure?: boolean
-}
-
 /**
  * Fleet 코어 파사드 — store / sessions / cli / providers / orchestrator / chat 를 묶어
  * IPC 계층에 단일 진입점을 제공한다. 전부 순수 TS 라 헤드리스로 검증 가능.
@@ -122,7 +112,7 @@ export interface FleetEngine {
   getLastActiveProject(): string | null
   /** 마지막으로 본 프로젝트 id 저장(null 이면 해제). */
   setLastActiveProject(projectId: string | null): void
-  runProjectFlow(input: RunProjectInput): Promise<RunResult>
+  runProjectFlow(input: RunProjectRequest): Promise<RunResult>
   /** 진행 중인 프로젝트 실행을 취소한다(현재 작업 revert 후 중단). 미존재 id 는 무시. */
   cancelRun(projectId: string): void
   /** 산출물 기록·검증 워크스페이스 조회/설정(null 이면 비활성). */
@@ -389,6 +379,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         assignments = [...assignments.filter((a) => a.role !== 'implementer'), { role: 'implementer', llmId: cliId }]
         store.appendEvent({ type: 'assignment.implementer_reassigned', data: { to: cliId } })
       }
+      // 렌더러는 main 기준 신뢰 경계 바깥이다 — UI 셀렉트(0..MAX_REPLAN_ROUNDS)를 우회한 devtools/커스텀
+      // 렌더러가 임의 큰 값으로 무한정 planner/구현/검증 사이클(검증이 계속 실패하는 한)을 돌리지 못하도록
+      // engine 경계에서 상한을 강제한다(하한·정수·유한성도 함께 보정 — orchestrator 에 sane 값만 넘어가게).
+      const requestedReplan = Math.floor(input.maxReplanRounds ?? 0)
+      const maxReplanRounds = Number.isFinite(requestedReplan) ? Math.min(Math.max(requestedReplan, 0), MAX_REPLAN_ROUNDS) : 0
       // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
       const controller = new AbortController()
       const onEvent = (e: OrchestratorEvent) => {
@@ -403,6 +398,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           sessions,
           assignments,
           maxReviewRounds: input.maxReviewRounds,
+          maxReplanRounds,
           taskTimeoutMs: input.taskTimeoutMs,
           continueOnFailure: input.continueOnFailure,
           workspace: currentWorkspace(),
