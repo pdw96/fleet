@@ -257,6 +257,63 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     }
   }
 
+  // 라이브 CLI 세션을 만들어 매니저에 추가한다(순수 — store/audit 부작용 없음). register·restore 공용.
+  // 복원이 session.registered 재방출/store 재기록 없이 재구성하게 하는 silent 빌드 지점.
+  const buildCliSession = (input: {
+    adapterId: string
+    model?: string
+    stateful?: boolean
+    mcpConfig?: string
+    capabilities?: AgentRole[]
+  }): LlmDescriptor => {
+    const adapter = cliRegistry.get(input.adapterId)
+    if (!adapter) throw new Error(`알 수 없는 CLI 어댑터: ${input.adapterId}`)
+    const descriptor: LlmDescriptor = {
+      id: `cli:${input.adapterId}`,
+      kind: 'cli',
+      displayName: adapter.displayName,
+      ref: input.adapterId,
+      // 모델 미지정(빈 값)이면 CLI 기본 모델. 지정 시 cli-session 이 --model 로 전달.
+      model: input.model?.trim() || '',
+      stateful: !!input.stateful,
+      // MCP 설정(경로/인라인 JSON). adapter.mcpConfigFlag 가 있는 CLI(claude)에만 적용된다.
+      mcpConfig: input.mcpConfig?.trim() || undefined,
+      // capabilities 미지정(신규 등록)이면 시드, 지정(복원)이면 그 값을 적용.
+      capabilities: input.capabilities ?? seedCapabilities(input.adapterId),
+    }
+    sessions.add(createCliSession(descriptor, adapter, runner, undefined, { stateful: input.stateful }))
+    return descriptor
+  }
+
+  // 라이브 CLI descriptor → 영속 store 미러(단일 지점). mcpConfig 는 의도적 제외(secret 평문 금지).
+  const syncPersistedSession = (descriptor: LlmDescriptor): void => {
+    if (descriptor.kind !== 'cli') return // API 영속은 safeStorage 후속(Epic B)
+    store.putSession({
+      kind: 'cli',
+      id: descriptor.id,
+      adapterId: descriptor.ref,
+      model: descriptor.model,
+      stateful: descriptor.stateful,
+      capabilities: descriptor.capabilities,
+    })
+  }
+
+  // 재시작 복원: 영속 CLI 세션을 라이브로 재구성한다. registry 에 있는 adapter 만(등록≠탐지 — 탐지는 별개).
+  // 복원은 store 를 재기록하지 않고(이미 있음) session.registered 도 재방출하지 않는다(에코·중복 audit 회피).
+  // 손상/미지 엔트리가 엔진 생성을 막지 않도록 전체/엔트리별로 격리한다(앱 부팅 brick 방지).
+  for (const ps of store.listSessions()) {
+    try {
+      if (ps.kind !== 'cli') continue // 미지 kind(전방호환) skip
+      if (!cliRegistry.get(ps.adapterId)) {
+        console.warn('[fleet] 세션 복원 skip — 미지 어댑터:', ps.id, ps.adapterId)
+        continue
+      }
+      buildCliSession({ adapterId: ps.adapterId, model: ps.model, stateful: ps.stateful, capabilities: ps.capabilities })
+    } catch (err) {
+      console.error('[fleet] 세션 복원 실패:', ps?.id, err)
+    }
+  }
+
   return {
     detectClis() {
       return detectAll(cliRegistry.list(), runner)
@@ -267,28 +324,21 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     registerCliSession(adapterId, sessionOpts) {
-      const adapter = cliRegistry.get(adapterId)
-      if (!adapter) throw new Error(`알 수 없는 CLI 어댑터: ${adapterId}`)
-      const id = `cli:${adapterId}`
       // 기본 stateless. stateful 은 채팅 등 연속성이 필요한 경로에서만 opt-in (오케스트레이터 독립성 보존).
-      const descriptor: LlmDescriptor = {
-        id,
-        kind: 'cli',
-        displayName: adapter.displayName,
-        ref: adapterId,
-        // 모델 미지정(빈 값)이면 CLI 기본 모델을 쓴다. 지정 시 cli-session 이 --model 로 전달.
-        model: sessionOpts?.model?.trim() || '',
-        stateful: !!sessionOpts?.stateful,
-        // MCP 설정(경로/인라인 JSON). adapter.mcpConfigFlag 가 있는 CLI(claude)에만 적용된다.
-        mcpConfig: sessionOpts?.mcpConfig?.trim() || undefined,
-        capabilities: seedCapabilities(adapterId),
-      }
-      sessions.add(createCliSession(descriptor, adapter, runner, undefined, { stateful: sessionOpts?.stateful }))
-      store.appendEvent({ type: 'session.registered', data: { id, kind: 'cli', stateful: !!sessionOpts?.stateful } })
+      // buildCliSession 이 미지 adapter 면 throw — 기존 계약 보존. capabilities 미지정 → 내부에서 시드.
+      const descriptor = buildCliSession({
+        adapterId,
+        model: sessionOpts?.model,
+        stateful: sessionOpts?.stateful,
+        mcpConfig: sessionOpts?.mcpConfig,
+      })
+      syncPersistedSession(descriptor) // 영속(재시작 복원용)
+      store.appendEvent({ type: 'session.registered', data: { id: descriptor.id, kind: 'cli', stateful: !!sessionOpts?.stateful } })
       return descriptor
     },
 
     registerApiSession(config) {
+      // 주의: API 세션은 영속하지 않는다 — apiKey 는 항상 secret 이라 평문 store 금지(safeStorage 후속, Epic B).
       const id = `api:${config.id}`
       const descriptor: LlmDescriptor = {
         id,
@@ -326,12 +376,14 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     setSessionCapabilities(id, roles) {
       const descriptor = sessions.setCapabilities(id, roles)
       if (!descriptor) throw new Error(`알 수 없는 세션: ${id}`)
+      syncPersistedSession(descriptor) // 수정된 capabilities 영속(cli 만 — 내부에서 분기)
       store.appendEvent({ type: 'session.capabilities', data: { id, roles: [...roles] } })
       return descriptor
     },
 
-    removeSession(id) {
-      return sessions.remove(id)
+    async removeSession(id) {
+      await sessions.remove(id)
+      store.deleteSession(id) // 라이브 제거 후 영속 삭제(재시작 부활 방지)
     },
 
     listProjects() {
