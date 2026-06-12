@@ -42,6 +42,13 @@ const ADAPTIVE_MODELS = /claude-(fable|opus-4-(6|7|8)|sonnet-4-6)(?![0-9])/
 // xhigh effort 와 thinking.display 필드는 Opus 4.7 도입. 4.6 세대는 summarized 가 기본 동작이라
 // display 생략이 행동 보존이고, xhigh 는 effort 생략(=서버 기본 high)으로 하향한다.
 const OPUS_47_PLUS = /claude-(fable|opus-4-(7|8))(?![0-9])/
+// sampling 파라미터(temperature/top_p/top_k) 자체를 400 으로 거부하는 reasoning-native 세대(Fable·Opus 4.7/4.8).
+// 현 세대에선 OPUS_47_PLUS(xhigh/display 지원 집합)와 같은 모델 집합이나 의미 축이 독립적이라 별도 상수로 둔다 —
+// 미래에 'xhigh 는 지원하되 temperature 는 허용'처럼 두 축이 갈리는 모델이 나와도, OPUS_47_PLUS 수정이 이
+// sampling 가드를 조용히 깨지 않도록 분리한다. (fable 토큰은 모든 Fable 세대를 의도적으로 포괄 — Fable 은
+// 전 세대가 no-sampling 이라 미지 버전도 temperature 생략이 안전·정합. opus-4-X 의 (?![0-9]) 룩어헤드는
+// opus-4-70 이 4-7 로 번지는 부분일치만 차단한다.)
+const NO_SAMPLING_MODELS = /claude-(fable|opus-4-(7|8))(?![0-9])/
 
 /**
  * per-call/config thinking 노브를 모델 가용성으로 정규화한다.
@@ -278,9 +285,11 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         body.cache_control = { type: 'ephemeral' }
       }
       if (system) body.system = system
-      // reasoning 모드(thinking) 정규화: 확장 thinking 은 sampling 파라미터와 충돌할 수 있고(구형은 temperature=1
-      // 요구, Opus 4.7/4.8 은 temperature 자체를 거부) → thinking 켜지면 temperature 를 생략한다(생략은 항상 안전).
-      if (temperature !== undefined && !thinking) body.temperature = temperature
+      // sampling 파라미터(temperature) 정규화 — 두 갈래로 생략한다(생략은 항상 안전):
+      //  (1) thinking 켜짐: 확장 thinking 은 temperature 와 충돌(구형은 temperature=1 강제, 신형은 미지원).
+      //  (2) no-sampling 모델(Fable·Opus 4.7/4.8): thinking 무관하게 temperature 자체를 거부 → 하드 400.
+      //      `!thinking` 만으론 thinking 미지정 + temperature 명시 교집합에서 400 이라 모델 게이트를 동반한다.
+      if (temperature !== undefined && !thinking && !NO_SAMPLING_MODELS.test(config.model)) body.temperature = temperature
       if (opts.tools?.length) {
         body.tools = opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }))
         // 확장 thinking 은 강제 도구사용(tool_choice any/tool)과 비호환(400) → thinking 켜지면 'required'(any)를
