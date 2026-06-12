@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { CommandResult, CommandRunner } from './core/cli/detect'
 import type { FleetEngine } from './core/engine'
 
@@ -19,9 +22,14 @@ export const e2eRunner: CommandRunner = (_command, args, _opts, onStdout) => {
   return new Promise<CommandResult>(() => {}) // 의도적으로 resolve 안 함 — 진행 상태를 고정한다
 }
 
-/** 결정론적 픽스처: 페이크 세션 2개 + 방 1개 — 채팅 탭이 즉시 토론 가능하도록 시드한다. */
+/** 결정론적 픽스처: 페이크 세션 2개 + 방 1개 + 워크스페이스 — 채팅·프로젝트 탭이 즉시 동작하도록 시드한다. */
 export function seedE2eFixtures(engine: FleetEngine): void {
   engine.registerCliSession('claude')
   engine.registerCliSession('codex')
   engine.createRoom('E2E 토론방', ['cli:claude', 'cli:codex'])
+  // 프로젝트 탭 E2E: 워크스페이스를 임시 디렉터리로 시드해 오케스트레이션 실행을 가능하게 한다
+  // (runProjectFlow 는 워크스페이스 필수). 페이크 러너가 planTasks 에서 hang 하므로 git 작업(ensureRepo)까지
+  // 도달하지 않아 디렉터리 존재만으로 충분하다 — 실행이 project.created 직후 in-flight 로 고정돼
+  // 취소 버튼·running 잠금의 탭 전환 복원(getRunActivity)을 관찰할 수 있다(앱 종료가 정리).
+  engine.setWorkspace(mkdtempSync(join(tmpdir(), 'fleet-e2e-ws-')))
 }
