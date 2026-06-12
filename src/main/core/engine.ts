@@ -311,7 +311,13 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         console.warn('[fleet] 세션 복원 skip — 미지 어댑터:', ps.id, ps.adapterId)
         continue
       }
-      buildCliSession({ adapterId: ps.adapterId, model: ps.model, stateful: ps.stateful, capabilities: ps.capabilities })
+      buildCliSession({
+        adapterId: ps.adapterId,
+        model: ps.model,
+        stateful: ps.stateful,
+        // 손상 capabilities(비배열)는 버리고 재시드 — 렌더러 SessionsPanel 의 .includes 크래시 방지.
+        capabilities: Array.isArray(ps.capabilities) ? ps.capabilities : undefined,
+      })
     } catch (err) {
       console.error('[fleet] 세션 복원 실패:', ps?.id, err)
     }

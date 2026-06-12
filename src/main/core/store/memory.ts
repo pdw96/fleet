@@ -25,6 +25,9 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
   const idGen = opts.idGen ?? (() => randomUUID())
   const now = opts.now ?? (() => Date.now())
   const state: StoreState = opts.initial ? structuredClone(opts.initial) : emptyState()
+  // 손상 store 파일이 비배열 sessions(유효 JSON → .corrupt 미발동)를 실으면 putSession/deleteSession 의
+  // findIndex 가 throw 한다. 로드 시 1회 정규화해 모든 소비처(CRUD·listSessions·엔진 복원 루프)를 보호한다.
+  if (!Array.isArray(state.sessions)) state.sessions = []
 
   const save = (): void => {
     if (opts.persist) opts.persist(structuredClone(state))

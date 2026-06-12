@@ -213,6 +213,15 @@ describe('json-file store', () => {
     const s = createJsonFileStore(dir)
     expect(s.snapshot().sessions).toEqual([])
   })
+
+  it('비배열 sessions(손상 파일) 로드 후에도 CRUD 가 깨지지 않는다(정규화)', () => {
+    // 유효 JSON 이라 .corrupt 백업 미발동 → state.sessions=42 가 그대로 들어오면 findIndex 가 throw.
+    // 로드 시 정규화하면 putSession/listSessions 가 정상 동작해 UI 로 복구 가능.
+    writeFileSync(join(dir, 'fleet-store.json'), JSON.stringify({ sessions: 42 }), 'utf8')
+    const s = createJsonFileStore(dir)
+    expect(() => s.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })).not.toThrow()
+    expect(s.listSessions()).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude' }])
+  })
 })
 
 describe('memory store — persisted sessions', () => {

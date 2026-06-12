@@ -1283,6 +1283,16 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     expect(e2.listSessions()[0].mcpConfig).toBeUndefined() // 영속 제외 → 복원 시 없음
   })
 
+  it('손상 capabilities(비배열)는 버리고 재시드해 복원한다(렌더러 .includes 크래시 방지)', () => {
+    const store = createMemoryStore()
+    // 비배열 capabilities(객체) — 렌더러 SessionsPanel 이 .includes 호출 시 크래시할 손상 데이터.
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: {} as unknown as AgentRole[] })
+    const engine = createFleetEngine({ store, runner: roleRunner })
+    const caps = engine.listSessions()[0].capabilities
+    expect(Array.isArray(caps)).toBe(true)
+    expect(caps).toEqual(['reviewer']) // claude 시드 기본값으로 복원
+  })
+
   it('비배열 sessions(손상 store 파일)로도 엔진 생성이 brick 되지 않는다(R3)', () => {
     // 최상위 sessions 가 배열 아님 — 유효 JSON 이라 json-file 얕은 머지를 통과(.corrupt 미발동).
     // 복원 루프에 가드가 없으면 for...of 가 TypeError 를 던져 createFleetEngine 전체가 throw(부팅 brick).
