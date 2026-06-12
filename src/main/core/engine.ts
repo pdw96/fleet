@@ -300,6 +300,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
   // 재시작 복원: 영속 CLI 세션을 라이브로 재구성한다. registry 에 있는 adapter 만(등록≠탐지 — 탐지는 별개).
   // 복원은 store 를 재기록하지 않고(이미 있음) session.registered 도 재방출하지 않는다(에코·중복 audit 회피).
+  // 한계(R9): 복원된 stateful 세션은 fresh(started=false·resume id 미영속)라 첫 post-restart ask 가
+  // room.ts 의 lastOwn 델타만 받아 재시작-전 맥락을 잃는다. main 대비 순개선(세션 소실→사용가능)이라
+  // 이 슬라이스는 여기서 멈추고, resume id 영속/컨트롤러 첫-ask full history 는 후속으로 둔다.
   // 손상/미지 엔트리가 엔진 생성을 막지 않도록 전체/엔트리별로 격리한다(앱 부팅 brick 방지).
   // Array.isArray 가드 = '전체' 격리: 손상 store 파일의 최상위 sessions 가 비배열(유효 JSON 이라
   // .corrupt 백업 미발동)이면 for...of 가 try 밖에서 TypeError → createFleetEngine 전체 throw → 부팅 brick.

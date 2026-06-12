@@ -175,8 +175,14 @@ store/json-file:
 | R6 | 앱 업그레이드 시 seed 변경분 미반영(capabilities 고착) | 수용 — minor, user-set 보존이 의도 |
 | R7 | restore.skipped 매 기동 누적 | **완화** — console.warn(transient), 미영속 |
 | R8 | 구버전이 신 store 의 `kind:'api'` 읽기 | 안전 — `continue` skip; **upsert-by-id 불변 유지**(배열 filter-rewrite 금지) |
+| R9 | 복원된 stateful CLI 세션이 fresh(resume id 미영속) → 첫 post-restart ask 에 재시작-전 맥락 누락 | **문서화·이연**(Codex P1) — main 대비 순개선(세션 소실→사용가능); 오케스트레이터는 stateless 라 무관. 제대로된 수정(CLI resume id 영속/컨트롤러가 첫 ask 에 full history)은 CLI별 fragile → 후속 |
+| R10 | 손상 store 의 비배열 `sessions`/`capabilities`(유효 JSON) | **완화**(Codex P2×2) — `memory.ts` 로드 시 `sessions` 정규화(CRUD throw 방지) + 복원 시 `capabilities` 비배열 가드(렌더러 `.includes` 크래시 방지). 회귀 테스트 2건 |
 
 ## 후속(이번 슬라이스 밖)
 
 - **Epic B**: API 세션 영속 — apiKey/인라인 mcpConfig 를 safeStorage 로 암호화하거나 BYO-참조.
 - **Epic C**: 클라우드 백엔드(동기화·팀) — secret 수탁 liability·오프라인·아키텍처 계약 재검토 필요.
+- **stateful 복원 맥락 연속성(R9, Codex P1)**: 복원된 stateful 채팅 세션은 fresh CLI(재개 상태 없음)라
+  첫 post-restart ask 에 재시작-전 맥락이 빠진다. 제대로된 수정 = CLI resume id 영속(claude 세션파일·
+  codex thread id — CLI별 생존 보장 안 됨) 또는 컨트롤러가 복원 세션의 첫 ask 에 full history 전송.
+  본 슬라이스는 순개선(세션 소실→사용가능)에서 멈추고 이연.
