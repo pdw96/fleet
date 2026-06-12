@@ -17,6 +17,22 @@ import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerif
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
 
+/**
+ * 워크스페이스를 되돌리되, revert 실패를 무성흡수(`.catch(()=>{})`)하지 않고 사람이 읽는 주석으로 표면화한다(#7).
+ * 격리 경로(작업 오류·verify-fix catch)에서 호출하므로 revert 예외가 상위 실행을 중단시키지 않게 흡수하되,
+ * 워크스페이스에 부분 변경이 잔존한다는 사실은 호출자가 메시지에 덧붙여 알릴 수 있게 한다.
+ * @returns 성공 시 빈 문자열, 실패 시 ` · 되돌리기 실패: <원문>(워크스페이스 부분 변경 잔존)`
+ */
+async function revertSafely(ws: Pick<Workspace, 'revert'>, base: string): Promise<string> {
+  try {
+    await ws.revert(base)
+    return ''
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return ` · 되돌리기 실패: ${message}(워크스페이스 부분 변경 잔존)`
+  }
+}
+
 export interface RunOptions {
   store: Store
   sessions: SessionManager
@@ -236,10 +252,18 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       done.add(task.id)
     } catch (err) {
       // LLM 호출(네트워크/CLI) 실패를 작업 단위로 격리한다 — 한 작업 실패가 전체 실행을 중단시키지 않는다.
-      await ws.revert(base).catch(() => {})
+      // 부분 편집을 되돌린다. revert 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
+      const revertNote = await revertSafely(ws, base)
+      // 취소(abort)로 인한 중단은 '실행 오류'가 아니다 — 취소(skipped)로 정확히 라벨한다
+      // (pending 취소 경로의 '실행 취소됨'·task.skipped 와 동일 컨벤션). failed 집계에도 넣지 않는다.
+      if (opts.signal?.aborted) {
+        store.updateTask(task.id, { status: 'skipped', output: `실행 취소됨${revertNote}` })
+        emit({ type: 'task.skipped', message: `${task.title}: 실행 취소됨${revertNote}`, data: { taskId: task.id } })
+        return
+      }
       const message = err instanceof Error ? err.message : String(err)
-      store.updateTask(task.id, { status: 'failed', output: `실행 오류: ${message}` })
-      emit({ type: 'task.failed', message: `${task.title}: 실행 오류 - ${message}`, data: { taskId: task.id } })
+      store.updateTask(task.id, { status: 'failed', output: `실행 오류: ${message}${revertNote}` })
+      emit({ type: 'task.failed', message: `${task.title}: 실행 오류 - ${message}${revertNote}`, data: { taskId: task.id } })
       failed.add(task.id)
     }
   }
@@ -384,10 +408,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         }
         await opts.workspace.keep(`[verify-fix r${round}]`)
       } catch (err) {
-        await opts.workspace.revert(base).catch(() => {})
+        // 부분 수정을 되돌린다. revert 실패는 무성흡수하지 않고 수정 실패 메시지에 덧붙여 표면화한다(#7).
+        const revertNote = await revertSafely(opts.workspace, base)
         emit({
           type: 'verify.fixing',
-          message: `수정 실패: ${err instanceof Error ? err.message : String(err)}`,
+          message: `수정 실패: ${err instanceof Error ? err.message : String(err)}${revertNote}`,
           data: { projectId: project.id, round },
         })
         break
@@ -461,10 +486,19 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
   // 취소되면 검증·요약을 건너뛰었으므로 무조건 failed 로 종료한다(misleading done 방지).
   // run.cancelled 는 engine 이 별도로 방출하므로 오케스트레이터는 일을 멈추기만 하면 된다.
+  const signalAborted = opts.signal?.aborted === true
   const verifyFailed =
     !!opts.verify && !(verifications !== undefined && verifications.length > 0 && verifications.every((v) => v.passed))
-  store.updateProject(project.id, { status: opts.signal?.aborted || verifyFailed ? 'failed' : 'done' })
-  emit({ type: 'project.done', message: `프로젝트 완료: ${project.title}`, data: { projectId: project.id } })
+  store.updateProject(project.id, { status: signalAborted || verifyFailed ? 'failed' : 'done' })
+  // project.done 메시지는 실제 종료 상태를 반영한다 — 취소/검증 실패를 항상 '완료'로 위장하지 않는다(#7).
+  // 이벤트 타입('project.done')·data.projectId 는 불변 — engine 의 activeRuns 정리(타입 기반)와 렌더러
+  // running 잠금 해제(타입 기반)가 여기에 의존하므로 메시지 텍스트만 정확화한다.
+  const doneMessage = signalAborted
+    ? `프로젝트 취소됨: ${project.title}`
+    : verifyFailed
+      ? `프로젝트 실패: ${project.title}`
+      : `프로젝트 완료: ${project.title}`
+  emit({ type: 'project.done', message: doneMessage, data: { projectId: project.id } })
 
   return { projectId: project.id, tasks: store.listTasks(project.id), summary, verifications }
 }

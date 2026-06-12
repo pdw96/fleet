@@ -162,7 +162,7 @@ describe('runProject', () => {
 
     const t1 = result.tasks.find((t) => t.title === 'T1')
     const t2 = result.tasks.find((t) => t.title === 'T2')
-    expect(t1?.status).toBe('failed') // 첫 작업은 send 예외로 실패
+    expect(t1?.status).toBe('skipped') // 취소 중 send 예외 → 실행 오류(failed)가 아니라 취소(skipped)
     expect(t2?.status).toBe('skipped') // 취소 후 남은 작업은 실행 없이 skipped
     expect(implCalls).toBe(1) // 둘째 작업은 실행되지 않음
     expect(summarizerCalls).toBe(0) // 취소 시 요약 생략
@@ -1459,5 +1459,277 @@ describe('runProject', () => {
     expect(persisted.some((e) => e.type === 'project.done' && !!e.message)).toBe(true)
     // task.progress(토큰 델타)는 영속되지 않는다.
     expect(store.listEvents().some((e) => e.type === 'task.progress')).toBe(false)
+  })
+
+  // ── 오케스트레이터 정확성 소탕 (#7: 무성흡수 금지 · 정확한 라벨) ──
+
+  it('취소 중 send 예외인 in-flight 작업을 "실행 오류"(failed)가 아니라 취소(skipped)로 라벨한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const controller = new AbortController()
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        controller.abort() // 작업 실행 중 취소 발생
+        throw new Error('aborted mid-task')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+      onEvent: (e) => events.push(e),
+    })
+    const t = result.tasks[0]
+    expect(t.status).toBe('skipped') // 취소는 실패가 아니다
+    expect(t.output).toContain('실행 취소됨')
+    expect(t.output).not.toContain('실행 오류') // 취소를 실행 오류로 오라벨하지 않는다
+    expect(events.some((e) => e.type === 'task.skipped')).toBe(true)
+    expect(events.some((e) => e.type === 'task.failed')).toBe(false) // 취소는 task.failed 로 방출하지 않는다
+  })
+
+  it('취소가 아닌 실제 send 예외는 여전히 "실행 오류"(failed)로 라벨한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        throw new Error('CLI 호출 실패') // 취소 없이 순수 오류
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
+    })
+    const t = result.tasks[0]
+    expect(t.status).toBe('failed')
+    expect(t.output).toContain('실행 오류')
+    expect(events.some((e) => e.type === 'task.failed')).toBe(true)
+  })
+
+  it('작업 오류 정리 중 revert 실패를 무성흡수하지 않고 표면화한다 (#7)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        throw new Error('CLI 호출 실패')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    // revert 가 거부하는 워크스페이스 — 부분 변경이 잔존하므로 무성흡수하면 안 된다.
+    const ws: Workspace = {
+      async ensureRepo() {},
+      async checkpoint() {
+        return 'base'
+      },
+      async collectDiff(): Promise<DiffResult> {
+        return { files: [], patch: '', truncated: false }
+      },
+      async keep() {
+        return 'commit'
+      },
+      async revert() {
+        throw new Error('git reset 실패')
+      },
+    }
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
+    })
+    const t = result.tasks[0]
+    expect(t.status).toBe('failed')
+    expect(t.output).toContain('실행 오류') // 원래 작업 오류
+    expect(t.output).toContain('되돌리기 실패') // revert 실패도 표면화(무성흡수 금지)
+    expect(t.output).toContain('git reset 실패') // revert 오류 원문 보존
+    expect(events.some((e) => e.type === 'task.failed' && e.message.includes('되돌리기 실패'))).toBe(true)
+  })
+
+  it('verify-fix 정리 중 revert 실패를 무성흡수하지 않고 표면화한다 (#7)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        implCalls++
+        if (implCalls >= 2) throw new Error('수정 호출 실패') // verify-fix 호출에서 실패
+        return '구현' // 첫 작업은 성공(승인→keep, revert 안 함)
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    // 작업 경로는 승인되어 revert 미호출. verify-fix catch 에서만 revert 가 호출되며 거부한다.
+    const ws: Workspace = {
+      async ensureRepo() {},
+      async checkpoint() {
+        return 'base'
+      },
+      async collectDiff(): Promise<DiffResult> {
+        return { files: ['src/a.ts'], patch: '+a', truncated: false }
+      },
+      async keep() {
+        return 'commit'
+      },
+      async revert() {
+        throw new Error('git clean 실패')
+      },
+    }
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      onEvent: (e) => events.push(e),
+      verify: async () => [
+        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+      ],
+    })
+    const fixEvent = events.find((e) => e.type === 'verify.fixing' && e.message.includes('수정 실패'))
+    expect(fixEvent).toBeDefined()
+    expect(fixEvent?.message).toContain('되돌리기 실패') // verify-fix revert 실패 표면화
+    expect(fixEvent?.message).toContain('git clean 실패') // revert 오류 원문 보존
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('취소된 실행의 project.done 메시지는 "완료"가 아니라 "취소"를 반영한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const controller = new AbortController()
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        controller.abort()
+        throw new Error('aborted')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+      onEvent: (e) => events.push(e),
+    })
+    const done = events.find((e) => e.type === 'project.done')
+    expect(done).toBeDefined()
+    expect(done?.message).toContain('취소') // 취소를 '완료'로 위장하지 않는다
+    expect(done?.message).not.toContain('완료')
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('검증 실패 실행의 project.done 메시지는 "완료"가 아니라 "실패"를 반영한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      onEvent: (e) => events.push(e),
+      verify: async () => [
+        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', durationMs: 1 },
+      ],
+    })
+    const done = events.find((e) => e.type === 'project.done')
+    expect(done).toBeDefined()
+    expect(done?.message).toContain('실패') // 검증 실패를 '완료'로 위장하지 않는다
+    expect(done?.message).not.toContain('완료')
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('성공한 실행의 project.done 메시지는 "완료"를 유지한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
+    })
+    const done = events.find((e) => e.type === 'project.done')
+    expect(done?.message).toContain('완료')
+    expect(store.getProject(result.projectId)?.status).toBe('done')
   })
 })
