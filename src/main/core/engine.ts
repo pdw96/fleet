@@ -14,6 +14,7 @@ import type {
   McpServerSpec,
   McpServerStatus,
   Project,
+  RunActivity,
   RunProjectRequest,
   Task,
   ToolStep,
@@ -115,6 +116,11 @@ export interface FleetEngine {
   runProjectFlow(input: RunProjectRequest): Promise<RunResult>
   /** 진행 중인 프로젝트 실행을 취소한다(현재 작업 revert 후 중단). 미존재 id 는 무시. */
   cancelRun(projectId: string): void
+  /**
+   * 프로젝트 실행 진행 상태 스냅샷(단일 소스 오브 트루스). 렌더러가 ProjectPanel 마운트 시 조회해
+   * 진행 표시·취소 버튼을 복원한다. 탭 전환으로 렌더러 state 가 날아가도 main(activeRuns)이 권위.
+   */
+  getRunActivity(): RunActivity
   /** 산출물 기록·검증 워크스페이스 조회/설정(null 이면 비활성). */
   getWorkspace(): string | null
   setWorkspace(dir: string | null): void
@@ -423,6 +429,12 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // 라이브로 받은 run.cancelled 와 영속본을 같은 id 로 dedup 하도록(중복 '실행 취소됨' 방지).
       const persisted = store.appendEvent({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
       opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId, eventId: persisted.id } })
+    },
+
+    getRunActivity() {
+      // activeRuns 는 project.created 에서 등록·project.done/cancelRun/dispose 에서 제거되는 in-flight 실행의
+      // 권위 소스다. 키(projectId) 스냅샷만 노출해 렌더러가 running·취소 버튼을 복원한다(순차 전제상 0~1건).
+      return { activeProjectIds: [...activeRuns.keys()] }
     },
 
     getWorkspace() {

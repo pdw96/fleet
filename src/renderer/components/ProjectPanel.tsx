@@ -52,6 +52,10 @@ export function ProjectPanel({ sessions }: Props) {
   // 프로젝트 목록(setProjects) 갱신의 단조 토큰 — 근접 마일스톤들이 띄운 refreshProjects 응답이 순서 뒤바뀌어
   // 도착해도(예: 느린 plan.created 가 빠른 project.done 뒤에 resolve) 옛 스냅샷이 최신 목록/상태칩을 덮어쓰지 않게 한다.
   const projectsTokenRef = useRef(0)
+  // 하이드레이션 레이스 가드: getRunActivity 스냅샷 resolve 전 도착한 라이브 종료(project.done/run.cancelled/
+  // plan.failed)를 기록해, 스테일 스냅샷이 이미 끝난 실행을 "진행 중"으로 되살리지 않게 한다(라이브 우선).
+  // 마운트 1회용이라 누적은 무해(ChatPanel 의 endedStreamsRef 와 동형).
+  const endedRunsRef = useRef<Set<string>>(new Set())
 
   // 방 선택을 동기적으로 확정한다: selectedIdRef·카운터를 즉시 갱신하고 이전 방의 보드/로그/요약을 비운다.
   // 동기 처리라 (a) 직후 도착 라이브 이벤트가 새 방 필터를 통과하고(특히 막 생성된 프로젝트의 task.progress),
@@ -116,13 +120,19 @@ export function ProjectPanel({ sessions }: Props) {
       // 도착하는 task.progress(영속 안 됨, 재조회로 복원 불가)도 곧바로 라이브 로그 필터를 통과한다.
       if (e.type === 'project.created' && pid) {
         setActiveProjectId(pid)
+        // running 잠금은 main 진행 신호로 켠다 — run() 을 호출하지 않은 마운트-옵저버도(스냅샷이 빈 사각
+        // = created 직전 마운트) 진행 표시·동시 실행 차단을 얻는다. run() 호출자에겐 멱등(이미 true).
+        setRunning(true)
         void refreshProjects()
         selectProject(pid) // 새 프로젝트를 바로 연다(ref 동기 갱신)
       }
-      // 실행 종료(완료/취소/계획실패): in-flight id 해제 + 프로젝트 목록 갱신.
-      // run() 을 시작하지 않은 마운트-옵저버 인스턴스(탭/창 전환 후 재마운트)도 여기서 사이드바·상태칩을 갱신한다.
+      // 실행 종료(완료/취소/계획실패): in-flight id·running 해제 + 프로젝트 목록 갱신.
+      // run() 을 시작하지 않은 마운트-옵저버 인스턴스(탭/창 전환 후 재마운트)도 여기서 사이드바·상태칩을
+      // 갱신하고, 스냅샷으로 하이드레이트된 running 을 해제한다(이 인스턴스엔 풀어줄 run() 프로미스가 없다).
       if ((e.type === 'project.done' || e.type === 'run.cancelled' || e.type === 'plan.failed') && pid) {
+        endedRunsRef.current.add(pid) // 하이드레이션 레이스 가드(스냅샷 되살림 방지)
         setActiveProjectId((cur) => (cur === pid ? null : cur))
+        setRunning(false)
         void refreshProjects()
       }
       // 상태 전환 마일스톤도 목록 갱신 — planning→executing(plan.created), executing→verifying(verify.*).
@@ -147,6 +157,21 @@ export function ProjectPanel({ sessions }: Props) {
       }
     })
     return unsub
+  }, [])
+
+  // 마운트 시 진행 중 실행 스냅샷 복원(단일 소스 오브 트루스) — 탭 재진입으로 로컬 state(running/activeProjectId)가
+  // 날아가도 main 이 보유한 in-flight 실행을 되살려 (a) 취소 버튼 소실과 (b) running 해제로 인한 동시 2번째 실행
+  // 시도(엔진 가드가 거부하지만 UX 가 나쁘다)를 막는다. 구독(onOrchestratorEvent)을 먼저 건 뒤 조회해, 조회와
+  // 라이브 종료 이벤트 사이 간극을 최소화한다(라이브 우선 — 윈도우 중 끝난 실행은 endedRunsRef 로 거른다).
+  useEffect(() => {
+    void window.fleet.getRunActivity().then((a) => {
+      // 스냅샷은 조회 시점값이라 resolve 전 도착한 라이브 종료보다 스테일할 수 있다. 이미 끝난 실행은 되살리지 않는다.
+      const live = a.activeProjectIds.filter((pid) => !endedRunsRef.current.has(pid))
+      if (live.length === 0) return // 진행 중 실행 없음 — 라이브가 이미 종료를 반영했거나 애초에 없었다.
+      // 라이브 created 가 이미 잡았으면 그 값을 유지(라이브 우선). 순차 전제상 단일 실행이라 충돌은 없다.
+      setActiveProjectId((cur) => cur ?? live[0])
+      setRunning(true)
+    })
   }, [])
 
   // 선택 변경: 저장소 스냅샷 로드(보드/로그)와 마지막 선택 영속. 보드/로그/요약 비우기와 카운터 리셋은

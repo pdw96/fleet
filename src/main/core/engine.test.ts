@@ -350,6 +350,37 @@ describe('FleetEngine', () => {
     }
   }, 10_000)
 
+  it('getRunActivity 는 진행 중 실행이 없으면 빈 목록을 반환한다', () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    const engine = createFleetEngine({ store, sessions })
+    expect(engine.getRunActivity()).toEqual({ activeProjectIds: [] })
+  })
+
+  it('getRunActivity 는 진행 중 실행의 projectId 를 스냅샷으로 반환하고 취소 후 비운다(재마운트 복원 권위 소스)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-run-activity-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const sessions = createSessionManager()
+      sessions.add(hangingImplSession())
+      const events: { type: string; data?: Record<string, unknown> }[] = []
+      const engine = createFleetEngine({ store, sessions, workspaceDir: dir, gitRunner: fakeGit(), onOrchestratorEvent: (e) => events.push(e) })
+
+      const run = engine.runProjectFlow({ goal: 'g' })
+      const pid = await waitForCreated(events) // project.created 에서 activeRuns 에 등록될 때까지 대기
+
+      // 진행 중: 스냅샷에 in-flight projectId 가 잡혀야 재마운트한 렌더러가 취소 버튼·running 을 복원한다.
+      expect(engine.getRunActivity()).toEqual({ activeProjectIds: [pid] })
+
+      engine.cancelRun(pid) // 취소 → activeRuns 에서 제거
+      await run
+      // 종료 후엔 비어야 한다(스테일 "진행 중" 표시 방지).
+      expect(engine.getRunActivity()).toEqual({ activeProjectIds: [] })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 10_000)
+
   it('runs the implementer as a direct-edit agent in the workspace and verifies when workspaceDir is set', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-'))
     try {
