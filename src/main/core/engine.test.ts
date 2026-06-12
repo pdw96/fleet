@@ -11,6 +11,7 @@ import type { HttpClient } from './providers/types'
 import { createSessionManager } from './session/manager'
 import type { FleetTool } from './tools/types'
 import { createMemoryStore } from './store/memory'
+import { createJsonFileStore } from './store/json-file'
 import type { GitRunner } from './workspace/git'
 
 function deterministic() {
@@ -1280,5 +1281,18 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
 
     const e2 = createFleetEngine({ store, runner: roleRunner })
     expect(e2.listSessions()[0].mcpConfig).toBeUndefined() // 영속 제외 → 복원 시 없음
+  })
+
+  it('비배열 sessions(손상 store 파일)로도 엔진 생성이 brick 되지 않는다(R3)', () => {
+    // 최상위 sessions 가 배열 아님 — 유효 JSON 이라 json-file 얕은 머지를 통과(.corrupt 미발동).
+    // 복원 루프에 가드가 없으면 for...of 가 TypeError 를 던져 createFleetEngine 전체가 throw(부팅 brick).
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-brick-'))
+    try {
+      writeFileSync(join(dir, 'fleet-store.json'), JSON.stringify({ sessions: 42 }), 'utf8')
+      const store = createJsonFileStore(dir)
+      expect(() => createFleetEngine({ store, runner: roleRunner })).not.toThrow()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

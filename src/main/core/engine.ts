@@ -301,7 +301,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   // 재시작 복원: 영속 CLI 세션을 라이브로 재구성한다. registry 에 있는 adapter 만(등록≠탐지 — 탐지는 별개).
   // 복원은 store 를 재기록하지 않고(이미 있음) session.registered 도 재방출하지 않는다(에코·중복 audit 회피).
   // 손상/미지 엔트리가 엔진 생성을 막지 않도록 전체/엔트리별로 격리한다(앱 부팅 brick 방지).
-  for (const ps of store.listSessions()) {
+  // Array.isArray 가드 = '전체' 격리: 손상 store 파일의 최상위 sessions 가 비배열(유효 JSON 이라
+  // .corrupt 백업 미발동)이면 for...of 가 try 밖에서 TypeError → createFleetEngine 전체 throw → 부팅 brick.
+  const persisted = store.listSessions()
+  for (const ps of Array.isArray(persisted) ? persisted : []) {
     try {
       if (ps.kind !== 'cli') continue // 미지 kind(전방호환) skip
       if (!cliRegistry.get(ps.adapterId)) {

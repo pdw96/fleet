@@ -138,7 +138,7 @@ preload 재시작 함정(AGENTS.md) 회피.
 
 ## 에러 처리
 
-- 복원 루프 전체/엔트리별 try/catch → 손상·미지 엔트리가 부팅을 막지 못함.
+- 복원 루프 **전체(`Array.isArray` 가드)/엔트리별(try/catch)** 격리 → 손상·미지 엔트리가 부팅을 막지 못함. 특히 손상 store 파일의 최상위 `sessions` 가 비배열(유효 JSON → `.corrupt` 백업 미발동)이면 가드 없이는 `for...of` 가 try 밖에서 `TypeError` → `createFleetEngine` 전체 throw(부팅 brick); `Array.isArray` 가 이를 막는다.
 - 미지 adapter → console.warn 후 skip(영속 store 스팸 회피, R7). 내구 가시화(stale-session UI)는 미래 작업.
 - buildCliSession throw(미지 adapter)는 복원 가드(`registry.get`) 뒤라 정상 경로에선 안 남.
 
@@ -169,7 +169,7 @@ store/json-file:
 |----|--------|------|
 | R1 | mcpConfig 인라인 JSON 평문 영속(secret 노출) | **해소** — mcpConfig 미영속 |
 | R2 | 반쪽 복원 → 역할 배정 침묵 드리프트; API-only 사용자 #364 잔존 | 본질적 한계 — Epic B 까지 잔존(문서화) |
-| R3 | 복원 실패가 엔진 생성 brick | **완화** — 전체/엔트리별 try/catch |
+| R3 | 복원 실패가 엔진 생성 brick(비배열 sessions 포함) | **완화** — 전체(`Array.isArray` 가드)/엔트리별(try/catch). 회귀 테스트 `비배열 sessions … brick 되지 않는다(R3)` |
 | R4 | 이중 진실원천 동기화 드리프트(미래) | **완화** — `syncPersistedSession` 단일 미러 |
 | R5 | 바이너리 미설치 세션 침묵 부활 → 런타임 실패 | 수용 — 기존 register 의미(등록≠탐지)와 일치 |
 | R6 | 앱 업그레이드 시 seed 변경분 미반영(capabilities 고착) | 수용 — minor, user-set 보존이 의도 |
