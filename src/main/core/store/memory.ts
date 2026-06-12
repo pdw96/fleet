@@ -8,6 +8,7 @@ const emptyState = (): StoreState => ({
   rooms: [],
   messages: [],
   events: [],
+  sessions: [],
 })
 
 /** 목표 문자열에서 짧은 제목 도출. */
@@ -171,6 +172,25 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
     },
     getLastActiveProjectId() {
       return state.lastActiveProjectId
+    },
+
+    // ── persisted sessions ──
+    putSession(session) {
+      // upsert-by-id 만 — 배열을 filter-rewrite 하지 않아 미지 kind 엔트리(전방호환)를 보존한다.
+      const i = state.sessions.findIndex((s) => s.id === session.id)
+      if (i >= 0) state.sessions[i] = session
+      else state.sessions.push(session)
+      save()
+    },
+    deleteSession(id) {
+      const i = state.sessions.findIndex((s) => s.id === id)
+      if (i >= 0) {
+        state.sessions.splice(i, 1)
+        save()
+      }
+    },
+    listSessions() {
+      return structuredClone(state.sessions)
     },
 
     // ── persistence ──
