@@ -277,11 +277,56 @@ describe('AnthropicProvider', () => {
     expect(body.thinking).toEqual({ type: 'adaptive' })
   })
 
-  it('thinking 미지정이면 temperature 를 그대로 전송한다(현행 동작)', async () => {
+  it('thinking 미지정이면 temperature 를 그대로 전송한다 — temperature 허용 모델(Sonnet 4.6) (현행 동작)', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
-    const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3 }, http)
+    const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3 }, http) // claude-sonnet-4-6
     await p.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBe(0.3)
+  })
+
+  // ── temperature 거부(no-sampling) 모델 가드 (anthropic-nosampling-guard) ──────────
+  // Opus 4.7/4.8·Fable 은 sampling 파라미터(temperature) 자체를 400 으로 거부한다. thinking 미지정이면
+  // resolveThinking 이 undefined 라 기존 `!thinking` 게이트가 모델 무관하게 temperature 를 실어 하드 400 →
+  // 모델 게이트를 동반해 thinking 여부와 무관하게 생략해야 한다(생략은 항상 안전).
+
+  it('temperature 거부 모델(Opus 4.8)은 thinking 미지정·temperature 명시여도 temperature 를 생략한다 (anthropic-nosampling-guard)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-8', temperature: 0.3 }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBeUndefined()
+  })
+
+  it('temperature 거부 모델(Fable)도 thinking 미지정·temperature 명시여도 temperature 를 생략한다 (anthropic-nosampling-guard)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-fable-5', temperature: 0.5 }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBeUndefined()
+  })
+
+  it('temperature 거부 모델(Opus 4.7)은 per-call opts.temperature 도 생략한다 (anthropic-nosampling-guard)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-7' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { temperature: 0.2 })
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBeUndefined()
+  })
+
+  it('temperature 거부 모델(Opus 4.8) + thinking 활성 + temperature 명시 — 두 가드 모두 적용돼 temperature 생략 (anthropic-nosampling-guard)', async () => {
+    // thinking 게이트(`!thinking`)와 모델 게이트(`!NO_SAMPLING_MODELS`)의 교차. thinking 켜진 경로에서도
+    // no-sampling 모델의 temperature 가 새지 않음을 잠가 둔다(어느 한 가드가 회귀로 빠져도 포착).
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-8', temperature: 0.3 }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.temperature).toBeUndefined()
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+  })
+
+  it('temperature 허용 모델(Sonnet 4.6)은 per-call opts.temperature 도 그대로 전송한다 (config/per-call × accept 매트릭스 보강)', async () => {
+    // 거부 모델은 config·per-call 양 경로를 위에서 커버 → 허용 모델의 per-call 경로까지 잠가 매트릭스를 닫는다.
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http) // claude-sonnet-4-6
+    await p.chat([{ role: 'user', content: 'q' }], { temperature: 0.4 })
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBe(0.4)
   })
 
   it('thinking 켜지면 강제 도구사용(toolChoice:required)을 auto 로 낮춘다(확장 thinking 비호환) (#11-thinking)', async () => {
