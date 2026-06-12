@@ -429,6 +429,16 @@ export interface ChatActivity {
   streams: ActiveChatStream[]
 }
 
+/**
+ * 프로젝트 실행 진행 상태 스냅샷(단일 소스 오브 트루스). 렌더러가 ProjectPanel 마운트 시 1회 조회해
+ * 진행 표시(running 잠금·취소 버튼)를 복원한다 — 탭 전환으로 컴포넌트가 언마운트돼 로컬 state 가
+ * 날아가도 진행 중 실행의 권위는 항상 main(activeRuns)에 있다. ChatActivity 와 동형이다.
+ */
+export interface RunActivity {
+  /** 진행 중인 프로젝트 실행 id 목록. DESIGN.md 순차 전제상 0 또는 1건(동시 실행 가드). */
+  activeProjectIds: string[]
+}
+
 // ── preload 가 노출하는 브리지 계약 ────────────────────────────────────────
 export interface FleetBridge {
   getAppInfo(): Promise<AppInfo>
@@ -458,6 +468,8 @@ export interface FleetBridge {
   runProject(req: RunProjectRequest): Promise<RunResult>
   /** 진행 중인 프로젝트 실행을 취소한다. */
   cancelRun(projectId: string): Promise<void>
+  /** 프로젝트 실행 진행 상태 스냅샷(진행 중 실행 id). ProjectPanel 마운트 시 running·취소 버튼 복원용. */
+  getRunActivity(): Promise<RunActivity>
   /** 산출물 기록·검증 워크스페이스 조회. null 이면 비활성(파일 기록/검증 안 함). */
   getWorkspace(): Promise<string | null>
   /** 워크스페이스 디렉터리 선택(취소 시 기존 값 유지). 적용된 경로(또는 null) 반환. */

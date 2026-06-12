@@ -92,6 +92,7 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   )
   ipcMain.handle('fleet:project:run', (_e, req: RunProjectRequest) => engine.runProjectFlow(req))
   ipcMain.handle('fleet:project:cancel', (_e, projectId: string) => engine.cancelRun(projectId))
+  ipcMain.handle('fleet:project:activity', () => engine.getRunActivity())
   ipcMain.handle('fleet:workspace:get', () => engine.getWorkspace())
   ipcMain.handle('fleet:workspace:select', async () => {
     const res = await dialog.showOpenDialog({

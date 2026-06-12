@@ -21,6 +21,7 @@ const api: FleetBridge = {
   setLastActiveProject: (projectId) => ipcRenderer.invoke('fleet:project:lastActive:set', projectId),
   runProject: (req) => ipcRenderer.invoke('fleet:project:run', req),
   cancelRun: (projectId) => ipcRenderer.invoke('fleet:project:cancel', projectId),
+  getRunActivity: () => ipcRenderer.invoke('fleet:project:activity'),
   getWorkspace: () => ipcRenderer.invoke('fleet:workspace:get'),
   selectWorkspace: () => ipcRenderer.invoke('fleet:workspace:select'),
 

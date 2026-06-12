@@ -22,6 +22,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     listProjectEvents: vi.fn().mockResolvedValue([]),
     getLastActiveProject: vi.fn().mockResolvedValue(null),
     setLastActiveProject: vi.fn().mockResolvedValue(undefined),
+    getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: [] }),
     ...overrides,
   }
   ;(window as unknown as { fleet: unknown }).fleet = fleet
@@ -510,5 +511,95 @@ describe('ProjectPanel', () => {
     })
     expect(listProjects.mock.calls.length).toBeGreaterThan(before) // verify.fixing 에서 refreshProjects 호출됨
     expect(screen.getAllByText('verifying').length).toBeGreaterThan(0) // executing 고착 아님
+  })
+
+  // V(Next②): 재마운트 시 getRunActivity 스냅샷으로 진행 중 실행을 복원한다 — 취소 버튼이 되살아나고
+  //           run 버튼이 비활성(running)으로 잠겨 동시 2번째 실행 시도가 차단된다(엔진 가드 우회 UX 방지).
+  it('restores the in-flight run (취소 button + running lock) from getRunActivity on mount', async () => {
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P2]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p2'),
+      getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    // 스냅샷 복원으로 취소 버튼이 나타난다(run() 프로미스 없이도 — 마운트-옵저버).
+    expect(await screen.findByRole('button', { name: '취소' })).toBeTruthy()
+    expect(fleet.getRunActivity).toHaveBeenCalled()
+    // running 잠금: 목표를 입력해도 run 버튼이 비활성이라 두 번째 실행을 시도할 수 없다.
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '다른 목표' } })
+    expect((screen.getByRole('button', { name: '실행 중…' }) as HTMLButtonElement).disabled).toBe(true)
+    // 취소는 스냅샷의 in-flight projectId 로 호출된다.
+    fireEvent.click(screen.getByRole('button', { name: '취소' }))
+    await act(async () => {})
+    expect(fleet.cancelRun).toHaveBeenCalledWith('p2')
+  })
+
+  // V2(Next②): getRunActivity 의 진행 중 실행 id 는 마운트 자동선택(보던 프로젝트)과 다를 수 있다 —
+  //            activeProjectId(실행 중)와 selectedId(보는 중)는 설계상 분리(DESIGN.md). 취소 버튼은
+  //            폼-레벨 실행 제어라 보는 프로젝트가 아니라 실제 진행 중 실행을 대상으로 한다. 두 개념 혼동 회귀 가드.
+  it('cancels the in-flight run, not the viewed project, when they differ (activeProjectId vs selectedId 분리)', async () => {
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P1, P2]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p1'), // 보던(선택된) 프로젝트는 p1
+      getProjectTasks: vi.fn().mockResolvedValue([]),
+      listProjectEvents: vi.fn().mockResolvedValue([]),
+      getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }), // 실제 진행 중 실행은 p2
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    const cancelBtn = await screen.findByRole('button', { name: '취소' }) // running(p2) 복원
+    fireEvent.click(cancelBtn)
+    await act(async () => {})
+    expect(fleet.cancelRun).toHaveBeenCalledWith('p2') // 보던 p1 이 아니라 진행 중 p2 를 취소
+  })
+
+  // W(Next②): 스냅샷 resolve 전 도착한 라이브 종료(terminal)는 스테일 스냅샷이 되살리지 않아야 한다(라이브 우선).
+  it('does not resurrect a run that ended live before the getRunActivity snapshot resolved', async () => {
+    let resolveActivity: (a: { activeProjectIds: string[] }) => void = () => {}
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P2]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p2'),
+      getRunActivity: vi.fn(() => new Promise<{ activeProjectIds: string[] }>((res) => { resolveActivity = res })),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText('결제 연동')
+    // 스냅샷 펜딩 중 라이브 종료가 먼저 도착(하이드레이션 윈도우 레이스).
+    await act(async () => { fleet.fire({ type: 'project.done', message: '완료', data: { projectId: 'p2' } }) })
+    // 스냅샷이 늦게 진행 중(p2)을 보고해도, 이미 종료된 실행이라 되살리지 않는다.
+    await act(async () => { resolveActivity({ activeProjectIds: ['p2'] }) })
+    expect(screen.queryByRole('button', { name: '취소' })).toBeNull() // 취소 버튼 안 뜸
+  })
+
+  // Y(Codex P1): run.cancelled 는 취소 ack 일 뿐 — 오케스트레이터가 revert 를 마치고 project.done 을 방출할
+  //              때까지 running 잠금을 유지해야 한다(정리 윈도우 중 두 번째 실행이 revert 와 경합 → 워크스페이스 파괴 방지).
+  it('keeps running locked on run.cancelled until project.done (cancel-revert window)', async () => {
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P2]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p2'),
+      getProjectTasks: vi.fn().mockResolvedValue([]),
+      listProjectEvents: vi.fn().mockResolvedValue([]),
+      getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByRole('button', { name: '취소' }) // running 잠금 복원
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '두번째 목표' } })
+    // 취소 ack 도착 — 하지만 revert 가 끝나지 않았으므로 폼은 여전히 잠겨 있어야 한다(두 번째 실행 차단).
+    await act(async () => { fleet.fire({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId: 'p2' } }) })
+    expect((screen.getByRole('button', { name: '실행 중…' }) as HTMLButtonElement).disabled).toBe(true)
+    // project.done(revert 완료)에서 비로소 잠금 해제 → 새 실행 가능.
+    await act(async () => { fleet.fire({ type: 'project.done', message: '완료', data: { projectId: 'p2' } }) })
+    expect((screen.getByRole('button', { name: '오케스트레이션 실행' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  // X(Next②): 마운트-옵저버가 라이브 project.created 만으로도 running 잠금을 켜야 한다(스냅샷이 빈 경우의 사각 봉합).
+  it('locks running on a live project.created even without a local run() (observer)', async () => {
+    const fleet = mockFleet({ listProjects: vi.fn().mockResolvedValue([]) })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    // 이 인스턴스는 run() 을 호출하지 않았다 — 다른 경로로 시작된 실행의 created 만 관측.
+    await act(async () => { fleet.fire({ type: 'project.created', message: '생성', data: { projectId: 'pY' } }) })
+    expect(await screen.findByRole('button', { name: '취소' })).toBeTruthy() // running+activeProjectId → 취소 버튼
+    // 종료 이벤트로 잠금 해제 — running 이 false 로 풀려 새 실행이 가능해진다.
+    await act(async () => { fleet.fire({ type: 'project.done', message: '완료', data: { projectId: 'pY' } }) })
+    expect(screen.queryByRole('button', { name: '취소' })).toBeNull()
   })
 })
