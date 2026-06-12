@@ -422,9 +422,13 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
     cancelRun(projectId) {
       const c = activeRuns.get(projectId)
-      if (!c) return // 미존재 id 는 무해한 no-op
+      if (!c || c.signal.aborted) return // 미존재 id·이미 취소 진행 중 → 무해한 no-op(중복 run.cancelled 방지)
       c.abort()
-      activeRuns.delete(projectId)
+      // activeRuns 에서 즉시 제거하지 않는다 — 실행은 abort 후에도 현재 작업을 revert(git reset --hard·clean)
+      // 하며 unwinding 중이고 project.done 을 방출할 때까지 워크스페이스를 계속 건드린다. 그때까지 활성으로
+      // 유지해야 동시 실행 가드(activeRuns.size>0)와 getRunActivity 스냅샷이 '취소 정리 중'을 정확히 반영해
+      // revert 완료 전 두 번째 실행이 같은 워크스페이스를 편집(파괴)하는 것을 막는다. 제거는 revert 후 방출되는
+      // project.done(onEvent) 또는 runProjectFlow finally 가 수행한다.
       // 영속 이벤트 id 를 라이브 페이로드(data.eventId)에도 실어 보낸다 — 렌더러가 스냅샷 재조회 시
       // 라이브로 받은 run.cancelled 와 영속본을 같은 id 로 dedup 하도록(중복 '실행 취소됨' 방지).
       const persisted = store.appendEvent({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
@@ -432,8 +436,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     getRunActivity() {
-      // activeRuns 는 project.created 에서 등록·project.done/cancelRun/dispose 에서 제거되는 in-flight 실행의
-      // 권위 소스다. 키(projectId) 스냅샷만 노출해 렌더러가 running·취소 버튼을 복원한다(순차 전제상 0~1건).
+      // activeRuns 는 project.created 에서 등록·project.done/dispose 에서 제거되는 in-flight 실행의 권위
+      // 소스다(cancelRun 은 abort 만 하고 제거는 revert 후 project.done 에 맡긴다 — 정리 윈도우도 활성 유지).
+      // 키(projectId) 스냅샷만 노출해 렌더러가 running·취소 버튼을 복원한다(순차 전제상 0~1건).
       return { activeProjectIds: [...activeRuns.keys()] }
     },
 

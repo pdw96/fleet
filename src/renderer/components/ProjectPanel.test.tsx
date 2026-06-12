@@ -569,6 +569,27 @@ describe('ProjectPanel', () => {
     expect(screen.queryByRole('button', { name: '취소' })).toBeNull() // 취소 버튼 안 뜸
   })
 
+  // Y(Codex P1): run.cancelled 는 취소 ack 일 뿐 — 오케스트레이터가 revert 를 마치고 project.done 을 방출할
+  //              때까지 running 잠금을 유지해야 한다(정리 윈도우 중 두 번째 실행이 revert 와 경합 → 워크스페이스 파괴 방지).
+  it('keeps running locked on run.cancelled until project.done (cancel-revert window)', async () => {
+    const fleet = mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P2]),
+      getLastActiveProject: vi.fn().mockResolvedValue('p2'),
+      getProjectTasks: vi.fn().mockResolvedValue([]),
+      listProjectEvents: vi.fn().mockResolvedValue([]),
+      getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }),
+    })
+    render(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByRole('button', { name: '취소' }) // running 잠금 복원
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '두번째 목표' } })
+    // 취소 ack 도착 — 하지만 revert 가 끝나지 않았으므로 폼은 여전히 잠겨 있어야 한다(두 번째 실행 차단).
+    await act(async () => { fleet.fire({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId: 'p2' } }) })
+    expect((screen.getByRole('button', { name: '실행 중…' }) as HTMLButtonElement).disabled).toBe(true)
+    // project.done(revert 완료)에서 비로소 잠금 해제 → 새 실행 가능.
+    await act(async () => { fleet.fire({ type: 'project.done', message: '완료', data: { projectId: 'p2' } }) })
+    expect((screen.getByRole('button', { name: '오케스트레이션 실행' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
   // X(Next②): 마운트-옵저버가 라이브 project.created 만으로도 running 잠금을 켜야 한다(스냅샷이 빈 경우의 사각 봉합).
   it('locks running on a live project.created even without a local run() (observer)', async () => {
     const fleet = mockFleet({ listProjects: vi.fn().mockResolvedValue([]) })

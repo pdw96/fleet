@@ -52,9 +52,10 @@ export function ProjectPanel({ sessions }: Props) {
   // 프로젝트 목록(setProjects) 갱신의 단조 토큰 — 근접 마일스톤들이 띄운 refreshProjects 응답이 순서 뒤바뀌어
   // 도착해도(예: 느린 plan.created 가 빠른 project.done 뒤에 resolve) 옛 스냅샷이 최신 목록/상태칩을 덮어쓰지 않게 한다.
   const projectsTokenRef = useRef(0)
-  // 하이드레이션 레이스 가드: getRunActivity 스냅샷 resolve 전 도착한 라이브 종료(project.done/run.cancelled/
+  // 하이드레이션 레이스 가드: getRunActivity 스냅샷 resolve 전 도착한 라이브 *최종* 종료(project.done/
   // plan.failed)를 기록해, 스테일 스냅샷이 이미 끝난 실행을 "진행 중"으로 되살리지 않게 한다(라이브 우선).
-  // 마운트 1회용이라 누적은 무해(ChatPanel 의 endedStreamsRef 와 동형).
+  // run.cancelled 는 제외 — 취소 ack 시점엔 실행이 아직 revert 중(활성)이라 스냅샷이 복원해야 옳다(project.done
+  // 까지 잠금 유지). 마운트 1회용이라 누적은 무해(ChatPanel 의 endedStreamsRef 와 동형).
   const endedRunsRef = useRef<Set<string>>(new Set())
 
   // 방 선택을 동기적으로 확정한다: selectedIdRef·카운터를 즉시 갱신하고 이전 방의 보드/로그/요약을 비운다.
@@ -126,15 +127,21 @@ export function ProjectPanel({ sessions }: Props) {
         void refreshProjects()
         selectProject(pid) // 새 프로젝트를 바로 연다(ref 동기 갱신)
       }
-      // 실행 종료(완료/취소/계획실패): in-flight id·running 해제 + 프로젝트 목록 갱신.
+      // 실행의 *최종* 종료(완료/계획실패): in-flight id·running 해제 + 목록 갱신 + 하이드레이션 가드 기록.
       // run() 을 시작하지 않은 마운트-옵저버 인스턴스(탭/창 전환 후 재마운트)도 여기서 사이드바·상태칩을
       // 갱신하고, 스냅샷으로 하이드레이트된 running 을 해제한다(이 인스턴스엔 풀어줄 run() 프로미스가 없다).
-      if ((e.type === 'project.done' || e.type === 'run.cancelled' || e.type === 'plan.failed') && pid) {
+      // run.cancelled 는 *취소 ack* 일 뿐 — 오케스트레이터는 그 뒤에도 현재 작업을 revert 하며 unwinding 하고
+      // 나중에 project.done 을 방출한다. running 잠금을 취소 ack 에서 풀면 그 정리 윈도우 동안 폼이 재활성돼
+      // 두 번째 실행이 revert 와 경합(워크스페이스 파괴)할 수 있으므로, 잠금은 project.done/실패까지 유지한다
+      // (engine 의 동시 실행 가드·activeRuns 도 cancelRun 에서 제거하지 않고 project.done 까지 유지 — 대칭).
+      if ((e.type === 'project.done' || e.type === 'plan.failed') && pid) {
         endedRunsRef.current.add(pid) // 하이드레이션 레이스 가드(스냅샷 되살림 방지)
         setActiveProjectId((cur) => (cur === pid ? null : cur))
         setRunning(false)
         void refreshProjects()
       }
+      // 취소 ack: 사이드바/로그만 갱신한다(running·activeProjectId 는 project.done 까지 유지 — 위 참조).
+      if (e.type === 'run.cancelled' && pid) void refreshProjects()
       // 상태 전환 마일스톤도 목록 갱신 — planning→executing(plan.created), executing→verifying(verify.*).
       // 그러지 않으면 실행/검증 내내 사이드바·상태칩이 이전 단계(planning/executing)에 고착된다.
       // (verify.passed/failed/fixing 은 orchestrator 가 status 를 verifying 으로 바꾼 뒤 방출한다.)
