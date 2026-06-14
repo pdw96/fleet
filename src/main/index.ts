@@ -15,7 +15,6 @@ import { createIpcApprover, type IpcApprover } from './core/safety/approval-brid
 import { createJsonFileStore } from './core/store/json-file'
 import { e2eRunner, seedE2eFixtures } from './e2e'
 import { installNavigationGuards } from './window-guards'
-import { installPermissionGuards } from './permission-guards'
 
 function broadcastOrchestratorEvent(event: OrchestratorEvent): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -149,9 +148,6 @@ function createWindow(): void {
   // 네비게이션 하드닝: 새 창/window.open 거부 + 모든 페이지발 네비게이션(드롭 file://·리다이렉트·
   // 서브프레임·외부 링크·주입 location) 차단(안전 우선). 상세 계약은 window-guards.ts 참조.
   installNavigationGuards(win.webContents)
-
-  // 권한 하드닝: 미디어·지오·알림·클립보드·WebUSB/Serial/HID 거부(정상 경로 없는 로컬 SPA; Web Bluetooth 는 Electron 무리스너 기본동작에 의존). 계약은 permission-guards.ts 참조.
-  installPermissionGuards(win.webContents.session)
 
   win.on('ready-to-show', () => win.show())
 
