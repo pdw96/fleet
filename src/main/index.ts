@@ -150,7 +150,7 @@ function createWindow(): void {
   // 서브프레임·외부 링크·주입 location) 차단(안전 우선). 상세 계약은 window-guards.ts 참조.
   installNavigationGuards(win.webContents)
 
-  // 권한 하드닝: 카메라·마이크·지오·알림·클립보드·WebUSB/BT/Serial 전부 거부(정상 경로 없는 로컬 SPA). 계약은 permission-guards.ts 참조.
+  // 권한 하드닝: 미디어·지오·알림·클립보드·WebUSB/Serial/HID 거부(정상 경로 없는 로컬 SPA; Web Bluetooth 는 Electron 무리스너 기본동작에 의존). 계약은 permission-guards.ts 참조.
   installPermissionGuards(win.webContents.session)
 
   win.on('ready-to-show', () => win.show())
