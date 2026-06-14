@@ -4,9 +4,10 @@ import { join, resolve } from 'node:path'
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
 
 /**
- * 회귀 가드: 윈도우 네비게이션 하드닝(installNavigationGuards)이 실제 Electron 에서 발화하는지 검증한다.
- * 단위 테스트는 페이크 webContents 로 헬퍼 배선만 증명하므로, 실 WebContents 가 setWindowOpenHandler 를
- * 존중하고 페이지발 네비게이션을 실제로 차단하는지는 빌드된 앱을 띄워 확인해야 한다(로드맵 '수동 기동 검증'의 자동화).
+ * 회귀 가드: 윈도우 하드닝(installNavigationGuards 네비게이션 + installPermissionGuards 권한)이 실제
+ * Electron 에서 발화하는지 검증한다. 단위 테스트는 페이크 webContents/session 으로 헬퍼 배선만 증명하므로,
+ * 실 WebContents 가 setWindowOpenHandler 를 존중하고 페이지발 네비게이션을 차단하는지, 실 Session 이
+ * 권한 요청/조회를 거부하는지는 빌드된 앱을 띄워 확인해야 한다(로드맵 '수동 기동 검증'의 자동화).
  */
 
 let app: ElectronApplication
@@ -45,4 +46,23 @@ test('페이지발 top-level 네비게이션을 차단한다 (will-navigate prev
     .catch(() => undefined) // 차단으로 컨텍스트가 흔들려도 무시(아래 URL 단언이 본질)
   await page.waitForTimeout(500)
   expect(page.url()).toBe(before) // URL 불변 — top-level 네비게이션이 차단됨(허용됐다면 file:// 로 바뀜)
+})
+
+test('지오로케이션 권한 요청을 거부한다 (setPermissionRequestHandler deny)', async () => {
+  // 권한 핸들러가 deny 면 getCurrentPosition 은 PERMISSION_DENIED(code 1) error 콜백으로 즉시 실패한다.
+  const code = await page.evaluate(
+    () =>
+      new Promise<number>((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          () => resolve(0), // 성공 = 가드 누락
+          (err) => resolve(err.code), // 1 === PERMISSION_DENIED
+        )
+      }),
+  )
+  expect(code).toBe(1)
+})
+
+test('지오로케이션 권한 조회가 denied 다 (setPermissionCheckHandler deny)', async () => {
+  const state = await page.evaluate(() => navigator.permissions.query({ name: 'geolocation' }).then((s) => s.state))
+  expect(state).toBe('denied')
 })
