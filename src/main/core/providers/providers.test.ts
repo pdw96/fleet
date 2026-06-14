@@ -1091,6 +1091,165 @@ describe('GoogleProvider', () => {
     ])
   })
 
+  // ── #11-Gemini-thinking 1단계: thinkingConfig 배선 + starvation maxOutputTokens 가드 ──────────
+  // 세대별 와이어 방언이 다르다(js-genai·ai.google.dev 1차출처): 2.5=thinkingBudget(정수, -1=AUTOMATIC),
+  // 3=thinkingLevel(소문자 enum). thinking 토큰이 출력 예산을 함께 소모하므로(공식: "reserve more of the
+  // token output for your response" + 실키 검증: 낮은 한도→빈 응답) thinking 활성 시 maxOutputTokens 를
+  // cap-safe(전 2.5/3 출력상한 65536 내) 기본/floor 로 끌어올린다.
+  const okBody = () => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }) })
+
+  it('Gemini 2.5: thinking 노브 → generationConfig.thinkingConfig.thinkingBudget=-1(AUTOMATIC) (#11-Gemini-thinking)', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1 })
+  })
+
+  it('Gemini 2.5: thinking 활성 시 과소 maxOutputTokens 를 버퍼 기본(16384)으로 floor 한다(굶음 방지)', async () => {
+    // baseGoogle.maxTokens=256 → thinking 이 256 을 먹어 가시 답변이 굶는다 → 16384 로 floor.
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider(baseGoogle, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    expect(body.generationConfig?.maxOutputTokens).toBe(16384)
+  })
+
+  it('Gemini 3: effort → thinkingConfig.thinkingLevel(소문자) — high', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'high' })
+  })
+
+  it('Gemini 3: low/medium 은 그대로, xhigh·max 는 high 로 수렴한다(미지원 티어 하향)', async () => {
+    const cfg = { id: 'g', provider: 'google' as const, displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }
+    const cases = [['low', 'low'], ['medium', 'medium'], ['xhigh', 'high'], ['max', 'high']] as const
+    for (const [effort, level] of cases) {
+      const { http, calls } = mockHttp(okBody)
+      await createGoogleProvider(cfg, http).chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
+      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+      expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: level })
+    }
+  })
+
+  it('Gemini 3: effort 없는 thinking({})은 thinkingLevel 을 싣지 않되(모델 기본) starvation 가드는 적용한다', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', maxTokens: 256 }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number } }
+    expect(body.generationConfig?.thinkingConfig).toBeUndefined()
+    expect(body.generationConfig?.maxOutputTokens).toBe(16384)
+  })
+
+  it('thinking 미지정이면 thinkingConfig 미전송·maxOutputTokens 무변경(현행 동작 무회귀)', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider(baseGoogle, http) // maxTokens 256, thinking 없음
+    await p.chat([{ role: 'user', content: 'q' }])
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number } }
+    expect(body.generationConfig?.thinkingConfig).toBeUndefined()
+    expect(body.generationConfig?.maxOutputTokens).toBe(256)
+  })
+
+  it('thinking 미지원 모델(gemini-1.5-pro)은 thinkingConfig·starvation 가드 모두 미적용(400 방지)', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-1.5-pro', apiKey: 'k', maxTokens: 256 }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number } }
+    expect(body.generationConfig?.thinkingConfig).toBeUndefined()
+    expect(body.generationConfig?.maxOutputTokens).toBe(256) // 무변경(미지원 모델)
+  })
+
+  it('Gemini 스트리밍 + thinking: maxOutputTokens 를 스트림 기본(32768)으로 floor 한다', async () => {
+    const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
+    const p = createGoogleProvider(baseGoogle, http) // maxTokens 256
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: () => {} })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    expect(body.generationConfig?.maxOutputTokens).toBe(32768)
+  })
+
+  it('thinking 활성이라도 명시 maxOutputTokens 가 기본 이상이면 존중한다(floor 만, 하향 없음)', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens: 50000 }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    expect(body.generationConfig?.maxOutputTokens).toBe(50000)
+  })
+
+  it('config.thinking 이 세션 기본값으로 동작한다 — per-call 미지정에도 thinkingConfig 활성', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', thinking: { effort: 'low' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'low' })
+  })
+
+  it('per-call opts.thinking 이 config.thinking 기본값을 이긴다', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', thinking: { effort: 'low' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'high' })
+  })
+
+  // ── 적대리뷰 후속: 커버리지 갭 잠금(로직은 정확 확인됨 — 회귀 방지 특성화 테스트) ──────────
+  it('Gemini 3.5(앱 기본 Google 모델 gemini-3.5-flash): effort → thinkingLevel(점버전도 gen-3 방언)', async () => {
+    // gemini-3.5-flash 는 PROVIDER_DEFAULTS.google 기본값 → gen-3 thinkingLevel 로 정규화돼야 한다.
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'medium' })
+  })
+
+  it('Gemini 2.5(pro/flash/flash-lite): 전 effort 티어가 thinkingBudget=-1 로 수렴한다(1단계 불변식 잠금)', async () => {
+    // 1단계는 2.5 서브모델 범위 차이(범위이탈 400)를 피해 effort 무관 -1(AUTOMATIC). 티어→정수 budget 은 2단계.
+    for (const model of ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'] as const) {
+      for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+        const { http, calls } = mockHttp(okBody)
+        await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
+          .chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
+        const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+        expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1 })
+      }
+    }
+  })
+
+  it('starvation floor 경계: 버퍼 floor 정확값(16384)은 무변경, 직전(16383)은 16384 로 올림', async () => {
+    for (const [maxTokens, expected] of [[16384, 16384], [16383, 16384]] as const) {
+      const { http, calls } = mockHttp(okBody)
+      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens }, http)
+        .chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+      expect(body.generationConfig?.maxOutputTokens).toBe(expected)
+    }
+  })
+
+  it('starvation floor 경계(스트리밍): 스트림 floor 직전(32767)은 32768 로 올림', async () => {
+    const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
+    await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens: 32767 }, http)
+      .chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: () => {} })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    expect(body.generationConfig?.maxOutputTokens).toBe(32768)
+  })
+
+  it('config.thinking(세션 기본) + per-call 과소 maxTokens 도 floor 가 적용된다', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', thinking: { effort: 'high' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { maxTokens: 256 })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    expect(body.generationConfig?.maxOutputTokens).toBe(16384)
+  })
+
+  it('config.thinking + config.maxTokens 과소(512) + per-call maxTokens 미지정 → floor(이중 폴백 opts→config→floor)', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', maxTokens: 512, thinking: { effort: 'high' } }, http)
+    await p.chat([{ role: 'user', content: 'q' }])
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    expect(body.generationConfig?.maxOutputTokens).toBe(16384)
+  })
+
   it('responseSchema → generationConfig.responseSchema + responseMimeType 를 싣는다', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '{}' }] }, finishReason: 'STOP' }] }) }))
     const p = createGoogleProvider(baseGoogle, http)
