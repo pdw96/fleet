@@ -94,4 +94,100 @@ describe('ApprovalModal', () => {
     expect(respondApproval).toHaveBeenCalledWith('req-1', true)
     expect(screen.getByText('파일 쓰기: secret.pem')).toBeTruthy()
   })
+
+  it('rejects the current request on Escape (safe default)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(respondApproval).toHaveBeenCalledWith('req-1', false)
+    expect(screen.queryByRole('dialog')).toBeNull() // 디큐 — 다음 요청 없으면 모달 사라짐
+  })
+
+  it('focuses the 거부 button when a request appears', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '거부' }))
+  })
+
+  it('refocuses 거부 on the next queued request after a decision', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    fire({ ...REQ, id: 'req-2', summary: '파일 쓰기: secret.pem', target: '/ws/secret.pem' })
+    fireEvent.click(screen.getByRole('button', { name: '승인' })) // req-1 승인 → req-2 표시
+    expect(screen.getByText('파일 쓰기: secret.pem')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '거부' }))
+  })
+
+  it('wraps focus from 승인(last) to 거부(first) on Tab', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    const approve = screen.getByRole('button', { name: '승인' })
+    const reject = screen.getByRole('button', { name: '거부' })
+    approve.focus()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' })
+    expect(document.activeElement).toBe(reject)
+  })
+
+  it('wraps focus from 거부(first) to 승인(last) on Shift+Tab', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    const approve = screen.getByRole('button', { name: '승인' })
+    const reject = screen.getByRole('button', { name: '거부' })
+    reject.focus()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(approve)
+  })
+
+  it('labels the dialog with its title, summary, and target for screen readers', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.getAttribute('aria-labelledby')).toBe('approval-title')
+    // target(전체경로/셸명령/파일목록 — 보안 결정적 텍스트)도 description 에 포함.
+    expect(dialog.getAttribute('aria-describedby')).toBe('approval-summary approval-target')
+    expect(document.getElementById('approval-title')?.textContent).toBe('위험 작업 승인')
+    expect(document.getElementById('approval-summary')?.textContent).toBe('파일 쓰기: config/.env')
+    expect(document.getElementById('approval-target')?.textContent).toBe('/ws/config/.env')
+  })
+
+  it('traps Tab even when focus has escaped to a background element (document-level)', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    const reject = screen.getByRole('button', { name: '거부' })
+    // 배경 컨트롤이 포커스를 가져간 상황 — overlay onKeyDown 은 못 잡지만 document 트랩은 잡아야 한다.
+    const bg = document.createElement('button')
+    document.body.appendChild(bg)
+    act(() => bg.focus())
+    expect(document.activeElement).toBe(bg) // 포커스가 배경으로 유실
+    fireEvent.keyDown(bg, { key: 'Tab' }) // overlay 밖(배경)에서 Tab
+    expect(document.activeElement).toBe(reject) // 모달 내부(첫 버튼)로 복귀
+    bg.remove()
+  })
+
+  it('refocuses 거부 on the next queued request after Escape rejects the current', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    fire({ ...REQ, id: 'req-2', summary: '파일 쓰기: secret.pem', target: '/ws/secret.pem' })
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' }) // req-1 거부 → req-2 표시
+    expect(respondApproval).toHaveBeenCalledWith('req-1', false)
+    expect(screen.getByText('파일 쓰기: secret.pem')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '거부' }))
+  })
+
+  it('does not intercept Enter — button activation stays native (no accidental decide)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter' }) // dialog 핸들러는 Enter 를 무시
+    expect(respondApproval).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeTruthy() // 모달 유지(우발적 결정 없음)
+  })
 })
