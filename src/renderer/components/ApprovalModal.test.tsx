@@ -156,15 +156,19 @@ describe('ApprovalModal', () => {
     expect(document.getElementById('approval-target')?.textContent).toBe('/ws/config/.env')
   })
 
-  it('pulls focus back into the modal on Tab when it has strayed outside (contain-always)', () => {
+  it('traps Tab even when focus has escaped to a background element (document-level)', () => {
     const { fire } = mockFleet()
     render(<ApprovalModal />)
     fire(REQ)
     const reject = screen.getByRole('button', { name: '거부' })
-    ;(document.activeElement as HTMLElement | null)?.blur() // 포커스를 body 로 유실시킴
-    expect(document.activeElement).not.toBe(reject)
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' })
+    // 배경 컨트롤이 포커스를 가져간 상황 — overlay onKeyDown 은 못 잡지만 document 트랩은 잡아야 한다.
+    const bg = document.createElement('button')
+    document.body.appendChild(bg)
+    act(() => bg.focus())
+    expect(document.activeElement).toBe(bg) // 포커스가 배경으로 유실
+    fireEvent.keyDown(bg, { key: 'Tab' }) // overlay 밖(배경)에서 Tab
     expect(document.activeElement).toBe(reject) // 모달 내부(첫 버튼)로 복귀
+    bg.remove()
   })
 
   it('refocuses 거부 on the next queued request after Escape rejects the current', () => {
