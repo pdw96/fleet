@@ -94,4 +94,13 @@ describe('ApprovalModal', () => {
     expect(respondApproval).toHaveBeenCalledWith('req-1', true)
     expect(screen.getByText('파일 쓰기: secret.pem')).toBeTruthy()
   })
+
+  it('rejects the current request on Escape (safe default)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(respondApproval).toHaveBeenCalledWith('req-1', false)
+    expect(screen.queryByRole('dialog')).toBeNull() // 디큐 — 다음 요청 없으면 모달 사라짐
+  })
 })

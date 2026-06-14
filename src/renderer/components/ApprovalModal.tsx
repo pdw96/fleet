@@ -46,7 +46,18 @@ export function ApprovalModal() {
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true">
+    <div
+      className="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      onKeyDown={(e) => {
+        // 키보드 접근성: Escape=거부(자동거부 백스톱과 일관한 안전 방향).
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          decide(false)
+        }
+      }}
+    >
       <div className="panel modal-card">
         <div className="panel-head">
           <span className="eyebrow">승인 필요</span>
