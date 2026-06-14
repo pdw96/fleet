@@ -55,7 +55,7 @@ export function installPermissionGuards(session: GuardableSession): void {
   session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
   // 동기 권한 조회(navigator.permissions.query·getUserMedia 프리플라이트) 전부 거부 — 일관되게 denied 보고.
   session.setPermissionCheckHandler(() => false)
-  // WebUSB / Bluetooth / Serial 장치 선택 전부 거부.
+  // WebUSB / Serial / HID 장치 선택 전부 거부 (deviceType=usb/serial/hid). Web Bluetooth 미경유 — 아래 '적대 리뷰 반영' 참조.
   session.setDevicePermissionHandler(() => false)
 }
 ```
@@ -112,10 +112,36 @@ installPermissionGuards(win.webContents.session)
 
 - **권한 allowlist** — 현재 정상 경로로 필요한 웹 권한이 0이라 무조건 거부로 충분. 미래에 특정 권한이
   필요해지면 그때 파라미터화(현 시점 도입은 사용처 없는 추상화).
+- **명시 `select-bluetooth-device` 거부** — Web Bluetooth 는 이 세 핸들러가 아니라 webContents 의 별도
+  이벤트로 게이트되고, Fleet 에 BT 정상 경로가 없어 Electron 무리스너 기본동작(전부 취소=거부)이 이미 막는다.
+  명시 핸들러는 그 기본동작과 중복이고 session 축 모듈을 webContents 축에 결합 → 비범위. 필요해지면 webContents
+  축(window-guards 인근)에 1줄 추가. (적대 리뷰 #1 반영 — 아래 참조.)
 - **CSP(`onHeadersReceived`) · `@electron/fuses` · `senderFrame` IPC 게이트** — 이슈 #27 의 별도 보안
   하위트랙(electron-csp-fuses-senderframe, Later). 권장 시퀀싱상 후속 1 PR 로 묶을 수 있으나 이 슬라이스는
   권한 핸들러 단독으로 독립 착지.
 - **Electron 33→42 업그레이드** — packaging-pipeline 하류 종속(이슈 #27), 별개 트랙.
+
+## 적대 리뷰 반영 (23 에이전트 · 5차원 × 3렌즈, 2026-06-14)
+
+원시 6 → **확정 3 / 기각 3**(전건 코드·Electron 1차문서 대조). 확정 3건 전부 런타임 영향 0(low/nit):
+
+- **#1 (low, 3/3) — 'Bluetooth 거부' 문구 부정확**: `setDevicePermissionHandler` 의 deviceType 은
+  hid/serial/usb 한정이고 권한 열거에 bluetooth 없음 → 세 핸들러는 Web Bluetooth 를 게이트하지 않는다(유일
+  게이트는 webContents `select-bluetooth-device`). 런타임은 Electron 무리스너 기본동작이 BT 를 취소해 안전하나
+  주석/테스트명이 능동거부를 과장. **반영**: 검증자 3/3 권장안(Option 2 — 문구 정정·기본동작 의존 명시)을 채택,
+  명시 BT 핸들러(Option 1)는 중복·축결합으로 비범위 처리. `permission-guards.ts` docstring·device 주석,
+  `index.ts` 배선 주석, 테스트명을 'WebUSB/Serial/HID' 로 정정 + BT 범위 주의 추가.
+- **#2 (low/nit/n/a, 2/3) — device 핸들러 e2e 부재**: 제안된 e2e 프로브는 3번째 검증자가 반증
+  (`navigator.usb.requestDevice` 는 user-gesture 요구로 핸들러 도달 전 SecurityError → 거짓신뢰 테스트;
+  `permissions.query({name:'usb'})` 는 Chromium PermissionName enum 비유효로 TypeError). **반영**: 플레이키
+  프로브를 추가하지 않고, e2e docstring 에 '장치 축은 단위테스트 전용(헤드리스 e2e 불안정·무효)'을 명시해 갭 표면화.
+- **#3 (nit, 3/3) — 무조건거부 불변식 미단언**: 알려진 4문자열만 검증, 임의/미지 문자열 케이스 부재 →
+  부분 allowlist 도입 회귀를 못 잡음. **반영**: request/check 테스트에 `'any-future-permission'`·`'totally-unknown'`
+  거부 단언 추가(프로덕션 무변경, 불변식 앵커).
+
+**기각 3건**: device 단위테스트 '동어반복'(1/3 — 프로덕션 배선 검증하는 정당 스모크), 무회귀 단언(1/3 —
+결함 아닌 *입증된 무회귀*, 권한-게이트 Web API 정상 사용 0건), geolocation 프로브 '원인 구분 잠재'(0/3 —
+거부가 측위 전 동기 발화라 code 1 결정론적).
 
 ## 라이브 검증 사항
 

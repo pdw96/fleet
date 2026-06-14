@@ -44,6 +44,8 @@ describe('installPermissionGuards', () => {
     expect(f.requestPermission('geolocation')).toBe(false)
     expect(f.requestPermission('notifications')).toBe(false)
     expect(f.requestPermission('clipboard-read')).toBe(false)
+    // 무조건거부 불변식(allowlist 없음): 미지/미래 권한 문자열도 거부 — 부분 allowlist 도입 회귀를 잡는 앵커.
+    expect(f.requestPermission('any-future-permission')).toBe(false)
   })
 
   it('denies every synchronous permission check (navigator.permissions.query / getUserMedia preflight)', () => {
@@ -51,9 +53,12 @@ describe('installPermissionGuards', () => {
     installPermissionGuards(f.session)
     expect(f.checkPermission('media')).toBe(false)
     expect(f.checkPermission('geolocation')).toBe(false)
+    // 무조건거부 불변식: 미지/미래 권한 문자열도 거부.
+    expect(f.checkPermission('totally-unknown')).toBe(false)
   })
 
-  it('denies every device permission request (WebUSB / Bluetooth / Serial)', () => {
+  // 이 핸들러는 deviceType=usb/serial/hid 만 게이트한다. Web Bluetooth 는 미경유(webContents select-bluetooth-device).
+  it('denies every device permission request (WebUSB / Serial / HID)', () => {
     const f = fakeSession()
     installPermissionGuards(f.session)
     expect(f.requestDevice()).toBe(false)

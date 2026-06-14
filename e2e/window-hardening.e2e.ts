@@ -8,6 +8,7 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
  * Electron 에서 발화하는지 검증한다. 단위 테스트는 페이크 webContents/session 으로 헬퍼 배선만 증명하므로,
  * 실 WebContents 가 setWindowOpenHandler 를 존중하고 페이지발 네비게이션을 차단하는지, 실 Session 이
  * 권한 요청/조회를 거부하는지는 빌드된 앱을 띄워 확인해야 한다(로드맵 '수동 기동 검증'의 자동화).
+ * (장치 권한[WebUSB/Serial/HID] 거부는 user-gesture·chooser 의존으로 헤드리스 e2e 가 불안정·무효 → 단위테스트가 커버.)
  */
 
 let app: ElectronApplication
