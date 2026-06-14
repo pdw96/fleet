@@ -56,6 +56,8 @@ export function ApprovalModal() {
       className="modal-overlay"
       role="dialog"
       aria-modal="true"
+      aria-labelledby="approval-title"
+      aria-describedby="approval-summary"
       onKeyDown={(e) => {
         // 키보드 접근성: Escape=거부(자동거부 백스톱과 일관한 안전 방향).
         if (e.key === 'Escape') {
@@ -83,14 +85,18 @@ export function ApprovalModal() {
       <div className="panel modal-card">
         <div className="panel-head">
           <span className="eyebrow">승인 필요</span>
-          <h2 className="panel-title">{KIND_TITLE[current.kind]}</h2>
+          <h2 className="panel-title" id="approval-title">
+            {KIND_TITLE[current.kind]}
+          </h2>
           <div className="right">
             <span className="chip" style={{ color: 'var(--bad)', borderColor: 'currentColor' }}>
               {RISK_LABEL[current.risk]}
             </span>
           </div>
         </div>
-        <p className="modal-summary">{current.summary}</p>
+        <p className="modal-summary" id="approval-summary">
+          {current.summary}
+        </p>
         <p className="modal-target">{current.target}</p>
         <div className="modal-actions">
           <span className="modal-countdown">{remaining}s 후 자동 거부</span>

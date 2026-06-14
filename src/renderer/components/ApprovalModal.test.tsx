@@ -142,4 +142,15 @@ describe('ApprovalModal', () => {
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
     expect(document.activeElement).toBe(approve)
   })
+
+  it('labels the dialog with its title and summary for screen readers', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.getAttribute('aria-labelledby')).toBe('approval-title')
+    expect(dialog.getAttribute('aria-describedby')).toBe('approval-summary')
+    expect(document.getElementById('approval-title')?.textContent).toBe('위험 작업 승인')
+    expect(document.getElementById('approval-summary')?.textContent).toBe('파일 쓰기: config/.env')
+  })
 })
