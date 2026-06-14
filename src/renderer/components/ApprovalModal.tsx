@@ -61,6 +61,22 @@ export function ApprovalModal() {
         if (e.key === 'Escape') {
           e.preventDefault()
           decide(false)
+          return
+        }
+        // 포커스 트랩: Tab/Shift+Tab 을 모달 내 버튼(거부↔승인)으로 가둔다 — 배경 탈출 차단.
+        if (e.key === 'Tab') {
+          const card = e.currentTarget.querySelector('.modal-card')
+          const focusables = card ? Array.from(card.querySelectorAll<HTMLElement>('button')) : []
+          if (focusables.length === 0) return
+          const first = focusables[0]
+          const last = focusables[focusables.length - 1]
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault()
+            last.focus()
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault()
+            first.focus()
+          }
         }
       }}
     >

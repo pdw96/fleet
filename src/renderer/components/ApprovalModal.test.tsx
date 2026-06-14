@@ -120,4 +120,26 @@ describe('ApprovalModal', () => {
     expect(screen.getByText('파일 쓰기: secret.pem')).toBeTruthy()
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '거부' }))
   })
+
+  it('wraps focus from 승인(last) to 거부(first) on Tab', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    const approve = screen.getByRole('button', { name: '승인' })
+    const reject = screen.getByRole('button', { name: '거부' })
+    approve.focus()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' })
+    expect(document.activeElement).toBe(reject)
+  })
+
+  it('wraps focus from 거부(first) to 승인(last) on Shift+Tab', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    const approve = screen.getByRole('button', { name: '승인' })
+    const reject = screen.getByRole('button', { name: '거부' })
+    reject.focus()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(approve)
+  })
 })
