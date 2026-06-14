@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { createMemoryStore } from './memory'
 import type { Store, StoreOptions, StoreState } from './types'
 
-const EMPTY: StoreState = { projects: [], tasks: [], rooms: [], messages: [], events: [] }
+const EMPTY: StoreState = { projects: [], tasks: [], rooms: [], messages: [], events: [], sessions: [] }
 
 /**
  * 디스크 영속 저장소. 초기 로드 후 매 변경마다 JSON 스냅샷을 동기 기록한다.

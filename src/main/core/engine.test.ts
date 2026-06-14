@@ -11,6 +11,7 @@ import type { HttpClient } from './providers/types'
 import { createSessionManager } from './session/manager'
 import type { FleetTool } from './tools/types'
 import { createMemoryStore } from './store/memory'
+import { createJsonFileStore } from './store/json-file'
 import type { GitRunner } from './workspace/git'
 
 function deterministic() {
@@ -1211,5 +1212,97 @@ describe('FleetEngine 채팅 진행 상태(getChatActivity / busy·idle)', () =>
 
     expect(events.at(-1)?.kind).toBe('idle')
     expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
+  })
+})
+
+describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
+  it('CLI 세션을 동일 store 의 새 엔진에서 복원한다', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, runner: roleRunner })
+    e1.registerCliSession('claude')
+    expect(e1.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+
+    const e2 = createFleetEngine({ store, runner: roleRunner })
+    expect(e2.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('사용자 수정 capabilities 를 복원 시 보존한다(재시드 안 함)', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, runner: roleRunner })
+    const d = e1.registerCliSession('claude') // 기본 시드 capabilities = ['reviewer']
+    e1.setSessionCapabilities(d.id, ['implementer', 'planner'])
+
+    const e2 = createFleetEngine({ store, runner: roleRunner })
+    expect(e2.listSessions()[0].capabilities).toEqual(['implementer', 'planner'])
+  })
+
+  it('제거한 세션은 복원하지 않는다', async () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, runner: roleRunner })
+    const d = e1.registerCliSession('claude')
+    await e1.removeSession(d.id)
+
+    const e2 = createFleetEngine({ store, runner: roleRunner })
+    expect(e2.listSessions()).toHaveLength(0)
+  })
+
+  it('미지 어댑터 엔트리는 throw 없이 skip 하고 형제는 복원한다', () => {
+    const store = createMemoryStore()
+    store.putSession({ kind: 'cli', id: 'cli:ghost', adapterId: 'ghost' })
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
+
+    const engine = createFleetEngine({ store, runner: roleRunner })
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('복원은 session.registered 를 재방출하지 않는다(에코 0)', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, runner: roleRunner })
+    e1.registerCliSession('claude')
+    createFleetEngine({ store, runner: roleRunner }) // 복원 — 추가 방출 없어야 함
+    const registered = store.listEvents().filter((ev) => ev.type === 'session.registered')
+    expect(registered).toHaveLength(1)
+  })
+
+  it('API 세션은 영속하지 않는다(경계)', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, runner: roleRunner })
+    e1.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'Claude API', model: 'claude-sonnet-4-6', apiKey: 'k' })
+
+    const e2 = createFleetEngine({ store, runner: roleRunner })
+    expect(e2.listSessions()).toHaveLength(0)
+  })
+
+  it('mcpConfig 는 런타임엔 적용되나 영속에서 제외된다(secret 평문 금지)', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, runner: roleRunner })
+    const d = e1.registerCliSession('claude', { mcpConfig: '/path/to/mcp.json' })
+    expect(d.mcpConfig).toBe('/path/to/mcp.json') // 런타임 descriptor 에 적용
+
+    const e2 = createFleetEngine({ store, runner: roleRunner })
+    expect(e2.listSessions()[0].mcpConfig).toBeUndefined() // 영속 제외 → 복원 시 없음
+  })
+
+  it('손상 capabilities(비배열)는 버리고 재시드해 복원한다(렌더러 .includes 크래시 방지)', () => {
+    const store = createMemoryStore()
+    // 비배열 capabilities(객체) — 렌더러 SessionsPanel 이 .includes 호출 시 크래시할 손상 데이터.
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: {} as unknown as AgentRole[] })
+    const engine = createFleetEngine({ store, runner: roleRunner })
+    const caps = engine.listSessions()[0].capabilities
+    expect(Array.isArray(caps)).toBe(true)
+    expect(caps).toEqual(['reviewer']) // claude 시드 기본값으로 복원
+  })
+
+  it('비배열 sessions(손상 store 파일)로도 엔진 생성이 brick 되지 않는다(R3)', () => {
+    // 최상위 sessions 가 배열 아님 — 유효 JSON 이라 json-file 얕은 머지를 통과(.corrupt 미발동).
+    // 복원 루프에 가드가 없으면 for...of 가 TypeError 를 던져 createFleetEngine 전체가 throw(부팅 brick).
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-brick-'))
+    try {
+      writeFileSync(join(dir, 'fleet-store.json'), JSON.stringify({ sessions: 42 }), 'utf8')
+      const store = createJsonFileStore(dir)
+      expect(() => createFleetEngine({ store, runner: roleRunner })).not.toThrow()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

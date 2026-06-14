@@ -166,7 +166,7 @@ describe('json-file store', () => {
   it('starts empty when no file exists', () => {
     const s = createJsonFileStore(dir)
     expect(s.listProjects()).toHaveLength(0)
-    expect(s.snapshot()).toEqual({ projects: [], tasks: [], rooms: [], messages: [], events: [] })
+    expect(s.snapshot()).toEqual({ projects: [], tasks: [], rooms: [], messages: [], events: [], sessions: [] })
   })
 
   it('backs up a corrupted store file instead of silently discarding it', () => {
@@ -194,5 +194,55 @@ describe('json-file store', () => {
     expect(s.listProjects()).toHaveLength(1)
     expect(s.snapshot().tasks).toEqual([]) // 결측 배열이 기본값으로 보강됨
     expect(s.snapshot().events).toEqual([])
+  })
+
+  it('persists sessions to disk and reloads them in a new store', () => {
+    const a = createJsonFileStore(dir, deterministic())
+    a.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] })
+
+    const b = createJsonFileStore(dir)
+    expect(b.listSessions()).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] }])
+  })
+
+  it('fills missing sessions key as [] for older store files', () => {
+    writeFileSync(
+      join(dir, 'fleet-store.json'),
+      JSON.stringify({ projects: [{ id: 'p1', goal: 'g', title: 'T', status: 'done', createdAt: 0, updatedAt: 0 }] }),
+      'utf8',
+    )
+    const s = createJsonFileStore(dir)
+    expect(s.snapshot().sessions).toEqual([])
+  })
+
+  it('비배열 sessions(손상 파일) 로드 후에도 CRUD 가 깨지지 않는다(정규화)', () => {
+    // 유효 JSON 이라 .corrupt 백업 미발동 → state.sessions=42 가 그대로 들어오면 findIndex 가 throw.
+    // 로드 시 정규화하면 putSession/listSessions 가 정상 동작해 UI 로 복구 가능.
+    writeFileSync(join(dir, 'fleet-store.json'), JSON.stringify({ sessions: 42 }), 'utf8')
+    const s = createJsonFileStore(dir)
+    expect(() => s.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })).not.toThrow()
+    expect(s.listSessions()).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude' }])
+  })
+})
+
+describe('memory store — persisted sessions', () => {
+  it('upserts, lists, and deletes persisted sessions', () => {
+    const store = createMemoryStore(deterministic())
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] })
+    store.putSession({ kind: 'cli', id: 'cli:codex', adapterId: 'codex' })
+    expect(store.listSessions().map((s) => s.id)).toEqual(['cli:claude', 'cli:codex'])
+
+    // 같은 id 는 교체(중복 push 아님)
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['planner'] })
+    expect(store.listSessions()).toHaveLength(2)
+    expect(store.listSessions().find((s) => s.id === 'cli:claude')?.capabilities).toEqual(['planner'])
+
+    store.deleteSession('cli:claude')
+    expect(store.listSessions().map((s) => s.id)).toEqual(['cli:codex'])
+  })
+
+  it('includes sessions in the snapshot', () => {
+    const store = createMemoryStore(deterministic())
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
+    expect(store.snapshot().sessions).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude' }])
   })
 })

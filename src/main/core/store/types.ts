@@ -8,6 +8,23 @@ import type {
   Task,
 } from '../../../shared/types'
 
+/**
+ * 재시작 간 복원할 직렬화 세션. 이번 슬라이스는 CLI 만 — 구독 CLI 는 자체 인증을 가져
+ * 저장할 비밀값이 없다. mcpConfig 는 의도적 제외(인라인 JSON 이 secret 운반 가능 → 평문 영속 금지).
+ */
+export type PersistedSession = {
+  kind: 'cli'
+  /** 디스크립터 id (= `cli:${adapterId}`). upsert/삭제 키. */
+  id: string
+  /** CliAdapter.id. 복원 시 cli/registry 조회 키. */
+  adapterId: string
+  /** 빈 문자열/미지정이면 CLI 기본 모델. */
+  model?: string
+  stateful?: boolean
+  /** 사용자 수정 가능 → 복원 시 재시드하지 않고 이 값을 적용. */
+  capabilities?: AgentRole[]
+}
+
 /** 직렬화 가능한 전체 상태 스냅샷. */
 export interface StoreState {
   projects: Project[]
@@ -15,6 +32,8 @@ export interface StoreState {
   rooms: ChatRoom[]
   messages: ChatMessage[]
   events: FleetEvent[]
+  /** 재시작 복원용 영속 세션 디스크립터(CLI 만 — secret 가능 필드·API 키 제외). */
+  sessions: PersistedSession[]
   /** 프로젝트 탭에서 마지막으로 본 프로젝트(렌더러 복원용). 미설정이면 부재. */
   lastActiveProjectId?: string
 }
@@ -84,6 +103,12 @@ export interface Store {
   setLastActiveProject(projectId: string | null): void
   /** 마지막 본 프로젝트 id 경량 읽기 — 전체 상태 clone(snapshot) 없이 한 필드만 반환. */
   getLastActiveProjectId(): string | undefined
+
+  // ── persisted sessions (재시작 복원) ──
+  /** CLI 세션 디스크립터 upsert(id 키). engine.removeSession 과 구분 위해 delete-. */
+  putSession(session: PersistedSession): void
+  deleteSession(id: string): void
+  listSessions(): PersistedSession[]
 
   // ── persistence ──
   snapshot(): StoreState

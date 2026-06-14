@@ -8,6 +8,7 @@ const emptyState = (): StoreState => ({
   rooms: [],
   messages: [],
   events: [],
+  sessions: [],
 })
 
 /** 목표 문자열에서 짧은 제목 도출. */
@@ -24,6 +25,9 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
   const idGen = opts.idGen ?? (() => randomUUID())
   const now = opts.now ?? (() => Date.now())
   const state: StoreState = opts.initial ? structuredClone(opts.initial) : emptyState()
+  // 손상 store 파일이 비배열 sessions(유효 JSON → .corrupt 미발동)를 실으면 putSession/deleteSession 의
+  // findIndex 가 throw 한다. 로드 시 1회 정규화해 모든 소비처(CRUD·listSessions·엔진 복원 루프)를 보호한다.
+  if (!Array.isArray(state.sessions)) state.sessions = []
 
   const save = (): void => {
     if (opts.persist) opts.persist(structuredClone(state))
@@ -171,6 +175,25 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
     },
     getLastActiveProjectId() {
       return state.lastActiveProjectId
+    },
+
+    // ── persisted sessions ──
+    putSession(session) {
+      // upsert-by-id 만 — 배열을 filter-rewrite 하지 않아 미지 kind 엔트리(전방호환)를 보존한다.
+      const i = state.sessions.findIndex((s) => s.id === session.id)
+      if (i >= 0) state.sessions[i] = session
+      else state.sessions.push(session)
+      save()
+    },
+    deleteSession(id) {
+      const i = state.sessions.findIndex((s) => s.id === id)
+      if (i >= 0) {
+        state.sessions.splice(i, 1)
+        save()
+      }
+    },
+    listSessions() {
+      return structuredClone(state.sessions)
     },
 
     // ── persistence ──
