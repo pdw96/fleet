@@ -37,13 +37,14 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [provider, setProvider] = useState<ApiProviderConfig['provider']>('anthropic')
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
   const [apiKey, setApiKey] = useState('')
-  // thinking effort 세션 기본값('' = 끄기). Anthropic(adaptive thinking)·OpenAI(reasoning_effort) 매핑.
+  // thinking effort 세션 기본값('' = 끄기). Anthropic(adaptive)·OpenAI(reasoning_effort)·Google(thinkingConfig) 매핑.
   const [effort, setEffort] = useState<'' | ReasoningEffort>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // thinking(reasoning) 노브를 매핑하는 provider — provider 별 모델-인지 정규화는 provider 책임(Gemini 후속).
-  const thinkingSupported = provider === 'anthropic' || provider === 'openai'
+  // thinking(reasoning) 노브를 매핑하는 provider(anthropic·openai·google 전부) — provider 별 모델-인지
+  // 정규화는 provider 책임(Gemini: 3.x thinkingLevel·2.5 thinkingBudget·그외 미전송 + starvation maxOutputTokens 가드).
+  const thinkingSupported = provider === 'anthropic' || provider === 'openai' || provider === 'google'
 
   const asError = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
@@ -165,7 +166,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
     setBusy(true)
     setError(null)
     try {
-      // thinking 은 Anthropic·OpenAI 만 매핑 — 끄기('')면 키 자체를 넣지 않는다(IPC 페이로드 깔끔 유지).
+      // thinking 은 anthropic·openai·google 매핑 — 끄기('')면 키 자체를 넣지 않는다(IPC 페이로드 깔끔 유지).
       // 세션 설정은 비영속·불가시라 displayName 에도 노출해 어느 세션이 thinking 인지 확인 가능하게 한다.
       const thinkingOn = thinkingSupported && effort !== ''
       const config: ApiProviderConfig = {
@@ -309,7 +310,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             <p className="meta" style={{ marginTop: 6 }}>
               {provider === 'anthropic'
                 ? '현행 세대(Opus 4.6+ · Sonnet 4.6)에서만 적용 — 미지원 모델은 자동 off, 미지원 티어는 기본(high)으로 동작합니다.'
-                : 'reasoning 모델(o-series · GPT-5+, chat·o1 초기 모델 제외)에서만 적용 — 그 외는 미전송, xhigh/max 는 미지원 모델에서 high 로, pro 모델은 지원 티어로 자동 정규화됩니다.'}
+                : provider === 'openai'
+                  ? 'reasoning 모델(o-series · GPT-5+, chat·o1 초기 모델 제외)에서만 적용 — 그 외는 미전송, xhigh/max 는 미지원 모델에서 high 로, pro 모델은 지원 티어로 자동 정규화됩니다.'
+                  : 'Gemini 3.x(gemini-3-pro · 3.5-flash 등)는 effort→thinking 깊이(low/medium/high)로 적용 · Gemini 2.5 는 동적 사고(effort 티어 세분화는 후속) · 그 외 모델은 미전송. thinking 활성 시 답변 토큰 예산을 자동 상향(굶음 방지)합니다.'}
             </p>
           </div>
         )}
