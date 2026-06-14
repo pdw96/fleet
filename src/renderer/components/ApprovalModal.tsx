@@ -57,7 +57,7 @@ export function ApprovalModal() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="approval-title"
-      aria-describedby="approval-summary"
+      aria-describedby="approval-summary approval-target"
       onKeyDown={(e) => {
         // 키보드 접근성: Escape=거부(자동거부 백스톱과 일관한 안전 방향).
         if (e.key === 'Escape') {
@@ -72,10 +72,15 @@ export function ApprovalModal() {
           if (focusables.length === 0) return
           const first = focusables[0]
           const last = focusables[focusables.length - 1]
-          if (e.shiftKey && document.activeElement === first) {
+          const active = document.activeElement
+          if (card && !card.contains(active)) {
+            // 포커스가 모달 밖으로 샜으면(배경 요소/body) 내부로 복귀 — 경계-only wrap 의 탈출 구멍 차단.
+            e.preventDefault()
+            first.focus()
+          } else if (e.shiftKey && active === first) {
             e.preventDefault()
             last.focus()
-          } else if (!e.shiftKey && document.activeElement === last) {
+          } else if (!e.shiftKey && active === last) {
             e.preventDefault()
             first.focus()
           }
@@ -97,7 +102,9 @@ export function ApprovalModal() {
         <p className="modal-summary" id="approval-summary">
           {current.summary}
         </p>
-        <p className="modal-target">{current.target}</p>
+        <p className="modal-target" id="approval-target">
+          {current.target}
+        </p>
         <div className="modal-actions">
           <span className="modal-countdown">{remaining}s 후 자동 거부</span>
           <button ref={rejectRef} className="btn btn-danger" onClick={() => decide(false)}>
