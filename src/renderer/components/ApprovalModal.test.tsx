@@ -103,4 +103,21 @@ describe('ApprovalModal', () => {
     expect(respondApproval).toHaveBeenCalledWith('req-1', false)
     expect(screen.queryByRole('dialog')).toBeNull() // 디큐 — 다음 요청 없으면 모달 사라짐
   })
+
+  it('focuses the 거부 button when a request appears', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '거부' }))
+  })
+
+  it('refocuses 거부 on the next queued request after a decision', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(REQ)
+    fire({ ...REQ, id: 'req-2', summary: '파일 쓰기: secret.pem', target: '/ws/secret.pem' })
+    fireEvent.click(screen.getByRole('button', { name: '승인' })) // req-1 승인 → req-2 표시
+    expect(screen.getByText('파일 쓰기: secret.pem')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '거부' }))
+  })
 })

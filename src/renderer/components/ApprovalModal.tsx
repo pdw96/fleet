@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { APPROVAL_TIMEOUT_MS } from '../../shared/types'
 import type { ApprovalRequest, RiskLevel } from '../../shared/types'
 
@@ -21,6 +21,7 @@ const KIND_TITLE: Record<ApprovalRequest['kind'], string> = {
 export function ApprovalModal() {
   const [queue, setQueue] = useState<ApprovalRequest[]>([])
   const [remaining, setRemaining] = useState(0)
+  const rejectRef = useRef<HTMLButtonElement>(null)
 
   // 승인 요청 구독 — 마운트 1회. 들어온 요청을 큐 뒤에 적재.
   useEffect(() => {
@@ -36,6 +37,11 @@ export function ApprovalModal() {
     setRemaining(Math.ceil(APPROVAL_TIMEOUT_MS / 1000))
     const iv = setInterval(() => setRemaining((r) => (r > 0 ? r - 1 : 0)), 1000)
     return () => clearInterval(iv)
+  }, [current?.id])
+
+  // 모달 열림·큐 전진(다음 요청)마다 거부 버튼에 초기 포커스 — Enter 가 거부로 떨어져 destructive 오승인 방지.
+  useEffect(() => {
+    if (current) rejectRef.current?.focus()
   }, [current?.id])
 
   if (!current) return null
@@ -72,7 +78,7 @@ export function ApprovalModal() {
         <p className="modal-target">{current.target}</p>
         <div className="modal-actions">
           <span className="modal-countdown">{remaining}s 후 자동 거부</span>
-          <button className="btn btn-danger" onClick={() => decide(false)}>
+          <button ref={rejectRef} className="btn btn-danger" onClick={() => decide(false)}>
             거부
           </button>
           <button className="btn" onClick={() => decide(true)}>
