@@ -15,6 +15,7 @@ import {
   type FinishReason,
   type HttpClient,
   type HttpResponse,
+  type ProviderMeta,
   type ReasoningEffort,
   type ToolUseBlock,
 } from './types'
@@ -204,15 +205,22 @@ async function readStream(
   onToken: (delta: string) => void,
 ): Promise<ChatResult> {
   let text = ''
-  // thought 파트를 파트(서명 단위)별로 보존한다 — 다중 reasoning 스텝에서 각 thoughtSignature 를 유실하지
-  // 않도록(버퍼 per-part 보존과 대칭). thoughtSignature 가 thought 파트를 마감한다(스텝 경계).
-  const thoughts: Array<{ text: string; sig?: string }> = []
-  let curThought = '' // 아직 서명으로 마감되지 않은 진행 중 thought 텍스트
-  let textSig: string | undefined // 가시 text 파트의 thoughtSignature(Gemini 3 "even if text" — 멀티턴 왕복)
+  // 도착 순서대로 ContentBlock 을 재구성한다(버퍼의 per-part 정확성과 대칭). Gemini 스트림엔 전역 part
+  // 인덱스가 없어 도착 순서로 복원한다. thoughtSignature 가 해당 파트(segment)를 마감하며, 서명/미서명 파트를
+  // 병합하지 않는다(Gemini 문서: 서명은 정확한 파트에 둔다 — Codex P2). 미서명 인접 델타만 한 블록으로 합친다.
+  const blocks: ContentBlock[] = []
+  let curThought = '' // 서명 전 진행 중 thought 텍스트(사고 요약)
+  let curText = '' // 서명 전 진행 중 가시 텍스트(미서명 세그먼트)
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
-  const funcs: Array<{ fc: { id?: string; name?: string; args?: unknown }; sig?: string }> = []
+  const metaOf = (sig: string | undefined): ProviderMeta | undefined => (sig !== undefined ? { google: { thoughtSignature: sig } } : undefined)
+  const flushText = (): void => {
+    if (curText) {
+      blocks.push({ type: 'text', text: curText })
+      curText = ''
+    }
+  }
   for await (const data of sseData(body)) {
     let ev: GoogleResponse
     try {
@@ -227,25 +235,30 @@ async function readStream(
     }
     const cand = ev.candidates?.[0]
     for (const p of cand?.content?.parts ?? []) {
-      // thought 파트는 text 도 함께 오므로 먼저 분기한다 — 사고 요약은 onToken 으로 안 흘린다(가시 토큰 아님).
-      // thoughtSignature 가 오면 그 thought 파트를 마감해 배열에 push 한다(다중 thought-part 서명 보존).
       if (p.thought) {
+        // 사고 요약은 onToken 으로 안 흘린다(가시 토큰 아님). thoughtSignature 가 그 thought 파트를 마감한다.
         if (p.text) curThought += p.text
         if (p.thoughtSignature !== undefined) {
-          thoughts.push({ text: curThought, sig: p.thoughtSignature })
+          blocks.push({ type: 'thinking', text: curThought, providerMeta: metaOf(p.thoughtSignature) })
           curThought = ''
         }
       } else if (p.functionCall) {
-        funcs.push({ fc: p.functionCall, sig: p.thoughtSignature })
+        flushText() // functionCall 앞의 미서명 텍스트를 먼저 마감(순서 보존)
+        blocks.push(toToolUse(p.functionCall, p.thoughtSignature))
       } else {
-        // 일반 text 파트(빈 문자열 포함) 또는 서명-only 파트. text 가 있으면 흘리고, signature 는 text 가
-        // 비어 있어도 캡처한다 — Gemini 가 최종 서명을 text:"" 파트에 실어 보낼 수 있다(Codex P2). 첫 서명을
-        // 잡고 undefined 로 덮어쓰지 않는다.
+        // 가시 text 파트(빈 문자열 포함) 또는 서명-only 파트. text 가 있으면 흘린다(ChatResult.text 누적).
         if (p.text) {
           text += p.text
           onToken(p.text)
         }
-        if (p.thoughtSignature !== undefined) textSig = p.thoughtSignature
+        if (p.thoughtSignature !== undefined) {
+          // 이 파트가 서명을 운반 → 직전 미서명 텍스트를 별도 블록으로 마감하고, 이 파트를 서명 블록으로 둔다.
+          // 서명/미서명 파트를 병합하지 않는다(Gemini 가 최종 서명을 빈 text 파트에 실어 보낼 수 있다, Codex P2).
+          flushText()
+          blocks.push({ type: 'text', text: p.text ?? '', providerMeta: metaOf(p.thoughtSignature) })
+        } else {
+          curText += p.text ?? ''
+        }
       }
     }
     if (cand?.finishReason) finish = cand.finishReason
@@ -257,21 +270,14 @@ async function readStream(
       }
     }
   }
-  const toolCalls: ToolUseBlock[] = funcs.map((f) => toToolUse(f.fc, f.sig))
-  // 서명 없이 끝난 잔여 thought 텍스트도 한 블록으로 보존한다(thought 파트가 sig 없이 종료된 경우).
-  if (curThought) thoughts.push({ text: curThought })
-  // 평면 text+toolCalls 폴백이 잃는 정보(thought 파트·서명된 text 파트)가 있을 때만 순서보존 content 를
-  // 재구성한다(버퍼 트리거와 대칭). Gemini 는 사고를 답변 앞에 방출하므로 [thinking…, text?, ...toolCalls]
-  // 휴리스틱으로 복원한다(버퍼는 정확 순서, 스트림은 thought-우선 — 전역 인덱스가 없는 Gemini wire 특성상
-  // Anthropic 스트림과 동일 관용구). thought 파트별 ThinkingBlock 1개씩(서명 per-part). functionCall sig 는
-  // toolCalls 가 이미 보존하므로 그것만으론 content 를 만들지 않음. 둘 다 없으면 undefined(현행 동작 byte-동일).
-  let content: ContentBlock[] | undefined
-  if (thoughts.length > 0 || textSig !== undefined) {
-    content = thoughts.map((t): ContentBlock => ({ type: 'thinking', text: t.text, providerMeta: t.sig !== undefined ? { google: { thoughtSignature: t.sig } } : undefined }))
-    // 서명된 text 파트는 text 가 비어 있어도 블록을 만들어 signature 를 보존한다(sig-only text 파트, Codex P2).
-    if (text || textSig !== undefined) content.push({ type: 'text', text, providerMeta: textSig !== undefined ? { google: { thoughtSignature: textSig } } : undefined })
-    for (const t of toolCalls) content.push(t)
-  }
+  // 서명 없이 끝난 잔여 thought/text 를 미서명 trailing 블록으로 마감한다.
+  if (curThought) blocks.push({ type: 'thinking', text: curThought })
+  flushText()
+  const toolCalls: ToolUseBlock[] = blocks.filter((b): b is ToolUseBlock => b.type === 'tool_use')
+  // 평면 text+toolCalls 폴백이 잃는 정보(thinking 블록·서명된 text 파트)가 있을 때만 content 를 채운다.
+  // functionCall sig 는 toolCalls 가 이미 보존하므로 그것만으론 content 를 만들지 않는다(버퍼 트리거와 대칭).
+  // 그 외(미서명 평범 응답)는 undefined → loop 가 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
+  const content: ContentBlock[] | undefined = blocks.some((b) => b.type === 'thinking' || (b.type === 'text' && b.providerMeta !== undefined)) ? blocks : undefined
   // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).
   if (blockReason) return { text, toolCalls, content, finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
   // 클린 종료인데 finishReason 미수신 = 비정상 종료(연결 끊김 등). mapFinish(undefined)='stop' 으로 위장하면

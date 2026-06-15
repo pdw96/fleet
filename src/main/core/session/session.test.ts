@@ -78,6 +78,29 @@ describe('createApiSession', () => {
     expect(seen[1].find((m) => m.role === 'assistant')!.content).toBe('echo:hi')
   })
 
+  it('사고(thinking)만 하고 가시 답변이 없는 응답은 무성 빈 reply 대신 에러로 표면화한다 (Codex P2 — #7)', async () => {
+    // includeThoughts 응답에서 thought 파트만 오고 visible text/tool 이 없으면 finish=stop 이어도 빈 reply.
+    const provider: ApiProvider = {
+      id: 'g', provider: 'google', model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [], content: [{ type: 'thinking', text: '사고', providerMeta: { google: { thoughtSignature: 'S' } } }], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('hi')).rejects.toThrow(/사고.*가시 답변/)
+  })
+
+  it('thinking content 없이 빈 text + stop 은 기존대로 빈 문자열 반환(무회귀 — thought-only 가드 과발동 방지)', async () => {
+    const provider: ApiProvider = {
+      id: 'g', provider: 'google', model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    expect(await s.send('hi')).toBe('')
+  })
+
   it('invokes onChunk with the reply (비스트리밍: 최종 1회)', async () => {
     const { provider } = fakeProvider()
     const s = createApiSession(apiDesc, provider)

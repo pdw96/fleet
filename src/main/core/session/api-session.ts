@@ -33,6 +33,11 @@ function unwrap(provider: string, result: ChatResult): string {
     if (result.finishReason === 'length') {
       throw new Error(`[${provider}] 응답이 토큰 한도로 잘려 빈 응답이 되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리세요.`)
     }
+    // 사고(thinking)만 하고 가시 답변/도구호출이 없는 경우 — includeThoughts 응답에서 발생 가능(Gemini 가
+    // thought 파트만 방출). finishReason 이 stop 이어도 무성 빈 응답이 되므로 표면화한다(#7, silent blank 방지).
+    if (result.content?.some((b) => b.type === 'thinking')) {
+      throw new Error(`[${provider}] 모델이 사고(thinking)만 하고 가시 답변을 생성하지 않았습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리거나 재시도하세요.`)
+    }
   }
   return result.text
 }

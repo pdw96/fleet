@@ -1608,7 +1608,8 @@ describe('provider streaming (SSE)', () => {
     ])
   })
 
-  it('Google 스트림: 서명된 text 파트(thought 없음)도 content 로 적재해 signature 를 보존한다 (Codex P2)', async () => {
+  it('Google 스트림: 서명된 text 파트와 뒤따르는 미서명 text 를 별도 블록으로 유지한다(병합 금지) (Codex P2)', async () => {
+    // 서명은 정확한 파트에만 — 서명된 "최종" 파트와 미서명 " 답" 델타를 한 블록으로 합치지 않는다.
     const { http } = mockStreamHttp([
       'data: {"candidates":[{"content":{"parts":[{"text":"최종","thoughtSignature":"TXTSIG"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"text":" 답"}]},"finishReason":"STOP"}]}\n\n',
@@ -1617,12 +1618,14 @@ describe('provider streaming (SSE)', () => {
     const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
     expect(out.text).toBe('최종 답')
     expect(out.content).toEqual([
-      { type: 'text', text: '최종 답', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
+      { type: 'text', text: '최종', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
+      { type: 'text', text: ' 답' },
     ])
   })
 
-  it('Google 스트림: 빈 문자열 text 파트에 실린 thoughtSignature 도 보존한다 (Codex P2 — truthy 가드 함정)', async () => {
+  it('Google 스트림: 빈 문자열 text 파트에 실린 thoughtSignature 를 별도 서명 블록으로 보존한다(병합 금지) (Codex P2)', async () => {
     // Gemini 가 최종 서명을 text:"" 파트에 실어 보내면 truthy p.text 가드가 파트를 스킵해 sig 를 잃을 수 있다.
+    // 또한 미서명 답변 text 와 서명-only 빈 파트를 한 블록으로 병합하지 않는다(서명은 정확한 파트에).
     const { http } = mockStreamHttp([
       'data: {"candidates":[{"content":{"parts":[{"text":"답변"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"TXTSIG"}]},"finishReason":"STOP"}]}\n\n',
@@ -1631,7 +1634,8 @@ describe('provider streaming (SSE)', () => {
     const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
     expect(out.text).toBe('답변')
     expect(out.content).toEqual([
-      { type: 'text', text: '답변', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
+      { type: 'text', text: '답변' },
+      { type: 'text', text: '', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
     ])
   })
 
