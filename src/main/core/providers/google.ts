@@ -126,8 +126,15 @@ function mapParts(content: string | ContentBlock[]): unknown[] {
   if (typeof content === 'string') return [{ text: content }]
   return content.map((b) => {
     switch (b.type) {
-      case 'text':
-        return { text: b.text }
+      case 'text': {
+        // Gemini 3 는 text 파트에도 thoughtSignature 를 붙인다("first part always has a signature, even if
+        // text"). 멀티턴에서 받은 그대로 echo 해야 reasoning 상태가 보존된다(누락 시 검증오류). thought/tool_use
+        // 와 동일한 Part 레벨 형제 필드·echo-only-when-present(#29).
+        const part: Record<string, unknown> = { text: b.text }
+        const sig = b.providerMeta?.google?.thoughtSignature
+        if (sig !== undefined) part.thoughtSignature = sig
+        return part
+      }
       case 'image':
         return { inlineData: { mimeType: b.mimeType, data: b.data } }
       case 'tool_use': {
@@ -201,6 +208,7 @@ async function readStream(
   // 않도록(버퍼 per-part 보존과 대칭). thoughtSignature 가 thought 파트를 마감한다(스텝 경계).
   const thoughts: Array<{ text: string; sig?: string }> = []
   let curThought = '' // 아직 서명으로 마감되지 않은 진행 중 thought 텍스트
+  let textSig: string | undefined // 가시 text 파트의 thoughtSignature(Gemini 3 "even if text" — 멀티턴 왕복)
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
@@ -230,6 +238,8 @@ async function readStream(
       } else if (p.text) {
         text += p.text
         onToken(p.text)
+        // Gemini 3 는 text 파트에도 sig 를 붙인다 → 보존(첫 서명을 잡고 undefined 로 덮어쓰지 않음).
+        if (p.thoughtSignature !== undefined) textSig = p.thoughtSignature
       } else if (p.functionCall) {
         funcs.push({ fc: p.functionCall, sig: p.thoughtSignature })
       }
@@ -246,14 +256,15 @@ async function readStream(
   const toolCalls: ToolUseBlock[] = funcs.map((f) => toToolUse(f.fc, f.sig))
   // 서명 없이 끝난 잔여 thought 텍스트도 한 블록으로 보존한다(thought 파트가 sig 없이 종료된 경우).
   if (curThought) thoughts.push({ text: curThought })
-  // thought 가 있으면 순서보존 content 를 재구성한다(멀티턴 tool 루프 signature 왕복용). Gemini 는 사고를
-  // 답변 앞에 방출하므로 [thinking…, text?, ...toolCalls] 휴리스틱으로 복원한다(버퍼는 정확 순서, 스트림은
-  // thought-우선 — 전역 인덱스가 없는 Gemini wire 특성상 Anthropic 스트림과 동일 관용구). thought 파트별로
-  // ThinkingBlock 1개씩(서명 per-part 보존). thought 없으면 content undefined → 현행 스트림 동작 byte-동일.
+  // 평면 text+toolCalls 폴백이 잃는 정보(thought 파트·서명된 text 파트)가 있을 때만 순서보존 content 를
+  // 재구성한다(버퍼 트리거와 대칭). Gemini 는 사고를 답변 앞에 방출하므로 [thinking…, text?, ...toolCalls]
+  // 휴리스틱으로 복원한다(버퍼는 정확 순서, 스트림은 thought-우선 — 전역 인덱스가 없는 Gemini wire 특성상
+  // Anthropic 스트림과 동일 관용구). thought 파트별 ThinkingBlock 1개씩(서명 per-part). functionCall sig 는
+  // toolCalls 가 이미 보존하므로 그것만으론 content 를 만들지 않음. 둘 다 없으면 undefined(현행 동작 byte-동일).
   let content: ContentBlock[] | undefined
-  if (thoughts.length > 0) {
+  if (thoughts.length > 0 || textSig !== undefined) {
     content = thoughts.map((t): ContentBlock => ({ type: 'thinking', text: t.text, providerMeta: t.sig !== undefined ? { google: { thoughtSignature: t.sig } } : undefined }))
-    if (text) content.push({ type: 'text', text })
+    if (text) content.push({ type: 'text', text, providerMeta: textSig !== undefined ? { google: { thoughtSignature: textSig } } : undefined })
     for (const t of toolCalls) content.push(t)
   }
   // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).
@@ -355,16 +366,19 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const toolCalls: ToolUseBlock[] = parts
         .filter((p) => p.functionCall)
         .map((p) => toToolUse(p.functionCall!, p.thoughtSignature))
-      // thought 파트가 1개 이상이면 순서보존 content 를 적재한다(멀티턴 tool 루프 signature 왕복용 — Anthropic
-      // 동형). 없으면 미설정 → loop 는 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
-      const content: ContentBlock[] | undefined = parts.some((p) => p.thought)
+      // 순서보존 content 는 평면 text+toolCalls 폴백이 정보를 잃는 경우에만 적재한다: thought 파트 또는
+      // 서명된 text 파트(둘 다 멀티턴 왕복에 필요). functionCall sig 는 toolCalls(providerMeta)가 이미 보존하므로
+      // 그것만으론 content 를 만들지 않는다 → 둘 다 없으면 undefined(현행 동작 byte-동일, 무회귀). Anthropic 동형.
+      const needsContent = parts.some((p) => p.thought || (typeof p.text === 'string' && p.thoughtSignature !== undefined))
+      const content: ContentBlock[] | undefined = needsContent
         ? parts.flatMap((p): ContentBlock[] => {
+            const meta = p.thoughtSignature !== undefined ? { google: { thoughtSignature: p.thoughtSignature } } : undefined
             // thought 파트는 text 유무와 무관하게 보존한다 — sig-only(text 없는) thought 파트도 signature 를
             // 떨궈선 안 된다(멀티턴 왕복·스트림/Anthropic 동형 `?? ''`). text 없으면 빈 문자열.
-            if (p.thought)
-              return [{ type: 'thinking', text: p.text ?? '', providerMeta: p.thoughtSignature !== undefined ? { google: { thoughtSignature: p.thoughtSignature } } : undefined }]
+            if (p.thought) return [{ type: 'thinking', text: p.text ?? '', providerMeta: meta }]
             if (p.functionCall) return [toToolUse(p.functionCall, p.thoughtSignature)]
-            if (typeof p.text === 'string') return [{ type: 'text', text: p.text }]
+            // Gemini 3 는 text 파트에도 sig 를 붙인다("even if text") → providerMeta 로 보존(없으면 undefined).
+            if (typeof p.text === 'string') return [{ type: 'text', text: p.text, providerMeta: meta }]
             return [] // 미지 파트(inlineData 등 어시스턴트 응답엔 없음) — content 에서 제외
           })
         : undefined

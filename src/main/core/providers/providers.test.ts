@@ -1333,6 +1333,32 @@ describe('GoogleProvider', () => {
     ])
   })
 
+  it('버퍼: 서명된 text 파트(thought 없음)도 content 로 적재해 providerMeta 에 signature 를 보존한다 (Codex P2)', async () => {
+    // Gemini 3 는 text 파트에 thoughtSignature 를 붙인다("even if text"). thought 파트가 없어도 서명된 text 가
+    // 있으면 평면 폴백이 sig 를 잃으므로 content 를 만들어 보존한다(멀티턴 왕복).
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [
+        { text: '최종 답변', thoughtSignature: 'TXTSIG' },
+        { functionCall: { id: 'fc1', name: 'lookup', args: { id: 1 } }, thoughtSignature: 'FCSIG' },
+      ] }, finishReason: 'STOP' }] }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.text).toBe('최종 답변')
+    expect(out.content).toEqual([
+      { type: 'text', text: '최종 답변', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
+      { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+    ])
+  })
+
+  it('버퍼: 서명·thought 없는 평범한 text 응답은 content undefined 유지(무회귀)', async () => {
+    const { http } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'plain' }] }, finishReason: 'STOP' }] }) }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }])
+    expect(out.content).toBeUndefined()
+    expect(out.text).toBe('plain')
+  })
+
   it('mapParts: thinking 블록을 {text, thought:true, thoughtSignature}로 회신한다(멀티턴 왕복)', async () => {
     const { http, calls } = mockHttp(okBody)
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
@@ -1360,6 +1386,22 @@ describe('GoogleProvider', () => {
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ role: string; parts: unknown[] }> }
     const model = body.contents.find((c) => c.role === 'model')!
     expect(model.parts[0]).toEqual({ text: '사고', thought: true })
+  })
+
+  it('mapParts: 서명된 text 블록은 thoughtSignature 를 echo 하고, 없으면 미전송한다 (Codex P2)', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: [
+        { type: 'text', text: '서명됨', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
+        { type: 'text', text: '평범' },
+      ] },
+    ])
+    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ role: string; parts: unknown[] }> }
+    const model = body.contents.find((c) => c.role === 'model')!
+    expect(model.parts[0]).toEqual({ text: '서명됨', thoughtSignature: 'TXTSIG' })
+    expect(model.parts[1]).toEqual({ text: '평범' })
   })
 })
 
@@ -1563,6 +1605,19 @@ describe('provider streaming (SSE)', () => {
     expect(out.content).toEqual([
       { type: 'thinking', text: '생각', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
       { type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+    ])
+  })
+
+  it('Google 스트림: 서명된 text 파트(thought 없음)도 content 로 적재해 signature 를 보존한다 (Codex P2)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"최종","thoughtSignature":"TXTSIG"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":" 답"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
+    expect(out.text).toBe('최종 답')
+    expect(out.content).toEqual([
+      { type: 'text', text: '최종 답', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
     ])
   })
 
