@@ -50,6 +50,10 @@ export function approxTokens(turns: ChatTurn[]): number {
  * tool_use↔tool_result 페어링·블록 순서·thinking 서명이 불변(3사 wire 유효성 보존). 최근
  * keepRecentToolUses 개는 보존한다. turns 를 in-place 변이한다(history 영속 → send 간 누적 경계).
  * 이미 stub 인 것은 건너뛴다(idempotent).
+ *
+ * 의도된 비범위(native clear_tool_uses 시맨틱과 동일): keep 윈도 안에 든 단일 거대 tool_result(트리거를
+ * 단독 초과)와 비-tool_result content(text·thinking·user 입력)는 정리하지 않는다 → 그 경우 turns 가
+ * 예산 위로 남을 수 있다. 이 슬라이스의 범위는 누적되는 오래된 tool_result 경계다.
  */
 export function pruneToolResults(turns: ChatTurn[], policy: ContextManagementPolicy): void {
   if (approxTokens(turns) <= policy.triggerInputTokens) return
