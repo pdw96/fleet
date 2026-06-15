@@ -257,3 +257,13 @@ client 테스트는 갱신(과거 배치 정리 반영).
 
 선제 적대검증(opus) — 7수정 정확 확인·신규 Critical 0. 보강: CM+schema 의 CM-유발 400(②③)·지속 400 throw
 테스트 2건(Finding D), `JSON.stringify(tools)` 가드(Finding B). 검증: 4게이트 녹색(test 733→**739**).
+
+### 라운드 4 (재리뷰 P2 1건 — CJK/dense 과소추정)
+
+10. **approxTokens 보수화** (P2) — chars/4 는 비-ASCII(CJK 등 영어 대비 2~4배 조밀)·dense 콘텐츠를 심하게
+    과소추정한다. **트리거 용도에선 과소추정이 위험**(실토큰 > 추정이면 prune 전에 윈도 초과 — 100k 트리거
+    128k 모델이 실제론 넘는데 미발화) — 원래 주석의 "과소=안전" 은 역논리였다. ASCII 는 ~4 char/token 유지,
+    **비-ASCII 는 1 token/char 이상**으로 보수 추정(ASCII 전용 입력은 기존 동작 byte-동일). 2차 효과로 한국어
+    `PRUNE_STUB`(~19 토큰)이 비싸져 **skip-small 비교를 char→토큰 기반**(`estTokens(content) ≤ estTokens(STUB)`)으로
+    함께 전환 — 짧은 ASCII 결과를 char 로만 보면 토큰상 외려 키우던 갭 차단. 검증: 4게이트 녹색(test 739→**740**:
+    CJK 보수추정 신규). 잔여: ASCII-dense 코드(~3 char/token)는 #13(모델-인지)·contextPolicy 하향으로 커버.

@@ -5,12 +5,19 @@ import { approxTokens, DEFAULT_CONTEXT_POLICY, pruneToolResults, PRUNE_STUB } fr
 const toolResult = (id: string, content: string): ToolResultBlock => ({ type: 'tool_result', toolUseId: id, content })
 
 describe('approxTokens', () => {
-  it('문자열·블록 content 의 대략 토큰(chars/4)을 합산한다', () => {
+  it('ASCII content 의 대략 토큰(chars/4)을 합산한다', () => {
     const turns: ChatTurn[] = [
       { role: 'user', content: 'aaaaaaaa' }, // 8 chars
       { role: 'user', content: [toolResult('t1', 'bbbbbbbb')] }, // 8 chars
     ]
     expect(approxTokens(turns)).toBe(4) // ceil(16/4)
+  })
+
+  it('비-ASCII(CJK)는 1 token/char 이상으로 보수 추정한다(chars/4 과소 방지, Codex P2)', () => {
+    const ko = '한국어그리고긴텍스트'.repeat(5) // 50 비-ASCII chars
+    const turns: ChatTurn[] = [{ role: 'user', content: ko }]
+    // chars/4 면 ceil(50/4)=13 으로 심한 과소추정 → char 수(50) 이상으로 보수 추정해야 한다.
+    expect(approxTokens(turns)).toBeGreaterThanOrEqual(ko.length)
   })
 })
 

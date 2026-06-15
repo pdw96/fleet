@@ -15,39 +15,61 @@ export const DEFAULT_CONTEXT_POLICY: ContextManagementPolicy = {
 /** 정리된 tool_result content 를 대체하는 표식(idempotent 검사에도 쓰임). */
 export const PRUNE_STUB = '[이전 도구 결과 정리됨 — 컨텍스트 관리]'
 
-/** 블록 1개의 대략 문자수(추정 토큰의 입력). 미지 variant 는 0(안전). */
-function blockChars(b: ContentBlock): number {
+/** 블록 1개에서 토큰을 차지하는 문자열을 뽑는다(미지 variant 는 ''). */
+function blockText(b: ContentBlock): string {
   switch (b.type) {
     case 'text':
-      return b.text.length
+      return b.text
     case 'tool_result':
-      return b.content.length
+      return b.content
     case 'tool_use':
       try {
-        return JSON.stringify(b.input ?? {}).length
+        return JSON.stringify(b.input ?? {})
       } catch {
-        return 0
+        return ''
       }
     case 'thinking':
-      return b.text.length
+      return b.text
     case 'image':
-      return b.data.length
+      return b.data // base64(ASCII)
     default:
-      return 0
+      return ''
   }
 }
 
 /**
- * turns 전체의 대략 입력 토큰을 추정한다(정밀 토크나이저 없음 → chars/4). 코드/JSON 은 실토큰이 더
- * 빽빽해 이 추정이 낮게 나오므로 트리거가 늦게(보수적으로) 발화한다 — 안전 방향.
+ * 문자열 1개의 대략 토큰. 트리거 용도라 *과소추정이 위험*하다 — 실토큰 > 추정이면 prune 전에 윈도를
+ * 넘긴다. 그래서 보수적으로: ASCII 는 ~4 char/token(영어 관용), 비-ASCII(CJK 등)는 1 token/char 이상으로
+ * 본다(한·중·일 텍스트는 영어보다 2~4배 조밀 → 일괄 chars/4 면 심하게 과소추정, Codex P2).
+ */
+export function estTokens(s: string): number {
+  let ascii = 0
+  for (let k = 0; k < s.length; k++) if (s.charCodeAt(k) < 128) ascii++
+  const other = s.length - ascii
+  return Math.ceil(ascii / 4 + other)
+}
+
+/** PRUNE_STUB 의 추정 토큰(작은 결과 skip 비교용 — 모듈 로드 시 1회 계산). */
+const PRUNE_STUB_TOKENS = estTokens(PRUNE_STUB)
+
+/**
+ * turns 전체의 대략 입력 토큰을 추정한다(정밀 토크나이저 없음). estTokens 와 동일 규칙으로 ASCII/비-ASCII
+ * 를 누적해 1회 ceil 한다 — ASCII 전용 입력은 기존 chars/4 와 동일, CJK 는 보수적으로 더 센다.
  */
 export function approxTokens(turns: ChatTurn[]): number {
-  let chars = 0
-  for (const t of turns) {
-    if (typeof t.content === 'string') chars += t.content.length
-    else for (const b of t.content) chars += blockChars(b)
+  let ascii = 0
+  let other = 0
+  const add = (s: string): void => {
+    for (let k = 0; k < s.length; k++) {
+      if (s.charCodeAt(k) < 128) ascii++
+      else other++
+    }
   }
-  return Math.ceil(chars / 4)
+  for (const t of turns) {
+    if (typeof t.content === 'string') add(t.content)
+    else for (const b of t.content) add(blockText(b))
+  }
+  return Math.ceil(ascii / 4 + other)
 }
 
 /**
@@ -111,8 +133,9 @@ export function pruneToolResults(
     const content = turns[i].content as ContentBlock[]
     const block = content[j] as ToolResultBlock
     if (block.content === PRUNE_STUB) continue // idempotent
-    // 이미 stub 길이 이하면 치환이 외려 프롬프트를 키운다 → 건너뛴다(Codex P2). 작은 결과는 정리 이득 0.
-    if (block.content.length <= PRUNE_STUB.length) continue
+    // 추정 토큰이 stub 이하면 치환이 외려 프롬프트를 키운다 → 건너뛴다(Codex P2). char 길이가 아니라
+    // 토큰으로 비교해야 한다 — stub 이 CJK 라 토큰이 비싸서 짧은 ASCII 결과를 char 로만 보면 확장될 수 있다.
+    if (estTokens(block.content) <= PRUNE_STUB_TOKENS) continue
     // copy-on-write: 원본(공유) 객체를 변이하지 않도록 턴·content·블록을 클론해 turns 슬롯만 교체한다.
     const newBlock: ToolResultBlock = { ...block, content: PRUNE_STUB }
     delete newBlock.isError // stale 한 에러 표식 제거
