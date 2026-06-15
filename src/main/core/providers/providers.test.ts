@@ -1480,6 +1480,33 @@ describe('provider streaming (SSE)', () => {
     ])
   })
 
+  it('Google 스트림: thought 델타+signature 를 ThinkingBlock content 로 누적, onToken 엔 안 흘린다 (2단계 ②)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"생각중","thought":true,"thoughtSignature":"TSIG"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"안"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"녕"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4}}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const deltas: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: (d) => deltas.push(d) })
+    expect(deltas).toEqual(['안', '녕']) // 사고 요약은 onToken 으로 안 흘림(가시 토큰 아님)
+    expect(out.text).toBe('안녕')
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '생각중', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
+      { type: 'text', text: '안녕' },
+    ])
+  })
+
+  it('Google 스트림: thought 가 없으면 content undefined(무회귀)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
+    expect(out.content).toBeUndefined()
+    expect(out.text).toBe('hi')
+  })
+
   it('Anthropic: 스트리밍 중 여러 tool_use 블록을 인덱스 순서로 누적한다 (#10 SP3)', async () => {
     const { http } = mockStreamHttp([
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"read"}}\n\n',

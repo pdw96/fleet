@@ -191,6 +191,8 @@ async function readStream(
   onToken: (delta: string) => void,
 ): Promise<ChatResult> {
   let text = ''
+  let thoughtText = '' // includeThoughts 사고 요약 누적(가시 답변 아님)
+  let thoughtSig: string | undefined // thought 파트 레벨 thoughtSignature(멀티턴 왕복용)
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
@@ -209,7 +211,11 @@ async function readStream(
     }
     const cand = ev.candidates?.[0]
     for (const p of cand?.content?.parts ?? []) {
-      if (p.text) {
+      // thought 파트는 text 도 함께 오므로 먼저 분기한다 — 사고 요약은 onToken 으로 안 흘린다(가시 토큰 아님).
+      if (p.thought) {
+        if (p.text) thoughtText += p.text
+        if (p.thoughtSignature !== undefined) thoughtSig = p.thoughtSignature
+      } else if (p.text) {
         text += p.text
         onToken(p.text)
       } else if (p.functionCall) {
@@ -226,14 +232,24 @@ async function readStream(
     }
   }
   const toolCalls: ToolUseBlock[] = funcs.map((f) => toToolUse(f.fc, f.sig))
+  // thought 가 있으면 순서보존 content 를 재구성한다(멀티턴 tool 루프 signature 왕복용). Gemini 는 사고를
+  // 답변 앞에 방출하므로 [thinking, text?, ...toolCalls] 휴리스틱으로 복원한다(버퍼는 정확 순서, 스트림은
+  // thought-우선 — 전역 인덱스가 없는 Gemini wire 특성상 Anthropic 스트림과 동일 관용구). thought 없으면
+  // content undefined → 현행 스트림 동작 byte-동일(무회귀).
+  let content: ContentBlock[] | undefined
+  if (thoughtText || thoughtSig !== undefined) {
+    content = [{ type: 'thinking', text: thoughtText, providerMeta: thoughtSig !== undefined ? { google: { thoughtSignature: thoughtSig } } : undefined }]
+    if (text) content.push({ type: 'text', text })
+    for (const t of toolCalls) content.push(t)
+  }
   // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).
-  if (blockReason) return { text, toolCalls, finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
+  if (blockReason) return { text, toolCalls, content, finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
   // 클린 종료인데 finishReason 미수신 = 비정상 종료(연결 끊김 등). mapFinish(undefined)='stop' 으로 위장하면
   // 잘린 부분 응답이 성공으로 흡수된다 → silent truncation 표면화(#7, 3사 공통). 프롬프트 차단은 위에서 이미 종결.
   if (finish === undefined) {
     throw new ApiProviderError('google', 200, 'stream ended without finishReason (truncated)')
   }
-  return { text, toolCalls, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
+  return { text, toolCalls, content, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
 }
 
 /** Google Gemini generateContent API provider. */
