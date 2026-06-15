@@ -846,6 +846,34 @@ describe('OpenAiProvider', () => {
     }
   })
 
+  it('gpt-5.1-codex-max 는 마이너=1 이지만 xhigh 지원(전용 도입 모델) — plain gpt-5.1-codex/-mini 는 강등 유지 (codex-max 핫픽스)', async () => {
+    // 공식 호환성 매트릭스(2026-06, community/codex docs): xhigh 는 gpt-5.1-codex-max 가 처음 도입했고
+    // plain gpt-5.1-codex·-mini 는 마이너=1 이라 xhigh 미지원(low/medium/high 만). 숫자비교 supportsXhigh(>=2)
+    // 가 마이너=1 인 codex-max 까지 high 로 무성 강등하던 갭 → 'codex-max' 접미사 우선 매칭으로 해소하되
+    // 'codex'/'codex-mini' 는 over-match 금지(강등 유지).
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const eff = () => (JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort
+    // codex-max: xhigh·max 둘 다 xhigh 유지(강등 없음), low/medium/high 는 그대로 통과(정규화 부작용 없음).
+    const max = createOpenAiProvider({ id: 'm', provider: 'openai', displayName: 'M', model: 'gpt-5.1-codex-max', apiKey: 'k' }, http)
+    await max.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+    expect(eff()).toBe('xhigh')
+    await max.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+    expect(eff()).toBe('xhigh')
+    await max.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
+    expect(eff()).toBe('medium')
+    // 날짜접미 풀 ID 스냅샷(프로덕션 핀 형태)도 xhigh 유지 — 비앵커 substring 매칭이라 정상. 누군가 정규식을
+    // 앵커드(/codex-max$/)로 '정리'하면 무성 강등이 재발하는데 이 어서션이 그 회귀를 잠근다(anthropic:423 동형).
+    const maxDated = createOpenAiProvider({ id: 'md', provider: 'openai', displayName: 'MD', model: 'gpt-5.1-codex-max-2025-11-19', apiKey: 'k' }, http)
+    await maxDated.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+    expect(eff()).toBe('xhigh')
+    // plain gpt-5.1-codex·-mini: xhigh 미지원 → high 로 안전 강등(codex-max 접미사 over-match 회귀가드).
+    for (const model of ['gpt-5.1-codex', 'gpt-5.1-codex-mini']) {
+      const p = createOpenAiProvider({ id: 'c', provider: 'openai', displayName: 'C', model, apiKey: 'k' }, http)
+      await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
+      expect(eff()).toBe('high')
+    }
+  })
+
   it('중립 max 는 모델 최상위 티어로 매핑한다 — gpt-5.5=xhigh, o3-mini=high', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
     const xh = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model: 'gpt-5.5', apiKey: 'k' }, http)

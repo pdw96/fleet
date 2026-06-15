@@ -50,10 +50,14 @@ function supportsReasoningEffort(model: string): boolean {
   if (/-chat/i.test(model) || /^o1-(mini|preview)/i.test(model)) return false
   return isReasoningModel(model)
 }
-// xhigh 가용성: **GPT-5.2+ 세대**(codex 변종 포함 — 5.2·5.2-codex·5.3-codex·5.4·5.5…) 전용. GPT-5.0/5.1 과
-// o-series 는 xhigh 미지원(전송 시 400). 마이너 버전을 **숫자로 비교**해 5.2+ 를 빠짐없이 포함하고(정규식
-// 열거의 under-match 로 5.2/5.3 가 high 로 무성 강등되던 회귀 차단 — codex P2) 두 자리 마이너(5.10+)도 안전 처리.
+// xhigh 가용성: **GPT-5.2+ 세대**(codex 변종 포함 — 5.2·5.2-codex·5.3-codex·5.4·5.5…) + **gpt-5.1-codex-max**.
+// codex-max 는 마이너=1 이지만 xhigh 를 처음 도입한 모델이라 마이너 숫자비교로는 못 잡힌다 → 'codex-max' 접미사를
+// 먼저 매칭한다. plain gpt-5.1-codex·-mini 는 xhigh 미지원(low/medium/high 만)이라 'codex' 가 아닌 'codex-max'
+// 로만 매칭해 over-match 를 막는다. GPT-5.0/5.1·gpt-5.1-codex·o-series 는 xhigh 미지원(전송 시 400). 나머지는
+// 마이너 버전을 **숫자로 비교**해 5.2+ 를 빠짐없이 포함하고(정규식 열거의 under-match 로 5.2/5.3 가 high 로
+// 무성 강등되던 회귀 차단 — codex P2) 두 자리 마이너(5.10+)도 안전 처리. 공식 호환성 매트릭스(2026-06)로 검증.
 function supportsXhigh(model: string): boolean {
+  if (/codex-max/i.test(model)) return true // gpt-5.1-codex-max: 마이너=1 이지만 xhigh 도입 모델(plain codex 는 미지원)
   const m = /^gpt-5\.(\d+)/i.exec(model)
   return m ? Number(m[1]) >= 2 : false
 }
