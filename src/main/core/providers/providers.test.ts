@@ -606,6 +606,20 @@ describe('OpenAiProvider', () => {
     expect(calls[0].init.headers.authorization).toBe('Bearer key-o')
   })
 
+  it('응답 usage 의 prompt_tokens_details.cached_tokens 를 cacheRead 로 잡고 inputTokens 에서 분리한다 (OpenAI cached_tokens)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        // OpenAI 의 prompt_tokens 는 cached_tokens 를 *포함*한다(Anthropic 과 반대).
+        usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 30 } },
+      }),
+    }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }])
+    // Anthropic 처럼 서로소로 정규화: input=비캐시분(100-30), cacheRead=30. 합산 시 이중계산 방지.
+    expect(out.usage).toEqual({ inputTokens: 70, outputTokens: 20, cacheReadInputTokens: 30 })
+  })
+
   it('reasoning models (gpt-5/o-series) use max_completion_tokens and drop temperature', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
     for (const model of ['gpt-5.1', 'o3-mini']) {
@@ -1451,6 +1465,18 @@ describe('provider streaming (SSE)', () => {
     const body = JSON.parse(calls[0].init.body) as { stream?: boolean; stream_options?: { include_usage?: boolean } }
     expect(body.stream).toBe(true)
     expect(body.stream_options?.include_usage).toBe(true)
+  })
+
+  it('OpenAI 스트림: 최종 usage 청크의 prompt_tokens_details.cached_tokens 를 cacheRead 로 분리한다 (OpenAI cached_tokens)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":30}}}\n\n',
+      'data: [DONE]\n\n',
+    ])
+    const p = createOpenAiProvider(baseOpenai, http)
+    const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} })
+    // 버퍼 경로와 동일한 서로소 정규화.
+    expect(out.usage).toEqual({ inputTokens: 70, outputTokens: 20, cacheReadInputTokens: 30 })
   })
 
   it('Google: streamGenerateContent?alt=sse 로 요청하고 델타/usage 파싱', async () => {

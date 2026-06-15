@@ -15,6 +15,7 @@ import {
   type HttpClient,
   type HttpResponse,
   type TextBlock,
+  type TokenUsage,
   type ToolUseBlock,
 } from './types'
 
@@ -24,9 +25,34 @@ interface OpenAiToolCall {
   id?: string
   function?: { name?: string; arguments?: string }
 }
+/** OpenAI usage 페이로드(버퍼·스트림 공통). prompt_tokens 는 cached_tokens 를 *포함*한다. */
+interface OpenAiUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  /** prompt_tokens 중 프롬프트 캐시 적중분(prompt_tokens 의 부분집합). 미캐시/구형 응답이면 부재. */
+  prompt_tokens_details?: { cached_tokens?: number }
+}
 interface OpenAiResponse {
   choices?: Array<{ message?: { content?: string; refusal?: string; tool_calls?: OpenAiToolCall[] }; finish_reason?: string }>
-  usage?: { prompt_tokens?: number; completion_tokens?: number }
+  usage?: OpenAiUsage
+}
+
+/**
+ * OpenAI usage → Fleet TokenUsage. OpenAI 의 prompt_tokens 는 캐시 적중분(cached_tokens)을 *포함*하지만
+ * (Anthropic 은 input_tokens 와 cache_read 가 분리), Fleet 의 TokenUsage 는 두 값을 서로소로 본다.
+ * 따라서 동일 모델로 정규화한다: inputTokens=비캐시 입력(prompt-cached), cacheReadInputTokens=cached.
+ * 덕분에 cross-provider 비용 누적(addUsage)에서 input+cacheRead 를 합산해도 이중계산이 없다.
+ * cached 미보고(prompt_tokens_details 부재)면 prompt 그대로·cacheRead 미설정 → 기존 동작 보존(무회귀).
+ */
+function mapUsage(u: OpenAiUsage | undefined): TokenUsage {
+  const cached = u?.prompt_tokens_details?.cached_tokens
+  const prompt = u?.prompt_tokens
+  const usage: TokenUsage = {
+    inputTokens: cached !== undefined && prompt !== undefined ? Math.max(0, prompt - cached) : prompt,
+    outputTokens: u?.completion_tokens,
+  }
+  if (cached !== undefined) usage.cacheReadInputTokens = cached
+  return usage
 }
 
 /**
@@ -163,7 +189,7 @@ async function readStream(
   let text = ''
   let refusal = ''
   let finish: string | undefined
-  let usage: { inputTokens?: number; outputTokens?: number } | undefined
+  let usage: TokenUsage | undefined
   const toolAccum = new Map<number, { id: string; name: string; args: string }>()
   for await (const data of sseData(body)) {
     let ev: {
@@ -175,7 +201,7 @@ async function readStream(
         }
         finish_reason?: string
       }>
-      usage?: { prompt_tokens?: number; completion_tokens?: number }
+      usage?: OpenAiUsage
       error?: { message?: string; type?: string; code?: string }
     }
     try {
@@ -205,7 +231,7 @@ async function readStream(
       toolAccum.set(idx, acc)
     }
     if (choice?.finish_reason) finish = choice.finish_reason
-    if (ev.usage) usage = { inputTokens: ev.usage.prompt_tokens, outputTokens: ev.usage.completion_tokens }
+    if (ev.usage) usage = mapUsage(ev.usage)
   }
   const toolCalls: ToolUseBlock[] = [...toolAccum.entries()]
     .sort((a, b) => a[0] - b[0])
@@ -297,7 +323,7 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
           toolCalls: [],
           finishReason: 'content_filter',
           rawFinishReason: `refusal: ${refusal}`,
-          usage: { inputTokens: parsed.usage?.prompt_tokens, outputTokens: parsed.usage?.completion_tokens },
+          usage: mapUsage(parsed.usage),
         }
       }
       return {
@@ -305,7 +331,7 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         toolCalls,
         finishReason: mapFinish(choice?.finish_reason),
         rawFinishReason: choice?.finish_reason,
-        usage: { inputTokens: parsed.usage?.prompt_tokens, outputTokens: parsed.usage?.completion_tokens },
+        usage: mapUsage(parsed.usage),
       }
     },
   }
