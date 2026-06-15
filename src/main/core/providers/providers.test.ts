@@ -1319,6 +1319,35 @@ describe('GoogleProvider', () => {
     expect(out.content).toBeUndefined()
     expect(out.text).toBe('hi')
   })
+
+  it('mapParts: thinking 블록을 {text, thought:true, thoughtSignature}로 회신한다(멀티턴 왕복)', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: [
+        { type: 'thinking', text: '사고', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
+        { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+      ] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc1', name: 'lookup', content: '값' }] },
+    ], { thinking: { effort: 'high' }, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ role: string; parts: unknown[] }> }
+    const model = body.contents.find((c) => c.role === 'model')!
+    expect(model.parts[0]).toEqual({ text: '사고', thought: true, thoughtSignature: 'TSIG' })
+    expect(model.parts[1]).toEqual({ functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc1' }, thoughtSignature: 'FCSIG' })
+  })
+
+  it('mapParts: thinking 블록에 sig 가 없으면 thoughtSignature 미전송', async () => {
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    await p.chat([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: [{ type: 'thinking', text: '사고' }] },
+    ], { thinking: { effort: 'high' } })
+    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ role: string; parts: unknown[] }> }
+    const model = body.contents.find((c) => c.role === 'model')!
+    expect(model.parts[0]).toEqual({ text: '사고', thought: true })
+  })
 })
 
 describe('provider streaming (SSE)', () => {

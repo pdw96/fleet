@@ -149,10 +149,16 @@ function mapParts(content: string | ContentBlock[]): unknown[] {
         if (b.toolUseId) functionResponse.id = b.toolUseId // 실제 id 만 회신(병렬 상관)
         return { functionResponse }
       }
-      case 'thinking':
-        // Gemini thought 파트 재방출은 후속(#11-Gemini-thinking). 현재 Gemini 는 ThinkingBlock 을
-        // 생성하지 않아 도달 불가 — exhaustiveness 만족용 방어 텍스트 파트.
-        return { text: b.text }
+      case 'thinking': {
+        // includeThoughts 로 받은 사고 요약을 받은 그대로 회신한다(thought:true + signature). 멀티턴 tool
+        // 루프에서 thought-part thoughtSignature 왕복(누락 시 Gemini 3 함수호출 검증오류 — 1차출처 "pass back
+        // any received thought signature exactly as received"). thoughtSignature 는 functionCall 의 형제인
+        // Part 레벨 필드다. echo-only-when-present(#29 규율) — 실제 있을 때만 싣고 byte-exact 보존.
+        const part: Record<string, unknown> = { text: b.text, thought: true }
+        const sig = b.providerMeta?.google?.thoughtSignature
+        if (sig !== undefined) part.thoughtSignature = sig
+        return part
+      }
       default:
         return assertNever(b)
     }
