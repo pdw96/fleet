@@ -206,14 +206,23 @@ content를 채우는 순간 멀티턴 tool 루프에서 thoughtSignature byte-ex
 - **기각 18건**: wire-format 정확성 확인(includeThoughts+thinkingBudget/Level 공존 valid·thoughtSignature
   Part 레벨 배치 correct), 스트림 thought-before-answer 휴리스틱 한계(트리거 미확정·문서화됨), 무회귀 확인 등.
 
+## Codex 봇 리뷰 반영 (PR open 후 자동리뷰 — P2 1건)
+
+- **P2(text 파트 signature 보존)** — Codex가 "Gemini 3 는 text 파트에도 thoughtSignature 를 붙인다(first
+  part always has a signature, **even if text**) → 서명된 text 를 plain TextBlock 으로 만들며 sig 드롭, 멀티턴
+  echo 누락"을 지적. **초안의 text-part 비범위 결정을 뒤집어 반영**(커밋 c9f2e7e) — PR 자체 목표(signature
+  왕복으로 검증오류 방지)에 비춰 같은 클래스이고, 스트림 처리도 `textSig` 변수 하나로 대칭 가능해 비범위
+  근거(복잡도)가 과대평가였음. 내 적대리뷰(wire-format 차원)도 surfaced 했으나 비범위로 기각했던 지점 —
+  Codex가 재지적. **수정**: 버퍼/스트림 content 트리거를 `thought OR 서명된 text 파트`로 확장 + text 분기
+  providerMeta + `mapParts` case 'text' echo. functionCall sig 만 있으면 toolCalls 가 이미 보존하므로 content
+  미생성(버퍼/스트림 대칭, 평범 text 무회귀). 회귀가드 4건(test 688). [[merge-requires-confirmation]] 실증.
+
 ## 비범위 (YAGNI / 후속) — 갱신
 
 - **① 2.5 effort→정수 budget 세분화** — 별도 micro-slice(2.5 모델 한정·기본 모델 무관·서브모델 범위탐지
   400 위험). 현행 `thinkingBudget:-1`(AUTOMATIC) 유지.
-- **text-part thoughtSignature 캡처/왕복** — 비범위 유지(메모리가 ②를 "thought 파트 분리"로 명시). 단
-  리뷰가 짚은 잔여 불확실성: includeThoughts off / 모델이 thought 요약 미생성하며 선두 text 파트만 sig를
-  갖는 변형. **머지 후 실 키 스모크에서 text-part sig가 함수호출 검증에 mandatory인지 실측** → 관측되면
-  저비용 대칭 확장(버퍼 text 분기 providerMeta + mapParts text echo + 스트림 선두-파트 sig 캡처).
+- ~~text-part thoughtSignature 캡처/왕복~~ — **Codex P2 반영으로 범위 편입**(위 참조). 버퍼/스트림/mapParts
+  3경로 보존·왕복 완료.
 - **스트림 thought-before-answer 순서 휴리스틱** — Gemini classic 스트림에 전역 part 인덱스가 없어
   thought-우선 재구성. 가정적 interleaved/answer-after-thought 응답 시 부정확 → 머지 후 라이브 추적.
 - **orchestrator가 google 세션에 opts.thinking 지정** — 1단계서 이미 config.thinking 경로 활성. 무변경.
