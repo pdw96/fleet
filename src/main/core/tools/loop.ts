@@ -95,8 +95,11 @@ export async function runToolLoop(
 
   for (let iter = 0; iter < max; iter++) {
     // provider 분기 없이 capability 플래그만 본다: native(anthropic)는 wire 위임, 그 외는 client-side
-    // 가지치기. 둘 다 chat 직전에 적용해 매 라운드 누적을 경계한다.
+    // 가지치기. 둘 다 chat 직전에 적용해 매 라운드 누적을 경계한다. loop 가 contextManagement 소유권을
+    // 가진다(caller opts 값은 무시) — native 는 서버가 context 를 직접 관리하므로 local turns 가 무제한
+    // 성장하는 게 정상(의도된 설계)이고, client 경로만 turns 를 가지치기한다.
     const chatOpts: ApiCallOptions = { ...opts, tools, toolChoice: 'auto' }
+    delete chatOpts.contextManagement // loop 가 소유 — caller 가 실어보낸 값은 쓰지 않는다(누출 차단)
     if (policy) {
       if (provider.nativeContextManagement) chatOpts.contextManagement = policy
       else pruneToolResults(turns, policy)

@@ -376,7 +376,7 @@ describe('runToolLoop', () => {
       id: 'fake',
       provider: 'anthropic',
       model: 'm',
-      nativeContextManagement: native || undefined,
+      nativeContextManagement: native ? true : undefined,
       async chat(messages, o = {}) {
         turns.push(structuredClone(messages))
         opts.push(o)
@@ -387,13 +387,24 @@ describe('runToolLoop', () => {
   }
 
   it('native provider 에는 contextManagement 를 opts 로 싣고 turns 를 prune 하지 않는다', async () => {
+    const big = 'x'.repeat(4000)
+    const start: ChatTurn[] = [
+      { role: 'assistant', content: [toolUse('t0', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
+      { role: 'assistant', content: [toolUse('t1', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: big }] },
+      { role: 'user', content: 'go' },
+    ]
     const { provider, opts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
-    await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+    await runToolLoop(provider, start, {}, {
       registry: createToolRegistry([echoTool]),
       gate: approveAll,
-      contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 2 },
+      contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 1 },
     })
-    expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 2 })
+    expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 1 })
+    // native 는 서버가 클리어하므로 client-side prune 을 하지 않는다 — 같은 입력에서 client 경로라면
+    // t0 가 stub 될 조건(keep=1·결과 2개·임계초과)이지만 native 경로는 t0 를 그대로 둔다(회귀 가드).
+    expect((start[1].content as ToolResultBlock[])[0].content).toBe(big)
   })
 
   it('native 미지원 provider: contextManagement 미전달 + 임계 초과 시 오래된 tool_result stub', async () => {
