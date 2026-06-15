@@ -50,14 +50,21 @@ export function approxTokens(turns: ChatTurn[]): number {
   return Math.ceil(chars / 4)
 }
 
-/** 가장 마지막에 tool_result 를 담은 턴의 인덱스(없으면 -1). 그 턴은 직전 도구루프 iter 가 추가했고
- * 아직 모델에 전송되지 않았다(다음 chat 에서 처음 전송) → 정리 대상에서 제외한다. */
-function lastToolResultTurnIndex(turns: ChatTurn[]): number {
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const c = turns[i].content
-    if (typeof c !== 'string' && c.some((b) => b.type === 'tool_result')) return i
-  }
-  return -1
+/**
+ * 미전송 fresh tool_result 배치의 크기. **마지막 턴**이 tool_result 턴이면 = 직전 도구루프 iter 가 방금
+ * 추가했고 아직 모델에 전송되지 않은 배치이므로 그 결과 수를 반환한다. 마지막 턴이 user 프롬프트·assistant
+ * (새 send 시작·응답 후)면 직전 tool_result 는 이미 전송된 과거 것이라 0 을 반환한다(=fresh 아님).
+ * client 가지치기는 이 배치를 정리에서 제외하고, native 는 keep 을 이 크기 이상으로 올려 server clear 가
+ * 모델이 보기 전 fresh 배치를 클립하지 못하게 한다(Codex P2). "마지막 *턴*" 한정이 핵심 — 라운드1 의
+ * "마지막 tool_result 턴 무조건 제외" 는 새 send 의 *이미 전송된* 과거 배치까지 보호해 prune 불능이 되던
+ * 걸 정밀화한다(api-session history 는 항상 assistant 턴으로 끝나 새 send 첫 prune 엔 마지막 턴=user → fresh 0).
+ */
+export function freshToolResultBatchSize(turns: ChatTurn[]): number {
+  const last = turns[turns.length - 1]
+  if (!last || typeof last.content === 'string') return 0
+  let n = 0
+  for (const b of last.content) if (b.type === 'tool_result') n++
+  return n
 }
 
 /**
@@ -65,10 +72,11 @@ function lastToolResultTurnIndex(turns: ChatTurn[]): number {
  * 오래된 tool_result 의 content 를 PRUNE_STUB 으로 치환한다 — **블록 제거가 아니라 content 축약**이라
  * tool_use↔tool_result 페어링·블록 순서·thinking 서명이 불변(3사 wire 유효성 보존).
  *
- * 두 보존 규칙: ① **미전송 최신 tool_result 턴**(직전 iter 가 추가, 다음 chat 에서 처음 전송)은 통째로
- * 보존한다 — 한 어시스턴트 턴이 keep 보다 많은 병렬 도구를 호출하면 그 배치의 일부가 모델이 보기 전에
- * stub 돼 명시 요청한 출력 없이 답하게 되는 걸 막는다(Codex P2). ② 그 앞(이미 전송된) 결과 중 최근
- * keepRecentToolUses 개는 보존한다.
+ * 두 보존 규칙: ① **미전송 fresh 배치**(마지막 턴이 tool_result 턴일 때만 — 직전 iter 가 추가, 다음 chat
+ * 에서 처음 전송)는 통째로 보존한다 — 한 어시스턴트 턴이 keep 보다 많은 병렬 도구를 호출하면 그 배치의
+ * 일부가 모델이 보기 전에 stub 돼 명시 요청한 출력 없이 답하게 되는 걸 막는다(Codex P2). 새 send 의 이미
+ * 전송된 과거 배치는 마지막 턴이 아니므로(뒤에 user 프롬프트가 옴) 제외하지 않는다. ② 그 앞(이미 전송된)
+ * 결과 중 최근 keepRecentToolUses 개는 보존한다.
  *
  * **copy-on-write**: stub 시 공유된 history 블록을 직접 변이하지 않고 턴·content 배열·블록을 클론해
  * turns 슬롯에만 반영한다 — api-session 의 `working=[...history]` 는 블록 객체를 공유하므로 in-place
@@ -81,11 +89,11 @@ function lastToolResultTurnIndex(turns: ChatTurn[]): number {
  */
 export function pruneToolResults(turns: ChatTurn[], policy: ContextManagementPolicy): void {
   if (approxTokens(turns) <= policy.triggerInputTokens) return
-  // 미전송 최신 tool_result 턴은 제외하고, 이미 모델이 본 결과만 (turnIndex, blockIndex)로 수집한다.
-  const lastTr = lastToolResultTurnIndex(turns)
+  // 미전송 fresh 배치(마지막 턴이 tool_result 일 때만)는 제외하고, 이미 모델이 본 결과만 (turnIndex, blockIndex)로 수집.
+  const excludeIdx = freshToolResultBatchSize(turns) > 0 ? turns.length - 1 : -1
   const slots: Array<[number, number]> = []
   for (let i = 0; i < turns.length; i++) {
-    if (i === lastTr) continue
+    if (i === excludeIdx) continue
     const c = turns[i].content
     if (typeof c === 'string') continue
     for (let j = 0; j < c.length; j++) if (c[j].type === 'tool_result') slots.push([i, j])

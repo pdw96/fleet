@@ -8,7 +8,7 @@ import type {
   ToolResultBlock,
 } from '../providers/types'
 import type { ToolLoopDeps } from './types'
-import { DEFAULT_CONTEXT_POLICY, pruneToolResults } from './context'
+import { DEFAULT_CONTEXT_POLICY, freshToolResultBatchSize, pruneToolResults } from './context'
 
 const DEFAULT_MAX_ITERATIONS = 8
 
@@ -101,8 +101,14 @@ export async function runToolLoop(
     const chatOpts: ApiCallOptions = { ...opts, tools, toolChoice: 'auto' }
     delete chatOpts.contextManagement // loop 가 소유 — caller 가 실어보낸 값은 쓰지 않는다(누출 차단)
     if (policy) {
-      if (provider.nativeContextManagement) chatOpts.contextManagement = policy
-      else pruneToolResults(turns, policy)
+      if (provider.nativeContextManagement) {
+        // server clear_tool_uses 는 "가장 최근 keep 개 tool_use"를 유지한다(블록 단위·턴 경계 무시 — 1차출처).
+        // 한 어시스턴트 턴의 병렬 호출이 keep 초과면, 모델이 그 fresh 결과를 보기 전에 server 가 일부를 클립할
+        // 수 있다 → 이번 요청 한정 keep 을 fresh 배치 크기 이상으로 올려 통째로 보존한다(Codex P2, client 대칭).
+        const fresh = freshToolResultBatchSize(turns)
+        chatOpts.contextManagement =
+          fresh > policy.keepRecentToolUses ? { ...policy, keepRecentToolUses: fresh } : policy
+      } else pruneToolResults(turns, policy)
     }
     const result = await provider.chat(turns, chatOpts)
     usageAcc = addUsage(usageAcc, result.usage)

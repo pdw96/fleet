@@ -412,7 +412,8 @@ describe('runToolLoop', () => {
   it('native 미지원 provider: contextManagement 미전달 + 임계 초과 시 전송된 오래된 tool_result stub', async () => {
     const big = 'x'.repeat(4000)
     const { provider, opts, turns } = capturingProvider(false, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
-    // 결과 3개: t0(전송·정리)·t1(전송·keep 보존)·t2(미전송 최신·보존).
+    // 새 send 시작(마지막 턴='go' 프롬프트): 직전 tool_result 3개는 모두 이미 전송됨 → keep=1 이 최신 t2 만
+    // 보존하고 t0·t1 은 정리. (마지막 턴이 tool_result 가 아니므로 fresh-배치 제외가 적용되지 않는다 — P2#A.)
     const start: ChatTurn[] = [
       { role: 'assistant', content: [toolUse('t0', 'echo', {})] },
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
@@ -430,8 +431,8 @@ describe('runToolLoop', () => {
     expect(opts[0].contextManagement).toBeUndefined()
     const captured = turns[0]
     expect((captured[1].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // 오래된 t0 정리
-    expect((captured[3].content as ToolResultBlock[])[0].content).toBe(big) // t1 keep 보존
-    expect((captured[5].content as ToolResultBlock[])[0].content).toBe(big) // t2 미전송 최신 보존
+    expect((captured[3].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // t1 도 전송됨 → 정리
+    expect((captured[5].content as ToolResultBlock[])[0].content).toBe(big) // 최신 t2 keep 보존
   })
 
   it('contextPolicy: null 이면 native 위임도 client-side prune 도 하지 않는다', async () => {
@@ -464,5 +465,23 @@ describe('runToolLoop', () => {
       gate: approveAll,
     })
     expect(opts[0].contextManagement).toEqual(DEFAULT_CONTEXT_POLICY)
+  })
+
+  it('native: 미전송 fresh 배치가 keep 초과면 그 요청의 keep 을 배치 크기로 올린다(Codex P2)', async () => {
+    // 직전 iter 가 병렬 도구 5개 결과를 한 user 턴(마지막 턴)에 push 한 상황. keep=2 < 5.
+    const big = 'x'.repeat(4000)
+    const ids = ['b0', 'b1', 'b2', 'b3', 'b4']
+    const start: ChatTurn[] = [
+      { role: 'assistant', content: ids.map((id) => toolUse(id, 'echo', {})) },
+      { role: 'user', content: ids.map((id) => ({ type: 'tool_result', toolUseId: id, content: big }) as ToolResultBlock) },
+    ]
+    const { provider, opts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    await runToolLoop(provider, start, {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 2 },
+    })
+    // server clear_tool_uses 가 fresh 배치를 클립하지 않도록 keep 을 배치 크기(5) 로 상향.
+    expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 5 })
   })
 })

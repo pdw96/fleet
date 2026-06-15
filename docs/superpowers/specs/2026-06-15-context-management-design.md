@@ -225,3 +225,20 @@ turns(=working) 변이 → history 영속(send 간 누적 경계, client-side �
 
 검증: 4게이트 녹색(test 729→**731**, context 12→14: 미전송배치·copy-on-write 신규 테스트). client-side prune
 테스트는 미전송-턴 제외 반영해 ≥3 전송 결과로 갱신.
+
+### 라운드 2 (재리뷰 P2 2건 — fresh-batch 정밀화)
+
+라운드1 의 fresh-batch 보존이 두 방향에서 불완전했다(context7 로 `clear_tool_uses` 시맨틱 검증 — `keep` 은
+**tool_use 블록 단위 "가장 최근 N개"**, 턴 경계·최신 배치 보호 없음):
+
+4. **client: "마지막 *턴*" 한정** (P2#A) — 라운드1 은 *어디에 있든* 마지막 tool_result 턴을 제외해서, 새 send
+   시작(`working=[...history, newPrompt]`)의 *이미 전송된* 과거 배치까지 보호 → 영영 prune 불가, 큰 과거 배치면
+   여전히 초과. `lastToolResultTurnIndex`(마지막 tool_result 턴) → `freshToolResultBatchSize`(**마지막 턴이
+   tool_result 일 때만** fresh)로 교체. api-session history 는 항상 assistant 로 끝나 새 send 첫 prune 엔
+   마지막 턴=user → fresh 0 → 과거 배치 정상 정리.
+5. **native: fresh 배치만큼 keep 상향** (P2#B) — server `clear_tool_uses` 도 한 어시스턴트 턴의 병렬 호출이
+   `keep` 초과면 모델이 보기 전 일부를 클립한다. loop 가 native 에 정책을 실을 때 `keep =
+   max(policy.keep, freshToolResultBatchSize(turns))` 로 이번 요청 한정 상향(client 대칭).
+
+검증: 4게이트 녹색(test 731→**733**: 새-send 과거배치 정리·native fresh-batch keep 상향 신규). 새-send
+client 테스트는 갱신(과거 배치 정리 반영).

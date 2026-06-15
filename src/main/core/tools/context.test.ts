@@ -174,4 +174,17 @@ describe('pruneToolResults', () => {
     expect((working[0].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // working 엔 stub 반영
     expect(working[0]).not.toBe(history[0]) // 턴이 클론됨
   })
+
+  it('새 send 시작(마지막 턴=user 프롬프트)이면 이미 전송된 직전 tool_result 턴도 정리 대상이다(Codex P2)', () => {
+    // working=[...history, newPrompt] 상황: 직전 tool_result 는 이미 전송됨 → 마지막 턴이 아니므로 prune 가능.
+    // (라운드1 의 "마지막 tool_result 턴 무조건 제외"면 t1 이 영영 prune 불가였음.)
+    const turns: ChatTurn[] = [
+      { role: 'user', content: [toolResult('t0', big)] },
+      { role: 'user', content: [toolResult('t1', big)] }, // 직전(이미 전송된) tool_result 턴 — 마지막 아님
+      { role: 'user', content: 'next prompt' }, // 새 send 의 user 프롬프트(마지막 턴)
+    ]
+    pruneToolResults(turns, { triggerInputTokens: 10, keepRecentToolUses: 0 })
+    expect((turns[0].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB)
+    expect((turns[1].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // t1 도 정리됨(과거·전송됨)
+  })
 })
