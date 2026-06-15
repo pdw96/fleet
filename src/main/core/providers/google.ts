@@ -76,8 +76,10 @@ function resolveThinkingConfig(model: string, knob: ApiCallOptions['thinking']):
 
 interface GooglePart {
   text?: string
+  /** includeThoughts 로 받은 사고 요약 파트 표식. true 면 가시 답변이 아니라 reasoning 요약(ThinkingBlock). */
+  thought?: boolean
   functionCall?: { id?: string; name?: string; args?: unknown }
-  /** Part 레벨 thought signature(functionCall 의 형제). thinking 모델 함수호출에서 첫 FC 파트에 붙는다(#17-P1). */
+  /** Part 레벨 thought signature(functionCall·thought 파트의 형제). thinking 모델에서 파트에 붙는다(#17-P1). */
   thoughtSignature?: string
 }
 interface GoogleResponse {
@@ -318,14 +320,27 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const parsed = JSON.parse(raw) as GoogleResponse
       const cand = parsed.candidates?.[0]
       const parts = cand?.content?.parts ?? []
-      const text = parts.map((p) => p.text ?? '').join('')
+      // 가시 답변은 thought 파트를 제외한 text 만 이어붙인다(사고 요약은 가시 토큰이 아님 — textOf 규율).
+      const text = parts.filter((p) => !p.thought).map((p) => p.text ?? '').join('')
       const toolCalls: ToolUseBlock[] = parts
         .filter((p) => p.functionCall)
         .map((p) => toToolUse(p.functionCall!, p.thoughtSignature))
+      // thought 파트가 1개 이상이면 순서보존 content 를 적재한다(멀티턴 tool 루프 signature 왕복용 — Anthropic
+      // 동형). 없으면 미설정 → loop 는 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
+      const content: ContentBlock[] | undefined = parts.some((p) => p.thought)
+        ? parts.flatMap((p): ContentBlock[] => {
+            if (p.thought && typeof p.text === 'string')
+              return [{ type: 'thinking', text: p.text, providerMeta: p.thoughtSignature !== undefined ? { google: { thoughtSignature: p.thoughtSignature } } : undefined }]
+            if (p.functionCall) return [toToolUse(p.functionCall, p.thoughtSignature)]
+            if (typeof p.text === 'string') return [{ type: 'text', text: p.text }]
+            return [] // 미지 파트(inlineData 등 어시스턴트 응답엔 없음) — content 에서 제외
+          })
+        : undefined
       const finish = resolveFinish(parsed)
       return {
         text,
         toolCalls,
+        content,
         finishReason: finish.finishReason,
         rawFinishReason: finish.raw,
         usage: {

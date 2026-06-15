@@ -1277,6 +1277,48 @@ describe('GoogleProvider', () => {
     expect(b1.generationConfig?.responseMimeType).toBeUndefined()
     expect(out.text).toBe('[]')
   })
+
+  // ── 2단계 ②: thought 파트 캡처(includeThoughts) — 버퍼 파싱 ──────────────────
+  it('버퍼: thought 파트를 ThinkingBlock(sig in providerMeta)로, text/tool_use 순서보존 content 적재', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [
+          { text: '사고 요약', thought: true, thoughtSignature: 'TSIG' },
+          { text: '답변' },
+          { functionCall: { id: 'fc1', name: 'lookup', args: { id: 1 } } },
+        ] }, finishReason: 'STOP' }],
+      }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.text).toBe('답변') // thought 텍스트는 가시 답변에서 제외
+    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 } }])
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '사고 요약', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
+      { type: 'text', text: '답변' },
+      { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 } },
+    ])
+  })
+
+  it('버퍼: thought 파트의 thoughtSignature 가 없으면 providerMeta undefined', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '사고', thought: true }, { text: '답' }] }, finishReason: 'STOP' }] }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '사고', providerMeta: undefined },
+      { type: 'text', text: '답' },
+    ])
+  })
+
+  it('버퍼: thought 파트가 없으면 content undefined(무회귀)', async () => {
+    const { http } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'hi' }] }, finishReason: 'STOP' }] }) }))
+    const p = createGoogleProvider(baseGoogle, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }])
+    expect(out.content).toBeUndefined()
+    expect(out.text).toBe('hi')
+  })
 })
 
 describe('provider streaming (SSE)', () => {
