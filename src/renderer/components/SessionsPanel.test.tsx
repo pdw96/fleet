@@ -121,6 +121,29 @@ describe('SessionsPanel', () => {
     expect(String(cfg.displayName)).toContain('thinking:high')
   })
 
+  it('openai-compatible 선택 시 Base URL 입력칸과 effort 셀렉트가 노출된다', async () => {
+    mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
+    expect(screen.getByLabelText(/Base URL/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
+  })
+
+  it('openai-compatible 등록 config 에 baseUrl·provider 가 실린다', async () => {
+    const fleet = mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
+    fireEvent.change(screen.getByLabelText(/Base URL/i), { target: { value: 'https://openrouter.ai/api/v1' } })
+    fireEvent.change(screen.getByLabelText('모델'), { target: { value: 'qwen/qwen3-32b' } })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
+    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    expect(cfg.provider).toBe('openai-compatible')
+    expect(cfg.baseUrl).toBe('https://openrouter.ai/api/v1')
+    expect(cfg.model).toBe('qwen/qwen3-32b')
+  })
+
   it('anthropic·openai·google 모두 thinking effort 셀렉트를 노출한다(3사 thinking 패리티)', async () => {
     mockFleet()
     render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
