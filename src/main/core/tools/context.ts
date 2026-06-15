@@ -64,6 +64,7 @@ export function pruneToolResults(turns: ChatTurn[], policy: ContextManagementPol
     if (r.content === PRUNE_STUB) continue // idempotent
     r.content = PRUNE_STUB
     delete r.isError // stale 한 에러 표식 제거
+    // 한 건 정리할 때마다 재추정한다(현 컨텍스트 크기에선 무시 가능 — 매우 큰 도구 이력이면 delta 추적 최적화 여지).
     if (approxTokens(turns) <= policy.triggerInputTokens) return
   }
 }

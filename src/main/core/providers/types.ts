@@ -97,7 +97,7 @@ export interface ToolDefinition {
 export interface ContextManagementPolicy {
   /** 누적 입력토큰(anthropic=서버 실측·그 외=client 추정)이 이 값을 넘으면 정리. */
   triggerInputTokens: number
-  /** 유지할 최근 도구결과 수. 이보다 오래된 tool_result 부터 정리. */
+  /** 유지할 최근 도구결과 수(≥ 0). 이보다 오래된 tool_result 부터 정리한다. 0이면 가능한 전부 정리. */
   keepRecentToolUses: number
 }
 
