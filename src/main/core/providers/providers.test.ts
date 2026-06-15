@@ -1320,6 +1320,19 @@ describe('GoogleProvider', () => {
     expect(out.text).toBe('hi')
   })
 
+  it('버퍼: text 없는 sig-only thought 파트도 ThinkingBlock(text:"")로 signature 를 보존한다 (버퍼/스트림 대칭)', async () => {
+    // thought 파트가 요약 text 없이 thoughtSignature 만 와도 서명을 떨궈선 안 된다(멀티턴 왕복).
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [{ thought: true, thoughtSignature: 'TSIG_NOTEXT' }, { text: '답' }] }, finishReason: 'STOP' }] }),
+    }))
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '', providerMeta: { google: { thoughtSignature: 'TSIG_NOTEXT' } } },
+      { type: 'text', text: '답' },
+    ])
+  })
+
   it('mapParts: thinking 블록을 {text, thought:true, thoughtSignature}로 회신한다(멀티턴 왕복)', async () => {
     const { http, calls } = mockHttp(okBody)
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
@@ -1534,6 +1547,38 @@ describe('provider streaming (SSE)', () => {
     const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
     expect(out.content).toBeUndefined()
     expect(out.text).toBe('hi')
+  })
+
+  it('Google 스트림: thought + functionCall 을 순서보존 content [thinking, tool_use]로 재구성한다 (멀티턴 왕복 핵심값)', async () => {
+    // PR 핵심값 #2 — includeThoughts 응답이 [thought(sig), functionCall(sig)] 이 되는 멀티턴 경로.
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"생각","thought":true,"thoughtSignature":"TSIG"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_s1","name":"lookup","args":{"id":7}},"thoughtSignature":"FCSIG"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+    ])
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '생각', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
+      { type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+    ])
+  })
+
+  it('Google 스트림: 다중 thought 파트의 thoughtSignature 를 파트별로 보존한다(last-write-wins 붕괴 방지·버퍼 대칭)', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"단계1","thought":true,"thoughtSignature":"SIG1"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"단계2","thought":true,"thoughtSignature":"SIG2"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"답"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: () => {} })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '단계1', providerMeta: { google: { thoughtSignature: 'SIG1' } } },
+      { type: 'thinking', text: '단계2', providerMeta: { google: { thoughtSignature: 'SIG2' } } },
+      { type: 'text', text: '답' },
+    ])
   })
 
   it('Anthropic: 스트리밍 중 여러 tool_use 블록을 인덱스 순서로 누적한다 (#10 SP3)', async () => {

@@ -197,8 +197,10 @@ async function readStream(
   onToken: (delta: string) => void,
 ): Promise<ChatResult> {
   let text = ''
-  let thoughtText = '' // includeThoughts 사고 요약 누적(가시 답변 아님)
-  let thoughtSig: string | undefined // thought 파트 레벨 thoughtSignature(멀티턴 왕복용)
+  // thought 파트를 파트(서명 단위)별로 보존한다 — 다중 reasoning 스텝에서 각 thoughtSignature 를 유실하지
+  // 않도록(버퍼 per-part 보존과 대칭). thoughtSignature 가 thought 파트를 마감한다(스텝 경계).
+  const thoughts: Array<{ text: string; sig?: string }> = []
+  let curThought = '' // 아직 서명으로 마감되지 않은 진행 중 thought 텍스트
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
@@ -218,9 +220,13 @@ async function readStream(
     const cand = ev.candidates?.[0]
     for (const p of cand?.content?.parts ?? []) {
       // thought 파트는 text 도 함께 오므로 먼저 분기한다 — 사고 요약은 onToken 으로 안 흘린다(가시 토큰 아님).
+      // thoughtSignature 가 오면 그 thought 파트를 마감해 배열에 push 한다(다중 thought-part 서명 보존).
       if (p.thought) {
-        if (p.text) thoughtText += p.text
-        if (p.thoughtSignature !== undefined) thoughtSig = p.thoughtSignature
+        if (p.text) curThought += p.text
+        if (p.thoughtSignature !== undefined) {
+          thoughts.push({ text: curThought, sig: p.thoughtSignature })
+          curThought = ''
+        }
       } else if (p.text) {
         text += p.text
         onToken(p.text)
@@ -238,13 +244,15 @@ async function readStream(
     }
   }
   const toolCalls: ToolUseBlock[] = funcs.map((f) => toToolUse(f.fc, f.sig))
+  // 서명 없이 끝난 잔여 thought 텍스트도 한 블록으로 보존한다(thought 파트가 sig 없이 종료된 경우).
+  if (curThought) thoughts.push({ text: curThought })
   // thought 가 있으면 순서보존 content 를 재구성한다(멀티턴 tool 루프 signature 왕복용). Gemini 는 사고를
-  // 답변 앞에 방출하므로 [thinking, text?, ...toolCalls] 휴리스틱으로 복원한다(버퍼는 정확 순서, 스트림은
-  // thought-우선 — 전역 인덱스가 없는 Gemini wire 특성상 Anthropic 스트림과 동일 관용구). thought 없으면
-  // content undefined → 현행 스트림 동작 byte-동일(무회귀).
+  // 답변 앞에 방출하므로 [thinking…, text?, ...toolCalls] 휴리스틱으로 복원한다(버퍼는 정확 순서, 스트림은
+  // thought-우선 — 전역 인덱스가 없는 Gemini wire 특성상 Anthropic 스트림과 동일 관용구). thought 파트별로
+  // ThinkingBlock 1개씩(서명 per-part 보존). thought 없으면 content undefined → 현행 스트림 동작 byte-동일.
   let content: ContentBlock[] | undefined
-  if (thoughtText || thoughtSig !== undefined) {
-    content = [{ type: 'thinking', text: thoughtText, providerMeta: thoughtSig !== undefined ? { google: { thoughtSignature: thoughtSig } } : undefined }]
+  if (thoughts.length > 0) {
+    content = thoughts.map((t): ContentBlock => ({ type: 'thinking', text: t.text, providerMeta: t.sig !== undefined ? { google: { thoughtSignature: t.sig } } : undefined }))
     if (text) content.push({ type: 'text', text })
     for (const t of toolCalls) content.push(t)
   }
@@ -351,8 +359,10 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       // 동형). 없으면 미설정 → loop 는 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
       const content: ContentBlock[] | undefined = parts.some((p) => p.thought)
         ? parts.flatMap((p): ContentBlock[] => {
-            if (p.thought && typeof p.text === 'string')
-              return [{ type: 'thinking', text: p.text, providerMeta: p.thoughtSignature !== undefined ? { google: { thoughtSignature: p.thoughtSignature } } : undefined }]
+            // thought 파트는 text 유무와 무관하게 보존한다 — sig-only(text 없는) thought 파트도 signature 를
+            // 떨궈선 안 된다(멀티턴 왕복·스트림/Anthropic 동형 `?? ''`). text 없으면 빈 문자열.
+            if (p.thought)
+              return [{ type: 'thinking', text: p.text ?? '', providerMeta: p.thoughtSignature !== undefined ? { google: { thoughtSignature: p.thoughtSignature } } : undefined }]
             if (p.functionCall) return [toToolUse(p.functionCall, p.thoughtSignature)]
             if (typeof p.text === 'string') return [{ type: 'text', text: p.text }]
             return [] // 미지 파트(inlineData 등 어시스턴트 응답엔 없음) — content 에서 제외
