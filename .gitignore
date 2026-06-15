@@ -11,4 +11,5 @@ coverage/
 *.tsbuildinfo
 test-results/
 playwright-report/
+.playwright-mcp/
 e2e/__screenshots__/
