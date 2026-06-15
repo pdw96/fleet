@@ -235,13 +235,17 @@ async function readStream(
           thoughts.push({ text: curThought, sig: p.thoughtSignature })
           curThought = ''
         }
-      } else if (p.text) {
-        text += p.text
-        onToken(p.text)
-        // Gemini 3 는 text 파트에도 sig 를 붙인다 → 보존(첫 서명을 잡고 undefined 로 덮어쓰지 않음).
-        if (p.thoughtSignature !== undefined) textSig = p.thoughtSignature
       } else if (p.functionCall) {
         funcs.push({ fc: p.functionCall, sig: p.thoughtSignature })
+      } else {
+        // 일반 text 파트(빈 문자열 포함) 또는 서명-only 파트. text 가 있으면 흘리고, signature 는 text 가
+        // 비어 있어도 캡처한다 — Gemini 가 최종 서명을 text:"" 파트에 실어 보낼 수 있다(Codex P2). 첫 서명을
+        // 잡고 undefined 로 덮어쓰지 않는다.
+        if (p.text) {
+          text += p.text
+          onToken(p.text)
+        }
+        if (p.thoughtSignature !== undefined) textSig = p.thoughtSignature
       }
     }
     if (cand?.finishReason) finish = cand.finishReason
@@ -264,7 +268,8 @@ async function readStream(
   let content: ContentBlock[] | undefined
   if (thoughts.length > 0 || textSig !== undefined) {
     content = thoughts.map((t): ContentBlock => ({ type: 'thinking', text: t.text, providerMeta: t.sig !== undefined ? { google: { thoughtSignature: t.sig } } : undefined }))
-    if (text) content.push({ type: 'text', text, providerMeta: textSig !== undefined ? { google: { thoughtSignature: textSig } } : undefined })
+    // 서명된 text 파트는 text 가 비어 있어도 블록을 만들어 signature 를 보존한다(sig-only text 파트, Codex P2).
+    if (text || textSig !== undefined) content.push({ type: 'text', text, providerMeta: textSig !== undefined ? { google: { thoughtSignature: textSig } } : undefined })
     for (const t of toolCalls) content.push(t)
   }
   // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).

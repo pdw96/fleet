@@ -1621,6 +1621,20 @@ describe('provider streaming (SSE)', () => {
     ])
   })
 
+  it('Google 스트림: 빈 문자열 text 파트에 실린 thoughtSignature 도 보존한다 (Codex P2 — truthy 가드 함정)', async () => {
+    // Gemini 가 최종 서명을 text:"" 파트에 실어 보내면 truthy p.text 가드가 파트를 스킵해 sig 를 잃을 수 있다.
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"답변"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"TXTSIG"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
+    expect(out.text).toBe('답변')
+    expect(out.content).toEqual([
+      { type: 'text', text: '답변', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
+    ])
+  })
+
   it('Google 스트림: 다중 thought 파트의 thoughtSignature 를 파트별로 보존한다(last-write-wins 붕괴 방지·버퍼 대칭)', async () => {
     const { http } = mockStreamHttp([
       'data: {"candidates":[{"content":{"parts":[{"text":"단계1","thought":true,"thoughtSignature":"SIG1"}]}}]}\n\n',
