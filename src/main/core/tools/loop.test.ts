@@ -388,11 +388,14 @@ describe('runToolLoop', () => {
 
   it('native provider 에는 contextManagement 를 opts 로 싣고 turns 를 prune 하지 않는다', async () => {
     const big = 'x'.repeat(4000)
+    // 결과 3개(t0 전송·t1 전송·t2 미전송 최신). client 경로라면 t0 가 stub 될 조건이다(keep=1·전송된 2개·임계초과).
     const start: ChatTurn[] = [
       { role: 'assistant', content: [toolUse('t0', 'echo', {})] },
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
       { role: 'assistant', content: [toolUse('t1', 'echo', {})] },
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: big }] },
+      { role: 'assistant', content: [toolUse('t2', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't2', content: big }] },
       { role: 'user', content: 'go' },
     ]
     const { provider, opts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
@@ -402,19 +405,21 @@ describe('runToolLoop', () => {
       contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 1 },
     })
     expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 1 })
-    // native 는 서버가 클리어하므로 client-side prune 을 하지 않는다 — 같은 입력에서 client 경로라면
-    // t0 가 stub 될 조건(keep=1·결과 2개·임계초과)이지만 native 경로는 t0 를 그대로 둔다(회귀 가드).
+    // native 는 서버가 클리어하므로 client-side prune 을 하지 않는다 — t0 를 그대로 둔다(회귀 가드).
     expect((start[1].content as ToolResultBlock[])[0].content).toBe(big)
   })
 
-  it('native 미지원 provider: contextManagement 미전달 + 임계 초과 시 오래된 tool_result stub', async () => {
+  it('native 미지원 provider: contextManagement 미전달 + 임계 초과 시 전송된 오래된 tool_result stub', async () => {
     const big = 'x'.repeat(4000)
     const { provider, opts, turns } = capturingProvider(false, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    // 결과 3개: t0(전송·정리)·t1(전송·keep 보존)·t2(미전송 최신·보존).
     const start: ChatTurn[] = [
       { role: 'assistant', content: [toolUse('t0', 'echo', {})] },
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
       { role: 'assistant', content: [toolUse('t1', 'echo', {})] },
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: big }] },
+      { role: 'assistant', content: [toolUse('t2', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't2', content: big }] },
       { role: 'user', content: 'go' },
     ]
     await runToolLoop(provider, start, {}, {
@@ -425,7 +430,8 @@ describe('runToolLoop', () => {
     expect(opts[0].contextManagement).toBeUndefined()
     const captured = turns[0]
     expect((captured[1].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // 오래된 t0 정리
-    expect((captured[3].content as ToolResultBlock[])[0].content).toBe(big) // 최근 t1 보존
+    expect((captured[3].content as ToolResultBlock[])[0].content).toBe(big) // t1 keep 보존
+    expect((captured[5].content as ToolResultBlock[])[0].content).toBe(big) // t2 미전송 최신 보존
   })
 
   it('contextPolicy: null 이면 native 위임도 client-side prune 도 하지 않는다', async () => {

@@ -89,8 +89,8 @@ export interface ContextManagementPolicy {
 
 정책 기본값 + client-side 가지치기를 독립 테스트 가능한 단위로 분리(loop.ts 비대화 방지).
 
-- `export const DEFAULT_CONTEXT_POLICY: ContextManagementPolicy = { triggerInputTokens: 150_000,
-  keepRecentToolUses: 3 }`
+- `export const DEFAULT_CONTEXT_POLICY: ContextManagementPolicy = { triggerInputTokens: 100_000,
+  keepRecentToolUses: 3 }` (트리거 100k — 아래 "Codex 리뷰 반영" 참조)
 - `const PRUNE_STUB = '[이전 도구 결과 정리됨 — 컨텍스트 관리]'`
 - `approxTokens(turns): number` — `Σ chars / 4`(텍스트·tool_result content·tool_use input(JSON)·thinking
   text·image data 길이 합). 정밀 토크나이저 없음 → 보수적 추정(코드/JSON 은 실토큰이 더 빽빽해 늦게-보수적
@@ -204,5 +204,24 @@ turns(=working) 변이 → history 영속(send 간 누적 경계, client-side �
   안전 방향). 정밀 측정(provider count_tokens)은 비범위.
 - **anthropic 로컬 history 무경계**: native 는 full 전송 필요(서버가 클리어) → 로컬 history 는 계속 누적·
   재업로드. 모델 컨텍스트는 서버-경계라 정확성 무해(업로드 대역만 비효율). 100k 메시지 요청 한도와 무관.
-- **Gemini 1M 윈도에 150k 보수적**: context-rot 완화 효과로 정당(Google 문서도 명시), per-model 튜닝 후속.
+- **Gemini 1M 윈도에 보수적 트리거**: context-rot 완화 효과로 정당(Google 문서도 명시), per-model 튜닝 후속.
 - **default-on + beta**: §4 400-fallback 이 beta 미인식/변경 시 무-CM 으로 강등(무회귀 보장).
+
+## Codex 리뷰 반영 (PR #64, post-review)
+
+세 P2 전건 검증 후 반영(전부 기존 기능을 깨지 않고 정합성을 높이는 방향):
+
+1. **미전송 최신 tool_result 턴 보존** (P2#1) — client-side prune 은 도구루프 iter 시작에 도는데, 직전 iter 가
+   추가한 tool_result 턴은 아직 모델에 전송되지 않았다. 한 어시스턴트 턴이 `keepRecentToolUses` 초과 병렬
+   도구를 호출하면 그 미전송 배치 일부가 모델이 보기 전에 stub 돼 *명시 요청한 출력 없이* 답하게 된다. →
+   `pruneToolResults` 가 **마지막 tool_result 턴을 정리 대상에서 제외**하고, 그 앞(이미 전송된) 결과만 keep
+   윈도 적용. (`lastToolResultTurnIndex`)
+2. **copy-on-write** (P2#2) — `api-session` 의 `working=[...history]` 는 ContentBlock 객체를 공유하므로
+   in-place 변이는 미커밋 send(throw)에도 history 를 손상시킨다(원자 커밋 위반). → stub 시 턴·content·블록을
+   **클론**해 turns 슬롯만 교체. 성공 시 커밋(history=working)으로 영속, 실패 시 history 무손상.
+3. **기본 트리거 150k→100k** (P2#3) — 150k 는 비-native 메인스트림 윈도(gpt-4o·gpt-4o-mini **128k**)보다 커서
+   작은-윈도 모델이 prune 전에 컨텍스트 초과. 100k 로 낮춰 메인스트림 아래로. 더 작은(로컬·openai-compatible)
+   ·dense 모델은 `contextPolicy` 하향, 모델-인지 임계는 #13 후속(부분 완화). native 는 서버 실측이라 정밀.
+
+검증: 4게이트 녹색(test 729→**731**, context 12→14: 미전송배치·copy-on-write 신규 테스트). client-side prune
+테스트는 미전송-턴 제외 반영해 ≥3 전송 결과로 갱신.
