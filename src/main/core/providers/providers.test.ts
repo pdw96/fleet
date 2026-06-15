@@ -615,6 +615,26 @@ describe('AnthropicProvider', () => {
     expect(calls[1].init.headers['anthropic-beta']).toBeUndefined()
   })
 
+  it('CM + streaming: 400 fallback 후 스트리밍으로 응답을 돌려준다', async () => {
+    const chunks = [
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":5}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
+    ]
+    const { http, calls } = mock400ThenStream(chunks)
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const seen: string[] = []
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      onToken: (d) => seen.push(d),
+      contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 },
+    })
+    expect(out.text).toBe('ok')
+    expect(seen.join('')).toBe('ok')
+    expect(calls).toHaveLength(2) // 1차 CM 동봉 400 → 2차 CM 제거 후 스트리밍 성공
+    expect(JSON.parse(calls[1].init.body).context_management).toBeUndefined()
+    expect(calls[1].init.headers['anthropic-beta']).toBeUndefined()
+  })
+
   it('nativeContextManagement 플래그를 노출한다(anthropic=true·openai/google 부재)', () => {
     expect(createAnthropicProvider(baseAnthropic).nativeContextManagement).toBe(true)
     expect(createOpenAiProvider(baseOpenai).nativeContextManagement).toBeUndefined()
