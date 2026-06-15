@@ -252,11 +252,13 @@ async function readStream(
 export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient = defaultHttp): ApiProvider {
   return {
     id: config.id,
-    provider: 'openai',
+    provider: config.provider,
     model: config.model,
     async chat(messages: ChatTurn[], opts: ApiCallOptions = {}): Promise<ChatResult> {
       const apiKey = requireApiKey(config)
-      const reasoning = isReasoningModel(config.model)
+      const compatible = config.provider === 'openai-compatible'
+      const endpoint = compatible ? requireBaseUrl(config) : ENDPOINT
+      const reasoning = !compatible && isReasoningModel(config.model)
 
       const body: Record<string, unknown> = {
         model: config.model,
@@ -273,8 +275,16 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       if (temperature !== undefined && !reasoning) body.temperature = temperature
       // per-call 노브 우선, 미지정이면 세션 기본값(config.thinking) — temperature/maxTokens 관용구와 동일.
       // 모델-인지 정규화: 비-reasoning 모델/effort 미지정이면 undefined 가 되어 reasoning_effort 미전송.
-      const reasoningEffort = resolveReasoningEffort(config.model, opts.thinking ?? config.thinking)
-      if (reasoningEffort) body.reasoning_effort = reasoningEffort
+      if (compatible) {
+        // opt-in flat 패스스루: 모델명 정규화(resolveReasoningEffort) 미사용 — OpenRouter 슬러그(claude/qwen 등)에서
+        // false 가 되어 silent-drop 되는 것을 회피. 'max' 는 OpenAI 스펙 비표준값이라 strict 서버 Literal 검증
+        // 400 회피용으로 'high' 다운매핑(그 외 low/medium/high/xhigh 는 그대로). cross-model 정규화는 게이트웨이 책임.
+        const effort = (opts.thinking ?? config.thinking)?.effort
+        if (effort !== undefined) body.reasoning_effort = effort === 'max' ? 'high' : effort
+      } else {
+        const reasoningEffort = resolveReasoningEffort(config.model, opts.thinking ?? config.thinking)
+        if (reasoningEffort) body.reasoning_effort = reasoningEffort
+      }
       if (opts.tools?.length) {
         body.tools = opts.tools.map((t) => ({
           type: 'function',
@@ -298,9 +308,33 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
 
       const headers = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }
       const send = (): Promise<HttpResponse> =>
-        http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
-      // 스트리밍도 동일 가드 — 400 재시도 응답이 OK 면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
-      const res = await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.response_format })
+        http(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
+      const stripSchema = (): void => { delete body.response_format }
+      let res: HttpResponse
+      if (compatible && body.reasoning_effort !== undefined) {
+        // 두 opt-in 필드(reasoning_effort·response_format)가 함께 실릴 때 불투명한 400 의 원인을 알 수 없으므로
+        // 한 번에 하나씩만 제거해 '무고한' 필드를 보존한다(서버마다 미지원 파라미터에 400). ① reasoning 만 빼고
+        // 재시도(schema 보존) → ② 그래도 400 이고 schema 가 있으면 reasoning 복원·schema 만 빼고 재시도
+        // (reasoning 보존) → ③ 그래도 400 이면 둘 다 제거. 스트리밍도 동일 가드(최종 OK 면 readStream 진입).
+        const effort = body.reasoning_effort
+        res = await send()
+        if (!res.ok && res.status === 400) {
+          delete body.reasoning_effort
+          res = await send()
+          if (!res.ok && res.status === 400 && opts.responseSchema) {
+            body.reasoning_effort = effort
+            stripSchema()
+            res = await send()
+            if (!res.ok && res.status === 400) {
+              delete body.reasoning_effort
+              res = await send()
+            }
+          }
+        }
+      } else {
+        // 비-compatible 또는 reasoning 미지정: 기존 schema 400 폴백 그대로(무회귀).
+        res = await sendWithSchemaFallback(send, !!opts.responseSchema, stripSchema)
+      }
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
@@ -335,6 +369,13 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       }
     },
   }
+}
+
+/** openai-compatible 의 baseUrl 을 정규화해 /chat/completions 엔드포인트로 만든다. 누락 시 throw. */
+function requireBaseUrl(config: ApiProviderConfig): string {
+  const base = config.baseUrl?.trim()
+  if (!base) throw new Error(`[openai-compatible] baseUrl 이 설정되지 않았습니다 (id=${config.id}).`)
+  return base.replace(/\/+$/, '') + '/chat/completions'
 }
 
 /** tool_call arguments 는 JSON 문자열이다. 파싱 실패 시 원문을 보존한다. */

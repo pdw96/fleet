@@ -20,6 +20,7 @@ const PROVIDER_DEFAULTS: Record<ApiProviderConfig['provider'], string> = {
   anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-5.5',
   google: 'gemini-3.5-flash',
+  'openai-compatible': '',
 }
 
 // MCP 상태 경량 폴링 간격(ms). 포커스 유지 중 서버 종료/크래시도 반영하기 위한 보조 경로(#21 옵션B).
@@ -37,6 +38,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [provider, setProvider] = useState<ApiProviderConfig['provider']>('anthropic')
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
   const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
   // thinking effort 세션 기본값('' = 끄기). Anthropic(adaptive)·OpenAI(reasoning_effort)·Google(thinkingConfig) 매핑.
   const [effort, setEffort] = useState<'' | ReasoningEffort>('')
   const [busy, setBusy] = useState(false)
@@ -44,7 +46,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
 
   // thinking(reasoning) 노브를 매핑하는 provider(anthropic·openai·google 전부) — provider 별 모델-인지
   // 정규화는 provider 책임(Gemini: 3.x thinkingLevel·2.5 thinkingBudget·그외 미전송 + starvation maxOutputTokens 가드).
-  const thinkingSupported = provider === 'anthropic' || provider === 'openai' || provider === 'google'
+  const thinkingSupported =
+    provider === 'anthropic' || provider === 'openai' || provider === 'google' || provider === 'openai-compatible'
 
   const asError = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
@@ -163,6 +166,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
 
   async function registerApi() {
     if (!apiKey.trim()) return
+    if (provider === 'openai-compatible' && (!baseUrl.trim() || !model.trim())) return
     setBusy(true)
     setError(null)
     try {
@@ -175,6 +179,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
         displayName: `${provider} (${model}${thinkingOn ? `, thinking:${effort}` : ''})`,
         model,
         apiKey: apiKey.trim(),
+        ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
         ...(thinkingOn ? { thinking: { effort } } : {}),
       }
       await window.fleet.registerApiSession(config)
@@ -282,13 +287,29 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
               <option value="google">Google</option>
+              <option value="openai-compatible">OpenAI-compatible</option>
             </select>
           </div>
           <div>
-            <label className="field-label">모델</label>
-            <input className="field" value={model} onChange={(e) => setModel(e.target.value)} />
+            <label className="field-label" htmlFor="api-model">모델</label>
+            <input id="api-model" className="field" value={model} onChange={(e) => setModel(e.target.value)} />
           </div>
         </div>
+        {provider === 'openai-compatible' && (
+          <div style={{ marginTop: 12 }}>
+            <label className="field-label" htmlFor="api-base-url">Base URL</label>
+            <input
+              id="api-base-url"
+              className="field"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://openrouter.ai/api/v1"
+            />
+            <p className="meta" style={{ marginTop: 6 }}>
+              OpenAI Chat Completions 호환 엔드포인트(OpenRouter·로컬 vLLM 등). 키는 해당 서비스의 API 키.
+            </p>
+          </div>
+        )}
         {thinkingSupported && (
           <div style={{ marginTop: 12 }}>
             <label className="field-label" htmlFor="api-thinking">
@@ -312,7 +333,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                 ? '현행 세대(Opus 4.6+ · Sonnet 4.6)에서만 적용 — 미지원 모델은 자동 off, 미지원 티어는 기본(high)으로 동작합니다.'
                 : provider === 'openai'
                   ? 'reasoning 모델(o-series · GPT-5+, chat·o1 초기 모델 제외)에서만 적용 — 그 외는 미전송, xhigh/max 는 미지원 모델에서 high 로, pro 모델은 지원 티어로 자동 정규화됩니다.'
-                  : 'Gemini 3.x(gemini-3-pro · 3.5-flash 등)는 effort→thinking 깊이(low/medium/high)로 적용 · Gemini 2.5 는 동적 사고(effort 티어 세분화는 후속) · 그 외 모델은 미전송. thinking 활성 시 답변 토큰 예산을 자동 상향(굶음 방지)합니다.'}
+                  : provider === 'openai-compatible'
+                    ? '엔드포인트/모델이 지원할 때만 reasoning_effort 로 적용됩니다(미지원 시 무시 또는 자동 제거). max 는 high 로 보냅니다.'
+                    : 'Gemini 3.x(gemini-3-pro · 3.5-flash 등)는 effort→thinking 깊이(low/medium/high)로 적용 · Gemini 2.5 는 동적 사고(effort 티어 세분화는 후속) · 그 외 모델은 미전송. thinking 활성 시 답변 토큰 예산을 자동 상향(굶음 방지)합니다.'}
             </p>
           </div>
         )}
@@ -326,7 +349,12 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             onChange={(e) => setApiKey(e.target.value)}
           />
         </div>
-        <button className="btn" style={{ marginTop: 14 }} onClick={registerApi} disabled={busy || !apiKey.trim()}>
+        <button
+          className="btn"
+          style={{ marginTop: 14 }}
+          onClick={registerApi}
+          disabled={busy || !apiKey.trim() || (provider === 'openai-compatible' && (!baseUrl.trim() || !model.trim()))}
+        >
           API 세션 등록
         </button>
       </section>

@@ -884,6 +884,132 @@ describe('OpenAiProvider', () => {
     await p.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
   })
+
+  it('registry: openai-compatible 를 openai 구현으로 라우팅하고 provider 필드를 보존한다', () => {
+    const p = createApiProvider({
+      id: 'oc', provider: 'openai-compatible', displayName: 'OC',
+      model: 'qwen/qwen3-32b', apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1',
+    })
+    expect(p.provider).toBe('openai-compatible')
+    expect(p.model).toBe('qwen/qwen3-32b')
+  })
+
+  it('openai-compatible: baseUrl 끝슬래시 정규화 + max_tokens 사용(reasoning 게이트 없음)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'anthropic/claude-sonnet-4-6', apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1/', maxTokens: 100 },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'hi' }])
+    expect(calls[0].url).toBe('https://openrouter.ai/api/v1/chat/completions')
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.max_tokens).toBe(100)
+    expect(body.max_completion_tokens).toBeUndefined()
+  })
+
+  it('openai-compatible: baseUrl 누락 시 chat 이 throw', async () => {
+    const { http } = mockHttp(() => ({ body: '{}' }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k' },
+      http,
+    )
+    await expect(p.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/baseUrl/)
+  })
+
+  it('openai-compatible: thinking.effort 를 flat reasoning_effort 로 패스스루(모델명 정규화 없이)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'qwen/qwen3-32b', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'hi' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+  })
+
+  it('openai-compatible: max effort 는 high 로 다운매핑', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'max' } },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'hi' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+  })
+
+  it('openai-compatible: effort 미지정이면 reasoning_effort 미전송', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1' },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'hi' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+  })
+
+  it('openai-compatible: reasoning_effort 가 400 이면 그 필드만 빼고 1회 재시도', async () => {
+    const calls: { body: string }[] = []
+    const http: HttpClient = async (_url, init) => {
+      calls.push({ body: init.body })
+      const hasReasoning = (JSON.parse(init.body) as Record<string, unknown>).reasoning_effort !== undefined
+      if (hasReasoning) return { ok: false, status: 400, text: async () => 'unknown param: reasoning_effort' }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }
+    }
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'hi' }])
+    expect(calls).toHaveLength(2)
+    expect((JSON.parse(calls[0].body) as Record<string, unknown>).reasoning_effort).toBe('high')
+    expect((JSON.parse(calls[1].body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+    expect(out.text).toBe('ok')
+  })
+
+  it('openai-compatible: schema 가 400 의 원인이면 response_format 만 빼고 reasoning_effort 는 보존한다', async () => {
+    const calls: { body: string }[] = []
+    const http: HttpClient = async (_url, init) => {
+      calls.push({ body: init.body })
+      const b = JSON.parse(init.body) as Record<string, unknown>
+      if (b.response_format !== undefined) return { ok: false, status: 400, text: async () => 'response_format unsupported' }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }
+    }
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'hi' }], { responseSchema: { name: 'r', schema: { type: 'object' } } })
+    const last = JSON.parse(calls[calls.length - 1].body) as Record<string, unknown>
+    expect(last.response_format).toBeUndefined()
+    expect(last.reasoning_effort).toBe('high')
+    expect(out.text).toBe('ok')
+  })
+
+  it('openai-compatible: reasoning 이 400 의 원인이면 reasoning_effort 만 빼고 response_format(schema)은 보존한다', async () => {
+    const calls: { body: string }[] = []
+    const http: HttpClient = async (_url, init) => {
+      calls.push({ body: init.body })
+      const b = JSON.parse(init.body) as Record<string, unknown>
+      if (b.reasoning_effort !== undefined) return { ok: false, status: 400, text: async () => 'reasoning_effort unsupported' }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }
+    }
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'hi' }], { responseSchema: { name: 'r', schema: { type: 'object' } } })
+    const last = JSON.parse(calls[calls.length - 1].body) as Record<string, unknown>
+    expect(last.reasoning_effort).toBeUndefined() // reasoning 이 원인이라 제거
+    expect(last.response_format).toBeDefined() // schema 는 보존(구조화 출력 강제 유지)
+    expect(out.text).toBe('ok')
+  })
 })
 
 describe('GoogleProvider', () => {

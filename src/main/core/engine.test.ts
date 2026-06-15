@@ -630,6 +630,19 @@ describe('FleetEngine', () => {
     expect(d.capabilities?.length).toBeGreaterThan(0)
   })
 
+  it('openai-compatible 세션도 빈 capabilities 가 아니라 implementer 로 시드된다', () => {
+    const engine = createFleetEngine()
+    const d = engine.registerApiSession({
+      id: 'oc',
+      provider: 'openai-compatible',
+      displayName: 'OC',
+      model: 'x',
+      apiKey: 'k',
+      baseUrl: 'https://x/v1',
+    })
+    expect(d.capabilities).toEqual(['implementer'])
+  })
+
   it('capability-scored routes a role to the session that lists it and records assignedLlmId', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-cap-'))
     try {
