@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
-import type { ApiCallOptions, ApiProvider, ChatTurn, TokenUsage } from '../providers/types'
+import type { ApiCallOptions, ApiProvider, ChatTurn, ContentBlock, TokenUsage } from '../providers/types'
 import { createToolRegistry } from '../tools/registry'
 import { createApiSession } from './api-session'
 import { buildHeadlessArgs, createCliSession } from './cli-session'
@@ -46,6 +46,59 @@ describe('createApiSession', () => {
     expect(seen[1].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
     expect(seen[1][0].content).toBe('sys')
     expect(seen[1][2].content).toBe('echo:hi')
+  })
+
+  it('누적 history 에 provider 의 순서보존 content(서명 등)를 보존한다 — 평문으로 강등하지 않는다 (Codex P2)', async () => {
+    // provider 가 content(thinking·서명된 파트)를 채우면 다음 턴 요청에 그대로 실려야 멀티턴 왕복이 tool 루프
+    // 밖에서도 동작한다. 평문 reply 만 push 하면 providerMeta(서명)가 사라진다.
+    const seen: ChatTurn[][] = []
+    const ordered: ContentBlock[] = [
+      { type: 'thinking', text: '사고', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
+      { type: 'text', text: '답' },
+    ]
+    const provider: ApiProvider = {
+      id: 'g', provider: 'google', model: 'm',
+      async chat(messages) {
+        seen.push(structuredClone(messages))
+        return { text: '답', toolCalls: [], content: ordered, finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    expect(await s.send('hi')).toBe('답') // 반환은 평문 string(LlmSession.send 계약 불변)
+    await s.send('again')
+    const assistantTurn = seen[1].find((m) => m.role === 'assistant')!
+    expect(assistantTurn.content).toEqual(ordered) // 평문 '답' 이 아니라 순서보존 content(서명 포함)
+  })
+
+  it('provider 가 content 를 안 채우면 기존대로 평문 reply 를 history 에 넣는다(무회귀)', async () => {
+    const { provider, seen } = fakeProvider()
+    const s = createApiSession(apiDesc, provider)
+    await s.send('hi')
+    await s.send('again')
+    expect(seen[1].find((m) => m.role === 'assistant')!.content).toBe('echo:hi')
+  })
+
+  it('사고(thinking)만 하고 가시 답변이 없는 응답은 무성 빈 reply 대신 에러로 표면화한다 (Codex P2 — #7)', async () => {
+    // includeThoughts 응답에서 thought 파트만 오고 visible text/tool 이 없으면 finish=stop 이어도 빈 reply.
+    const provider: ApiProvider = {
+      id: 'g', provider: 'google', model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [], content: [{ type: 'thinking', text: '사고', providerMeta: { google: { thoughtSignature: 'S' } } }], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('hi')).rejects.toThrow(/사고.*가시 답변/)
+  })
+
+  it('thinking content 없이 빈 text + stop 은 기존대로 빈 문자열 반환(무회귀 — thought-only 가드 과발동 방지)', async () => {
+    const provider: ApiProvider = {
+      id: 'g', provider: 'google', model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    expect(await s.send('hi')).toBe('')
   })
 
   it('invokes onChunk with the reply (비스트리밍: 최종 1회)', async () => {
