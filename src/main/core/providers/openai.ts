@@ -309,15 +309,31 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       const headers = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }
       const send = (): Promise<HttpResponse> =>
         http(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
-      // 400 graceful degradation: schema(response_format) 폴백을 먼저 적용한다 — response_format 만 거부하는
-      // 서버에서 reasoning_effort 를 보존하기 위함. 그 뒤에도 400 이고 reasoning_effort 가 실려 있으면
-      // (reasoning 미지원 서버) 그 필드만 빼고 1회 더 재시도(body 변이라 이후 호출에 반영). 스트리밍도 동일 가드.
-      const sendWithSchema = (): Promise<HttpResponse> =>
-        sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.response_format })
-      let res = await sendWithSchema()
-      if (compatible && body.reasoning_effort !== undefined && !res.ok && res.status === 400) {
-        delete body.reasoning_effort
-        res = await sendWithSchema()
+      const stripSchema = (): void => { delete body.response_format }
+      let res: HttpResponse
+      if (compatible && body.reasoning_effort !== undefined) {
+        // 두 opt-in 필드(reasoning_effort·response_format)가 함께 실릴 때 불투명한 400 의 원인을 알 수 없으므로
+        // 한 번에 하나씩만 제거해 '무고한' 필드를 보존한다(서버마다 미지원 파라미터에 400). ① reasoning 만 빼고
+        // 재시도(schema 보존) → ② 그래도 400 이고 schema 가 있으면 reasoning 복원·schema 만 빼고 재시도
+        // (reasoning 보존) → ③ 그래도 400 이면 둘 다 제거. 스트리밍도 동일 가드(최종 OK 면 readStream 진입).
+        const effort = body.reasoning_effort
+        res = await send()
+        if (!res.ok && res.status === 400) {
+          delete body.reasoning_effort
+          res = await send()
+          if (!res.ok && res.status === 400 && opts.responseSchema) {
+            body.reasoning_effort = effort
+            stripSchema()
+            res = await send()
+            if (!res.ok && res.status === 400) {
+              delete body.reasoning_effort
+              res = await send()
+            }
+          }
+        }
+      } else {
+        // 비-compatible 또는 reasoning 미지정: 기존 schema 400 폴백 그대로(무회귀).
+        res = await sendWithSchemaFallback(send, !!opts.responseSchema, stripSchema)
       }
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
