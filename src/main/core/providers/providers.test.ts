@@ -573,6 +573,53 @@ describe('AnthropicProvider', () => {
       { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
     ])
   })
+
+  // ── context management (도구루프 경로) ─────────────────────────────────────
+  const cmResp = JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })
+
+  it('contextManagement → context_management.clear_tool_uses + beta 헤더를 싣는다', async () => {
+    const { http, calls } = mockHttp(() => ({ body: cmResp }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'x' }], { contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 } })
+    const body = JSON.parse(calls[0].init.body)
+    expect(body.context_management).toEqual({
+      edits: [{
+        type: 'clear_tool_uses_20250919',
+        trigger: { type: 'input_tokens', value: 150000 },
+        keep: { type: 'tool_uses', value: 3 },
+      }],
+    })
+    expect(calls[0].init.headers['anthropic-beta']).toBe('context-management-2025-06-27')
+  })
+
+  it('contextManagement 미지정 → context_management·beta 헤더 부재(무회귀)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: cmResp }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'x' }], {})
+    const body = JSON.parse(calls[0].init.body)
+    expect(body.context_management).toBeUndefined()
+    expect(calls[0].init.headers['anthropic-beta']).toBeUndefined()
+  })
+
+  it('CM 동봉 요청 400 → context_management·beta 제거 후 1회 재시도', async () => {
+    const { http, calls } = mockHttp((_url, init) => {
+      const body = JSON.parse(init.body)
+      if (body.context_management) return { ok: false, status: 400, body: 'unsupported beta' }
+      return { body: cmResp }
+    })
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], { contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 } })
+    expect(out.text).toBe('ok')
+    expect(calls).toHaveLength(2)
+    expect(JSON.parse(calls[1].init.body).context_management).toBeUndefined()
+    expect(calls[1].init.headers['anthropic-beta']).toBeUndefined()
+  })
+
+  it('nativeContextManagement 플래그를 노출한다(anthropic=true·openai/google 부재)', () => {
+    expect(createAnthropicProvider(baseAnthropic).nativeContextManagement).toBe(true)
+    expect(createOpenAiProvider(baseOpenai).nativeContextManagement).toBeUndefined()
+    expect(createGoogleProvider(baseGoogle).nativeContextManagement).toBeUndefined()
+  })
 })
 
 describe('OpenAiProvider', () => {
