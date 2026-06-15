@@ -1639,6 +1639,21 @@ describe('provider streaming (SSE)', () => {
     ])
   })
 
+  it('Google 스트림: 서명 없는 rolling thought 뒤 functionCall 이 와도 [thinking, tool_use] 순서를 보존한다 (Codex P2)', async () => {
+    // 서명 없이 thought 가 누적되다가 functionCall 이 오면, thought 를 먼저 마감하지 않으면 tool_use 가
+    // thinking 보다 앞서 기록돼 멀티턴 히스토리가 뒤바뀐다.
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"고민","thought":true}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc1","name":"lookup","args":{"id":1}},"thoughtSignature":"FCSIG"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    expect(out.content).toEqual([
+      { type: 'thinking', text: '고민', providerMeta: undefined },
+      { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+    ])
+  })
+
   it('Google 스트림: 다중 thought 파트의 thoughtSignature 를 파트별로 보존한다(last-write-wins 붕괴 방지·버퍼 대칭)', async () => {
     const { http } = mockStreamHttp([
       'data: {"candidates":[{"content":{"parts":[{"text":"단계1","thought":true,"thoughtSignature":"SIG1"}]}}]}\n\n',

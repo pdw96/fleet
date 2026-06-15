@@ -221,6 +221,15 @@ async function readStream(
       curText = ''
     }
   }
+  // 서명 없이 진행 중이던 thought 를 미서명 thinking 블록으로 마감한다. 비-thought 파트(answer/tool)가
+  // 오면 사고 단계가 끝난 것이므로 그 파트보다 먼저 호출해 원본 part 순서(thinking→answer/tool)를 보존한다
+  // (서명 없는 rolling thought 뒤 functionCall 이 thought 보다 먼저 기록되는 오순서 방지 — Codex P2).
+  const flushThought = (): void => {
+    if (curThought) {
+      blocks.push({ type: 'thinking', text: curThought })
+      curThought = ''
+    }
+  }
   for await (const data of sseData(body)) {
     let ev: GoogleResponse
     try {
@@ -243,10 +252,12 @@ async function readStream(
           curThought = ''
         }
       } else if (p.functionCall) {
+        flushThought() // 미서명 진행 thought 를 먼저 마감(thinking→tool 순서 보존)
         flushText() // functionCall 앞의 미서명 텍스트를 먼저 마감(순서 보존)
         blocks.push(toToolUse(p.functionCall, p.thoughtSignature))
       } else {
         // 가시 text 파트(빈 문자열 포함) 또는 서명-only 파트. text 가 있으면 흘린다(ChatResult.text 누적).
+        flushThought() // 가시 답변 시작 = 사고 종료 → 미서명 thought 를 먼저 마감(thinking→answer 순서)
         if (p.text) {
           text += p.text
           onToken(p.text)
@@ -270,8 +281,8 @@ async function readStream(
       }
     }
   }
-  // 서명 없이 끝난 잔여 thought/text 를 미서명 trailing 블록으로 마감한다.
-  if (curThought) blocks.push({ type: 'thinking', text: curThought })
+  // 서명 없이 끝난 잔여 thought/text 를 미서명 trailing 블록으로 마감한다(예: thought-only 응답).
+  flushThought()
   flushText()
   const toolCalls: ToolUseBlock[] = blocks.filter((b): b is ToolUseBlock => b.type === 'tool_use')
   // 평면 text+toolCalls 폴백이 잃는 정보(thinking 블록·서명된 text 파트)가 있을 때만 content 를 채운다.
