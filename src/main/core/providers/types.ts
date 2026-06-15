@@ -90,6 +90,17 @@ export interface ToolDefinition {
 }
 
 // ── 응답 메타 ────────────────────────────────────────────────────────────────
+/**
+ * provider-중립 context management 정책. anthropic 은 native `context_management` wire 로,
+ * native 미지원 provider 는 loop 의 client-side 가지치기로 해석한다(동일 정책·실행만 분기).
+ */
+export interface ContextManagementPolicy {
+  /** 누적 입력토큰(anthropic=서버 실측·그 외=client 추정)이 이 값을 넘으면 정리. */
+  triggerInputTokens: number
+  /** 유지할 최근 도구결과 수. 이보다 오래된 tool_result 부터 정리. */
+  keepRecentToolUses: number
+}
+
 export interface TokenUsage {
   inputTokens?: number
   outputTokens?: number
