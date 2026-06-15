@@ -884,6 +884,15 @@ describe('OpenAiProvider', () => {
     await p.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
   })
+
+  it('registry: openai-compatible 를 openai 구현으로 라우팅하고 provider 필드를 보존한다', () => {
+    const p = createApiProvider({
+      id: 'oc', provider: 'openai-compatible', displayName: 'OC',
+      model: 'qwen/qwen3-32b', apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1',
+    })
+    expect(p.provider).toBe('openai-compatible')
+    expect(p.model).toBe('qwen/qwen3-32b')
+  })
 })
 
 describe('GoogleProvider', () => {

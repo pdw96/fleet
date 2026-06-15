@@ -158,10 +158,12 @@ export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 /** API provider 설정 (요구사항 2B). */
 export interface ApiProviderConfig {
   id: string
-  provider: 'anthropic' | 'openai' | 'google'
+  provider: 'anthropic' | 'openai' | 'google' | 'openai-compatible'
   displayName: string
   model: string
   apiKey?: string
+  /** OpenAI 호환 엔드포인트 베이스 URL(예: https://openrouter.ai/api/v1). provider==='openai-compatible' 일 때 필수, 그 외 무시. */
+  baseUrl?: string
   temperature?: number
   maxTokens?: number
   /**

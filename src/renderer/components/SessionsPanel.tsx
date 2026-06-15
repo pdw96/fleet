@@ -20,6 +20,7 @@ const PROVIDER_DEFAULTS: Record<ApiProviderConfig['provider'], string> = {
   anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-5.5',
   google: 'gemini-3.5-flash',
+  'openai-compatible': '',
 }
 
 // MCP 상태 경량 폴링 간격(ms). 포커스 유지 중 서버 종료/크래시도 반영하기 위한 보조 경로(#21 옵션B).

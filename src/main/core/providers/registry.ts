@@ -16,6 +16,9 @@ export function createApiProvider(config: ApiProviderConfig, http: HttpClient = 
       return createOpenAiProvider(config, http)
     case 'google':
       return createGoogleProvider(config, http)
+    case 'openai-compatible':
+      // OpenAI Chat Completions 호환 — 같은 구현, config.baseUrl 이 엔드포인트·동작 결정.
+      return createOpenAiProvider(config, http)
     default: {
       const exhaustive: never = config.provider
       throw new Error(`지원하지 않는 provider: ${String(exhaustive)}`)

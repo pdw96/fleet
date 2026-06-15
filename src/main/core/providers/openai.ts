@@ -252,7 +252,7 @@ async function readStream(
 export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient = defaultHttp): ApiProvider {
   return {
     id: config.id,
-    provider: 'openai',
+    provider: config.provider,
     model: config.model,
     async chat(messages: ChatTurn[], opts: ApiCallOptions = {}): Promise<ChatResult> {
       const apiKey = requireApiKey(config)
