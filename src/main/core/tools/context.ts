@@ -86,9 +86,16 @@ export function freshToolResultBatchSize(turns: ChatTurn[]): number {
  * 의도된 비범위(native clear_tool_uses 시맨틱과 동일): keep/미전송 보존 윈도 안의 단일 거대 tool_result
  * 와 비-tool_result content(text·thinking·user 입력)는 정리하지 않는다 → 그 경우 turns 가 예산 위로 남을
  * 수 있다. 이 슬라이스의 범위는 누적되는 오래된 tool_result 경계다.
+ *
+ * `overheadTokens`: 매 요청에 동봉되는 turns 외 입력(도구 정의 등)의 추정 토큰. 트리거 판단을 실제 요청
+ * 크기(turns + overhead)로 해 큰 MCP 스키마가 단독으로 윈도를 채우는데 prune 이 안 도는 갭을 막는다(Codex P2).
  */
-export function pruneToolResults(turns: ChatTurn[], policy: ContextManagementPolicy): void {
-  if (approxTokens(turns) <= policy.triggerInputTokens) return
+export function pruneToolResults(
+  turns: ChatTurn[],
+  policy: ContextManagementPolicy,
+  overheadTokens = 0,
+): void {
+  if (approxTokens(turns) + overheadTokens <= policy.triggerInputTokens) return
   // 미전송 fresh 배치(마지막 턴이 tool_result 일 때만)는 제외하고, 이미 모델이 본 결과만 (turnIndex, blockIndex)로 수집.
   const excludeIdx = freshToolResultBatchSize(turns) > 0 ? turns.length - 1 : -1
   const slots: Array<[number, number]> = []
@@ -104,6 +111,8 @@ export function pruneToolResults(turns: ChatTurn[], policy: ContextManagementPol
     const content = turns[i].content as ContentBlock[]
     const block = content[j] as ToolResultBlock
     if (block.content === PRUNE_STUB) continue // idempotent
+    // 이미 stub 길이 이하면 치환이 외려 프롬프트를 키운다 → 건너뛴다(Codex P2). 작은 결과는 정리 이득 0.
+    if (block.content.length <= PRUNE_STUB.length) continue
     // copy-on-write: 원본(공유) 객체를 변이하지 않도록 턴·content·블록을 클론해 turns 슬롯만 교체한다.
     const newBlock: ToolResultBlock = { ...block, content: PRUNE_STUB }
     delete newBlock.isError // stale 한 에러 표식 제거
@@ -111,6 +120,6 @@ export function pruneToolResults(turns: ChatTurn[], policy: ContextManagementPol
     newContent[j] = newBlock
     turns[i] = { ...turns[i], content: newContent }
     // 한 건 정리할 때마다 재추정한다(현 컨텍스트 크기에선 무시 가능 — 매우 큰 도구 이력이면 delta 추적 최적화 여지).
-    if (approxTokens(turns) <= policy.triggerInputTokens) return
+    if (approxTokens(turns) + overheadTokens <= policy.triggerInputTokens) return
   }
 }

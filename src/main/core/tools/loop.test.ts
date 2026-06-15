@@ -467,8 +467,8 @@ describe('runToolLoop', () => {
     expect(opts[0].contextManagement).toEqual(DEFAULT_CONTEXT_POLICY)
   })
 
-  it('native: 미전송 fresh 배치가 keep 초과면 그 요청의 keep 을 배치 크기로 올린다(Codex P2)', async () => {
-    // 직전 iter 가 병렬 도구 5개 결과를 한 user 턴(마지막 턴)에 push 한 상황. keep=2 < 5.
+  it('native: 미전송 fresh 배치가 keep 초과면 keep 을 fresh+policy.keep 으로 올린다(Codex P2 — client 패리티)', async () => {
+    // 직전 iter 가 병렬 도구 5개 결과를 한 user 턴(마지막 턴)에 push 한 상황. keep=2.
     const big = 'x'.repeat(4000)
     const ids = ['b0', 'b1', 'b2', 'b3', 'b4']
     const start: ChatTurn[] = [
@@ -481,7 +481,32 @@ describe('runToolLoop', () => {
       gate: approveAll,
       contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 2 },
     })
-    // server clear_tool_uses 가 fresh 배치를 클립하지 않도록 keep 을 배치 크기(5) 로 상향.
-    expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 5 })
+    // client 는 fresh 배치(5) + 직전 keep(2) 을 보존 → native 도 keep=fresh+keep=7 로 상향(패리티).
+    expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 7 })
+  })
+
+  it('native 미지원: 큰 도구 정의도 prune 예산에 포함한다 — turns 만으론 임계 이하라도 prune(Codex P2)', async () => {
+    const bigTool: FleetTool = {
+      definition: { name: 'big', description: 'x'.repeat(8000), parameters: { type: 'object' } },
+      classify: () => 'safe',
+      async execute() {
+        return 'ok'
+      },
+    }
+    const mid = 'x'.repeat(400) // 각 ~100 추정토큰
+    const start: ChatTurn[] = [
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: mid }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: mid }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't2', content: mid }] },
+      { role: 'user', content: 'go' },
+    ]
+    const { provider, turns } = capturingProvider(false, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    // turns 만 추정 ~300 ≤ 600. bigTool 정의(~8000자 → ~2000 토큰)가 예산에 포함 → 600 초과 → prune 발화.
+    await runToolLoop(provider, start, {}, {
+      registry: createToolRegistry([bigTool]),
+      gate: approveAll,
+      contextPolicy: { triggerInputTokens: 600, keepRecentToolUses: 1 },
+    })
+    expect((turns[0][0].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // 도구 예산 포함으로 정리됨
   })
 })

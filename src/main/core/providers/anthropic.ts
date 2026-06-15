@@ -5,7 +5,6 @@ import {
   assertNever,
   defaultHttp,
   requireApiKey,
-  sendWithSchemaFallback,
   textOf,
   type ApiCallOptions,
   type ApiProvider,
@@ -337,27 +336,51 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       if (opts.contextManagement) headers['anthropic-beta'] = 'context-management-2025-06-27'
       const send = (): Promise<HttpResponse> =>
         http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
-      // CM 400 회복탄력성: context_management+beta 만 빼고 1회 재시도(무-CM 으로 강등 = 무회귀, beta
-      // 미인식/일시오류 흡수). CM ⊥ responseSchema(모든 schema 호출은 bypassTools → 도구루프 우회)라 한
-      // 호출에 둘이 공존하지 않아 schema fallback 과 조합 안전(CM 있을 때 hasSchema=false → 바깥 래퍼 통과).
-      const sendCM: () => Promise<HttpResponse> = !opts.contextManagement
-        ? send
-        : async () => {
-            const r = await send()
-            if (r.ok || r.status !== 400) return r
-            delete body.context_management
-            delete headers['anthropic-beta']
-            return send()
-          }
-      // 스트리밍도 동일 가드 — 400 재시도 응답이 OK 면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
-      const res = await sendWithSchemaFallback(sendCM, !!opts.responseSchema, () => {
-        // 구조화-출력 400 폴백: format 만 제거하고 effort 등 다른 output_config 필드는 보존한다.
+      // 두 opt-in 필드(context_management·output_config.format) + 불투명 400 → 한 번에 하나씩 제거해 무고한
+      // 필드를 보존한다(PR #63 필드별 격리). 둘 다 set + schema-유발 400 에서 CM 까지 함께 지워 회귀하던
+      // 갭(Codex P2)을 막는다. removeSchema 는 format 만 빼고 effort 등은 보존, 복원은 opts 에서 재구성.
+      const removeCM = (): void => {
+        delete body.context_management
+        delete headers['anthropic-beta']
+      }
+      const removeSchema = (): void => {
         const oc = body.output_config as Record<string, unknown> | undefined
         if (oc) {
           delete oc.format
           if (Object.keys(oc).length === 0) delete body.output_config
         }
-      })
+      }
+      const addSchema = (): void => {
+        const oc = (body.output_config as Record<string, unknown> | undefined) ?? {}
+        oc.format = { type: 'json_schema', schema: opts.responseSchema!.schema }
+        body.output_config = oc
+      }
+      const hasCM = !!opts.contextManagement
+      const hasSchema = !!opts.responseSchema
+      // 스트리밍도 동일 — 최종 OK 응답이 body 를 가지면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
+      let res = await send()
+      if (!res.ok && res.status === 400 && (hasCM || hasSchema)) {
+        if (hasCM && hasSchema) {
+          // ① schema 만 제거(CM 보존) → ② 그래도 400 이면 schema 복원·CM 제거(schema 보존) → ③ 둘 다 제거.
+          removeSchema()
+          res = await send()
+          if (!res.ok && res.status === 400) {
+            addSchema()
+            removeCM()
+            res = await send()
+            if (!res.ok && res.status === 400) {
+              removeSchema()
+              res = await send()
+            }
+          }
+        } else if (hasCM) {
+          removeCM()
+          res = await send()
+        } else {
+          removeSchema()
+          res = await send()
+        }
+      }
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 

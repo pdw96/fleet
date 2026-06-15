@@ -242,3 +242,18 @@ turns(=working) 변이 → history 영속(send 간 누적 경계, client-side �
 
 검증: 4게이트 녹색(test 731→**733**: 새-send 과거배치 정리·native fresh-batch keep 상향 신규). 새-send
 client 테스트는 갱신(과거 배치 정리 반영).
+
+### 라운드 3 (재리뷰 P2 4건 — 패리티·격리·예산·확장)
+
+6. **native keep 패리티** (P2#1) — 라운드2 의 `max(fresh, policy.keep)` 는 fresh>keep 일 때 직전 kept 결과를
+   버려 client(=fresh 배치 + 그 앞 keep 보존)와 불일치 → `keep = fresh + policy.keepRecentToolUses` 로 정정.
+7. **anthropic CM+schema 필드 격리** (P2#2) — 둘 다 set 이고 schema 가 400 을 유발하면 기존 sendCM 래퍼가 CM 까지
+   함께 삭제 → 둘 다 빠진 채 성공(CM 의존 호출 회귀). PR #63 패턴으로 **한 번에 하나씩 제거**(①schema→②CM→③둘다)
+   해 무고한 필드 보존. (현 오케스트레이터는 CM⊥schema 라 미도달이나 코드 차원 보장.)
+8. **tools 를 prune 예산에** (P2#3) — client 트리거가 `approxTokens(turns)` 만 봐서 동봉되는 `tools`(큰 MCP
+   스키마) 누락 → turns 임계 이하인데 turns+tools 윈도 초과면 prune 미발화. `overheadTokens`(=도구정의 추정,
+   1회 계산)를 트리거 판단에 합산.
+9. **작은 결과 확장 방지** (P2#4) — `content.length ≤ PRUNE_STUB.length` 면 치환이 외려 키우므로 건너뜀.
+
+선제 적대검증(opus) — 7수정 정확 확인·신규 Critical 0. 보강: CM+schema 의 CM-유발 400(②③)·지속 400 throw
+테스트 2건(Finding D), `JSON.stringify(tools)` 가드(Finding B). 검증: 4게이트 녹색(test 733→**739**).

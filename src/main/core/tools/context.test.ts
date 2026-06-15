@@ -187,4 +187,29 @@ describe('pruneToolResults', () => {
     expect((turns[0].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB)
     expect((turns[1].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // t1 도 정리됨(과거·전송됨)
   })
+
+  it('이미 stub 길이 이하인 작은 결과는 치환하지 않는다(Codex P2 — 확장 방지)', () => {
+    const tiny = 'OK' // 2 chars < PRUNE_STUB(24)
+    const turns: ChatTurn[] = [
+      { role: 'user', content: [toolResult('t0', tiny)] }, // 작음 → 건너뜀(보존)
+      { role: 'user', content: [toolResult('t1', big)] }, // 큼 → 정리
+      { role: 'user', content: [toolResult('t2', big)] }, // keep=1 보존
+      { role: 'user', content: [toolResult('t3', big)] }, // 미전송 최신 → 보존
+    ]
+    pruneToolResults(turns, { triggerInputTokens: 10, keepRecentToolUses: 1 })
+    expect((turns[0].content as ToolResultBlock[])[0].content).toBe(tiny) // 작은 건 그대로(확장 안 함)
+    expect((turns[1].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // 큰 건 정리
+  })
+
+  it('overheadTokens 를 트리거 판단에 더한다 — turns 만으론 임계 이하라도 prune(Codex P2)', () => {
+    const turns: ChatTurn[] = [
+      { role: 'user', content: [toolResult('t0', big)] },
+      { role: 'user', content: [toolResult('t1', big)] },
+      { role: 'user', content: 'go' }, // 마지막 턴=프롬프트 → fresh 0 → t0·t1 모두 정리 대상
+    ]
+    // turns 추정 ~ (80+80+2)/4 = 41 ≤ 100 이라 overhead 없으면 no-op. overhead 200 → 241 > 100 → 발화.
+    pruneToolResults(turns, { triggerInputTokens: 100, keepRecentToolUses: 0 }, 200)
+    expect((turns[0].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB)
+    expect((turns[1].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB)
+  })
 })

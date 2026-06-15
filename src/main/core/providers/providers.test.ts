@@ -635,6 +635,56 @@ describe('AnthropicProvider', () => {
     expect(calls[1].init.headers['anthropic-beta']).toBeUndefined()
   })
 
+  it('CM+schema 둘 다 set·schema 가 400 유발 → schema 만 제거하고 CM 은 보존한다(Codex P2 — 필드 격리)', async () => {
+    const { http, calls } = mockHttp((_url, init) => {
+      const body = JSON.parse(init.body)
+      // schema(output_config.format) 가 원인인 400 모사 — format 있으면 거부, 없으면 성공.
+      if (body.output_config?.format) return { ok: false, status: 400, body: 'format unsupported' }
+      return { body: cmResp }
+    })
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 },
+      responseSchema: { name: 'v', schema: { type: 'object' } },
+    })
+    expect(out.text).toBe('ok')
+    expect(calls).toHaveLength(2) // 1차(format+CM) 400 → 2차(format 제거·CM 보존) 성공
+    const b2 = JSON.parse(calls[1].init.body)
+    expect(b2.output_config?.format).toBeUndefined() // schema 제거됨
+    expect(b2.context_management).toBeDefined() // CM 보존(회귀 차단)
+    expect(calls[1].init.headers['anthropic-beta']).toBe('context-management-2025-06-27') // beta 헤더 보존
+  })
+
+  it('CM+schema 둘 다 set·CM 이 400 유발 → CM 만 제거하고 schema 는 복원·보존한다(필드 격리 ②③)', async () => {
+    const { http, calls } = mockHttp((_url, init) => {
+      const body = JSON.parse(init.body)
+      if (body.context_management) return { ok: false, status: 400, body: 'cm unsupported' } // CM 이 원인
+      return { body: cmResp }
+    })
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 },
+      responseSchema: { name: 'v', schema: { type: 'object' } },
+    })
+    expect(out.text).toBe('ok')
+    expect(calls).toHaveLength(3) // ①schema 제거(여전히 CM→400) ②schema 복원·CM 제거 → 성공
+    const b3 = JSON.parse(calls[2].init.body)
+    expect(b3.context_management).toBeUndefined() // CM 제거됨
+    expect(b3.output_config?.format).toBeDefined() // schema 복원·보존됨
+  })
+
+  it('CM+schema 둘 다 제거해도 400 이면 ApiProviderError 를 던진다(필드 격리 최종)', async () => {
+    const { http, calls } = mockHttp(() => ({ ok: false, status: 400, body: 'always 400' }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await expect(
+      p.chat([{ role: 'user', content: 'x' }], {
+        contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 },
+        responseSchema: { name: 'v', schema: { type: 'object' } },
+      }),
+    ).rejects.toThrow(/HTTP 400/)
+    expect(calls).toHaveLength(4) // 원본 + ①schema ②CM ③둘다 = 4 시도
+  })
+
   it('nativeContextManagement 플래그를 노출한다(anthropic=true·openai/google 부재)', () => {
     expect(createAnthropicProvider(baseAnthropic).nativeContextManagement).toBe(true)
     expect(createOpenAiProvider(baseOpenai).nativeContextManagement).toBeUndefined()
