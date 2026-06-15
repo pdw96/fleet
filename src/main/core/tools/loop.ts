@@ -4,6 +4,7 @@ import type {
   ChatResult,
   ChatTurn,
   ContentBlock,
+  TokenUsage,
   ToolResultBlock,
 } from '../providers/types'
 import type { ToolLoopDeps } from './types'
@@ -11,6 +12,43 @@ import type { ToolLoopDeps } from './types'
 const DEFAULT_MAX_ITERATIONS = 8
 
 const NOOP_AUDIT = (): void => {}
+
+/**
+ * 도구 루프가 최대 반복을 초과해도 여전히 도구 호출을 요청할 때 던진다. 그때까지 누적한 usage 를
+ * 실어 호출자(api-session)가 unwrap-throw 와 동일하게 소비 토큰을 집계할 수 있게 한다 — 최대
+ * 반복 경로는 가장 비싼 경로라 미집계 시 실 지출의 최대 누락이 된다(usage-accounting).
+ */
+export class ToolLoopExceededError extends Error {
+  constructor(
+    max: number,
+    readonly usage: TokenUsage | undefined,
+  ) {
+    super(`도구 루프가 최대 ${max}회 반복을 초과했습니다(모델이 여전히 도구 호출을 요청).`)
+    this.name = 'ToolLoopExceededError'
+  }
+}
+
+/**
+ * 두 TokenUsage 를 필드별로 합산한다(usage-accounting). 한쪽만 있으면 있는 값만,
+ * 양쪽 다 미설정인 필드는 결과에서도 생략한다 → 전 구간 usage 가 없으면 결과도 undefined
+ * (무회귀). 도구루프가 매 iter 의 비용을 누적하는 데 쓴다.
+ */
+function addUsage(acc: TokenUsage | undefined, next: TokenUsage | undefined): TokenUsage | undefined {
+  if (!next) return acc
+  if (!acc) return { ...next }
+  const sum = (a?: number, b?: number): number | undefined =>
+    a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0)
+  const merged: TokenUsage = {}
+  const input = sum(acc.inputTokens, next.inputTokens)
+  if (input !== undefined) merged.inputTokens = input
+  const output = sum(acc.outputTokens, next.outputTokens)
+  if (output !== undefined) merged.outputTokens = output
+  const cacheCreation = sum(acc.cacheCreationInputTokens, next.cacheCreationInputTokens)
+  if (cacheCreation !== undefined) merged.cacheCreationInputTokens = cacheCreation
+  const cacheRead = sum(acc.cacheReadInputTokens, next.cacheReadInputTokens)
+  if (cacheRead !== undefined) merged.cacheReadInputTokens = cacheRead
+  return merged
+}
 
 /** 도구 입력을 승인 요청에 보여줄 짧은 문자열로 요약한다(안전 절단, 최대 200자). */
 function previewInput(input: unknown): string {
@@ -48,12 +86,16 @@ export async function runToolLoop(
   const audit = deps.onAudit ?? NOOP_AUDIT
   const onToolStep = opts.onToolStep
   const tools = deps.registry.list()
+  // 매 iter 의 비용을 누적한다 — 도구 왕복(최대 max 라운드)의 chat 호출이 각각 토큰을 소모하므로
+  // 마지막 응답만 반환하면 이전 라운드 비용이 통째로 누락된다(usage-accounting).
+  let usageAcc: TokenUsage | undefined
 
   for (let iter = 0; iter < max; iter++) {
     const result = await provider.chat(turns, { ...opts, tools, toolChoice: 'auto' })
+    usageAcc = addUsage(usageAcc, result.usage)
     // 종료는 finishReason 가 아니라 toolCalls 유무로 판단한다 — Gemini 는 functionCall 응답에도
     // finishReason 를 'stop'(STOP)으로 주므로 finishReason 게이팅은 Gemini 도구호출을 통째로 건너뛴다.
-    if (result.toolCalls.length === 0) return result
+    if (result.toolCalls.length === 0) return { ...result, usage: usageAcc }
 
     // 어시스턴트 턴 재구성: provider 가 ordered content(순서·서명)를 보존했으면 그대로 사용하고
     // (thinking→text→tool_use 순서·providerMeta 유지), 아니면 (텍스트 있으면) + tool_use 로 재구성한다.
@@ -134,7 +176,6 @@ export async function runToolLoop(
     turns.push({ role: 'user', content: results })
   }
 
-  throw new Error(
-    `도구 루프가 최대 ${max}회 반복을 초과했습니다(모델이 여전히 도구 호출을 요청).`,
-  )
+  // 가장 비싼 경로 — 그때까지 누적한 usage 를 에러에 실어 호출자가 집계하게 한다(미집계 방지).
+  throw new ToolLoopExceededError(max, usageAcc)
 }

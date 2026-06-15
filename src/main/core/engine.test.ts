@@ -804,6 +804,52 @@ describe('FleetEngine', () => {
     expect(calls[1]).toContain('pong') // 2번째 요청에 tool_result 포함
   })
 
+  it("API 세션 send 가 토큰 사용량을 'usage' 이벤트로 기록한다 (usage-accounting)", async () => {
+    const store = createMemoryStore(deterministic())
+    const { http } = scriptedHttp([
+      JSON.stringify({ content: [{ type: 'text', text: '응답' }], stop_reason: 'end_turn', usage: { input_tokens: 11, output_tokens: 4 } }),
+    ])
+    const engine = createFleetEngine({ store, http })
+    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    const room = engine.createRoom('r', ['api:a'])
+    await engine.askLlm(room.id, 'api:a')
+
+    const usageEvents = store.listEvents().filter((e) => e.type === 'usage')
+    expect(usageEvents).toHaveLength(1)
+    expect(usageEvents[0].data).toMatchObject({ id: 'api:a', provider: 'anthropic', inputTokens: 11, outputTokens: 4 })
+  })
+
+  it("도구 루프 API 세션은 합산된 토큰 사용량을 'usage' 이벤트로 기록한다 (usage-accounting)", async () => {
+    const pingTool: FleetTool = {
+      definition: { name: 'mcp__demo__ping', parameters: { type: 'object' } },
+      classify: () => 'safe',
+      async execute() {
+        return 'pong'
+      },
+    }
+    const fakeMcpHost: McpHost = {
+      async setServers() {
+        return []
+      },
+      tools: () => [pingTool],
+      status: () => [],
+      async dispose() {},
+    }
+    const store = createMemoryStore(deterministic())
+    const { http } = scriptedHttp([
+      JSON.stringify({ content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__demo__ping', input: {} }], stop_reason: 'tool_use', usage: { input_tokens: 10, output_tokens: 6 } }),
+      JSON.stringify({ content: [{ type: 'text', text: '끝' }], stop_reason: 'end_turn', usage: { input_tokens: 30, output_tokens: 9 } }),
+    ])
+    const engine = createFleetEngine({ store, http, mcpHost: fakeMcpHost })
+    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    const room = engine.createRoom('r', ['api:a'])
+    await engine.askLlm(room.id, 'api:a')
+
+    const usageEvents = store.listEvents().filter((e) => e.type === 'usage')
+    expect(usageEvents).toHaveLength(1) // send 1회 → 도구 왕복 2 chat 을 합산한 단일 usage 이벤트
+    expect(usageEvents[0].data).toMatchObject({ id: 'api:a', provider: 'anthropic', inputTokens: 40, outputTokens: 15 })
+  })
+
   it('setMcpServers/getMcpStatus/dispose 가 mcpHost 에 위임한다 (#10 SP2)', async () => {
     const seen: string[] = []
     const fakeMcpHost: McpHost = {

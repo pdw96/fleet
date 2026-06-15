@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
-import type { ApiCallOptions, ApiProvider, ChatTurn } from '../providers/types'
+import type { ApiCallOptions, ApiProvider, ChatTurn, TokenUsage } from '../providers/types'
 import { createToolRegistry } from '../tools/registry'
 import { createApiSession } from './api-session'
 import { buildHeadlessArgs, createCliSession } from './cli-session'
@@ -237,6 +237,93 @@ describe('createApiSession', () => {
     expect(seen[1].map((m) => m.content)).toEqual(['sys', '독립'])
     expect(seen[2].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
     expect(seen[2].map((m) => m.content)).toEqual(['sys', 'hi', 'echo:hi', 'next'])
+  })
+
+  // ── usage sink (usage-accounting) ────────────────────────────────────────────
+  const usageProvider = (usage: TokenUsage | undefined, finishReason: 'stop' | 'length' = 'stop'): ApiProvider => ({
+    id: 'u', provider: 'anthropic', model: 'm',
+    async chat() {
+      return { text: finishReason === 'length' ? '' : 'ok', toolCalls: [], finishReason, rawFinishReason: 'x', usage }
+    },
+  })
+
+  it('성공 send 의 응답 usage 를 onUsage sink 로 전달한다', async () => {
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 12, outputTokens: 8 }), { onUsage: (u) => usages.push(u) })
+    expect(await s.send('hi')).toBe('ok')
+    expect(usages).toEqual([{ inputTokens: 12, outputTokens: 8 }])
+  })
+
+  it('onUsage 는 fresh(독립) 경로에서도 발화한다', async () => {
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 3, outputTokens: 1 }), { onUsage: (u) => usages.push(u) })
+    await s.send('독립', { fresh: true })
+    expect(usages).toEqual([{ inputTokens: 3, outputTokens: 1 }])
+  })
+
+  it('onUsage 는 unwrap 이 throw 하는 빈 응답(토큰 한도)에도 발화한다 — 소비 토큰은 집계해야 한다', async () => {
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 50, outputTokens: 0 }, 'length'), { onUsage: (u) => usages.push(u) })
+    await expect(s.send('x')).rejects.toThrow(/토큰|length|max_tokens|잘/)
+    expect(usages).toEqual([{ inputTokens: 50, outputTokens: 0 }])
+  })
+
+  it('응답에 usage 가 없으면 onUsage 를 호출하지 않는다', async () => {
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider(undefined), { onUsage: (u) => usages.push(u) })
+    await s.send('hi')
+    expect(usages).toEqual([])
+  })
+
+  it('onUsage 미지정이어도 정상 동작하고 string 을 반환한다(계약 무회귀)', async () => {
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 1, outputTokens: 1 }))
+    expect(await s.send('hi')).toBe('ok')
+  })
+
+  it('토큰 데이터가 없는 usage 객체(필드 전부 undefined)는 onUsage 를 호출하지 않는다', async () => {
+    // provider buffer 경로는 API 가 usage 를 안 줘도 빈 객체({inputTokens:undefined,…})를 만든다.
+    // 존재 검사(if result.usage)만 하면 내용 없는 'usage' 이벤트가 매 send 마다 새므로, 실 데이터가
+    // 하나라도 있을 때만 발화해야 한다('usage 없으면 미발화' 계약).
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider({}), { onUsage: (u) => usages.push(u) })
+    await s.send('hi')
+    expect(usages).toEqual([])
+  })
+
+  it('onUsage 가 도구 루프 최대 반복 초과 throw 에서도 누적 usage 를 발화한다(가장 비싼 경로 집계)', async () => {
+    const provider: ApiProvider = {
+      id: 'u', provider: 'anthropic', model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [{ type: 'tool_use', id: 't', name: 'echo', input: {} }], finishReason: 'tool_use', usage: { inputTokens: 5, outputTokens: 2 } }
+      },
+    }
+    const registry = createToolRegistry([
+      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+    ])
+    const gate = { async request() { return 'approved' as const } }
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate, maxIterations: 2 }), onUsage: (u) => usages.push(u) })
+    await expect(s.send('go')).rejects.toThrow(/최대/)
+    expect(usages).toEqual([{ inputTokens: 10, outputTokens: 4 }]) // 2 라운드 합산
+  })
+
+  it('throw 하는 onUsage sink 은 성공 send 의 반환·history 커밋을 깨지 않는다(부수채널 격리)', async () => {
+    // usage 를 채우고 본 메시지를 기록하는 provider.
+    const seen: ChatTurn[][] = []
+    const provider: ApiProvider = {
+      id: 'u', provider: 'anthropic', model: 'm',
+      async chat(messages) {
+        seen.push(structuredClone(messages))
+        const last = messages.at(-1)?.content ?? ''
+        const text = typeof last === 'string' ? last : ''
+        return { text: `echo:${text}`, toolCalls: [], finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const s = createApiSession(apiDesc, provider, { onUsage: () => { throw new Error('sink boom') } })
+    expect(await s.send('A')).toBe('echo:A') // sink throw 가 성공 send 를 거부시키지 않음
+    expect(await s.send('B')).toBe('echo:B')
+    // 둘째 send 가 첫 교환을 history 로 본다 → 커밋이 깨지지 않았다.
+    expect(seen[1].map((m) => m.content)).toEqual(['A', 'echo:A', 'B'])
   })
 })
 
