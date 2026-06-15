@@ -73,3 +73,20 @@ provider.chat → ChatResult.usage
 `src/main/core/tools/loop.ts` · `src/main/core/session/api-session.ts` ·
 `src/main/core/session/types.ts`(미변경 예정 — 확인용) · `src/main/core/engine.ts` (+테스트).
 shared/types · IPC · preload · renderer 무변경. 4 게이트 + 다중 에이전트 적대 리뷰 대상.
+
+## 적대 리뷰 반영 (하드닝)
+
+16-에이전트 적대 리뷰(5렌즈×발견별 검증) 확정 3건 반영:
+
+1. **최대 반복 초과 throw 의 usage 미집계(high)** — `runToolLoop` 이 max 라운드 소진 후 throw 하면
+   누적 usage(최대 8라운드 = 가장 비싼 경로)가 폐기돼 `onUsage` 미발화. unwrap-throw 는 집계하면서
+   이 경로만 누락하는 비대칭. → 신규 `ToolLoopExceededError`(누적 usage 탑재)를 throw 하고,
+   api-session `runChatReportingUsage` 가 catch 해서 `emitUsage` 후 재전파.
+2. **throw 하는 onUsage sink 이 주 경로 파손(low)** — sink 가 throw 하면 unwrap·history 커밋이 안 돼
+   성공한 send 가 거부되고 assistant 턴 유실. → `emitUsage` 가 onUsage 호출을 try/catch 로 격리
+   (로깅하되 미전파). 부수기록은 주 send 계약을 깰 수 없다.
+3. **all-undefined usage 가 빈 이벤트 발화(low)** — provider buffer 경로가 API 무응답에도 빈 usage
+   객체를 만들어 `if(result.usage)` 통과 → 내용 없는 'usage' 이벤트. → `hasTokenData` 가드로 실
+   토큰 데이터가 하나라도 있을 때만 발화('usage 없으면 미발화' 계약 일치).
+
+기각 7건은 검증자가 코드 대조로 반증(no-defect 검증기록·의도된 scope·도달불가 abort 경로·미래 필드 nit).

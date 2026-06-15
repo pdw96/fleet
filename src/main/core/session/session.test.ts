@@ -279,6 +279,52 @@ describe('createApiSession', () => {
     const s = createApiSession(apiDesc, usageProvider({ inputTokens: 1, outputTokens: 1 }))
     expect(await s.send('hi')).toBe('ok')
   })
+
+  it('토큰 데이터가 없는 usage 객체(필드 전부 undefined)는 onUsage 를 호출하지 않는다', async () => {
+    // provider buffer 경로는 API 가 usage 를 안 줘도 빈 객체({inputTokens:undefined,…})를 만든다.
+    // 존재 검사(if result.usage)만 하면 내용 없는 'usage' 이벤트가 매 send 마다 새므로, 실 데이터가
+    // 하나라도 있을 때만 발화해야 한다('usage 없으면 미발화' 계약).
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider({}), { onUsage: (u) => usages.push(u) })
+    await s.send('hi')
+    expect(usages).toEqual([])
+  })
+
+  it('onUsage 가 도구 루프 최대 반복 초과 throw 에서도 누적 usage 를 발화한다(가장 비싼 경로 집계)', async () => {
+    const provider: ApiProvider = {
+      id: 'u', provider: 'anthropic', model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [{ type: 'tool_use', id: 't', name: 'echo', input: {} }], finishReason: 'tool_use', usage: { inputTokens: 5, outputTokens: 2 } }
+      },
+    }
+    const registry = createToolRegistry([
+      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+    ])
+    const gate = { async request() { return 'approved' as const } }
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate, maxIterations: 2 }), onUsage: (u) => usages.push(u) })
+    await expect(s.send('go')).rejects.toThrow(/최대/)
+    expect(usages).toEqual([{ inputTokens: 10, outputTokens: 4 }]) // 2 라운드 합산
+  })
+
+  it('throw 하는 onUsage sink 은 성공 send 의 반환·history 커밋을 깨지 않는다(부수채널 격리)', async () => {
+    // usage 를 채우고 본 메시지를 기록하는 provider.
+    const seen: ChatTurn[][] = []
+    const provider: ApiProvider = {
+      id: 'u', provider: 'anthropic', model: 'm',
+      async chat(messages) {
+        seen.push(structuredClone(messages))
+        const last = messages.at(-1)?.content ?? ''
+        const text = typeof last === 'string' ? last : ''
+        return { text: `echo:${text}`, toolCalls: [], finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const s = createApiSession(apiDesc, provider, { onUsage: () => { throw new Error('sink boom') } })
+    expect(await s.send('A')).toBe('echo:A') // sink throw 가 성공 send 를 거부시키지 않음
+    expect(await s.send('B')).toBe('echo:B')
+    // 둘째 send 가 첫 교환을 history 로 본다 → 커밋이 깨지지 않았다.
+    expect(seen[1].map((m) => m.content)).toEqual(['A', 'echo:A', 'B'])
+  })
 })
 
 describe('buildHeadlessArgs', () => {

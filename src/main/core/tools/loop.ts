@@ -14,6 +14,21 @@ const DEFAULT_MAX_ITERATIONS = 8
 const NOOP_AUDIT = (): void => {}
 
 /**
+ * 도구 루프가 최대 반복을 초과해도 여전히 도구 호출을 요청할 때 던진다. 그때까지 누적한 usage 를
+ * 실어 호출자(api-session)가 unwrap-throw 와 동일하게 소비 토큰을 집계할 수 있게 한다 — 최대
+ * 반복 경로는 가장 비싼 경로라 미집계 시 실 지출의 최대 누락이 된다(usage-accounting).
+ */
+export class ToolLoopExceededError extends Error {
+  constructor(
+    max: number,
+    readonly usage: TokenUsage | undefined,
+  ) {
+    super(`도구 루프가 최대 ${max}회 반복을 초과했습니다(모델이 여전히 도구 호출을 요청).`)
+    this.name = 'ToolLoopExceededError'
+  }
+}
+
+/**
  * 두 TokenUsage 를 필드별로 합산한다(usage-accounting). 한쪽만 있으면 있는 값만,
  * 양쪽 다 미설정인 필드는 결과에서도 생략한다 → 전 구간 usage 가 없으면 결과도 undefined
  * (무회귀). 도구루프가 매 iter 의 비용을 누적하는 데 쓴다.
@@ -161,7 +176,6 @@ export async function runToolLoop(
     turns.push({ role: 'user', content: results })
   }
 
-  throw new Error(
-    `도구 루프가 최대 ${max}회 반복을 초과했습니다(모델이 여전히 도구 호출을 요청).`,
-  )
+  // 가장 비싼 경로 — 그때까지 누적한 usage 를 에러에 실어 호출자가 집계하게 한다(미집계 방지).
+  throw new ToolLoopExceededError(max, usageAcc)
 }

@@ -344,4 +344,20 @@ describe('runToolLoop', () => {
     })
     expect(out.usage).toEqual({ inputTokens: 9, outputTokens: 1 })
   })
+
+  it('최대 반복 초과로 throw 할 때도 누적 usage 를 에러에 실어 surface 한다 (가장 비싼 경로 미집계 방지)', async () => {
+    // 도구 루프가 max 라운드를 소진하고도 여전히 도구 호출을 요청하면 throw 한다. 그때까지 소비한
+    // 토큰(최대 max 라운드 = 가장 비싼 경로)을 버리면 안 된다 — 에러에 누적 usage 를 실어 호출자가
+    // unwrap-throw 와 동일하게 집계할 수 있게 한다.
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t', 'echo', {})], finishReason: 'tool_use', usage: { inputTokens: 5, outputTokens: 2 } },
+    ])
+    await expect(
+      runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+        registry: createToolRegistry([echoTool]),
+        gate: approveAll,
+        maxIterations: 3,
+      }),
+    ).rejects.toMatchObject({ usage: { inputTokens: 15, outputTokens: 6 } }) // 3 라운드 합산
+  })
 })

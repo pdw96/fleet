@@ -1,8 +1,23 @@
 import type { LlmDescriptor } from '../../../shared/types'
 import type { ApiCallOptions, ApiProvider, ChatResult, ChatTurn, TokenUsage } from '../providers/types'
-import { runToolLoop } from '../tools/loop'
+import { runToolLoop, ToolLoopExceededError } from '../tools/loop'
 import type { ToolLoopDeps } from '../tools/types'
 import type { LlmSession, SendOptions } from './types'
+
+/**
+ * 실제 토큰 데이터가 하나라도 있는지. provider buffer 경로는 API 가 usage 를 안 줘도 빈 객체
+ * (모든 필드 undefined)를 만들 수 있어, 단순 존재검사로는 내용 없는 'usage' 이벤트가 샌다 —
+ * 적어도 한 필드가 채워졌을 때만 집계한다('usage 없으면 미발화' 계약).
+ */
+function hasTokenData(usage: TokenUsage | undefined): usage is TokenUsage {
+  return (
+    !!usage &&
+    (usage.inputTokens !== undefined ||
+      usage.outputTokens !== undefined ||
+      usage.cacheCreationInputTokens !== undefined ||
+      usage.cacheReadInputTokens !== undefined)
+  )
+}
 
 /**
  * ChatResult 를 레거시 string send() 계약으로 환원한다.
@@ -45,10 +60,31 @@ export function createApiSession(
 ): LlmSession {
   const history: ChatTurn[] = []
   if (opts.system) history.push({ role: 'system', content: opts.system })
-  // chat 결과의 usage 를 sink 로 흘린다(있을 때만). unwrap throw 전에 호출해야 잘린/필터된 응답의
-  // 소비 토큰도 누락 없이 집계된다.
-  const reportUsage = (result: ChatResult): void => {
-    if (result.usage) opts.onUsage?.(result.usage)
+  // usage 를 sink 로 흘린다(실 토큰 데이터가 있을 때만). sink 는 순수 부수기록이라 throw 해도 주
+  // 경로(성공 반환·history 커밋)를 깨면 안 되므로 격리한다 — 시끄럽게 로깅하되 전파하지 않는다.
+  const emitUsage = (usage: TokenUsage | undefined): void => {
+    if (!hasTokenData(usage)) return
+    try {
+      opts.onUsage?.(usage)
+    } catch (err) {
+      console.error('[fleet] onUsage sink 에서 예외 발생(집계만 무시, send 는 계속):', err)
+    }
+  }
+  // chat 을 실행하고 usage 를 집계한다. 성공 응답은 물론, 도구 루프가 최대 반복 초과로 throw 할 때도
+  // (가장 비싼 경로) 에러에 실린 누적 usage 를 집계한 뒤 재전파한다 — unwrap-throw 와 동일 원칙.
+  const runChatReportingUsage = async (
+    turns: ChatTurn[],
+    callOpts: ApiCallOptions,
+    bypassTools = false,
+  ): Promise<ChatResult> => {
+    try {
+      const result = await runChat(turns, callOpts, bypassTools)
+      emitUsage(result.usage)
+      return result
+    } catch (err) {
+      if (err instanceof ToolLoopExceededError) emitUsage(err.usage)
+      throw err
+    }
   }
   // 비-fresh 누적 경로 직렬화 체인 — 같은 세션의 동시 send 가 history 를 읽기-수정-쓰기 레이스로
   // 덮어쓰지 않게 순서를 보장한다(cli-session 과 동일 패턴). fresh 경로는 history 불변이라 미적용.
@@ -91,8 +127,7 @@ export function createApiSession(
         const turns: ChatTurn[] = opts.system
           ? [{ role: 'system', content: opts.system }, { role: 'user', content: prompt }]
           : [{ role: 'user', content: prompt }]
-        const result = await runChat(turns, callOpts, sendOpts.bypassTools)
-        reportUsage(result)
+        const result = await runChatReportingUsage(turns, callOpts, sendOpts.bypassTools)
         return emit(unwrap(provider.provider, result))
       }
       // 누적 경로: 직렬화 체인에 올려 동시 send 끼리 순서를 보장한다(앞 호출의 성공/실패와 무관하게
@@ -102,8 +137,7 @@ export function createApiSession(
       const result = (async (): Promise<string> => {
         await prior.catch(() => {})
         const working: ChatTurn[] = [...history, { role: 'user', content: prompt }]
-        const result = await runChat(working, callOpts, sendOpts.bypassTools)
-        reportUsage(result)
+        const result = await runChatReportingUsage(working, callOpts, sendOpts.bypassTools)
         const reply = unwrap(provider.provider, result)
         working.push({ role: 'assistant', content: reply })
         history.length = 0
