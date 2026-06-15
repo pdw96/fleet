@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
-import type { ApiCallOptions, ApiProvider, ChatTurn } from '../providers/types'
+import type { ApiCallOptions, ApiProvider, ChatTurn, TokenUsage } from '../providers/types'
 import { createToolRegistry } from '../tools/registry'
 import { createApiSession } from './api-session'
 import { buildHeadlessArgs, createCliSession } from './cli-session'
@@ -237,6 +237,47 @@ describe('createApiSession', () => {
     expect(seen[1].map((m) => m.content)).toEqual(['sys', '독립'])
     expect(seen[2].map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user'])
     expect(seen[2].map((m) => m.content)).toEqual(['sys', 'hi', 'echo:hi', 'next'])
+  })
+
+  // ── usage sink (usage-accounting) ────────────────────────────────────────────
+  const usageProvider = (usage: TokenUsage | undefined, finishReason: 'stop' | 'length' = 'stop'): ApiProvider => ({
+    id: 'u', provider: 'anthropic', model: 'm',
+    async chat() {
+      return { text: finishReason === 'length' ? '' : 'ok', toolCalls: [], finishReason, rawFinishReason: 'x', usage }
+    },
+  })
+
+  it('성공 send 의 응답 usage 를 onUsage sink 로 전달한다', async () => {
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 12, outputTokens: 8 }), { onUsage: (u) => usages.push(u) })
+    expect(await s.send('hi')).toBe('ok')
+    expect(usages).toEqual([{ inputTokens: 12, outputTokens: 8 }])
+  })
+
+  it('onUsage 는 fresh(독립) 경로에서도 발화한다', async () => {
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 3, outputTokens: 1 }), { onUsage: (u) => usages.push(u) })
+    await s.send('독립', { fresh: true })
+    expect(usages).toEqual([{ inputTokens: 3, outputTokens: 1 }])
+  })
+
+  it('onUsage 는 unwrap 이 throw 하는 빈 응답(토큰 한도)에도 발화한다 — 소비 토큰은 집계해야 한다', async () => {
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 50, outputTokens: 0 }, 'length'), { onUsage: (u) => usages.push(u) })
+    await expect(s.send('x')).rejects.toThrow(/토큰|length|max_tokens|잘/)
+    expect(usages).toEqual([{ inputTokens: 50, outputTokens: 0 }])
+  })
+
+  it('응답에 usage 가 없으면 onUsage 를 호출하지 않는다', async () => {
+    const usages: TokenUsage[] = []
+    const s = createApiSession(apiDesc, usageProvider(undefined), { onUsage: (u) => usages.push(u) })
+    await s.send('hi')
+    expect(usages).toEqual([])
+  })
+
+  it('onUsage 미지정이어도 정상 동작하고 string 을 반환한다(계약 무회귀)', async () => {
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 1, outputTokens: 1 }))
+    expect(await s.send('hi')).toBe('ok')
   })
 })
 

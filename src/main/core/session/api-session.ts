@@ -1,5 +1,5 @@
 import type { LlmDescriptor } from '../../../shared/types'
-import type { ApiCallOptions, ApiProvider, ChatResult, ChatTurn } from '../providers/types'
+import type { ApiCallOptions, ApiProvider, ChatResult, ChatTurn, TokenUsage } from '../providers/types'
 import { runToolLoop } from '../tools/loop'
 import type { ToolLoopDeps } from '../tools/types'
 import type { LlmSession, SendOptions } from './types'
@@ -32,10 +32,24 @@ function unwrap(provider: string, result: ChatResult): string {
 export function createApiSession(
   descriptor: LlmDescriptor,
   provider: ApiProvider,
-  opts: { system?: string; toolDeps?: () => ToolLoopDeps | undefined } = {},
+  opts: {
+    system?: string
+    toolDeps?: () => ToolLoopDeps | undefined
+    /**
+     * 응답 토큰 사용량 sink(usage-accounting). 매 성공 chat 의 usage 를 흘린다 — 도구루프는
+     * 전 라운드 합산값. unwrap 이 빈 응답으로 throw 하기 전에 호출해 소비 토큰을 빠짐없이 집계한다.
+     * usage 가 없는 응답에선 호출하지 않는다. (엔진이 'usage' 이벤트로 소비.)
+     */
+    onUsage?: (usage: TokenUsage) => void
+  } = {},
 ): LlmSession {
   const history: ChatTurn[] = []
   if (opts.system) history.push({ role: 'system', content: opts.system })
+  // chat 결과의 usage 를 sink 로 흘린다(있을 때만). unwrap throw 전에 호출해야 잘린/필터된 응답의
+  // 소비 토큰도 누락 없이 집계된다.
+  const reportUsage = (result: ChatResult): void => {
+    if (result.usage) opts.onUsage?.(result.usage)
+  }
   // 비-fresh 누적 경로 직렬화 체인 — 같은 세션의 동시 send 가 history 를 읽기-수정-쓰기 레이스로
   // 덮어쓰지 않게 순서를 보장한다(cli-session 과 동일 패턴). fresh 경로는 history 불변이라 미적용.
   let chain: Promise<unknown> = Promise.resolve()
@@ -77,7 +91,9 @@ export function createApiSession(
         const turns: ChatTurn[] = opts.system
           ? [{ role: 'system', content: opts.system }, { role: 'user', content: prompt }]
           : [{ role: 'user', content: prompt }]
-        return emit(unwrap(provider.provider, await runChat(turns, callOpts, sendOpts.bypassTools)))
+        const result = await runChat(turns, callOpts, sendOpts.bypassTools)
+        reportUsage(result)
+        return emit(unwrap(provider.provider, result))
       }
       // 누적 경로: 직렬화 체인에 올려 동시 send 끼리 순서를 보장한다(앞 호출의 성공/실패와 무관하게
       // 순서만). 성공 시에만 history 에 원자적으로 커밋하므로 루프 중간 throw 가 history 를 부분 확장
@@ -86,7 +102,9 @@ export function createApiSession(
       const result = (async (): Promise<string> => {
         await prior.catch(() => {})
         const working: ChatTurn[] = [...history, { role: 'user', content: prompt }]
-        const reply = unwrap(provider.provider, await runChat(working, callOpts, sendOpts.bypassTools))
+        const result = await runChat(working, callOpts, sendOpts.bypassTools)
+        reportUsage(result)
+        const reply = unwrap(provider.provider, result)
         working.push({ role: 'assistant', content: reply })
         history.length = 0
         history.push(...working)

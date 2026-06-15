@@ -362,6 +362,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       }
       sessions.add(
         createApiSession(descriptor, createApiProvider(config, http), {
+          // 토큰 사용량을 'usage' 감사 이벤트로 기록한다(usage-accounting). 도구루프는 합산값.
+          // FleetEvent 는 generic {type,data} 라 IPC/preload/renderer 변경 없이 이벤트 스트림에 흐른다.
+          onUsage: (usage) => appendAudit('usage', { id, provider: config.provider, ...usage }),
           // 워크스페이스 도구 + MCP 도구를 병합 노출한다. 둘 다 없으면 단발 chat(완전 하위호환).
           // 클로저라 런타임 워크스페이스/MCP 변경을 추종한다.
           toolDeps: () => {

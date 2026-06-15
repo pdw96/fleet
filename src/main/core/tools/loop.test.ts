@@ -293,4 +293,55 @@ describe('runToolLoop', () => {
     const assistant = calls[1][1]
     expect((assistant.content as ContentBlock[]).map((b) => b.type)).toEqual(['text', 'tool_use'])
   })
+
+  // ── usage 누적 (usage-accounting) ────────────────────────────────────────────
+  it('모든 iter 의 usage 를 합산해 반환한다 — 도구 왕복 비용 미집계 갭 해소', async () => {
+    // 도구루프는 iter 마다 chat 을 호출하지만 기존엔 마지막 iter 의 usage 만 반환했다(이전 라운드
+    // 비용 통째 누락). 모든 라운드의 input/output/cache 토큰을 합산해야 한다.
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'echo', {})], finishReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } },
+      { text: '완료', toolCalls: [], finishReason: 'stop', usage: { inputTokens: 20, outputTokens: 7, cacheReadInputTokens: 3 } },
+    ])
+    const out = await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    // 두 라운드 합산. 어느 라운드에도 없는 cacheCreation 은 키 자체가 없어야 한다(전부 미설정→미설정).
+    expect(out.usage).toEqual({ inputTokens: 30, outputTokens: 12, cacheReadInputTokens: 3 })
+  })
+
+  it('어느 iter 에도 usage 가 없으면 usage 는 undefined 다(무회귀)', async () => {
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'echo', {})], finishReason: 'tool_use' },
+      { text: '완료', toolCalls: [], finishReason: 'stop' },
+    ])
+    const out = await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    expect(out.usage).toBeUndefined()
+  })
+
+  it('도구 0(단발) 응답은 그 응답의 usage 를 그대로 반환한다', async () => {
+    const { provider } = scriptedProvider([
+      { text: '바로답', toolCalls: [], finishReason: 'stop', usage: { inputTokens: 4, outputTokens: 2 } },
+    ])
+    const out = await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    expect(out.usage).toEqual({ inputTokens: 4, outputTokens: 2 })
+  })
+
+  it('일부 iter 에만 usage 가 있어도 있는 값만 누적한다', async () => {
+    const { provider } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'echo', {})], finishReason: 'tool_use' }, // usage 없음
+      { text: '완료', toolCalls: [], finishReason: 'stop', usage: { inputTokens: 9, outputTokens: 1 } },
+    ])
+    const out = await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    expect(out.usage).toEqual({ inputTokens: 9, outputTokens: 1 })
+  })
 })
