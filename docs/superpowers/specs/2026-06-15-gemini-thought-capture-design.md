@@ -187,15 +187,35 @@ content를 채우는 순간 멀티턴 tool 루프에서 thoughtSignature byte-ex
 - `src/main/core/providers/providers.test.ts` — 신규/갱신 테스트.
 - (선택) `src/main/core/tools/loop.test.ts` — 라운드트립.
 
-## 비범위 (YAGNI / 후속)
+## 적대 리뷰 반영 (28에이전트 6차원 워크플로 — 원시 22 → 확정 4 / 기각 18)
+
+스펙 초안의 단일-thought 가정을 리뷰가 강화. 확정 3건 반영(머지 전), 1건 기술 반박:
+
+- **#1(스트림 다중 thought-part sig 붕괴)** — 초안의 스칼라 `thoughtText`/`thoughtSig`는 다중 reasoning
+  스텝에서 last-write-wins로 2번째+ thoughtSignature를 유실(버퍼 per-part 보존과 비대칭). **수정**:
+  `thoughts: Array<{text,sig?}>` 로 signature-delimited 누적(thoughtSignature가 thought 파트 마감) →
+  thought 파트별 ThinkingBlock 1개. 단일 thought 케이스는 현행 동작 byte-보존, 시그니처 절대 유실 없음.
+- **#2(버퍼 text-없는 sig-only thought 파트 누락)** — flatMap thought 분기가 `&& typeof p.text==='string'`
+  로 text를 필수 요구해 sig-only thought 파트를 떨굼(스트림/Anthropic은 보존). **수정**: 분기를 `if (p.thought)
+  return [{thinking, text: p.text ?? ''}]` 로 완화(Anthropic `c.thinking ?? ''` 동형).
+- **#3(스트림 thought+functionCall 미커버, line 249 변이생존)** — PR 핵심값(멀티턴 왕복) 경로가 회귀가드
+  0. **반영**: 스트림 thought+functionCall·다중 thought-part·sig-only 버퍼 테스트 추가(test 684).
+- **#4(mapParts toEqual+undefined 거짓양성) — 기각(기술 반박)**: 테스트가 JSON 왕복 본문을 단언하는데
+  `JSON.stringify`가 undefined 키를 이미 제거 → 가드 제거 변이는 **wire-equivalent**. 권고된 `toStrictEqual`/
+  `not.toHaveProperty`도 파싱 객체에 키 부재라 동일 통과(변이 못 잡음). 가드 유지·테스트 무변경.
+- **기각 18건**: wire-format 정확성 확인(includeThoughts+thinkingBudget/Level 공존 valid·thoughtSignature
+  Part 레벨 배치 correct), 스트림 thought-before-answer 휴리스틱 한계(트리거 미확정·문서화됨), 무회귀 확인 등.
+
+## 비범위 (YAGNI / 후속) — 갱신
 
 - **① 2.5 effort→정수 budget 세분화** — 별도 micro-slice(2.5 모델 한정·기본 모델 무관·서브모델 범위탐지
   400 위험). 현행 `thinkingBudget:-1`(AUTOMATIC) 유지.
-- **text-part thoughtSignature 캡처/왕복** — 1차출처의 "first part always has a signature"(주로 이미지생성
-  맥락)는 thinking-off 경로에도 해당할 수 있으나, (a) 메모리가 ②를 "thought 파트 분리"로 명시, (b) 스트림
-  text-part sig 재구성은 불균형 복잡도(델타 평면 누적과 충돌), (c) thinking-off 경로 무회귀(현행 동작 유지),
-  (d) thought-part + functionCall-part sig가 함수호출 왕복(문서화된 검증오류 위험)을 커버 → **비범위, 문서화된
-  한계**. 실 키 멀티턴서 text-part-only sig 검증오류가 관측되면 후속 편입.
+- **text-part thoughtSignature 캡처/왕복** — 비범위 유지(메모리가 ②를 "thought 파트 분리"로 명시). 단
+  리뷰가 짚은 잔여 불확실성: includeThoughts off / 모델이 thought 요약 미생성하며 선두 text 파트만 sig를
+  갖는 변형. **머지 후 실 키 스모크에서 text-part sig가 함수호출 검증에 mandatory인지 실측** → 관측되면
+  저비용 대칭 확장(버퍼 text 분기 providerMeta + mapParts text echo + 스트림 선두-파트 sig 캡처).
+- **스트림 thought-before-answer 순서 휴리스틱** — Gemini classic 스트림에 전역 part 인덱스가 없어
+  thought-우선 재구성. 가정적 interleaved/answer-after-thought 응답 시 부정확 → 머지 후 라이브 추적.
 - **orchestrator가 google 세션에 opts.thinking 지정** — 1단계서 이미 config.thinking 경로 활성. 무변경.
 
 ## 미해결 / 라이브 검증 사항
@@ -204,3 +224,5 @@ content를 채우는 순간 멀티턴 tool 루프에서 thoughtSignature byte-ex
   (thinking+tools)은 머지 후 라이브 키로 별도 스모크. 이 슬라이스는 파싱+노브라 라이브 의존 없음.
 - `includeThoughts:true` 고정 전송이 일부 모델서 요약 미생성(thought 파트 0)일 수 있다 → 그 경우 `content`
   undefined로 무해 폴백(현행 동작). 굶음(starvation) 가드는 1단계 floor가 이미 처리.
+- **다중 thought-part 서명 방출**(스트림 #1 수정의 트리거)이 classic generateContent에서 실제 발생하는지
+  머지 후 실 키 멀티턴으로 확인 — 수정은 단일/다중 모두 graceful이라 무발생 시에도 무해.
