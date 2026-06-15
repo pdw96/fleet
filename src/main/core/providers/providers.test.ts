@@ -893,6 +893,30 @@ describe('OpenAiProvider', () => {
     expect(p.provider).toBe('openai-compatible')
     expect(p.model).toBe('qwen/qwen3-32b')
   })
+
+  it('openai-compatible: baseUrl 끝슬래시 정규화 + max_tokens 사용(reasoning 게이트 없음)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'anthropic/claude-sonnet-4-6', apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1/', maxTokens: 100 },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'hi' }])
+    expect(calls[0].url).toBe('https://openrouter.ai/api/v1/chat/completions')
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.max_tokens).toBe(100)
+    expect(body.max_completion_tokens).toBeUndefined()
+  })
+
+  it('openai-compatible: baseUrl 누락 시 chat 이 throw', async () => {
+    const { http } = mockHttp(() => ({ body: '{}' }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k' },
+      http,
+    )
+    await expect(p.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/baseUrl/)
+  })
 })
 
 describe('GoogleProvider', () => {

@@ -256,7 +256,9 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
     model: config.model,
     async chat(messages: ChatTurn[], opts: ApiCallOptions = {}): Promise<ChatResult> {
       const apiKey = requireApiKey(config)
-      const reasoning = isReasoningModel(config.model)
+      const compatible = config.provider === 'openai-compatible'
+      const endpoint = compatible ? requireBaseUrl(config) : ENDPOINT
+      const reasoning = !compatible && isReasoningModel(config.model)
 
       const body: Record<string, unknown> = {
         model: config.model,
@@ -298,7 +300,7 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
 
       const headers = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }
       const send = (): Promise<HttpResponse> =>
-        http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
+        http(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
       // 스트리밍도 동일 가드 — 400 재시도 응답이 OK 면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
       const res = await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.response_format })
 
@@ -335,6 +337,13 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       }
     },
   }
+}
+
+/** openai-compatible 의 baseUrl 을 정규화해 /chat/completions 엔드포인트로 만든다. 누락 시 throw. */
+function requireBaseUrl(config: ApiProviderConfig): string {
+  const base = config.baseUrl?.trim()
+  if (!base) throw new Error(`[openai-compatible] baseUrl 이 설정되지 않았습니다 (id=${config.id}).`)
+  return base.replace(/\/+$/, '') + '/chat/completions'
 }
 
 /** tool_call arguments 는 JSON 문자열이다. 파싱 실패 시 원문을 보존한다. */
