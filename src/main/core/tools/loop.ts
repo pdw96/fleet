@@ -8,6 +8,7 @@ import type {
   ToolResultBlock,
 } from '../providers/types'
 import type { ToolLoopDeps } from './types'
+import { DEFAULT_CONTEXT_POLICY, freshToolResultBatchSize, pruneToolResults } from './context'
 
 const DEFAULT_MAX_ITERATIONS = 8
 
@@ -86,12 +87,42 @@ export async function runToolLoop(
   const audit = deps.onAudit ?? NOOP_AUDIT
   const onToolStep = opts.onToolStep
   const tools = deps.registry.list()
+  // context management 정책: undefined → 기본(default-on), null → 비활성.
+  const policy = deps.contextPolicy === undefined ? DEFAULT_CONTEXT_POLICY : deps.contextPolicy
+  // 도구 정의는 매 요청에 동봉돼 입력 토큰을 차지한다(큰 MCP 스키마). client prune 트리거 판단이 이를
+  // 빠뜨리면 turns 는 임계 이하인데 turns+tools 가 윈도를 넘겨 prune 미발화·초과할 수 있다 → 예산에 포함(Codex P2).
+  // 도구 집합은 send 동안 불변이라 1회만 추정한다. stringify 실패는 0 으로(blockChars 와 대칭, 추정 보수화).
+  let toolsTokens = 0
+  if (tools.length > 0) {
+    try {
+      toolsTokens = Math.ceil(JSON.stringify(tools).length / 4)
+    } catch {
+      toolsTokens = 0
+    }
+  }
   // 매 iter 의 비용을 누적한다 — 도구 왕복(최대 max 라운드)의 chat 호출이 각각 토큰을 소모하므로
   // 마지막 응답만 반환하면 이전 라운드 비용이 통째로 누락된다(usage-accounting).
   let usageAcc: TokenUsage | undefined
 
   for (let iter = 0; iter < max; iter++) {
-    const result = await provider.chat(turns, { ...opts, tools, toolChoice: 'auto' })
+    // provider 분기 없이 capability 플래그만 본다: native(anthropic)는 wire 위임, 그 외는 client-side
+    // 가지치기. 둘 다 chat 직전에 적용해 매 라운드 누적을 경계한다. loop 가 contextManagement 소유권을
+    // 가진다(caller opts 값은 무시) — native 는 서버가 context 를 직접 관리하므로 local turns 가 무제한
+    // 성장하는 게 정상(의도된 설계)이고, client 경로만 turns 를 가지치기한다.
+    const chatOpts: ApiCallOptions = { ...opts, tools, toolChoice: 'auto' }
+    delete chatOpts.contextManagement // loop 가 소유 — caller 가 실어보낸 값은 쓰지 않는다(누출 차단)
+    if (policy) {
+      if (provider.nativeContextManagement) {
+        // server clear_tool_uses 는 "가장 최근 keep 개 tool_use"를 유지한다(블록 단위·턴 경계 무시 — 1차출처).
+        // client 가지치기는 미전송 fresh 배치 전체 + 그 앞 keepRecentToolUses 개를 보존하므로, native 도 동일
+        // 보존을 위해 keep 을 fresh + policy.keep 으로 올린다(요청 한정) — fresh 배치가 모델 전송 전 클립되는
+        // 것 방지 + 직전 kept 결과 패리티(max 면 fresh>keep 일 때 직전 kept 를 잃음, Codex P2). fresh=0(새 send)
+        // 이면 keep=policy.keep 그대로다.
+        const fresh = freshToolResultBatchSize(turns)
+        chatOpts.contextManagement = { ...policy, keepRecentToolUses: fresh + policy.keepRecentToolUses }
+      } else pruneToolResults(turns, policy, toolsTokens)
+    }
+    const result = await provider.chat(turns, chatOpts)
     usageAcc = addUsage(usageAcc, result.usage)
     // 종료는 finishReason 가 아니라 toolCalls 유무로 판단한다 — Gemini 는 functionCall 응답에도
     // finishReason 를 'stop'(STOP)으로 주므로 finishReason 게이팅은 Gemini 도구호출을 통째로 건너뛴다.

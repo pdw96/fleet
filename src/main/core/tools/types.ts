@@ -1,5 +1,5 @@
 import type { RiskLevel } from '../../../shared/types'
-import type { ToolDefinition } from '../providers/types'
+import type { ContextManagementPolicy, ToolDefinition } from '../providers/types'
 import type { ApprovalGate } from '../safety/approval'
 
 /** 도구 실행 컨텍스트(취소 신호 등). */
@@ -33,4 +33,9 @@ export interface ToolLoopDeps {
   onAudit?: (type: string, data: Record<string, unknown>) => void
   /** 최대 반복 횟수(기본 8). */
   maxIterations?: number
+  /**
+   * context management 정책. undefined → DEFAULT_CONTEXT_POLICY(default-on), null → 비활성.
+   * native provider 엔 위임, 그 외엔 client-side 가지치기로 적용한다.
+   */
+  contextPolicy?: ContextManagementPolicy | null
 }

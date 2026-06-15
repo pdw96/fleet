@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolStep } from '../../../shared/types'
-import type { ApiProvider, ChatResult, ChatTurn, ContentBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock } from '../providers/types'
+import type { ApiCallOptions, ApiProvider, ChatResult, ChatTurn, ContentBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock } from '../providers/types'
 import type { ApprovalGate } from '../safety/approval'
 import { createToolRegistry } from './registry'
 import { runToolLoop } from './loop'
 import type { FleetTool } from './types'
+import { DEFAULT_CONTEXT_POLICY, PRUNE_STUB } from './context'
 
 const approveAll: ApprovalGate = { async request() { return 'approved' } }
 const rejectAll: ApprovalGate = { async request() { return 'rejected' } }
@@ -359,5 +360,153 @@ describe('runToolLoop', () => {
         maxIterations: 3,
       }),
     ).rejects.toMatchObject({ usage: { inputTokens: 15, outputTokens: 6 } }) // 3 라운드 합산
+  })
+
+  // ── context management 라우팅 ──────────────────────────────────────────────
+  /** turns 와 chat opts 를 모두 캡처하고 nativeContextManagement 플래그를 설정 가능한 provider. */
+  function capturingProvider(native: boolean, script: ChatResult[]): {
+    provider: ApiProvider
+    opts: ApiCallOptions[]
+    turns: ChatTurn[][]
+  } {
+    const opts: ApiCallOptions[] = []
+    const turns: ChatTurn[][] = []
+    let i = 0
+    const provider: ApiProvider = {
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
+      nativeContextManagement: native ? true : undefined,
+      async chat(messages, o = {}) {
+        turns.push(structuredClone(messages))
+        opts.push(o)
+        return script[Math.min(i++, script.length - 1)]
+      },
+    }
+    return { provider, opts, turns }
+  }
+
+  it('native provider 에는 contextManagement 를 opts 로 싣고 turns 를 prune 하지 않는다', async () => {
+    const big = 'x'.repeat(4000)
+    // 결과 3개(t0 전송·t1 전송·t2 미전송 최신). client 경로라면 t0 가 stub 될 조건이다(keep=1·전송된 2개·임계초과).
+    const start: ChatTurn[] = [
+      { role: 'assistant', content: [toolUse('t0', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
+      { role: 'assistant', content: [toolUse('t1', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: big }] },
+      { role: 'assistant', content: [toolUse('t2', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't2', content: big }] },
+      { role: 'user', content: 'go' },
+    ]
+    const { provider, opts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    await runToolLoop(provider, start, {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 1 },
+    })
+    expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 1 })
+    // native 는 서버가 클리어하므로 client-side prune 을 하지 않는다 — t0 를 그대로 둔다(회귀 가드).
+    expect((start[1].content as ToolResultBlock[])[0].content).toBe(big)
+  })
+
+  it('native 미지원 provider: contextManagement 미전달 + 임계 초과 시 전송된 오래된 tool_result stub', async () => {
+    const big = 'x'.repeat(4000)
+    const { provider, opts, turns } = capturingProvider(false, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    // 새 send 시작(마지막 턴='go' 프롬프트): 직전 tool_result 3개는 모두 이미 전송됨 → keep=1 이 최신 t2 만
+    // 보존하고 t0·t1 은 정리. (마지막 턴이 tool_result 가 아니므로 fresh-배치 제외가 적용되지 않는다 — P2#A.)
+    const start: ChatTurn[] = [
+      { role: 'assistant', content: [toolUse('t0', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
+      { role: 'assistant', content: [toolUse('t1', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: big }] },
+      { role: 'assistant', content: [toolUse('t2', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't2', content: big }] },
+      { role: 'user', content: 'go' },
+    ]
+    await runToolLoop(provider, start, {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 1 },
+    })
+    expect(opts[0].contextManagement).toBeUndefined()
+    const captured = turns[0]
+    expect((captured[1].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // 오래된 t0 정리
+    expect((captured[3].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // t1 도 전송됨 → 정리
+    expect((captured[5].content as ToolResultBlock[])[0].content).toBe(big) // 최신 t2 keep 보존
+  })
+
+  it('contextPolicy: null 이면 native 위임도 client-side prune 도 하지 않는다', async () => {
+    const big = 'x'.repeat(4000)
+    const { provider: nativeP, opts: nativeOpts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    await runToolLoop(nativeP, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: null,
+    })
+    expect(nativeOpts[0].contextManagement).toBeUndefined()
+
+    const { provider: clientP, turns } = capturingProvider(false, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    const start: ChatTurn[] = [
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
+      { role: 'user', content: 'go' },
+    ]
+    await runToolLoop(clientP, start, {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: null,
+    })
+    expect((turns[0][0].content as ToolResultBlock[])[0].content).toBe(big) // prune 안 함
+  })
+
+  it('contextPolicy 미지정이면 DEFAULT_CONTEXT_POLICY 를 native opts 로 싣는다', async () => {
+    const { provider, opts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    expect(opts[0].contextManagement).toEqual(DEFAULT_CONTEXT_POLICY)
+  })
+
+  it('native: 미전송 fresh 배치가 keep 초과면 keep 을 fresh+policy.keep 으로 올린다(Codex P2 — client 패리티)', async () => {
+    // 직전 iter 가 병렬 도구 5개 결과를 한 user 턴(마지막 턴)에 push 한 상황. keep=2.
+    const big = 'x'.repeat(4000)
+    const ids = ['b0', 'b1', 'b2', 'b3', 'b4']
+    const start: ChatTurn[] = [
+      { role: 'assistant', content: ids.map((id) => toolUse(id, 'echo', {})) },
+      { role: 'user', content: ids.map((id) => ({ type: 'tool_result', toolUseId: id, content: big }) as ToolResultBlock) },
+    ]
+    const { provider, opts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    await runToolLoop(provider, start, {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 2 },
+    })
+    // client 는 fresh 배치(5) + 직전 keep(2) 을 보존 → native 도 keep=fresh+keep=7 로 상향(패리티).
+    expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 7 })
+  })
+
+  it('native 미지원: 큰 도구 정의도 prune 예산에 포함한다 — turns 만으론 임계 이하라도 prune(Codex P2)', async () => {
+    const bigTool: FleetTool = {
+      definition: { name: 'big', description: 'x'.repeat(8000), parameters: { type: 'object' } },
+      classify: () => 'safe',
+      async execute() {
+        return 'ok'
+      },
+    }
+    const mid = 'x'.repeat(400) // 각 ~100 추정토큰
+    const start: ChatTurn[] = [
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: mid }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: mid }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't2', content: mid }] },
+      { role: 'user', content: 'go' },
+    ]
+    const { provider, turns } = capturingProvider(false, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    // turns 만 추정 ~300 ≤ 600. bigTool 정의(~8000자 → ~2000 토큰)가 예산에 포함 → 600 초과 → prune 발화.
+    await runToolLoop(provider, start, {}, {
+      registry: createToolRegistry([bigTool]),
+      gate: approveAll,
+      contextPolicy: { triggerInputTokens: 600, keepRecentToolUses: 1 },
+    })
+    expect((turns[0][0].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // 도구 예산 포함으로 정리됨
   })
 })

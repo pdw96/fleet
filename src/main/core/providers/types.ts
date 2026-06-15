@@ -90,6 +90,17 @@ export interface ToolDefinition {
 }
 
 // ── 응답 메타 ────────────────────────────────────────────────────────────────
+/**
+ * provider-중립 context management 정책. anthropic 은 native `context_management` wire 로,
+ * native 미지원 provider 는 loop 의 client-side 가지치기로 해석한다(동일 정책·실행만 분기).
+ */
+export interface ContextManagementPolicy {
+  /** 누적 입력토큰(anthropic=서버 실측·그 외=client 추정)이 이 값을 넘으면 정리. */
+  triggerInputTokens: number
+  /** 유지할 최근 도구결과 수(≥ 0). 이보다 오래된 tool_result 부터 정리한다. 0이면 가능한 전부 정리. */
+  keepRecentToolUses: number
+}
+
 export interface TokenUsage {
   inputTokens?: number
   outputTokens?: number
@@ -155,6 +166,11 @@ export interface ApiCallOptions {
    * Anthropic(adaptive thinking)·OpenAI(reasoning_effort) 매핑. Gemini 는 후속. #11-thinking.
    */
   thinking?: { effort?: ReasoningEffort }
+  /**
+   * provider-중립 context management 정책. native 지원 provider(anthropic)는 이를 wire
+   * `context_management` 로 변환한다. native 미지원 provider 는 무시한다(루프가 client-side 처리).
+   */
+  contextManagement?: ContextManagementPolicy
 }
 
 // ── 주입 가능한 최소 HTTP 클라이언트 (테스트에서 mock) ──────────────────────
@@ -192,6 +208,8 @@ export interface ApiProvider {
   readonly id: string
   readonly provider: ApiProviderConfig['provider']
   readonly model: string
+  /** native server-side context management(예: anthropic Messages API context_management) 지원 여부. */
+  readonly nativeContextManagement?: boolean
   /** 대화 턴 배열 → 구조화된 어시스턴트 응답(text · 도구호출 · 종료사유 · 사용량). */
   chat(messages: ChatTurn[], opts?: ApiCallOptions): Promise<ChatResult>
 }

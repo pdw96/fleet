@@ -5,7 +5,6 @@ import {
   assertNever,
   defaultHttp,
   requireApiKey,
-  sendWithSchemaFallback,
   textOf,
   type ApiCallOptions,
   type ApiProvider,
@@ -250,6 +249,7 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
     id: config.id,
     provider: 'anthropic',
     model: config.model,
+    nativeContextManagement: true,
     async chat(messages: ChatTurn[], opts: ApiCallOptions = {}): Promise<ChatResult> {
       const apiKey = requireApiKey(config)
       const system = messages
@@ -312,24 +312,75 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         if (thinking.effort) outputConfig.effort = thinking.effort
       }
       if (Object.keys(outputConfig).length > 0) body.output_config = outputConfig
+      // context management(도구루프 경로): clear_tool_uses edit. native 위임 = 서버 실측 토큰 트리거로
+      // 오래된 tool 결과를 per-request 클리어(cache_control·thinking 과 공존). CM 있을 때만 → 무회귀.
+      if (opts.contextManagement) {
+        body.context_management = {
+          edits: [
+            {
+              type: 'clear_tool_uses_20250919',
+              trigger: { type: 'input_tokens', value: opts.contextManagement.triggerInputTokens },
+              keep: { type: 'tool_uses', value: opts.contextManagement.keepRecentToolUses },
+            },
+          ],
+        }
+      }
       if (streaming) body.stream = true
 
-      const headers = {
+      const headers: Record<string, string> = {
         'content-type': 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': API_VERSION,
       }
+      // CM beta 헤더는 context_management 동봉 시에만(비-CM 호출 헤더 부재 = 무회귀).
+      if (opts.contextManagement) headers['anthropic-beta'] = 'context-management-2025-06-27'
       const send = (): Promise<HttpResponse> =>
         http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
-      // 스트리밍도 동일 가드 — 400 재시도 응답이 OK 면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
-      const res = await sendWithSchemaFallback(send, !!opts.responseSchema, () => {
-        // 구조화-출력 400 폴백: format 만 제거하고 effort 등 다른 output_config 필드는 보존한다.
+      // 두 opt-in 필드(context_management·output_config.format) + 불투명 400 → 한 번에 하나씩 제거해 무고한
+      // 필드를 보존한다(PR #63 필드별 격리). 둘 다 set + schema-유발 400 에서 CM 까지 함께 지워 회귀하던
+      // 갭(Codex P2)을 막는다. removeSchema 는 format 만 빼고 effort 등은 보존, 복원은 opts 에서 재구성.
+      const removeCM = (): void => {
+        delete body.context_management
+        delete headers['anthropic-beta']
+      }
+      const removeSchema = (): void => {
         const oc = body.output_config as Record<string, unknown> | undefined
         if (oc) {
           delete oc.format
           if (Object.keys(oc).length === 0) delete body.output_config
         }
-      })
+      }
+      const addSchema = (): void => {
+        const oc = (body.output_config as Record<string, unknown> | undefined) ?? {}
+        oc.format = { type: 'json_schema', schema: opts.responseSchema!.schema }
+        body.output_config = oc
+      }
+      const hasCM = !!opts.contextManagement
+      const hasSchema = !!opts.responseSchema
+      // 스트리밍도 동일 — 최종 OK 응답이 body 를 가지면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
+      let res = await send()
+      if (!res.ok && res.status === 400 && (hasCM || hasSchema)) {
+        if (hasCM && hasSchema) {
+          // ① schema 만 제거(CM 보존) → ② 그래도 400 이면 schema 복원·CM 제거(schema 보존) → ③ 둘 다 제거.
+          removeSchema()
+          res = await send()
+          if (!res.ok && res.status === 400) {
+            addSchema()
+            removeCM()
+            res = await send()
+            if (!res.ok && res.status === 400) {
+              removeSchema()
+              res = await send()
+            }
+          }
+        } else if (hasCM) {
+          removeCM()
+          res = await send()
+        } else {
+          removeSchema()
+          res = await send()
+        }
+      }
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
