@@ -1103,7 +1103,7 @@ describe('GoogleProvider', () => {
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1 })
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
   })
 
   it('Gemini 2.5: thinking 활성 시 과소 maxOutputTokens 를 버퍼 기본(16384)으로 floor 한다(굶음 방지)', async () => {
@@ -1120,7 +1120,7 @@ describe('GoogleProvider', () => {
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'high' })
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'high', includeThoughts: true })
   })
 
   it('Gemini 3: low/medium 은 그대로, xhigh·max 는 high 로 수렴한다(미지원 티어 하향)', async () => {
@@ -1130,16 +1130,17 @@ describe('GoogleProvider', () => {
       const { http, calls } = mockHttp(okBody)
       await createGoogleProvider(cfg, http).chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
       const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-      expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: level })
+      expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: level, includeThoughts: true })
     }
   })
 
-  it('Gemini 3: effort 없는 thinking({})은 thinkingLevel 을 싣지 않되(모델 기본) starvation 가드는 적용한다', async () => {
+  it('Gemini 3: effort 없는 thinking({})은 thinkingLevel 없이 includeThoughts 만 싣고 starvation 가드를 적용한다', async () => {
+    // thinking 활성이면 thinkingLevel(effort) 유무와 독립적으로 사고 요약을 요청한다(includeThoughts).
     const { http, calls } = mockHttp(okBody)
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', maxTokens: 256 }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number } }
-    expect(body.generationConfig?.thinkingConfig).toBeUndefined()
+    expect(body.generationConfig?.thinkingConfig).toEqual({ includeThoughts: true })
     expect(body.generationConfig?.maxOutputTokens).toBe(16384)
   })
 
@@ -1182,7 +1183,7 @@ describe('GoogleProvider', () => {
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', thinking: { effort: 'low' } }, http)
     await p.chat([{ role: 'user', content: 'q' }])
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'low' })
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'low', includeThoughts: true })
   })
 
   it('per-call opts.thinking 이 config.thinking 기본값을 이긴다', async () => {
@@ -1190,7 +1191,7 @@ describe('GoogleProvider', () => {
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', thinking: { effort: 'low' } }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'high' })
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'high', includeThoughts: true })
   })
 
   // ── 적대리뷰 후속: 커버리지 갭 잠금(로직은 정확 확인됨 — 회귀 방지 특성화 테스트) ──────────
@@ -1200,7 +1201,7 @@ describe('GoogleProvider', () => {
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'medium' })
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'medium', includeThoughts: true })
   })
 
   it('Gemini 2.5(pro/flash/flash-lite): 전 effort 티어가 thinkingBudget=-1 로 수렴한다(1단계 불변식 잠금)', async () => {
@@ -1211,7 +1212,7 @@ describe('GoogleProvider', () => {
         await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
           .chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
         const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-        expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1 })
+        expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
       }
     }
   })

@@ -58,14 +58,20 @@ function thinkingLevelOf(effort: ReasoningEffort): 'low' | 'medium' | 'high' {
 
 /**
  * per-call/config thinking 노브 → generationConfig.thinkingConfig. 반환 undefined = 미전송(현행 동작).
- * 2.5 는 thinkingBudget(-1=동적), 3 은 thinkingLevel(effort 매핑)을 싣는다. 3 에서 effort 미지정(knob={})
- * 이면 모델 기본 사고에 맡겨 미전송한다(starvation 가드는 thinking 활성 여부로 별도 판단).
+ * thinking 활성(노브 있음 + 지원 모델)이면 사고 요약을 함께 요청한다(includeThoughts) — thinkingLevel/
+ * thinkingBudget 유무와 독립이라 3 에서 effort 미지정(knob={})이어도 요약은 받는다(모델 기본 사고 깊이 유지).
+ * 세대별 방언: 2.5 는 thinkingBudget(-1=AUTOMATIC 동적), 3 은 thinkingLevel(effort 매핑). 그 외 미지원
+ * 모델은 isThinkingModel 가드로 undefined(미전송 — 보내면 400/무시).
  */
 function resolveThinkingConfig(model: string, knob: ApiCallOptions['thinking']): Record<string, unknown> | undefined {
-  if (!knob) return undefined
-  if (GEMINI_3.test(model)) return knob.effort ? { thinkingLevel: thinkingLevelOf(knob.effort) } : undefined
-  if (GEMINI_25.test(model)) return { thinkingBudget: -1 }
-  return undefined
+  if (!knob || !isThinkingModel(model)) return undefined
+  const cfg: Record<string, unknown> = { includeThoughts: true }
+  if (GEMINI_3.test(model)) {
+    if (knob.effort) cfg.thinkingLevel = thinkingLevelOf(knob.effort)
+  } else {
+    cfg.thinkingBudget = -1 // GEMINI_25 (isThinkingModel 가드로 그 외는 도달 불가)
+  }
+  return cfg
 }
 
 interface GooglePart {
