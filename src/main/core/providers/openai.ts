@@ -275,8 +275,16 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       if (temperature !== undefined && !reasoning) body.temperature = temperature
       // per-call 노브 우선, 미지정이면 세션 기본값(config.thinking) — temperature/maxTokens 관용구와 동일.
       // 모델-인지 정규화: 비-reasoning 모델/effort 미지정이면 undefined 가 되어 reasoning_effort 미전송.
-      const reasoningEffort = resolveReasoningEffort(config.model, opts.thinking ?? config.thinking)
-      if (reasoningEffort) body.reasoning_effort = reasoningEffort
+      if (compatible) {
+        // opt-in flat 패스스루: 모델명 정규화(resolveReasoningEffort) 미사용 — OpenRouter 슬러그(claude/qwen 등)에서
+        // false 가 되어 silent-drop 되는 것을 회피. 'max' 는 OpenAI 스펙 비표준값이라 strict 서버 Literal 검증
+        // 400 회피용으로 'high' 다운매핑(그 외 low/medium/high/xhigh 는 그대로). cross-model 정규화는 게이트웨이 책임.
+        const effort = (opts.thinking ?? config.thinking)?.effort
+        if (effort !== undefined) body.reasoning_effort = effort === 'max' ? 'high' : effort
+      } else {
+        const reasoningEffort = resolveReasoningEffort(config.model, opts.thinking ?? config.thinking)
+        if (reasoningEffort) body.reasoning_effort = reasoningEffort
+      }
       if (opts.tools?.length) {
         body.tools = opts.tools.map((t) => ({
           type: 'function',

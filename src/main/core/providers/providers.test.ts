@@ -917,6 +917,42 @@ describe('OpenAiProvider', () => {
     )
     await expect(p.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/baseUrl/)
   })
+
+  it('openai-compatible: thinking.effort 를 flat reasoning_effort 로 패스스루(모델명 정규화 없이)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'qwen/qwen3-32b', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'hi' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+  })
+
+  it('openai-compatible: max effort 는 high 로 다운매핑', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'max' } },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'hi' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+  })
+
+  it('openai-compatible: effort 미지정이면 reasoning_effort 미전송', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1' },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'hi' }])
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+  })
 })
 
 describe('GoogleProvider', () => {
