@@ -972,6 +972,25 @@ describe('OpenAiProvider', () => {
     expect((JSON.parse(calls[1].body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
     expect(out.text).toBe('ok')
   })
+
+  it('openai-compatible: schema 가 400 의 원인이면 response_format 만 빼고 reasoning_effort 는 보존한다', async () => {
+    const calls: { body: string }[] = []
+    const http: HttpClient = async (_url, init) => {
+      calls.push({ body: init.body })
+      const b = JSON.parse(init.body) as Record<string, unknown>
+      if (b.response_format !== undefined) return { ok: false, status: 400, text: async () => 'response_format unsupported' }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }
+    }
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'hi' }], { responseSchema: { name: 'r', schema: { type: 'object' } } })
+    const last = JSON.parse(calls[calls.length - 1].body) as Record<string, unknown>
+    expect(last.response_format).toBeUndefined()
+    expect(last.reasoning_effort).toBe('high')
+    expect(out.text).toBe('ok')
+  })
 })
 
 describe('GoogleProvider', () => {

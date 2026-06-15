@@ -52,6 +52,7 @@ const DEFAULT_CAPABILITIES: Record<string, readonly AgentRole[]> = {
   gemini: ['planner', 'summarizer'],
   anthropic: ['reviewer'],
   openai: ['implementer'],
+  'openai-compatible': ['implementer'],
   google: ['planner', 'summarizer'],
 }
 
