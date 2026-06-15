@@ -8,6 +8,7 @@ import type {
   ToolResultBlock,
 } from '../providers/types'
 import type { ToolLoopDeps } from './types'
+import { DEFAULT_CONTEXT_POLICY, pruneToolResults } from './context'
 
 const DEFAULT_MAX_ITERATIONS = 8
 
@@ -86,12 +87,21 @@ export async function runToolLoop(
   const audit = deps.onAudit ?? NOOP_AUDIT
   const onToolStep = opts.onToolStep
   const tools = deps.registry.list()
+  // context management 정책: undefined → 기본(default-on), null → 비활성.
+  const policy = deps.contextPolicy === undefined ? DEFAULT_CONTEXT_POLICY : deps.contextPolicy
   // 매 iter 의 비용을 누적한다 — 도구 왕복(최대 max 라운드)의 chat 호출이 각각 토큰을 소모하므로
   // 마지막 응답만 반환하면 이전 라운드 비용이 통째로 누락된다(usage-accounting).
   let usageAcc: TokenUsage | undefined
 
   for (let iter = 0; iter < max; iter++) {
-    const result = await provider.chat(turns, { ...opts, tools, toolChoice: 'auto' })
+    // provider 분기 없이 capability 플래그만 본다: native(anthropic)는 wire 위임, 그 외는 client-side
+    // 가지치기. 둘 다 chat 직전에 적용해 매 라운드 누적을 경계한다.
+    const chatOpts: ApiCallOptions = { ...opts, tools, toolChoice: 'auto' }
+    if (policy) {
+      if (provider.nativeContextManagement) chatOpts.contextManagement = policy
+      else pruneToolResults(turns, policy)
+    }
+    const result = await provider.chat(turns, chatOpts)
     usageAcc = addUsage(usageAcc, result.usage)
     // 종료는 finishReason 가 아니라 toolCalls 유무로 판단한다 — Gemini 는 functionCall 응답에도
     // finishReason 를 'stop'(STOP)으로 주므로 finishReason 게이팅은 Gemini 도구호출을 통째로 건너뛴다.

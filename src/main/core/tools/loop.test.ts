@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolStep } from '../../../shared/types'
-import type { ApiProvider, ChatResult, ChatTurn, ContentBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock } from '../providers/types'
+import type { ApiCallOptions, ApiProvider, ChatResult, ChatTurn, ContentBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock } from '../providers/types'
 import type { ApprovalGate } from '../safety/approval'
 import { createToolRegistry } from './registry'
 import { runToolLoop } from './loop'
 import type { FleetTool } from './types'
+import { DEFAULT_CONTEXT_POLICY, PRUNE_STUB } from './context'
 
 const approveAll: ApprovalGate = { async request() { return 'approved' } }
 const rejectAll: ApprovalGate = { async request() { return 'rejected' } }
@@ -359,5 +360,92 @@ describe('runToolLoop', () => {
         maxIterations: 3,
       }),
     ).rejects.toMatchObject({ usage: { inputTokens: 15, outputTokens: 6 } }) // 3 라운드 합산
+  })
+
+  // ── context management 라우팅 ──────────────────────────────────────────────
+  /** turns 와 chat opts 를 모두 캡처하고 nativeContextManagement 플래그를 설정 가능한 provider. */
+  function capturingProvider(native: boolean, script: ChatResult[]): {
+    provider: ApiProvider
+    opts: ApiCallOptions[]
+    turns: ChatTurn[][]
+  } {
+    const opts: ApiCallOptions[] = []
+    const turns: ChatTurn[][] = []
+    let i = 0
+    const provider: ApiProvider = {
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
+      nativeContextManagement: native || undefined,
+      async chat(messages, o = {}) {
+        turns.push(structuredClone(messages))
+        opts.push(o)
+        return script[Math.min(i++, script.length - 1)]
+      },
+    }
+    return { provider, opts, turns }
+  }
+
+  it('native provider 에는 contextManagement 를 opts 로 싣고 turns 를 prune 하지 않는다', async () => {
+    const { provider, opts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 2 },
+    })
+    expect(opts[0].contextManagement).toEqual({ triggerInputTokens: 100, keepRecentToolUses: 2 })
+  })
+
+  it('native 미지원 provider: contextManagement 미전달 + 임계 초과 시 오래된 tool_result stub', async () => {
+    const big = 'x'.repeat(4000)
+    const { provider, opts, turns } = capturingProvider(false, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    const start: ChatTurn[] = [
+      { role: 'assistant', content: [toolUse('t0', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
+      { role: 'assistant', content: [toolUse('t1', 'echo', {})] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: big }] },
+      { role: 'user', content: 'go' },
+    ]
+    await runToolLoop(provider, start, {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: { triggerInputTokens: 100, keepRecentToolUses: 1 },
+    })
+    expect(opts[0].contextManagement).toBeUndefined()
+    const captured = turns[0]
+    expect((captured[1].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // 오래된 t0 정리
+    expect((captured[3].content as ToolResultBlock[])[0].content).toBe(big) // 최근 t1 보존
+  })
+
+  it('contextPolicy: null 이면 native 위임도 client-side prune 도 하지 않는다', async () => {
+    const big = 'x'.repeat(4000)
+    const { provider: nativeP, opts: nativeOpts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    await runToolLoop(nativeP, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: null,
+    })
+    expect(nativeOpts[0].contextManagement).toBeUndefined()
+
+    const { provider: clientP, turns } = capturingProvider(false, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    const start: ChatTurn[] = [
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big }] },
+      { role: 'user', content: 'go' },
+    ]
+    await runToolLoop(clientP, start, {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+      contextPolicy: null,
+    })
+    expect((turns[0][0].content as ToolResultBlock[])[0].content).toBe(big) // prune 안 함
+  })
+
+  it('contextPolicy 미지정이면 DEFAULT_CONTEXT_POLICY 를 native opts 로 싣는다', async () => {
+    const { provider, opts } = capturingProvider(true, [{ text: 'ok', toolCalls: [], finishReason: 'stop' }])
+    await runToolLoop(provider, [{ role: 'user', content: 'go' }], {}, {
+      registry: createToolRegistry([echoTool]),
+      gate: approveAll,
+    })
+    expect(opts[0].contextManagement).toEqual(DEFAULT_CONTEXT_POLICY)
   })
 })

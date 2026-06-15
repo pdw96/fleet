@@ -166,6 +166,11 @@ export interface ApiCallOptions {
    * Anthropic(adaptive thinking)·OpenAI(reasoning_effort) 매핑. Gemini 는 후속. #11-thinking.
    */
   thinking?: { effort?: ReasoningEffort }
+  /**
+   * provider-중립 context management 정책. native 지원 provider(anthropic)는 이를 wire
+   * `context_management` 로 변환한다. native 미지원 provider 는 무시한다(루프가 client-side 처리).
+   */
+  contextManagement?: ContextManagementPolicy
 }
 
 // ── 주입 가능한 최소 HTTP 클라이언트 (테스트에서 mock) ──────────────────────
@@ -203,6 +208,8 @@ export interface ApiProvider {
   readonly id: string
   readonly provider: ApiProviderConfig['provider']
   readonly model: string
+  /** native server-side context management(예: anthropic Messages API context_management) 지원 여부. */
+  readonly nativeContextManagement?: boolean
   /** 대화 턴 배열 → 구조화된 어시스턴트 응답(text · 도구호출 · 종료사유 · 사용량). */
   chat(messages: ChatTurn[], opts?: ApiCallOptions): Promise<ChatResult>
 }
