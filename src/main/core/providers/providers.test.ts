@@ -953,6 +953,25 @@ describe('OpenAiProvider', () => {
     await p.chat([{ role: 'user', content: 'hi' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
   })
+
+  it('openai-compatible: reasoning_effort 가 400 이면 그 필드만 빼고 1회 재시도', async () => {
+    const calls: { body: string }[] = []
+    const http: HttpClient = async (_url, init) => {
+      calls.push({ body: init.body })
+      const hasReasoning = (JSON.parse(init.body) as Record<string, unknown>).reasoning_effort !== undefined
+      if (hasReasoning) return { ok: false, status: 400, text: async () => 'unknown param: reasoning_effort' }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }
+    }
+    const p = createOpenAiProvider(
+      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'hi' }])
+    expect(calls).toHaveLength(2)
+    expect((JSON.parse(calls[0].body) as Record<string, unknown>).reasoning_effort).toBe('high')
+    expect((JSON.parse(calls[1].body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+    expect(out.text).toBe('ok')
+  })
 })
 
 describe('GoogleProvider', () => {

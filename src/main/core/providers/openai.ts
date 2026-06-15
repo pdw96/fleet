@@ -309,8 +309,18 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       const headers = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }
       const send = (): Promise<HttpResponse> =>
         http(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
+      // compatible: reasoning_effort 가 실린 요청이 400 이면 그 필드만 빼고 1회 재시도(strict OpenAI-호환 서버는
+      // 미지원 파라미터에 400). body 를 변이하므로 이후 schema 폴백 재시도도 reasoning_effort 없이 나간다.
+      const sendWithReasoningFallback = async (): Promise<HttpResponse> => {
+        const r = await send()
+        if (compatible && body.reasoning_effort !== undefined && !r.ok && r.status === 400) {
+          delete body.reasoning_effort
+          return send()
+        }
+        return r
+      }
       // 스트리밍도 동일 가드 — 400 재시도 응답이 OK 면 아래 readStream 경로가 그대로 동작한다(#26 후속 b).
-      const res = await sendWithSchemaFallback(send, !!opts.responseSchema, () => { delete body.response_format })
+      const res = await sendWithSchemaFallback(sendWithReasoningFallback, !!opts.responseSchema, () => { delete body.response_format })
 
       if (streaming && res.ok && res.body) return readStream(res.body, opts.onToken!)
 
