@@ -52,7 +52,7 @@ export interface StoreState {
   rooms: ChatRoom[]
   messages: ChatMessage[]
   events: FleetEvent[]
-  /** 재시작 복원용 영속 세션 디스크립터(CLI 만 — secret 가능 필드·API 키 제외). */
+  /** 재시작 복원용 영속 세션 디스크립터(cli·api 판별 유니온 — 평문 apiKey 미기록, secret 은 암호문만). */
   sessions: PersistedSession[]
   /** 프로젝트 탭에서 마지막으로 본 프로젝트(렌더러 복원용). 미설정이면 부재. */
   lastActiveProjectId?: string

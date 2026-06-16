@@ -258,7 +258,8 @@ describe('memory store — persisted sessions', () => {
     store.patchSessionCapabilities('api:openai-1', ['planner', 'reviewer'])
     const s = store.listSessions().find((x) => x.id === 'api:openai-1')
     expect(s?.capabilities).toEqual(['planner', 'reviewer'])
-    expect(s && s.kind === 'api' && s.encryptedApiKey).toBe('v1:ZW5j')
+    if (s?.kind !== 'api') throw new Error('api 세션이어야 한다')
+    expect(s.encryptedApiKey).toBe('v1:ZW5j') // capabilities patch 가 암호문을 건드리지 않음
   })
 
   it('patchSessionCapabilities 는 미존재 id 에 no-op(throw 없음)', () => {
