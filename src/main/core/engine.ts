@@ -174,9 +174,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   // 주입이 없으면 타임아웃·재시도를 갖춘 기본 HTTP 를 쓴다(네트워크 무한 대기/일시 오류 방어).
   const http = opts.http ?? createResilientHttp(defaultHttp, { timeoutMs: LLM_HTTP_TIMEOUT_MS })
   const runner = opts.runner ?? defaultRunner
-  // Task 4(영속 register)·Task 5(복원 decrypt)에서 사용된다 — 지금은 주입 결선만.
+  // Task 4(영속 register)·Task 5(복원 decrypt)에서 사용된다.
   const secretCrypto = opts.secretCrypto ?? NOOP_CRYPTO
-  void secretCrypto // noUnusedLocals 억제 — Task 4 에서 실사용 시 이 줄을 제거한다.
 
   // 안전 계층: 파일 쓰기는 caution(자동승인), 민감/삭제는 destructive(approver 필요)로 게이트한다.
   const appendAudit = (type: string, data: Record<string, unknown>): void => {
@@ -405,7 +404,19 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
     registerApiSession(config) {
       const descriptor = buildApiSession(config)
-      // 영속은 Task 4 에서 추가(현재는 register 만 — 동작 무변경).
+      // 영속(조건부): 키가 있고 OS 암호화가 가능할 때만 암호문으로 기록한다 — 평문 키는 store 에 절대 안 남긴다.
+      // 미가용(키링 부재 등)이면 미영속 = 현행 동작(재시작 시 재입력). 좀비(키 없는) 세션은 만들지 않는다.
+      // 구조분해 후 분해된 apiKey 바인딩을 직접 검사한다(config.apiKey 좁히기는 별 바인딩 apiKey 에 전파 안 됨).
+      const { apiKey, ...rest } = config
+      if (apiKey && secretCrypto.isAvailable()) {
+        store.putSession({
+          kind: 'api',
+          id: descriptor.id,
+          config: rest,
+          encryptedApiKey: secretCrypto.encrypt(apiKey),
+          capabilities: descriptor.capabilities,
+        })
+      }
       store.appendEvent({ type: 'session.registered', data: { id: descriptor.id, kind: 'api', provider: config.provider } })
       return descriptor
     },

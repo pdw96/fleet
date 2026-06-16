@@ -61,6 +61,18 @@ function scriptedHttp(bodies: string[]): { http: HttpClient; calls: string[] } {
   return { http, calls }
 }
 
+/** 가역 fake SecretCrypto — base64 왕복 + v1: 프리픽스. 테스트에서 평문/암호문 대조용. */
+function fakeCrypto(available = true): import('./secret/types').SecretCrypto {
+  return {
+    isAvailable: () => available,
+    encrypt: (p) => 'v1:' + Buffer.from(p, 'utf8').toString('base64'),
+    decrypt: (t) => {
+      if (!t.startsWith('v1:')) throw new Error('bad token')
+      return Buffer.from(t.slice(3), 'base64').toString('utf8')
+    },
+  }
+}
+
 /**
  * 프롬프트 내용에 따라 역할별 응답을 돌려주는 러너.
  * 편집 모드(opts.cwd 지정)에선 워크스페이스에 파일을 직접 만들어 실제 git diff 를 발생시킨다.
@@ -1323,13 +1335,36 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     expect(registered).toHaveLength(1)
   })
 
-  it('API 세션은 영속하지 않는다(경계)', () => {
+  it('API 세션은 암호화 미주입 시 영속하지 않는다(경계 — Epic B 는 crypto 주입 필요)', () => {
     const store = createMemoryStore()
     const e1 = createFleetEngine({ store, runner: roleRunner })
     e1.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'Claude API', model: 'claude-sonnet-4-6', apiKey: 'k' })
 
     const e2 = createFleetEngine({ store, runner: roleRunner })
     expect(e2.listSessions()).toHaveLength(0)
+  })
+
+  it('암호화 가능 시 API 세션을 암호문으로 영속한다(평문 키 미기록)', () => {
+    const store = createMemoryStore()
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto() })
+    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    const persisted = store.listSessions()
+    expect(persisted).toHaveLength(1)
+    const ps = persisted[0]
+    expect(ps.kind).toBe('api')
+    expect(ps.id).toBe('api:openai-1')
+    expect(ps.kind === 'api' && ps.encryptedApiKey.startsWith('v1:')).toBe(true)
+    expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret')
+    expect(ps.kind === 'api' && 'apiKey' in ps.config).toBe(false)
+  })
+
+  it('암호화 미가용(crypto 미주입)이면 API 세션을 영속하지 않는다(graceful degrade)', () => {
+    const store = createMemoryStore()
+    const engine = createFleetEngine({ store }) // secretCrypto 미주입 → no-op(isAvailable=false)
+    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    expect(store.listSessions()).toHaveLength(0)
+    expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret')
   })
 
   it('mcpConfig 는 런타임엔 적용되나 영속에서 제외된다(secret 평문 금지)', () => {
