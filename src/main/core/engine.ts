@@ -31,6 +31,7 @@ import { defaultHttp, type HttpClient } from './providers/types'
 import { createApprovalGate } from './safety/approval'
 import { createApiSession } from './session/api-session'
 import { createCliSession } from './session/cli-session'
+import { anySignal } from './session/abort'
 import { createSessionManager, type SessionManager } from './session/manager'
 import { createMcpHost } from './mcp/host'
 import type { McpHost } from './mcp/types'
@@ -149,6 +150,8 @@ export interface FleetEngine {
   askLlm(roomId: string, llmId: string, opts?: AskOptions): Promise<ChatMessage>
   /** 여러 LLM 이 방의 대화를 보고 rounds 회 순차 발언 (AI 간 자동 토론). */
   discussRoom(roomId: string, llmIds: string[], rounds?: number): Promise<ChatMessage[]>
+  /** 진행 중인 채팅 발언(ask/discuss)을 취소한다(in-flight 호출 abort). 미존재/이미 취소 roomId 는 무시. */
+  cancelChat(roomId: string): void
   /**
    * 채팅 진행 상태 스냅샷(단일 소스 오브 트루스). 렌더러가 ChatPanel 마운트 시 조회해
    * 진행 표시·라이브 말풍선을 복원한다. 탭 전환으로 렌더러 state 가 날아가도 main 이 권위.
@@ -207,17 +210,28 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   >()
   /** roomId → 진행 중 ask/discuss 연산 수. 0→1 에서 busy, 1→0 에서 idle 을 방출한다. */
   const activeOps = new Map<string, number>()
+  /**
+   * roomId → 진행 중 채팅(ask/discuss) 취소 컨트롤러. 첫 연산 경계(enterOp 0→1)에서 생성,
+   * 마지막 연산 경계(exitOp 1→0)에서 제거한다. cancelChat 이 abort 해 in-flight session.send 를 끊는다.
+   * 프로젝트 실행의 activeRuns(projectId → AbortController)와 동형 — 채팅 취소(cancelChat)의 권위 소스.
+   */
+  const activeChatRuns = new Map<string, AbortController>()
 
   const enterOp = (roomId: string): void => {
     const n = (activeOps.get(roomId) ?? 0) + 1
     activeOps.set(roomId, n)
-    if (n === 1) emitChat?.({ kind: 'busy', roomId }) // 첫 연산 경계
+    if (n === 1) {
+      // 첫 연산 경계: 이 방 전용 취소 컨트롤러를 만든다. 같은 방의 동시 연산은 이 컨트롤러를 공유한다.
+      activeChatRuns.set(roomId, new AbortController())
+      emitChat?.({ kind: 'busy', roomId })
+    }
   }
   const exitOp = (roomId: string): void => {
     const n = (activeOps.get(roomId) ?? 1) - 1
     if (n <= 0) {
       activeOps.delete(roomId)
-      emitChat?.({ kind: 'idle', roomId }) // 마지막 연산 경계
+      activeChatRuns.delete(roomId) // 마지막 연산 경계: 정리(다음 발언은 새 컨트롤러를 받는다)
+      emitChat?.({ kind: 'idle', roomId })
     } else {
       activeOps.set(roomId, n)
     }
@@ -605,8 +619,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     askLlm(roomId, llmId, askOpts) {
       // 연산 경계(busy/idle)는 한 발언 전체를 감싼다 — 단일 질문도 진행 표시 대상.
       enterOp(roomId)
-      return streamedAsk(createChatController({ store, sessions, roomId }), roomId, llmId, askOpts).finally(() =>
-        exitOp(roomId),
+      // 방 취소 컨트롤러 신호(cancelChat)를 발언에 싣되, 호출자가 자체 signal 을 넘겼으면 덮어쓰지 않고
+      // 합성한다(둘 중 하나라도 abort 시 취소) — 코어 호출자의 per-call 타임아웃/취소가 유실되지 않게.
+      const signal = anySignal(askOpts?.signal, activeChatRuns.get(roomId)?.signal)
+      return streamedAsk(createChatController({ store, sessions, roomId }), roomId, llmId, { ...askOpts, signal }).finally(
+        () => exitOp(roomId),
       )
     },
 
@@ -614,12 +631,15 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // busy 는 토론 시작에 1회, idle 은 전체 토론 종료에 1회 — 턴 사이 공백에도 진행 표시가 유지된다.
       enterOp(roomId)
       try {
+        const signal = activeChatRuns.get(roomId)?.signal
         const controller = createChatController({ store, sessions, roomId })
         const out: ChatMessage[] = []
         for (let r = 0; r < rounds; r++) {
           for (const id of llmIds) {
+            // 취소되면 남은 턴을 시작하지 않는다 — in-flight 발언은 signal 이 session.send 에서 중단한다.
+            if (signal?.aborted) return out
             try {
-              out.push(await streamedAsk(controller, roomId, id))
+              out.push(await streamedAsk(controller, roomId, id, { signal }))
             } catch {
               // 한 LLM 의 실패가 나머지 토론을 중단시키지 않게 격리한다(에러는 streamedAsk 가 스트림 이벤트로 방출).
             }
@@ -629,6 +649,16 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       } finally {
         exitOp(roomId)
       }
+    },
+
+    cancelChat(roomId) {
+      const c = activeChatRuns.get(roomId)
+      if (!c || c.signal.aborted) return // 미존재 방·이미 취소 진행 중 → 무해한 no-op(중복 chat.cancelled 방지)
+      c.abort()
+      // 진행 중 발언(session.send)이 abort 로 거부되며 streamedAsk 가 error 를, exitOp 가 idle 을 방출한다.
+      // activeChatRuns 에서 즉시 제거하지 않는다 — 정리는 마지막 연산 경계(exitOp)가 수행한다. 그 전의
+      // 중복 cancelChat 은 위 signal.aborted 가드로 흡수된다(cancelRun 의 activeRuns 유지 패턴과 동형).
+      store.appendEvent({ type: 'chat.cancelled', message: '채팅 취소됨', data: { roomId } })
     },
 
     getChatActivity() {
@@ -661,6 +691,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // 건드리거나 무한 대기(타임아웃 복원 전이라면)하는 것을 막는다. abort 는 동기라 정리보다 앞선다.
       for (const c of activeRuns.values()) c.abort()
       activeRuns.clear()
+      // 진행 중 채팅 발언도 동일하게 abort 한다 — 세션 dispose 는 in-flight send 를 끊지 못하므로
+      // (CLI 자식 미킬·API HTTP 미중단) 컨트롤러 abort 만이 orphan 자식/미정착 send 를 막는다(activeRuns 와 대칭).
+      for (const c of activeChatRuns.values()) c.abort()
+      activeChatRuns.clear()
       // 한쪽 정리 실패가 다른 쪽(특히 MCP 자식 프로세스) 정리를 막지 않도록 격리한다 — 좀비 방지가 목적.
       await Promise.allSettled([sessions.disposeAll(), mcpHost.dispose()])
     },

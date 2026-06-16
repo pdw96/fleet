@@ -272,6 +272,17 @@ export function ChatPanel({ sessions }: Props) {
     }
   }
 
+  // 진행 중 발언(ask/discuss)을 취소한다 — main 의 AbortController 를 abort 해 in-flight LLM 호출을 끊는다.
+  // 진행 해제(idle)는 main 의 이벤트가 권위라 여기서 busy 를 직접 끄지 않는다(에러/idle 스트림이 정리).
+  async function cancelChat() {
+    if (!activeRoom) return
+    try {
+      await window.fleet.cancelChat(activeRoom)
+    } catch (e) {
+      console.error('채팅 취소 실패', e)
+    }
+  }
+
   // 활성 방이 진행 중인지 — 진행 표시(버튼 라벨/비활성)의 단일 근거.
   const busy = activeRoom ? busyRooms.has(activeRoom) : false
   const liveBubbles = Object.values(streams).filter((s) => s.roomId === activeRoom)
@@ -376,6 +387,11 @@ export function ChatPanel({ sessions }: Props) {
                   <span className="note-warn" style={{ fontSize: 11 }}>
                     세션 2개 이상 필요
                   </span>
+                )}
+                {busy && (
+                  <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => void cancelChat()}>
+                    취소
+                  </button>
                 )}
               </div>
               <div className="chiprow">

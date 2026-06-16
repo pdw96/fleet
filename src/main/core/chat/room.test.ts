@@ -162,4 +162,68 @@ describe('ChatController', () => {
     await ctrl.askLlm('s', { onToolStep: (s) => steps.push(`${s.name}:${s.phase}`) })
     expect(steps).toEqual(['read_file:running'])
   })
+
+  it('opts.signal 을 session.send 로 그대로 전달한다(채팅 취소 배선)', async () => {
+    const { sessions, ctrl } = setup()
+    let seen: SendOptions | undefined
+    const session: LlmSession = {
+      id: 's',
+      descriptor: { id: 's', kind: 'api', displayName: 'S', ref: 's', model: '' },
+      async send(_prompt, opts) {
+        seen = opts
+        return 'ok'
+      },
+      async dispose() {},
+    }
+    sessions.add(session)
+
+    const { signal } = new AbortController()
+    await ctrl.askLlm('s', { signal })
+    expect(seen?.signal).toBe(signal) // 하위 session.send 의 취소 신호로 전달돼야 한다
+  })
+
+  it('discuss 는 signal 을 각 발언에 전달하고 abort 시 남은 턴을 건너뛴다', async () => {
+    const { sessions, ctrl } = setup()
+    const seenSignals: (AbortSignal | undefined)[] = []
+    const ac = new AbortController()
+    const mk = (id: string): LlmSession => ({
+      id,
+      descriptor: { id, kind: 'api', displayName: id, ref: id, model: '' },
+      async send(_prompt, opts) {
+        seenSignals.push(opts?.signal)
+        ac.abort() // 첫 발언 직후 취소 → 둘째 발언은 시작되지 않아야 한다
+        return `${id}응답`
+      },
+      async dispose() {},
+    })
+    sessions.add(mk('a'))
+    sessions.add(mk('b'))
+
+    const out = await ctrl.discuss('주제', ['a', 'b'], 1, ac.signal)
+
+    expect(seenSignals).toEqual([ac.signal]) // 첫 발언만 실행 + signal 전달
+    expect(out).toHaveLength(1) // 둘째 발언(b)은 abort 로 건너뜀
+  })
+
+  it('discuss 는 시작 전 이미 abort 된 signal 이면 어떤 발언도 시작하지 않는다', async () => {
+    const { sessions, ctrl } = setup()
+    let calls = 0
+    const session: LlmSession = {
+      id: 'a',
+      descriptor: { id: 'a', kind: 'api', displayName: 'A', ref: 'a', model: '' },
+      async send() {
+        calls++
+        return '응답'
+      },
+      async dispose() {},
+    }
+    sessions.add(session)
+
+    const ac = new AbortController()
+    ac.abort() // 사전 취소
+    const out = await ctrl.discuss('주제', ['a'], 1, ac.signal)
+
+    expect(calls).toBe(0)
+    expect(out).toHaveLength(0)
+  })
 })

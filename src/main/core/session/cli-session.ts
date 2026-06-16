@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { CliAdapter, CliSessionSpec, LlmDescriptor } from '../../../shared/types'
 import { defaultRunner, type CommandResult, type CommandRunner } from '../cli/detect'
 import { cleanCliOutput, extractCodexThreadId, parseStreamLine } from '../cli/output'
+import { settleOrAbort } from './abort'
 import type { CreateCliSessionOptions, LlmSession, SendOptions } from './types'
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -181,15 +182,22 @@ export function createCliSession(
     stateful: !!spec,
     async send(prompt: string, sendOpts: SendOptions = {}): Promise<string> {
       const prior = chain
-      const result = (async () => {
+      let started = false // 실제 자식 spawn 진입 여부 — 이후의 abort 는 조기 거부하지 않고 runner 정착(killTree/close)을 따른다.
+      const link = (async () => {
         await prior.catch(() => {}) // 앞 호출의 성공/실패와 무관하게 순서만 보장
+        // 큐 대기 중 취소됐으면 자식 spawn 없이 중단한다(낭비 방지). 체인 순서는 보존되므로 다음 send 는
+        // 여전히 이 링크의 정착을 기다린다(직렬화 유지). 취소 즉시성은 아래 settleOrAbort 가 담당.
+        sendOpts.signal?.throwIfAborted()
+        started = true
         // workspace 가 있으면 편집 모드가 최우선(항상 fresh/stateless): cwd=workspace 에서 파일 직접 편집.
         if (sendOpts.workspace) return runEditing(prompt, sendOpts.workspace, sendOpts)
         // fresh 면 stateful 세션이라도 헤드리스 1회(재개 상태 불변) → 오케스트레이터 독립 호출.
         return spec && !sendOpts.fresh ? runStateful(spec, prompt, sendOpts) : runStateless(prompt, sendOpts)
       })()
-      chain = result.catch(() => {}) // 직렬화 체인은 에러로 끊기지 않게
-      return result
+      chain = link.catch(() => {}) // 직렬화 체인은 에러로 끊기지 않게(순서만 보존)
+      // 큐 대기 중에만 취소를 즉시 반영한다. 실행 시작(자식 spawn) 후의 취소는 runner 의 killTree/close-후-정착을
+      // 따른다 — 오케스트레이터 revert 가 살아있는 자식과 경합하지 않게 보장(직렬화 링크는 위 chain 이 보존).
+      return settleOrAbort(link, sendOpts.signal, () => started)
     },
     async dispose(): Promise<void> {
       // stateless 1회 실행은 유지 리소스 없음. stateful 세션 파일의 '사후 정리'는 CLI 별로

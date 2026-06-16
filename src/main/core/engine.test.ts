@@ -1296,6 +1296,225 @@ describe('FleetEngine 채팅 진행 상태(getChatActivity / busy·idle)', () =>
   })
 })
 
+describe('FleetEngine 채팅 취소(cancelChat)', () => {
+  // abort 까지 hang 하는 채팅 세션 — cancelChat 의 in-flight 발언 취소 시뮬레이션용(프로젝트 cancelRun 테스트와 동형).
+  function hangingChatSession(id = 'a') {
+    const state: { signal?: AbortSignal } = {}
+    const session = {
+      id,
+      descriptor: { id, kind: 'api' as const, displayName: id.toUpperCase(), ref: id, model: '' },
+      async send(_prompt: string, opts?: { signal?: AbortSignal }) {
+        state.signal = opts?.signal
+        return await new Promise<string>((_resolve, reject) => {
+          const signal = opts?.signal
+          if (signal?.aborted) return reject(new Error('aborted'))
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+      },
+      async dispose() {},
+    }
+    return { session, state }
+  }
+
+  it('cancelChat 은 in-flight 발언을 abort 하고 chat.cancelled 를 남긴 뒤 busy 를 해제한다', async () => {
+    const sessions = createSessionManager()
+    const { session, state } = hangingChatSession('a')
+    sessions.add(session)
+    const engine = createFleetEngine({ sessions })
+    const room = engine.createRoom('방', ['a'])
+
+    const p = engine.askLlm(room.id, 'a') // await 하지 않고 in-flight 로 띄움
+    await vi.waitFor(() => expect(state.signal).toBeDefined()) // signal 이 session.send 까지 도달
+    expect(state.signal?.aborted).toBe(false) // 취소는 비행 중에 일어난다(사전 취소 아님)
+    expect(engine.getChatActivity().busyRooms).toEqual([room.id])
+
+    engine.cancelChat(room.id)
+
+    await expect(p).rejects.toThrow() // abort 로 발언이 거부됨
+    expect(state.signal?.aborted).toBe(true)
+    // 감사 로그(store)에 chat.cancelled(roomId 포함)가 남는다 — run.cancelled 와 대칭.
+    const cancelled = engine.listEvents().find((e) => e.type === 'chat.cancelled')
+    expect(cancelled?.data?.['roomId']).toBe(room.id)
+    // 종료 후 busy 해제(idle) — getChatActivity 가 비어야 한다.
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
+  })
+
+  it('cancelChat 미존재 roomId 는 무해한 no-op 이다(chat.cancelled 미방출)', () => {
+    const engine = createFleetEngine()
+    expect(() => engine.cancelChat('does-not-exist')).not.toThrow()
+    expect(engine.listEvents().some((e) => e.type === 'chat.cancelled')).toBe(false)
+  })
+
+  it('cancelChat 중복 호출은 chat.cancelled 를 한 번만 남긴다(이미 abort → no-op)', async () => {
+    const sessions = createSessionManager()
+    const { session, state } = hangingChatSession('a')
+    sessions.add(session)
+    const engine = createFleetEngine({ sessions })
+    const room = engine.createRoom('방', ['a'])
+
+    const p = engine.askLlm(room.id, 'a')
+    await vi.waitFor(() => expect(state.signal).toBeDefined())
+
+    engine.cancelChat(room.id)
+    engine.cancelChat(room.id) // 이미 abort 됨 → no-op(중복 취소 이벤트 방지)
+
+    await expect(p).rejects.toThrow()
+    expect(engine.listEvents().filter((e) => e.type === 'chat.cancelled')).toHaveLength(1)
+  })
+
+  it('discussRoom 도중 cancelChat 은 현재 발언을 끊고 남은 턴을 건너뛴다', async () => {
+    const sessions = createSessionManager()
+    const { session, state } = hangingChatSession('a')
+    sessions.add(session)
+    // 둘째 세션은 즉시 응답 — 취소로 결코 도달하지 않아야 한다.
+    let bCalls = 0
+    sessions.add({
+      id: 'b',
+      descriptor: { id: 'b', kind: 'api', displayName: 'B', ref: 'b', model: '' },
+      async send() {
+        bCalls++
+        return 'b응답'
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ sessions })
+    const room = engine.createRoom('방', ['a', 'b'])
+
+    const p = engine.discussRoom(room.id, ['a', 'b'], 1)
+    await vi.waitFor(() => expect(state.signal).toBeDefined()) // 첫 발언(a) in-flight
+
+    engine.cancelChat(room.id)
+
+    const out = await p // discuss 는 a 의 거부를 격리하고 b 를 건너뛴 채 종료
+    expect(bCalls).toBe(0) // 취소 후 둘째 발언은 시작되지 않음
+    expect(out).toHaveLength(0) // a 거부(격리) + b 스킵 → 영속 메시지 없음
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
+  })
+
+  it('dispose 는 진행 중 채팅 발언을 abort 한다(종료 중 in-flight chat 이 계속 돌지 않게)', async () => {
+    // CLI 세션 dispose 는 자식을 죽이지 않으므로(no-op), 컨트롤러 abort 만이 in-flight 발언을
+    // 끊는 유일한 수단이다 — cancelRun/dispose(activeRuns) 의 종료-시-abort 패턴과 동형이어야 한다.
+    const sessions = createSessionManager()
+    const { session, state } = hangingChatSession('a')
+    sessions.add(session)
+    const engine = createFleetEngine({ sessions })
+    const room = engine.createRoom('방', ['a'])
+
+    const p = engine.askLlm(room.id, 'a')
+    await vi.waitFor(() => expect(state.signal).toBeDefined())
+    expect(state.signal?.aborted).toBe(false)
+
+    await engine.dispose() // activeChatRuns 를 abort 해야 hang 중인 발언이 풀린다
+
+    expect(state.signal?.aborted).toBe(true)
+    await expect(p).rejects.toThrow() // abort 전파 → 발언 거부
+  })
+
+  it('동일 방 동시 발언은 컨트롤러를 공유 — cancelChat 한 번이 둘 다 abort 하고 chat.cancelled 는 1회', async () => {
+    const sessions = createSessionManager()
+    const a = hangingChatSession('a')
+    const b = hangingChatSession('b')
+    sessions.add(a.session)
+    sessions.add(b.session)
+    const engine = createFleetEngine({ sessions })
+    const room = engine.createRoom('방', ['a', 'b'])
+
+    const pa = engine.askLlm(room.id, 'a')
+    const pb = engine.askLlm(room.id, 'b') // 같은 방, 동시 in-flight (activeOps 2)
+    await vi.waitFor(() => {
+      expect(a.state.signal).toBeDefined()
+      expect(b.state.signal).toBeDefined()
+    })
+    expect(a.state.signal).toBe(b.state.signal) // 단일 컨트롤러를 공유
+    expect(engine.getChatActivity().busyRooms).toEqual([room.id])
+
+    engine.cancelChat(room.id) // 한 번의 취소가 둘 다 끊어야 한다
+
+    await expect(pa).rejects.toThrow()
+    await expect(pb).rejects.toThrow()
+    expect(engine.listEvents().filter((e) => e.type === 'chat.cancelled')).toHaveLength(1)
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] }) // 마지막 연산에서 정리
+  })
+
+  it('취소 후 idle 이 된 방에서 새 발언은 미abort 컨트롤러를 받는다(좀비 컨트롤러 재사용 방지)', async () => {
+    const sessions = createSessionManager()
+    const signals: (AbortSignal | undefined)[] = []
+    sessions.add({
+      id: 'a',
+      descriptor: { id: 'a', kind: 'api', displayName: 'A', ref: 'a', model: '' },
+      async send(_p, opts) {
+        signals.push(opts?.signal)
+        return await new Promise<string>((_res, reject) => {
+          const s = opts?.signal
+          if (s?.aborted) return reject(new Error('aborted'))
+          s?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ sessions })
+    const room = engine.createRoom('방', ['a'])
+
+    const p1 = engine.askLlm(room.id, 'a')
+    await vi.waitFor(() => expect(signals).toHaveLength(1))
+    engine.cancelChat(room.id)
+    await expect(p1).rejects.toThrow() // 취소 거부 → exitOp 가 컨트롤러 제거(idle)
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
+
+    const p2 = engine.askLlm(room.id, 'a') // 새 발언
+    await vi.waitFor(() => expect(signals).toHaveLength(2))
+    expect(signals[1]?.aborted).toBe(false) // 직전 abort 된 컨트롤러를 재사용하지 않음
+
+    engine.cancelChat(room.id) // 정리
+    await expect(p2).rejects.toThrow()
+  })
+
+  it('askLlm 은 호출자 제공 signal 을 방 취소 컨트롤러로 덮어쓰지 않고 합성한다(Codex P3)', async () => {
+    // 코어 호출자가 AskOptions.signal(per-call 타임아웃·취소)을 넘기면 방 cancelChat 컨트롤러와 합성돼야
+    // 한다 — 덮어쓰면 호출자 취소가 session.send 에 도달하지 못해 호출이 계속 돈다.
+    const sessions = createSessionManager()
+    let sawSignal: AbortSignal | undefined
+    sessions.add({
+      id: 'a',
+      descriptor: { id: 'a', kind: 'api', displayName: 'A', ref: 'a', model: '' },
+      async send(_p, opts) {
+        sawSignal = opts?.signal
+        return await new Promise<string>((_res, reject) => {
+          const s = opts?.signal
+          if (s?.aborted) return reject(new Error('aborted'))
+          s?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ sessions })
+    const room = engine.createRoom('방', ['a'])
+
+    const callerAc = new AbortController()
+    const p = engine.askLlm(room.id, 'a', { signal: callerAc.signal })
+    await vi.waitFor(() => expect(sawSignal).toBeDefined())
+
+    callerAc.abort() // cancelChat 이 아니라 '호출자' signal 을 취소
+    await expect(p).rejects.toThrow() // 합성됐으므로 send 의 signal 도 abort → 거부(덮어썼다면 무반응)
+    expect(sawSignal?.aborted).toBe(true)
+  })
+
+  it('완료(idle)된 방에 cancelChat 은 no-op 이다(컨트롤러가 제거돼 좀비 취소가 없다)', async () => {
+    const engine = createFleetEngine({
+      runner: async () => ({ code: 0, stdout: '응답', stderr: '' }),
+    })
+    engine.registerCliSession('claude')
+    const room = engine.createRoom('방', ['cli:claude'])
+
+    await engine.askLlm(room.id, 'cli:claude') // 완료 → idle, 컨트롤러 제거됨
+    expect(engine.getChatActivity()).toEqual({ busyRooms: [], streams: [] })
+
+    engine.cancelChat(room.id) // 한 번도 busy 가 아닌 'does-not-exist' 와 달리, busy→idle 을 거친 방
+
+    expect(engine.listEvents().some((e) => e.type === 'chat.cancelled')).toBe(false)
+  })
+})
+
 describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
   it('CLI 세션을 동일 store 의 새 엔진에서 복원한다', () => {
     const store = createMemoryStore()

@@ -32,6 +32,7 @@ const api: FleetBridge = {
   postUserMessage: (roomId, content) => ipcRenderer.invoke('fleet:chat:postUser', roomId, content),
   askLlm: (roomId, llmId) => ipcRenderer.invoke('fleet:chat:askLlm', roomId, llmId),
   discussRoom: (roomId, llmIds, rounds) => ipcRenderer.invoke('fleet:chat:discuss', roomId, llmIds, rounds),
+  cancelChat: (roomId) => ipcRenderer.invoke('fleet:chat:cancel', roomId),
   getChatActivity: () => ipcRenderer.invoke('fleet:chat:activity'),
 
   // MCP 호스트
