@@ -73,6 +73,16 @@ function fakeCrypto(available = true): import('./secret/types').SecretCrypto {
   }
 }
 
+/** Authorization 헤더를 캡처하고 유효한 openai 응답을 돌려주는 http(복원 키 왕복 검증용). */
+function authCapturingHttp(): { http: HttpClient; authHeaders: string[] } {
+  const authHeaders: string[] = []
+  const http: HttpClient = async (_url, init) => {
+    authHeaders.push(init.headers['authorization'] ?? '')
+    return { ok: true, status: 200, text: async () => '{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}' }
+  }
+  return { http, authHeaders }
+}
+
 /**
  * 프롬프트 내용에 따라 역할별 응답을 돌려주는 러너.
  * 편집 모드(opts.cwd 지정)에선 워크스페이스에 파일을 직접 만들어 실제 git diff 를 발생시킨다.
@@ -1425,5 +1435,76 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('API 세션을 동일 store+crypto 의 새 엔진에서 복원한다', () => {
+    const store = createMemoryStore()
+    const crypto = fakeCrypto()
+    const e1 = createFleetEngine({ store, secretCrypto: crypto })
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    const e2 = createFleetEngine({ store, secretCrypto: crypto })
+    expect(e2.listSessions().map((s) => s.id)).toEqual(['api:openai-1'])
+  })
+
+  it('복원된 API 세션이 복호화된 키를 provider 호출에 사용한다(키 왕복)', async () => {
+    const store = createMemoryStore()
+    const crypto = fakeCrypto()
+    const e1 = createFleetEngine({ store, secretCrypto: crypto })
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    const { http, authHeaders } = authCapturingHttp()
+    const e2 = createFleetEngine({ store, secretCrypto: crypto, http })
+    const room = e2.createRoom('방', ['api:openai-1'])
+    e2.postUserMessage(room.id, '안녕?')
+    await e2.askLlm(room.id, 'api:openai-1')
+
+    expect(authHeaders.some((h) => h === 'Bearer sk-secret')).toBe(true)
+  })
+
+  it('암호화 미가용이면 영속된 API 세션을 복원하지 않는다(좀비 방지)', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, secretCrypto: fakeCrypto() })
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    expect(store.listSessions()).toHaveLength(1)
+
+    const e2 = createFleetEngine({ store, secretCrypto: fakeCrypto(false) })
+    expect(e2.listSessions()).toHaveLength(0)
+  })
+
+  it('복호화 실패(키회전)는 throw 없이 skip 하고 형제 CLI 는 복원한다', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
+    e1.registerCliSession('claude')
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    const rotated: import('./secret/types').SecretCrypto = {
+      isAvailable: () => true,
+      encrypt: (p) => 'v1:' + Buffer.from(p).toString('base64'),
+      decrypt: () => {
+        throw new Error('decrypt failed')
+      },
+    }
+    const e2 = createFleetEngine({ store, secretCrypto: rotated, runner: roleRunner })
+    expect(e2.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('손상 api 엔트리(config 없음)는 skip 하고 형제는 복원한다', () => {
+    const store = createMemoryStore()
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
+    store.putSession({ kind: 'api', id: 'api:broken' } as unknown as Parameters<typeof store.putSession>[0])
+
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('API 세션 복원은 session.registered 를 재방출하지 않는다(에코 0)', () => {
+    const store = createMemoryStore()
+    const crypto = fakeCrypto()
+    const e1 = createFleetEngine({ store, secretCrypto: crypto })
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    createFleetEngine({ store, secretCrypto: crypto })
+    const registered = store.listEvents().filter((ev) => ev.type === 'session.registered')
+    expect(registered).toHaveLength(1)
   })
 })

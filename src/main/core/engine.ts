@@ -362,20 +362,41 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const persisted = store.listSessions()
   for (const ps of Array.isArray(persisted) ? persisted : []) {
     try {
-      if (ps.kind !== 'cli') continue // 미지 kind(전방호환) skip
-      if (!cliRegistry.get(ps.adapterId)) {
-        console.warn('[fleet] 세션 복원 skip — 미지 어댑터:', ps.id, ps.adapterId)
-        continue
+      if (ps.kind === 'cli') {
+        if (!cliRegistry.get(ps.adapterId)) {
+          console.warn('[fleet] 세션 복원 skip — 미지 어댑터:', ps.id, ps.adapterId)
+          continue
+        }
+        buildCliSession({
+          adapterId: ps.adapterId,
+          model: ps.model,
+          stateful: ps.stateful,
+          // 손상 capabilities(비배열)는 버리고 재시드 — 렌더러 SessionsPanel 의 .includes 크래시 방지.
+          capabilities: Array.isArray(ps.capabilities) ? ps.capabilities : undefined,
+        })
+      } else if (ps.kind === 'api') {
+        // 암호화 미가용이면 복원 불가(평문 키 없음) → skip. 좀비(키 없는) 세션을 만들지 않는다.
+        if (!secretCrypto.isAvailable()) {
+          console.warn('[fleet] API 세션 복원 skip — 암호화 미가용:', ps.id)
+          continue
+        }
+        // 런타임 형태 검증 — store JSON 은 타입 보장이 없다(손상 엔트리 방어).
+        if (typeof ps.id !== 'string' || !ps.config || typeof ps.config.provider !== 'string' || typeof ps.encryptedApiKey !== 'string') {
+          console.warn('[fleet] API 세션 복원 skip — 손상 엔트리:', (ps as { id?: unknown }).id)
+          continue
+        }
+        let apiKey: string
+        try {
+          apiKey = secretCrypto.decrypt(ps.encryptedApiKey)
+        } catch (e) {
+          console.warn('[fleet] API 세션 복원 skip — 복호화 실패(키회전/손상):', ps.id, e)
+          continue
+        }
+        buildApiSession({ ...ps.config, apiKey }, Array.isArray(ps.capabilities) ? ps.capabilities : undefined)
       }
-      buildCliSession({
-        adapterId: ps.adapterId,
-        model: ps.model,
-        stateful: ps.stateful,
-        // 손상 capabilities(비배열)는 버리고 재시드 — 렌더러 SessionsPanel 의 .includes 크래시 방지.
-        capabilities: Array.isArray(ps.capabilities) ? ps.capabilities : undefined,
-      })
+      // else: 미지 kind(전방호환) → skip
     } catch (err) {
-      console.error('[fleet] 세션 복원 실패:', ps?.id, err)
+      console.error('[fleet] 세션 복원 실패:', (ps as { id?: unknown })?.id, err)
     }
   }
 
