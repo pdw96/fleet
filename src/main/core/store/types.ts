@@ -1,5 +1,6 @@
 import type {
   AgentRole,
+  ApiProviderConfig,
   ChatAuthor,
   ChatMessage,
   ChatRoom,
@@ -8,11 +9,14 @@ import type {
   Task,
 } from '../../../shared/types'
 
+/** 재시작 간 복원할 직렬화 세션. cli|api 판별 유니온. */
+export type PersistedSession = PersistedCliSession | PersistedApiSession
+
 /**
- * 재시작 간 복원할 직렬화 세션. 이번 슬라이스는 CLI 만 — 구독 CLI 는 자체 인증을 가져
- * 저장할 비밀값이 없다. mcpConfig 는 의도적 제외(인라인 JSON 이 secret 운반 가능 → 평문 영속 금지).
+ * CLI 세션(#52). 구독 CLI 는 자체 인증을 가져 저장할 비밀값이 없다.
+ * mcpConfig 는 의도적 제외(인라인 JSON 이 secret 운반 가능 → 평문 영속 금지).
  */
-export type PersistedSession = {
+export type PersistedCliSession = {
   kind: 'cli'
   /** 디스크립터 id (= `cli:${adapterId}`). upsert/삭제 키. */
   id: string
@@ -25,6 +29,22 @@ export type PersistedSession = {
   capabilities?: AgentRole[]
 }
 
+/**
+ * API 세션(Epic B). apiKey 는 평문 미기록 — safeStorage 암호문(base64+버전프리픽스)만.
+ * config 는 ApiProviderConfig 에서 apiKey 만 뺀 나머지(provider/model/displayName/baseUrl/thinking 등 비밀 아님).
+ */
+export type PersistedApiSession = {
+  kind: 'api'
+  /** 디스크립터 id (= `api:${config.id}`). upsert/삭제 키. */
+  id: string
+  /** apiKey 제외 — 복원 시 decrypt 한 키와 합쳐 라이브 재구성. */
+  config: Omit<ApiProviderConfig, 'apiKey'>
+  /** safeStorage 암호화된 apiKey 토큰. 복호화 실패/미지 포맷이면 복원 skip. */
+  encryptedApiKey: string
+  /** 사용자 수정 가능 → 복원 시 재시드하지 않고 이 값을 적용. */
+  capabilities?: AgentRole[]
+}
+
 /** 직렬화 가능한 전체 상태 스냅샷. */
 export interface StoreState {
   projects: Project[]
@@ -32,7 +52,7 @@ export interface StoreState {
   rooms: ChatRoom[]
   messages: ChatMessage[]
   events: FleetEvent[]
-  /** 재시작 복원용 영속 세션 디스크립터(CLI 만 — secret 가능 필드·API 키 제외). */
+  /** 재시작 복원용 영속 세션 디스크립터(cli·api 판별 유니온 — 평문 apiKey 미기록, secret 은 암호문만). */
   sessions: PersistedSession[]
   /** 프로젝트 탭에서 마지막으로 본 프로젝트(렌더러 복원용). 미설정이면 부재. */
   lastActiveProjectId?: string
@@ -109,6 +129,8 @@ export interface Store {
   putSession(session: PersistedSession): void
   deleteSession(id: string): void
   listSessions(): PersistedSession[]
+  /** 영속 세션의 capabilities 만 in-place 갱신(부재 시 no-op). 키 재암호화 없이 capabilities 만 바꾸는 경로. */
+  patchSessionCapabilities(id: string, capabilities: AgentRole[]): void
 
   // ── persistence ──
   snapshot(): StoreState

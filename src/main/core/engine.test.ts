@@ -61,6 +61,28 @@ function scriptedHttp(bodies: string[]): { http: HttpClient; calls: string[] } {
   return { http, calls }
 }
 
+/** 가역 fake SecretCrypto — base64 왕복 + v1: 프리픽스. 테스트에서 평문/암호문 대조용. */
+function fakeCrypto(available = true): import('./secret/types').SecretCrypto {
+  return {
+    isAvailable: () => available,
+    encrypt: (p) => 'v1:' + Buffer.from(p, 'utf8').toString('base64'),
+    decrypt: (t) => {
+      if (!t.startsWith('v1:')) throw new Error('bad token')
+      return Buffer.from(t.slice(3), 'base64').toString('utf8')
+    },
+  }
+}
+
+/** Authorization 헤더를 캡처하고 유효한 openai 응답을 돌려주는 http(복원 키 왕복 검증용). */
+function authCapturingHttp(): { http: HttpClient; authHeaders: string[] } {
+  const authHeaders: string[] = []
+  const http: HttpClient = async (_url, init) => {
+    authHeaders.push(init.headers['authorization'] ?? '')
+    return { ok: true, status: 200, text: async () => '{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}' }
+  }
+  return { http, authHeaders }
+}
+
 /**
  * 프롬프트 내용에 따라 역할별 응답을 돌려주는 러너.
  * 편집 모드(opts.cwd 지정)에선 워크스페이스에 파일을 직접 만들어 실제 git diff 를 발생시킨다.
@@ -1323,13 +1345,63 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     expect(registered).toHaveLength(1)
   })
 
-  it('API 세션은 영속하지 않는다(경계)', () => {
+  it('API 세션은 암호화 미주입 시 영속하지 않는다(경계 — Epic B 는 crypto 주입 필요)', () => {
     const store = createMemoryStore()
     const e1 = createFleetEngine({ store, runner: roleRunner })
     e1.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'Claude API', model: 'claude-sonnet-4-6', apiKey: 'k' })
 
     const e2 = createFleetEngine({ store, runner: roleRunner })
     expect(e2.listSessions()).toHaveLength(0)
+  })
+
+  it('암호화 가능 시 API 세션을 암호문으로 영속한다(평문 키 미기록)', () => {
+    const store = createMemoryStore()
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto() })
+    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    const persisted = store.listSessions()
+    expect(persisted).toHaveLength(1)
+    const ps = persisted[0]
+    expect(ps.id).toBe('api:openai-1')
+    if (ps.kind !== 'api') throw new Error('api 세션이어야 한다')
+    expect(ps.encryptedApiKey.startsWith('v1:')).toBe(true)
+    expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret')
+    expect('apiKey' in ps.config).toBe(false)
+  })
+
+  it('암호화 미가용(crypto 미주입)이면 API 세션을 영속하지 않는다(graceful degrade)', () => {
+    const store = createMemoryStore()
+    const engine = createFleetEngine({ store }) // secretCrypto 미주입 → no-op(isAvailable=false)
+    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    expect(store.listSessions()).toHaveLength(0)
+    expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret')
+  })
+
+  it('apiKey 없는 API 세션은 영속하지 않는다(암호화 가능해도 키 부재)', () => {
+    const store = createMemoryStore()
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto() })
+    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5' }) // apiKey 미지정
+    expect(store.listSessions()).toHaveLength(0)
+  })
+
+  it('encrypt throw(키링 일시 잠금) 시 미영속으로 degrade 하되 라이브 세션·session.registered 는 유지한다', () => {
+    const store = createMemoryStore()
+    // isAvailable=true 이나 encrypt 가 throw — 키링 잠금/safeStorage 타이밍 모의.
+    const flaky: import('./secret/types').SecretCrypto = {
+      isAvailable: () => true,
+      encrypt: () => {
+        throw new Error('keyring locked')
+      },
+      decrypt: () => '',
+    }
+    const engine = createFleetEngine({ store, secretCrypto: flaky })
+    const d = engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    expect(d.id).toBe('api:openai-1') // register 가 throw 하지 않고 라이브 descriptor 반환
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['api:openai-1']) // 라이브 세션 구성됨
+    expect(store.listSessions()).toHaveLength(0) // 미영속(degrade)
+    expect(store.listEvents().filter((e) => e.type === 'session.registered')).toHaveLength(1) // 이벤트 발행
+    expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret') // 평문 키 미기록
   })
 
   it('mcpConfig 는 런타임엔 적용되나 영속에서 제외된다(secret 평문 금지)', () => {
@@ -1363,5 +1435,116 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it('API 세션을 동일 store+crypto 의 새 엔진에서 복원한다', () => {
+    const store = createMemoryStore()
+    const crypto = fakeCrypto()
+    const e1 = createFleetEngine({ store, secretCrypto: crypto })
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    const e2 = createFleetEngine({ store, secretCrypto: crypto })
+    expect(e2.listSessions().map((s) => s.id)).toEqual(['api:openai-1'])
+  })
+
+  it('복원된 API 세션이 복호화된 키를 provider 호출에 사용한다(키 왕복)', async () => {
+    const store = createMemoryStore()
+    const crypto = fakeCrypto()
+    const e1 = createFleetEngine({ store, secretCrypto: crypto })
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    const { http, authHeaders } = authCapturingHttp()
+    const e2 = createFleetEngine({ store, secretCrypto: crypto, http })
+    const room = e2.createRoom('방', ['api:openai-1'])
+    e2.postUserMessage(room.id, '안녕?')
+    await e2.askLlm(room.id, 'api:openai-1')
+
+    expect(authHeaders.some((h) => h === 'Bearer sk-secret')).toBe(true)
+  })
+
+  it('암호화 미가용이면 영속된 API 세션을 복원하지 않는다(좀비 방지)', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, secretCrypto: fakeCrypto() })
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    expect(store.listSessions()).toHaveLength(1)
+
+    const e2 = createFleetEngine({ store, secretCrypto: fakeCrypto(false) })
+    expect(e2.listSessions()).toHaveLength(0)
+  })
+
+  it('복호화 실패(키회전)는 throw 없이 skip 하고 형제 CLI 는 복원한다', () => {
+    const store = createMemoryStore()
+    const e1 = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
+    e1.registerCliSession('claude')
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    const rotated: import('./secret/types').SecretCrypto = {
+      isAvailable: () => true,
+      encrypt: (p) => 'v1:' + Buffer.from(p).toString('base64'),
+      decrypt: () => {
+        throw new Error('decrypt failed')
+      },
+    }
+    const e2 = createFleetEngine({ store, secretCrypto: rotated, runner: roleRunner })
+    expect(e2.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('손상 api 엔트리(config 없음)는 skip 하고 형제는 복원한다', () => {
+    const store = createMemoryStore()
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
+    store.putSession({ kind: 'api', id: 'api:broken' } as unknown as Parameters<typeof store.putSession>[0])
+
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('손상 api 엔트리(encryptedApiKey 비문자열)도 형태검증으로 skip 한다', () => {
+    const store = createMemoryStore()
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
+    // config 는 있으나 encryptedApiKey 가 숫자 — 손상 JSON(타입 보장 없음) 모의.
+    store.putSession({
+      kind: 'api',
+      id: 'api:openai-1',
+      config: { id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5' },
+      encryptedApiKey: 123,
+    } as unknown as Parameters<typeof store.putSession>[0])
+
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('미지 kind 영속 엔트리는 전방호환으로 skip 하고 형제는 복원한다', () => {
+    const store = createMemoryStore()
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
+    // 미래 버전이 쓴 미지 kind — 현재 엔진은 조용히 건너뛰고 형제 복원을 막지 않아야 한다.
+    store.putSession({ kind: 'future', id: 'future:x' } as unknown as Parameters<typeof store.putSession>[0])
+
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('API 세션 복원은 session.registered 를 재방출하지 않는다(에코 0)', () => {
+    const store = createMemoryStore()
+    const crypto = fakeCrypto()
+    const e1 = createFleetEngine({ store, secretCrypto: crypto })
+    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    createFleetEngine({ store, secretCrypto: crypto })
+    const registered = store.listEvents().filter((ev) => ev.type === 'session.registered')
+    expect(registered).toHaveLength(1)
+  })
+
+  it('API 세션의 수정된 capabilities 를 복원 시 보존한다(암호문 불변)', () => {
+    const store = createMemoryStore()
+    const crypto = fakeCrypto()
+    const e1 = createFleetEngine({ store, secretCrypto: crypto })
+    const d = e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    e1.setSessionCapabilities(d.id, ['planner', 'reviewer'])
+
+    const ps = store.listSessions()[0]
+    if (ps.kind !== 'api') throw new Error('api 세션이어야 한다')
+    expect(ps.encryptedApiKey.startsWith('v1:')).toBe(true) // 암호문 불변(키 재암호화 없음)
+
+    const e2 = createFleetEngine({ store, secretCrypto: crypto })
+    expect(e2.listSessions()[0].capabilities).toEqual(['planner', 'reviewer'])
   })
 })

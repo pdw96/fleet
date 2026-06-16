@@ -16,6 +16,7 @@ import { createJsonFileStore } from './core/store/json-file'
 import { e2eRunner, seedE2eFixtures } from './e2e'
 import { installNavigationGuards } from './window-guards'
 import { installPermissionGuards } from './permission-guards'
+import { createSafeStorageCrypto } from './secret-crypto'
 
 function broadcastOrchestratorEvent(event: OrchestratorEvent): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -51,6 +52,9 @@ function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover } {
     approver: ipcApprover.approver,
     // E2E: 실제 CLI 대신 결정론적 페이크 러너를 주입(FLEET_E2E 일 때만). 프로덕션은 기본 러너.
     runner: e2e ? e2eRunner : undefined,
+    // 시크릿(apiKey) 영속용 OS 암호화 백엔드 주입. buildEngine 은 app.whenReady 이후 호출되므로
+    // (Linux 키링 등) safeStorage 가용성 판정이 정상 동작한다. 코어는 이 포트만 알고 electron 비의존.
+    secretCrypto: createSafeStorageCrypto(),
   })
   if (e2e) seedE2eFixtures(engine) // 페이크 세션 2개 + 방 1개 시드
   return { engine, ipcApprover }

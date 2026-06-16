@@ -204,6 +204,21 @@ describe('json-file store', () => {
     expect(b.listSessions()).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] }])
   })
 
+  it('암호화된 api 세션을 디스크에 영속하고 새 store 에서 reload 한다(암호문 생존)', () => {
+    const a = createJsonFileStore(dir, deterministic())
+    const entry = {
+      kind: 'api' as const,
+      id: 'api:openai-1',
+      config: { id: 'openai-1', provider: 'openai' as const, displayName: 'GPT', model: 'gpt-5.5' },
+      encryptedApiKey: 'v1:ZW5j',
+      capabilities: ['implementer' as const],
+    }
+    a.putSession(entry)
+
+    const b = createJsonFileStore(dir)
+    expect(b.listSessions()).toEqual([entry]) // 디스크 직렬화 왕복으로 암호문·config 생존
+  })
+
   it('fills missing sessions key as [] for older store files', () => {
     writeFileSync(
       join(dir, 'fleet-store.json'),
@@ -244,5 +259,40 @@ describe('memory store — persisted sessions', () => {
     const store = createMemoryStore(deterministic())
     store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
     expect(store.snapshot().sessions).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude' }])
+  })
+
+  it('patchSessionCapabilities 가 capabilities 만 in-place 갱신한다(키 보존)', () => {
+    const store = createMemoryStore(deterministic())
+    store.putSession({
+      kind: 'api',
+      id: 'api:openai-1',
+      config: { id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5' },
+      encryptedApiKey: 'v1:ZW5j',
+      capabilities: ['implementer'],
+    })
+    store.patchSessionCapabilities('api:openai-1', ['planner', 'reviewer'])
+    const s = store.listSessions().find((x) => x.id === 'api:openai-1')
+    expect(s?.capabilities).toEqual(['planner', 'reviewer'])
+    if (s?.kind !== 'api') throw new Error('api 세션이어야 한다')
+    expect(s.encryptedApiKey).toBe('v1:ZW5j') // capabilities patch 가 암호문을 건드리지 않음
+  })
+
+  it('patchSessionCapabilities 는 미존재 id 에 no-op(throw 없음)', () => {
+    const store = createMemoryStore(deterministic())
+    expect(() => store.patchSessionCapabilities('api:ghost', ['planner'])).not.toThrow()
+    expect(store.listSessions()).toHaveLength(0)
+  })
+
+  it('api 세션을 upsert·snapshot 왕복한다', () => {
+    const store = createMemoryStore(deterministic())
+    const entry = {
+      kind: 'api' as const,
+      id: 'api:openai-1',
+      config: { id: 'openai-1', provider: 'openai' as const, displayName: 'GPT', model: 'gpt-5.5' },
+      encryptedApiKey: 'v1:ZW5j',
+      capabilities: ['implementer' as const],
+    }
+    store.putSession(entry)
+    expect(store.snapshot().sessions).toEqual([entry])
   })
 })
