@@ -40,6 +40,7 @@ import { createMemoryStore } from './store/memory'
 import type { Store } from './store/types'
 import { npmVerifyCommands, runAllVerifications, type VerifyRunner } from './verify/run'
 import { createWorkspace, type GitRunner } from './workspace/git'
+import type { SecretCrypto } from './secret/types'
 
 /**
  * CLI 어댑터 id / API provider 별 기본 적합 역할 시드.
@@ -57,6 +58,18 @@ const DEFAULT_CAPABILITIES: Record<string, readonly AgentRole[]> = {
 }
 
 const seedCapabilities = (key: string): AgentRole[] => [...(DEFAULT_CAPABILITIES[key] ?? [])]
+
+// SecretCrypto 미주입(테스트·헤드리스·CLI) 기본값 — 암호화 미가용 → API 세션 미영속(현행 동작 보존).
+// isAvailable()===false 가드 뒤에서만 encrypt/decrypt 가 호출되므로 throw 는 정상 경로에 도달하지 않는다.
+const NOOP_CRYPTO: SecretCrypto = {
+  isAvailable: () => false,
+  encrypt: () => {
+    throw new Error('시크릿 암호화 미가용(SecretCrypto 미주입)')
+  },
+  decrypt: () => {
+    throw new Error('시크릿 복호화 미가용(SecretCrypto 미주입)')
+  },
+}
 
 // 오케스트레이션 검증은 실제 빌드/테스트라 채팅용 120s 로는 부족하다 — 10분으로 상향(spec §5 분리·상향).
 const VERIFY_TIMEOUT_MS = 600_000
@@ -85,6 +98,8 @@ export interface FleetEngineOptions {
   gitRunner?: GitRunner
   /** MCP 호스트 주입(테스트용). 기본은 stdio 기반 createMcpHost. */
   mcpHost?: McpHost
+  /** 시크릿(apiKey) 암복호화 백엔드. 미주입 시 API 세션 미영속(현행 동작). main 이 safeStorage 어댑터 주입. */
+  secretCrypto?: SecretCrypto
 }
 
 /**
@@ -159,6 +174,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   // 주입이 없으면 타임아웃·재시도를 갖춘 기본 HTTP 를 쓴다(네트워크 무한 대기/일시 오류 방어).
   const http = opts.http ?? createResilientHttp(defaultHttp, { timeoutMs: LLM_HTTP_TIMEOUT_MS })
   const runner = opts.runner ?? defaultRunner
+  // Task 4(영속 register)·Task 5(복원 decrypt)에서 사용된다 — 지금은 주입 결선만.
+  const secretCrypto = opts.secretCrypto ?? NOOP_CRYPTO
+  void secretCrypto // noUnusedLocals 억제 — Task 4 에서 실사용 시 이 줄을 제거한다.
 
   // 안전 계층: 파일 쓰기는 caution(자동승인), 민감/삭제는 destructive(approver 필요)로 게이트한다.
   const appendAudit = (type: string, data: Record<string, unknown>): void => {
@@ -299,6 +317,39 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     })
   }
 
+  // 라이브 API 세션을 만들어 매니저에 추가한다(순수 — store/audit 부작용 없음). register·restore 공용.
+  // capabilities 미지정(신규 등록)이면 provider 시드, 지정(복원)이면 그 값을 적용한다(buildCliSession 대칭).
+  const buildApiSession = (config: ApiProviderConfig, capabilities?: AgentRole[]): LlmDescriptor => {
+    const id = `api:${config.id}`
+    const descriptor: LlmDescriptor = {
+      id,
+      kind: 'api',
+      displayName: config.displayName,
+      ref: config.id,
+      model: config.model,
+      capabilities: capabilities ?? seedCapabilities(config.provider),
+    }
+    sessions.add(
+      createApiSession(descriptor, createApiProvider(config, http), {
+        // 토큰 사용량을 'usage' 감사 이벤트로 기록한다(usage-accounting). 도구루프는 합산값.
+        onUsage: (usage) => appendAudit('usage', { id, provider: config.provider, ...usage }),
+        // 워크스페이스 도구 + MCP 도구를 병합 노출한다. 둘 다 없으면 단발 chat(완전 하위호환).
+        toolDeps: () => {
+          const wsTools = workspaceDir ? createWorkspaceReadTools(workspaceDir) : []
+          const mcpTools = mcpHost.tools()
+          if (wsTools.length === 0 && mcpTools.length === 0) return undefined
+          return {
+            registry: createToolRegistry([...wsTools, ...mcpTools]),
+            gate,
+            onAudit: appendAudit,
+            maxIterations: 8,
+          }
+        },
+      }),
+    )
+    return descriptor
+  }
+
   // 재시작 복원: 영속 CLI 세션을 라이브로 재구성한다. registry 에 있는 adapter 만(등록≠탐지 — 탐지는 별개).
   // 복원은 store 를 재기록하지 않고(이미 있음) session.registered 도 재방출하지 않는다(에코·중복 audit 회피).
   // 한계(R9): 복원된 stateful 세션은 fresh(started=false·resume id 미영속)라 첫 post-restart ask 가
@@ -351,37 +402,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     registerApiSession(config) {
-      // 주의: API 세션은 영속하지 않는다 — apiKey 는 항상 secret 이라 평문 store 금지(safeStorage 후속, Epic B).
-      const id = `api:${config.id}`
-      const descriptor: LlmDescriptor = {
-        id,
-        kind: 'api',
-        displayName: config.displayName,
-        ref: config.id,
-        model: config.model,
-        capabilities: seedCapabilities(config.provider),
-      }
-      sessions.add(
-        createApiSession(descriptor, createApiProvider(config, http), {
-          // 토큰 사용량을 'usage' 감사 이벤트로 기록한다(usage-accounting). 도구루프는 합산값.
-          // FleetEvent 는 generic {type,data} 라 IPC/preload/renderer 변경 없이 이벤트 스트림에 흐른다.
-          onUsage: (usage) => appendAudit('usage', { id, provider: config.provider, ...usage }),
-          // 워크스페이스 도구 + MCP 도구를 병합 노출한다. 둘 다 없으면 단발 chat(완전 하위호환).
-          // 클로저라 런타임 워크스페이스/MCP 변경을 추종한다.
-          toolDeps: () => {
-            const wsTools = workspaceDir ? createWorkspaceReadTools(workspaceDir) : []
-            const mcpTools = mcpHost.tools()
-            if (wsTools.length === 0 && mcpTools.length === 0) return undefined
-            return {
-              registry: createToolRegistry([...wsTools, ...mcpTools]),
-              gate,
-              onAudit: appendAudit,
-              maxIterations: 8,
-            }
-          },
-        }),
-      )
-      store.appendEvent({ type: 'session.registered', data: { id, kind: 'api', provider: config.provider } })
+      const descriptor = buildApiSession(config)
+      // 영속은 Task 4 에서 추가(현재는 register 만 — 동작 무변경).
+      store.appendEvent({ type: 'session.registered', data: { id: descriptor.id, kind: 'api', provider: config.provider } })
       return descriptor
     },
 
