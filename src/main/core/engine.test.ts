@@ -1469,6 +1469,36 @@ describe('FleetEngine 채팅 취소(cancelChat)', () => {
     await expect(p2).rejects.toThrow()
   })
 
+  it('askLlm 은 호출자 제공 signal 을 방 취소 컨트롤러로 덮어쓰지 않고 합성한다(Codex P3)', async () => {
+    // 코어 호출자가 AskOptions.signal(per-call 타임아웃·취소)을 넘기면 방 cancelChat 컨트롤러와 합성돼야
+    // 한다 — 덮어쓰면 호출자 취소가 session.send 에 도달하지 못해 호출이 계속 돈다.
+    const sessions = createSessionManager()
+    let sawSignal: AbortSignal | undefined
+    sessions.add({
+      id: 'a',
+      descriptor: { id: 'a', kind: 'api', displayName: 'A', ref: 'a', model: '' },
+      async send(_p, opts) {
+        sawSignal = opts?.signal
+        return await new Promise<string>((_res, reject) => {
+          const s = opts?.signal
+          if (s?.aborted) return reject(new Error('aborted'))
+          s?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })
+      },
+      async dispose() {},
+    })
+    const engine = createFleetEngine({ sessions })
+    const room = engine.createRoom('방', ['a'])
+
+    const callerAc = new AbortController()
+    const p = engine.askLlm(room.id, 'a', { signal: callerAc.signal })
+    await vi.waitFor(() => expect(sawSignal).toBeDefined())
+
+    callerAc.abort() // cancelChat 이 아니라 '호출자' signal 을 취소
+    await expect(p).rejects.toThrow() // 합성됐으므로 send 의 signal 도 abort → 거부(덮어썼다면 무반응)
+    expect(sawSignal?.aborted).toBe(true)
+  })
+
   it('완료(idle)된 방에 cancelChat 은 no-op 이다(컨트롤러가 제거돼 좀비 취소가 없다)', async () => {
     const engine = createFleetEngine({
       runner: async () => ({ code: 0, stdout: '응답', stderr: '' }),

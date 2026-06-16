@@ -140,11 +140,13 @@ export function createApiSession(
       // 순서만). 성공 시에만 history 에 원자적으로 커밋하므로 루프 중간 throw 가 history 를 부분 확장
       // 상태로 남기지 않는다(역할 시퀀스 오염 방지). 직렬화로 동시 호출의 read-modify-write 레이스도 제거.
       const prior = chain
+      let started = false // 실제 provider 호출 진입 여부 — 이후의 abort 는 조기 거부하지 않고 provider 정착을 따른다.
       const link = (async (): Promise<string> => {
         await prior.catch(() => {})
         // 큐 대기 중 취소됐으면 실제 호출 없이 중단한다(낭비 방지·history 불변). 체인 순서는 보존되므로
         // 다음 send 는 여전히 이 링크의 정착을 기다린다(직렬화 유지). 취소 즉시성은 아래 settleOrAbort 가 담당.
         sendOpts.signal?.throwIfAborted()
+        started = true
         const working: ChatTurn[] = [...history, { role: 'user', content: prompt }]
         const result = await runChatReportingUsage(working, callOpts, sendOpts.bypassTools)
         const reply = unwrap(provider.provider, result)
@@ -159,8 +161,9 @@ export function createApiSession(
         return emit(reply)
       })()
       chain = link.catch(() => {}) // 체인은 에러로 끊기지 않게 흡수(순서만 보존)
-      // 호출자에겐 큐 대기 중에도 취소를 즉시 반영한다(직렬화 링크는 위 chain 이 독립 보존).
-      return settleOrAbort(link, sendOpts.signal)
+      // 큐 대기 중에만 취소를 즉시 반영한다. 실행 시작 후의 취소는 provider 의 signal 처리(스트림 abort)를
+      // 따른다 — 직렬화 링크는 위 chain 이 독립 보존한다.
+      return settleOrAbort(link, sendOpts.signal, () => started)
     },
     async dispose(): Promise<void> {
       history.length = 0

@@ -954,6 +954,34 @@ describe('createCliSession', () => {
     releaseA()
     await pA
   })
+
+  it('실행이 시작된 편집 send 는 abort 후에도 runner 정착(킬 완료)까지 기다린다(revert 안전성·Codex P1)', async () => {
+    // 편집(workspace) CLI 의 defaultRunner 는 abort 시 즉시 거부하지 않고 killTree/stream-close 까지 기다린 뒤
+    // 정착해, 오케스트레이터의 후속 revert 가 살아있는 자식 프로세스와 경합하지 않게 보장한다. 취소 즉시성
+    // (settleOrAbort)이 '실행 시작 후' 이 단계를 가로채 조기 거부하면 그 불변식이 깨진다(started 가드로 방지).
+    const editAdapter: CliAdapter = { ...claudeAdapter, edit: { args: ['--edit', '{workspace}', '{prompt}'] } }
+    let runnerStarted = false
+    let releaseRunner: () => void = () => {}
+    const runner: CommandRunner = async () => {
+      runnerStarted = true
+      await new Promise<void>((r) => (releaseRunner = r)) // abort 를 무시하고 '킬 완료'까지 대기하는 모델
+      return { code: 0, stdout: '완료', stderr: '' }
+    }
+    const s = createCliSession(cliDesc, editAdapter, runner)
+    const ac = new AbortController()
+    const p = s.send('작업', { workspace: '/ws', signal: ac.signal })
+    await vi.waitFor(() => expect(runnerStarted).toBe(true)) // 실행 시작(started=true)
+
+    ac.abort() // 실행 중 취소
+    const settled = await Promise.race([
+      p.then(() => 'resolved', () => 'rejected'),
+      new Promise<string>((r) => setTimeout(() => r('pending'), 50)),
+    ])
+    expect(settled).toBe('pending') // runner 정착 전엔 send 도 정착하지 않아야 한다(조기 거부 금지)
+
+    releaseRunner() // 프로세스 종료(kill 완료) 시뮬레이트
+    await expect(p).resolves.toBe('완료') // 이제서야 정착
+  })
 })
 
 describe('createCliSession streaming', () => {

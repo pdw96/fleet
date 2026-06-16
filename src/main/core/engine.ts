@@ -31,6 +31,7 @@ import { defaultHttp, type HttpClient } from './providers/types'
 import { createApprovalGate } from './safety/approval'
 import { createApiSession } from './session/api-session'
 import { createCliSession } from './session/cli-session'
+import { anySignal } from './session/abort'
 import { createSessionManager, type SessionManager } from './session/manager'
 import { createMcpHost } from './mcp/host'
 import type { McpHost } from './mcp/types'
@@ -618,8 +619,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     askLlm(roomId, llmId, askOpts) {
       // 연산 경계(busy/idle)는 한 발언 전체를 감싼다 — 단일 질문도 진행 표시 대상.
       enterOp(roomId)
-      // enterOp 가 방금 만든(또는 진행 중 공유) 취소 컨트롤러의 신호를 발언에 싣는다 → cancelChat 이 끊는다.
-      const signal = activeChatRuns.get(roomId)?.signal
+      // 방 취소 컨트롤러 신호(cancelChat)를 발언에 싣되, 호출자가 자체 signal 을 넘겼으면 덮어쓰지 않고
+      // 합성한다(둘 중 하나라도 abort 시 취소) — 코어 호출자의 per-call 타임아웃/취소가 유실되지 않게.
+      const signal = anySignal(askOpts?.signal, activeChatRuns.get(roomId)?.signal)
       return streamedAsk(createChatController({ store, sessions, roomId }), roomId, llmId, { ...askOpts, signal }).finally(
         () => exitOp(roomId),
       )
