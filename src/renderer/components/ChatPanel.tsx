@@ -67,6 +67,8 @@ export function ChatPanel({ sessions }: Props) {
     // fire-and-forget 갱신은 reject 를 직접 처리해야 한다 — 안 그러면 일시적 IPC 실패가
     // unhandled rejection 으로 샌다(앱·테스트 양쪽). 최선노력 갱신이라 로그만 남기고 무시한다.
     refreshRooms().catch((e) => console.error('방 목록 갱신 실패', e))
+    // 마운트 1회 로드(refreshRooms 는 초기 activeRoom=null 로 1회 실행 의도) — 의존성 추가 시 방 전환마다 재실행되어 잘못.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {

@@ -41,14 +41,21 @@ export function ApprovalModal() {
   // 현재 요청 전환 시 카운트다운 리셋(시각 표시 전용 — 실제 자동 거부는 메인 측 권위).
   useEffect(() => {
     if (!current) return
+    // 의도적 동기 setState: 요청 전환 시 표시용 카운트다운을 즉시 리셋(요청당 1회 추가 렌더·무해, [current?.id] 라
+    // 자기 재발화 없음). 실제 자동거부는 메인 권위. 룰은 켜 두고 이 site 만 명시 억제.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRemaining(Math.ceil(APPROVAL_TIMEOUT_MS / 1000))
     const iv = setInterval(() => setRemaining((r) => (r > 0 ? r - 1 : 0)), 1000)
     return () => clearInterval(iv)
+    // current?.id(요청 신원) 전환에만 카운트다운 리셋 — current 객체 변화가 아닌 id 변화 기준이 의도.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id])
 
   // 모달 열림·큐 전진(다음 요청)마다 거부 버튼에 초기 포커스 — Enter 가 거부로 떨어져 destructive 오승인 방지.
   useEffect(() => {
     if (current) rejectRef.current?.focus()
+    // 요청 id 전환마다 거부 버튼 초기 포커스 — current 객체 변화가 아닌 id 변화 기준이 의도.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id])
 
   // 키보드 트랩(document 레벨): Escape=거부 + Tab/Shift+Tab 을 모달 내 버튼(거부↔승인)으로 가둔다.
@@ -84,6 +91,8 @@ export function ApprovalModal() {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
+    // 요청 id 전환마다 리스너 재부착 — current/decide 객체 변화가 아닌 id 변화 기준이 의도(매 렌더 재부착 방지).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id])
 
   if (!current) return null
