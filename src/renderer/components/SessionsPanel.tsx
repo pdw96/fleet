@@ -54,6 +54,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
 
   useEffect(() => {
     void detect()
+    // 마운트 1회 CLI 감지(detect 는 reactive 값을 닫지 않음) — 의존성 추가 불요·재실행 의도 없음.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function detect() {
