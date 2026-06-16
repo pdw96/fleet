@@ -305,7 +305,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
   // 라이브 CLI descriptor → 영속 store 미러(단일 지점). mcpConfig 는 의도적 제외(secret 평문 금지).
   const syncPersistedSession = (descriptor: LlmDescriptor): void => {
-    if (descriptor.kind !== 'cli') return // API 영속은 safeStorage 후속(Epic B)
+    if (descriptor.kind !== 'cli') return // api 영속은 registerApiSession 이 키와 함께 직접 처리(descriptor 엔 키 없음)
     store.putSession({
       kind: 'cli',
       id: descriptor.id,
@@ -409,13 +409,20 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // 구조분해 후 분해된 apiKey 바인딩을 직접 검사한다(config.apiKey 좁히기는 별 바인딩 apiKey 에 전파 안 됨).
       const { apiKey, ...rest } = config
       if (apiKey && secretCrypto.isAvailable()) {
-        store.putSession({
-          kind: 'api',
-          id: descriptor.id,
-          config: rest,
-          encryptedApiKey: secretCrypto.encrypt(apiKey),
-          capabilities: descriptor.capabilities,
-        })
+        // isAvailable()===true 라도 encrypt 가 throw 할 수 있다(키링 일시 잠금·safeStorage 초기화 타이밍).
+        // 그 경우 미영속으로 degrade 하되(평문 키 미기록 원칙 유지) 라이브 세션은 이미 구성됐으므로
+        // session.registered 는 그대로 발행한다(라이브↔audit 일관성, register 전체를 throw 시키지 않음).
+        try {
+          store.putSession({
+            kind: 'api',
+            id: descriptor.id,
+            config: rest,
+            encryptedApiKey: secretCrypto.encrypt(apiKey),
+            capabilities: descriptor.capabilities,
+          })
+        } catch (err) {
+          console.warn('[fleet] API 세션 영속 skip — 암호화 실패:', descriptor.id, err)
+        }
       }
       store.appendEvent({ type: 'session.registered', data: { id: descriptor.id, kind: 'api', provider: config.provider } })
       return descriptor

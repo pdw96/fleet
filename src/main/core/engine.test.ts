@@ -1352,11 +1352,11 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     const persisted = store.listSessions()
     expect(persisted).toHaveLength(1)
     const ps = persisted[0]
-    expect(ps.kind).toBe('api')
     expect(ps.id).toBe('api:openai-1')
-    expect(ps.kind === 'api' && ps.encryptedApiKey.startsWith('v1:')).toBe(true)
+    if (ps.kind !== 'api') throw new Error('api 세션이어야 한다')
+    expect(ps.encryptedApiKey.startsWith('v1:')).toBe(true)
     expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret')
-    expect(ps.kind === 'api' && 'apiKey' in ps.config).toBe(false)
+    expect('apiKey' in ps.config).toBe(false)
   })
 
   it('암호화 미가용(crypto 미주입)이면 API 세션을 영속하지 않는다(graceful degrade)', () => {
@@ -1365,6 +1365,33 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
     expect(store.listSessions()).toHaveLength(0)
     expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret')
+  })
+
+  it('apiKey 없는 API 세션은 영속하지 않는다(암호화 가능해도 키 부재)', () => {
+    const store = createMemoryStore()
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto() })
+    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5' }) // apiKey 미지정
+    expect(store.listSessions()).toHaveLength(0)
+  })
+
+  it('encrypt throw(키링 일시 잠금) 시 미영속으로 degrade 하되 라이브 세션·session.registered 는 유지한다', () => {
+    const store = createMemoryStore()
+    // isAvailable=true 이나 encrypt 가 throw — 키링 잠금/safeStorage 타이밍 모의.
+    const flaky: import('./secret/types').SecretCrypto = {
+      isAvailable: () => true,
+      encrypt: () => {
+        throw new Error('keyring locked')
+      },
+      decrypt: () => '',
+    }
+    const engine = createFleetEngine({ store, secretCrypto: flaky })
+    const d = engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+
+    expect(d.id).toBe('api:openai-1') // register 가 throw 하지 않고 라이브 descriptor 반환
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['api:openai-1']) // 라이브 세션 구성됨
+    expect(store.listSessions()).toHaveLength(0) // 미영속(degrade)
+    expect(store.listEvents().filter((e) => e.type === 'session.registered')).toHaveLength(1) // 이벤트 발행
+    expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret') // 평문 키 미기록
   })
 
   it('mcpConfig 는 런타임엔 적용되나 영속에서 제외된다(secret 평문 금지)', () => {
