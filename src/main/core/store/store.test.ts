@@ -204,6 +204,21 @@ describe('json-file store', () => {
     expect(b.listSessions()).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] }])
   })
 
+  it('암호화된 api 세션을 디스크에 영속하고 새 store 에서 reload 한다(암호문 생존)', () => {
+    const a = createJsonFileStore(dir, deterministic())
+    const entry = {
+      kind: 'api' as const,
+      id: 'api:openai-1',
+      config: { id: 'openai-1', provider: 'openai' as const, displayName: 'GPT', model: 'gpt-5.5' },
+      encryptedApiKey: 'v1:ZW5j',
+      capabilities: ['implementer' as const],
+    }
+    a.putSession(entry)
+
+    const b = createJsonFileStore(dir)
+    expect(b.listSessions()).toEqual([entry]) // 디스크 직렬화 왕복으로 암호문·config 생존
+  })
+
   it('fills missing sessions key as [] for older store files', () => {
     writeFileSync(
       join(dir, 'fleet-store.json'),
