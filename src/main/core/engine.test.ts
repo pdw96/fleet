@@ -1498,6 +1498,31 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
   })
 
+  it('손상 api 엔트리(encryptedApiKey 비문자열)도 형태검증으로 skip 한다', () => {
+    const store = createMemoryStore()
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
+    // config 는 있으나 encryptedApiKey 가 숫자 — 손상 JSON(타입 보장 없음) 모의.
+    store.putSession({
+      kind: 'api',
+      id: 'api:openai-1',
+      config: { id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5' },
+      encryptedApiKey: 123,
+    } as unknown as Parameters<typeof store.putSession>[0])
+
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
+  it('미지 kind 영속 엔트리는 전방호환으로 skip 하고 형제는 복원한다', () => {
+    const store = createMemoryStore()
+    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
+    // 미래 버전이 쓴 미지 kind — 현재 엔진은 조용히 건너뛰고 형제 복원을 막지 않아야 한다.
+    store.putSession({ kind: 'future', id: 'future:x' } as unknown as Parameters<typeof store.putSession>[0])
+
+    const engine = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
+    expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
+  })
+
   it('API 세션 복원은 session.registered 를 재방출하지 않는다(에코 0)', () => {
     const store = createMemoryStore()
     const crypto = fakeCrypto()

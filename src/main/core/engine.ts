@@ -389,7 +389,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         try {
           apiKey = secretCrypto.decrypt(ps.encryptedApiKey)
         } catch (e) {
-          console.warn('[fleet] API 세션 복원 skip — 복호화 실패(키회전/손상):', ps.id, e)
+          // e.message 만 로깅 — error 객체 전체는 향후 decrypt 구현이 암호문/평문 단편을 담을 수 있어 방어.
+          console.warn('[fleet] API 세션 복원 skip — 복호화 실패(키회전/손상):', ps.id, e instanceof Error ? e.message : String(e))
           continue
         }
         buildApiSession({ ...ps.config, apiKey }, Array.isArray(ps.capabilities) ? ps.capabilities : undefined)
