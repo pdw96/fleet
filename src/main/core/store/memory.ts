@@ -192,6 +192,13 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
         save()
       }
     },
+    patchSessionCapabilities(id, capabilities) {
+      const s = state.sessions.find((x) => x.id === id)
+      if (s) {
+        s.capabilities = [...capabilities]
+        save()
+      }
+    },
     listSessions() {
       return structuredClone(state.sessions)
     },

@@ -245,4 +245,38 @@ describe('memory store — persisted sessions', () => {
     store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
     expect(store.snapshot().sessions).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude' }])
   })
+
+  it('patchSessionCapabilities 가 capabilities 만 in-place 갱신한다(키 보존)', () => {
+    const store = createMemoryStore(deterministic())
+    store.putSession({
+      kind: 'api',
+      id: 'api:openai-1',
+      config: { id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5' },
+      encryptedApiKey: 'v1:ZW5j',
+      capabilities: ['implementer'],
+    })
+    store.patchSessionCapabilities('api:openai-1', ['planner', 'reviewer'])
+    const s = store.listSessions().find((x) => x.id === 'api:openai-1')
+    expect(s?.capabilities).toEqual(['planner', 'reviewer'])
+    expect(s && s.kind === 'api' && s.encryptedApiKey).toBe('v1:ZW5j')
+  })
+
+  it('patchSessionCapabilities 는 미존재 id 에 no-op(throw 없음)', () => {
+    const store = createMemoryStore(deterministic())
+    expect(() => store.patchSessionCapabilities('api:ghost', ['planner'])).not.toThrow()
+    expect(store.listSessions()).toHaveLength(0)
+  })
+
+  it('api 세션을 upsert·snapshot 왕복한다', () => {
+    const store = createMemoryStore(deterministic())
+    const entry = {
+      kind: 'api' as const,
+      id: 'api:openai-1',
+      config: { id: 'openai-1', provider: 'openai' as const, displayName: 'GPT', model: 'gpt-5.5' },
+      encryptedApiKey: 'v1:ZW5j',
+      capabilities: ['implementer' as const],
+    }
+    store.putSession(entry)
+    expect(store.snapshot().sessions).toEqual([entry])
+  })
 })
