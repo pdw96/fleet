@@ -8,6 +8,11 @@ export interface AskOptions {
   /** 추가 지시 (예: "비판적으로 검토하라") */
   instruction?: string
   /**
+   * 취소 신호. session.send 의 signal 로 연결돼 in-flight LLM 호출을 중단시킨다.
+   * 프로젝트 실행의 AbortController(cancelRun)와 동형 — 채팅 ask/discuss 취소(cancelChat)의 하단 배선.
+   */
+  signal?: AbortSignal
+  /**
    * 토큰 델타 콜백. 지정 시 session.send 의 onChunk 로 연결돼 스트리밍을 활성화한다.
    * 미지정 시 send 는 버퍼링(최종 1회) — 기존 비스트리밍 동작을 그대로 보존한다.
    */
@@ -28,8 +33,8 @@ export interface ChatController {
   postSystem(content: string): ChatMessage
   /** 특정 LLM 을 지목해 대화 기록을 보여주고 다음 발언을 받는다. */
   askLlm(llmId: string, opts?: AskOptions): Promise<ChatMessage>
-  /** 여러 LLM 이 주제에 대해 rounds 회 순차 토론. */
-  discuss(topic: string, llmIds: readonly string[], rounds?: number): Promise<ChatMessage[]>
+  /** 여러 LLM 이 주제에 대해 rounds 회 순차 토론. signal abort 시 남은 턴을 건너뛴다. */
+  discuss(topic: string, llmIds: readonly string[], rounds?: number, signal?: AbortSignal): Promise<ChatMessage[]>
   history(): ChatMessage[]
 }
 
@@ -98,16 +103,19 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
 
       // onToken 이 있으면 onChunk 로 연결돼 스트리밍 활성화(없으면 onChunk=undefined → 버퍼링).
       // onToolStep 은 API 세션 도구 루프의 라이브 도구 단계 싱크로 연결된다(CLI 세션은 무시).
-      const reply = await session.send(prompt, { onChunk: opts.onToken, onToolStep: opts.onToolStep })
+      // signal 은 취소(cancelChat) 신호 — api/cli-session 이 honor 해 in-flight 호출을 중단한다.
+      const reply = await session.send(prompt, { signal: opts.signal, onChunk: opts.onToken, onToolStep: opts.onToolStep })
       return store.appendMessage({ roomId, author: { type: 'llm', llmId }, role: opts.role, content: reply })
     },
 
-    async discuss(topic, llmIds, rounds = 1) {
+    async discuss(topic, llmIds, rounds = 1, signal) {
       controller.postUser(topic)
       const out: ChatMessage[] = []
       for (let r = 0; r < rounds; r++) {
         for (const id of llmIds) {
-          out.push(await controller.askLlm(id))
+          // 취소되면 남은 턴을 시작하지 않는다 — in-flight 발언은 signal 이 session.send 에서 중단한다.
+          if (signal?.aborted) return out
+          out.push(await controller.askLlm(id, { signal }))
         }
       }
       return out

@@ -120,6 +120,7 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   ipcMain.handle('fleet:chat:discuss', (_e, roomId: string, llmIds: string[], rounds?: number) =>
     engine.discussRoom(roomId, llmIds, rounds),
   )
+  ipcMain.handle('fleet:chat:cancel', (_e, roomId: string) => engine.cancelChat(roomId))
   ipcMain.handle('fleet:chat:activity', () => engine.getChatActivity())
 
   // MCP 호스트

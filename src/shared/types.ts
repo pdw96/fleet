@@ -484,6 +484,8 @@ export interface FleetBridge {
   postUserMessage(roomId: string, content: string): Promise<ChatMessage>
   askLlm(roomId: string, llmId: string): Promise<ChatMessage>
   discussRoom(roomId: string, llmIds: string[], rounds?: number): Promise<ChatMessage[]>
+  /** 진행 중인 채팅 발언(ask/discuss)을 취소한다(in-flight 호출 abort). ChatPanel 취소 버튼용. */
+  cancelChat(roomId: string): Promise<void>
   /** 채팅 진행 상태 스냅샷(진행 중 방 + 라이브 스트림). ChatPanel 마운트 시 복원용. */
   getChatActivity(): Promise<ChatActivity>
 

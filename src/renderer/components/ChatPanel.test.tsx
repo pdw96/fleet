@@ -21,6 +21,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     postUserMessage: vi.fn().mockResolvedValue(undefined),
     askLlm: vi.fn().mockResolvedValue(undefined),
     discussRoom: vi.fn().mockResolvedValue(undefined),
+    cancelChat: vi.fn().mockResolvedValue(undefined),
     onChatStream: vi.fn((cb: (e: ChatStreamEvent) => void) => {
       emit = cb
       return () => {
@@ -71,6 +72,31 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
 
     fleet.fire({ kind: 'idle', roomId: 'r1' })
     expect(await screen.findByText('🤖 AI 자동 토론')).toBeTruthy() // idle → 비진행
+  })
+
+  it('busy 일 때 취소 버튼을 노출하고 클릭 시 cancelChat(활성 방)을 호출한다', async () => {
+    const fleet = mockFleet()
+    render(<ChatPanel sessions={SESSIONS} />)
+    await screen.findByText('🤖 AI 자동 토론')
+    expect(screen.queryByText('취소')).toBeNull() // 비진행 시 취소 버튼 없음
+
+    fleet.fire({ kind: 'busy', roomId: 'r1' }) // 활성 방(r1) 진행 시작
+    const cancelBtn = await screen.findByText('취소')
+
+    await act(async () => {
+      cancelBtn.click()
+    })
+    expect(fleet.cancelChat).toHaveBeenCalledWith('r1')
+  })
+
+  it('다른 방의 busy 에서는 활성 방 취소 버튼을 노출하지 않는다', async () => {
+    const fleet = mockFleet()
+    render(<ChatPanel sessions={SESSIONS} />)
+    await screen.findByText('🤖 AI 자동 토론')
+
+    fleet.fire({ kind: 'busy', roomId: 'OTHER' }) // 다른 방만 진행
+    // 활성 방(r1)은 비진행 → 취소 버튼 없음
+    expect(screen.queryByText('취소')).toBeNull()
   })
 
   it('다른 방의 busy 는 현재 활성 방의 진행 표시에 영향을 주지 않는다', async () => {
