@@ -12,12 +12,15 @@ export interface ResilientOptions {
 /** 기본 백오프 sleep — signal 이 abort 되면(사용자 취소) 타이머를 끊고 즉시 reject 한다. */
 const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise<void>((resolve, reject) => {
+    // abort 사유(signal.reason)를 그대로 전파한다 — 취소 사유 보존이 의도. reason 은 관례상 DOMException.
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
     if (signal?.aborted) return reject(signal.reason)
     const timer = setTimeout(resolve, ms)
     signal?.addEventListener(
       'abort',
       () => {
         clearTimeout(timer)
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
         reject(signal.reason)
       },
       { once: true },

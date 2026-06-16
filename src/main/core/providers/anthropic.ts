@@ -180,7 +180,7 @@ async function readStream(
       error?: { type?: string; message?: string }
     }
     try {
-      ev = JSON.parse(data)
+      ev = JSON.parse(data) as typeof ev
     } catch {
       continue
     }

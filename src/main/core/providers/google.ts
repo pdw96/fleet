@@ -233,7 +233,7 @@ async function readStream(
   for await (const data of sseData(body)) {
     let ev: GoogleResponse
     try {
-      ev = JSON.parse(data)
+      ev = JSON.parse(data) as GoogleResponse
     } catch {
       continue
     }

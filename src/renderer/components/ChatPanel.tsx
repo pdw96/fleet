@@ -288,7 +288,7 @@ export function ChatPanel({ sessions }: Props) {
               if (e.key === 'Enter') void createRoom()
             }}
           />
-          <button className="btn btn-sm" onClick={createRoom}>
+          <button className="btn btn-sm" onClick={() => void createRoom()}>
             +
           </button>
         </div>
@@ -354,7 +354,7 @@ export function ChatPanel({ sessions }: Props) {
 
             <div className="controls">
               <div className="chiprow">
-                <button className="btn btn-live btn-sm" disabled={busy || sessions.length < 2} onClick={discuss}>
+                <button className="btn btn-live btn-sm" disabled={busy || sessions.length < 2} onClick={() => void discuss()}>
                   {busy ? 'AI 토론 중…' : '🤖 AI 자동 토론'}
                 </button>
                 <span className="field-label" style={{ margin: 0 }}>
@@ -378,7 +378,7 @@ export function ChatPanel({ sessions }: Props) {
               </div>
               <div className="chiprow">
                 {sessions.map((s) => (
-                  <button key={s.id} className="ask-btn" disabled={busy} onClick={() => ask(s.id)}>
+                  <button key={s.id} className="ask-btn" disabled={busy} onClick={() => void ask(s.id)}>
                     {busy ? '…' : `${s.displayName}에게 묻기`}
                   </button>
                 ))}
@@ -395,7 +395,7 @@ export function ChatPanel({ sessions }: Props) {
                   if (e.key === 'Enter') void postMessage()
                 }}
               />
-              <button className="btn" onClick={postMessage}>
+              <button className="btn" onClick={() => void postMessage()}>
                 전송
               </button>
             </div>
