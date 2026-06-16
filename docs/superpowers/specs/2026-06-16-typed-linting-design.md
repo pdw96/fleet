@@ -52,6 +52,17 @@
 - **회귀 잠금**: 룰이 `error` 라 향후 신규 미처리 Promise·async 핸들러 오용이 CI 에서 자동 차단.
 - CI(ubuntu+windows) 녹색.
 
+## 검증 (context7 현행문서, 2026-06-16)
+
+AGENTS.md 교차검증 규율에 따라 typescript-eslint 현행 문서(`/typescript-eslint/typescript-eslint`)로 핵심 결정을 검증:
+
+- **`project` 배열 채택이 정답(강한 확인)**: `project: true`·`projectService` 는 **둘 다 `tsconfig.json` 만 탐색**하며, 블로그 문서가 *"project:true 는 커스텀 TSConfig 파일명(`tsconfig.eslint.json`)을 지원하지 않고 `tsconfig.json` 을 찾는다"* 고 명시. 루트 `tsconfig.json` 부재 + 커스텀명(node/web/e2e) 구조라 **명시적 `project` 배열**이 문서가 제시하는 해법(Monorepos 문서: `project: ['./tsconfig.eslint.json', './packages/*/tsconfig.json']`). 프로브의 "not found by the project service" 실증과 일치.
+- **`recommendedTypeChecked`** 프리셋명·`await-thenable:error` 등 타입인지 룰 포함 확인(프로브가 `require-await` 252건 실측 → require-await 도 이 프리셋 소속).
+- **`disableTypeChecked`** JS 비활성 패턴 확인. 구현 시 글롭은 `**/*.{js,mjs,cjs}` 로(`e2e/fixtures/mock-mcp-server.mjs` 커버).
+- **`tsconfigRootDir`** 사용 확인(flat ESM = `import.meta.dirname`).
+
+projectService 가 현대 권장 기본이나, 이 레포는 루트 `tsconfig.json` 도입(영역별 lib/types[node↔DOM] 분리 붕괴) 또는 references+composite(빌드 변경) 없이는 사용 불가 → 빌드 무변경의 `project` 배열이 정확한 선택.
+
 ## 비범위
 
 - `eslint-plugin-react-hooks`(7차 Next #2 — 별도 PR), `require-await` 를 src 에서 재활성화(현행 1건 dispose 가 양성이라 무가치).
