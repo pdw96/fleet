@@ -280,6 +280,49 @@ describe('createApiSession', () => {
     expect(seen.at(-1)!.map((m) => m.content)).toEqual(['A', 'echo:A', 'B', 'echo:B', 'C'])
   })
 
+  it('큐 대기 중인 send 는 prior 완료를 기다리지 않고 signal abort 시 즉시 거부한다(취소 즉시성·provider 미호출)', async () => {
+    // A 가 in-flight 인 동안 같은 세션에 B 가 큐잉되면, B 의 signal 을 abort 해도 직렬화 체인이
+    // A 완료까지 B 의 chat 진입을 막아 취소가 지연됐다(방이 계속 busy — Codex P2). 이제 체인 순서는
+    // 보존하되 호출자 promise 는 abort 와 race 해 즉시 거부하고, 큐 대기 중 취소면 provider.chat 도 건너뛴다.
+    let aStarted = false
+    let releaseA: () => void = () => {}
+    const gateA = new Promise<void>((r) => (releaseA = r))
+    let bChatCalled = false
+    const provider: ApiProvider = {
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
+      async chat(messages) {
+        const last = messages.at(-1)?.content
+        const text = typeof last === 'string' ? last : ''
+        if (text === 'A') {
+          aStarted = true
+          await gateA // A 를 in-flight 로 잡아둔다
+        } else {
+          bChatCalled = true
+        }
+        return { text: `echo:${text}`, toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+
+    const pA = s.send('A')
+    await vi.waitFor(() => expect(aStarted).toBe(true)) // A 가 chat 진입(=체인 점유)
+    const ac = new AbortController()
+    const pB = s.send('B', { signal: ac.signal }) // A 뒤에 큐잉
+
+    ac.abort() // A 진행 중에 B 취소
+    const settled = await Promise.race([
+      pB.then(() => 'resolved', () => 'rejected'),
+      new Promise<string>((r) => setTimeout(() => r('pending'), 50)),
+    ])
+    expect(settled).toBe('rejected') // prior(A) 대기 없이 즉시 거부
+    expect(bChatCalled).toBe(false) // 큐 대기 중 취소 → provider.chat 미호출
+
+    releaseA() // 정리
+    await pA
+  })
+
   it('fresh: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립 호출)', async () => {
     const { provider, seen } = fakeProvider()
     const s = createApiSession(apiDesc, provider, { system: 'sys' })
@@ -875,6 +918,41 @@ describe('createCliSession', () => {
     expect(r2).toBe('R2')
     expect(calls[0]).toEqual(['exec', '--json', 'q1']) // start
     expect(calls[1]).toEqual(['exec', 'resume', '--json', 'tid-1', 'q2']) // 캡처된 id 로 resume
+  })
+
+  it('큐 대기 중인 send 는 prior 완료를 기다리지 않고 signal abort 시 즉시 거부한다(취소 즉시성·runner 미호출)', async () => {
+    // api-session 과 동형(Codex P2): A in-flight 중 큐잉된 B 를 취소하면 prior 대기 없이 즉시 거부되고
+    // 큐 대기 중 취소면 runner(자식 spawn)도 호출되지 않아야 한다.
+    let aStarted = false
+    let releaseA: () => void = () => {}
+    const gateA = new Promise<void>((r) => (releaseA = r))
+    let bRan = false
+    const runner: CommandRunner = async (_c, args) => {
+      if (args.join(' ').includes('A')) {
+        aStarted = true
+        await gateA
+      } else {
+        bRan = true
+      }
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const s = createCliSession(cliDesc, claudeAdapter, runner)
+
+    const pA = s.send('A')
+    await vi.waitFor(() => expect(aStarted).toBe(true))
+    const ac = new AbortController()
+    const pB = s.send('B', { signal: ac.signal })
+
+    ac.abort()
+    const settled = await Promise.race([
+      pB.then(() => 'resolved', () => 'rejected'),
+      new Promise<string>((r) => setTimeout(() => r('pending'), 50)),
+    ])
+    expect(settled).toBe('rejected')
+    expect(bRan).toBe(false)
+
+    releaseA()
+    await pA
   })
 })
 
