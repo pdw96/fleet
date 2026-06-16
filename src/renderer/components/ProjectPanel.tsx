@@ -322,7 +322,7 @@ export function ProjectPanel({ sessions }: Props) {
                 ))}
               </select>
             </div>
-            <button className="btn" style={{ marginLeft: 'auto' }} onClick={run} disabled={!canRun}>
+            <button className="btn" style={{ marginLeft: 'auto' }} onClick={() => void run()} disabled={!canRun}>
               {running ? '실행 중…' : '오케스트레이션 실행'}
             </button>
             {running && activeProjectId && (

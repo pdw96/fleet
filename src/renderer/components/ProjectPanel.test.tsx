@@ -411,8 +411,8 @@ describe('ProjectPanel', () => {
     await screen.findByText('로그인 기능') // 사이드바 로드됨, 자동선택은 getLastActiveProject 펜딩으로 보류
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
     fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
-    await fleet.fire({ type: 'project.created', message: '생성', data: { projectId: 'pX' } }) // pX 선택
-    await fleet.fire({ type: 'task.done', message: 'pX작업완료', data: { projectId: 'pX' } }) // pX 라이브 로그
+    fleet.fire({ type: 'project.created', message: '생성', data: { projectId: 'pX' } }) // pX 선택
+    fleet.fire({ type: 'task.done', message: 'pX작업완료', data: { projectId: 'pX' } }) // pX 라이브 로그
     expect(await screen.findByText('pX작업완료')).toBeTruthy()
     await act(async () => { resolveLast('p1') }) // 지연된 자동선택이 옛 last(p1)로 해소
     expect(screen.getByText('pX작업완료')).toBeTruthy() // 여전히 pX (p1 으로 안 바뀜)

@@ -205,7 +205,7 @@ async function readStream(
       error?: { message?: string; type?: string; code?: string }
     }
     try {
-      ev = JSON.parse(data)
+      ev = JSON.parse(data) as typeof ev
     } catch {
       continue
     }

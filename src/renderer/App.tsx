@@ -61,7 +61,7 @@ export function App() {
 
       <main className="main">
         <div className="wrap">
-          {tab === 'sessions' && <SessionsPanel sessions={sessions} onRefresh={refreshSessions} />}
+          {tab === 'sessions' && <SessionsPanel sessions={sessions} onRefresh={() => void refreshSessions()} />}
           {tab === 'project' && <ProjectPanel sessions={sessions} />}
           {tab === 'chat' && <ChatPanel sessions={sessions} />}
         </div>

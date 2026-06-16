@@ -44,7 +44,8 @@ export default tseslint.config(
   // JS/mjs 는 tsconfig 비포함이라 타입정보 없음 → 타입인지 룰 비활성.
   {
     files: ['**/*.{js,mjs,cjs}'],
-    extends: [...tseslint.configs.disableTypeChecked],
+    // disableTypeChecked 는 단일 config 객체라 spread(...) 불가 — extends 배열에 그대로 넣는다.
+    extends: [tseslint.configs.disableTypeChecked],
   },
   // 테스트 파일은 파싱 JSON·부분 fixture 를 의도적으로 다룬다 → unsafe-* 완화(src 는 strict 유지).
   {
@@ -79,29 +80,24 @@ Expected: FAIL. 남은 위반 = `no-misused-promises`(10)·`no-floating-promises
 
 ---
 
-### Task 2: 자동 수정 (no-unnecessary-type-assertion · no-redundant-type-constituents)
+### Task 2: 스타일 룰 2종 비활성 (no-unnecessary-type-assertion · no-redundant-type-constituents)
 
-**Files:** `eslint --fix` 가 결정(타입 전용 변경, 런타임 무영향).
+> **실행 중 정정(2026-06-16)**: 당초 `eslint --fix` 자동수정 계획이었으나 — (1) `no-unnecessary-type-assertion` 의 `--fix` 가 `ProjectPanel.test.tsx` 의 `getByRole(...) as HTMLButtonElement`(빌드가 `.disabled` 접근에 필요)를 **거짓 양성으로 제거 → 빌드 깨짐**(lint program 이 testing-library 타입을 build tsc 와 다르게 해석), (2) `no-redundant-type-constituents` 는 `--fix` 불가이고 `detect.ts:11` `spawnError` 의 정당한 LiteralUnion 문서패턴과 충돌. **둘 다 스타일 룰(버그탐지 아님)** 이라 끄고 게이트를 비동기/unsafe 버그탐지에 집중(스펙 §철학 정합).
 
-- [ ] **Step 1: 자동 수정 적용**
+**Files:**
+- Modify: `eslint.config.mjs` (마지막 `rules` 블록에 2 룰 off 추가 — Task 1 config 에 이미 포함)
 
-Run: `npx eslint . --fix`
-Expected: `no-unnecessary-type-assertion`(불필요 `as`/`!` 제거)·`no-redundant-type-constituents`(중복 union 멤버 제거) 자동 수정.
+- [ ] **Step 1: config 의 rules 블록에 2 룰 off 확인**
 
-- [ ] **Step 2: diff 검토 — 타입 전용 변경인지 확인**
+```js
+      '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+      '@typescript-eslint/no-redundant-type-constituents': 'off',
+```
 
-Run: `git diff --stat`
-Expected: 변경은 타입 표기 제거뿐(값/제어흐름 불변). 의심스러운 변경 있으면 해당 파일 수동 검토.
-
-- [ ] **Step 3: 타입체크·테스트 녹색 확인**
-
-Run: `npm run typecheck && npm test`
-Expected: PASS(자동 수정이 회귀 없음).
-
-- [ ] **Step 4: lint 재실행 — 두 룰 0 확인**
+- [ ] **Step 2: lint 재실행 — 두 룰 0, 버그탐지 룰만 잔존 확인**
 
 Run: `npm run lint`
-Expected: `no-unnecessary-type-assertion`·`no-redundant-type-constituents` 0. 남은: misused-promises·floating·unsafe(src)·prefer-reject·await-thenable.
+Expected: 잔여 19 = `no-misused-promises`(10)·`no-unsafe-assignment`(3)·`prefer-promise-reject-errors`(2)·`await-thenable`(2)·`no-floating-promises`(1)·`no-unsafe-argument`(1). 두 스타일 룰 0.
 
 ---
 

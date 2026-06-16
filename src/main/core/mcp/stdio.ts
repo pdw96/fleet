@@ -30,7 +30,7 @@ export const defaultSpawn: SpawnFn = (spec: McpServerSpec): McpChild => {
     },
     kill: () => {
       // Windows 에서 cross-spawn 은 cmd.exe 셰임 경유라 child.kill() 은 껍데기만 죽인다 → 트리 킬.
-      killTree(child)
+      void killTree(child)
     },
   }
 }

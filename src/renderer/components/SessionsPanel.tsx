@@ -4,6 +4,7 @@ import type {
   ApiProviderConfig,
   CliDetectionResult,
   LlmDescriptor,
+  McpServerSpec,
   McpServerStatus,
   ReasoningEffort,
 } from '../../shared/types'
@@ -158,7 +159,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
       return
     }
     try {
-      setMcpStatus(await window.fleet.setMcpServers(specs))
+      setMcpStatus(await window.fleet.setMcpServers(specs as McpServerSpec[]))
     } catch (e) {
       setError(`MCP 적용 실패: ${asError(e)}`)
     }
@@ -204,7 +205,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
           <span className="eyebrow">01 — CLI</span>
           <h2 className="panel-title">구독제 / TUI LLM</h2>
           <div className="right">
-            <button className="btn btn-ghost btn-sm" onClick={detect} disabled={detecting}>
+            <button className="btn btn-ghost btn-sm" onClick={() => void detect()} disabled={detecting}>
               {detecting ? '감지 중…' : '다시 감지'}
             </button>
           </div>
@@ -254,7 +255,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                 className="btn btn-sm"
                 style={{ marginLeft: 'auto' }}
                 disabled={!c.installed}
-                onClick={() => registerCli(c.id)}
+                onClick={() => void registerCli(c.id)}
               >
                 세션 등록
               </button>
@@ -352,7 +353,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
         <button
           className="btn"
           style={{ marginTop: 14 }}
-          onClick={registerApi}
+          onClick={() => void registerApi()}
           disabled={busy || !apiKey.trim() || (provider === 'openai-compatible' && (!baseUrl.trim() || !model.trim()))}
         >
           API 세션 등록
@@ -398,7 +399,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                     <button
                       key={role}
                       className="chip"
-                      onClick={() => toggleCapability(s, role)}
+                      onClick={() => void toggleCapability(s, role)}
                       style={{
                         cursor: 'pointer',
                         color: active ? 'var(--ok)' : 'var(--faint)',
