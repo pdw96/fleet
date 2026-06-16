@@ -443,7 +443,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
             capabilities: descriptor.capabilities,
           })
         } catch (err) {
-          console.warn('[fleet] API 세션 영속 skip — 암호화 실패:', descriptor.id, err)
+          // err.message 만 로깅 — 시크릿(encrypt) 경로라 error 객체 전체 노출을 피한다(decrypt 로그와 대칭).
+          console.warn('[fleet] API 세션 영속 skip — 암호화 실패:', descriptor.id, err instanceof Error ? err.message : String(err))
         }
       }
       store.appendEvent({ type: 'session.registered', data: { id: descriptor.id, kind: 'api', provider: config.provider } })
