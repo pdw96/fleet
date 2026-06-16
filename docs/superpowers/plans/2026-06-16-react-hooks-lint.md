@@ -4,7 +4,9 @@
 
 **Goal:** 렌더러 훅 의존성·Rules of Hooks 를 `npm run lint` 게이트로 기계 검증해 회귀를 자동 차단한다.
 
-**Architecture:** `eslint.config.mjs` 에 `eslint-plugin-react-hooks@7.1.1` 의 `flat.recommended` 를 `src/renderer/**/*.tsx` 스코프로 추가. `exhaustive-deps` 는 `error` 로 승격(하드 게이트), `set-state-in-effect` 는 `off`(false-positive/의도적 노이즈). 의도적 마운트-once·id-keyed effect 5건은 인라인 `eslint-disable-next-line` + 한국어 근거로 명시. 런타임 동작 불변(설정+주석만).
+**Architecture:** `eslint.config.mjs` 에 `eslint-plugin-react-hooks@7.1.1` 의 `flat.recommended` 를 `src/renderer/**/*.tsx` 스코프로 추가. `exhaustive-deps` 는 `error` 로 승격(하드 게이트). 의도적 예외 7건(마운트-once·id-keyed effect 5 + set-state-in-effect false-positive/카운트다운 2)은 인라인 `eslint-disable-next-line` + 한국어 근거로 명시. 런타임 동작 불변(설정+주석만).
+
+> **적대 코드리뷰 반영(2026-06-16)**: 초안은 `set-state-in-effect: 'off'`(스코프 전체) 였으나, 룰-off 가 향후 신규 동기 setState 회귀를 못 잡아 PR 목표·exhaustive-deps 규율과 비대칭이라는 지적(8 confirmed·0 must-fix) 수용 → **룰은 프리셋 error 로 유지하고 2건만 site-별 inline disable**. 아래 Task 1/2 는 그 최종형을 반영.
 
 **Tech Stack:** ESLint 9.39.4 flat config · eslint-plugin-react-hooks 7.1.1 · React 18.3.1 · TypeScript
 
@@ -46,7 +48,6 @@ import reactHooks from 'eslint-plugin-react-hooks'
     rules: {
       ...reactHooks.configs.flat.recommended.rules,
       'react-hooks/exhaustive-deps': 'error',
-      'react-hooks/set-state-in-effect': 'off',
     },
   },
 ```
@@ -57,7 +58,7 @@ Run:
 ```bash
 npx eslint "src/renderer/**/*.tsx" -f json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const d=JSON.parse(s);const by={};for(const f of d)for(const m of f.messages){if(!m.ruleId||!m.ruleId.startsWith('react-hooks/'))continue;by[m.ruleId]=(by[m.ruleId]||0)+1}console.log(JSON.stringify(by))})"
 ```
-Expected: `{"react-hooks/exhaustive-deps":5}` — exhaustive-deps 5건만(set-state-in-effect 는 off 라 0). 다르면 Task 2 전 원인 조사.
+Expected(인라인 disable 적용 전): `{"react-hooks/exhaustive-deps":5,"react-hooks/set-state-in-effect":2}` — exhaustive-deps 5 + set-state-in-effect 2(App.tsx:30·ApprovalModal:44). 다르면 Task 2 전 원인 조사. (Task 2 의 인라인 disable 7건이 전부 억제 → 최종 0.)
 
 - [ ] **Step 4: 커밋**
 
@@ -76,12 +77,12 @@ EOF
 
 ---
 
-### Task 2: exhaustive-deps 5건 인라인 disable (의도적 패턴 명시)
+### Task 2: react-hooks 7건 인라인 disable (exhaustive-deps 5 + set-state-in-effect 2)
 
 **Files:**
-- Modify: `src/renderer/components/ChatPanel.tsx:69`, `src/renderer/components/SessionsPanel.tsx:56`, `src/renderer/components/ApprovalModal.tsx:46,51,86`
+- Modify: `src/renderer/App.tsx`, `src/renderer/components/ChatPanel.tsx`, `src/renderer/components/SessionsPanel.tsx`, `src/renderer/components/ApprovalModal.tsx`
 
-각 effect 의 의존성 배열 `}, [...])` 바로 앞 줄에 disable 주석을 넣는다(경고는 의존성 배열 줄에 앵커됨).
+exhaustive-deps: 각 effect 의 의존성 배열 `}, [...])` 바로 앞 줄에 disable 주석(경고는 의존성 배열 줄에 앵커). set-state-in-effect: 룰이 가리키는 setState 호출/호출부 바로 앞 줄에.
 
 - [ ] **Step 1: ChatPanel — 마운트 1회 방 목록 로드**
 
@@ -141,10 +142,32 @@ EOF
   }, [current?.id])
 ```
 
-- [ ] **Step 4: lint 0 확인**
+- [ ] **Step 4: set-state-in-effect 2건 인라인 disable**
+
+`src/renderer/App.tsx` 의 마운트 effect, `void refreshSessions()` 바로 앞:
+```js
+    // false-positive: refreshSessions 의 setSessions 는 await(IPC) 뒤에 실행돼 effect 본문 동기 setState 가 아니다.
+    // 룰이 async/await 경계를 못 봐 호출부만 보고 플래그 — 룰은 켜 두고 이 site 만 명시 억제.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refreshSessions()
+```
+
+`src/renderer/components/ApprovalModal.tsx` 카운트다운 effect, `if (!current) return` 다음·`setRemaining(...)` 앞:
+```js
+    if (!current) return
+    // 의도적 동기 setState: 요청 전환 시 표시용 카운트다운을 즉시 리셋(요청당 1회 추가 렌더·무해, [current?.id] 라
+    // 자기 재발화 없음). 실제 자동거부는 메인 권위. 룰은 켜 두고 이 site 만 명시 억제.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRemaining(Math.ceil(APPROVAL_TIMEOUT_MS / 1000))
+```
+
+- [ ] **Step 5: lint 0 + 죽은 directive 0 확인**
 
 Run: `npm run lint`
 Expected: exit 0, 출력 없음(error+warning 0).
+
+Run: `npx eslint src/renderer/App.tsx src/renderer/components/ApprovalModal.tsx src/renderer/components/ChatPanel.tsx src/renderer/components/SessionsPanel.tsx --report-unused-disable-directives`
+Expected: exit 0, 출력 없음(7 directive 전부 실효 — 죽은 것 0).
 
 추가 확인(warning 까지 0):
 ```bash
@@ -152,19 +175,11 @@ npx eslint . -f json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>
 ```
 Expected: `errors 0 warnings 0`.
 
-- [ ] **Step 5: 커밋**
+- [ ] **Step 6: 커밋**
 
 ```bash
-git add src/renderer/components/ChatPanel.tsx src/renderer/components/SessionsPanel.tsx src/renderer/components/ApprovalModal.tsx
-git commit -m "$(cat <<'EOF'
-fix(lint): 의도적 마운트-once·id-keyed effect 5건 exhaustive-deps 인라인 명시 (#27 Next#2)
-
-ChatPanel(방 목록 1회)·SessionsPanel(CLI 감지 1회)·ApprovalModal 3건(current?.id 키잉)
-— 동작 불변, 룰은 신규 effect 에서 가드 유지.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-EOF
-)"
+git add src/renderer/App.tsx src/renderer/components/ChatPanel.tsx src/renderer/components/SessionsPanel.tsx src/renderer/components/ApprovalModal.tsx eslint.config.mjs
+git commit -m "react-hooks 의도적 예외 7건 인라인 disable (exhaustive-deps 5 + set-state-in-effect 2)"
 ```
 
 ---
@@ -203,8 +218,8 @@ Expected: exit 0(electron-vite build 성공).
 - 버전 v7.1.1 채택 → Task 1 Step 1(확인). ✅
 - flat.recommended 스코프 추가 → Task 1 Step 2. ✅
 - exhaustive-deps=error → Task 1 Step 2. ✅
-- set-state-in-effect=off → Task 1 Step 2. ✅
-- 인라인 disable 5건 → Task 2 Step 1–3. ✅
+- set-state-in-effect 유지(프리셋 error) + 2건 인라인 disable → Task 1 Step 2(off 미설정)·Task 2 Step 4. ✅
+- 인라인 disable 7건(exhaustive-deps 5 + set-state-in-effect 2) → Task 2 Step 1–4. ✅
 - 4게이트 녹색·무회귀 → Task 3. ✅
 - 스프레드 덮어쓰기 함정 회피(명시 블록) + languageOptions 확인 → Task 1 Step 1–2. ✅
 

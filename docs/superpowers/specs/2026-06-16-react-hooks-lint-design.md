@@ -27,14 +27,14 @@
 **핵심 관찰**:
 - 이슈가 노이즈로 지목한 `immutability`·`refs`(no-ref-access-during-render)는 **0건** — 렌더러가 ref 를 effect/콜백에서만 접근(렌더 중 미접근)하기 때문. 즉 이슈의 *구체적* 예측은 빗나갔고(그래서 프로브한다), 원칙(컴파일러 룰 노이즈는 타깃 disable)만 유효.
 - `ProjectPanel` 0건: ref-heavy 설계(8+ 가드 ref)가 오히려 `exhaustive-deps` 를 **만족** — ref 는 reactive 가 아니라 의존성 누락이 아니다. v7 `exhaustive-deps` 가 reactive 클로저만 정확히 플래그.
-- `set-state-in-effect` 는 이 레포의 지배적 idiom(effect 에서 async refresh 호출)에 false-positive(App.tsx) → 만성 노이즈원.
+- `set-state-in-effect` 는 App.tsx 의 직접 async-refresh 호출(`void asyncFn()`)에 false-positive — 단 **실측상 1건뿐**(`.then()`/async-IIFE 는 미발화)이라 만성 아님 → 룰-off 대신 site-별 disable 로 충분(설계 결정 4).
 
 ## 설계 결정
 
 1. **스코프 = `src/renderer/**/*.tsx`.** 훅은 렌더러 컴포넌트에만 존재(grep 실증: App/ApprovalModal/ChatPanel/ProjectPanel/SessionsPanel 만 훅 사용). 테스트 tsx 포함하나 프로브상 0건. 코어/main 은 비대상.
 2. **`flat.recommended` 전체 채택**(이슈 지정·공식 프리셋). 0건인 13 compiler 룰은 그대로 둔다 — **공짜 회귀 가드**(향후 진짜 mutation-in-render·impure 컴포넌트 등 차단).
 3. **`exhaustive-deps` = `error`(warn 에서 승격).** 목표가 회귀 *방지* 이고, `npm run lint`(=`eslint .`)는 `--max-warnings 0` 가 없어 warn 은 CI 를 못 막는다(baseline 0/0 확인). typed-linting "곧장 error 착륙" 철학과 동형. 의도적 예외는 인라인 disable 로 명시.
-4. **`set-state-in-effect` = `off`(타깃 disable).** 2건 다 비-버그(1 false-positive·1 의도적). 이 레포의 async-refresh-in-effect idiom 에 만성 false-positive → 컴파일러 룰 노이즈. 진짜 위험(렌더 중 setState)은 `set-state-in-render`(0건·유지)가 잡는다. 이슈의 "compiler-rule 노이즈 타깃 disable" 의 실측 적용(이슈가 찍은 immutability/refs 대신 실측이 가리킨 set-state-in-effect).
+4. **`set-state-in-effect` = 유지(프리셋 error) + 2건 인라인 disable.** (적대 코드리뷰 반영 — 초안의 룰-off 를 교정.) 룰을 스코프-전체 off 하면 (a) 향후 신규 *진짜* 동기 setState 회귀를 못 잡아 PR 목표("회귀 자동 차단")와 모순되고, (b) exhaustive-deps 의 site-별 disable 규율과 비대칭이다. **실측상 false-positive 는 만성이 아님**: 룰 강제 ON 시 정확히 2건만 발화(App.tsx:30·ApprovalModal:44)하고, 흔한 `.then()`/async-IIFE setState(ChatPanel·ProjectPanel)는 미발화. 2건 다 비-버그라 각 site 인라인 명시: App.tsx:30(false-positive — setState 가 `await` 뒤)·ApprovalModal:44(의도적 카운트다운 리셋, `[current?.id]` 라 자기 재발화 없음). 룰은 켜 둬 신규 코드 가드 유지. 진짜 위험(렌더 중 setState)은 `set-state-in-render`(0건)도 별도 가드.
 5. 그 외 룰 레벨은 프리셋 기본 유지(`incompatible-library`·`unsupported-syntax` warn 등 — React 팀 의도적 보수 레벨, 현재 0건).
 
 설정 블록(스프레드 덮어쓰기 함정 회피 위해 명시 형태):
@@ -46,26 +46,30 @@ import reactHooks from 'eslint-plugin-react-hooks'
   plugins: { 'react-hooks': reactHooks },
   rules: {
     ...reactHooks.configs.flat.recommended.rules,
-    'react-hooks/exhaustive-deps': 'error',   // 회귀 하드 게이트
-    'react-hooks/set-state-in-effect': 'off',  // 컴파일러 룰 노이즈(false-positive + 의도적 리셋)
+    'react-hooks/exhaustive-deps': 'error',   // 회귀 하드 게이트(의도적 예외는 인라인 disable)
   },
 }
 ```
-(구현 시 `flat.recommended` 가 `plugins`/`rules` 외 `languageOptions`/`settings` 를 싣지 않음을 확인 — 프로브상 미포함. 싣는다면 스프레드 형태로 전환.)
+(구현 시 `flat.recommended` 가 `plugins`/`rules` 외 `languageOptions`/`settings` 를 싣지 않음을 확인 — 프로브상 미포함. 싣는다면 스프레드 형태로 전환.) ESLint 9 flat config 는 `reportUnusedDisableDirectives` 기본 warn 이라, 룰을 끄지 않고 site-별 disable 을 쓰면 죽은 directive 가 즉시 드러난다(룰-off 대비 이점).
 
-## src 수정 (전부 인라인 disable, 5건 — 동작 불변)
+## src 수정 (전부 인라인 disable, 7건 — 동작 불변)
 
-의도적 패턴이라 "수정"(의존성 추가)은 동작을 바꾼다 → React 팀 권장 방식인 `// eslint-disable-next-line react-hooks/exhaustive-deps` + 한국어 근거를 각 site 에 붙인다(룰은 다른 곳에서 가드 유지). `set-state-in-effect` 2건은 룰 off 라 인라인 불요.
+의도적 패턴이라 "수정"(의존성 추가/구조 변경)은 동작을 바꾼다 → React 팀 권장 방식인 `// eslint-disable-next-line <rule>` + 한국어 근거를 각 site 에 붙인다(룰은 다른 곳·신규 코드에서 가드 유지).
 
+**exhaustive-deps 5건:**
 - **ChatPanel `useEffect(…, [])`**(refreshRooms): 마운트 1회 방 목록 로드(refreshRooms 는 초기 activeRoom=null 로 1회 실행 의도 — 의존성 추가 시 방 전환마다 재실행되어 잘못).
-- **SessionsPanel `useEffect(…, [])`**(detect): 마운트 1회 CLI 감지. (대안: `detect` 를 `useCallback([])`+`[detect]` 로 — `asError` 의존 연쇄 시 disable 로 단순화. 구현서 더 깔끔한 쪽 선택.)
+- **SessionsPanel `useEffect(…, [])`**(detect): 마운트 1회 CLI 감지(detect 는 reactive 값 미참조).
 - **ApprovalModal 3건**(`[current?.id]` 키잉): 카운트다운 리셋·거부버튼 포커스·키보드 트랩. `current`(=queue[0]) 객체 변화가 아닌 *요청 id* 변화에만 재실행하려는 의도(#57 a11y). `current`/`decide` 추가 시 매 큐 변동/렌더마다 재실행되어 리스너 재부착·포커스 튐.
+
+**set-state-in-effect 2건:**
+- **App.tsx:30**(`void refreshSessions()`): false-positive — setState 가 `await window.fleet.listSessions()` 뒤 마이크로태스크라 동기 아님. 룰이 async 경계를 못 봐 호출부만 보고 플래그.
+- **ApprovalModal:44**(`setRemaining`): 의도적·무해한 표시용 카운트다운 리셋(요청당 1회 추가 렌더·`[current?.id]` 라 루프 없음·실제 자동거부는 메인 권위).
 
 ## 검증
 
 - **게이트가 곧 테스트**: `npm run lint` 0 exit(= 새 훅 게이트 실효). 4게이트(typecheck·lint·test·build) 전부 녹색. **런타임 동작 불변**(설정+주석만) → 기존 렌더러 테스트(ChatPanel/ProjectPanel/ApprovalModal/SessionsPanel) 그린 유지.
 - **회귀 잠금**: `rules-of-hooks`·`exhaustive-deps` 가 error → 향후 신규 훅 순서 위반·미선언 reactive 의존성이 CI 자동 차단. 13 compiler 룰도 error/warn 으로 잠복 가드.
-- **무회귀 재프로브**: 구현 후 `eslint .` 가 0/0(error+warning) 확인(인라인 disable 5 가 exhaustive-deps warn 제거, set-state-in-effect off 가 error 2 제거).
+- **무회귀 재프로브**: 구현 후 `eslint .` 가 0/0(error+warning) 확인(인라인 disable 7 = exhaustive-deps 5 + set-state-in-effect 2 억제). `--report-unused-disable-directives` 로 죽은 directive 0 확인(7건 전부 실효).
 - CI(ubuntu+windows·Node 22) 녹색 + Codex 봇 리뷰 대기·반영.
 
 ## 비범위

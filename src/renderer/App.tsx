@@ -27,6 +27,9 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    // false-positive: refreshSessions 의 setSessions 는 await(IPC) 뒤에 실행돼 effect 본문 동기 setState 가 아니다.
+    // 룰이 async/await 경계를 못 봐 호출부만 보고 플래그 — 룰은 켜 두고 이 site 만 명시 억제.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshSessions()
     void window.fleet
       .getAppInfo()

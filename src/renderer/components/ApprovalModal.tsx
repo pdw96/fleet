@@ -41,6 +41,9 @@ export function ApprovalModal() {
   // 현재 요청 전환 시 카운트다운 리셋(시각 표시 전용 — 실제 자동 거부는 메인 측 권위).
   useEffect(() => {
     if (!current) return
+    // 의도적 동기 setState: 요청 전환 시 표시용 카운트다운을 즉시 리셋(요청당 1회 추가 렌더·무해, [current?.id] 라
+    // 자기 재발화 없음). 실제 자동거부는 메인 권위. 룰은 켜 두고 이 site 만 명시 억제.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRemaining(Math.ceil(APPROVAL_TIMEOUT_MS / 1000))
     const iv = setInterval(() => setRemaining((r) => (r > 0 ? r - 1 : 0)), 1000)
     return () => clearInterval(iv)
