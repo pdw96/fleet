@@ -1532,4 +1532,19 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     const registered = store.listEvents().filter((ev) => ev.type === 'session.registered')
     expect(registered).toHaveLength(1)
   })
+
+  it('API 세션의 수정된 capabilities 를 복원 시 보존한다(암호문 불변)', () => {
+    const store = createMemoryStore()
+    const crypto = fakeCrypto()
+    const e1 = createFleetEngine({ store, secretCrypto: crypto })
+    const d = e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    e1.setSessionCapabilities(d.id, ['planner', 'reviewer'])
+
+    const ps = store.listSessions()[0]
+    if (ps.kind !== 'api') throw new Error('api 세션이어야 한다')
+    expect(ps.encryptedApiKey.startsWith('v1:')).toBe(true) // 암호문 불변(키 재암호화 없음)
+
+    const e2 = createFleetEngine({ store, secretCrypto: crypto })
+    expect(e2.listSessions()[0].capabilities).toEqual(['planner', 'reviewer'])
+  })
 })

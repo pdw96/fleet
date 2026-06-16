@@ -457,7 +457,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     setSessionCapabilities(id, roles) {
       const descriptor = sessions.setCapabilities(id, roles)
       if (!descriptor) throw new Error(`알 수 없는 세션: ${id}`)
-      syncPersistedSession(descriptor) // 수정된 capabilities 영속(cli 만 — 내부에서 분기)
+      // 영속 미러: 키 재암호화 없이 capabilities 만 in-place patch(cli·api 통일). 미영속 세션엔 no-op.
+      store.patchSessionCapabilities(id, [...roles])
       store.appendEvent({ type: 'session.capabilities', data: { id, roles: [...roles] } })
       return descriptor
     },
