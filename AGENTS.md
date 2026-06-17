@@ -48,6 +48,17 @@ CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 위 4개를 강제한�
 - **E2E 활성화는 `FLEET_E2E === '1'` 일 때만.** (`src/main/index.ts:38`) `0`/`false`/빈 값은
   프로덕션 경로. 이 가드를 느슨하게 바꾸면 페이크 러너(영구 in-flight)·E2E 픽스처가 프로덕션
   런치로 샌다.
+- **Windows 툴링 경로/인코딩.** Bash 도구는 Git Bash(MSYS) — `/tmp` 가
+  `C:\Users\…\AppData\Local\Temp` 로 매핑되지만 **네이티브 Python/도구는 `/tmp` 를 `C:\tmp`
+  (드라이브 루트)로 해석한다.** Git Bash 로 만든 파일을 네이티브 도구(예: 시스템 `python`)에
+  넘길 땐 `/tmp` 대신 **절대 Windows 경로나 stdin 파이프**를 써라. 네이티브 Python 의 한글/
+  이모지 입출력은 기본 cp949 라 깨짐 → `PYTHONUTF8=1`.
+- **engine-strict floor 정직성.** `.npmrc` 의 `engine-strict=true` 때문에 선언한
+  `engines.node`(현 `>=22.22.1 <23 || >=24`)가 의존성 트리의 *실제* 바닥과 어긋나면 `npm ci` 가
+  EBADENGINE 로 하드 실패한다(transitive 까지 강제). 현 바닥 결정자: `eslint-visitor-keys`
+  (`^22.13.0 || >=24` → **Node 23 제외**) · `lint-staged@17`(`>=22.22.1`). dev-tool 이 floor 를
+  올리면 **최신 메이저를 다운그레이드해 회피하지 말고 floor 를 정직하게 상향**하라(핀된
+  `.nvmrc`/CI 엔 무영향). lockfile 루트 `engines` 드리프트는 `npm install --package-lock-only` 로 동기화.
 
 ## 컨벤션
 
@@ -73,6 +84,11 @@ project number `1`, owner `pdw96`).
    품질 게이트 4종 green(위 「품질 게이트」 참조; preload 변경 시 dev 재시작). 적대 리뷰.
 4. **PR** — 본문에 `Closes #<N>` 를 넣는다(머지 시 이슈 자동 닫힘 → #27 sub-issue 진행률 자동 갱신).
    PR open 후 **Codex 봇 자동리뷰를 기다려** 반영(위 「리뷰 피드백 교차검증」) → 사용자 확인 후 squash 머지.
+   - **Codex 봇 운영**: 자동리뷰가 항상 즉발은 아니다(보통 7~20분; 무응답 시 `@codex review`
+     코멘트로 명시 트리거, 인지하면 트리거 코멘트에 👀 리액션). **이슈가 없을 때 clean 승인은
+     인라인/리뷰 없이 👍 리액션-only 가 흔하다** → `gh api repos/pdw96/fleet/issues/<pr>/reactions`
+     도 확인하라(comments/reviews 만 보면 놓친다). 봇 로그인 = `chatgpt-codex-connector[bot]`
+     (필터 `test("codex")`). ~4라운드 넘으면 레이트리밋 가능.
 5. **머지 후 동기화** — (a) 이슈 닫힘·#27 진행률 = `Closes #N` 으로 자동. (b) **보드 Status → Done**:
    보드 내장 워크플로("Item closed → Done")가 켜져 있으면 자동, 아니면 `gh project item-edit` 로 수동
    (수동 id 출처 — `--project-id`(`PVT_…`): `gh project view 1 --owner pdw96 --format json` 의 `.id` ·
