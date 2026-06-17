@@ -24,7 +24,8 @@
     "test:watch": "vitest",
     "test:e2e": "electron-vite build && playwright test",
     "brain": "node scripts/brain/build.mjs",
-    "brain:watch": "node scripts/brain/watch.mjs"
+    "brain:watch": "node scripts/brain/watch.mjs",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
@@ -42,7 +43,9 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
     "force-graph": "^1.51.4",
+    "husky": "^9.1.7",
     "jsdom": "^25.0.1",
+    "lint-staged": "^17.0.7",
     "prettier": "3.8.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -50,5 +53,14 @@
     "typescript-eslint": "^8.10.0",
     "vite": "^5.4.9",
     "vitest": "^2.1.3"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs,cjs}": [
+      "prettier --write",
+      "eslint --fix --no-warn-ignored"
+    ],
+    "*.{json,css,yml,yaml,html}": [
+      "prettier --write"
+    ]
   }
 }
