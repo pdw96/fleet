@@ -183,6 +183,24 @@ describe('SessionsPanel', () => {
     expect(screen.queryByLabelText(/캐시 TTL/i)).toBeNull()
   })
 
+  it('anthropic→1h 선택 후 openai 로 전환하면 stale cacheTtl 가 config 에 누출되지 않는다 (#72 provider 게이트)', async () => {
+    const fleet = mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    // anthropic 에서 1h 선택 → provider 전환(셀렉트 onChange 는 cacheTtl state 를 리셋하지 않아 '1h' 잔존)
+    fireEvent.change(screen.getByLabelText(/캐시 TTL/i), { target: { value: '1h' } })
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
+
+    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    // provider 게이트(provider==='anthropic' &&)만이 stale '1h' 의 누출을 막는다 — 게이트 제거 뮤테이션 차단.
+    expect(cfg.provider).toBe('openai')
+    expect('cacheTtl' in cfg).toBe(false)
+    expect(String(cfg.displayName)).not.toContain('cache:1h')
+  })
+
   it('MCP 서버 JSON 을 적용하고 상태를 표시한다', async () => {
     const status = [{ name: 'fs', connected: true, toolCount: 2, tools: ['mcp__fs__read', 'mcp__fs__write'] }]
     const fleet = mockFleet({ setMcpServers: vi.fn().mockResolvedValue(status) })
