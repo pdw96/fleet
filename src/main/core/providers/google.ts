@@ -44,6 +44,9 @@ const GEMINI_3 = /gemini-3(?![0-9])/
 // (65536) 내라 cap-safe. 스트리밍은 더 긴 출력을 허용한다(Anthropic 버퍼/스트림 2단 관용구와 동형).
 const THINKING_BUFFER_MAX_TOKENS = 16384
 const THINKING_STREAM_MAX_TOKENS = 32768
+// 전 Gemini 2.5/3 출력 토큰 상한. 2.5 정수 budget 의 starvation floor((budget + answer-reserve))가 이 위를
+// 넘지 않게 클램프(cap-safe). 현 매핑 최댓값 32768+16384=49152 < 65536 라 실제로는 방어용.
+const GEMINI_MAX_OUTPUT_TOKENS = 65536
 
 /** thinking(2.5/3) 지원 모델이면 true — thinkingConfig 전송 및 starvation maxOutputTokens 가드 적용 여부. */
 function isThinkingModel(model: string): boolean {
@@ -354,12 +357,20 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const thinkingActive = !!knob && isThinkingModel(config.model)
       // onToken 이 있으면 SSE 스트리밍 엔드포인트로 요청한다(아래 method 분기). starvation floor 단계 결정에도 쓴다.
       const streaming = !!opts.onToken
-      // thinking 토큰이 출력 예산을 함께 소모 → 과소/미설정 maxOutputTokens 면 가시 답변이 굶는다. thinking
-      // 활성 시 cap-safe 기본으로 끌어올리고 명시값이 그 아래여도 floor 한다(thinking 켠 호출에서 굶는 한도는
-      // 의도가 아니다 — 명시 한도가 기본 이상이면 그대로 존중). thinking off 면 기존 동작(미설정=미전송) 그대로.
+      // thinkingConfig 를 먼저 해소한다 — 2.5 정수 budget 을 아래 starvation floor 계산에 반영하기 위함.
+      const thinkingConfig = resolveThinkingConfig(config.model, knob)
+      // thinking 토큰이 출력 예산(maxOutputTokens)을 함께 소모 → 과소/미설정이면 가시 답변이 굶는다. thinking
+      // 활성 시 cap-safe floor 로 끌어올리고 명시값이 그 아래여도 floor 한다(명시 한도가 기본 이상이면 존중).
+      // 2.5 정수 budget(effort 매핑)은 사고가 그만큼 출력 예산을 점유하므로, 가시 답변용 reserve 를 budget 위로
+      // 더해 floor 를 올린다(budget + THINKING_BUFFER_MAX_TOKENS, 모델 출력상한 내 클램프) — budget 이 staticFloor
+      // 에 근접/초과해도 답변이 굶지 않게(Codex P2). -1(AUTOMATIC)·gen-3 thinkingLevel·미전송은 정수 budget 부재라
+      // staticFloor 만 적용. thinking off 면 기존 동작(미설정=미전송) 그대로.
       let maxTokens = opts.maxTokens ?? config.maxTokens
       if (thinkingActive) {
-        const floor = streaming ? THINKING_STREAM_MAX_TOKENS : THINKING_BUFFER_MAX_TOKENS
+        const staticFloor = streaming ? THINKING_STREAM_MAX_TOKENS : THINKING_BUFFER_MAX_TOKENS
+        const budget = typeof thinkingConfig?.thinkingBudget === 'number' ? thinkingConfig.thinkingBudget : -1
+        const budgetFloor = budget > 0 ? Math.min(budget + THINKING_BUFFER_MAX_TOKENS, GEMINI_MAX_OUTPUT_TOKENS) : 0
+        const floor = Math.max(staticFloor, budgetFloor)
         maxTokens = Math.max(maxTokens ?? floor, floor)
       }
 
@@ -378,8 +389,7 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
         generationConfig.responseMimeType = 'application/json'
         generationConfig.responseSchema = opts.responseSchema.schema
       }
-      // thinkingConfig 는 세대별 방언으로 정규화돼 온다(2.5=thinkingBudget·3=thinkingLevel·그 외=미전송).
-      const thinkingConfig = resolveThinkingConfig(config.model, knob)
+      // thinkingConfig 는 위에서 세대별 방언으로 해소됐다(2.5=thinkingBudget·3=thinkingLevel·그 외=미전송).
       if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig
 
       const body: Record<string, unknown> = { contents }

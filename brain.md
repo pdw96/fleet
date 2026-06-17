@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 56 files · 138 import wires · 32 IPC channels · 생성 2026-06-17T04:52 UTC
+> 56 files · 138 import wires · 32 IPC channels · 생성 2026-06-17T11:01 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -36,7 +36,7 @@
 - **renderer/components/ApprovalModal** — 위험한 작업을 하기 전에 사용자에게 허락을 받는 확인 창 _파일 삭제·명령 실행 같은 위험 작업이 생기면 '거부/승인' 팝업을 띄우고, 정해진 시간이 지나면 자동으로 거부합니다. 실수로 엔터를 눌러도 거부 쪽으로 떨어지게 해 위험한 작업이 잘못 승인되는 걸 막습니다._
   - →의존: shared/types · ←피의존: renderer/App · 140줄
 - **renderer/components/SessionsPanel** — 어떤 AI를 쓸지 등록하고 설정하는 세션 관리 화면 _컴퓨터에 깔린 클로드·코덱스 같은 CLI 도구를 감지해 등록하거나, API 키를 넣어 Anthropic·OpenAI·Google AI를 추가하고, 각 AI가 잘하는 역할과 외부 도구(MCP) 연결도 지정합니다._
-  - →의존: shared/types · ←피의존: renderer/App · 458줄
+  - →의존: shared/types · ←피의존: renderer/App · 483줄
 - **renderer/ui** — 화면의 색과 클래스 이름을 다루는 작은 도우미 모음 _작업 상태(완료·실패·진행 중 등)에 맞는 색을 골라 주고, 채팅에 참여한 AI마다 고유한 색을 정해 누가 말했는지 한눈에 구분되게 합니다. 조건에 맞는 화면 스타일 이름을 합치는 간단한 기능도 들어 있습니다._
   - →의존: — · ←피의존: renderer/components/ChatPanel, renderer/components/ProjectPanel · 46줄
 - **renderer/main** — 앱 화면을 맨 처음 켜서 빈 페이지에 띄우는 시작 부품 _웹 페이지의 빈 자리를 찾아 그 안에 위의 App 화면 전체를 그려 넣어 앱을 처음 띄웁니다. 개발 중 실수를 더 잘 잡아주는 점검 모드로 감싸 실행합니다._
@@ -62,13 +62,13 @@
 
 ### providers · core — 클로드·제미니·GPT 같은 여러 AI 서비스의 서로 다른 대화 방식을 똑같은 형태로 맞춰주고, 인터넷 장애에도 잘 견디게 해주는 'AI 통역·연결 창구' 모음.
 - **providers/types** — 모든 AI 창구가 똑같이 쓰는 공통 약속(데이터 모양)과 기본 도구를 모아 둔 규격집 _대화 한 마디, 답변 결과, 도구 호출, 토큰 사용량 같은 데이터의 표준 모양을 정의해 어떤 AI든 같은 형태로 주고받게 한다. 또 API 키 확인, 인터넷 통신 기본 도구, 오류 표현 같은 공용 부품도 함께 담고 있다._
-  - →의존: shared/types · ←피의존: engine, providers/anthropic, providers/google, providers/openai, providers/registry, providers/resilient, session/api-session, tools/context, tools/loop, tools/types · 255줄
+  - →의존: shared/types · ←피의존: engine, providers/anthropic, providers/google, providers/openai, providers/registry, providers/resilient, session/api-session, tools/context, tools/loop, tools/types · 260줄
 - **providers/registry** — 설정에 적힌 AI 종류를 보고 알맞은 창구를 골라 만들어 주는 안내데스크 _'anthropic·openai·google' 중 무엇인지 보고 그에 맞는 대화 창구를 하나 만들어 돌려준다. 새 AI 서비스를 추가할 때 여기 한 곳만 고치면 되도록 분기점을 모아 둔 곳이다._
   - →의존: providers/anthropic, providers/google, providers/openai, providers/types, shared/types · ←피의존: engine · 28줄
 - **providers/anthropic** — 클로드(Anthropic) AI 와 대화하는 전용 창구 _클로드에게 질문을 보내고 답을 받아오며, 답이 한 글자씩 실시간으로 오게 하는 처리도 한다. 또 클로드의 '깊이 생각하기' 기능이 켜지면 답이 잘리지 않게 답변 분량을 더 넉넉히 잡아주고, 모델 종류에 맞춰 안 통하는 설정은 알아서 빼준다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 428줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 438줄
 - **providers/google** — 구글 제미니(Gemini) AI 와 대화하는 전용 창구 _제미니에게 질문을 보내고 답을 받아오며, 제미니 버전(2.5/3 등)마다 다른 '생각 깊이' 설정 방식을 알아서 맞춰 보낸다. 생각하기를 켜면 답이 굶지 않도록 답변 분량을 늘리고, 제미니가 답을 차단했는지도 가려낸다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 422줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 473줄
 - **providers/openai** — OpenAI(GPT) 및 같은 방식을 쓰는 호환 AI 와 대화하는 전용 창구 _GPT 에게 질문을 보내고 답을 받아오며, o1·GPT-5 같은 추론 모델이 거부하는 설정(온도·토큰 항목 등)을 모델에 맞게 알아서 바꿔 보낸다. 같은 방식을 쓰는 다른 회사 AI(openai-compatible)도 이 창구로 함께 처리한다._
   - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 390줄
 - **providers/sse** — 실시간으로 조각조각 도착하는 답변 데이터를 한 덩어리씩 깔끔히 잘라 주는 도구 _AI 가 답을 한 글자씩 흘려보낼 때 인터넷으로 들어오는 데이터 조각에서 실제 내용만 골라내고, 의미 없는 줄이나 종료 신호는 걸러낸다. 글자가 중간에 끊겨 깨지지 않도록 안전하게 이어 붙인다._
@@ -172,7 +172,7 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/detect, cli/output, cli/registry, engine, main/index, mcp/host, mcp/stdio, mcp/types, mcp/wrap, +26 · 509줄
+  - →의존: — · ←피의존: chat/room, cli/detect, cli/output, cli/registry, engine, main/index, mcp/host, mcp/stdio, mcp/types, mcp/wrap, +26 · 517줄
 
 ---
 _이 파일은 자동 생성물이다. 코드 변경 후 `npm run brain` 으로 갱신. 설명은 `scripts/brain/descriptions.json` 에서 손볼 수 있다._

@@ -1443,11 +1443,12 @@ describe('GoogleProvider', () => {
     expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: 8192, includeThoughts: true })
   })
 
-  it('Gemini 2.5: thinking 활성 시 과소 maxOutputTokens 를 버퍼 기본(16384)으로 floor 한다(굶음 방지)', async () => {
-    // baseGoogle.maxTokens=256 → thinking 이 256 을 먹어 가시 답변이 굶는다 → 16384 로 floor.
+  it('Gemini 2.5 AUTOMATIC(thinking{}): 과소 maxOutputTokens 를 버퍼 staticFloor(16384)로 floor 한다(굶음 방지)', async () => {
+    // baseGoogle.maxTokens=256 → thinking 이 256 을 먹어 가시 답변이 굶는다 → 16384 로 floor. 정수 budget 부재
+    // (effort 미지정 → -1 AUTOMATIC)라 budget-aware floor 미적용, staticFloor 만(정수 budget floor 는 별도 테스트).
     const { http, calls } = mockHttp(okBody)
     const p = createGoogleProvider(baseGoogle, http)
-    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
     expect(body.generationConfig?.maxOutputTokens).toBe(16384)
   })
@@ -1611,11 +1612,12 @@ describe('GoogleProvider', () => {
     }
   })
 
-  it('starvation floor 경계: 버퍼 floor 정확값(16384)은 무변경, 직전(16383)은 16384 로 올림', async () => {
+  it('starvation staticFloor 경계(AUTOMATIC): 버퍼 floor 정확값(16384)은 무변경, 직전(16383)은 16384 로 올림', async () => {
+    // 정수 budget 부재(thinking{} → -1 AUTOMATIC)라 staticFloor(16384) 경계만 검증(budget-aware floor 는 별도).
     for (const [maxTokens, expected] of [[16384, 16384], [16383, 16384]] as const) {
       const { http, calls } = mockHttp(okBody)
       await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens }, http)
-        .chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+        .chat([{ role: 'user', content: 'q' }], { thinking: {} })
       const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
       expect(body.generationConfig?.maxOutputTokens).toBe(expected)
     }
@@ -1624,9 +1626,44 @@ describe('GoogleProvider', () => {
   it('starvation floor 경계(스트리밍): 스트림 floor 직전(32767)은 32768 로 올림', async () => {
     const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
     await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens: 32767 }, http)
-      .chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: () => {} })
+      .chat([{ role: 'user', content: 'q' }], { thinking: {}, onToken: () => {} })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
     expect(body.generationConfig?.maxOutputTokens).toBe(32768)
+  })
+
+  it('Gemini 2.5: 정수 budget 은 가시 답변 reserve(16384)를 budget 위로 더해 maxOutputTokens floor 를 올린다 (#73 Codex P2 starvation)', async () => {
+    // budget 이 출력 예산(maxOutputTokens)을 점유 → floor=max(staticFloor 16384, budget+16384), 65536 내 클램프.
+    // 비스트림: 전 effort 가 budget+reserve 로 상승. budget 이 구 floor(16384)에 근접/초과(xhigh·max)해도 답변 무굶음.
+    const cases = [
+      ['gemini-2.5-pro', 'medium', 20480], // 4096 + 16384
+      ['gemini-2.5-pro', 'high', 24576], // 8192 + 16384
+      ['gemini-2.5-pro', 'xhigh', 32768], // 16384 + 16384 (budget==구 floor 였던 starvation 케이스)
+      ['gemini-2.5-pro', 'max', 49152], // 32768 + 16384 (pro 천장)
+      ['gemini-2.5-flash', 'max', 40960], // 24576(flash 천장 클램프) + 16384
+    ] as const
+    for (const [model, effort, expected] of cases) {
+      const { http, calls } = mockHttp(okBody)
+      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
+        .chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
+      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: { thinkingBudget?: number }; maxOutputTokens?: number } }
+      expect(body.generationConfig?.maxOutputTokens).toBe(expected)
+      // 핵심 불변식: 출력 한도가 thinking budget 을 항상 초과 → 가시 답변 여유 확보(굶음 없음).
+      expect(body.generationConfig!.maxOutputTokens!).toBeGreaterThan(body.generationConfig!.thinkingConfig!.thinkingBudget!)
+    }
+  })
+
+  it('Gemini 2.5 스트리밍: 정수 budget reserve 는 스트림 floor(32768)를 넘을 때(max)만 상승 (#73 Codex P2)', async () => {
+    const cases = [
+      ['xhigh', 32768], // 16384+16384=32768 == 스트림 floor → 무변화
+      ['max', 49152], // 32768+16384=49152 > 32768 → 상승
+    ] as const
+    for (const [effort, expected] of cases) {
+      const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
+      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' }, http)
+        .chat([{ role: 'user', content: 'q' }], { thinking: { effort }, onToken: () => {} })
+      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+      expect(body.generationConfig?.maxOutputTokens).toBe(expected)
+    }
   })
 
   it('config.thinking(세션 기본) + per-call 과소 maxTokens 도 floor 가 적용된다', async () => {
