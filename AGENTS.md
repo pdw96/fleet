@@ -75,8 +75,9 @@ project number `1`, owner `pdw96`).
    PR open 후 **Codex 봇 자동리뷰를 기다려** 반영(위 「리뷰 피드백 교차검증」) → 사용자 확인 후 squash 머지.
 5. **머지 후 동기화** — (a) 이슈 닫힘·#27 진행률 = `Closes #N` 으로 자동. (b) **보드 Status → Done**:
    보드 내장 워크플로("Item closed → Done")가 켜져 있으면 자동, 아니면 `gh project item-edit` 로 수동
-   (필요한 id 는 `gh project item-list 1 --owner pdw96 --format json` 로 수확 — `--project-id`=`PVT_…`
-   project node, `--id`=`PVTI_…` item node, `--field-id`+`--single-select-option-id`/`--number`).
+   (수동 id 출처 — `--project-id`(`PVT_…`): `gh project view 1 --owner pdw96 --format json` 의 `.id` ·
+   `--field-id` + Status `--single-select-option-id`(Done): `gh project field-list 1 --owner pdw96 --format json` ·
+   `--id`(`PVTI_…` 항목): `gh project item-list 1 --owner pdw96 --format json`).
    (c) **#27 본문**: 🎯 트래커 체크 + ✅완료/changelog 이동(수동 — 분석 기록).
 
 **새 이슈 생성 시**: `area:{provider,orchestrator,mcp,renderer,electron,devx}` + `tier:{next,later}`
