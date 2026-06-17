@@ -1,6 +1,7 @@
 import js from '@eslint/js'
 import tseslint from 'typescript-eslint'
 import reactHooks from 'eslint-plugin-react-hooks'
+import eslintConfigPrettier from 'eslint-config-prettier/flat'
 
 export default tseslint.config(
   { ignores: ['out/**', 'dist/**', 'build/**', 'node_modules/**', '*.config.*', '*.config.mjs'] },
@@ -63,4 +64,7 @@ export default tseslint.config(
       'react-hooks/exhaustive-deps': 'error',
     },
   },
+  // Prettier 와 충돌하는 ESLint 스타일룰 비활성 (반드시 last). 현재 스타일룰 0 이라 즉효는
+  // 미미하나, 향후 stylistic 룰 추가 시 포맷 책임을 Prettier 가 단독으로 갖도록 보장하는 가드.
+  eslintConfigPrettier,
 )

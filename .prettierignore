@@ -1,0 +1,17 @@
+# 빌드 산출물 / 의존성
+node_modules
+out
+dist
+build
+coverage
+test-results
+playwright-report
+.playwright-mcp
+fleet-data
+# npm 관리 (포맷 금지)
+package-lock.json
+# Second Brain 자동 생성물
+fleet-brain.html
+brain.tmp.json
+# 손으로 다듬은 한글 prose 문서 — 차후 opt-in
+*.md
