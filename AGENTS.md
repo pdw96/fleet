@@ -68,7 +68,7 @@ project number `1`, owner `pdw96`).
 1. **선정** — `gh issue view 27 --repo pdw96/fleet` 로 본문 «🎯 착수 sub-issues» 트래커를 확인하고
    `tier:next` 최상위를 집는다(나열 순서 = 권장 착수순; 후보가 비었거나 모호하면 사용자에게 확인).
    `gh issue list --repo pdw96/fleet --label tier:next` 로도 필터 가능.
-2. **브랜치** — master 직접 작업 금지. `feat/<slug>` 특성 브랜치 생성.
+2. **브랜치** — 기본 브랜치(현재 `master`) 직접 작업 금지. `feat/<slug>` 특성 브랜치 생성.
 3. **사이클** — 비자명하면 브레인스토밍 → 스펙(`docs/superpowers/specs/`) → 계획. TDD(RED→GREEN).
    품질 게이트 4종 green(위 「품질 게이트」 참조; preload 변경 시 dev 재시작). 적대 리뷰.
 4. **PR** — 본문에 `Closes #<N>` 를 넣는다(머지 시 이슈 자동 닫힘 → #27 sub-issue 진행률 자동 갱신).
@@ -77,7 +77,7 @@ project number `1`, owner `pdw96`).
    보드 내장 워크플로("Item closed → Done")가 켜져 있으면 자동, 아니면 `gh project item-edit` 로 수동
    (수동 id 출처 — `--project-id`(`PVT_…`): `gh project view 1 --owner pdw96 --format json` 의 `.id` ·
    `--field-id` + Status `--single-select-option-id`(Done): `gh project field-list 1 --owner pdw96 --format json` ·
-   `--id`(`PVTI_…` 항목): `gh project item-list 1 --owner pdw96 --format json`).
+   `--id`(`PVTI_…` 항목): `gh project item-list 1 --owner pdw96 --limit 200 --format json` 에서 `.content.number==<N>` 로 필터 — `item-list` 기본 limit 30 이라 보드가 커지면 `--limit` 상향 필수).
    (c) **#27 본문**: 🎯 트래커 체크 + ✅완료/changelog 이동(수동 — 분석 기록).
 
 **새 이슈 생성 시**: `area:{provider,orchestrator,mcp,renderer,electron,devx}` + `tier:{next,later}`
