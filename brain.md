@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 56 files · 138 import wires · 32 IPC channels · 생성 2026-06-17T01:51 UTC
+> 56 files · 138 import wires · 32 IPC channels · 생성 2026-06-17T04:08 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -48,13 +48,13 @@
 
 ### main · main — Fleet 앱의 본체(메인 프로세스)를 켜고, 창과 보안 빗장을 설치하며, 화면과 AI 엔진을 안전하게 연결하는 시동·관문 묶음이다.
 - **main/index** — 앱에 시동을 걸어 창을 띄우고 화면과 AI 엔진을 이어주는 '시동·교환대' _앱이 준비되면 AI 엔진을 만들고, 화면(창)을 띄우며, 화면이 보내는 모든 요청(세션 등록·채팅·프로젝트 실행·승인 응답 등)을 엔진의 해당 기능으로 연결하는 전화 교환대 역할을 한다. 창을 만들 때 보안 빗장 두 개(이동 차단·권한 차단)를 걸고, 앱을 끌 때는 켜져 있던 AI 프로그램들을 깔끔히 정리한 뒤 종료해 '좀비' 프로세스가 남지 않게 한다._
-  - →의존: engine, main/crash-recovery, main/e2e, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, store/json-file · ←피의존: — · 209줄
+  - →의존: engine, main/crash-recovery, main/e2e, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, store/json-file · ←피의존: — · 211줄
 - **main/e2e** — 자동 테스트할 때만 켜지는 '연습용 가짜 AI' 장치 _진짜 AI를 부르는 대신 미리 정해둔 답을 흉내 내, 화면 자동검사(Playwright)가 흔들림 없이 돌아가게 한다. 가짜 AI 둘과 토론방 하나, 임시 작업폴더를 미리 깔아두며, 일부러 '응답 중' 상태에서 멈춰 탭을 옮겼다 돌아와도 진행 표시가 살아있는지 확인하게 해준다. FLEET_E2E 라는 스위치가 정확히 '1'일 때만 작동하고 평소엔 절대 끼어들지 않는다._
   - →의존: cli/detect, engine · ←피의존: main/index · 36줄
 - **main/secret-crypto** — API 키 같은 비밀번호를 운영체제 금고로 잠갔다 푸는 '비밀 자물쇠' _맥의 키체인, 윈도우의 DPAPI 같은 운영체제 내장 금고를 이용해 API 키를 암호화해 저장하고, 필요할 때 다시 풀어준다. 리눅스에서 진짜 암호화가 안 되는 경우(평문 저장)는 보호가 0이라 아예 '사용 불가'로 처리해, 비밀이 무방비로 새지 않게 막는다._
   - →의존: secret/types · ←피의존: main/index · 34줄
 - **main/crash-recovery**
-  - →의존: — · ←피의존: main/index · 135줄
+  - →의존: — · ←피의존: main/index · 157줄
 - **main/permission-guards** — 카메라·마이크 같은 장치·권한 요청을 무조건 거절하는 '권한 문지기' _이 앱은 카메라, 마이크, 위치, 알림, USB 장치 등을 쓸 일이 없으므로 그런 권한 요청을 전부 거절한다. AI가 만든 내용이 화면에 들어오는 앱이라, 혹시 끼어든 코드가 몰래 장치를 켜려 해도 기본적으로 다 막아두는 안전장치다._
   - →의존: — · ←피의존: main/index · 33줄
 - **main/window-guards** — 새 창 열기와 다른 페이지로의 이동을 전부 막는 '이동 문지기' _이 앱은 화면이 하나뿐이라 새 창을 열거나 다른 웹페이지로 넘어갈 일이 없으므로, window.open·외부 링크·리다이렉트·하위 프레임 이동 등을 모두 차단한다. AI 출력에 섞여 들어온 코드가 몰래 다른 곳으로 화면을 끌고 가는 일을 막는 안전 가드이며, 앱의 정상적인 첫 화면 로딩은 그대로 둔다._

@@ -81,12 +81,39 @@ describe('installCrashRecovery', () => {
     },
   )
 
-  it.each(['clean-exit', 'killed'])('정상/의도된 종료 reason(%s)은 reload 하지 않는다', (reason) => {
+  it('정상 종료(reason=clean-exit)는 reload 하지 않는다', () => {
     const f = fakeWebContents()
     const sched = fakeScheduler()
     installCrashRecovery(f.wc, { log: () => {}, schedule: sched.schedule, now: () => 0 })
-    f.crash(reason)
+    f.crash('clean-exit')
     expect(sched.delays()).toEqual([])
+    sched.runAll()
+    expect(f.reload).not.toHaveBeenCalled()
+  })
+
+  it('외부 kill(reason=killed) 렌더러는 창이 살아있으므로 reload 로 복구한다 (Codex P2 회귀 방지)', () => {
+    // killed = SIGTERM 등 외부 강제 종료 또는 webContents.forcefullyCrashRenderer() — BrowserWindow 는
+    // 살아있고 렌더러만 사라진 흰 화면 상태다. killed 를 teardown 으로 오인해 생략하면 복구가 무력화된다.
+    const f = fakeWebContents()
+    const sched = fakeScheduler()
+    installCrashRecovery(f.wc, { log: () => {}, schedule: sched.schedule, now: () => 0 })
+    f.crash('killed', 0)
+    expect(sched.delays()).toEqual([500])
+    sched.runAll()
+    expect(f.reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('앱 종료 진행 중(isShuttingDown)이면 비정상 크래시여도 reload 하지 않는다', () => {
+    // teardown 억제는 reason 이 아니라 종료 플래그로 판정 — 종료 중엔 어떤 사유든 reload 로 종료와 싸우지 않는다.
+    const f = fakeWebContents()
+    const sched = fakeScheduler()
+    installCrashRecovery(f.wc, {
+      log: () => {},
+      schedule: sched.schedule,
+      now: () => 0,
+      isShuttingDown: () => true,
+    })
+    f.crash('crashed')
     sched.runAll()
     expect(f.reload).not.toHaveBeenCalled()
   })
