@@ -13,3 +13,6 @@ test-results/
 playwright-report/
 .playwright-mcp/
 e2e/__screenshots__/
+# 설계도(Second Brain) 자동 생성물 — `npm run brain` 으로 재생성(코드에서 derive).
+fleet-brain.html
+brain.tmp.json

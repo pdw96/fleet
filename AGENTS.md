@@ -7,6 +7,13 @@ gemini)와 API provider(anthropic/openai/google)를 통합 `LlmSession` 뒤로 �
 이 파일은 코딩 에이전트(Claude Code / Codex / Gemini CLI 등) 공통 가이드다.
 `CLAUDE.md`·`GEMINI.md` 는 이 파일을 가리키는 얇은 포인터다.
 
+## 코드베이스 빠른 파악 — `brain.md` 먼저 읽기
+
+`src/` 를 통째로 뒤지기 전에 [`brain.md`](./brain.md)(자동 생성)를 **먼저 읽어라.** 54개 파일의 역할·의존(→)·
+피의존(←)·IPC 배선·허브/진입점/게이트를 한 장에 압축한 구조 지도다(≈6K 토큰). 전체 `src/` 탐색(≈90K 토큰)을
+대체해 토큰을 아낀다. 코드 변경 후 `npm run brain` 으로 갱신(`src/` 에서 자동 추출 — drift 시 재생성). 사람용
+시각 그래프는 `fleet-brain.html`(`npm run brain` 산출, gitignore). 설명 문구는 `scripts/brain/descriptions.json` 에서 수정.
+
 ## 품질 게이트 (변경 후 반드시 통과)
 
 ```bash
