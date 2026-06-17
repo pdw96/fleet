@@ -1,4 +1,4 @@
-import type { ApiProviderConfig, ReasoningEffort, ToolStep } from '../../../shared/types'
+import type { ApiProviderConfig, CacheTtl, ReasoningEffort, ToolStep } from '../../../shared/types'
 
 // ReasoningEffort 는 렌더러 설정 UI 와 공유돼 shared/types.ts 로 이동(단일 진실 원천) — 기존 import 경로 호환 재export.
 export type { ReasoningEffort }
@@ -166,6 +166,11 @@ export interface ApiCallOptions {
    * Anthropic(adaptive thinking)·OpenAI(reasoning_effort) 매핑. Gemini 는 후속. #11-thinking.
    */
   thinking?: { effort?: ReasoningEffort }
+  /**
+   * 프롬프트 캐시 TTL per-call override(Anthropic). 미지정이면 config.cacheTtl 로 폴백(thinking 관용구).
+   * '1h' 는 cacheable(재사용 프리픽스) 경로에서만 wire 에 반영된다. #72.
+   */
+  cacheTtl?: CacheTtl
   /**
    * provider-중립 context management 정책. native 지원 provider(anthropic)는 이를 wire
    * `context_management` 로 변환한다. native 미지원 provider 는 무시한다(루프가 client-side 처리).
