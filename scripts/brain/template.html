@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fleet · 설계도 — Second Brain</title>
+<style>
+  :root {
+    --bg: #0a0b0d;
+    --ink: #e8e6e1;
+    --faint: #8a8f98;
+    --hair: rgba(255, 255, 255, 0.08);
+    --amber: #ffc24b;
+    --mint: #4fe0c0;
+    --panel: rgba(16, 18, 22, 0.86);
+    --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
+    --mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: var(--mono); overflow: hidden; }
+  /* 도트그리드 + 코너 글로우 + 비네팅 — 전부 CSS 그라디언트(외부 자산 0). */
+  #bg {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(900px 600px at 12% -8%, rgba(255, 194, 75, 0.06), transparent 60%),
+      radial-gradient(1000px 700px at 108% 112%, rgba(79, 224, 192, 0.06), transparent 60%),
+      radial-gradient(circle at center, transparent 60%, rgba(0, 0, 0, 0.55) 100%),
+      radial-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 100% 100%, 26px 26px;
+  }
+  #graph { position: fixed; inset: 0; z-index: 1; }
+
+  .hud { position: fixed; z-index: 3; }
+  #head { top: 22px; left: 26px; max-width: 46ch; pointer-events: none; }
+  #head .eyebrow { font-size: 11px; letter-spacing: 0.32em; color: var(--amber); text-transform: uppercase; }
+  #head h1 { font-family: var(--serif); font-weight: 600; font-size: 40px; margin: 4px 0 6px; letter-spacing: 0.01em; }
+  #head .meta { font-size: 11.5px; color: var(--faint); line-height: 1.7; }
+  #head .meta b { color: var(--ink); font-weight: 600; }
+
+  #controls { top: 24px; right: 26px; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
+  #search {
+    width: 230px; background: var(--panel); border: 1px solid var(--hair); color: var(--ink);
+    font-family: var(--mono); font-size: 12.5px; padding: 9px 12px; border-radius: 9px; outline: none;
+    backdrop-filter: blur(8px);
+  }
+  #search:focus { border-color: var(--amber); }
+  #search::placeholder { color: var(--faint); }
+  .seg { display: flex; gap: 6px; }
+  .btn {
+    background: var(--panel); border: 1px solid var(--hair); color: var(--faint);
+    font-family: var(--mono); font-size: 11.5px; padding: 7px 11px; border-radius: 8px; cursor: pointer;
+    backdrop-filter: blur(8px); transition: color 0.15s, border-color 0.15s;
+  }
+  .btn:hover { color: var(--ink); }
+  .btn.on { color: var(--bg); background: var(--amber); border-color: var(--amber); font-weight: 600; }
+  .btn.on.mint { background: var(--mint); border-color: var(--mint); }
+
+  #legend { bottom: 18px; left: 26px; display: flex; flex-direction: column; gap: 7px; max-width: 72ch; z-index: 3; }
+  .key-group { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 11px; }
+  .kg-title { font-size: 9.5px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--faint); opacity: 0.65; }
+  .key { display: inline-flex; align-items: center; font-size: 10.5px; color: var(--faint); white-space: nowrap; }
+  .ln { display: inline-block; width: 17px; height: 0; border-top: 2px solid rgba(150, 160, 175, 0.75); margin-right: 5px; }
+  .ln.ipc { border-top-style: dashed; border-color: var(--mint); }
+  .ln.runtime { border-top-style: dotted; border-color: #9aa0aa; }
+  .mk { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; box-sizing: border-box; background: #7c828c; }
+  .mk.hub { background: var(--mint); box-shadow: 0 0 6px var(--mint); }
+  .mk.entry { border: 2px solid var(--amber); background: #2a2c30; }
+  .mk.registry { border: 2px dashed var(--mint); background: transparent; }
+  .mk.gate { border: 2px solid #ff6b6b; background: #2a2c30; }
+  .mk.ext { border: 2px solid var(--mint); background: transparent; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint);
+    background: var(--panel); border: 1px solid var(--hair); padding: 4px 9px 4px 7px; border-radius: 999px;
+    cursor: pointer; user-select: none; backdrop-filter: blur(6px); transition: color 0.12s, opacity 0.12s;
+  }
+  .chip .dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+  .chip:hover { color: var(--ink); }
+  .chip.off { opacity: 0.34; text-decoration: line-through; }
+
+  #panel {
+    position: fixed; z-index: 4; top: 0; right: 0; height: 100%; width: 332px;
+    background: var(--panel); border-left: 1px solid var(--hair); backdrop-filter: blur(14px);
+    padding: 26px 22px; overflow-y: auto; transform: translateX(100%); transition: transform 0.22s ease;
+  }
+  #panel.open { transform: none; }
+  #panel .close { position: absolute; top: 16px; right: 18px; cursor: pointer; color: var(--faint); font-size: 18px; }
+  #panel .close:hover { color: var(--ink); }
+  #panel .p-eyebrow { font-size: 10.5px; letter-spacing: 0.26em; text-transform: uppercase; }
+  #panel h2 { font-family: var(--serif); font-size: 23px; font-weight: 600; margin: 6px 0 2px; word-break: break-all; }
+  #panel .p-path { font-size: 11px; color: var(--faint); word-break: break-all; margin-bottom: 16px; }
+  #panel .stat-row { display: flex; gap: 18px; margin-bottom: 16px; }
+  #panel .stat { font-size: 11px; color: var(--faint); }
+  #panel .stat b { display: block; font-size: 19px; color: var(--ink); font-weight: 600; }
+  #panel .sect { margin-bottom: 15px; }
+  #panel .sect > .t { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); margin-bottom: 7px; }
+  #panel .list { display: flex; flex-direction: column; gap: 3px; }
+  #panel .list a, #panel .ext { font-size: 11.5px; color: var(--ink); text-decoration: none; cursor: pointer; word-break: break-all; }
+  #panel .list a:hover { color: var(--amber); }
+  #panel .list .none { color: var(--faint); font-style: italic; }
+  #panel .ext { color: var(--faint); }
+  #panel a.open {
+    display: inline-block; margin-top: 4px; font-size: 11.5px; color: var(--mint); text-decoration: none;
+    border: 1px solid var(--hair); border-radius: 7px; padding: 6px 10px;
+  }
+  #panel a.open:hover { border-color: var(--mint); }
+
+  #hint { position: fixed; bottom: 20px; right: 26px; z-index: 3; font-size: 10.5px; color: var(--faint); text-align: right; }
+  .k { color: var(--ink); }
+
+  /* 인스펙터 쉬운 설명 */
+  #panel .p-desc { margin: 2px 0 16px; }
+  #panel .p-desc .role { font-size: 14px; color: var(--ink); font-weight: 600; line-height: 1.5; margin-bottom: 7px; }
+  #panel .p-desc .detail { font-size: 12px; color: #b9bdc4; line-height: 1.65; }
+
+  /* "이게 뭐죠?" 인트로 모달 */
+  #helpBtn {
+    position: fixed; top: 30px; left: 168px; z-index: 5; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--panel); border: 1px solid var(--hair); color: var(--amber); font-family: var(--serif);
+    font-size: 15px; cursor: pointer; backdrop-filter: blur(8px);
+  }
+  #helpBtn:hover { border-color: var(--amber); }
+  #intro {
+    position: fixed; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center;
+    background: rgba(6, 7, 9, 0.72); backdrop-filter: blur(4px);
+  }
+  #intro.show { display: flex; }
+  #intro .card {
+    width: min(620px, 92vw); max-height: 86vh; overflow-y: auto; background: #101216;
+    border: 1px solid var(--hair); border-radius: 16px; padding: 30px 32px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 194, 75, 0.06);
+  }
+  #intro .eyebrow { font-size: 11px; letter-spacing: 0.3em; color: var(--amber); text-transform: uppercase; }
+  #intro h2 { font-family: var(--serif); font-size: 30px; font-weight: 600; margin: 6px 0 14px; }
+  #intro .lead { font-size: 13px; color: #c9cdd3; line-height: 1.75; white-space: pre-wrap; margin-bottom: 20px; }
+  #intro .layers { display: flex; flex-direction: column; gap: 10px; margin-bottom: 22px; }
+  #intro .layer { display: flex; gap: 12px; align-items: baseline; }
+  #intro .layer .lt { flex: 0 0 116px; font-size: 12.5px; font-weight: 600; }
+  #intro .layer .ld { font-size: 12px; color: #aeb3ba; line-height: 1.6; }
+  #intro .go {
+    display: inline-block; background: var(--amber); color: var(--bg); border: none; font-family: var(--mono);
+    font-size: 13px; font-weight: 600; padding: 10px 20px; border-radius: 9px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <div id="bg"></div>
+  <div id="graph"></div>
+
+  <header id="head" class="hud">
+    <div class="eyebrow">FLEET // SECOND BRAIN</div>
+    <h1>설계도</h1>
+    <div class="meta" id="metaLine"></div>
+  </header>
+
+  <div id="controls" class="hud">
+    <input id="search" type="text" placeholder="파일·모듈 검색…" autocomplete="off" spellcheck="false" />
+    <div class="seg">
+      <button class="btn on" id="viewFile">파일</button>
+      <button class="btn" id="viewModule">모듈</button>
+    </div>
+    <div class="seg">
+      <button class="btn on mint" id="overlayBtn">배선 오버레이</button>
+      <button class="btn" id="resetBtn">맞춤</button>
+    </div>
+  </div>
+
+  <aside id="legend" class="hud">
+    <div class="key-group">
+      <span class="kg-title">배선</span>
+      <span class="key"><i class="ln"></i>import 의존 (화살표=의존 방향)</span>
+      <span class="key"><i class="ln ipc"></i>IPC · window.fleet</span>
+      <span class="key"><i class="ln runtime"></i>외부 런타임 경계</span>
+    </div>
+    <div class="key-group">
+      <span class="kg-title">표식</span>
+      <span class="key"><i class="mk hub"></i>허브(연결 많음)</span>
+      <span class="key"><i class="mk entry"></i>진입점</span>
+      <span class="key"><i class="mk registry"></i>레지스트리</span>
+      <span class="key"><i class="mk gate"></i>승인 게이트</span>
+      <span class="key"><i class="mk ext"></i>외부 경계</span>
+    </div>
+    <div class="key-group" id="domainChips">
+      <span class="kg-title">도메인</span>
+    </div>
+  </aside>
+
+  <aside id="panel">
+    <div class="close" id="panelClose">×</div>
+    <div id="panelBody"></div>
+  </aside>
+
+  <footer id="hint">
+    <span class="k">스크롤</span> 줌 · <span class="k">드래그</span> 이동 · <span class="k">호버</span> 배선추적 · <span class="k">클릭</span> 인스펙트
+  </footer>
+
+  <button id="helpBtn" title="이게 뭐죠?">?</button>
+  <div id="intro">
+    <div class="card">
+      <div class="eyebrow">FLEET // SECOND BRAIN</div>
+      <h2>이 지도는 뭐죠?</h2>
+      <div class="lead" id="introLead"></div>
+      <div class="layers" id="introLayers"></div>
+      <button class="go" id="introGo">지도 보기 →</button>
+    </div>
+  </div>
+
+  <!--__FORCE_GRAPH_LIB__-->
+  <script>
+  /* eslint-disable */
+  const DATA = __GRAPH_DATA__;
+
+  // ── 도메인(group) → 색. Command Deck 흑요석 위에서 분간되는 의도적 팔레트. ──
+  const GROUP_COLOR = {
+    renderer: '#ffc24b', preload: '#a78bfa', main: '#5b9dff', engine: '#4fe0c0',
+    session: '#2dd4bf', providers: '#38bdf8', orchestrator: '#818cf8', chat: '#f472b6',
+    store: '#d8a657', verify: '#5fd75f', safety: '#ff6b6b', mcp: '#c084fc',
+    tools: '#bef264', workspace: '#22d3ee', process: '#94a3b8', secret: '#eab308',
+    cli: '#fb923c', shared: '#cbb89d', runtime: '#9aa0aa', other: '#8a8f98',
+  };
+  const colorOf = (g) => GROUP_COLOR[g] || '#8a8f98';
+
+  // ── 데이터셋 빌더 ────────────────────────────────────────────────────────
+  function fileDataset(overlay) {
+    const nodes = DATA.nodes.map((n) => ({ ...n }));
+    const links = DATA.links.map((l) => ({ ...l }));
+    if (overlay) {
+      DATA.overlayNodes.forEach((n) => nodes.push({ ...n }));
+      DATA.overlayLinks.forEach((l) => links.push({ ...l }));
+    }
+    return { nodes, links };
+  }
+
+  function moduleDataset(overlay) {
+    const byGroup = new Map();
+    const groupNode = (n) => {
+      let g = byGroup.get(n.group);
+      if (!g) {
+        g = { id: 'mod:' + n.group, label: n.group, group: n.group, layer: n.layer, isModule: true, files: 0, loc: 0, degree: 0 };
+        byGroup.set(n.group, g);
+      }
+      return g;
+    };
+    DATA.nodes.forEach((n) => { const g = groupNode(n); g.files++; g.loc += n.loc; });
+    const fileGroup = new Map(DATA.nodes.map((n) => [n.id, 'mod:' + n.group]));
+    const mapId = (id) => (id.startsWith('ext:') ? id : fileGroup.get(id) || id);
+
+    const linkMap = new Map();
+    const add = (s, t, kind) => {
+      if (s === t) return;
+      const k = s + ' ' + t + ' ' + kind;
+      const e = linkMap.get(k);
+      if (e) e.count++; else linkMap.set(k, { source: s, target: t, kind, count: 1 });
+    };
+    DATA.links.forEach((l) => add(mapId(l.source), mapId(l.target), 'import'));
+
+    const nodes = [...byGroup.values()];
+    if (overlay) {
+      DATA.overlayNodes.forEach((n) =>
+        nodes.push({ id: n.id, label: n.label, group: n.group, layer: n.layer, external: true, isModule: true, files: 0, loc: 0, degree: 0, sub: n.sub }));
+      DATA.overlayLinks.forEach((l) => add(mapId(l.source), mapId(l.target), l.kind));
+    }
+    const links = [...linkMap.values()];
+    const nmap = new Map(nodes.map((n) => [n.id, n]));
+    links.forEach((l) => { nmap.get(l.source) && nmap.get(l.source).degree++; nmap.get(l.target) && nmap.get(l.target).degree++; });
+    return { nodes, links };
+  }
+
+  // 이웃/엣지 교차링크(호버 강조용) — id 문자열 기준으로 미리 묶는다.
+  function prepare(ds) {
+    const map = new Map(ds.nodes.map((n) => [n.id, n]));
+    ds.nodes.forEach((n) => { n.neighbors = new Set(); n.adj = new Set(); });
+    ds.links.forEach((l) => {
+      const a = map.get(typeof l.source === 'object' ? l.source.id : l.source);
+      const b = map.get(typeof l.target === 'object' ? l.target.id : l.target);
+      if (!a || !b) return;
+      a.neighbors.add(b); b.neighbors.add(a); a.adj.add(l); b.adj.add(l);
+    });
+    return ds;
+  }
+
+  // ── 상태 ────────────────────────────────────────────────────────────────
+  let viewMode = 'file';
+  let showOverlay = true;
+  const hiddenGroups = new Set();
+  let current = null;
+  let selected = null;
+
+  let hoverNode = null;
+  const highlightNodes = new Set();
+  const highlightLinks = new Set();
+  let searchTerm = '';
+  const searchMatches = new Set();
+  const posCache = new Map();
+
+  const hasFocus = () => hoverNode || searchTerm;
+  const isFocused = (n) => (hoverNode ? highlightNodes.has(n) : searchTerm ? searchMatches.has(n) : true);
+
+  function radiusOf(n) {
+    if (n.external) return 5;
+    if (n.isModule) return 3 + Math.sqrt(n.files || 1) * 1.2 + (n.loc || 0) / 1000;
+    return 1.7 + Math.sqrt(n.degree || 1) * 0.9;
+  }
+
+  // ── 그래프 인스턴스 ──────────────────────────────────────────────────────
+  const elem = document.getElementById('graph');
+  const Graph = new ForceGraph(elem)
+    .backgroundColor('rgba(0,0,0,0)')
+    .nodeId('id')
+    .nodeLabel((n) => (n.role ? '<b>' + esc(n.label) + '</b> — ' + esc(n.role) : esc(n.label)))
+    .nodeCanvasObject(drawNode)
+    .nodePointerAreaPaint(paintArea)
+    .linkColor(linkColor)
+    .linkWidth((l) => (highlightLinks.has(l) ? 2.4 : l.kind === 'import' ? 0.55 : 1.1))
+    .linkLineDash((l) => (l.kind === 'ipc' ? [4, 3] : l.kind === 'runtime' ? [1, 4] : null))
+    .linkCurvature((l) => (l.kind === 'import' ? 0 : 0.16))
+    .linkDirectionalArrowLength((l) => (l.kind === 'import' ? 2.6 : 3.6))
+    .linkDirectionalArrowRelPos(1)
+    .linkDirectionalParticles((l) => (highlightLinks.has(l) ? 3 : 0))
+    .linkDirectionalParticleWidth(2)
+    .onNodeHover(onHover)
+    .onNodeClick((n) => select(n))
+    .onNodeDragEnd((n) => { n.fx = n.x; n.fy = n.y; }) // 끌어둔 노드는 고정(배치 정리 용)
+    .onBackgroundClick(() => select(null))
+    .autoPauseRedraw(false)
+    .cooldownTicks(140)
+    .d3VelocityDecay(0.28);
+
+  // 힘 튜닝: 허브일수록 더 밀어내고, 오버레이 배선은 길게.
+  Graph.d3Force('charge').strength((n) => -34 - Math.sqrt(n.degree || 1) * 24);
+  Graph.d3Force('link').distance((l) => (l.kind === 'import' ? 36 : l.kind === 'runtime' ? 78 : 58)).strength(0.45);
+
+  function drawNode(node, ctx, scale) {
+    const r = radiusOf(node);
+    const c = colorOf(node.group);
+    const focused = isFocused(node);
+    ctx.globalAlpha = focused ? 1 : 0.1;
+    const glow = focused && (node.hub || node === hoverNode || highlightNodes.has(node) || node.external);
+    ctx.shadowColor = glow ? c : 'transparent';
+    ctx.shadowBlur = glow ? (node === hoverNode ? 15 : 8) : 0;
+
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
+    ctx.fillStyle = node.external ? 'rgba(10,11,13,0.9)' : c;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    if (node.external) { ctx.lineWidth = 1.4 / scale; ctx.strokeStyle = c; ctx.stroke(); }
+
+    // 특수 노드 링: gate=적색 / entry=앰버 / registry=민트 점선 / module=옅은 테두리
+    let ring = null;
+    if (node.gate) ring = '#ff6b6b';
+    else if (node.entry) ring = '#ffc24b';
+    else if (node.registry) ring = '#4fe0c0';
+    if (ring) {
+      ctx.lineWidth = 1.5 / scale;
+      ctx.strokeStyle = ring;
+      ctx.setLineDash(node.registry ? [2 / scale, 2 / scale] : []);
+      ctx.beginPath(); ctx.arc(node.x, node.y, r + 2.4, 0, 2 * Math.PI); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const showLabel = scale > 2.1 || node.hub || node.external || node.isModule || node === hoverNode || highlightNodes.has(node);
+    if (showLabel) {
+      const fs = Math.max(3.4, 11 / scale);
+      ctx.font = fs + "px 'IBM Plex Mono', ui-monospace, monospace";
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = focused ? 'rgba(232,230,225,0.92)' : 'rgba(232,230,225,0.28)';
+      ctx.fillText(node.label, node.x, node.y + r + 1.5);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function paintArea(node, color, ctx) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radiusOf(node) + 3, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  function linkColor(l) {
+    if (highlightLinks.has(l)) return 'rgba(79,224,192,0.92)';
+    const f = hasFocus();
+    if (l.kind === 'ipc') return 'rgba(79,224,192,' + (f ? 0.07 : 0.42) + ')';
+    if (l.kind === 'runtime') return 'rgba(160,165,175,' + (f ? 0.06 : 0.34) + ')';
+    return 'rgba(150,160,175,' + (f ? 0.035 : 0.13) + ')';
+  }
+
+  function onHover(node) {
+    highlightNodes.clear(); highlightLinks.clear(); hoverNode = null;
+    if (node) {
+      hoverNode = node;
+      highlightNodes.add(node);
+      node.neighbors && node.neighbors.forEach((n) => highlightNodes.add(n));
+      node.adj && node.adj.forEach((l) => highlightLinks.add(l));
+    }
+    elem.style.cursor = node ? 'pointer' : 'default';
+  }
+
+  // ── 인스펙터 패널 ────────────────────────────────────────────────────────
+  function select(node) {
+    selected = node;
+    const panel = document.getElementById('panel');
+    if (!node) { panel.classList.remove('open'); return; }
+    panel.classList.add('open');
+    const body = document.getElementById('panelBody');
+    const c = colorOf(node.group);
+
+    if (node.external || node.isModule) {
+      const desc = node.external ? descBlock(node.role, node.detail) : descBlock(null, (DATA.meta.modules || {})[node.group]);
+      const sub = node.sub ? '<div class="p-path">' + esc(node.sub) + '</div>' : '';
+      body.innerHTML =
+        '<div class="p-eyebrow" style="color:' + c + '">' + (node.external ? 'RUNTIME BOUNDARY' : 'MODULE · ' + esc(node.group)) + '</div>' +
+        '<h2>' + esc(node.label) + '</h2>' + sub + desc +
+        (node.isModule && !node.external
+          ? '<div class="stat-row"><div class="stat"><b>' + node.files + '</b>files</div><div class="stat"><b>' + node.loc + '</b>lines</div><div class="stat"><b>' + (node.degree || 0) + '</b>wires</div></div>'
+          : '');
+      return;
+    }
+
+    const out = [], inc = [];
+    current.links.forEach((l) => {
+      if (l.kind !== 'import') return;
+      const s = l.source.id || l.source, t = l.target.id || l.target;
+      if (s === node.id) out.push(t);
+      if (t === node.id) inc.push(s);
+    });
+    const link = 'vscode://file/' + DATA.meta.root + '/src/' + node.path;
+    body.innerHTML =
+      '<div class="p-eyebrow" style="color:' + c + '">' + esc(node.layer) + ' // ' + esc(node.group) + '</div>' +
+      '<h2>' + esc(node.label) + '</h2>' +
+      '<div class="p-path">src/' + esc(node.path) + '</div>' +
+      descBlock(node.role, node.detail) +
+      '<div class="stat-row">' +
+        '<div class="stat"><b>' + node.loc + '</b>lines</div>' +
+        '<div class="stat"><b>' + node.degree + '</b>wires</div>' +
+        '<div class="stat"><b>' + out.length + '→ ' + inc.length + '←</b>deps</div>' +
+      '</div>' +
+      tagRow(node) +
+      listSect('의존 (imports →)', out) +
+      listSect('피의존 (← imported by)', inc) +
+      (node.externals.length ? '<div class="sect"><div class="t">외부 패키지</div><div class="list">' + node.externals.map((e) => '<span class="ext">' + esc(e) + '</span>').join('') + '</div></div>' : '') +
+      '<a class="open" href="' + link + '">VS Code에서 열기 ↗</a>';
+  }
+
+  function tagRow(node) {
+    const tags = [];
+    if (node.hub) tags.push(['HUB', '#4fe0c0']);
+    if (node.entry) tags.push(['ENTRY', '#ffc24b']);
+    if (node.registry) tags.push(['REGISTRY', '#4fe0c0']);
+    if (node.gate) tags.push(['APPROVAL GATE', '#ff6b6b']);
+    if (!tags.length) return '';
+    return '<div class="sect"><div class="list" style="flex-direction:row;flex-wrap:wrap;gap:5px">' +
+      tags.map((t) => '<span class="ext" style="color:' + t[1] + ';border:1px solid ' + t[1] + '44;border-radius:5px;padding:2px 7px">' + t[0] + '</span>').join('') +
+      '</div></div>';
+  }
+
+  function listSect(title, ids) {
+    const items = ids.length
+      ? ids.sort().map((id) => '<a data-goto="' + esc(id) + '">' + esc(id) + '</a>').join('')
+      : '<span class="none">없음</span>';
+    return '<div class="sect"><div class="t">' + title + ' · ' + ids.length + '</div><div class="list">' + items + '</div></div>';
+  }
+
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function descBlock(role, detail) {
+    if (!role && !detail) return '';
+    return '<div class="p-desc">' +
+      (role ? '<div class="role">' + esc(role) + '</div>' : '') +
+      (detail ? '<div class="detail">' + esc(detail) + '</div>' : '') +
+      '</div>';
+  }
+
+  document.getElementById('panelBody').addEventListener('click', (e) => {
+    const id = e.target.getAttribute && e.target.getAttribute('data-goto');
+    if (!id) return;
+    const n = current.nodes.find((x) => x.id === id);
+    if (n) { select(n); Graph.centerAt(n.x, n.y, 600); Graph.zoom(4, 600); }
+  });
+  document.getElementById('panelClose').onclick = () => select(null);
+
+  // ── 컨트롤 ──────────────────────────────────────────────────────────────
+  function rebuild(refit) {
+    if (current) current.nodes.forEach((n) => { if (n.x != null) posCache.set(n.id, { x: n.x, y: n.y }); });
+    let ds = viewMode === 'module' ? moduleDataset(showOverlay) : fileDataset(showOverlay);
+    const nodes = ds.nodes.filter((n) => !hiddenGroups.has(n.group));
+    const keep = new Set(nodes.map((n) => n.id));
+    const links = ds.links.filter((l) => keep.has(l.source) && keep.has(l.target));
+    nodes.forEach((n) => { const p = posCache.get(n.id); if (p) { n.x = p.x; n.y = p.y; } });
+    current = prepare({ nodes, links });
+    hoverNode = null; highlightNodes.clear(); highlightLinks.clear();
+    Graph.graphData(current);
+    if (refit) setTimeout(() => Graph.zoomToFit(600, 48), 380);
+  }
+
+  const $ = (id) => document.getElementById(id);
+  $('search').addEventListener('input', (e) => {
+    searchTerm = e.target.value.trim().toLowerCase();
+    searchMatches.clear();
+    if (searchTerm) current.nodes.forEach((n) => { if ((n.label + ' ' + n.id).toLowerCase().includes(searchTerm)) searchMatches.add(n); });
+  });
+  function setView(mode) {
+    viewMode = mode;
+    $('viewFile').classList.toggle('on', mode === 'file');
+    $('viewModule').classList.toggle('on', mode === 'module');
+    select(null); rebuild(true);
+  }
+  $('viewFile').onclick = () => setView('file');
+  $('viewModule').onclick = () => setView('module');
+  $('overlayBtn').onclick = () => { showOverlay = !showOverlay; $('overlayBtn').classList.toggle('on', showOverlay); rebuild(true); };
+  $('resetBtn').onclick = () => Graph.zoomToFit(600, 48);
+
+  // 콘솔 스크립팅 핸들(파워유저용): brain.focus('engine'), brain.graph.zoom(…) 등.
+  window.brain = {
+    graph: Graph,
+    select,
+    get current() { return current },
+    focus(q) {
+      const n = current.nodes.find((x) => x.id === q || x.label === q || (x.id + '').includes(q));
+      if (n) { select(n); Graph.centerAt(n.x, n.y, 600); Graph.zoom(4.5, 600); }
+      return n;
+    },
+  };
+
+  // 레전드(도메인 칩) — 클릭으로 해당 도메인 표시/숨김.
+  (function buildLegend() {
+    const groups = [...DATA.meta.groups];
+    if (!groups.includes('runtime')) groups.push('runtime');
+    const wrap = $('domainChips');
+    groups.forEach((g) => {
+      const chip = document.createElement('div');
+      chip.className = 'chip';
+      chip.innerHTML = '<span class="dot" style="background:' + colorOf(g) + ';color:' + colorOf(g) + '"></span>' + g;
+      chip.onclick = () => {
+        if (hiddenGroups.has(g)) hiddenGroups.delete(g); else hiddenGroups.add(g);
+        chip.classList.toggle('off', hiddenGroups.has(g));
+        rebuild(false);
+      };
+      wrap.appendChild(chip);
+    });
+  })();
+
+  // 메타 라인
+  (function metaLine() {
+    const m = DATA.meta;
+    const when = (m.generatedAt || '').replace('T', ' ').slice(0, 16);
+    $('metaLine').innerHTML =
+      '<b>' + m.fileCount + '</b> files · <b>' + m.linkCount + '</b> import wires · <b>' + m.channels + '</b> IPC channels<br>' +
+      'src/ 에서 자동 추출 · ' + when + ' UTC';
+  })();
+
+  // "이게 뭐죠?" 인트로 — 큰 그림(앱 소개 + 레이어 설명). 첫 진입 시 자동, ? 버튼으로 재호출.
+  (function intro() {
+    const m = DATA.meta;
+    $('introLead').textContent = m.intro || '';
+    const wrap = $('introLayers');
+    ['renderer', 'preload', 'main', 'core', 'shared', 'runtime'].forEach((k) => {
+      const L = (m.layers || {})[k];
+      if (!L) return;
+      const row = document.createElement('div');
+      row.className = 'layer';
+      row.innerHTML = '<div class="lt">' + esc(L.title) + '</div><div class="ld">' + esc(L.desc) + '</div>';
+      wrap.appendChild(row);
+    });
+    const modal = $('intro');
+    $('helpBtn').onclick = () => modal.classList.add('show');
+    $('introGo').onclick = () => modal.classList.remove('show');
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('show'); });
+    if (m.intro) modal.classList.add('show');
+  })();
+
+  // 키보드: / 검색 포커스, Esc 닫기(인트로 → 패널/검색)
+  window.addEventListener('keydown', (e) => {
+    if (e.key === '/' && document.activeElement !== $('search')) { e.preventDefault(); $('search').focus(); }
+    if (e.key === 'Escape') { $('intro').classList.remove('show'); $('search').value = ''; searchTerm = ''; searchMatches.clear(); $('search').blur(); select(null); }
+  });
+
+  rebuild(true);
+  </script>
+</body>
+</html>
