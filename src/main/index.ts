@@ -16,6 +16,7 @@ import { createJsonFileStore } from './core/store/json-file'
 import { e2eRunner, seedE2eFixtures } from './e2e'
 import { installNavigationGuards } from './window-guards'
 import { installPermissionGuards } from './permission-guards'
+import { installChildProcessObserver, installCrashRecovery } from './crash-recovery'
 import { createSafeStorageCrypto } from './secret-crypto'
 
 function broadcastOrchestratorEvent(event: OrchestratorEvent): void {
@@ -158,6 +159,10 @@ function createWindow(): void {
   // 권한 하드닝: 미디어·지오·알림·클립보드·WebUSB/Serial/HID 거부(정상 경로 없는 로컬 SPA; Web Bluetooth 는 Electron 무리스너 기본동작에 의존). 계약은 permission-guards.ts 참조.
   installPermissionGuards(win.webContents.session)
 
+  // 크래시 복구: 렌더러가 죽어(화이트스크린) render-process-gone 이 발화하면 무한 reload 루프 방지(연속
+  // 카운트·지수 백오프·포기 한도)를 끼워 안전하게 reload 한다. 계약은 crash-recovery.ts 참조.
+  installCrashRecovery(win.webContents)
+
   win.on('ready-to-show', () => win.show())
 
   const devUrl = process.env['ELECTRON_RENDERER_URL']
@@ -171,6 +176,9 @@ function createWindow(): void {
 void app.whenReady().then(() => {
   const { engine, ipcApprover } = buildEngine()
   registerIpc(engine, ipcApprover)
+  // 보조 프로세스(GPU·Utility 등) 종료 관측 — child-process-gone 은 app 에만 발화한다. Chromium 이
+  // 자동 재기동하므로 reload 하지 않고 진단 로그만 남긴다(스코프 명시적 한정). 계약은 crash-recovery.ts 참조.
+  installChildProcessObserver(app)
   // 종료 시 세션·MCP 자식 프로세스를 정리한다(좀비 방지). dispose 는 비동기(큐 대기 후 late 자식 정리)라
   // will-quit 를 preventDefault 로 잡고 dispose 완료 후 재-quit 한다 — fire-and-forget 이면 그 사이
   // 막 시작된 MCP 서버가 orphan 으로 남을 수 있다.
