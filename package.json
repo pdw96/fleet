@@ -6,7 +6,7 @@
   "author": "Dowon Park",
   "main": "./out/main/index.js",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.13.0 <23 || >=24"
   },
   "dependencies": {
     "cross-spawn": "^7.0.6",
@@ -25,7 +25,7 @@
     "test:e2e": "electron-vite build && playwright test",
     "brain": "node scripts/brain/build.mjs",
     "brain:watch": "node scripts/brain/watch.mjs",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
