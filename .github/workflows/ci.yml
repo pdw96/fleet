@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: '.nvmrc'
           cache: npm
 
       - name: Install
@@ -49,7 +49,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: '.nvmrc'
           cache: npm
 
       # vitest 는 electron 바이너리가 필요 없다(테스트는 electron 모듈을 import 하지 않음, build 도 안 함).

@@ -5,6 +5,9 @@
   "description": "멀티 LLM 오케스트레이션 데스크톱 앱",
   "author": "Dowon Park",
   "main": "./out/main/index.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "dependencies": {
     "cross-spawn": "^7.0.6",
     "safe-regex": "^2.1.1"
