@@ -158,6 +158,31 @@ describe('SessionsPanel', () => {
     expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
   })
 
+  it('anthropic 에서 캐시 TTL 1h 선택 → registerApiSession config 에 cacheTtl 가 실린다 (#72)', async () => {
+    const fleet = mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByLabelText(/캐시 TTL/i), { target: { value: '1h' } })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
+
+    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    expect(cfg.provider).toBe('anthropic')
+    expect(cfg.cacheTtl).toBe('1h')
+    expect(String(cfg.displayName)).toContain('cache:1h')
+  })
+
+  it('비-anthropic provider 에는 캐시 TTL 컨트롤이 노출되지 않는다 (#72 anthropic 한정)', async () => {
+    mockFleet()
+    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    // anthropic(기본)에는 노출
+    expect(screen.getByLabelText(/캐시 TTL/i)).toBeTruthy()
+    // openai 로 전환하면 비노출
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
+    expect(screen.queryByLabelText(/캐시 TTL/i)).toBeNull()
+  })
+
   it('MCP 서버 JSON 을 적용하고 상태를 표시한다', async () => {
     const status = [{ name: 'fs', connected: true, toolCount: 2, tools: ['mcp__fs__read', 'mcp__fs__write'] }]
     const fleet = mockFleet({ setMcpServers: vi.fn().mockResolvedValue(status) })
