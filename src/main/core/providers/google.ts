@@ -26,9 +26,9 @@ const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 // Gemini thinkingConfig 는 세대별 와이어 방언이 다르다(js-genai·ai.google.dev 1차출처 검증):
 //   • 2.5(pro/flash/flash-lite): generationConfig.thinkingConfig.thinkingBudget = 정수
 //     (0=DISABLED[pro 는 min128 로 불가], -1=AUTOMATIC[동적]). 서브모델마다 정수 범위가 달라
-//     (pro 128–32768·flash 0–24576·flash-lite 512–24576) 고정 정수 매핑은 범위이탈 400 위험 →
-//     1단계는 -1(AUTOMATIC)로 동적 사고만 켠다. effort 티어→정수 budget 은 서브모델 범위 탐지가
-//     필요한 후속(2단계).
+//     (pro 128–32768·flash 0–24576·flash-lite 512–24576) effort 티어→정수 budget 은 서브모델별
+//     범위 화이트리스트(budgetRange25)로 클램프한다(범위이탈 400 차단). effort 없거나 미지 서브모델은
+//     -1(AUTOMATIC 동적)로 안전 폴백한다(#73 2단계).
 //   • 3.x: generationConfig.thinkingConfig.thinkingLevel = 'low'|'medium'|'high'(소문자 enum).
 //     토큰 정수가 아니라 범위이탈 위험이 없어 effort→level 티어를 그대로 싣는다.
 //   • 그 외(1.5·2.0 등 미지원): thinkingConfig 미전송(보내면 무시/400 → 미전송이 항상 안전).
@@ -57,12 +57,51 @@ function thinkingLevelOf(effort: ReasoningEffort): 'low' | 'medium' | 'high' {
   return 'high' // high · xhigh · max
 }
 
+// 2.5 서브모델별 유효 thinkingBudget 정수 범위(ai.google.dev/gemini-api/docs/thinking 1차출처, 2026-06-17 검증):
+//   • pro:        [128, 32768]  — 동적 기본(-1), DISABLE(0) 불가(min 128)
+//   • flash:      [0, 24576]    — 동적 기본, 0=DISABLE 허용
+//   • flash-lite: [512, 24576]  — 기본 미사고, 동적 또는 512–24576
+// 화이트리스트 미스(미지 2.5 서브모델)는 null → 호출부에서 -1(AUTOMATIC) 안전 폴백(범위 추측 400 방지).
+// 부분일치 순서 주의: 'flash-lite' 를 'flash' 보다 먼저 검사한다(flash-lite 가 'flash' 를 포함). budgetRange25 는
+// GEMINI_25 매칭 모델에서만 호출되므로(resolveThinkingConfig 가드) 'pro'/'flash' 부분일치는 2.5 서브모델로 안전하다.
+function budgetRange25(model: string): { min: number; max: number } | null {
+  if (model.includes('flash-lite')) return { min: 512, max: 24576 }
+  if (model.includes('flash')) return { min: 0, max: 24576 }
+  if (model.includes('pro')) return { min: 128, max: 32768 }
+  return null
+}
+
+// effort 티어 → 목표 thinkingBudget(휴리스틱 기하급수). 서브모델 [min,max] 로 클램프되므로 상한이 낮은
+// 서브모델(flash/flash-lite 24576)에선 max 가 천장으로 수렴한다(pro 만 32768 도달). 최저 2048 이 모든
+// 서브모델 min 보다 커서 어떤 effort 도 0(DISABLE) 으로 떨어지지 않는다 — effort 지정 시 의도치 않은 사고 비활성 방지.
+const BUDGET_BY_EFFORT: Record<ReasoningEffort, number> = {
+  low: 2048,
+  medium: 4096,
+  high: 8192,
+  xhigh: 16384,
+  max: 32768,
+}
+
+/**
+ * Gemini 2.5 effort → 서브모델 유효 범위 내 정수 thinkingBudget. 화이트리스트 미스(미지 서브모델)나 유니온 밖
+ * effort 는 null(호출부에서 -1=AUTOMATIC 폴백). 목표값을 [min,max] 로 클램프해 범위이탈 400 을 원천 차단한다.
+ */
+function thinkingBudgetOf(model: string, effort: ReasoningEffort): number | null {
+  const range = budgetRange25(model)
+  // BUDGET_BY_EFFORT 는 인덱스 조회라 유니온 밖 effort(stale 영속/미검증 IPC config)면 undefined → 클램프 NaN →
+  // JSON 직렬화 시 thinkingBudget:null(무효 wire값, 범위이탈 400). range 미스와 동일하게 null → -1 폴백한다
+  // (불변식: 어떤 입력에도 절대 무효 budget 을 wire 에 싣지 않는다). `?? -1` 은 NaN 을 못 잡으므로 여기서 차단.
+  const target = BUDGET_BY_EFFORT[effort]
+  if (!range || !Number.isFinite(target)) return null
+  return Math.min(Math.max(target, range.min), range.max)
+}
+
 /**
  * per-call/config thinking 노브 → generationConfig.thinkingConfig. 반환 undefined = 미전송(현행 동작).
  * thinking 활성(노브 있음 + 지원 모델)이면 사고 요약을 함께 요청한다(includeThoughts) — thinkingLevel/
  * thinkingBudget 유무와 독립이라 3 에서 effort 미지정(knob={})이어도 요약은 받는다(모델 기본 사고 깊이 유지).
- * 세대별 방언: 2.5 는 thinkingBudget(-1=AUTOMATIC 동적), 3 은 thinkingLevel(effort 매핑). 그 외 미지원
- * 모델은 isThinkingModel 가드로 undefined(미전송 — 보내면 400/무시).
+ * 세대별 방언: 2.5 는 thinkingBudget(effort→서브모델 범위 클램프 정수, effort 없거나 미지 서브모델이면
+ * -1=AUTOMATIC), 3 은 thinkingLevel(effort 매핑). 그 외 미지원 모델은 isThinkingModel 가드로 undefined(미전송).
  */
 function resolveThinkingConfig(model: string, knob: ApiCallOptions['thinking']): Record<string, unknown> | undefined {
   if (!knob || !isThinkingModel(model)) return undefined
@@ -70,7 +109,9 @@ function resolveThinkingConfig(model: string, knob: ApiCallOptions['thinking']):
   if (GEMINI_3.test(model)) {
     if (knob.effort) cfg.thinkingLevel = thinkingLevelOf(knob.effort)
   } else {
-    cfg.thinkingBudget = -1 // GEMINI_25 (isThinkingModel 가드로 그 외는 도달 불가)
+    // GEMINI_25(isThinkingModel 가드로 그 외 도달 불가): effort 있으면 서브모델 범위 클램프 정수,
+    // 없거나 미지 서브모델(thinkingBudgetOf null)이면 -1(AUTOMATIC 동적).
+    cfg.thinkingBudget = (knob.effort ? thinkingBudgetOf(model, knob.effort) : null) ?? -1
   }
   return cfg
 }
