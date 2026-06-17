@@ -57,3 +57,29 @@ CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 위 4개를 강제한�
 - **리뷰 피드백 교차검증.** PR 리뷰 코멘트(Codex 봇 등)를 반영할 때, 라이브러리·API·SDK·CLI·모델
   관련 지적은 에이전트 학습 컷오프 지식에만 의존하지 말고 **context7 MCP 로 현행 문서를 받아
   교차검증**한 뒤 수용/반박한다(컷오프 이후 변경 가능 — 착수 전 model-capability 검증 규율의 연장).
+
+## 백로그 착수 절차 (이슈 #27 기반)
+
+"이슈 #27 확인하고 작업 진행" 류 지시를 받으면 아래 루프를 따른다. 백로그는 4중으로 조직돼 있다:
+**#27**(메타 트래커 — 랭킹·근거·refute 이력) · **sub-issue 계층**(#27 의 자식 이슈) · **라벨**
+(`area:*`/`tier:*`/`type:*`) · **Projects 보드**(«Fleet 백로그» = `https://github.com/users/pdw96/projects/1`,
+project number `1`, owner `pdw96`).
+
+1. **선정** — `gh issue view 27 --repo pdw96/fleet` 로 본문 «🎯 착수 sub-issues» 트래커를 확인하고
+   `tier:next` 최상위를 집는다(나열 순서 = 권장 착수순; 후보가 비었거나 모호하면 사용자에게 확인).
+   `gh issue list --repo pdw96/fleet --label tier:next` 로도 필터 가능.
+2. **브랜치** — master 직접 작업 금지. `feat/<slug>` 특성 브랜치 생성.
+3. **사이클** — 비자명하면 브레인스토밍 → 스펙(`docs/superpowers/specs/`) → 계획. TDD(RED→GREEN).
+   품질 게이트 4종 green(위 「품질 게이트」 참조; preload 변경 시 dev 재시작). 적대 리뷰.
+4. **PR** — 본문에 `Closes #<N>` 를 넣는다(머지 시 이슈 자동 닫힘 → #27 sub-issue 진행률 자동 갱신).
+   PR open 후 **Codex 봇 자동리뷰를 기다려** 반영(위 「리뷰 피드백 교차검증」) → 사용자 확인 후 squash 머지.
+5. **머지 후 동기화** — (a) 이슈 닫힘·#27 진행률 = `Closes #N` 으로 자동. (b) **보드 Status → Done**:
+   보드 내장 워크플로("Item closed → Done")가 켜져 있으면 자동, 아니면 `gh project item-edit` 로 수동
+   (필요한 id 는 `gh project item-list 1 --owner pdw96 --format json` 로 수확 — `--project-id`=`PVT_…`
+   project node, `--id`=`PVTI_…` item node, `--field-id`+`--single-select-option-id`/`--number`).
+   (c) **#27 본문**: 🎯 트래커 체크 + ✅완료/changelog 이동(수동 — 분석 기록).
+
+**새 이슈 생성 시**: `area:{provider,orchestrator,mcp,renderer,electron,devx}` + `tier:{next,later}`
+(+ 필요 시 `type:{spike,meta,security}`) 라벨 부여 + #27 sub-issue 편입(`gh api … /sub_issues`,
+`sub_issue_id`=대상 이슈의 **DB id**) + 보드 추가(`gh project item-add 1 --owner pdw96 --url …`). 기능
+이슈는 `enhancement` 유지. 차기 작업 공급원 = #27 말미 🔬 컷오프 갭 / Hermes 후보 또는 재랭킹.
