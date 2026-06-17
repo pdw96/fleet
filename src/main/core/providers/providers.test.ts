@@ -1435,19 +1435,20 @@ describe('GoogleProvider', () => {
   // cap-safe(전 2.5/3 출력상한 65536 내) 기본/floor 로 끌어올린다.
   const okBody = () => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }) })
 
-  it('Gemini 2.5: thinking 노브 → generationConfig.thinkingConfig.thinkingBudget=-1(AUTOMATIC) (#11-Gemini-thinking)', async () => {
+  it('Gemini 2.5: effort → 서브모델 유효 범위 내 정수 thinkingBudget (flash high=8192) (#73)', async () => {
     const { http, calls } = mockHttp(okBody)
     const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: 8192, includeThoughts: true })
   })
 
-  it('Gemini 2.5: thinking 활성 시 과소 maxOutputTokens 를 버퍼 기본(16384)으로 floor 한다(굶음 방지)', async () => {
-    // baseGoogle.maxTokens=256 → thinking 이 256 을 먹어 가시 답변이 굶는다 → 16384 로 floor.
+  it('Gemini 2.5 AUTOMATIC(thinking{}): 과소 maxOutputTokens 를 버퍼 staticFloor(16384)로 floor 한다(굶음 방지)', async () => {
+    // baseGoogle.maxTokens=256 → thinking 이 256 을 먹어 가시 답변이 굶는다 → 16384 로 floor. 정수 budget 부재
+    // (effort 미지정 → -1 AUTOMATIC)라 budget-aware floor 미적용, staticFloor 만(정수 budget floor 는 별도 테스트).
     const { http, calls } = mockHttp(okBody)
     const p = createGoogleProvider(baseGoogle, http)
-    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
     expect(body.generationConfig?.maxOutputTokens).toBe(16384)
   })
@@ -1541,24 +1542,82 @@ describe('GoogleProvider', () => {
     expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'medium', includeThoughts: true })
   })
 
-  it('Gemini 2.5(pro/flash/flash-lite): 전 effort 티어가 thinkingBudget=-1 로 수렴한다(1단계 불변식 잠금)', async () => {
-    // 1단계는 2.5 서브모델 범위 차이(범위이탈 400)를 피해 effort 무관 -1(AUTOMATIC). 티어→정수 budget 은 2단계.
-    for (const model of ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'] as const) {
+  it('Gemini 2.5(pro/flash/flash-lite): effort → 서브모델 범위 내 정수 budget·천장 클램프(2단계 불변식 잠금 #73)', async () => {
+    // 1차출처(ai.google.dev/gemini-api/docs/thinking) 범위: pro 128–32768·flash 0–24576·flash-lite 512–24576.
+    // 휴리스틱 목표(2048/4096/8192/16384/32768)를 서브모델 [min,max] 로 클램프 → max 는 천장으로 수렴
+    // (pro 32768·flash/lite 24576). 5 티어 전부 해당 서브모델 범위 내 distinct 정수.
+    const expected: Record<string, Record<string, number>> = {
+      'gemini-2.5-pro': { low: 2048, medium: 4096, high: 8192, xhigh: 16384, max: 32768 },
+      'gemini-2.5-flash': { low: 2048, medium: 4096, high: 8192, xhigh: 16384, max: 24576 },
+      'gemini-2.5-flash-lite': { low: 2048, medium: 4096, high: 8192, xhigh: 16384, max: 24576 },
+    }
+    for (const model of Object.keys(expected)) {
+      const budgets: number[] = []
       for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
         const { http, calls } = mockHttp(okBody)
         await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
           .chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
-        const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-        expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
+        const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: { thinkingBudget?: number } } }
+        expect(body.generationConfig?.thinkingConfig?.thinkingBudget).toBe(expected[model][effort])
+        budgets.push(body.generationConfig!.thinkingConfig!.thinkingBudget!)
       }
+      // 천장 클램프에도 인접 티어가 붕괴하지 않는다: low<…<max 단조 증가 + 5 티어 전부 distinct(완료조건).
+      expect(budgets).toEqual([...budgets].sort((a, b) => a - b))
+      expect(new Set(budgets).size).toBe(budgets.length)
     }
   })
 
-  it('starvation floor 경계: 버퍼 floor 정확값(16384)은 무변경, 직전(16383)은 16384 로 올림', async () => {
+  it('Gemini 2.5: effort 없는 thinking({})은 thinkingBudget=-1(AUTOMATIC)로 폴백한다 (#73)', async () => {
+    // effort 미지정이면 정수 budget 을 추측하지 않고 동적 사고(-1) 유지 — 1단계 동작 무회귀.
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
+  })
+
+  it('Gemini 2.5 미지 서브모델은 effort 가 있어도 thinkingBudget=-1(AUTOMATIC) 안전 폴백 (#73, 범위이탈 400 방지)', async () => {
+    // 화이트리스트(pro/flash/flash-lite) 미스 → 범위 추측 대신 -1. 서브모델 추가/리네임 시 stale 안전망.
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-ultra', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
+  })
+
+  it('Gemini 2.5: 유니온 밖 effort 문자열도 thinkingBudget=-1(AUTOMATIC) 안전 폴백 (#73, NaN→null wire 400 방지)', async () => {
+    // BUDGET_BY_EFFORT 인덱스 미스 → undefined → 클램프 NaN → JSON.stringify 시 {"thinkingBudget":null}(무효 wire값,
+    // 범위이탈 400). `?? -1` 은 NaN 을 못 잡으므로 Number.isFinite 가드로 -1(AUTOMATIC) 폴백한다. 렌더러는 유니온
+    // 제약이나 IPC registerApi·영속 config 는 런타임 미검증이라 stale/수기편집 effort 가 여기까지 도달할 수 있다.
+    const { http, calls } = mockHttp(okBody)
+    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xxhigh' as never } })
+    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
+    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
+  })
+
+  it('Gemini 2.5 실제 dated-preview id 라우팅: flash-lite-preview→정수, computer-use-preview→-1 폴백 (#73)', async () => {
+    // 실제 모델 id 부분일치 회귀: '*-flash-lite-preview-*' 는 flash-lite 범위로, 비사고 변종('computer-use')은
+    // 화이트리스트 미스 → -1(AUTOMATIC). 서브모델 추가/리네임 시 오라우팅(400) 회귀 방지.
+    const cases = [
+      ['gemini-2.5-flash-lite-preview-09-2025', 8192], // high → flash-lite [512,24576] 내 클램프
+      ['gemini-2.5-computer-use-preview-10-2025', -1], // 미지 서브모델 → AUTOMATIC 안전 폴백
+    ] as const
+    for (const [model, expectedBudget] of cases) {
+      const { http, calls } = mockHttp(okBody)
+      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
+        .chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: { thinkingBudget?: number } } }
+      expect(body.generationConfig?.thinkingConfig?.thinkingBudget).toBe(expectedBudget)
+    }
+  })
+
+  it('starvation staticFloor 경계(AUTOMATIC): 버퍼 floor 정확값(16384)은 무변경, 직전(16383)은 16384 로 올림', async () => {
+    // 정수 budget 부재(thinking{} → -1 AUTOMATIC)라 staticFloor(16384) 경계만 검증(budget-aware floor 는 별도).
     for (const [maxTokens, expected] of [[16384, 16384], [16383, 16384]] as const) {
       const { http, calls } = mockHttp(okBody)
       await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens }, http)
-        .chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+        .chat([{ role: 'user', content: 'q' }], { thinking: {} })
       const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
       expect(body.generationConfig?.maxOutputTokens).toBe(expected)
     }
@@ -1567,9 +1626,44 @@ describe('GoogleProvider', () => {
   it('starvation floor 경계(스트리밍): 스트림 floor 직전(32767)은 32768 로 올림', async () => {
     const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
     await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens: 32767 }, http)
-      .chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: () => {} })
+      .chat([{ role: 'user', content: 'q' }], { thinking: {}, onToken: () => {} })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
     expect(body.generationConfig?.maxOutputTokens).toBe(32768)
+  })
+
+  it('Gemini 2.5: 정수 budget 은 가시 답변 reserve(16384)를 budget 위로 더해 maxOutputTokens floor 를 올린다 (#73 Codex P2 starvation)', async () => {
+    // budget 이 출력 예산(maxOutputTokens)을 점유 → floor=max(staticFloor 16384, budget+16384), 65536 내 클램프.
+    // 비스트림: 전 effort 가 budget+reserve 로 상승. budget 이 구 floor(16384)에 근접/초과(xhigh·max)해도 답변 무굶음.
+    const cases = [
+      ['gemini-2.5-pro', 'medium', 20480], // 4096 + 16384
+      ['gemini-2.5-pro', 'high', 24576], // 8192 + 16384
+      ['gemini-2.5-pro', 'xhigh', 32768], // 16384 + 16384 (budget==구 floor 였던 starvation 케이스)
+      ['gemini-2.5-pro', 'max', 49152], // 32768 + 16384 (pro 천장)
+      ['gemini-2.5-flash', 'max', 40960], // 24576(flash 천장 클램프) + 16384
+    ] as const
+    for (const [model, effort, expected] of cases) {
+      const { http, calls } = mockHttp(okBody)
+      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
+        .chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
+      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: { thinkingBudget?: number }; maxOutputTokens?: number } }
+      expect(body.generationConfig?.maxOutputTokens).toBe(expected)
+      // 핵심 불변식: 출력 한도가 thinking budget 을 항상 초과 → 가시 답변 여유 확보(굶음 없음).
+      expect(body.generationConfig!.maxOutputTokens!).toBeGreaterThan(body.generationConfig!.thinkingConfig!.thinkingBudget!)
+    }
+  })
+
+  it('Gemini 2.5 스트리밍: 정수 budget reserve 는 스트림 floor(32768)를 넘을 때(max)만 상승 (#73 Codex P2)', async () => {
+    const cases = [
+      ['xhigh', 32768], // 16384+16384=32768 == 스트림 floor → 무변화
+      ['max', 49152], // 32768+16384=49152 > 32768 → 상승
+    ] as const
+    for (const [effort, expected] of cases) {
+      const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
+      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' }, http)
+        .chat([{ role: 'user', content: 'q' }], { thinking: { effort }, onToken: () => {} })
+      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+      expect(body.generationConfig?.maxOutputTokens).toBe(expected)
+    }
   })
 
   it('config.thinking(세션 기본) + per-call 과소 maxTokens 도 floor 가 적용된다', async () => {
