@@ -155,6 +155,9 @@ export interface McpServerStatus {
  */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/** 프롬프트 캐시 TTL. Anthropic cache_control.ttl 매핑('1h'=extended-cache-ttl 베타). 미지정/기본=5m. #72. */
+export type CacheTtl = '5m' | '1h'
+
 /** API provider 설정 (요구사항 2B). */
 export interface ApiProviderConfig {
   id: string
@@ -171,6 +174,11 @@ export interface ApiProviderConfig {
    * (per-call ApiCallOptions.thinking 이 우선). 미지정=off. Anthropic·OpenAI 매핑(Gemini 후속).
    */
   thinking?: { effort?: ReasoningEffort }
+  /**
+   * 프롬프트 캐시 TTL 세션 기본값(Anthropic 한정). '1h' 면 재사용 프리픽스 cache_control 에 ttl:'1h' +
+   * extended-cache-ttl 베타를 싣는다(per-call ApiCallOptions.cacheTtl 우선). 미지정=5m(현행). #72.
+   */
+  cacheTtl?: CacheTtl
 }
 
 /** 등록된 LLM 디스크립터 (CLI 또는 API 통합). */

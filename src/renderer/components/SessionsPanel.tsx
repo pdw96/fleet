@@ -42,6 +42,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [baseUrl, setBaseUrl] = useState('')
   // thinking effort 세션 기본값('' = 끄기). Anthropic(adaptive)·OpenAI(reasoning_effort)·Google(thinkingConfig) 매핑.
   const [effort, setEffort] = useState<'' | ReasoningEffort>('')
+  // 캐시 TTL 세션 기본값(Anthropic 한정). '' = 기본(5m), '1h' = extended-cache. #72.
+  const [cacheTtl, setCacheTtl] = useState<'' | '1h'>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -176,14 +178,17 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
       // thinking 은 anthropic·openai·google 매핑 — 끄기('')면 키 자체를 넣지 않는다(IPC 페이로드 깔끔 유지).
       // 세션 설정은 비영속·불가시라 displayName 에도 노출해 어느 세션이 thinking 인지 확인 가능하게 한다.
       const thinkingOn = thinkingSupported && effort !== ''
+      // 캐시 TTL 은 Anthropic 만 — '1h' 선택 시에만 config 에 싣는다(기본 5m=키 미포함, byte-동일).
+      const cacheOn = provider === 'anthropic' && cacheTtl === '1h'
       const config: ApiProviderConfig = {
         id: `${provider}-${Date.now()}`,
         provider,
-        displayName: `${provider} (${model}${thinkingOn ? `, thinking:${effort}` : ''})`,
+        displayName: `${provider} (${model}${thinkingOn ? `, thinking:${effort}` : ''}${cacheOn ? ', cache:1h' : ''})`,
         model,
         apiKey: apiKey.trim(),
         ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
         ...(thinkingOn ? { thinking: { effort } } : {}),
+        ...(cacheOn ? { cacheTtl: '1h' } : {}),
       }
       await window.fleet.registerApiSession(config)
       setApiKey('')
@@ -339,6 +344,26 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                   : provider === 'openai-compatible'
                     ? '엔드포인트/모델이 지원할 때만 reasoning_effort 로 적용됩니다(미지원 시 무시 또는 자동 제거). max 는 high 로 보냅니다.'
                     : 'Gemini 3.x(gemini-3-pro · 3.5-flash 등)는 effort→thinking 깊이(low/medium/high)로 적용 · Gemini 2.5 는 동적 사고(effort 티어 세분화는 후속) · 그 외 모델은 미전송. thinking 활성 시 답변 토큰 예산을 자동 상향(굶음 방지)합니다.'}
+            </p>
+          </div>
+        )}
+        {provider === 'anthropic' && (
+          <div style={{ marginTop: 12 }}>
+            <label className="field-label" htmlFor="api-cache-ttl">
+              캐시 TTL (선택)
+            </label>
+            <select
+              id="api-cache-ttl"
+              className="field"
+              value={cacheTtl}
+              onChange={(e) => setCacheTtl(e.target.value as '' | '1h')}
+            >
+              <option value="">기본 (5분)</option>
+              <option value="1h">1시간 (extended-cache)</option>
+            </select>
+            <p className="meta" style={{ marginTop: 6 }}>
+              5분을 초과해 같은 프리픽스가 재전송되는 tail 경로(긴 빌드·느린 MCP 도구 루프)에서만 이득입니다. 1시간
+              캐시 쓰기는 비용이 약 2배라 평소엔 기본(5분)을 권장합니다.
             </p>
           </div>
         )}

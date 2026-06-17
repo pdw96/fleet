@@ -281,8 +281,12 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       // (최대 8라운드, 라운드마다 history+tools 프리픽스 반복)·멀티턴 chat(history 누적). 반대로 fresh 단발
       // (planner/reviewer/summarizer — 1턴·도구 없음·휘발성 diff/프롬프트)은 다음 호출이 다른 프롬프트라 캐시가
       // 절대 읽히지 않아 쓰기 1.25× 만 순손실이다 → 그 경로는 제외한다. (최소 프리픽스 미만은 어차피 무성 no-op.)
-      if (turns.length > 1 || (opts.tools?.length ?? 0) > 0) {
-        body.cache_control = { type: 'ephemeral' }
+      const cacheable = turns.length > 1 || (opts.tools?.length ?? 0) > 0
+      // cacheTtl='1h'(세션/per-call opt-in) + cacheable 면 ttl:'1h' + extended-cache 베타로 5m 초과 tail
+      // (긴 빌드·느린 MCP)의 히트를 유지한다(쓰기 ~2× → 기본은 5m 유지). 미지정/5m 은 현행 byte-동일.
+      const oneHourCache = cacheable && (opts.cacheTtl ?? config.cacheTtl) === '1h'
+      if (cacheable) {
+        body.cache_control = oneHourCache ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' }
       }
       if (system) body.system = system
       // sampling 파라미터(temperature) 정규화 — 두 갈래로 생략한다(생략은 항상 안전):
@@ -332,8 +336,11 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         'x-api-key': apiKey,
         'anthropic-version': API_VERSION,
       }
-      // CM beta 헤더는 context_management 동봉 시에만(비-CM 호출 헤더 부재 = 무회귀).
-      if (opts.contextManagement) headers['anthropic-beta'] = 'context-management-2025-06-27'
+      // beta 헤더 누적: context-management·extended-cache-ttl 공존(쉼표 결합). 둘 다 없으면 헤더 부재(무회귀).
+      const betas: string[] = []
+      if (opts.contextManagement) betas.push('context-management-2025-06-27')
+      if (oneHourCache) betas.push('extended-cache-ttl-2025-04-11')
+      if (betas.length) headers['anthropic-beta'] = betas.join(',')
       const send = (): Promise<HttpResponse> =>
         http(ENDPOINT, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
       // 두 opt-in 필드(context_management·output_config.format) + 불투명 400 → 한 번에 하나씩 제거해 무고한
@@ -341,7 +348,10 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       // 갭(Codex P2)을 막는다. removeSchema 는 format 만 빼고 effort 등은 보존, 복원은 opts 에서 재구성.
       const removeCM = (): void => {
         delete body.context_management
-        delete headers['anthropic-beta']
+        // CM 토큰만 제거한다(필드별 격리 불변식). extended-cache-ttl 은 별도 opt-in 이고 cache_control.ttl='1h'
+        // 의 전제 헤더라, CM-유발 400 재시도에서 함께 지우면 ttl 이 고아가 돼 2차 400 을 유발한다 → 보존.
+        if (oneHourCache) headers['anthropic-beta'] = 'extended-cache-ttl-2025-04-11'
+        else delete headers['anthropic-beta']
       }
       const removeSchema = (): void => {
         const oc = body.output_config as Record<string, unknown> | undefined

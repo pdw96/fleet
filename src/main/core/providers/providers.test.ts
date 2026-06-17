@@ -137,6 +137,66 @@ describe('AnthropicProvider', () => {
     expect(out.usage).toEqual({ inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 100, cacheReadInputTokens: 200 })
   })
 
+  it('config.cacheTtl=1h + 도구 동봉 → cache_control.ttl=1h + extended-cache 베타 헤더 (#72)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, cacheTtl: '1h' }, http)
+    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }] })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' })
+    expect(String(calls[0].init.headers['anthropic-beta'])).toContain('extended-cache-ttl-2025-04-11')
+  })
+
+  it('cacheTtl=1h + contextManagement → anthropic-beta 에 두 토큰 공존 (#72)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, cacheTtl: '1h' }, http)
+    // 멀티턴(cacheable) + CM 동봉 → cache_control(1h) 와 CM 헤더 동시 존재.
+    await p.chat(
+      [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' },
+      ],
+      { contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 } },
+    )
+    const betas = String(calls[0].init.headers['anthropic-beta']).split(',')
+    expect(betas).toContain('context-management-2025-06-27')
+    expect(betas).toContain('extended-cache-ttl-2025-04-11')
+  })
+
+  it('cacheTtl=1h 라도 fresh 단발(비-cacheable)엔 cache_control·extended-cache 베타 부재 (#72)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider({ ...baseAnthropic, cacheTtl: '1h' }, http)
+    await p.chat([
+      { role: 'system', content: '너는 평가자다' },
+      { role: 'user', content: 'q' },
+    ])
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.cache_control).toBeUndefined()
+    expect(calls[0].init.headers['anthropic-beta']).toBeUndefined()
+  })
+
+  it('per-call opts.cacheTtl=1h 가 config 미지정을 덮어 1h 경로를 켠다 (#72 override)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+      cacheTtl: '1h',
+    })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' })
+    expect(String(calls[0].init.headers['anthropic-beta'])).toContain('extended-cache-ttl-2025-04-11')
+  })
+
+  it('cacheTtl 미지정(기본) cacheable → cache_control=ephemeral(ttl 없음)·extended-cache 베타 부재 (#72 무회귀)', async () => {
+    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }] })
+    const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
+    expect(body.cache_control).toEqual({ type: 'ephemeral' })
+    const beta = calls[0].init.headers['anthropic-beta']
+    if (beta !== undefined) expect(String(beta)).not.toContain('extended-cache-ttl')
+  })
+
   it('defaults max_tokens to 4096 when unset', async () => {
     const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
     const p = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined }, http)
@@ -613,6 +673,26 @@ describe('AnthropicProvider', () => {
     expect(calls).toHaveLength(2)
     expect(JSON.parse(calls[1].init.body).context_management).toBeUndefined()
     expect(calls[1].init.headers['anthropic-beta']).toBeUndefined()
+  })
+
+  it('CM+cacheTtl=1h 동봉 요청 CM-유발 400 → CM 만 제거·extended-cache 베타·cache_control.ttl 보존 (#72 필드 격리)', async () => {
+    const { http, calls } = mockHttp((_url, init) => {
+      const body = JSON.parse(init.body)
+      if (body.context_management) return { ok: false, status: 400, body: 'unsupported beta' }
+      return { body: cmResp }
+    })
+    const p = createAnthropicProvider({ ...baseAnthropic, cacheTtl: '1h' }, http)
+    // cacheable(도구) + CM + 1h → 첫 호출 두 베타 토큰·cache_control.ttl. CM-유발 400 후 CM 만 빠져야 한다.
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+      contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 },
+    })
+    expect(out.text).toBe('ok')
+    expect(calls).toHaveLength(2)
+    const retry = JSON.parse(calls[1].init.body) as Record<string, unknown>
+    expect(retry.context_management).toBeUndefined()
+    expect(retry.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' }) // ttl 고아화 방지(보존)
+    expect(calls[1].init.headers['anthropic-beta']).toBe('extended-cache-ttl-2025-04-11') // CM 토큰만 제거
   })
 
   it('CM + streaming: 400 fallback 후 스트리밍으로 응답을 돌려준다', async () => {
