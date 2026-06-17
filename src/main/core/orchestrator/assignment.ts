@@ -74,7 +74,11 @@ function pickBest(
   return best
 }
 
-function score(llmId: string, role: AgentRole, capabilities?: Record<string, readonly AgentRole[]>): number {
+function score(
+  llmId: string,
+  role: AgentRole,
+  capabilities?: Record<string, readonly AgentRole[]>,
+): number {
   return capabilities?.[llmId]?.includes(role) ? 1 : 0
 }
 

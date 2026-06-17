@@ -13,7 +13,14 @@ import type { Workspace } from '../workspace/git'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
 import { planCorrectiveTasks, planTasks, type PlannedTask } from './plan'
-import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict, REVIEW_SCHEMA } from './review'
+import {
+  buildImplementPrompt,
+  buildReviewPrompt,
+  buildSummaryPrompt,
+  buildVerifyFixPrompt,
+  parseReviewVerdict,
+  REVIEW_SCHEMA,
+} from './review'
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
 
@@ -71,7 +78,10 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // 편집 에이전트 작업은 수 분이 걸린다 — 미지정 시 15분 기본(채팅용 120s 기본을 상속하지 않게).
   const DEFAULT_TASK_TIMEOUT_MS = 900_000
   const requestedTaskTimeout = Math.floor(opts.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS)
-  const taskTimeoutMs = Number.isFinite(requestedTaskTimeout) && requestedTaskTimeout > 0 ? requestedTaskTimeout : DEFAULT_TASK_TIMEOUT_MS
+  const taskTimeoutMs =
+    Number.isFinite(requestedTaskTimeout) && requestedTaskTimeout > 0
+      ? requestedTaskTimeout
+      : DEFAULT_TASK_TIMEOUT_MS
   // planner 세션은 프로젝트 생성 전에 검증한다 — 없으면 store 에 고아 프로젝트(planning 상태로 영구 정체)를 남기지 않는다.
   const plannerId = resolveLlmForRole(assignments, 'planner')
   const planner = plannerId ? sessions.get(plannerId) : undefined
@@ -88,7 +98,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     if (e.type !== 'task.progress') {
       // 영속 이벤트의 id 를 라이브 페이로드(data.eventId)에도 실어 보낸다 — 렌더러가 스냅샷 재조회 시
       // 라이브로 이미 받은 행과 영속본을 같은 id 로 정확히 dedup 하도록(반복 메시지 과잉제거 방지).
-      const persisted = store.appendEvent({ type: enriched.type, message: enriched.message, data: enriched.data ?? {} })
+      const persisted = store.appendEvent({
+        type: enriched.type,
+        message: enriched.message,
+        data: enriched.data ?? {},
+      })
       opts.onEvent?.({ ...enriched, data: { ...enriched.data, eventId: persisted.id } })
       return
     }
@@ -124,10 +138,18 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       if (deps.length > 0) store.updateTask(createdIds[i], { dependsOn: deps })
     })
     plannedCount = planned.length
-    emit({ type: 'plan.created', message: `${plannedCount}개 작업으로 분해`, data: { count: plannedCount } })
+    emit({
+      type: 'plan.created',
+      message: `${plannedCount}개 작업으로 분해`,
+      data: { count: plannedCount },
+    })
   } catch (err) {
     store.updateProject(project.id, { status: 'failed' })
-    emit({ type: 'plan.failed', message: `분해 실패: ${(err as Error).message}`, data: { projectId: project.id } })
+    emit({
+      type: 'plan.failed',
+      message: `분해 실패: ${(err as Error).message}`,
+      data: { projectId: project.id },
+    })
     throw err
   }
 
@@ -163,14 +185,25 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     const implementer = implementerId ? sessions.get(implementerId) : undefined
     if (!implementer) {
       store.updateTask(task.id, { status: 'failed', output: '구현 역할에 배정된 LLM 없음' })
-      emit({ type: 'task.failed', message: `${task.title}: 구현 LLM 미배정`, data: { taskId: task.id } })
+      emit({
+        type: 'task.failed',
+        message: `${task.title}: 구현 LLM 미배정`,
+        data: { taskId: task.id },
+      })
       failed.add(task.id)
       return
     }
     // 직접 편집은 CLI 세션만 가능(API는 파일을 못 만짐).
     if (implementer.descriptor.kind !== 'cli' || !ws) {
-      store.updateTask(task.id, { status: 'skipped', output: 'CLI 에이전트/워크스페이스 필요(직접 편집 불가)' })
-      emit({ type: 'task.skipped', message: `${task.title}: 직접 편집 불가(API 또는 워크스페이스 없음)`, data: { taskId: task.id } })
+      store.updateTask(task.id, {
+        status: 'skipped',
+        output: 'CLI 에이전트/워크스페이스 필요(직접 편집 불가)',
+      })
+      emit({
+        type: 'task.skipped',
+        message: `${task.title}: 직접 편집 불가(API 또는 워크스페이스 없음)`,
+        data: { taskId: task.id },
+      })
       failed.add(task.id)
       return
     }
@@ -180,7 +213,10 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     // 자기검토 경고: 같은 LLM 이 구현·검토를 모두 맡으면 교차검증 의미가 약해진다(감사 로그에 기록, 차단은 안 함).
     const reviewerId = resolveLlmForRole(assignments, 'reviewer')
     if (reviewerId && reviewerId === implementerId) {
-      store.appendEvent({ type: 'task.self_review', data: { taskId: task.id, llmId: implementerId } })
+      store.appendEvent({
+        type: 'task.self_review',
+        data: { taskId: task.id, llmId: implementerId },
+      })
     }
 
     const base = await ws.checkpoint()
@@ -190,27 +226,48 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       let feedback = ''
       let diff = { files: [] as string[], patch: '', truncated: false }
       for (let round = 0; round < maxRounds; round++) {
-        await implementer.send(buildImplementPrompt(goal, task.title, task.description, feedback || undefined), {
-          fresh: true,
-          workspace: opts.workspaceRoot,
-          signal: opts.signal,
-          timeoutMs: taskTimeoutMs,
-          onChunk: (delta) => emit({ type: 'task.progress', message: delta, data: { taskId: task.id } }),
-        })
+        await implementer.send(
+          buildImplementPrompt(goal, task.title, task.description, feedback || undefined),
+          {
+            fresh: true,
+            workspace: opts.workspaceRoot,
+            signal: opts.signal,
+            timeoutMs: taskTimeoutMs,
+            onChunk: (delta) =>
+              emit({ type: 'task.progress', message: delta, data: { taskId: task.id } }),
+          },
+        )
         diff = await ws.collectDiff(base)
         store.updateTask(task.id, { status: 'review', changedFiles: diff.files })
-        emit({ type: 'task.implemented', message: `구현 완료 (라운드 ${round + 1}, 변경 ${diff.files.length}개)`, data: { taskId: task.id, round } })
+        emit({
+          type: 'task.implemented',
+          message: `구현 완료 (라운드 ${round + 1}, 변경 ${diff.files.length}개)`,
+          data: { taskId: task.id, round },
+        })
 
         // #5: 민감/위험 diff 는 리뷰어(외부 API 가능)에게 보내기 전에 승인 게이트를 거친다(비밀 유출 방지).
         const dr = classifyDiffRisk(diff)
         if (dr.risk === 'destructive') {
           const decision = opts.gate
-            ? await opts.gate.request({ kind: 'apply-diff', summary: `${task.title} 변경 적용`, target: diff.files.join(', '), risk: 'destructive' })
+            ? await opts.gate.request({
+                kind: 'apply-diff',
+                summary: `${task.title} 변경 적용`,
+                target: diff.files.join(', '),
+                risk: 'destructive',
+              })
             : 'rejected'
           if (decision !== 'approved') {
             await ws.revert(base)
-            store.updateTask(task.id, { status: 'failed', output: `위험 변경 미승인: ${dr.reasons.join('; ')}`, changedFiles: [] })
-            emit({ type: 'task.failed', message: `${task.title}: 위험 변경 미승인`, data: { taskId: task.id } })
+            store.updateTask(task.id, {
+              status: 'failed',
+              output: `위험 변경 미승인: ${dr.reasons.join('; ')}`,
+              changedFiles: [],
+            })
+            emit({
+              type: 'task.failed',
+              message: `${task.title}: 위험 변경 미승인`,
+              data: { taskId: task.id },
+            })
             failed.add(task.id)
             return
           }
@@ -229,7 +286,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
             bypassTools: true,
           }),
         )
-        emit({ type: 'task.review', message: verdict.approved ? '리뷰 승인' : '수정 요청', data: { taskId: task.id, approved: verdict.approved, round } })
+        emit({
+          type: 'task.review',
+          message: verdict.approved ? '리뷰 승인' : '수정 요청',
+          data: { taskId: task.id, approved: verdict.approved, round },
+        })
         if (verdict.approved) {
           approved = true
           break
@@ -240,15 +301,31 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
       if (!approved) {
         await ws.revert(base)
-        store.updateTask(task.id, { status: 'failed', output: '미승인(재검토 한도 초과)', changedFiles: [] })
-        emit({ type: 'task.failed', message: `${task.title}: 미승인(재검토 한도 초과)`, data: { taskId: task.id } })
+        store.updateTask(task.id, {
+          status: 'failed',
+          output: '미승인(재검토 한도 초과)',
+          changedFiles: [],
+        })
+        emit({
+          type: 'task.failed',
+          message: `${task.title}: 미승인(재검토 한도 초과)`,
+          data: { taskId: task.id },
+        })
         failed.add(task.id)
         return
       }
 
       await ws.keep(`[${task.title}] by ${implementerId}`)
-      store.updateTask(task.id, { status: 'done', output: `변경 ${diff.files.length}개 적용`, changedFiles: diff.files })
-      emit({ type: 'task.done', message: `${task.title}: 완료(변경 ${diff.files.length}개)`, data: { taskId: task.id } })
+      store.updateTask(task.id, {
+        status: 'done',
+        output: `변경 ${diff.files.length}개 적용`,
+        changedFiles: diff.files,
+      })
+      emit({
+        type: 'task.done',
+        message: `${task.title}: 완료(변경 ${diff.files.length}개)`,
+        data: { taskId: task.id },
+      })
       done.add(task.id)
     } catch (err) {
       // LLM 호출(네트워크/CLI) 실패를 작업 단위로 격리한다 — 한 작업 실패가 전체 실행을 중단시키지 않는다.
@@ -258,12 +335,20 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       // (pending 취소 경로의 '실행 취소됨'·task.skipped 와 동일 컨벤션). failed 집계에도 넣지 않는다.
       if (opts.signal?.aborted) {
         store.updateTask(task.id, { status: 'skipped', output: `실행 취소됨${revertNote}` })
-        emit({ type: 'task.skipped', message: `${task.title}: 실행 취소됨${revertNote}`, data: { taskId: task.id } })
+        emit({
+          type: 'task.skipped',
+          message: `${task.title}: 실행 취소됨${revertNote}`,
+          data: { taskId: task.id },
+        })
         return
       }
       const message = err instanceof Error ? err.message : String(err)
       store.updateTask(task.id, { status: 'failed', output: `실행 오류: ${message}${revertNote}` })
-      emit({ type: 'task.failed', message: `${task.title}: 실행 오류 - ${message}${revertNote}`, data: { taskId: task.id } })
+      emit({
+        type: 'task.failed',
+        message: `${task.title}: 실행 오류 - ${message}${revertNote}`,
+        data: { taskId: task.id },
+      })
       failed.add(task.id)
     }
   }
@@ -289,7 +374,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       const deps = task.dependsOn ?? []
       if (deps.some((d) => failed.has(d))) {
         store.updateTask(task.id, { status: 'skipped', output: '의존 작업 실패로 건너뜀' })
-        emit({ type: 'task.skipped', message: `${task.title}: 의존 작업 실패로 건너뜀`, data: { taskId: task.id } })
+        emit({
+          type: 'task.skipped',
+          message: `${task.title}: 의존 작업 실패로 건너뜀`,
+          data: { taskId: task.id },
+        })
         failed.add(task.id)
         pending.splice(i, 1)
         progressed = true
@@ -313,7 +402,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       emit({ type: 'task.skipped', message: `${task.title}: 실행 취소됨`, data: { taskId: id } })
     } else {
       store.updateTask(id, { status: 'failed', output: '의존성 해소 불가(순환 가능)' })
-      emit({ type: 'task.failed', message: `${task.title}: 의존성 해소 불가(순환 가능)`, data: { taskId: id } })
+      emit({
+        type: 'task.failed',
+        message: `${task.title}: 의존성 해소 불가(순환 가능)`,
+        data: { taskId: id },
+      })
     }
   }
 
@@ -325,11 +418,19 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     if (!summarizer || opts.signal?.aborted) return
     try {
       const finalTasks = store.listTasks(project.id)
-      summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), { fresh: true, signal: opts.signal, bypassTools: true })
+      summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), {
+        fresh: true,
+        signal: opts.signal,
+        bypassTools: true,
+      })
       emit({ type: 'summary', message: '최종 요약 완료', data: { projectId: project.id } })
     } catch (err) {
       // 요약 실패가 완료된 작업 결과를 무효화하지 않도록 격리한다(summary 는 빈 문자열로 둔다).
-      emit({ type: 'summary', message: `요약 실패: ${err instanceof Error ? err.message : String(err)}`, data: { projectId: project.id } })
+      emit({
+        type: 'summary',
+        message: `요약 실패: ${err instanceof Error ? err.message : String(err)}`,
+        data: { projectId: project.id },
+      })
     }
   }
   await summarize()
@@ -363,7 +464,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       const ok = v.every((r) => r.passed)
       emit({
         type: ok ? 'verify.passed' : 'verify.failed',
-        message: ok ? '검증 통과' : `검증 실패: ${v.filter((r) => !r.passed).map((r) => r.kind).join(', ')}`,
+        message: ok
+          ? '검증 통과'
+          : `검증 실패: ${v
+              .filter((r) => !r.passed)
+              .map((r) => r.kind)
+              .join(', ')}`,
         data: { projectId: project.id },
       })
     }
@@ -384,7 +490,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       round++
     ) {
       const failing = verifications.filter((v) => !v.passed)
-      emit({ type: 'verify.fixing', message: `검증 실패 — 수정 시도 (라운드 ${round})`, data: { projectId: project.id, round } })
+      emit({
+        type: 'verify.fixing',
+        message: `검증 실패 — 수정 시도 (라운드 ${round})`,
+        data: { projectId: project.id, round },
+      })
       const base = await opts.workspace.checkpoint()
       try {
         await fixImplementer.send(buildVerifyFixPrompt(goal, failing), {
@@ -398,11 +508,20 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         const dr = classifyDiffRisk(diff)
         if (dr.risk === 'destructive') {
           const decision = opts.gate
-            ? await opts.gate.request({ kind: 'apply-diff', summary: `verify-fix r${round} 변경 적용`, target: diff.files.join(', '), risk: 'destructive' })
+            ? await opts.gate.request({
+                kind: 'apply-diff',
+                summary: `verify-fix r${round} 변경 적용`,
+                target: diff.files.join(', '),
+                risk: 'destructive',
+              })
             : 'rejected'
           if (decision !== 'approved') {
             await opts.workspace.revert(base)
-            emit({ type: 'verify.fixing', message: `수정 위험 변경 미승인: ${dr.reasons.join('; ')}`, data: { projectId: project.id, round } })
+            emit({
+              type: 'verify.fixing',
+              message: `수정 위험 변경 미승인: ${dr.reasons.join('; ')}`,
+              data: { projectId: project.id, round },
+            })
             break
           }
         }
@@ -453,7 +572,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         break
       }
       if (corrective.length === 0) {
-        emit({ type: 'replan', message: '보정 작업 없음 — replan 종료', data: { projectId: project.id, round, count: 0 } })
+        emit({
+          type: 'replan',
+          message: '보정 작업 없음 — replan 종료',
+          data: { projectId: project.id, round, count: 0 },
+        })
         break
       }
       emit({
@@ -488,7 +611,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // run.cancelled 는 engine 이 별도로 방출하므로 오케스트레이터는 일을 멈추기만 하면 된다.
   const signalAborted = opts.signal?.aborted === true
   const verifyFailed =
-    !!opts.verify && !(verifications !== undefined && verifications.length > 0 && verifications.every((v) => v.passed))
+    !!opts.verify &&
+    !(
+      verifications !== undefined &&
+      verifications.length > 0 &&
+      verifications.every((v) => v.passed)
+    )
   store.updateProject(project.id, { status: signalAborted || verifyFailed ? 'failed' : 'done' })
   // project.done 메시지는 실제 종료 상태를 반영한다 — 취소/검증 실패를 항상 '완료'로 위장하지 않는다(#7).
   // 이벤트 타입('project.done')·data.projectId 는 불변 — engine 의 activeRuns 정리(타입 기반)와 렌더러

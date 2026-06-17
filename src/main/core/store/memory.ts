@@ -163,7 +163,9 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
     listProjectEvents(projectId) {
       // 토큰 델타(task.progress)는 영속 노이즈라 제외한다. 삽입 순서가 곧 시간순.
       return structuredClone(
-        state.events.filter((e) => e.type !== 'task.progress' && e.data?.['projectId'] === projectId),
+        state.events.filter(
+          (e) => e.type !== 'task.progress' && e.data?.['projectId'] === projectId,
+        ),
       )
     },
 

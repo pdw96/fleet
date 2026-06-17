@@ -1,7 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import {
+  _electron as electron,
+  expect,
+  test,
+  type ElectronApplication,
+  type Page,
+} from '@playwright/test'
 
 /**
  * 회귀 가드: 윈도우 하드닝(installNavigationGuards 네비게이션 + installPermissionGuards 권한)이 실제
@@ -64,6 +70,8 @@ test('지오로케이션 권한 요청을 거부한다 (setPermissionRequestHand
 })
 
 test('지오로케이션 권한 조회가 denied 다 (setPermissionCheckHandler deny)', async () => {
-  const state = await page.evaluate(() => navigator.permissions.query({ name: 'geolocation' }).then((s) => s.state))
+  const state = await page.evaluate(() =>
+    navigator.permissions.query({ name: 'geolocation' }).then((s) => s.state),
+  )
   expect(state).toBe('denied')
 })

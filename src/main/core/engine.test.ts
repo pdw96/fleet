@@ -29,7 +29,8 @@ function fakeGit(): GitRunner {
   return {
     async run(args, cwd) {
       const sub = args[0]
-      if (sub === 'rev-parse' && args.includes('--is-inside-work-tree')) return { code: 0, stdout: 'true', stderr: '' }
+      if (sub === 'rev-parse' && args.includes('--is-inside-work-tree'))
+        return { code: 0, stdout: 'true', stderr: '' }
       if (sub === 'rev-parse') return { code: 0, stdout: `hash-${head}`, stderr: '' }
       if (sub === 'add') return { code: 0, stdout: '', stderr: '' }
       if (sub === 'diff' && args.includes('--name-only')) {
@@ -44,7 +45,8 @@ function fakeGit(): GitRunner {
         head++
         return { code: 0, stdout: '', stderr: '' }
       }
-      if (sub === 'reset' || sub === 'clean' || sub === 'init') return { code: 0, stdout: '', stderr: '' }
+      if (sub === 'reset' || sub === 'clean' || sub === 'init')
+        return { code: 0, stdout: '', stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
     },
   }
@@ -78,7 +80,11 @@ function authCapturingHttp(): { http: HttpClient; authHeaders: string[] } {
   const authHeaders: string[] = []
   const http: HttpClient = async (_url, init) => {
     authHeaders.push(init.headers['authorization'] ?? '')
-    return { ok: true, status: 200, text: async () => '{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}' }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => '{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}',
+    }
   }
   return { http, authHeaders }
 }
@@ -92,7 +98,8 @@ const roleRunner: CommandRunner = async (_cmd, args, opts) => {
   // planner·reviewer 프롬프트가 둘 다 구조화 출력 JSON 을 요청하므로(둘 다 'JSON' 포함),
   // planner 는 고유어 '분해', reviewer 는 고유어 '검토' 로 판별한다.
   const prompt = [...args, opts.stdinInput ?? ''].join(' ')
-  if (prompt.includes('분해')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+  if (prompt.includes('분해'))
+    return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
   if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
   if (prompt.includes('누락')) return { code: 0, stdout: '요약: 목표 충족, 누락 없음', stderr: '' }
   if (opts.cwd) writeFileSync(join(opts.cwd, 'impl.txt'), '구현 결과물') // 직접 편집
@@ -135,7 +142,12 @@ describe('FleetEngine', () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-flow-'))
     try {
       const store = createMemoryStore(deterministic())
-      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+      })
       engine.registerCliSession('claude')
 
       const result = await engine.runProjectFlow({ goal: '멀티 LLM 앱 만들기' })
@@ -168,7 +180,13 @@ describe('FleetEngine', () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-noimpl-'))
     try {
       const engine = createFleetEngine({ workspaceDir: dir, gitRunner: fakeGit() })
-      engine.registerApiSession({ id: 'a', provider: 'openai', displayName: 'GPT', model: 'm', apiKey: 'k' })
+      engine.registerApiSession({
+        id: 'a',
+        provider: 'openai',
+        displayName: 'GPT',
+        model: 'm',
+        apiKey: 'k',
+      })
       await expect(engine.runProjectFlow({ goal: 'g' })).rejects.toThrow(/구현|CLI 세션/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -181,9 +199,20 @@ describe('FleetEngine', () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-reassign-'))
     try {
       const store = createMemoryStore(deterministic())
-      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+      })
       engine.registerCliSession('claude') // cli:claude — 유일한 CLI
-      engine.registerApiSession({ id: 'a', provider: 'openai', displayName: 'GPT', model: 'm', apiKey: 'k' })
+      engine.registerApiSession({
+        id: 'a',
+        provider: 'openai',
+        displayName: 'GPT',
+        model: 'm',
+        apiKey: 'k',
+      })
 
       // implementer 를 API 세션에 명시 배정 → 재배정 로직이 cli:claude 로 바꿔야 한다.
       const result = await engine.runProjectFlow({
@@ -198,7 +227,9 @@ describe('FleetEngine', () => {
 
       expect(result.tasks[0].status).toBe('done') // 재배정된 CLI 로 직접 편집 실행됨
       expect(result.tasks[0].assignedLlmId).toBe('cli:claude') // API 가 아니라 CLI 로 라우팅
-      expect(store.listEvents().some((e) => e.type === 'assignment.implementer_reassigned')).toBe(true)
+      expect(store.listEvents().some((e) => e.type === 'assignment.implementer_reassigned')).toBe(
+        true,
+      )
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -213,7 +244,14 @@ describe('FleetEngine', () => {
       // 그 외(plan JSON / 검토 / 요약) 호출은 즉시 응답해 작업 루프까지 도달하게 한다.
       sessions.add({
         id: 'cli:claude',
-        descriptor: { id: 'cli:claude', kind: 'cli', displayName: 'Claude', ref: 'claude', model: '', capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'] },
+        descriptor: {
+          id: 'cli:claude',
+          kind: 'cli',
+          displayName: 'Claude',
+          ref: 'claude',
+          model: '',
+          capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'],
+        },
         async send(prompt, opts) {
           if (prompt.includes('분해')) return '[{"title":"작업1","description":"d1"}]'
           if (prompt.includes('검토')) return 'APPROVE'
@@ -284,7 +322,14 @@ describe('FleetEngine', () => {
   function hangingImplSession(onAbort?: () => void) {
     return {
       id: 'cli:claude',
-      descriptor: { id: 'cli:claude', kind: 'cli' as const, displayName: 'Claude', ref: 'claude', model: '', capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'] as AgentRole[] },
+      descriptor: {
+        id: 'cli:claude',
+        kind: 'cli' as const,
+        displayName: 'Claude',
+        ref: 'claude',
+        model: '',
+        capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'] as AgentRole[],
+      },
       async send(prompt: string, opts?: { workspace?: string; signal?: AbortSignal }) {
         if (prompt.includes('분해')) return '[{"title":"작업1","description":"d1"}]'
         if (prompt.includes('검토')) return 'APPROVE'
@@ -323,9 +368,19 @@ describe('FleetEngine', () => {
       const store = createMemoryStore(deterministic())
       const sessions = createSessionManager()
       let implAborted = false
-      sessions.add(hangingImplSession(() => { implAborted = true }))
+      sessions.add(
+        hangingImplSession(() => {
+          implAborted = true
+        }),
+      )
       const events: { type: string; data?: Record<string, unknown> }[] = []
-      const engine = createFleetEngine({ store, sessions, workspaceDir: dir, gitRunner: fakeGit(), onOrchestratorEvent: (e) => events.push(e) })
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
 
       const runPromise = engine.runProjectFlow({ goal: 'g' })
       await waitForCreated(events) // 구현 호출이 hang 상태가 되도록 진행을 기다린다
@@ -348,7 +403,13 @@ describe('FleetEngine', () => {
       const sessions = createSessionManager()
       sessions.add(hangingImplSession())
       const events: { type: string; data?: Record<string, unknown> }[] = []
-      const engine = createFleetEngine({ store, sessions, workspaceDir: dir, gitRunner: fakeGit(), onOrchestratorEvent: (e) => events.push(e) })
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
 
       const first = engine.runProjectFlow({ goal: 'g1' })
       const pid = await waitForCreated(events) // 첫 실행이 activeRuns 에 등록될 때까지 대기
@@ -387,7 +448,13 @@ describe('FleetEngine', () => {
       const sessions = createSessionManager()
       sessions.add(hangingImplSession())
       const events: { type: string; data?: Record<string, unknown> }[] = []
-      const engine = createFleetEngine({ store, sessions, workspaceDir: dir, gitRunner: fakeGit(), onOrchestratorEvent: (e) => events.push(e) })
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
 
       const run = engine.runProjectFlow({ goal: 'g' })
       const pid = await waitForCreated(events) // project.created 에서 activeRuns 에 등록될 때까지 대기
@@ -411,7 +478,13 @@ describe('FleetEngine', () => {
       const sessions = createSessionManager()
       sessions.add(hangingImplSession())
       const events: { type: string; data?: Record<string, unknown> }[] = []
-      const engine = createFleetEngine({ store, sessions, workspaceDir: dir, gitRunner: fakeGit(), onOrchestratorEvent: (e) => events.push(e) })
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
 
       const run = engine.runProjectFlow({ goal: 'g' })
       const pid = await waitForCreated(events)
@@ -436,7 +509,13 @@ describe('FleetEngine', () => {
       const sessions = createSessionManager()
       sessions.add(hangingImplSession())
       const events: { type: string; data?: Record<string, unknown> }[] = []
-      const engine = createFleetEngine({ store, sessions, workspaceDir: dir, gitRunner: fakeGit(), onOrchestratorEvent: (e) => events.push(e) })
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
 
       const run = engine.runProjectFlow({ goal: 'g' })
       const pid = await waitForCreated(events)
@@ -459,7 +538,8 @@ describe('FleetEngine', () => {
       const runner: CommandRunner = async (_cmd, args, opts) => {
         const prompt = [...args, opts.stdinInput ?? ''].join(' ')
         // planner·reviewer 둘 다 구조화 출력 JSON 을 요청하므로 planner 는 '분해', reviewer 는 '검토' 로 판별한다.
-        if (prompt.includes('분해')) return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+        if (prompt.includes('분해'))
+          return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
         if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
         if (opts.cwd) writeFileSync(join(opts.cwd, 'out.txt'), 'hello') // 직접 편집
@@ -513,7 +593,12 @@ describe('FleetEngine', () => {
       // 단순 이벤트 존재가 아니라 '보정 작업 추가' 분기(count>=1)가 실제로 발화됐는지 단언한다 —
       // maxReplanRounds 가 orchestrator 까지 배선돼 planCorrectiveTasks 가 호출됐다는 결정적 증거.
       expect(
-        events.some((e) => e.type === 'replan' && typeof e.data?.['count'] === 'number' && (e.data['count'] as number) >= 1),
+        events.some(
+          (e) =>
+            e.type === 'replan' &&
+            typeof e.data?.['count'] === 'number' &&
+            (e.data['count'] as number) >= 1,
+        ),
       ).toBe(true)
       // append-only: 초기 작업(1) + 보정 작업(>=1)으로 작업 수가 늘어난다.
       expect(engine.getProjectTasks(result.projectId).length).toBeGreaterThan(1)
@@ -585,7 +670,8 @@ describe('FleetEngine', () => {
     try {
       const runner: CommandRunner = async (_c, args, opts) => {
         const p = [...args, opts.stdinInput ?? ''].join(' ')
-        if (p.includes('분해')) return { code: 0, stdout: '[{"title":"T","description":"d"}]', stderr: '' }
+        if (p.includes('분해'))
+          return { code: 0, stdout: '[{"title":"T","description":"d"}]', stderr: '' }
         if (p.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
         if (p.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
         if (opts.cwd) writeFileSync(join(opts.cwd, 'made.txt'), 'hi') // 직접 편집
@@ -648,7 +734,13 @@ describe('FleetEngine', () => {
 
   it('seeds default capabilities per API provider at registration', () => {
     const engine = createFleetEngine()
-    const d = engine.registerApiSession({ id: 'a', provider: 'google', displayName: 'g', model: 'm', apiKey: 'k' })
+    const d = engine.registerApiSession({
+      id: 'a',
+      provider: 'google',
+      displayName: 'g',
+      model: 'm',
+      apiKey: 'k',
+    })
     expect(d.capabilities?.length).toBeGreaterThan(0)
   })
 
@@ -669,7 +761,12 @@ describe('FleetEngine', () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-cap-'))
     try {
       const store = createMemoryStore(deterministic())
-      const engine = createFleetEngine({ store, runner: roleRunner, workspaceDir: dir, gitRunner: fakeGit() })
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+      })
       engine.registerCliSession('claude') // cli:claude
       engine.registerCliSession('codex') // cli:codex
       // implementer 적합도를 claude 에 둔다 — round-robin 이면 implementer→codex 라 결과로 구분된다
@@ -733,7 +830,9 @@ describe('FleetEngine', () => {
   })
 
   it('supports a live chat room with a registered LLM', async () => {
-    const engine = createFleetEngine({ runner: async () => ({ code: 0, stdout: 'LLM 답변', stderr: '' }) })
+    const engine = createFleetEngine({
+      runner: async () => ({ code: 0, stdout: 'LLM 답변', stderr: '' }),
+    })
     engine.registerCliSession('claude')
     const room = engine.createRoom('테스트방', ['cli:claude'])
     engine.postUserMessage(room.id, '안녕')
@@ -783,7 +882,10 @@ describe('FleetEngine', () => {
       async dispose() {},
     }
     const { http, calls } = scriptedHttp([
-      JSON.stringify({ content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__demo__ping', input: {} }], stop_reason: 'tool_use' }),
+      JSON.stringify({
+        content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__demo__ping', input: {} }],
+        stop_reason: 'tool_use',
+      }),
       JSON.stringify({ content: [{ type: 'text', text: '끝' }], stop_reason: 'end_turn' }),
     ])
     const engine = createFleetEngine({ http, mcpHost: fakeMcpHost })
@@ -830,7 +932,13 @@ describe('FleetEngine', () => {
       JSON.stringify({ content: [{ type: 'text', text: '응답 완료' }], stop_reason: 'end_turn' }),
     ])
     const engine = createFleetEngine({ http, mcpHost: fakeMcpHost }) // 워크스페이스 미설정
-    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    engine.registerApiSession({
+      id: 'a',
+      provider: 'anthropic',
+      displayName: 'A',
+      model: 'claude-sonnet-4-6',
+      apiKey: 'k',
+    })
     const room = engine.createRoom('r', ['api:a'])
     const msg = await engine.askLlm(room.id, 'api:a')
 
@@ -842,16 +950,31 @@ describe('FleetEngine', () => {
   it("API 세션 send 가 토큰 사용량을 'usage' 이벤트로 기록한다 (usage-accounting)", async () => {
     const store = createMemoryStore(deterministic())
     const { http } = scriptedHttp([
-      JSON.stringify({ content: [{ type: 'text', text: '응답' }], stop_reason: 'end_turn', usage: { input_tokens: 11, output_tokens: 4 } }),
+      JSON.stringify({
+        content: [{ type: 'text', text: '응답' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 11, output_tokens: 4 },
+      }),
     ])
     const engine = createFleetEngine({ store, http })
-    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    engine.registerApiSession({
+      id: 'a',
+      provider: 'anthropic',
+      displayName: 'A',
+      model: 'claude-sonnet-4-6',
+      apiKey: 'k',
+    })
     const room = engine.createRoom('r', ['api:a'])
     await engine.askLlm(room.id, 'api:a')
 
     const usageEvents = store.listEvents().filter((e) => e.type === 'usage')
     expect(usageEvents).toHaveLength(1)
-    expect(usageEvents[0].data).toMatchObject({ id: 'api:a', provider: 'anthropic', inputTokens: 11, outputTokens: 4 })
+    expect(usageEvents[0].data).toMatchObject({
+      id: 'api:a',
+      provider: 'anthropic',
+      inputTokens: 11,
+      outputTokens: 4,
+    })
   })
 
   it("도구 루프 API 세션은 합산된 토큰 사용량을 'usage' 이벤트로 기록한다 (usage-accounting)", async () => {
@@ -872,17 +995,36 @@ describe('FleetEngine', () => {
     }
     const store = createMemoryStore(deterministic())
     const { http } = scriptedHttp([
-      JSON.stringify({ content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__demo__ping', input: {} }], stop_reason: 'tool_use', usage: { input_tokens: 10, output_tokens: 6 } }),
-      JSON.stringify({ content: [{ type: 'text', text: '끝' }], stop_reason: 'end_turn', usage: { input_tokens: 30, output_tokens: 9 } }),
+      JSON.stringify({
+        content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__demo__ping', input: {} }],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 10, output_tokens: 6 },
+      }),
+      JSON.stringify({
+        content: [{ type: 'text', text: '끝' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 30, output_tokens: 9 },
+      }),
     ])
     const engine = createFleetEngine({ store, http, mcpHost: fakeMcpHost })
-    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    engine.registerApiSession({
+      id: 'a',
+      provider: 'anthropic',
+      displayName: 'A',
+      model: 'claude-sonnet-4-6',
+      apiKey: 'k',
+    })
     const room = engine.createRoom('r', ['api:a'])
     await engine.askLlm(room.id, 'api:a')
 
     const usageEvents = store.listEvents().filter((e) => e.type === 'usage')
     expect(usageEvents).toHaveLength(1) // send 1회 → 도구 왕복 2 chat 을 합산한 단일 usage 이벤트
-    expect(usageEvents[0].data).toMatchObject({ id: 'api:a', provider: 'anthropic', inputTokens: 40, outputTokens: 15 })
+    expect(usageEvents[0].data).toMatchObject({
+      id: 'api:a',
+      provider: 'anthropic',
+      inputTokens: 40,
+      outputTokens: 15,
+    })
   })
 
   it('setMcpServers/getMcpStatus/dispose 가 mcpHost 에 위임한다 (#10 SP2)', async () => {
@@ -956,14 +1098,22 @@ describe('FleetEngine', () => {
       writeFileSync(join(dir, 'note.txt'), '메모 내용')
       const { http, calls } = scriptedHttp([
         JSON.stringify({
-          content: [{ type: 'tool_use', id: 'tu1', name: 'read_file', input: { path: 'note.txt' } }],
+          content: [
+            { type: 'tool_use', id: 'tu1', name: 'read_file', input: { path: 'note.txt' } },
+          ],
           stop_reason: 'tool_use',
         }),
         JSON.stringify({ content: [{ type: 'text', text: '확인 완료' }], stop_reason: 'end_turn' }),
       ])
       const engine = createFleetEngine({ http })
       engine.setWorkspace(dir)
-      engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+      engine.registerApiSession({
+        id: 'a',
+        provider: 'anthropic',
+        displayName: 'A',
+        model: 'claude-sonnet-4-6',
+        apiKey: 'k',
+      })
       const room = engine.createRoom('r', ['api:a'])
       engine.postUserMessage(room.id, 'note.txt 를 읽어줘')
       const msg = await engine.askLlm(room.id, 'api:a')
@@ -986,7 +1136,11 @@ const streamRunner: CommandRunner = async (_cmd, _args, _t, onStdout) => {
 
 /** 스트림 스코프 이벤트(streamId 보유)만 통과시키는 가드 — 방 단위 busy/idle 봉투를 분리한다. */
 const hasStreamId = (e: ChatStreamEvent): e is Extract<ChatStreamEvent, { streamId: string }> =>
-  e.kind === 'start' || e.kind === 'delta' || e.kind === 'tool' || e.kind === 'end' || e.kind === 'error'
+  e.kind === 'start' ||
+  e.kind === 'delta' ||
+  e.kind === 'tool' ||
+  e.kind === 'end' ||
+  e.kind === 'error'
 
 describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
   it('askLlm 은 start → delta* → end 를 동일 streamId 로 방출하고 end 에 영속 메시지를 싣는다', async () => {
@@ -1092,7 +1246,8 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
 
   it('codex-jsonl 포맷도 streamedAsk → onChatStream delta 로 흐른다(이벤트 단위 단일 델타)', async () => {
     const events: ChatStreamEvent[] = []
-    const codexLine = '{"type":"item.completed","item":{"type":"agent_message","text":"코덱스 응답"}}'
+    const codexLine =
+      '{"type":"item.completed","item":{"type":"agent_message","text":"코덱스 응답"}}'
     const codexRunner: CommandRunner = async (_c, _a, _t, onStdout) => {
       onStdout?.(codexLine + '\n')
       return { code: 0, stdout: codexLine, stderr: '' }
@@ -1133,14 +1288,30 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
       JSON.stringify({ content: [{ type: 'text', text: '끝' }], stop_reason: 'end_turn' }),
     ])
     const events: ChatStreamEvent[] = []
-    const engine = createFleetEngine({ http, mcpHost: fakeMcpHost, onChatStream: (e) => events.push(e) })
-    engine.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    const engine = createFleetEngine({
+      http,
+      mcpHost: fakeMcpHost,
+      onChatStream: (e) => events.push(e),
+    })
+    engine.registerApiSession({
+      id: 'a',
+      provider: 'anthropic',
+      displayName: 'A',
+      model: 'claude-sonnet-4-6',
+      apiKey: 'k',
+    })
     const room = engine.createRoom('r', ['api:a'])
     await engine.askLlm(room.id, 'api:a')
 
-    const toolEvents = events.filter((e): e is Extract<ChatStreamEvent, { kind: 'tool' }> => e.kind === 'tool')
+    const toolEvents = events.filter(
+      (e): e is Extract<ChatStreamEvent, { kind: 'tool' }> => e.kind === 'tool',
+    )
     expect(toolEvents.map((e) => e.step.phase)).toEqual(['running', 'ok'])
-    expect(toolEvents[0].step).toMatchObject({ id: 'tu1', name: 'mcp__demo__ping', phase: 'running' })
+    expect(toolEvents[0].step).toMatchObject({
+      id: 'tu1',
+      name: 'mcp__demo__ping',
+      phase: 'running',
+    })
     // seq 는 텍스트 델타와 공유 카운터로 단조 증가한다.
     expect(toolEvents[1].seq).toBeGreaterThan(toolEvents[0].seq)
   })
@@ -1148,7 +1319,13 @@ describe('FleetEngine 채팅 스트리밍(onChatStream)', () => {
 
 describe('FleetEngine — 프로젝트 영속 읽기', () => {
   it('lists a project events via the store (excluding task.progress)', () => {
-    const store = createMemoryStore({ idGen: (() => { let n = 0; return () => `id-${++n}` })(), now: () => 1 })
+    const store = createMemoryStore({
+      idGen: (() => {
+        let n = 0
+        return () => `id-${++n}`
+      })(),
+      now: () => 1,
+    })
     store.appendEvent({ type: 'project.created', message: '생성', data: { projectId: 'p1' } })
     store.appendEvent({ type: 'task.progress', message: '토큰', data: { projectId: 'p1' } })
     const engine = createFleetEngine({ store })
@@ -1199,7 +1376,12 @@ describe('FleetEngine 채팅 진행 상태(getChatActivity / busy·idle)', () =>
     const mid = engine.getChatActivity()
     expect(mid.busyRooms).toEqual([room.id])
     expect(mid.streams).toHaveLength(1)
-    expect(mid.streams[0]).toMatchObject({ roomId: room.id, llmId: 'a', text: '부분텍스트', seq: 1 })
+    expect(mid.streams[0]).toMatchObject({
+      roomId: room.id,
+      llmId: 'a',
+      text: '부분텍스트',
+      seq: 1,
+    })
 
     release()
     await p
@@ -1567,7 +1749,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
   it('API 세션은 암호화 미주입 시 영속하지 않는다(경계 — Epic B 는 crypto 주입 필요)', () => {
     const store = createMemoryStore()
     const e1 = createFleetEngine({ store, runner: roleRunner })
-    e1.registerApiSession({ id: 'a', provider: 'anthropic', displayName: 'Claude API', model: 'claude-sonnet-4-6', apiKey: 'k' })
+    e1.registerApiSession({
+      id: 'a',
+      provider: 'anthropic',
+      displayName: 'Claude API',
+      model: 'claude-sonnet-4-6',
+      apiKey: 'k',
+    })
 
     const e2 = createFleetEngine({ store, runner: roleRunner })
     expect(e2.listSessions()).toHaveLength(0)
@@ -1576,7 +1764,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
   it('암호화 가능 시 API 세션을 암호문으로 영속한다(평문 키 미기록)', () => {
     const store = createMemoryStore()
     const engine = createFleetEngine({ store, secretCrypto: fakeCrypto() })
-    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    engine.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
 
     const persisted = store.listSessions()
     expect(persisted).toHaveLength(1)
@@ -1591,7 +1785,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
   it('암호화 미가용(crypto 미주입)이면 API 세션을 영속하지 않는다(graceful degrade)', () => {
     const store = createMemoryStore()
     const engine = createFleetEngine({ store }) // secretCrypto 미주입 → no-op(isAvailable=false)
-    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    engine.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
     expect(store.listSessions()).toHaveLength(0)
     expect(JSON.stringify(store.snapshot())).not.toContain('sk-secret')
   })
@@ -1599,7 +1799,12 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
   it('apiKey 없는 API 세션은 영속하지 않는다(암호화 가능해도 키 부재)', () => {
     const store = createMemoryStore()
     const engine = createFleetEngine({ store, secretCrypto: fakeCrypto() })
-    engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5' }) // apiKey 미지정
+    engine.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+    }) // apiKey 미지정
     expect(store.listSessions()).toHaveLength(0)
   })
 
@@ -1614,7 +1819,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
       decrypt: () => '',
     }
     const engine = createFleetEngine({ store, secretCrypto: flaky })
-    const d = engine.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    const d = engine.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
 
     expect(d.id).toBe('api:openai-1') // register 가 throw 하지 않고 라이브 descriptor 반환
     expect(engine.listSessions().map((s) => s.id)).toEqual(['api:openai-1']) // 라이브 세션 구성됨
@@ -1636,7 +1847,12 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
   it('손상 capabilities(비배열)는 버리고 재시드해 복원한다(렌더러 .includes 크래시 방지)', () => {
     const store = createMemoryStore()
     // 비배열 capabilities(객체) — 렌더러 SessionsPanel 이 .includes 호출 시 크래시할 손상 데이터.
-    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: {} as unknown as AgentRole[] })
+    store.putSession({
+      kind: 'cli',
+      id: 'cli:claude',
+      adapterId: 'claude',
+      capabilities: {} as unknown as AgentRole[],
+    })
     const engine = createFleetEngine({ store, runner: roleRunner })
     const caps = engine.listSessions()[0].capabilities
     expect(Array.isArray(caps)).toBe(true)
@@ -1660,7 +1876,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     const store = createMemoryStore()
     const crypto = fakeCrypto()
     const e1 = createFleetEngine({ store, secretCrypto: crypto })
-    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    e1.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
 
     const e2 = createFleetEngine({ store, secretCrypto: crypto })
     expect(e2.listSessions().map((s) => s.id)).toEqual(['api:openai-1'])
@@ -1670,7 +1892,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     const store = createMemoryStore()
     const crypto = fakeCrypto()
     const e1 = createFleetEngine({ store, secretCrypto: crypto })
-    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    e1.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
 
     const { http, authHeaders } = authCapturingHttp()
     const e2 = createFleetEngine({ store, secretCrypto: crypto, http })
@@ -1684,7 +1912,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
   it('암호화 미가용이면 영속된 API 세션을 복원하지 않는다(좀비 방지)', () => {
     const store = createMemoryStore()
     const e1 = createFleetEngine({ store, secretCrypto: fakeCrypto() })
-    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    e1.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
     expect(store.listSessions()).toHaveLength(1)
 
     const e2 = createFleetEngine({ store, secretCrypto: fakeCrypto(false) })
@@ -1695,7 +1929,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     const store = createMemoryStore()
     const e1 = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
     e1.registerCliSession('claude')
-    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    e1.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
 
     const rotated: import('./secret/types').SecretCrypto = {
       isAvailable: () => true,
@@ -1711,7 +1951,9 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
   it('손상 api 엔트리(config 없음)는 skip 하고 형제는 복원한다', () => {
     const store = createMemoryStore()
     store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
-    store.putSession({ kind: 'api', id: 'api:broken' } as unknown as Parameters<typeof store.putSession>[0])
+    store.putSession({ kind: 'api', id: 'api:broken' } as unknown as Parameters<
+      typeof store.putSession
+    >[0])
 
     const engine = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
     expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
@@ -1736,7 +1978,9 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     const store = createMemoryStore()
     store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
     // 미래 버전이 쓴 미지 kind — 현재 엔진은 조용히 건너뛰고 형제 복원을 막지 않아야 한다.
-    store.putSession({ kind: 'future', id: 'future:x' } as unknown as Parameters<typeof store.putSession>[0])
+    store.putSession({ kind: 'future', id: 'future:x' } as unknown as Parameters<
+      typeof store.putSession
+    >[0])
 
     const engine = createFleetEngine({ store, secretCrypto: fakeCrypto(), runner: roleRunner })
     expect(engine.listSessions().map((s) => s.id)).toEqual(['cli:claude'])
@@ -1746,7 +1990,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     const store = createMemoryStore()
     const crypto = fakeCrypto()
     const e1 = createFleetEngine({ store, secretCrypto: crypto })
-    e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    e1.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
     createFleetEngine({ store, secretCrypto: crypto })
     const registered = store.listEvents().filter((ev) => ev.type === 'session.registered')
     expect(registered).toHaveLength(1)
@@ -1756,7 +2006,13 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     const store = createMemoryStore()
     const crypto = fakeCrypto()
     const e1 = createFleetEngine({ store, secretCrypto: crypto })
-    const d = e1.registerApiSession({ id: 'openai-1', provider: 'openai', displayName: 'GPT', model: 'gpt-5.5', apiKey: 'sk-secret' })
+    const d = e1.registerApiSession({
+      id: 'openai-1',
+      provider: 'openai',
+      displayName: 'GPT',
+      model: 'gpt-5.5',
+      apiKey: 'sk-secret',
+    })
     e1.setSessionCapabilities(d.id, ['planner', 'reviewer'])
 
     const ps = store.listSessions()[0]

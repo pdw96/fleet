@@ -36,7 +36,11 @@ export function buildImplementPrompt(
 }
 
 /** 교차 리뷰 프롬프트 (다른 LLM 이 워크스페이스 변경 diff 를 검토). */
-export function buildReviewPrompt(taskTitle: string, taskDescription: string, diff: string): string {
+export function buildReviewPrompt(
+  taskTitle: string,
+  taskDescription: string,
+  diff: string,
+): string {
   return [
     '다음은 한 작업으로 발생한 워크스페이스 변경(diff)이다. 비판적으로 검토하라.',
     `작업: ${taskTitle}`,
@@ -95,9 +99,15 @@ export const FIX_DETAIL_CAP = 2_000
  * verify 실패 → 에이전트 수정 프롬프트.
  * 실패한 검증의 분석(없으면 stderr)을 실어, 워크스페이스에서 직접 수정하도록 요청한다.
  */
-export function buildVerifyFixPrompt(goal: string, failures: ReadonlyArray<VerificationResult>): string {
+export function buildVerifyFixPrompt(
+  goal: string,
+  failures: ReadonlyArray<VerificationResult>,
+): string {
   const failBlock = failures
-    .map((f) => `- [${f.kind}] ${f.command}\n  ${(f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP).replace(/\n/g, '\n  ')}`)
+    .map(
+      (f) =>
+        `- [${f.kind}] ${f.command}\n  ${(f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP).replace(/\n/g, '\n  ')}`,
+    )
     .join('\n')
   return [
     `프로젝트 목표:\n${goal}`,

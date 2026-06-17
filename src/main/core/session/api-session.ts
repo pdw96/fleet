@@ -1,5 +1,11 @@
 import type { LlmDescriptor } from '../../../shared/types'
-import type { ApiCallOptions, ApiProvider, ChatResult, ChatTurn, TokenUsage } from '../providers/types'
+import type {
+  ApiCallOptions,
+  ApiProvider,
+  ChatResult,
+  ChatTurn,
+  TokenUsage,
+} from '../providers/types'
 import { runToolLoop, ToolLoopExceededError } from '../tools/loop'
 import type { ToolLoopDeps } from '../tools/types'
 import { settleOrAbort } from './abort'
@@ -29,15 +35,21 @@ function hasTokenData(usage: TokenUsage | undefined): usage is TokenUsage {
 function unwrap(provider: string, result: ChatResult): string {
   if (result.text === '' && result.toolCalls.length === 0) {
     if (result.finishReason === 'content_filter') {
-      throw new Error(`[${provider}] 응답이 콘텐츠/안전 필터로 차단되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}).`)
+      throw new Error(
+        `[${provider}] 응답이 콘텐츠/안전 필터로 차단되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}).`,
+      )
     }
     if (result.finishReason === 'length') {
-      throw new Error(`[${provider}] 응답이 토큰 한도로 잘려 빈 응답이 되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리세요.`)
+      throw new Error(
+        `[${provider}] 응답이 토큰 한도로 잘려 빈 응답이 되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리세요.`,
+      )
     }
     // 사고(thinking)만 하고 가시 답변/도구호출이 없는 경우 — includeThoughts 응답에서 발생 가능(Gemini 가
     // thought 파트만 방출). finishReason 이 stop 이어도 무성 빈 응답이 되므로 표면화한다(#7, silent blank 방지).
     if (result.content?.some((b) => b.type === 'thinking')) {
-      throw new Error(`[${provider}] 모델이 사고(thinking)만 하고 가시 답변을 생성하지 않았습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리거나 재시도하세요.`)
+      throw new Error(
+        `[${provider}] 모델이 사고(thinking)만 하고 가시 답변을 생성하지 않았습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리거나 재시도하세요.`,
+      )
     }
   }
   return result.text
@@ -97,7 +109,11 @@ export function createApiSession(
   let chain: Promise<unknown> = Promise.resolve()
 
   // 도구 의존성이 활성이면 루프, 아니면 단발 chat. turns 는 루프가 in-place 확장(도구 왕복 턴).
-  const runChat = (turns: ChatTurn[], callOpts: ApiCallOptions, bypassTools = false): Promise<ChatResult> => {
+  const runChat = (
+    turns: ChatTurn[],
+    callOpts: ApiCallOptions,
+    bypassTools = false,
+  ): Promise<ChatResult> => {
     const deps = bypassTools ? undefined : opts.toolDeps?.()
     return deps ? runToolLoop(provider, turns, callOpts, deps) : provider.chat(turns, callOpts)
   }
@@ -131,7 +147,10 @@ export function createApiSession(
       if (sendOpts.fresh) {
         // 독립 1회 호출: 누적 history 를 참조하지도 변경하지도 않는다(오케스트레이터 독립성).
         const turns: ChatTurn[] = opts.system
-          ? [{ role: 'system', content: opts.system }, { role: 'user', content: prompt }]
+          ? [
+              { role: 'system', content: opts.system },
+              { role: 'user', content: prompt },
+            ]
           : [{ role: 'user', content: prompt }]
         const result = await runChatReportingUsage(turns, callOpts, sendOpts.bypassTools)
         return emit(unwrap(provider.provider, result))
@@ -154,7 +173,8 @@ export function createApiSession(
         // 커밋한다 — 평문만 넣으면 다음 턴 요청에서 providerMeta(서명)가 사라져 멀티턴 왕복이 tool 루프 밖
         // (비-tool 누적 chat)에선 깨진다(Codex P2). 미설정이면 기존대로 평문(하위호환). LlmSession.send()
         // 반환값은 여전히 string(reply) — 소비자 계약 불변.
-        const assistantContent = result.content && result.content.length > 0 ? result.content : reply
+        const assistantContent =
+          result.content && result.content.length > 0 ? result.content : reply
         working.push({ role: 'assistant', content: assistantContent })
         history.length = 0
         history.push(...working)

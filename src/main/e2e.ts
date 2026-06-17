@@ -17,8 +17,11 @@ import type { FleetEngine } from './core/engine'
  *    관찰 가능한 상태로 멈춰, 탭 언마운트/리마운트 후 복원을 검증할 수 있다(앱 종료가 정리).
  */
 export const e2eRunner: CommandRunner = (_command, args, _opts, onStdout) => {
-  if (args.includes('--version')) return Promise.resolve({ code: 0, stdout: 'fleet-e2e 9.9.9', stderr: '' })
-  onStdout?.('{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"진행 중 응답"}}}\n')
+  if (args.includes('--version'))
+    return Promise.resolve({ code: 0, stdout: 'fleet-e2e 9.9.9', stderr: '' })
+  onStdout?.(
+    '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"진행 중 응답"}}}\n',
+  )
   return new Promise<CommandResult>(() => {}) // 의도적으로 resolve 안 함 — 진행 상태를 고정한다
 }
 

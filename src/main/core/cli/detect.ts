@@ -90,7 +90,8 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
 
     // 종료가 트리거됐을 때(취소/타임아웃/overflow) 트리 킬 확인과 stdout close 를 둘 다 본 뒤 종결한다.
     const finishWhenTerminated = () => {
-      if (terminating && killConfirmed && streamClosed) finish({ code: null, spawnError: terminating })
+      if (terminating && killConfirmed && streamClosed)
+        finish({ code: null, spawnError: terminating })
     }
 
     // 종료를 한 번만 트리거한다. killTree 는 비동기(특히 win32 taskkill 프로세스 스폰)이므로:

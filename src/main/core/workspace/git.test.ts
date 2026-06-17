@@ -1,13 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import { createWorkspace, type GitRunner, type GitResult } from './git'
 
-function fakeGit(): { runner: GitRunner; calls: string[][]; setReply: (m: (args: string[]) => GitResult) => void } {
+function fakeGit(): {
+  runner: GitRunner
+  calls: string[][]
+  setReply: (m: (args: string[]) => GitResult) => void
+} {
   const calls: string[][] = []
   let reply: (args: string[]) => GitResult = () => ({ code: 0, stdout: '', stderr: '' })
   return {
     calls,
-    setReply: (m) => { reply = m },
-    runner: { async run(args) { calls.push(args); return reply(args) } },
+    setReply: (m) => {
+      reply = m
+    },
+    runner: {
+      async run(args) {
+        calls.push(args)
+        return reply(args)
+      },
+    },
   }
 }
 
@@ -21,7 +32,8 @@ describe('createWorkspace.ensureRepo', () => {
     const g = fakeGit()
     g.setReply((args) => {
       // 레포가 아니다 → show-toplevel 실패(128)
-      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 128, stdout: '', stderr: 'not a git repo' }
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel'))
+        return { code: 128, stdout: '', stderr: 'not a git repo' }
       return { code: 0, stdout: '', stderr: '' }
     })
     const ws = createWorkspace('/ws', g.runner)
@@ -53,9 +65,11 @@ describe('createWorkspace.ensureRepo', () => {
     const g = fakeGit()
     g.setReply((args) => {
       // 워크스페이스가 자기 자신의 레포 루트 → show-toplevel 이 root 와 같은 경로를 돌려준다
-      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 0, stdout: ownTop, stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel'))
+        return { code: 0, stdout: ownTop, stderr: '' }
       // HEAD 존재 + 워크트리 깨끗 → 스냅샷/init 모두 없음
-      if (args[0] === 'rev-parse' && args.includes('HEAD')) return { code: 0, stdout: 'abc123', stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('HEAD'))
+        return { code: 0, stdout: 'abc123', stderr: '' }
       if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
     })
@@ -69,8 +83,10 @@ describe('createWorkspace.ensureRepo', () => {
   it('snapshots a dirty worktree into a baseline commit at run start (own repo root)', async () => {
     const g = fakeGit()
     g.setReply((args) => {
-      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 0, stdout: ownTop, stderr: '' }
-      if (args[0] === 'rev-parse' && args.includes('HEAD')) return { code: 0, stdout: 'abc123', stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel'))
+        return { code: 0, stdout: ownTop, stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('HEAD'))
+        return { code: 0, stdout: 'abc123', stderr: '' }
       // 이미 커밋이 있는 레포인데 미커밋 변경이 있다(status --porcelain → 더티)
       if (args[0] === 'status') return { code: 0, stdout: ' M file.ts\n', stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
@@ -85,8 +101,10 @@ describe('createWorkspace.ensureRepo', () => {
   it('does not snapshot when an existing repo worktree is clean', async () => {
     const g = fakeGit()
     g.setReply((args) => {
-      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 0, stdout: ownTop, stderr: '' }
-      if (args[0] === 'rev-parse' && args.includes('HEAD')) return { code: 0, stdout: 'abc123', stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel'))
+        return { code: 0, stdout: ownTop, stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('HEAD'))
+        return { code: 0, stdout: 'abc123', stderr: '' }
       // 워크트리가 깨끗하다(status --porcelain → 빈 출력) → 스냅샷 커밋 없음
       if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
@@ -100,7 +118,8 @@ describe('createWorkspace.ensureRepo', () => {
     const g = fakeGit()
     g.setReply((args) => {
       // 자기 레포 루트지만(show-toplevel = root) 커밋이 없다(rev-parse HEAD → 128)
-      if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { code: 0, stdout: ownTop, stderr: '' }
+      if (args[0] === 'rev-parse' && args.includes('--show-toplevel'))
+        return { code: 0, stdout: ownTop, stderr: '' }
       if (args[0] === 'rev-parse' && args.includes('HEAD')) {
         return { code: 128, stdout: '', stderr: "fatal: ambiguous argument 'HEAD'" }
       }
@@ -116,7 +135,11 @@ describe('createWorkspace.ensureRepo', () => {
 describe('createWorkspace diff/keep/revert', () => {
   it('checkpoint returns trimmed HEAD hash', async () => {
     const g = fakeGit()
-    g.setReply((args) => (args[0] === 'rev-parse' ? { code: 0, stdout: 'deadbeef\n', stderr: '' } : { code: 0, stdout: '', stderr: '' }))
+    g.setReply((args) =>
+      args[0] === 'rev-parse'
+        ? { code: 0, stdout: 'deadbeef\n', stderr: '' }
+        : { code: 0, stdout: '', stderr: '' },
+    )
     const ws = createWorkspace('/ws', g.runner)
     expect(await ws.checkpoint()).toBe('deadbeef')
   })
@@ -124,7 +147,8 @@ describe('createWorkspace diff/keep/revert', () => {
   it('collectDiff returns files, patch and truncation flag', async () => {
     const g = fakeGit()
     g.setReply((args) => {
-      if (args[0] === 'diff' && args.includes('--name-only')) return { code: 0, stdout: 'a.ts\nb.ts\n', stderr: '' }
+      if (args[0] === 'diff' && args.includes('--name-only'))
+        return { code: 0, stdout: 'a.ts\nb.ts\n', stderr: '' }
       if (args[0] === 'diff') return { code: 0, stdout: 'diff --git a a', stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
     })
@@ -146,7 +170,11 @@ describe('createWorkspace diff/keep/revert', () => {
 
   it('keep commits and returns the new HEAD hash', async () => {
     const g = fakeGit()
-    g.setReply((args) => (args[0] === 'rev-parse' ? { code: 0, stdout: 'newhash\n', stderr: '' } : { code: 0, stdout: '', stderr: '' }))
+    g.setReply((args) =>
+      args[0] === 'rev-parse'
+        ? { code: 0, stdout: 'newhash\n', stderr: '' }
+        : { code: 0, stdout: '', stderr: '' },
+    )
     const ws = createWorkspace('/ws', g.runner)
     expect(await ws.keep('[T] by impl')).toBe('newhash')
     expect(g.calls.map((c) => c.join(' ')).some((c) => c.includes('commit'))).toBe(true)
@@ -154,12 +182,18 @@ describe('createWorkspace diff/keep/revert', () => {
 
   it('gives Fleet-internal commits an explicit committer identity', async () => {
     const g = fakeGit()
-    g.setReply((args) => (args[0] === 'rev-parse' ? { code: 0, stdout: 'newhash\n', stderr: '' } : { code: 0, stdout: '', stderr: '' }))
+    g.setReply((args) =>
+      args[0] === 'rev-parse'
+        ? { code: 0, stdout: 'newhash\n', stderr: '' }
+        : { code: 0, stdout: '', stderr: '' },
+    )
     const ws = createWorkspace('/ws', g.runner)
     await ws.keep('[T] by impl')
     // 커밋 호출엔 명시적 아이덴티티 플래그가 commit 서브커맨드 앞에 와야 한다(미설정 머신 대응)
     const cmds = g.calls.map((c) => c.join(' '))
-    expect(cmds.some((c) => c.includes('-c user.email=fleet@local') && c.includes('commit'))).toBe(true)
+    expect(cmds.some((c) => c.includes('-c user.email=fleet@local') && c.includes('commit'))).toBe(
+      true,
+    )
     expect(cmds.some((c) => c.includes('-c user.name=Fleet') && c.includes('commit'))).toBe(true)
   })
 
@@ -179,10 +213,16 @@ describe('createWorkspace index.lock 경합 재시도', () => {
       if (args[0] === 'add') {
         addCalls++
         return addCalls < 2
-          ? { code: 128, stdout: '', stderr: "fatal: Unable to create '/ws/.git/index.lock': File exists.\nAnother git process seems to be running" }
+          ? {
+              code: 128,
+              stdout: '',
+              stderr:
+                "fatal: Unable to create '/ws/.git/index.lock': File exists.\nAnother git process seems to be running",
+            }
           : { code: 0, stdout: '', stderr: '' }
       }
-      if (args[0] === 'diff' && args.includes('--name-only')) return { code: 0, stdout: 'a.ts\n', stderr: '' }
+      if (args[0] === 'diff' && args.includes('--name-only'))
+        return { code: 0, stdout: 'a.ts\n', stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
     })
     const ws = createWorkspace('/ws', g.runner)

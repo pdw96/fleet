@@ -16,7 +16,11 @@
 /** installPermissionGuards 가 필요로 하는 Electron Session 의 최소 표면(실제 Electron.Session 이 구조적으로 만족). */
 export interface GuardableSession {
   setPermissionRequestHandler(
-    handler: (webContents: unknown, permission: string, callback: (granted: boolean) => void) => void,
+    handler: (
+      webContents: unknown,
+      permission: string,
+      callback: (granted: boolean) => void,
+    ) => void,
   ): void
   setPermissionCheckHandler(handler: (webContents: unknown, permission: string) => boolean): void
   setDevicePermissionHandler(handler: (details: unknown) => boolean): void

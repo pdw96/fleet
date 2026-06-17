@@ -31,16 +31,22 @@ describe('wrapMcpTool', () => {
 
   it('모든 MCP 도구를 destructive 로 분류한다(annotations 는 untrusted)', () => {
     // readOnlyHint 는 서버 자기신고라 신뢰하지 않는다(MCP 스펙). 항상 destructive.
-    expect(wrapMcpTool('s', { name: 'r', annotations: { readOnlyHint: true } }, fakeClient())?.classify({})).toBe(
-      'destructive',
-    )
+    expect(
+      wrapMcpTool('s', { name: 'r', annotations: { readOnlyHint: true } }, fakeClient())?.classify(
+        {},
+      ),
+    ).toBe('destructive')
     expect(wrapMcpTool('s', { name: 'w' }, fakeClient())?.classify({})).toBe('destructive')
   })
 
   it('inputSchema 를 parameters 로 매핑(없으면 빈 object)', () => {
-    expect(wrapMcpTool('s', { name: 'a', inputSchema: { type: 'object', properties: {} } }, fakeClient())?.definition
-      .parameters).toEqual({ type: 'object', properties: {} })
-    expect(wrapMcpTool('s', { name: 'b' }, fakeClient())?.definition.parameters).toEqual({ type: 'object' })
+    expect(
+      wrapMcpTool('s', { name: 'a', inputSchema: { type: 'object', properties: {} } }, fakeClient())
+        ?.definition.parameters,
+    ).toEqual({ type: 'object', properties: {} })
+    expect(wrapMcpTool('s', { name: 'b' }, fakeClient())?.definition.parameters).toEqual({
+      type: 'object',
+    })
   })
 
   it('execute 는 text/image/resource content 를 결합한다', async () => {
@@ -105,6 +111,8 @@ describe('contentToString', () => {
         { type: 'resource_link', uri: 'file://b' }, // name·mime 없음
         { type: 'resource_link' }, // uri 도 없음 → 폴백 [resource ] 가 아니라 빈 링크
       ]),
-    ).toBe('[resource_link a.txt file://a.txt text/plain]\n[resource_link file://b]\n[resource_link ]')
+    ).toBe(
+      '[resource_link a.txt file://a.txt text/plain]\n[resource_link file://b]\n[resource_link ]',
+    )
   })
 })

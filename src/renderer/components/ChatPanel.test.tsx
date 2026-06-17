@@ -9,14 +9,21 @@ const SESSIONS: LlmDescriptor[] = [
   { id: 'llm-2', kind: 'cli', displayName: 'Codex', ref: 'codex' },
 ]
 const ROOM: ChatRoom = { id: 'r1', title: '토론방', participants: ['llm-1', 'llm-2'], createdAt: 1 }
-const ROOM2: ChatRoom = { id: 'r2', title: '토론방2', participants: ['llm-1', 'llm-2'], createdAt: 2 }
+const ROOM2: ChatRoom = {
+  id: 'r2',
+  title: '토론방2',
+  participants: ['llm-1', 'llm-2'],
+  createdAt: 2,
+}
 
 function mockFleet(overrides: Record<string, unknown> = {}) {
   let emit: ((e: ChatStreamEvent) => void) | undefined
   const fleet = {
     listRooms: vi.fn().mockResolvedValue([ROOM]),
     roomHistory: vi.fn().mockResolvedValue([]),
-    getChatActivity: vi.fn().mockResolvedValue({ busyRooms: [], streams: [] } satisfies ChatActivity),
+    getChatActivity: vi
+      .fn()
+      .mockResolvedValue({ busyRooms: [], streams: [] } satisfies ChatActivity),
     createRoom: vi.fn().mockResolvedValue(ROOM),
     postUserMessage: vi.fn().mockResolvedValue(undefined),
     askLlm: vi.fn().mockResolvedValue(undefined),
@@ -45,7 +52,9 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
   it('마운트 시 getChatActivity 로 진행 표시(busy)를 복원한다', async () => {
     // 탭 재진입(remount) 시 활성 방이 진행 중이면 토론 버튼이 진행 라벨을 보여야 한다.
     mockFleet({
-      getChatActivity: vi.fn().mockResolvedValue({ busyRooms: ['r1'], streams: [] } satisfies ChatActivity),
+      getChatActivity: vi
+        .fn()
+        .mockResolvedValue({ busyRooms: ['r1'], streams: [] } satisfies ChatActivity),
     })
     render(<ChatPanel sessions={SESSIONS} />)
     expect(await screen.findByText('AI 토론 중…')).toBeTruthy()
@@ -55,7 +64,16 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     mockFleet({
       getChatActivity: vi.fn().mockResolvedValue({
         busyRooms: ['r1'],
-        streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '복원된 부분 응답', seq: 2, steps: [] }],
+        streams: [
+          {
+            streamId: 's1',
+            roomId: 'r1',
+            llmId: 'llm-1',
+            text: '복원된 부분 응답',
+            seq: 2,
+            steps: [],
+          },
+        ],
       } satisfies ChatActivity),
     })
     render(<ChatPanel sessions={SESSIONS} />)
@@ -139,10 +157,21 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
       kind: 'end',
       streamId: 's1',
       roomId: 'r1',
-      message: { id: 'm1', roomId: 'r1', author: { type: 'llm', llmId: 'llm-1' }, content: '끝난 응답', ts: 1 },
+      message: {
+        id: 'm1',
+        roomId: 'r1',
+        author: { type: 'llm', llmId: 'llm-1' },
+        content: '끝난 응답',
+        ts: 1,
+      },
     })
     await act(async () =>
-      resolveActivity({ busyRooms: [], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '좀비 타이핑', seq: 1, steps: [] }] }),
+      resolveActivity({
+        busyRooms: [],
+        streams: [
+          { streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '좀비 타이핑', seq: 1, steps: [] },
+        ],
+      }),
     )
 
     expect(screen.queryByText('좀비 타이핑')).toBeNull() // 종료된 스트림은 되살아나지 않음
@@ -183,7 +212,10 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
 
     // 스냅샷은 델타 이전(seq 0, 빈 텍스트)을 보고 → 버퍼된 델타가 머지 후 이어 붙어야 한다
     await act(async () =>
-      resolveActivity({ busyRooms: ['r1'], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '', seq: 0, steps: [] }] }),
+      resolveActivity({
+        busyRooms: ['r1'],
+        streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '', seq: 0, steps: [] }],
+      }),
     )
 
     expect(screen.getByText('실시간 토큰')).toBeTruthy() // 유실되지 않고 복원
@@ -200,7 +232,10 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     fleet.fire({ kind: 'delta', streamId: 's1', roomId: 'r1', delta: '가', seq: 1 }) // 버퍼됨
     // 스냅샷이 이 델타까지 이미 반영(seq 1, text '가') — 버퍼가 다시 붙이면 '가가' 가 된다
     await act(async () =>
-      resolveActivity({ busyRooms: ['r1'], streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '가', seq: 1, steps: [] }] }),
+      resolveActivity({
+        busyRooms: ['r1'],
+        streams: [{ streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '가', seq: 1, steps: [] }],
+      }),
     )
 
     expect(screen.getByText('가')).toBeTruthy()
@@ -213,16 +248,34 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     await screen.findByText('🤖 AI 자동 토론')
 
     fleet.fire({ kind: 'start', streamId: 's1', roomId: 'r1', llmId: 'llm-1' })
-    fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'read_file', phase: 'running' }, seq: 1 })
+    fleet.fire({
+      kind: 'tool',
+      streamId: 's1',
+      roomId: 'r1',
+      step: { id: 't1', name: 'read_file', phase: 'running' },
+      seq: 1,
+    })
     expect(screen.getByText('⏳ read_file')).toBeTruthy()
 
     // 같은 id 의 ok 이벤트 → 칩이 추가되지 않고 phase 만 전이(running 사라지고 ok 1개)
-    fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'read_file', phase: 'ok' }, seq: 2 })
+    fleet.fire({
+      kind: 'tool',
+      streamId: 's1',
+      roomId: 'r1',
+      step: { id: 't1', name: 'read_file', phase: 'ok' },
+      seq: 2,
+    })
     expect(screen.queryByText('⏳ read_file')).toBeNull()
     expect(screen.getByText('✓ read_file')).toBeTruthy()
 
     // 역순/중복 도착(seq=1 running 재도착)은 seq 가드로 무시 — ok 로 유지(running 으로 회귀 안 함)
-    fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'read_file', phase: 'running' }, seq: 1 })
+    fleet.fire({
+      kind: 'tool',
+      streamId: 's1',
+      roomId: 'r1',
+      step: { id: 't1', name: 'read_file', phase: 'running' },
+      seq: 1,
+    })
     expect(screen.getByText('✓ read_file')).toBeTruthy()
     expect(screen.queryByText('⏳ read_file')).toBeNull()
   })
@@ -256,7 +309,13 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
     await screen.findByText('🤖 AI 자동 토론')
 
     // start 못 받은 s1 의 ok 단계(seq=2)가 스냅샷 resolve 전 먼저 도착(레이스) — 버블이 아직 없어 드롭될 위험
-    fleet.fire({ kind: 'tool', streamId: 's1', roomId: 'r1', step: { id: 't1', name: 'grep', phase: 'ok' }, seq: 2 })
+    fleet.fire({
+      kind: 'tool',
+      streamId: 's1',
+      roomId: 'r1',
+      step: { id: 't1', name: 'grep', phase: 'ok' },
+      seq: 2,
+    })
     expect(screen.queryByText('✓ grep')).toBeNull() // 아직 미상 — 버블 없음
 
     // 스냅샷은 running(seq=1)까지만 봄 → 버퍼된 ok(seq=2)가 머지 후 칩을 ok 로 전이시켜야 한다(running 멈춤 방지)
@@ -264,7 +323,14 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
       resolveActivity({
         busyRooms: ['r1'],
         streams: [
-          { streamId: 's1', roomId: 'r1', llmId: 'llm-1', text: '', seq: 1, steps: [{ id: 't1', name: 'grep', phase: 'running' }] },
+          {
+            streamId: 's1',
+            roomId: 'r1',
+            llmId: 'llm-1',
+            text: '',
+            seq: 1,
+            steps: [{ id: 't1', name: 'grep', phase: 'running' }],
+          },
         ],
       }),
     )

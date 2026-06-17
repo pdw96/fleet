@@ -55,7 +55,11 @@ function collectSpecifiers(sf) {
   const visit = (node) => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       specs.push(node.moduleSpecifier.text)
-    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+    } else if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
       specs.push(node.moduleSpecifier.text)
     } else if (
       ts.isImportEqualsDeclaration(node) &&
@@ -179,7 +183,11 @@ export function buildGraph() {
     })
 
     // IPC 오버레이(파생): 렌더러가 window.fleet 를 참조하면 preload 브리지로 런타임 배선.
-    if (meta.layer === 'renderer' && /window\.fleet/.test(text) && fileSet.has('preload/index.ts')) {
+    if (
+      meta.layer === 'renderer' &&
+      /window\.fleet/.test(text) &&
+      fileSet.has('preload/index.ts')
+    ) {
       overlayLinks.push({ source: id, target: 'preload/index.ts', kind: 'ipc' })
     }
     if (id === 'preload/index.ts') {
@@ -209,25 +217,59 @@ export function buildGraph() {
   const overlayNodes = []
   const boundary = (extId, label, fromId, sub) => {
     if (!fileSet.has(fromId)) return
-    overlayNodes.push({ id: extId, label, group: 'runtime', layer: 'runtime', external: true, sub, degree: 1 })
+    overlayNodes.push({
+      id: extId,
+      label,
+      group: 'runtime',
+      layer: 'runtime',
+      external: true,
+      sub,
+      degree: 1,
+    })
     overlayLinks.push({ source: fromId, target: extId, kind: 'runtime' })
   }
-  boundary('ext:cli', 'claude · codex · gemini', 'main/core/session/cli-session.ts', 'CLI 프로세스 (PTY/pipe)')
-  boundary('ext:api', 'Anthropic · OpenAI · Google', 'main/core/session/api-session.ts', 'API provider (HTTP/SSE)')
-  boundary('ext:mcp', 'MCP servers', fileSet.has('main/core/mcp/stdio.ts') ? 'main/core/mcp/stdio.ts' : 'main/core/mcp/host.ts', 'stdio 도구 호스트')
+  boundary(
+    'ext:cli',
+    'claude · codex · gemini',
+    'main/core/session/cli-session.ts',
+    'CLI 프로세스 (PTY/pipe)',
+  )
+  boundary(
+    'ext:api',
+    'Anthropic · OpenAI · Google',
+    'main/core/session/api-session.ts',
+    'API provider (HTTP/SSE)',
+  )
+  boundary(
+    'ext:mcp',
+    'MCP servers',
+    fileSet.has('main/core/mcp/stdio.ts') ? 'main/core/mcp/stdio.ts' : 'main/core/mcp/host.ts',
+    'stdio 도구 호스트',
+  )
 
   // 허브 표시: 연결 상위 6개에 글로우 강조.
-  ;[...nodes.values()].sort((a, b) => b.degree - a.degree).slice(0, 6).forEach((n) => { n.hub = true })
+  ;[...nodes.values()]
+    .sort((a, b) => b.degree - a.degree)
+    .slice(0, 6)
+    .forEach((n) => {
+      n.hub = true
+    })
 
   // 설명(사이드카) 병합 — 구조는 코드에서 자동, "무슨 역할인지"는 descriptions.json 에서.
   const desc = loadDescriptions()
   for (const n of nodes.values()) {
     const d = desc.files && desc.files[n.id]
-    if (d) { n.role = d.role; n.detail = d.detail }
+    if (d) {
+      n.role = d.role
+      n.detail = d.detail
+    }
   }
   for (const en of overlayNodes) {
     const d = desc.externals && desc.externals[en.id]
-    if (d) { en.role = d.role; en.detail = d.detail }
+    if (d) {
+      en.role = d.role
+      en.detail = d.detail
+    }
   }
 
   return {

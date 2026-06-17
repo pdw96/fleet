@@ -106,7 +106,10 @@ function thinkingBudgetOf(model: string, effort: ReasoningEffort): number | null
  * 세대별 방언: 2.5 는 thinkingBudget(effort→서브모델 범위 클램프 정수, effort 없거나 미지 서브모델이면
  * -1=AUTOMATIC), 3 은 thinkingLevel(effort 매핑). 그 외 미지원 모델은 isThinkingModel 가드로 undefined(미전송).
  */
-function resolveThinkingConfig(model: string, knob: ApiCallOptions['thinking']): Record<string, unknown> | undefined {
+function resolveThinkingConfig(
+  model: string,
+  knob: ApiCallOptions['thinking'],
+): Record<string, unknown> | undefined {
   if (!knob || !isThinkingModel(model)) return undefined
   const cfg: Record<string, unknown> = { includeThoughts: true }
   if (GEMINI_3.test(model)) {
@@ -149,8 +152,16 @@ function toolUseId(fc: { id?: unknown }): string {
  * Gemini functionCall 파트 → ToolUseBlock. Part 레벨 thoughtSignature 가 있으면 providerMeta.google 에
  * verbatim 보존한다(#17-P1) — 멀티턴 tool 루프에서 mapParts 가 같은 Part 에 그대로 echo 한다(누락 시 400).
  */
-function toToolUse(fc: { id?: string; name?: string; args?: unknown }, thoughtSignature?: string): ToolUseBlock {
-  const block: ToolUseBlock = { type: 'tool_use', id: toolUseId(fc), name: fc.name ?? '', input: fc.args }
+function toToolUse(
+  fc: { id?: string; name?: string; args?: unknown },
+  thoughtSignature?: string,
+): ToolUseBlock {
+  const block: ToolUseBlock = {
+    type: 'tool_use',
+    id: toolUseId(fc),
+    name: fc.name ?? '',
+    input: fc.args,
+  }
   if (thoughtSignature !== undefined) block.providerMeta = { google: { thoughtSignature } }
   return block
 }
@@ -162,7 +173,8 @@ function toToolUse(fc: { id?: string; name?: string; args?: unknown }, thoughtSi
 function resolveFinish(parsed: GoogleResponse): { finishReason: FinishReason; raw?: string } {
   const cand = parsed.candidates?.[0]
   const blockReason = parsed.promptFeedback?.blockReason
-  if (!cand && blockReason) return { finishReason: 'content_filter', raw: `PROMPT_BLOCKED:${blockReason}` }
+  if (!cand && blockReason)
+    return { finishReason: 'content_filter', raw: `PROMPT_BLOCKED:${blockReason}` }
   return { finishReason: mapFinish(cand?.finishReason), raw: cand?.finishReason }
 }
 
@@ -258,7 +270,8 @@ async function readStream(
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
   let usage: { inputTokens?: number; outputTokens?: number } | undefined
-  const metaOf = (sig: string | undefined): ProviderMeta | undefined => (sig !== undefined ? { google: { thoughtSignature: sig } } : undefined)
+  const metaOf = (sig: string | undefined): ProviderMeta | undefined =>
+    sig !== undefined ? { google: { thoughtSignature: sig } } : undefined
   const flushText = (): void => {
     if (curText) {
       blocks.push({ type: 'text', text: curText })
@@ -292,7 +305,11 @@ async function readStream(
         // 사고 요약은 onToken 으로 안 흘린다(가시 토큰 아님). thoughtSignature 가 그 thought 파트를 마감한다.
         if (p.text) curThought += p.text
         if (p.thoughtSignature !== undefined) {
-          blocks.push({ type: 'thinking', text: curThought, providerMeta: metaOf(p.thoughtSignature) })
+          blocks.push({
+            type: 'thinking',
+            text: curThought,
+            providerMeta: metaOf(p.thoughtSignature),
+          })
           curThought = ''
         }
       } else if (p.functionCall) {
@@ -310,7 +327,11 @@ async function readStream(
           // 이 파트가 서명을 운반 → 직전 미서명 텍스트를 별도 블록으로 마감하고, 이 파트를 서명 블록으로 둔다.
           // 서명/미서명 파트를 병합하지 않는다(Gemini 가 최종 서명을 빈 text 파트에 실어 보낼 수 있다, Codex P2).
           flushText()
-          blocks.push({ type: 'text', text: p.text ?? '', providerMeta: metaOf(p.thoughtSignature) })
+          blocks.push({
+            type: 'text',
+            text: p.text ?? '',
+            providerMeta: metaOf(p.thoughtSignature),
+          })
         } else {
           curText += p.text ?? ''
         }
@@ -332,19 +353,41 @@ async function readStream(
   // 평면 text+toolCalls 폴백이 잃는 정보(thinking 블록·서명된 text 파트)가 있을 때만 content 를 채운다.
   // functionCall sig 는 toolCalls 가 이미 보존하므로 그것만으론 content 를 만들지 않는다(버퍼 트리거와 대칭).
   // 그 외(미서명 평범 응답)는 undefined → loop 가 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
-  const content: ContentBlock[] | undefined = blocks.some((b) => b.type === 'thinking' || (b.type === 'text' && b.providerMeta !== undefined)) ? blocks : undefined
+  const content: ContentBlock[] | undefined = blocks.some(
+    (b) => b.type === 'thinking' || (b.type === 'text' && b.providerMeta !== undefined),
+  )
+    ? blocks
+    : undefined
   // 프롬프트 차단은 사유와 무관하게 content_filter 로 표면화한다(#7).
-  if (blockReason) return { text, toolCalls, content, finishReason: 'content_filter', rawFinishReason: `PROMPT_BLOCKED:${blockReason}`, usage }
+  if (blockReason)
+    return {
+      text,
+      toolCalls,
+      content,
+      finishReason: 'content_filter',
+      rawFinishReason: `PROMPT_BLOCKED:${blockReason}`,
+      usage,
+    }
   // 클린 종료인데 finishReason 미수신 = 비정상 종료(연결 끊김 등). mapFinish(undefined)='stop' 으로 위장하면
   // 잘린 부분 응답이 성공으로 흡수된다 → silent truncation 표면화(#7, 3사 공통). 프롬프트 차단은 위에서 이미 종결.
   if (finish === undefined) {
     throw new ApiProviderError('google', 200, 'stream ended without finishReason (truncated)')
   }
-  return { text, toolCalls, content, finishReason: mapFinish(finish), rawFinishReason: finish, usage }
+  return {
+    text,
+    toolCalls,
+    content,
+    finishReason: mapFinish(finish),
+    rawFinishReason: finish,
+    usage,
+  }
 }
 
 /** Google Gemini generateContent API provider. */
-export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient = defaultHttp): ApiProvider {
+export function createGoogleProvider(
+  config: ApiProviderConfig,
+  http: HttpClient = defaultHttp,
+): ApiProvider {
   return {
     id: config.id,
     provider: 'google',
@@ -368,8 +411,10 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       let maxTokens = opts.maxTokens ?? config.maxTokens
       if (thinkingActive) {
         const staticFloor = streaming ? THINKING_STREAM_MAX_TOKENS : THINKING_BUFFER_MAX_TOKENS
-        const budget = typeof thinkingConfig?.thinkingBudget === 'number' ? thinkingConfig.thinkingBudget : -1
-        const budgetFloor = budget > 0 ? Math.min(budget + THINKING_BUFFER_MAX_TOKENS, GEMINI_MAX_OUTPUT_TOKENS) : 0
+        const budget =
+          typeof thinkingConfig?.thinkingBudget === 'number' ? thinkingConfig.thinkingBudget : -1
+        const budgetFloor =
+          budget > 0 ? Math.min(budget + THINKING_BUFFER_MAX_TOKENS, GEMINI_MAX_OUTPUT_TOKENS) : 0
         const floor = Math.max(staticFloor, budgetFloor)
         maxTokens = Math.max(maxTokens ?? floor, floor)
       }
@@ -380,7 +425,10 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
         .join('\n\n')
       const contents = messages
         .filter((m) => m.role !== 'system')
-        .map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: mapParts(m.content) }))
+        .map((m) => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: mapParts(m.content),
+        }))
 
       const generationConfig: Record<string, unknown> = {}
       if (temperature !== undefined) generationConfig.temperature = temperature
@@ -435,23 +483,32 @@ export function createGoogleProvider(config: ApiProviderConfig, http: HttpClient
       const cand = parsed.candidates?.[0]
       const parts = cand?.content?.parts ?? []
       // 가시 답변은 thought 파트를 제외한 text 만 이어붙인다(사고 요약은 가시 토큰이 아님 — textOf 규율).
-      const text = parts.filter((p) => !p.thought).map((p) => p.text ?? '').join('')
+      const text = parts
+        .filter((p) => !p.thought)
+        .map((p) => p.text ?? '')
+        .join('')
       const toolCalls: ToolUseBlock[] = parts
         .filter((p) => p.functionCall)
         .map((p) => toToolUse(p.functionCall!, p.thoughtSignature))
       // 순서보존 content 는 평면 text+toolCalls 폴백이 정보를 잃는 경우에만 적재한다: thought 파트 또는
       // 서명된 text 파트(둘 다 멀티턴 왕복에 필요). functionCall sig 는 toolCalls(providerMeta)가 이미 보존하므로
       // 그것만으론 content 를 만들지 않는다 → 둘 다 없으면 undefined(현행 동작 byte-동일, 무회귀). Anthropic 동형.
-      const needsContent = parts.some((p) => p.thought || (typeof p.text === 'string' && p.thoughtSignature !== undefined))
+      const needsContent = parts.some(
+        (p) => p.thought || (typeof p.text === 'string' && p.thoughtSignature !== undefined),
+      )
       const content: ContentBlock[] | undefined = needsContent
         ? parts.flatMap((p): ContentBlock[] => {
-            const meta = p.thoughtSignature !== undefined ? { google: { thoughtSignature: p.thoughtSignature } } : undefined
+            const meta =
+              p.thoughtSignature !== undefined
+                ? { google: { thoughtSignature: p.thoughtSignature } }
+                : undefined
             // thought 파트는 text 유무와 무관하게 보존한다 — sig-only(text 없는) thought 파트도 signature 를
             // 떨궈선 안 된다(멀티턴 왕복·스트림/Anthropic 동형 `?? ''`). text 없으면 빈 문자열.
             if (p.thought) return [{ type: 'thinking', text: p.text ?? '', providerMeta: meta }]
             if (p.functionCall) return [toToolUse(p.functionCall, p.thoughtSignature)]
             // Gemini 3 는 text 파트에도 sig 를 붙인다("even if text") → providerMeta 로 보존(없으면 undefined).
-            if (typeof p.text === 'string') return [{ type: 'text', text: p.text, providerMeta: meta }]
+            if (typeof p.text === 'string')
+              return [{ type: 'text', text: p.text, providerMeta: meta }]
             return [] // 미지 파트(inlineData 등 어시스턴트 응답엔 없음) — content 에서 제외
           })
         : undefined

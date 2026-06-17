@@ -102,7 +102,11 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
    */
   function notifyCancelled(id: number, reason: string): void {
     if (closed) return
-    transport.send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id, reason } })
+    transport.send({
+      jsonrpc: '2.0',
+      method: 'notifications/cancelled',
+      params: { requestId: id, reason },
+    })
   }
 
   function request(
@@ -169,11 +173,15 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
         const next = result['nextCursor']
         if (typeof next !== 'string') break // nextCursor 부재/비문자열 = 더 이상 페이지 없음
         if (seenCursors.has(next)) {
-          console.warn('MCP tools/list 가 동일 nextCursor 를 반복했습니다 — 페이지네이션 추종을 중단합니다(서버 버그 의심).')
+          console.warn(
+            'MCP tools/list 가 동일 nextCursor 를 반복했습니다 — 페이지네이션 추종을 중단합니다(서버 버그 의심).',
+          )
           break
         }
         if (page >= MAX_TOOLS_LIST_PAGES) {
-          console.warn(`MCP tools/list 페이지가 상한(${MAX_TOOLS_LIST_PAGES})을 초과했습니다 — 이후 페이지는 생략합니다.`)
+          console.warn(
+            `MCP tools/list 페이지가 상한(${MAX_TOOLS_LIST_PAGES})을 초과했습니다 — 이후 페이지는 생략합니다.`,
+          )
           break
         }
         seenCursors.add(next)

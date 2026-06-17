@@ -1,0 +1,4 @@
+# 모든 텍스트 파일을 LF로 정규화 (Windows 워킹트리 CRLF 차이로 인한 prettier --check 거짓실패 방지).
+* text=auto eol=lf
+# husky 훅은 sh 로 실행 → 반드시 LF.
+.husky/** text eol=lf

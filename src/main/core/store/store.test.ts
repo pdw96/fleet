@@ -52,7 +52,11 @@ describe('memory store — projects & tasks', () => {
     const store = createMemoryStore(deterministic())
     const p = store.createProject({ goal: 'g' })
     const t = store.createTask({ projectId: p.id, title: 'x', description: 'y' })
-    const updated = store.updateTask(t.id, { status: 'done', assignedLlmId: 'claude', output: 'ok' })
+    const updated = store.updateTask(t.id, {
+      status: 'done',
+      assignedLlmId: 'claude',
+      output: 'ok',
+    })
     expect(updated?.status).toBe('done')
     expect(updated?.assignedLlmId).toBe('claude')
     expect(store.getTask(t.id)?.output).toBe('ok')
@@ -69,7 +73,12 @@ describe('memory store — chat & events', () => {
     const store = createMemoryStore(deterministic())
     const room = store.createRoom({ title: '작업방', participants: ['claude', 'codex'] })
     store.appendMessage({ roomId: room.id, author: { type: 'user' }, content: '안녕' })
-    store.appendMessage({ roomId: room.id, author: { type: 'llm', llmId: 'claude' }, role: 'planner', content: '계획' })
+    store.appendMessage({
+      roomId: room.id,
+      author: { type: 'llm', llmId: 'claude' },
+      role: 'planner',
+      content: '계획',
+    })
 
     const msgs = store.listMessages(room.id)
     expect(msgs).toHaveLength(2)
@@ -166,7 +175,14 @@ describe('json-file store', () => {
   it('starts empty when no file exists', () => {
     const s = createJsonFileStore(dir)
     expect(s.listProjects()).toHaveLength(0)
-    expect(s.snapshot()).toEqual({ projects: [], tasks: [], rooms: [], messages: [], events: [], sessions: [] })
+    expect(s.snapshot()).toEqual({
+      projects: [],
+      tasks: [],
+      rooms: [],
+      messages: [],
+      events: [],
+      sessions: [],
+    })
   })
 
   it('backs up a corrupted store file instead of silently discarding it', () => {
@@ -187,7 +203,9 @@ describe('json-file store', () => {
     // lastActiveProjectId 없는 구버전 파일 + 신규 필드 부재
     writeFileSync(
       join(dir, 'fleet-store.json'),
-      JSON.stringify({ projects: [{ id: 'p1', goal: 'g', title: 'T', status: 'done', createdAt: 0, updatedAt: 0 }] }),
+      JSON.stringify({
+        projects: [{ id: 'p1', goal: 'g', title: 'T', status: 'done', createdAt: 0, updatedAt: 0 }],
+      }),
       'utf8',
     )
     const s = createJsonFileStore(dir)
@@ -201,7 +219,9 @@ describe('json-file store', () => {
     a.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] })
 
     const b = createJsonFileStore(dir)
-    expect(b.listSessions()).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] }])
+    expect(b.listSessions()).toEqual([
+      { kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] },
+    ])
   })
 
   it('암호화된 api 세션을 디스크에 영속하고 새 store 에서 reload 한다(암호문 생존)', () => {
@@ -222,7 +242,9 @@ describe('json-file store', () => {
   it('fills missing sessions key as [] for older store files', () => {
     writeFileSync(
       join(dir, 'fleet-store.json'),
-      JSON.stringify({ projects: [{ id: 'p1', goal: 'g', title: 'T', status: 'done', createdAt: 0, updatedAt: 0 }] }),
+      JSON.stringify({
+        projects: [{ id: 'p1', goal: 'g', title: 'T', status: 'done', createdAt: 0, updatedAt: 0 }],
+      }),
       'utf8',
     )
     const s = createJsonFileStore(dir)
@@ -242,14 +264,26 @@ describe('json-file store', () => {
 describe('memory store — persisted sessions', () => {
   it('upserts, lists, and deletes persisted sessions', () => {
     const store = createMemoryStore(deterministic())
-    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['reviewer'] })
+    store.putSession({
+      kind: 'cli',
+      id: 'cli:claude',
+      adapterId: 'claude',
+      capabilities: ['reviewer'],
+    })
     store.putSession({ kind: 'cli', id: 'cli:codex', adapterId: 'codex' })
     expect(store.listSessions().map((s) => s.id)).toEqual(['cli:claude', 'cli:codex'])
 
     // 같은 id 는 교체(중복 push 아님)
-    store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude', capabilities: ['planner'] })
+    store.putSession({
+      kind: 'cli',
+      id: 'cli:claude',
+      adapterId: 'claude',
+      capabilities: ['planner'],
+    })
     expect(store.listSessions()).toHaveLength(2)
-    expect(store.listSessions().find((s) => s.id === 'cli:claude')?.capabilities).toEqual(['planner'])
+    expect(store.listSessions().find((s) => s.id === 'cli:claude')?.capabilities).toEqual([
+      'planner',
+    ])
 
     store.deleteSession('cli:claude')
     expect(store.listSessions().map((s) => s.id)).toEqual(['cli:codex'])
@@ -258,7 +292,9 @@ describe('memory store — persisted sessions', () => {
   it('includes sessions in the snapshot', () => {
     const store = createMemoryStore(deterministic())
     store.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })
-    expect(store.snapshot().sessions).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude' }])
+    expect(store.snapshot().sessions).toEqual([
+      { kind: 'cli', id: 'cli:claude', adapterId: 'claude' },
+    ])
   })
 
   it('patchSessionCapabilities 가 capabilities 만 in-place 갱신한다(키 보존)', () => {

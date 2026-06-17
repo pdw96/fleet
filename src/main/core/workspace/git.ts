@@ -8,15 +8,24 @@ import { defaultRunner } from '../cli/detect'
  * (`git rev-parse --show-toplevel` 은 슬래시(/) 절대경로를 돌려준다.)
  */
 const samePath = (a: string, b: string): boolean => {
-  const norm = (p: string): string => resolve(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const norm = (p: string): string =>
+    resolve(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
   return norm(a) === norm(b)
 }
 
-export interface GitResult { code: number | null; stdout: string; stderr: string }
+export interface GitResult {
+  code: number | null
+  stdout: string
+  stderr: string
+}
 export interface GitRunner {
   run(args: string[], cwd: string, signal?: AbortSignal): Promise<GitResult>
 }
-export interface DiffResult { files: string[]; patch: string; truncated: boolean }
+export interface DiffResult {
+  files: string[]
+  patch: string
+  truncated: boolean
+}
 
 /** 편집 에이전트(codex 등)의 자체 git 작업이 남긴 index.lock 경합 패턴. */
 const LOCK_RE = /index\.lock|Another git process/i
@@ -70,7 +79,16 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
 
   // Fleet 내부 체크포인트 커밋엔 명시적 아이덴티티를 준다(user.name/email 미설정 머신에서도 동작).
   const commit = (message: string): Promise<GitResult> =>
-    ok(['-c', 'user.name=Fleet', '-c', 'user.email=fleet@local', 'commit', '--allow-empty', '-m', message])
+    ok([
+      '-c',
+      'user.name=Fleet',
+      '-c',
+      'user.email=fleet@local',
+      'commit',
+      '--allow-empty',
+      '-m',
+      message,
+    ])
 
   return {
     async ensureRepo() {
@@ -108,10 +126,15 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       // 대한 에이전트 편집은 이 diff(및 위험 게이트)에 잡히지 않고 revert 의 `clean -ffd` 로도 지워지지 않는다(spec §알려진 한계).
       await ok(['add', '-A'])
       const names = await ok(['diff', '--cached', '--name-only', base])
-      const files = names.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+      const files = names.stdout
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
       const patchRes = await ok(['diff', '--cached', base])
       const truncated = patchRes.stdout.length > DIFF_CAP
-      const patch = truncated ? `${patchRes.stdout.slice(0, DIFF_CAP)}\n…(diff 절단)` : patchRes.stdout
+      const patch = truncated
+        ? `${patchRes.stdout.slice(0, DIFF_CAP)}\n…(diff 절단)`
+        : patchRes.stdout
       return { files, patch, truncated }
     },
     async keep(message) {

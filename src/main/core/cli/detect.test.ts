@@ -2,7 +2,14 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { defaultRunner, detectAll, detectCli, parseVersion, type CommandRunner, type RunOpts } from './detect'
+import {
+  defaultRunner,
+  detectAll,
+  detectCli,
+  parseVersion,
+  type CommandRunner,
+  type RunOpts,
+} from './detect'
 import { createCliRegistry, DEFAULT_CLI_ADAPTERS } from './registry'
 import * as killTreeMod from '../process/kill-tree'
 import type { CliAdapter } from '../../../shared/types'
@@ -36,7 +43,12 @@ describe('detectCli', () => {
   })
 
   it('marks not installed when command is missing (ENOENT)', async () => {
-    const runner: CommandRunner = async () => ({ code: null, stdout: '', stderr: '', spawnError: 'ENOENT' })
+    const runner: CommandRunner = async () => ({
+      code: null,
+      stdout: '',
+      stderr: '',
+      spawnError: 'ENOENT',
+    })
     const r = await detectCli(claude, runner)
     expect(r.installed).toBe(false)
     expect(r.version).toBeUndefined()
@@ -88,7 +100,10 @@ describe('defaultRunner (integration)', () => {
     const script =
       "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write('GOT:'+d))"
     const payload = '안녕 stdin '.repeat(2000) // argv 한도(>8191자)를 넘는 큰 입력도 stdin 으론 통과
-    const res = await defaultRunner('node', ['-e', script], { timeoutMs: 10_000, stdinInput: payload })
+    const res = await defaultRunner('node', ['-e', script], {
+      timeoutMs: 10_000,
+      stdinInput: payload,
+    })
     expect(res.code).toBe(0)
     expect(res.stdout).toBe('GOT:' + payload)
   }, 15_000)
@@ -140,41 +155,44 @@ describe('defaultRunner (integration)', () => {
   }, 15_000)
 })
 
-describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows .cmd shim regression)', () => {
-  // 회귀: npm 설치 CLI(gemini.cmd 등)는 .cmd 배치 셰임이다. execFile 은 bare 이름을
-  // PATHEXT 로 해석 못 해 ENOENT, .cmd 명시 시엔 Node 20+ 가드로 EINVAL. cross-spawn 이 둘 다 해결.
-  it('resolves and runs a bare command name backed only by a .cmd shim', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'fleet-cli-'))
-    const prevPath = process.env.PATH
-    try {
-      writeFileSync(join(dir, 'mycli.cmd'), '@echo off\r\necho mycli 7.8.9\r\n')
-      process.env.PATH = `${dir};${prevPath ?? ''}`
-      const res = await defaultRunner('mycli', ['--version'], { timeoutMs: 10_000 })
-      expect(res.spawnError).toBeUndefined()
-      expect(res.code).toBe(0)
-      expect(parseVersion(res.stdout)).toBe('7.8.9')
-    } finally {
-      process.env.PATH = prevPath
-      rmSync(dir, { recursive: true, force: true })
-    }
-  }, 15_000)
+describe.skipIf(process.platform !== 'win32')(
+  'defaultRunner (Windows .cmd shim regression)',
+  () => {
+    // 회귀: npm 설치 CLI(gemini.cmd 등)는 .cmd 배치 셰임이다. execFile 은 bare 이름을
+    // PATHEXT 로 해석 못 해 ENOENT, .cmd 명시 시엔 Node 20+ 가드로 EINVAL. cross-spawn 이 둘 다 해결.
+    it('resolves and runs a bare command name backed only by a .cmd shim', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'fleet-cli-'))
+      const prevPath = process.env.PATH
+      try {
+        writeFileSync(join(dir, 'mycli.cmd'), '@echo off\r\necho mycli 7.8.9\r\n')
+        process.env.PATH = `${dir};${prevPath ?? ''}`
+        const res = await defaultRunner('mycli', ['--version'], { timeoutMs: 10_000 })
+        expect(res.spawnError).toBeUndefined()
+        expect(res.code).toBe(0)
+        expect(parseVersion(res.stdout)).toBe('7.8.9')
+      } finally {
+        process.env.PATH = prevPath
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }, 15_000)
 
-  // 보안 회귀: 임의 인자(헤드리스 {prompt})에 cmd.exe 메타문자가 있어도 명령 주입이 일어나지 않아야 한다.
-  it('does not allow command injection via a malicious argument', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'fleet-inj-'))
-    const marker = join(dir, 'pwned.txt')
-    try {
-      writeFileSync(join(dir, 'echoarg.cmd'), '@echo off\r\necho GOT %1\r\n')
-      // 주입이 가능하면 체이닝된 'echo > marker' 가 실행되어 marker 파일이 생긴다.
-      const payload = `x" & echo pwned> "${marker}" & echo "y`
-      const res = await defaultRunner(join(dir, 'echoarg.cmd'), [payload], { timeoutMs: 10_000 })
-      expect(res.spawnError).toBeUndefined()
-      expect(existsSync(marker)).toBe(false)
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  }, 15_000)
-})
+    // 보안 회귀: 임의 인자(헤드리스 {prompt})에 cmd.exe 메타문자가 있어도 명령 주입이 일어나지 않아야 한다.
+    it('does not allow command injection via a malicious argument', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'fleet-inj-'))
+      const marker = join(dir, 'pwned.txt')
+      try {
+        writeFileSync(join(dir, 'echoarg.cmd'), '@echo off\r\necho GOT %1\r\n')
+        // 주입이 가능하면 체이닝된 'echo > marker' 가 실행되어 marker 파일이 생긴다.
+        const payload = `x" & echo pwned> "${marker}" & echo "y`
+        const res = await defaultRunner(join(dir, 'echoarg.cmd'), [payload], { timeoutMs: 10_000 })
+        expect(res.spawnError).toBeUndefined()
+        expect(existsSync(marker)).toBe(false)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }, 15_000)
+  },
+)
 
 describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세스 트리 킬)', () => {
   // 회귀(이 버그의 본질): cross-spawn 은 .cmd 셰임을 cmd.exe 경유로 띄우므로 종료 시 child.kill() 은
@@ -251,9 +269,14 @@ describe.skipIf(process.platform === 'win32')('defaultRunner (취소 시 close �
       "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),250));process.stdout.write('up');setInterval(()=>{},1000)"
     let up = false
     const ac = new AbortController()
-    const p = defaultRunner('node', ['-e', script], { timeoutMs: 30_000, signal: ac.signal }, (c) => {
-      if (c.includes('up')) up = true
-    })
+    const p = defaultRunner(
+      'node',
+      ['-e', script],
+      { timeoutMs: 30_000, signal: ac.signal },
+      (c) => {
+        if (c.includes('up')) up = true
+      },
+    )
     const start = Date.now()
     while (Date.now() - start < 5000 && !up) await new Promise((r) => setTimeout(r, 20))
     expect(up).toBe(true) // 자식 기동 확인
@@ -270,12 +293,22 @@ describe.skipIf(process.platform === 'win32')('defaultRunner (취소 시 close �
 describe('createCliRegistry', () => {
   it('seeds with the default adapters', () => {
     const reg = createCliRegistry()
-    expect(reg.list().map((a) => a.id).sort()).toEqual(['claude', 'codex', 'gemini'])
+    expect(
+      reg
+        .list()
+        .map((a) => a.id)
+        .sort(),
+    ).toEqual(['claude', 'codex', 'gemini'])
   })
 
   it('allows registering a new CLI (extensibility)', () => {
     const reg = createCliRegistry()
-    reg.register({ id: 'cursor', displayName: 'Cursor CLI', command: 'cursor-agent', versionArgs: ['--version'] })
+    reg.register({
+      id: 'cursor',
+      displayName: 'Cursor CLI',
+      command: 'cursor-agent',
+      versionArgs: ['--version'],
+    })
     expect(reg.get('cursor')?.command).toBe('cursor-agent')
     expect(reg.list()).toHaveLength(4)
   })

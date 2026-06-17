@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentRole, ChatMessage, ChatRoom, ChatStreamEvent, LlmDescriptor, ToolStep } from '../../shared/types'
+import type {
+  AgentRole,
+  ChatMessage,
+  ChatRoom,
+  ChatStreamEvent,
+  LlmDescriptor,
+  ToolStep,
+} from '../../shared/types'
 import { agentHue, cx, vars } from '../ui'
 
 interface Props {
@@ -82,7 +89,15 @@ export function ChatPanel({ sessions }: Props) {
       if (e.kind === 'start') {
         setStreams((prev) => ({
           ...prev,
-          [e.streamId]: { streamId: e.streamId, roomId: e.roomId, llmId: e.llmId, role: e.role, text: '', seq: 0, steps: [] },
+          [e.streamId]: {
+            streamId: e.streamId,
+            roomId: e.roomId,
+            llmId: e.llmId,
+            role: e.role,
+            text: '',
+            seq: 0,
+            steps: [],
+          },
         }))
       } else if (e.kind === 'tool') {
         // 도구 단계: id 로 칩을 in-place 갱신(running→ok/error). seq 멱등은 텍스트 델타와 공유 카운터.
@@ -96,7 +111,8 @@ export function ChatPanel({ sessions }: Props) {
           if (!cur) return prev // start 못 받은 스트림 — 스냅샷 catch-up(+버퍼)이 steps 를 복원한다
           if (e.seq <= cur.seq) return prev // 멱등: 이미 반영한(중복/역순) 이벤트 무시
           const i = cur.steps.findIndex((s) => s.id === e.step.id)
-          const steps = i >= 0 ? cur.steps.map((s, j) => (j === i ? e.step : s)) : [...cur.steps, e.step]
+          const steps =
+            i >= 0 ? cur.steps.map((s, j) => (j === i ? e.step : s)) : [...cur.steps, e.step]
           return { ...prev, [e.streamId]: { ...cur, steps, seq: e.seq } }
         })
       } else if (e.kind === 'delta') {
@@ -122,7 +138,9 @@ export function ChatPanel({ sessions }: Props) {
           return next
         })
         if (e.message.roomId === activeRoomRef.current) {
-          setMessages((prev) => (prev.some((m) => m.id === e.message.id) ? prev : [...prev, e.message]))
+          setMessages((prev) =>
+            prev.some((m) => m.id === e.message.id) ? prev : [...prev, e.message],
+          )
         }
       } else if (e.kind === 'error') {
         endedStreamsRef.current.add(e.streamId) // 에러도 종료 — 스냅샷 되살림 방지
@@ -214,7 +232,10 @@ export function ChatPanel({ sessions }: Props) {
 
   async function createRoom() {
     const title = newRoomTitle.trim() || `작업방 ${rooms.length + 1}`
-    const room = await window.fleet.createRoom(title, sessions.map((s) => s.id))
+    const room = await window.fleet.createRoom(
+      title,
+      sessions.map((s) => s.id),
+    )
     setNewRoomTitle('')
     await refreshRooms()
     setActiveRoom(room.id)
@@ -265,7 +286,11 @@ export function ChatPanel({ sessions }: Props) {
     markBusy(room)
     clearRoomStreams(room)
     try {
-      await window.fleet.discussRoom(room, sessions.map((s) => s.id), rounds)
+      await window.fleet.discussRoom(
+        room,
+        sessions.map((s) => s.id),
+        rounds,
+      )
       await refreshMessages(room)
     } catch {
       // 한 턴 실패 시 해당 턴의 'error' 말풍선이 표시됨 — 미처리 거부만 흡수.
@@ -306,7 +331,12 @@ export function ChatPanel({ sessions }: Props) {
           </button>
         </div>
         {rooms.map((r) => (
-          <button key={r.id} className="room-btn" data-active={r.id === activeRoom} onClick={() => setActiveRoom(r.id)}>
+          <button
+            key={r.id}
+            className="room-btn"
+            data-active={r.id === activeRoom}
+            onClick={() => setActiveRoom(r.id)}
+          >
             {r.title}
           </button>
         ))}
@@ -321,7 +351,11 @@ export function ChatPanel({ sessions }: Props) {
                 <div
                   key={m.id}
                   className={cx('msg', m.author.type === 'user' && 'user')}
-                  style={m.author.type === 'llm' ? vars({ '--hue': agentHue(m.author.llmId) }) : undefined}
+                  style={
+                    m.author.type === 'llm'
+                      ? vars({ '--hue': agentHue(m.author.llmId) })
+                      : undefined
+                  }
                 >
                   <div className="msg-head">
                     <span className={cx('msg-author', m.author.type !== 'llm' && 'neutral')}>
@@ -347,7 +381,11 @@ export function ChatPanel({ sessions }: Props) {
                   {s.steps.length > 0 && (
                     <div className="tool-steps">
                       {s.steps.map((step) => (
-                        <span key={step.id} className={cx('tool-chip', step.phase)} title={step.summary}>
+                        <span
+                          key={step.id}
+                          className={cx('tool-chip', step.phase)}
+                          title={step.summary}
+                        >
                           {STEP_ICON[step.phase]} {step.name}
                         </span>
                       ))}
@@ -367,7 +405,11 @@ export function ChatPanel({ sessions }: Props) {
 
             <div className="controls">
               <div className="chiprow">
-                <button className="btn btn-live btn-sm" disabled={busy || sessions.length < 2} onClick={() => void discuss()}>
+                <button
+                  className="btn btn-live btn-sm"
+                  disabled={busy || sessions.length < 2}
+                  onClick={() => void discuss()}
+                >
                   {busy ? 'AI 토론 중…' : '🤖 AI 자동 토론'}
                 </button>
                 <span className="field-label" style={{ margin: 0 }}>
@@ -389,14 +431,23 @@ export function ChatPanel({ sessions }: Props) {
                   </span>
                 )}
                 {busy && (
-                  <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => void cancelChat()}>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={() => void cancelChat()}
+                  >
                     취소
                   </button>
                 )}
               </div>
               <div className="chiprow">
                 {sessions.map((s) => (
-                  <button key={s.id} className="ask-btn" disabled={busy} onClick={() => void ask(s.id)}>
+                  <button
+                    key={s.id}
+                    className="ask-btn"
+                    disabled={busy}
+                    onClick={() => void ask(s.id)}
+                  >
                     {busy ? '…' : `${s.displayName}에게 묻기`}
                   </button>
                 ))}

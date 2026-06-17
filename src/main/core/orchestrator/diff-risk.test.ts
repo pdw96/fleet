@@ -15,11 +15,18 @@ describe('classifyDiffRisk', () => {
   })
   it('does not flag an ordinary env source file (src/env.ts) as sensitive', () => {
     // env.ts 는 .env 세그먼트 경계도 .env$ 도 아니다 → caution 유지
-    const r = classifyDiffRisk({ files: ['src/env.ts'], patch: '+const x = 1', truncated: false }, 10)
+    const r = classifyDiffRisk(
+      { files: ['src/env.ts'], patch: '+const x = 1', truncated: false },
+      10,
+    )
     expect(r.risk).toBe('caution')
   })
   it('flags bulk deletions as destructive', () => {
-    const patch = ['deleted file mode 100644', 'deleted file mode 100644', 'deleted file mode 100644'].join('\n')
+    const patch = [
+      'deleted file mode 100644',
+      'deleted file mode 100644',
+      'deleted file mode 100644',
+    ].join('\n')
     const r = classifyDiffRisk({ files: ['a', 'b', 'c'], patch, truncated: false }, 2)
     expect(r.risk).toBe('destructive')
   })

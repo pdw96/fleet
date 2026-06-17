@@ -4,7 +4,13 @@ import { createAnthropicProvider } from './anthropic'
 import { createGoogleProvider } from './google'
 import { createOpenAiProvider } from './openai'
 import { createApiProvider } from './registry'
-import { ApiProviderError, sendWithSchemaFallback, type HttpClient, type HttpInit, type HttpResponse } from './types'
+import {
+  ApiProviderError,
+  sendWithSchemaFallback,
+  type HttpClient,
+  type HttpInit,
+  type HttpResponse,
+} from './types'
 
 interface Captured {
   url: string
@@ -48,7 +54,8 @@ function mock400ThenStream(chunks: string[]): { http: HttpClient; calls: Capture
   const calls: Captured[] = []
   const http: HttpClient = async (url, init) => {
     calls.push({ url, init })
-    if (calls.length === 1) return { ok: false, status: 400, text: async () => 'schema unsupported' }
+    if (calls.length === 1)
+      return { ok: false, status: 400, text: async () => 'schema unsupported' }
     return { ok: true, status: 200, text: async () => chunks.join(''), body: bodyOf(chunks) }
   }
   return { http, calls }
@@ -64,18 +71,31 @@ const baseAnthropic: ApiProviderConfig = {
 }
 
 const baseOpenai: ApiProviderConfig = {
-  id: 'o1', provider: 'openai', displayName: 'GPT', model: 'gpt-4o', apiKey: 'key-o', maxTokens: 256,
+  id: 'o1',
+  provider: 'openai',
+  displayName: 'GPT',
+  model: 'gpt-4o',
+  apiKey: 'key-o',
+  maxTokens: 256,
 }
 
 const baseGoogle: ApiProviderConfig = {
-  id: 'g1', provider: 'google', displayName: 'Gemini', model: 'gemini-2.5-pro', apiKey: 'key-g', maxTokens: 256,
+  id: 'g1',
+  provider: 'google',
+  displayName: 'Gemini',
+  model: 'gemini-2.5-pro',
+  apiKey: 'key-g',
+  maxTokens: 256,
 }
 
 describe('AnthropicProvider', () => {
   it('splits system, maps turns, parses text blocks + usage + finishReason', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({
-        content: [{ type: 'text', text: '안' }, { type: 'text', text: '녕' }],
+        content: [
+          { type: 'text', text: '안' },
+          { type: 'text', text: '녕' },
+        ],
         stop_reason: 'end_turn',
         usage: { input_tokens: 11, output_tokens: 3 },
       }),
@@ -99,29 +119,41 @@ describe('AnthropicProvider', () => {
   })
 
   it('재사용 프리픽스(도구 동봉·멀티턴)엔 top-level cache_control(ephemeral)를 싣는다 (#11 caching)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     // 도구 동봉 = tool loop 라운드 간 프리픽스 재사용 → 캐시 분기점.
-    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }] })
-    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).cache_control).toEqual({ type: 'ephemeral' })
+    await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+    })
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).cache_control).toEqual({
+      type: 'ephemeral',
+    })
     // 멀티턴(history 누적) 도 재사용 프리픽스.
     await p.chat([
       { role: 'user', content: 'a' },
       { role: 'assistant', content: 'b' },
       { role: 'user', content: 'c' },
     ])
-    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).cache_control).toEqual({ type: 'ephemeral' })
+    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).cache_control).toEqual({
+      type: 'ephemeral',
+    })
   })
 
   it('fresh 단발(1턴·도구 없음)엔 cache_control 을 싣지 않는다 — 휘발성 프리픽스 캐시-쓰기 순손실 방지 (#11 caching)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     // planner/reviewer/summarizer 패턴: system + 단일 user 턴(휘발성). 다음 호출이 다른 프롬프트라 캐시 미적중.
     await p.chat([
       { role: 'system', content: '너는 평가자다' },
       { role: 'user', content: 'q' },
     ])
-    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).cache_control).toBeUndefined()
+    expect(
+      (JSON.parse(calls[0].init.body) as Record<string, unknown>).cache_control,
+    ).toBeUndefined()
   })
 
   it('응답 usage 의 cache_creation/cache_read 토큰을 파싱한다 (#11 caching)', async () => {
@@ -129,25 +161,43 @@ describe('AnthropicProvider', () => {
       body: JSON.stringify({
         content: [{ type: 'text', text: 'ok' }],
         stop_reason: 'end_turn',
-        usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 100, cache_read_input_tokens: 200 },
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_creation_input_tokens: 100,
+          cache_read_input_tokens: 200,
+        },
       }),
     }))
     const p = createAnthropicProvider(baseAnthropic, http)
     const out = await p.chat([{ role: 'user', content: 'q' }])
-    expect(out.usage).toEqual({ inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 100, cacheReadInputTokens: 200 })
+    expect(out.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheCreationInputTokens: 100,
+      cacheReadInputTokens: 200,
+    })
   })
 
   it('config.cacheTtl=1h + 도구 동봉 → cache_control.ttl=1h + extended-cache 베타 헤더 (#72)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, cacheTtl: '1h' }, http)
-    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }] })
+    await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+    })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' })
-    expect(String(calls[0].init.headers['anthropic-beta'])).toContain('extended-cache-ttl-2025-04-11')
+    expect(String(calls[0].init.headers['anthropic-beta'])).toContain(
+      'extended-cache-ttl-2025-04-11',
+    )
   })
 
   it('cacheTtl=1h + contextManagement → anthropic-beta 에 두 토큰 공존 (#72)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, cacheTtl: '1h' }, http)
     // 멀티턴(cacheable) + CM 동봉 → cache_control(1h) 와 CM 헤더 동시 존재.
     await p.chat(
@@ -164,7 +214,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('cacheTtl=1h 라도 fresh 단발(비-cacheable)엔 cache_control·extended-cache 베타 부재 (#72)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, cacheTtl: '1h' }, http)
     await p.chat([
       { role: 'system', content: '너는 평가자다' },
@@ -176,7 +228,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('per-call opts.cacheTtl=1h 가 config 미지정을 덮어 1h 경로를 켠다 (#72 override)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([{ role: 'user', content: 'q' }], {
       tools: [{ name: 't', parameters: { type: 'object' } }],
@@ -184,13 +238,19 @@ describe('AnthropicProvider', () => {
     })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' })
-    expect(String(calls[0].init.headers['anthropic-beta'])).toContain('extended-cache-ttl-2025-04-11')
+    expect(String(calls[0].init.headers['anthropic-beta'])).toContain(
+      'extended-cache-ttl-2025-04-11',
+    )
   })
 
   it('cacheTtl 미지정(기본) cacheable → cache_control=ephemeral(ttl 없음)·extended-cache 베타 부재 (#72 무회귀)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }] })
+    await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+    })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.cache_control).toEqual({ type: 'ephemeral' })
     const beta = calls[0].init.headers['anthropic-beta']
@@ -198,7 +258,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('defaults max_tokens to 4096 when unset', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined }, http)
     await p.chat([{ role: 'user', content: 'x' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(4096)
@@ -217,20 +279,30 @@ describe('AnthropicProvider', () => {
       toolChoice: 'required',
     })
     expect(out.finishReason).toBe('tool_use')
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu_1', name: 'get_weather', input: { city: '서울' } }])
-    const body = JSON.parse(calls[0].init.body) as { tools: Array<Record<string, unknown>>; tool_choice: unknown }
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'tu_1', name: 'get_weather', input: { city: '서울' } },
+    ])
+    const body = JSON.parse(calls[0].init.body) as {
+      tools: Array<Record<string, unknown>>
+      tool_choice: unknown
+    }
     expect(body.tools[0]).toMatchObject({ name: 'get_weather', input_schema: { type: 'object' } })
     expect(body.tool_choice).toEqual({ type: 'any' })
   })
 
   it('maps content blocks (text + image) into the request', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([
-      { role: 'user', content: [
-        { type: 'text', text: '이게 뭐야?' },
-        { type: 'image', mimeType: 'image/png', data: 'AAAA' },
-      ] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: '이게 뭐야?' },
+          { type: 'image', mimeType: 'image/png', data: 'AAAA' },
+        ],
+      },
     ])
     const body = JSON.parse(calls[0].init.body) as { messages: Array<{ content: unknown }> }
     expect(body.messages[0].content).toEqual([
@@ -252,9 +324,15 @@ describe('AnthropicProvider', () => {
   })
 
   it('responseSchema → output_config.format(json_schema) 를 body 에 싣는다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: { x: { type: 'string' } },
+    }
     await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'verdict', schema } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.output_config).toEqual({ format: { type: 'json_schema', schema } })
@@ -266,19 +344,30 @@ describe('AnthropicProvider', () => {
       n++
       return n === 1
         ? { ok: false, status: 400, body: 'unsupported field output_config' }
-        : { body: JSON.stringify({ content: [{ type: 'text', text: '[]' }], stop_reason: 'end_turn' }) }
+        : {
+            body: JSON.stringify({
+              content: [{ type: 'text', text: '[]' }],
+              stop_reason: 'end_turn',
+            }),
+          }
     })
     const p = createAnthropicProvider(baseAnthropic, http)
     const schema = { type: 'object', additionalProperties: false, properties: {} }
-    const out = await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema } })
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      responseSchema: { name: 'v', schema },
+    })
     expect(calls).toHaveLength(2)
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).output_config).toBeDefined()
-    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toBeUndefined()
+    expect(
+      (JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config,
+    ).toBeUndefined()
     expect(out.text).toBe('[]')
   })
 
   it('thinking 노브 → adaptive thinking + effort 를 body 에 싣는다 — 4.6 세대는 display 생략(4.7 도입 필드) (#11-thinking)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -287,7 +376,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('effort 없이 thinking 만 주면 thinking 만 싣고 output_config 는 없다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -296,7 +387,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('thinking 미지정이면 body 에 thinking/output_config 가 없다(현행 동작)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([{ role: 'user', content: 'q' }])
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -305,10 +398,19 @@ describe('AnthropicProvider', () => {
   })
 
   it('responseSchema 와 thinking.effort 공존 시 output_config 에 format+effort 를 병합한다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
-    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema }, thinking: { effort: 'low' } })
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: { x: { type: 'string' } },
+    }
+    await p.chat([{ role: 'user', content: 'x' }], {
+      responseSchema: { name: 'v', schema },
+      thinking: { effort: 'low' },
+    })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.output_config).toEqual({ format: { type: 'json_schema', schema }, effort: 'low' })
   })
@@ -319,17 +421,29 @@ describe('AnthropicProvider', () => {
       n++
       return n === 1
         ? { ok: false, status: 400, body: 'unsupported field output_config' }
-        : { body: JSON.stringify({ content: [{ type: 'text', text: '[]' }], stop_reason: 'end_turn' }) }
+        : {
+            body: JSON.stringify({
+              content: [{ type: 'text', text: '[]' }],
+              stop_reason: 'end_turn',
+            }),
+          }
     })
     const p = createAnthropicProvider(baseAnthropic, http)
     const schema = { type: 'object', additionalProperties: false, properties: {} }
-    await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema }, thinking: { effort: 'medium' } })
+    await p.chat([{ role: 'user', content: 'x' }], {
+      responseSchema: { name: 'v', schema },
+      thinking: { effort: 'medium' },
+    })
     expect(calls).toHaveLength(2)
-    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toEqual({ effort: 'medium' })
+    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).output_config).toEqual({
+      effort: 'medium',
+    })
   })
 
   it('thinking 켜지면 temperature 를 전송하지 않는다(reasoning 모드 정규화) (#11-thinking)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3 }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -338,7 +452,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('thinking 미지정이면 temperature 를 그대로 전송한다 — temperature 허용 모델(Sonnet 4.6) (현행 동작)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3 }, http) // claude-sonnet-4-6
     await p.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBe(0.3)
@@ -350,21 +466,33 @@ describe('AnthropicProvider', () => {
   // 모델 게이트를 동반해 thinking 여부와 무관하게 생략해야 한다(생략은 항상 안전).
 
   it('temperature 거부 모델(Opus 4.8)은 thinking 미지정·temperature 명시여도 temperature 를 생략한다 (anthropic-nosampling-guard)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
-    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-8', temperature: 0.3 }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
+    const p = createAnthropicProvider(
+      { ...baseAnthropic, model: 'claude-opus-4-8', temperature: 0.3 },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBeUndefined()
   })
 
   it('temperature 거부 모델(Fable)도 thinking 미지정·temperature 명시여도 temperature 를 생략한다 (anthropic-nosampling-guard)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
-    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-fable-5', temperature: 0.5 }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
+    const p = createAnthropicProvider(
+      { ...baseAnthropic, model: 'claude-fable-5', temperature: 0.5 },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBeUndefined()
   })
 
   it('temperature 거부 모델(Opus 4.7)은 per-call opts.temperature 도 생략한다 (anthropic-nosampling-guard)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-7' }, http)
     await p.chat([{ role: 'user', content: 'q' }], { temperature: 0.2 })
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBeUndefined()
@@ -373,8 +501,13 @@ describe('AnthropicProvider', () => {
   it('temperature 거부 모델(Opus 4.8) + thinking 활성 + temperature 명시 — 두 가드 모두 적용돼 temperature 생략 (anthropic-nosampling-guard)', async () => {
     // thinking 게이트(`!thinking`)와 모델 게이트(`!NO_SAMPLING_MODELS`)의 교차. thinking 켜진 경로에서도
     // no-sampling 모델의 temperature 가 새지 않음을 잠가 둔다(어느 한 가드가 회귀로 빠져도 포착).
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
-    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-8', temperature: 0.3 }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
+    const p = createAnthropicProvider(
+      { ...baseAnthropic, model: 'claude-opus-4-8', temperature: 0.3 },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.temperature).toBeUndefined()
@@ -383,33 +516,52 @@ describe('AnthropicProvider', () => {
 
   it('temperature 허용 모델(Sonnet 4.6)은 per-call opts.temperature 도 그대로 전송한다 (config/per-call × accept 매트릭스 보강)', async () => {
     // 거부 모델은 config·per-call 양 경로를 위에서 커버 → 허용 모델의 per-call 경로까지 잠가 매트릭스를 닫는다.
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http) // claude-sonnet-4-6
     await p.chat([{ role: 'user', content: 'q' }], { temperature: 0.4 })
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).temperature).toBe(0.4)
   })
 
   it('thinking 켜지면 강제 도구사용(toolChoice:required)을 auto 로 낮춘다(확장 thinking 비호환) (#11-thinking)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    await p.chat([{ role: 'user', content: 'q' }], { thinking: {}, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    await p.chat([{ role: 'user', content: 'q' }], {
+      thinking: {},
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+      toolChoice: 'required',
+    })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.tool_choice).toBeUndefined() // 'any' 미전송 = auto(기본)
     expect(body.thinking).toEqual({ type: 'adaptive' })
   })
 
   it('thinking 켜져도 toolChoice:none 은 유지한다(none 은 thinking 과 호환)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    await p.chat([{ role: 'user', content: 'q' }], { thinking: {}, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'none' })
+    await p.chat([{ role: 'user', content: 'q' }], {
+      thinking: {},
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+      toolChoice: 'none',
+    })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.tool_choice).toEqual({ type: 'none' })
   })
 
   it('thinking 미지정이면 toolChoice:required 는 그대로 any 로 전송한다(현행 동작)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+      toolChoice: 'required',
+    })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.tool_choice).toEqual({ type: 'any' })
   })
@@ -417,7 +569,9 @@ describe('AnthropicProvider', () => {
   // ── #11-thinking 프로덕션 활성화: config 기본값 + 모델-인지 정규화 ──────────
 
   it('config.thinking 이 세션 기본값으로 동작한다 — per-call 미지정에도 thinking 활성 (#11-thinking 활성화)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'high' } }, http)
     await p.chat([{ role: 'user', content: 'q' }])
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -426,9 +580,14 @@ describe('AnthropicProvider', () => {
   })
 
   it('config.thinking 기본값 경로에서도 temperature 생략·toolChoice required→auto 가드가 동작한다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, temperature: 0.3, thinking: {} }, http)
-    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+      toolChoice: 'required',
+    })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.temperature).toBeUndefined()
     expect(body.tool_choice).toBeUndefined() // required → auto 하향
@@ -436,7 +595,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('per-call opts.thinking 이 config.thinking 기본값을 이긴다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'low' } }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -444,7 +605,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('Opus 4.7+ 모델은 display:summarized 를 동봉하고 xhigh effort 를 통과시킨다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-8' }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -453,7 +616,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('xhigh 는 4.7 미만(Sonnet 4.6)에서 effort 생략으로 하향한다 — thinking 은 켠 채(서버 기본 high)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http) // claude-sonnet-4-6
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -462,7 +627,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('max effort 는 Sonnet 4.6 에서 그대로 통과한다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -470,9 +637,18 @@ describe('AnthropicProvider', () => {
   })
 
   it('adaptive 미지원 모델(Haiku 4.5 등 구형)은 thinking 을 통째로 생략한다(=off, 400 방지)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
-    const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-haiku-4-5', temperature: 0.3 }, http)
-    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'low' }, tools: [{ name: 't', parameters: { type: 'object' } }], toolChoice: 'required' })
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
+    const p = createAnthropicProvider(
+      { ...baseAnthropic, model: 'claude-haiku-4-5', temperature: 0.3 },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'q' }], {
+      thinking: { effort: 'low' },
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+      toolChoice: 'required',
+    })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.thinking).toBeUndefined()
     expect(body.output_config).toBeUndefined()
@@ -481,7 +657,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('Opus 4.5(adaptive 도입 전)도 thinking 생략 대상이다 — 날짜접미 풀 ID 포함', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-5-20251101' }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -491,7 +669,9 @@ describe('AnthropicProvider', () => {
 
   it('화이트리스트 부분일치 함정 방지 — 마이너 버전 숫자가 번진 미지 ID(opus-4-60)는 off 로 강등한다', async () => {
     // `(?![0-9])` 룩어헤드가 없으면 opus-4-60 이 opus-4-6 으로 부분일치돼 미지 모델에 thinking 을 보내 400 위험.
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, model: 'claude-opus-4-60' }, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
@@ -501,8 +681,13 @@ describe('AnthropicProvider', () => {
 
   it('thinking 활성 + max_tokens 미지정이면 기본을 상향한다(버퍼 16384, 스트리밍 64000) — 명시값은 존중', async () => {
     // 버퍼 경로: 사고 토큰이 4096 예산을 소진해 빈-응답 truncation 이 되는 것을 막는다.
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
-    const p = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined, thinking: { effort: 'high' } }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
+    const p = createAnthropicProvider(
+      { ...baseAnthropic, maxTokens: undefined, thinking: { effort: 'high' } },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(16384)
 
@@ -512,29 +697,43 @@ describe('AnthropicProvider', () => {
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
     ])
-    const ps = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined, thinking: { effort: 'high' } }, stream.http)
+    const ps = createAnthropicProvider(
+      { ...baseAnthropic, maxTokens: undefined, thinking: { effort: 'high' } },
+      stream.http,
+    )
     await ps.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
-    expect((JSON.parse(stream.calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(64000)
+    expect((JSON.parse(stream.calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(
+      64000,
+    )
 
     // 명시 config.maxTokens 는 그대로(baseAnthropic=256 — 기존 thinking 테스트들이 이미 커버하는 계약의 명시화).
-    const { http: h2, calls: c2 } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http: h2, calls: c2 } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p2 = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'high' } }, h2)
     await p2.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(c2[0].init.body) as Record<string, unknown>).max_tokens).toBe(256)
   })
 
   it('config.thinking 기본값과 responseSchema 동시(planner 경로) → output_config 에 format+effort 병합', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [{ type: 'text', text: '{}' }], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, thinking: { effort: 'medium' } }, http)
     const schema = { type: 'object', additionalProperties: false, properties: {} }
     await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
-    expect(body.output_config).toEqual({ format: { type: 'json_schema', schema }, effort: 'medium' })
+    expect(body.output_config).toEqual({
+      format: { type: 'json_schema', schema },
+      effort: 'medium',
+    })
     expect(body.thinking).toEqual({ type: 'adaptive' })
   })
 
   it('thinking off 면 max_tokens 기본은 기존 4096 그대로다(무회귀)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider({ ...baseAnthropic, maxTokens: undefined }, http)
     await p.chat([{ role: 'user', content: 'q' }])
     expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).max_tokens).toBe(4096)
@@ -554,9 +753,14 @@ describe('AnthropicProvider', () => {
           { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
         ],
       },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'tu1', name: 'lookup', content: '값' }] },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'tu1', name: 'lookup', content: '값' }],
+      },
     ])
-    const body = JSON.parse(calls[0].init.body) as { messages: Array<{ role: string; content: unknown }> }
+    const body = JSON.parse(calls[0].init.body) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
     const assistant = body.messages.find((m) => m.role === 'assistant')!
     expect(assistant.content).toEqual([
       { type: 'thinking', thinking: '사고', signature: 'SIG' },
@@ -576,9 +780,13 @@ describe('AnthropicProvider', () => {
       }),
     }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.text).toBe('답변') // thinking 은 가시 텍스트에서 제외
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } }])
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
+    ])
     expect(out.content).toEqual([
       { type: 'thinking', text: '사고 과정', providerMeta: { anthropic: { signature: 'SIG_T' } } },
       { type: 'text', text: '답변' },
@@ -587,7 +795,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('비스트림 thinking 블록이 없으면 content 를 설정하지 않는다(무회귀)', async () => {
-    const { http } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' }) }))
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({ content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     const out = await p.chat([{ role: 'user', content: 'q' }])
     expect(out.content).toBeUndefined()
@@ -605,7 +815,9 @@ describe('AnthropicProvider', () => {
       }),
     }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.content).toEqual([
       { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: 'RD_ENC' } } },
       { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
@@ -613,7 +825,9 @@ describe('AnthropicProvider', () => {
   })
 
   it('redacted_thinking(providerMeta.anthropic.redactedData)을 redacted_thinking 블록으로 재방출한다 (#11-thinking)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }),
+    }))
     const p = createAnthropicProvider(baseAnthropic, http)
     await p.chat([
       { role: 'user', content: 'q' },
@@ -624,9 +838,14 @@ describe('AnthropicProvider', () => {
           { type: 'tool_use', id: 'tu1', name: 'lookup', input: { id: 1 } },
         ],
       },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'tu1', name: 'lookup', content: '값' }] },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'tu1', name: 'lookup', content: '값' }],
+      },
     ])
-    const body = JSON.parse(calls[0].init.body) as { messages: Array<{ role: string; content: unknown }> }
+    const body = JSON.parse(calls[0].init.body) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
     const assistant = body.messages.find((m) => m.role === 'assistant')!
     expect(assistant.content).toEqual([
       { type: 'redacted_thinking', data: 'RD_ENC' },
@@ -635,19 +854,27 @@ describe('AnthropicProvider', () => {
   })
 
   // ── context management (도구루프 경로) ─────────────────────────────────────
-  const cmResp = JSON.stringify({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })
+  const cmResp = JSON.stringify({
+    content: [{ type: 'text', text: 'ok' }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
 
   it('contextManagement → context_management.clear_tool_uses + beta 헤더를 싣는다', async () => {
     const { http, calls } = mockHttp(() => ({ body: cmResp }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    await p.chat([{ role: 'user', content: 'x' }], { contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 } })
+    await p.chat([{ role: 'user', content: 'x' }], {
+      contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 },
+    })
     const body = JSON.parse(calls[0].init.body)
     expect(body.context_management).toEqual({
-      edits: [{
-        type: 'clear_tool_uses_20250919',
-        trigger: { type: 'input_tokens', value: 150000 },
-        keep: { type: 'tool_uses', value: 3 },
-      }],
+      edits: [
+        {
+          type: 'clear_tool_uses_20250919',
+          trigger: { type: 'input_tokens', value: 150000 },
+          keep: { type: 'tool_uses', value: 3 },
+        },
+      ],
     })
     expect(calls[0].init.headers['anthropic-beta']).toBe('context-management-2025-06-27')
   })
@@ -668,7 +895,9 @@ describe('AnthropicProvider', () => {
       return { body: cmResp }
     })
     const p = createAnthropicProvider(baseAnthropic, http)
-    const out = await p.chat([{ role: 'user', content: 'x' }], { contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 } })
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      contextManagement: { triggerInputTokens: 150000, keepRecentToolUses: 3 },
+    })
     expect(out.text).toBe('ok')
     expect(calls).toHaveLength(2)
     expect(JSON.parse(calls[1].init.body).context_management).toBeUndefined()
@@ -781,7 +1010,15 @@ describe('OpenAiProvider', () => {
       }),
     }))
     const p = createOpenAiProvider(
-      { id: 'o1', provider: 'openai', displayName: 'GPT', model: 'gpt-4o', apiKey: 'key-o', temperature: 0.3, maxTokens: 100 },
+      {
+        id: 'o1',
+        provider: 'openai',
+        displayName: 'GPT',
+        model: 'gpt-4o',
+        apiKey: 'key-o',
+        temperature: 0.3,
+        maxTokens: 100,
+      },
       http,
     )
     const out = await p.chat([
@@ -808,7 +1045,11 @@ describe('OpenAiProvider', () => {
       body: JSON.stringify({
         choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
         // OpenAI 의 prompt_tokens 는 cached_tokens 를 *포함*한다(Anthropic 과 반대).
-        usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 30 } },
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          prompt_tokens_details: { cached_tokens: 30 },
+        },
       }),
     }))
     const p = createOpenAiProvider(baseOpenai, http)
@@ -818,10 +1059,20 @@ describe('OpenAiProvider', () => {
   })
 
   it('reasoning models (gpt-5/o-series) use max_completion_tokens and drop temperature', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
     for (const model of ['gpt-5.1', 'o3-mini']) {
       const p = createOpenAiProvider(
-        { id: 'r', provider: 'openai', displayName: 'R', model, apiKey: 'k', temperature: 0.7, maxTokens: 200 },
+        {
+          id: 'r',
+          provider: 'openai',
+          displayName: 'R',
+          model,
+          apiKey: 'k',
+          temperature: 0.7,
+          maxTokens: 200,
+        },
         http,
       )
       await p.chat([{ role: 'user', content: 'x' }])
@@ -836,17 +1087,28 @@ describe('OpenAiProvider', () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ choices: [{ message: { content: '끝' }, finish_reason: 'stop' }] }),
     }))
-    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const p = createOpenAiProvider(
+      { id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' },
+      http,
+    )
     await p.chat([
       { role: 'user', content: '검색해' },
-      { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'search', input: { q: 'x' } }] },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'c1', name: 'search', content: '결과' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'search', input: { q: 'x' } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'c1', name: 'search', content: '결과' }],
+      },
     ])
     const body = JSON.parse(calls[0].init.body) as { messages: Array<Record<string, unknown>> }
     expect(body.messages[1]).toEqual({
       role: 'assistant',
       content: null,
-      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } }],
+      tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } },
+      ],
     })
     expect(body.messages[2]).toEqual({ role: 'tool', tool_call_id: 'c1', content: '결과' })
   })
@@ -855,19 +1117,27 @@ describe('OpenAiProvider', () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ choices: [{ message: { content: '끝' }, finish_reason: 'stop' }] }),
     }))
-    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const p = createOpenAiProvider(
+      { id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' },
+      http,
+    )
     await p.chat([
       { role: 'user', content: '검색해' },
-      { role: 'assistant', content: [
-        { type: 'text', text: '검색할게요' },
-        { type: 'tool_use', id: 'c1', name: 'search', input: { q: 'x' } },
-      ] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '검색할게요' },
+          { type: 'tool_use', id: 'c1', name: 'search', input: { q: 'x' } },
+        ],
+      },
     ])
     const body = JSON.parse(calls[0].init.body) as { messages: Array<Record<string, unknown>> }
     expect(body.messages[1]).toEqual({
       role: 'assistant',
       content: '검색할게요',
-      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } }],
+      tool_calls: [
+        { id: 'c1', type: 'function', function: { name: 'search', arguments: '{"q":"x"}' } },
+      ],
     })
   })
 
@@ -876,33 +1146,57 @@ describe('OpenAiProvider', () => {
       body: JSON.stringify({
         choices: [
           {
-            message: { content: null, tool_calls: [{ id: 'c1', function: { name: 'search', arguments: '{"q":"x"}' } }] },
+            message: {
+              content: null,
+              tool_calls: [{ id: 'c1', function: { name: 'search', arguments: '{"q":"x"}' } }],
+            },
             finish_reason: 'tool_calls',
           },
         ],
       }),
     }))
-    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const p = createOpenAiProvider(
+      { id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], {
       tools: [{ name: 'search', parameters: { type: 'object' } }],
     })
     expect(out.finishReason).toBe('tool_use')
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'c1', name: 'search', input: { q: 'x' } }])
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'c1', name: 'search', input: { q: 'x' } },
+    ])
     const body = JSON.parse(calls[0].init.body) as { tools: unknown[] }
-    expect(body.tools[0]).toEqual({ type: 'function', function: { name: 'search', description: undefined, parameters: { type: 'object' } } })
+    expect(body.tools[0]).toEqual({
+      type: 'function',
+      function: { name: 'search', description: undefined, parameters: { type: 'object' } },
+    })
   })
 
   it('responseSchema → response_format(json_schema, strict) 를 body 에 싣는다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] }),
+    }))
     const p = createOpenAiProvider(baseOpenai, http)
-    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: { x: { type: 'string' } },
+    }
     await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'verdict', schema } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
-    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'verdict', schema, strict: true } })
+    expect(body.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: { name: 'verdict', schema, strict: true },
+    })
   })
 
   it('구조화 출력 거부(message.refusal)를 content_filter 로 표면화한다(#7)', async () => {
-    const { http } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { refusal: '안전상 거부합니다' }, finish_reason: 'stop' }] }) }))
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        choices: [{ message: { refusal: '안전상 거부합니다' }, finish_reason: 'stop' }],
+      }),
+    }))
     const p = createOpenAiProvider(baseOpenai, http)
     const out = await p.chat([{ role: 'user', content: 'x' }])
     expect(out.finishReason).toBe('content_filter')
@@ -916,13 +1210,23 @@ describe('OpenAiProvider', () => {
       n++
       return n === 1
         ? { ok: false, status: 400, body: 'response_format json_schema not supported' }
-        : { body: JSON.stringify({ choices: [{ message: { content: '[]' }, finish_reason: 'stop' }] }) }
+        : {
+            body: JSON.stringify({
+              choices: [{ message: { content: '[]' }, finish_reason: 'stop' }],
+            }),
+          }
     })
     const p = createOpenAiProvider(baseOpenai, http)
-    const out = await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema: { type: 'object' } } })
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      responseSchema: { name: 'v', schema: { type: 'object' } },
+    })
     expect(calls).toHaveLength(2)
-    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).response_format).toBeDefined()
-    expect((JSON.parse(calls[1].init.body) as Record<string, unknown>).response_format).toBeUndefined()
+    expect(
+      (JSON.parse(calls[0].init.body) as Record<string, unknown>).response_format,
+    ).toBeDefined()
+    expect(
+      (JSON.parse(calls[1].init.body) as Record<string, unknown>).response_format,
+    ).toBeUndefined()
     expect(out.text).toBe('[]')
   })
 
@@ -940,7 +1244,10 @@ describe('OpenAiProvider', () => {
           { type: 'tool_use', id: 'tc1', name: 'lookup', input: { id: 1 } },
         ],
       },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'tc1', name: 'lookup', content: '값' }] },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'tc1', name: 'lookup', content: '값' }],
+      },
     ])
     const body = JSON.parse(calls[0].init.body) as { messages: Array<Record<string, unknown>> }
     const assistant = body.messages.find((m) => m.role === 'assistant')!
@@ -954,16 +1261,26 @@ describe('OpenAiProvider', () => {
 
   // ── reasoning_effort 패리티 (thinking 크로스-프로바이더 1단계 — #11) ──────────
   it('thinking.effort → reasoning_effort 를 reasoning 모델 body 에 싣는다 (reasoning_effort 패리티)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.1', apiKey: 'k' }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.1', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.reasoning_effort).toBe('high')
   })
 
   it('low/medium 는 그대로 매핑한다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' },
+      http,
+    )
     for (const effort of ['low', 'medium'] as const) {
       await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
       const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
@@ -972,24 +1289,60 @@ describe('OpenAiProvider', () => {
   })
 
   it('config.thinking 이 세션 기본값으로 동작한다 — per-call 미지정에도 reasoning_effort 활성', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k', thinking: { effort: 'medium' } }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      {
+        id: 'r',
+        provider: 'openai',
+        displayName: 'R',
+        model: 'gpt-5.5',
+        apiKey: 'k',
+        thinking: { effort: 'medium' },
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }])
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.reasoning_effort).toBe('medium')
   })
 
   it('per-call opts.thinking 이 config.thinking 기본값을 이긴다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k', thinking: { effort: 'low' } }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      {
+        id: 'r',
+        provider: 'openai',
+        displayName: 'R',
+        model: 'gpt-5.5',
+        apiKey: 'k',
+        thinking: { effort: 'low' },
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.reasoning_effort).toBe('high')
   })
 
   it('비-reasoning 모델(gpt-4o)은 thinking 이 있어도 reasoning_effort 를 보내지 않는다(400 방지)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k', thinking: { effort: 'high' } }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      {
+        id: 'o',
+        provider: 'openai',
+        displayName: 'O',
+        model: 'gpt-4o',
+        apiKey: 'k',
+        thinking: { effort: 'high' },
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }])
     const body = JSON.parse(calls[0].init.body) as Record<string, unknown>
     expect(body.reasoning_effort).toBeUndefined()
@@ -1000,26 +1353,49 @@ describe('OpenAiProvider', () => {
     // gpt-5-chat-latest 는 비-reasoning chat 변종, o1-mini·o1-preview 는 reasoning_effort 도입 전 o1 초기 모델 —
     // 셋 다 reasoning_effort 를 400 으로 거부. isReasoningModel(토큰 필드용) 은 prefix 로 셋 다 매칭하므로
     // reasoning_effort 게이트는 별도 predicate 여야 한다(codex P2: o1-preview 누락 보강).
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
     for (const model of ['gpt-5-chat-latest', 'o1-mini', 'o1-preview', 'o1-preview-2024-09-12']) {
-      const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model, apiKey: 'k', thinking: { effort: 'high' } }, http)
+      const p = createOpenAiProvider(
+        {
+          id: 'r',
+          provider: 'openai',
+          displayName: 'R',
+          model,
+          apiKey: 'k',
+          thinking: { effort: 'high' },
+        },
+        http,
+      )
       await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
-      expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+      expect(
+        (JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort,
+      ).toBeUndefined()
     }
   })
 
   it('pro 계열 effort 정규화 — gpt-5-pro=high 만, dotted pro(gpt-5.2/5.4-pro)는 low→medium 상향 (codex P2)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const eff = () => (JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const eff = () =>
+      (JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort
     // gpt-5-pro 는 high 만 지원 → low/medium/xhigh/max 전부 high(미정규화 시 low/medium 400).
-    const pro = createOpenAiProvider({ id: 'p', provider: 'openai', displayName: 'P', model: 'gpt-5-pro', apiKey: 'k' }, http)
+    const pro = createOpenAiProvider(
+      { id: 'p', provider: 'openai', displayName: 'P', model: 'gpt-5-pro', apiKey: 'k' },
+      http,
+    )
     for (const e of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
       await pro.chat([{ role: 'user', content: 'q' }], { thinking: { effort: e } })
       expect(eff()).toBe('high')
     }
     // dotted pro(검증 집합 {medium,high,xhigh}): low→medium 상향, medium/high 유지, xhigh/max→xhigh.
     for (const model of ['gpt-5.2-pro', 'gpt-5.4-pro']) {
-      const p = createOpenAiProvider({ id: 'd', provider: 'openai', displayName: 'D', model, apiKey: 'k' }, http)
+      const p = createOpenAiProvider(
+        { id: 'd', provider: 'openai', displayName: 'D', model, apiKey: 'k' },
+        http,
+      )
       await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'low' } })
       expect(eff()).toBe('medium')
       await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
@@ -1032,60 +1408,114 @@ describe('OpenAiProvider', () => {
   })
 
   it('xhigh 는 지원 모델(gpt-5.5)에선 xhigh, 미지원 reasoning 모델(o3-mini)에선 high 로 하향', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const xh = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model: 'gpt-5.5', apiKey: 'k' }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const xh = createOpenAiProvider(
+      { id: 'x', provider: 'openai', displayName: 'X', model: 'gpt-5.5', apiKey: 'k' },
+      http,
+    )
     await xh.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
-    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('xhigh')
+    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe(
+      'xhigh',
+    )
 
-    const lo = createOpenAiProvider({ id: 'l', provider: 'openai', displayName: 'L', model: 'o3-mini', apiKey: 'k' }, http)
+    const lo = createOpenAiProvider(
+      { id: 'l', provider: 'openai', displayName: 'L', model: 'o3-mini', apiKey: 'k' },
+      http,
+    )
     await lo.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
-    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe(
+      'high',
+    )
   })
 
   it('xhigh 지원 세대는 GPT-5.2+(codex 변종 포함) — 5.2/5.2-codex/5.3-codex=xhigh, 5.1/5.0=high 강등 (codex P2)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
     for (const model of ['gpt-5.2', 'gpt-5.2-codex', 'gpt-5.3-codex']) {
-      const p = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model, apiKey: 'k' }, http)
+      const p = createOpenAiProvider(
+        { id: 'x', provider: 'openai', displayName: 'X', model, apiKey: 'k' },
+        http,
+      )
       await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xhigh' } })
-      expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('xhigh')
+      expect(
+        (JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort,
+      ).toBe('xhigh')
     }
     // 5.1/5.0(=plain gpt-5) 은 xhigh 미지원 세대 → high 로 안전 강등(400 방지).
     for (const model of ['gpt-5.1', 'gpt-5']) {
-      const p = createOpenAiProvider({ id: 'l', provider: 'openai', displayName: 'L', model, apiKey: 'k' }, http)
+      const p = createOpenAiProvider(
+        { id: 'l', provider: 'openai', displayName: 'L', model, apiKey: 'k' },
+        http,
+      )
       await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
-      expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+      expect(
+        (JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort,
+      ).toBe('high')
     }
   })
 
   it('중립 max 는 모델 최상위 티어로 매핑한다 — gpt-5.5=xhigh, o3-mini=high', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const xh = createOpenAiProvider({ id: 'x', provider: 'openai', displayName: 'X', model: 'gpt-5.5', apiKey: 'k' }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const xh = createOpenAiProvider(
+      { id: 'x', provider: 'openai', displayName: 'X', model: 'gpt-5.5', apiKey: 'k' },
+      http,
+    )
     await xh.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
-    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('xhigh')
+    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe(
+      'xhigh',
+    )
 
-    const lo = createOpenAiProvider({ id: 'l', provider: 'openai', displayName: 'L', model: 'o3-mini', apiKey: 'k' }, http)
+    const lo = createOpenAiProvider(
+      { id: 'l', provider: 'openai', displayName: 'L', model: 'o3-mini', apiKey: 'k' },
+      http,
+    )
     await lo.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
-    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+    expect((JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>).reasoning_effort).toBe(
+      'high',
+    )
   })
 
   it('effort 없이 thinking 만 주면(thinking:{}) reasoning_effort 를 보내지 않는다(서버 기본 사용)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
-    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+    expect(
+      (JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort,
+    ).toBeUndefined()
   })
 
   it('thinking 미지정이면 reasoning_effort 가 없다(현행 동작 무회귀)', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }))
-    const p = createOpenAiProvider({ id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' }, http)
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'r', provider: 'openai', displayName: 'R', model: 'gpt-5.5', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }])
-    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+    expect(
+      (JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort,
+    ).toBeUndefined()
   })
 
   it('registry: openai-compatible 를 openai 구현으로 라우팅하고 provider 필드를 보존한다', () => {
     const p = createApiProvider({
-      id: 'oc', provider: 'openai-compatible', displayName: 'OC',
-      model: 'qwen/qwen3-32b', apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1',
+      id: 'oc',
+      provider: 'openai-compatible',
+      displayName: 'OC',
+      model: 'qwen/qwen3-32b',
+      apiKey: 'k',
+      baseUrl: 'https://openrouter.ai/api/v1',
     })
     expect(p.provider).toBe('openai-compatible')
     expect(p.model).toBe('qwen/qwen3-32b')
@@ -1096,7 +1526,15 @@ describe('OpenAiProvider', () => {
       body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
     }))
     const p = createOpenAiProvider(
-      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'anthropic/claude-sonnet-4-6', apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1/', maxTokens: 100 },
+      {
+        id: 'oc',
+        provider: 'openai-compatible',
+        displayName: 'OC',
+        model: 'anthropic/claude-sonnet-4-6',
+        apiKey: 'k',
+        baseUrl: 'https://openrouter.ai/api/v1/',
+        maxTokens: 100,
+      },
       http,
     )
     await p.chat([{ role: 'user', content: 'hi' }])
@@ -1120,11 +1558,21 @@ describe('OpenAiProvider', () => {
       body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
     }))
     const p = createOpenAiProvider(
-      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'qwen/qwen3-32b', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      {
+        id: 'oc',
+        provider: 'openai-compatible',
+        displayName: 'OC',
+        model: 'qwen/qwen3-32b',
+        apiKey: 'k',
+        baseUrl: 'https://x/v1',
+        thinking: { effort: 'high' },
+      },
       http,
     )
     await p.chat([{ role: 'user', content: 'hi' }])
-    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBe(
+      'high',
+    )
   })
 
   it('openai-compatible: max effort 는 high 로 다운매핑', async () => {
@@ -1132,11 +1580,21 @@ describe('OpenAiProvider', () => {
       body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
     }))
     const p = createOpenAiProvider(
-      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'max' } },
+      {
+        id: 'oc',
+        provider: 'openai-compatible',
+        displayName: 'OC',
+        model: 'x',
+        apiKey: 'k',
+        baseUrl: 'https://x/v1',
+        thinking: { effort: 'max' },
+      },
       http,
     )
     await p.chat([{ role: 'user', content: 'hi' }])
-    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBe('high')
+    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBe(
+      'high',
+    )
   })
 
   it('openai-compatible: effort 미지정이면 reasoning_effort 미전송', async () => {
@@ -1144,23 +1602,47 @@ describe('OpenAiProvider', () => {
       body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
     }))
     const p = createOpenAiProvider(
-      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1' },
+      {
+        id: 'oc',
+        provider: 'openai-compatible',
+        displayName: 'OC',
+        model: 'x',
+        apiKey: 'k',
+        baseUrl: 'https://x/v1',
+      },
       http,
     )
     await p.chat([{ role: 'user', content: 'hi' }])
-    expect((JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort).toBeUndefined()
+    expect(
+      (JSON.parse(calls[0].init.body) as Record<string, unknown>).reasoning_effort,
+    ).toBeUndefined()
   })
 
   it('openai-compatible: reasoning_effort 가 400 이면 그 필드만 빼고 1회 재시도', async () => {
     const calls: { body: string }[] = []
     const http: HttpClient = async (_url, init) => {
       calls.push({ body: init.body })
-      const hasReasoning = (JSON.parse(init.body) as Record<string, unknown>).reasoning_effort !== undefined
-      if (hasReasoning) return { ok: false, status: 400, text: async () => 'unknown param: reasoning_effort' }
-      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }
+      const hasReasoning =
+        (JSON.parse(init.body) as Record<string, unknown>).reasoning_effort !== undefined
+      if (hasReasoning)
+        return { ok: false, status: 400, text: async () => 'unknown param: reasoning_effort' }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+      }
     }
     const p = createOpenAiProvider(
-      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      {
+        id: 'oc',
+        provider: 'openai-compatible',
+        displayName: 'OC',
+        model: 'x',
+        apiKey: 'k',
+        baseUrl: 'https://x/v1',
+        thinking: { effort: 'high' },
+      },
       http,
     )
     const out = await p.chat([{ role: 'user', content: 'hi' }])
@@ -1175,14 +1657,30 @@ describe('OpenAiProvider', () => {
     const http: HttpClient = async (_url, init) => {
       calls.push({ body: init.body })
       const b = JSON.parse(init.body) as Record<string, unknown>
-      if (b.response_format !== undefined) return { ok: false, status: 400, text: async () => 'response_format unsupported' }
-      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }
+      if (b.response_format !== undefined)
+        return { ok: false, status: 400, text: async () => 'response_format unsupported' }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+      }
     }
     const p = createOpenAiProvider(
-      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      {
+        id: 'oc',
+        provider: 'openai-compatible',
+        displayName: 'OC',
+        model: 'x',
+        apiKey: 'k',
+        baseUrl: 'https://x/v1',
+        thinking: { effort: 'high' },
+      },
       http,
     )
-    const out = await p.chat([{ role: 'user', content: 'hi' }], { responseSchema: { name: 'r', schema: { type: 'object' } } })
+    const out = await p.chat([{ role: 'user', content: 'hi' }], {
+      responseSchema: { name: 'r', schema: { type: 'object' } },
+    })
     const last = JSON.parse(calls[calls.length - 1].body) as Record<string, unknown>
     expect(last.response_format).toBeUndefined()
     expect(last.reasoning_effort).toBe('high')
@@ -1194,14 +1692,30 @@ describe('OpenAiProvider', () => {
     const http: HttpClient = async (_url, init) => {
       calls.push({ body: init.body })
       const b = JSON.parse(init.body) as Record<string, unknown>
-      if (b.reasoning_effort !== undefined) return { ok: false, status: 400, text: async () => 'reasoning_effort unsupported' }
-      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }) }
+      if (b.reasoning_effort !== undefined)
+        return { ok: false, status: 400, text: async () => 'reasoning_effort unsupported' }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+      }
     }
     const p = createOpenAiProvider(
-      { id: 'oc', provider: 'openai-compatible', displayName: 'OC', model: 'x', apiKey: 'k', baseUrl: 'https://x/v1', thinking: { effort: 'high' } },
+      {
+        id: 'oc',
+        provider: 'openai-compatible',
+        displayName: 'OC',
+        model: 'x',
+        apiKey: 'k',
+        baseUrl: 'https://x/v1',
+        thinking: { effort: 'high' },
+      },
       http,
     )
-    const out = await p.chat([{ role: 'user', content: 'hi' }], { responseSchema: { name: 'r', schema: { type: 'object' } } })
+    const out = await p.chat([{ role: 'user', content: 'hi' }], {
+      responseSchema: { name: 'r', schema: { type: 'object' } },
+    })
     const last = JSON.parse(calls[calls.length - 1].body) as Record<string, unknown>
     expect(last.reasoning_effort).toBeUndefined() // reasoning 이 원인이라 제거
     expect(last.response_format).toBeDefined() // schema 는 보존(구조화 출력 강제 유지)
@@ -1218,7 +1732,13 @@ describe('GoogleProvider', () => {
       }),
     }))
     const p = createGoogleProvider(
-      { id: 'g1', provider: 'google', displayName: 'Gemini', model: 'gemini-2.5-flash', apiKey: 'key-g' },
+      {
+        id: 'g1',
+        provider: 'google',
+        displayName: 'Gemini',
+        model: 'gemini-2.5-flash',
+        apiKey: 'key-g',
+      },
       http,
     )
     const out = await p.chat([
@@ -1243,8 +1763,13 @@ describe('GoogleProvider', () => {
   })
 
   it('SAFETY finishReason maps to content_filter', async () => {
-    const { http } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [] }, finishReason: 'SAFETY' }] }) }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({ candidates: [{ content: { parts: [] }, finishReason: 'SAFETY' }] }),
+    }))
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'x' }])
     expect(out.text).toBe('')
     expect(out.finishReason).toBe('content_filter')
@@ -1254,13 +1779,24 @@ describe('GoogleProvider', () => {
     // Gemini 3.x 는 functionCall 마다 고유 id 를 부여한다 → 멀티턴 history 재전송 시 model 턴의
     // functionCall 과 user 턴의 functionResponse 에 같은 id 를 실어 병렬 동일함수 호출을 정확히 상관시킨다.
     const { http, calls } = mockHttp(() => ({
-      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     await p.chat([
       { role: 'user', content: '조회' },
-      { role: 'assistant', content: [{ type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 } }] },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }],
+      },
     ])
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
     expect(body.contents.at(-2)!.parts[0]).toEqual({
@@ -1273,18 +1809,32 @@ describe('GoogleProvider', () => {
 
   it('ToolUseBlock.providerMeta.google.thoughtSignature 를 functionCall 에 echo 한다 (#17-P1 채널)', async () => {
     const { http, calls } = mockHttp(() => ({
-      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     await p.chat([
       { role: 'user', content: '조회' },
       {
         role: 'assistant',
         content: [
-          { type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'SIG_XYZ' } } },
+          {
+            type: 'tool_use',
+            id: 'fc_a1',
+            name: 'lookup',
+            input: { id: 1 },
+            providerMeta: { google: { thoughtSignature: 'SIG_XYZ' } },
+          },
         ],
       },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }] },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }],
+      },
     ])
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
     // thoughtSignature 는 Part 레벨(functionCall 의 형제)에 실린다 — Gemini wire 계약.
@@ -1296,13 +1846,24 @@ describe('GoogleProvider', () => {
 
   it('providerMeta 가 없으면 functionCall 에 thoughtSignature 를 싣지 않는다 (echo-only-when-present, #29 규율)', async () => {
     const { http, calls } = mockHttp(() => ({
-      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     await p.chat([
       { role: 'user', content: '조회' },
-      { role: 'assistant', content: [{ type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 } }] },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 'fc_a1', name: 'lookup', content: '값' }],
+      },
     ])
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
     expect(body.contents.at(-2)!.parts[0]).toEqual({
@@ -1313,24 +1874,44 @@ describe('GoogleProvider', () => {
   it('실제 id 가 없으면(빈 문자열) functionCall·functionResponse 에 id 를 싣지 않는다 (Gemini 2.x 호환)', async () => {
     // 2.x 는 functionCall.id 를 안 줄 수 있다 → 합성 id 를 만들어 보내지 않고 name 으로만 상관한다.
     const { http, calls } = mockHttp(() => ({
-      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
     await p.chat([
       { role: 'user', content: '조회' },
-      { role: 'assistant', content: [{ type: 'tool_use', id: '', name: 'lookup', input: { id: 1 } }] },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: '', name: 'lookup', content: '값' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: '', name: 'lookup', input: { id: 1 } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: '', name: 'lookup', content: '값' }],
+      },
     ])
     const body = JSON.parse(calls[0].init.body) as { contents: Array<{ parts: unknown[] }> }
-    expect(body.contents.at(-2)!.parts[0]).toEqual({ functionCall: { name: 'lookup', args: { id: 1 } } })
-    expect(body.contents.at(-1)!.parts[0]).toEqual({ functionResponse: { name: 'lookup', response: { result: '값' } } })
+    expect(body.contents.at(-2)!.parts[0]).toEqual({
+      functionCall: { name: 'lookup', args: { id: 1 } },
+    })
+    expect(body.contents.at(-1)!.parts[0]).toEqual({
+      functionResponse: { name: 'lookup', response: { result: '값' } },
+    })
   })
 
   it('tool_result 에 name 이 없으면 functionResponse.name 이 toolUseId 로 폴백한다(id 도 echo)', async () => {
     const { http, calls } = mockHttp(() => ({
-      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }),
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
     await p.chat([
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fallback-id', content: '값' }] },
     ])
@@ -1344,10 +1925,18 @@ describe('GoogleProvider', () => {
   it('sends functionDeclarations and parses functionCall', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({
-        candidates: [{ content: { parts: [{ functionCall: { name: 'lookup', args: { id: 1 } } }] }, finishReason: 'STOP' }],
+        candidates: [
+          {
+            content: { parts: [{ functionCall: { name: 'lookup', args: { id: 1 } } }] },
+            finishReason: 'STOP',
+          },
+        ],
       }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], {
       tools: [{ name: 'lookup', parameters: { type: 'object' } }],
     })
@@ -1364,24 +1953,61 @@ describe('GoogleProvider', () => {
   it('응답 functionCall.id 를 ToolUseBlock.id 로 보존한다 (#17-P2)', async () => {
     const { http } = mockHttp(() => ({
       body: JSON.stringify({
-        candidates: [{ content: { parts: [{ functionCall: { id: 'fc_xyz', name: 'lookup', args: { id: 1 } } }] }, finishReason: 'STOP' }],
+        candidates: [
+          {
+            content: {
+              parts: [{ functionCall: { id: 'fc_xyz', name: 'lookup', args: { id: 1 } } }],
+            },
+            finishReason: 'STOP',
+          },
+        ],
       }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'fc_xyz', name: 'lookup', input: { id: 1 } }])
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'fc_xyz', name: 'lookup', input: { id: 1 } },
+    ])
   })
 
   it('응답 part 레벨 thoughtSignature 를 providerMeta.google 로 캡처한다 (#17-P1, 비스트림)', async () => {
     const { http } = mockHttp(() => ({
       body: JSON.stringify({
-        candidates: [{ content: { parts: [{ functionCall: { id: 'fc_a1', name: 'lookup', args: { id: 1 } }, thoughtSignature: 'SIG_A' }] }, finishReason: 'STOP' }],
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  functionCall: { id: 'fc_a1', name: 'lookup', args: { id: 1 } },
+                  thoughtSignature: 'SIG_A',
+                },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
       }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.toolCalls).toEqual([
-      { type: 'tool_use', id: 'fc_a1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'SIG_A' } } },
+      {
+        type: 'tool_use',
+        id: 'fc_a1',
+        name: 'lookup',
+        input: { id: 1 },
+        providerMeta: { google: { thoughtSignature: 'SIG_A' } },
+      },
     ])
   })
 
@@ -1389,16 +2015,37 @@ describe('GoogleProvider', () => {
     // Gemini wire 계약: 병렬 호출 시 thoughtSignature 는 첫 functionCall 파트에만 붙는다.
     const { http } = mockHttp(() => ({
       body: JSON.stringify({
-        candidates: [{ content: { parts: [
-          { functionCall: { id: 'fc_1', name: 'lookup', args: { city: '서울' } }, thoughtSignature: 'SIG_A' },
-          { functionCall: { id: 'fc_2', name: 'lookup', args: { city: '부산' } } },
-        ] }, finishReason: 'STOP' }],
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  functionCall: { id: 'fc_1', name: 'lookup', args: { city: '서울' } },
+                  thoughtSignature: 'SIG_A',
+                },
+                { functionCall: { id: 'fc_2', name: 'lookup', args: { city: '부산' } } },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
       }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.toolCalls).toEqual([
-      { type: 'tool_use', id: 'fc_1', name: 'lookup', input: { city: '서울' }, providerMeta: { google: { thoughtSignature: 'SIG_A' } } },
+      {
+        type: 'tool_use',
+        id: 'fc_1',
+        name: 'lookup',
+        input: { city: '서울' },
+        providerMeta: { google: { thoughtSignature: 'SIG_A' } },
+      },
       { type: 'tool_use', id: 'fc_2', name: 'lookup', input: { city: '부산' } },
     ])
   })
@@ -1420,8 +2067,13 @@ describe('GoogleProvider', () => {
         ],
       }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'get_weather', parameters: { type: 'object' } }] })
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 'get_weather', parameters: { type: 'object' } }],
+    })
     expect(out.toolCalls).toEqual([
       { type: 'tool_use', id: 'fc_1', name: 'get_weather', input: { city: '서울' } },
       { type: 'tool_use', id: 'fc_2', name: 'get_weather', input: { city: '부산' } },
@@ -1433,14 +2085,26 @@ describe('GoogleProvider', () => {
   // 3=thinkingLevel(소문자 enum). thinking 토큰이 출력 예산을 함께 소모하므로(공식: "reserve more of the
   // token output for your response" + 실키 검증: 낮은 한도→빈 응답) thinking 활성 시 maxOutputTokens 를
   // cap-safe(전 2.5/3 출력상한 65536 내) 기본/floor 로 끌어올린다.
-  const okBody = () => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }] }) })
+  const okBody = () => ({
+    body: JSON.stringify({
+      candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+    }),
+  })
 
   it('Gemini 2.5: effort → 서브모델 유효 범위 내 정수 thinkingBudget (flash high=8192) (#73)', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: 8192, includeThoughts: true })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown }
+    }
+    expect(body.generationConfig?.thinkingConfig).toEqual({
+      thinkingBudget: 8192,
+      includeThoughts: true,
+    })
   })
 
   it('Gemini 2.5 AUTOMATIC(thinking{}): 과소 maxOutputTokens 를 버퍼 staticFloor(16384)로 floor 한다(굶음 방지)', async () => {
@@ -1449,35 +2113,75 @@ describe('GoogleProvider', () => {
     const { http, calls } = mockHttp(okBody)
     const p = createGoogleProvider(baseGoogle, http)
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.maxOutputTokens).toBe(16384)
   })
 
   it('Gemini 3: effort → thinkingConfig.thinkingLevel(소문자) — high', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'high', includeThoughts: true })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown }
+    }
+    expect(body.generationConfig?.thinkingConfig).toEqual({
+      thinkingLevel: 'high',
+      includeThoughts: true,
+    })
   })
 
   it('Gemini 3: low/medium 은 그대로, xhigh·max 는 high 로 수렴한다(미지원 티어 하향)', async () => {
-    const cfg = { id: 'g', provider: 'google' as const, displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }
-    const cases = [['low', 'low'], ['medium', 'medium'], ['xhigh', 'high'], ['max', 'high']] as const
+    const cfg = {
+      id: 'g',
+      provider: 'google' as const,
+      displayName: 'G',
+      model: 'gemini-3-pro',
+      apiKey: 'k',
+    }
+    const cases = [
+      ['low', 'low'],
+      ['medium', 'medium'],
+      ['xhigh', 'high'],
+      ['max', 'high'],
+    ] as const
     for (const [effort, level] of cases) {
       const { http, calls } = mockHttp(okBody)
-      await createGoogleProvider(cfg, http).chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
-      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-      expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: level, includeThoughts: true })
+      await createGoogleProvider(cfg, http).chat([{ role: 'user', content: 'q' }], {
+        thinking: { effort },
+      })
+      const body = JSON.parse(calls[0].init.body) as {
+        generationConfig?: { thinkingConfig?: unknown }
+      }
+      expect(body.generationConfig?.thinkingConfig).toEqual({
+        thinkingLevel: level,
+        includeThoughts: true,
+      })
     }
   })
 
   it('Gemini 3: effort 없는 thinking({})은 thinkingLevel 없이 includeThoughts 만 싣고 starvation 가드를 적용한다', async () => {
     // thinking 활성이면 thinkingLevel(effort) 유무와 독립적으로 사고 요약을 요청한다(includeThoughts).
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', maxTokens: 256 }, http)
+    const p = createGoogleProvider(
+      {
+        id: 'g',
+        provider: 'google',
+        displayName: 'G',
+        model: 'gemini-3-pro',
+        apiKey: 'k',
+        maxTokens: 256,
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number } }
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.thinkingConfig).toEqual({ includeThoughts: true })
     expect(body.generationConfig?.maxOutputTokens).toBe(16384)
   })
@@ -1486,60 +2190,131 @@ describe('GoogleProvider', () => {
     const { http, calls } = mockHttp(okBody)
     const p = createGoogleProvider(baseGoogle, http) // maxTokens 256, thinking 없음
     await p.chat([{ role: 'user', content: 'q' }])
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number } }
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.thinkingConfig).toBeUndefined()
     expect(body.generationConfig?.maxOutputTokens).toBe(256)
   })
 
   it('thinking 미지원 모델(gemini-1.5-pro)은 thinkingConfig·starvation 가드 모두 미적용(400 방지)', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-1.5-pro', apiKey: 'k', maxTokens: 256 }, http)
+    const p = createGoogleProvider(
+      {
+        id: 'g',
+        provider: 'google',
+        displayName: 'G',
+        model: 'gemini-1.5-pro',
+        apiKey: 'k',
+        maxTokens: 256,
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number } }
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown; maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.thinkingConfig).toBeUndefined()
     expect(body.generationConfig?.maxOutputTokens).toBe(256) // 무변경(미지원 모델)
   })
 
   it('Gemini 스트리밍 + thinking: maxOutputTokens 를 스트림 기본(32768)으로 floor 한다', async () => {
-    const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
+    const { http, calls } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n',
+    ])
     const p = createGoogleProvider(baseGoogle, http) // maxTokens 256
-    await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: () => {} })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    await p.chat([{ role: 'user', content: 'q' }], {
+      thinking: { effort: 'high' },
+      onToken: () => {},
+    })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.maxOutputTokens).toBe(32768)
   })
 
   it('thinking 활성이라도 명시 maxOutputTokens 가 기본 이상이면 존중한다(floor 만, 하향 없음)', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens: 50000 }, http)
+    const p = createGoogleProvider(
+      {
+        id: 'g',
+        provider: 'google',
+        displayName: 'G',
+        model: 'gemini-2.5-pro',
+        apiKey: 'k',
+        maxTokens: 50000,
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.maxOutputTokens).toBe(50000)
   })
 
   it('config.thinking 이 세션 기본값으로 동작한다 — per-call 미지정에도 thinkingConfig 활성', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', thinking: { effort: 'low' } }, http)
+    const p = createGoogleProvider(
+      {
+        id: 'g',
+        provider: 'google',
+        displayName: 'G',
+        model: 'gemini-3-pro',
+        apiKey: 'k',
+        thinking: { effort: 'low' },
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }])
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'low', includeThoughts: true })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown }
+    }
+    expect(body.generationConfig?.thinkingConfig).toEqual({
+      thinkingLevel: 'low',
+      includeThoughts: true,
+    })
   })
 
   it('per-call opts.thinking 이 config.thinking 기본값을 이긴다', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', thinking: { effort: 'low' } }, http)
+    const p = createGoogleProvider(
+      {
+        id: 'g',
+        provider: 'google',
+        displayName: 'G',
+        model: 'gemini-3-pro',
+        apiKey: 'k',
+        thinking: { effort: 'low' },
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'high', includeThoughts: true })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown }
+    }
+    expect(body.generationConfig?.thinkingConfig).toEqual({
+      thinkingLevel: 'high',
+      includeThoughts: true,
+    })
   })
 
   // ── 적대리뷰 후속: 커버리지 갭 잠금(로직은 정확 확인됨 — 회귀 방지 특성화 테스트) ──────────
   it('Gemini 3.5(앱 기본 Google 모델 gemini-3.5-flash): effort → thinkingLevel(점버전도 gen-3 방언)', async () => {
     // gemini-3.5-flash 는 PROVIDER_DEFAULTS.google 기본값 → gen-3 thinkingLevel 로 정규화돼야 한다.
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'medium' } })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingLevel: 'medium', includeThoughts: true })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown }
+    }
+    expect(body.generationConfig?.thinkingConfig).toEqual({
+      thinkingLevel: 'medium',
+      includeThoughts: true,
+    })
   })
 
   it('Gemini 2.5(pro/flash/flash-lite): effort → 서브모델 범위 내 정수 budget·천장 클램프(2단계 불변식 잠금 #73)', async () => {
@@ -1555,9 +2330,13 @@ describe('GoogleProvider', () => {
       const budgets: number[] = []
       for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
         const { http, calls } = mockHttp(okBody)
-        await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
-          .chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
-        const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: { thinkingBudget?: number } } }
+        await createGoogleProvider(
+          { id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' },
+          http,
+        ).chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
+        const body = JSON.parse(calls[0].init.body) as {
+          generationConfig?: { thinkingConfig?: { thinkingBudget?: number } }
+        }
         expect(body.generationConfig?.thinkingConfig?.thinkingBudget).toBe(expected[model][effort])
         budgets.push(body.generationConfig!.thinkingConfig!.thinkingBudget!)
       }
@@ -1570,19 +2349,35 @@ describe('GoogleProvider', () => {
   it('Gemini 2.5: effort 없는 thinking({})은 thinkingBudget=-1(AUTOMATIC)로 폴백한다 (#73)', async () => {
     // effort 미지정이면 정수 budget 을 추측하지 않고 동적 사고(-1) 유지 — 1단계 동작 무회귀.
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: {} })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown }
+    }
+    expect(body.generationConfig?.thinkingConfig).toEqual({
+      thinkingBudget: -1,
+      includeThoughts: true,
+    })
   })
 
   it('Gemini 2.5 미지 서브모델은 effort 가 있어도 thinkingBudget=-1(AUTOMATIC) 안전 폴백 (#73, 범위이탈 400 방지)', async () => {
     // 화이트리스트(pro/flash/flash-lite) 미스 → 범위 추측 대신 -1. 서브모델 추가/리네임 시 stale 안전망.
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-ultra', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-ultra', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'max' } })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown }
+    }
+    expect(body.generationConfig?.thinkingConfig).toEqual({
+      thinkingBudget: -1,
+      includeThoughts: true,
+    })
   })
 
   it('Gemini 2.5: 유니온 밖 effort 문자열도 thinkingBudget=-1(AUTOMATIC) 안전 폴백 (#73, NaN→null wire 400 방지)', async () => {
@@ -1590,10 +2385,18 @@ describe('GoogleProvider', () => {
     // 범위이탈 400). `?? -1` 은 NaN 을 못 잡으므로 Number.isFinite 가드로 -1(AUTOMATIC) 폴백한다. 렌더러는 유니온
     // 제약이나 IPC registerApi·영속 config 는 런타임 미검증이라 stale/수기편집 effort 가 여기까지 도달할 수 있다.
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'xxhigh' as never } })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: unknown } }
-    expect(body.generationConfig?.thinkingConfig).toEqual({ thinkingBudget: -1, includeThoughts: true })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { thinkingConfig?: unknown }
+    }
+    expect(body.generationConfig?.thinkingConfig).toEqual({
+      thinkingBudget: -1,
+      includeThoughts: true,
+    })
   })
 
   it('Gemini 2.5 실제 dated-preview id 라우팅: flash-lite-preview→정수, computer-use-preview→-1 폴백 (#73)', async () => {
@@ -1605,29 +2408,60 @@ describe('GoogleProvider', () => {
     ] as const
     for (const [model, expectedBudget] of cases) {
       const { http, calls } = mockHttp(okBody)
-      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
-        .chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
-      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: { thinkingBudget?: number } } }
+      await createGoogleProvider(
+        { id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' },
+        http,
+      ).chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
+      const body = JSON.parse(calls[0].init.body) as {
+        generationConfig?: { thinkingConfig?: { thinkingBudget?: number } }
+      }
       expect(body.generationConfig?.thinkingConfig?.thinkingBudget).toBe(expectedBudget)
     }
   })
 
   it('starvation staticFloor 경계(AUTOMATIC): 버퍼 floor 정확값(16384)은 무변경, 직전(16383)은 16384 로 올림', async () => {
     // 정수 budget 부재(thinking{} → -1 AUTOMATIC)라 staticFloor(16384) 경계만 검증(budget-aware floor 는 별도).
-    for (const [maxTokens, expected] of [[16384, 16384], [16383, 16384]] as const) {
+    for (const [maxTokens, expected] of [
+      [16384, 16384],
+      [16383, 16384],
+    ] as const) {
       const { http, calls } = mockHttp(okBody)
-      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens }, http)
-        .chat([{ role: 'user', content: 'q' }], { thinking: {} })
-      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+      await createGoogleProvider(
+        {
+          id: 'g',
+          provider: 'google',
+          displayName: 'G',
+          model: 'gemini-2.5-pro',
+          apiKey: 'k',
+          maxTokens,
+        },
+        http,
+      ).chat([{ role: 'user', content: 'q' }], { thinking: {} })
+      const body = JSON.parse(calls[0].init.body) as {
+        generationConfig?: { maxOutputTokens?: number }
+      }
       expect(body.generationConfig?.maxOutputTokens).toBe(expected)
     }
   })
 
   it('starvation floor 경계(스트리밍): 스트림 floor 직전(32767)은 32768 로 올림', async () => {
-    const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
-    await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k', maxTokens: 32767 }, http)
-      .chat([{ role: 'user', content: 'q' }], { thinking: {}, onToken: () => {} })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    const { http, calls } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n',
+    ])
+    await createGoogleProvider(
+      {
+        id: 'g',
+        provider: 'google',
+        displayName: 'G',
+        model: 'gemini-2.5-pro',
+        apiKey: 'k',
+        maxTokens: 32767,
+      },
+      http,
+    ).chat([{ role: 'user', content: 'q' }], { thinking: {}, onToken: () => {} })
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.maxOutputTokens).toBe(32768)
   })
 
@@ -1643,12 +2477,21 @@ describe('GoogleProvider', () => {
     ] as const
     for (const [model, effort, expected] of cases) {
       const { http, calls } = mockHttp(okBody)
-      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' }, http)
-        .chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
-      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { thinkingConfig?: { thinkingBudget?: number }; maxOutputTokens?: number } }
+      await createGoogleProvider(
+        { id: 'g', provider: 'google', displayName: 'G', model, apiKey: 'k' },
+        http,
+      ).chat([{ role: 'user', content: 'q' }], { thinking: { effort } })
+      const body = JSON.parse(calls[0].init.body) as {
+        generationConfig?: {
+          thinkingConfig?: { thinkingBudget?: number }
+          maxOutputTokens?: number
+        }
+      }
       expect(body.generationConfig?.maxOutputTokens).toBe(expected)
       // 핵심 불변식: 출력 한도가 thinking budget 을 항상 초과 → 가시 답변 여유 확보(굶음 없음).
-      expect(body.generationConfig!.maxOutputTokens!).toBeGreaterThan(body.generationConfig!.thinkingConfig!.thinkingBudget!)
+      expect(body.generationConfig!.maxOutputTokens!).toBeGreaterThan(
+        body.generationConfig!.thinkingConfig!.thinkingBudget!,
+      )
     }
   })
 
@@ -1658,34 +2501,73 @@ describe('GoogleProvider', () => {
       ['max', 49152], // 32768+16384=49152 > 32768 → 상승
     ] as const
     for (const [effort, expected] of cases) {
-      const { http, calls } = mockStreamHttp(['data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n'])
-      await createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' }, http)
-        .chat([{ role: 'user', content: 'q' }], { thinking: { effort }, onToken: () => {} })
-      const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+      const { http, calls } = mockStreamHttp([
+        'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n',
+      ])
+      await createGoogleProvider(
+        { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-pro', apiKey: 'k' },
+        http,
+      ).chat([{ role: 'user', content: 'q' }], { thinking: { effort }, onToken: () => {} })
+      const body = JSON.parse(calls[0].init.body) as {
+        generationConfig?: { maxOutputTokens?: number }
+      }
       expect(body.generationConfig?.maxOutputTokens).toBe(expected)
     }
   })
 
   it('config.thinking(세션 기본) + per-call 과소 maxTokens 도 floor 가 적용된다', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', thinking: { effort: 'high' } }, http)
+    const p = createGoogleProvider(
+      {
+        id: 'g',
+        provider: 'google',
+        displayName: 'G',
+        model: 'gemini-3-pro',
+        apiKey: 'k',
+        thinking: { effort: 'high' },
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }], { maxTokens: 256 })
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.maxOutputTokens).toBe(16384)
   })
 
   it('config.thinking + config.maxTokens 과소(512) + per-call maxTokens 미지정 → floor(이중 폴백 opts→config→floor)', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k', maxTokens: 512, thinking: { effort: 'high' } }, http)
+    const p = createGoogleProvider(
+      {
+        id: 'g',
+        provider: 'google',
+        displayName: 'G',
+        model: 'gemini-3-pro',
+        apiKey: 'k',
+        maxTokens: 512,
+        thinking: { effort: 'high' },
+      },
+      http,
+    )
     await p.chat([{ role: 'user', content: 'q' }])
-    const body = JSON.parse(calls[0].init.body) as { generationConfig?: { maxOutputTokens?: number } }
+    const body = JSON.parse(calls[0].init.body) as {
+      generationConfig?: { maxOutputTokens?: number }
+    }
     expect(body.generationConfig?.maxOutputTokens).toBe(16384)
   })
 
   it('responseSchema → generationConfig.responseSchema + responseMimeType 를 싣는다', async () => {
-    const { http, calls } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '{}' }] }, finishReason: 'STOP' }] }) }))
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{}' }] }, finishReason: 'STOP' }],
+      }),
+    }))
     const p = createGoogleProvider(baseGoogle, http)
-    const schema = { type: 'object', additionalProperties: false, properties: { x: { type: 'string' } } }
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: { x: { type: 'string' } },
+    }
     await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'verdict', schema } })
     const body = JSON.parse(calls[0].init.body) as { generationConfig?: Record<string, unknown> }
     expect(body.generationConfig?.responseMimeType).toBe('application/json')
@@ -1698,10 +2580,16 @@ describe('GoogleProvider', () => {
       n++
       return n === 1
         ? { ok: false, status: 400, body: 'responseSchema unsupported' }
-        : { body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '[]' }] }, finishReason: 'STOP' }] }) }
+        : {
+            body: JSON.stringify({
+              candidates: [{ content: { parts: [{ text: '[]' }] }, finishReason: 'STOP' }],
+            }),
+          }
     })
     const p = createGoogleProvider(baseGoogle, http)
-    const out = await p.chat([{ role: 'user', content: 'x' }], { responseSchema: { name: 'v', schema: { type: 'object' } } })
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      responseSchema: { name: 'v', schema: { type: 'object' } },
+    })
     expect(calls).toHaveLength(2)
     const b1 = JSON.parse(calls[1].init.body) as { generationConfig?: Record<string, unknown> }
     expect(b1.generationConfig?.responseSchema).toBeUndefined()
@@ -1713,19 +2601,38 @@ describe('GoogleProvider', () => {
   it('버퍼: thought 파트를 ThinkingBlock(sig in providerMeta)로, text/tool_use 순서보존 content 적재', async () => {
     const { http } = mockHttp(() => ({
       body: JSON.stringify({
-        candidates: [{ content: { parts: [
-          { text: '사고 요약', thought: true, thoughtSignature: 'TSIG' },
-          { text: '답변' },
-          { functionCall: { id: 'fc1', name: 'lookup', args: { id: 1 } } },
-        ] }, finishReason: 'STOP' }],
+        candidates: [
+          {
+            content: {
+              parts: [
+                { text: '사고 요약', thought: true, thoughtSignature: 'TSIG' },
+                { text: '답변' },
+                { functionCall: { id: 'fc1', name: 'lookup', args: { id: 1 } } },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
       }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      thinking: { effort: 'high' },
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.text).toBe('답변') // thought 텍스트는 가시 답변에서 제외
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 } }])
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 } },
+    ])
     expect(out.content).toEqual([
-      { type: 'thinking', text: '사고 요약', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
+      {
+        type: 'thinking',
+        text: '사고 요약',
+        providerMeta: { google: { thoughtSignature: 'TSIG' } },
+      },
       { type: 'text', text: '답변' },
       { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 } },
     ])
@@ -1733,9 +2640,19 @@ describe('GoogleProvider', () => {
 
   it('버퍼: thought 파트의 thoughtSignature 가 없으면 providerMeta undefined', async () => {
     const { http } = mockHttp(() => ({
-      body: JSON.stringify({ candidates: [{ content: { parts: [{ text: '사고', thought: true }, { text: '답' }] }, finishReason: 'STOP' }] }),
+      body: JSON.stringify({
+        candidates: [
+          {
+            content: { parts: [{ text: '사고', thought: true }, { text: '답' }] },
+            finishReason: 'STOP',
+          },
+        ],
+      }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     expect(out.content).toEqual([
       { type: 'thinking', text: '사고', providerMeta: undefined },
@@ -1744,7 +2661,11 @@ describe('GoogleProvider', () => {
   })
 
   it('버퍼: thought 파트가 없으면 content undefined(무회귀)', async () => {
-    const { http } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'hi' }] }, finishReason: 'STOP' }] }) }))
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'hi' }] }, finishReason: 'STOP' }],
+      }),
+    }))
     const p = createGoogleProvider(baseGoogle, http)
     const out = await p.chat([{ role: 'user', content: 'q' }])
     expect(out.content).toBeUndefined()
@@ -1754,9 +2675,21 @@ describe('GoogleProvider', () => {
   it('버퍼: text 없는 sig-only thought 파트도 ThinkingBlock(text:"")로 signature 를 보존한다 (버퍼/스트림 대칭)', async () => {
     // thought 파트가 요약 text 없이 thoughtSignature 만 와도 서명을 떨궈선 안 된다(멀티턴 왕복).
     const { http } = mockHttp(() => ({
-      body: JSON.stringify({ candidates: [{ content: { parts: [{ thought: true, thoughtSignature: 'TSIG_NOTEXT' }, { text: '답' }] }, finishReason: 'STOP' }] }),
+      body: JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [{ thought: true, thoughtSignature: 'TSIG_NOTEXT' }, { text: '답' }],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+      }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' } })
     expect(out.content).toEqual([
       { type: 'thinking', text: '', providerMeta: { google: { thoughtSignature: 'TSIG_NOTEXT' } } },
@@ -1768,23 +2701,53 @@ describe('GoogleProvider', () => {
     // Gemini 3 는 text 파트에 thoughtSignature 를 붙인다("even if text"). thought 파트가 없어도 서명된 text 가
     // 있으면 평면 폴백이 sig 를 잃으므로 content 를 만들어 보존한다(멀티턴 왕복).
     const { http } = mockHttp(() => ({
-      body: JSON.stringify({ candidates: [{ content: { parts: [
-        { text: '최종 답변', thoughtSignature: 'TXTSIG' },
-        { functionCall: { id: 'fc1', name: 'lookup', args: { id: 1 } }, thoughtSignature: 'FCSIG' },
-      ] }, finishReason: 'STOP' }] }),
+      body: JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                { text: '최종 답변', thoughtSignature: 'TXTSIG' },
+                {
+                  functionCall: { id: 'fc1', name: 'lookup', args: { id: 1 } },
+                  thoughtSignature: 'FCSIG',
+                },
+              ],
+            },
+            finishReason: 'STOP',
+          },
+        ],
+      }),
     }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.text).toBe('최종 답변')
     expect(out.content).toEqual([
       { type: 'text', text: '최종 답변', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
-      { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+      {
+        type: 'tool_use',
+        id: 'fc1',
+        name: 'lookup',
+        input: { id: 1 },
+        providerMeta: { google: { thoughtSignature: 'FCSIG' } },
+      },
     ])
   })
 
   it('버퍼: 서명·thought 없는 평범한 text 응답은 content undefined 유지(무회귀)', async () => {
-    const { http } = mockHttp(() => ({ body: JSON.stringify({ candidates: [{ content: { parts: [{ text: 'plain' }] }, finishReason: 'STOP' }] }) }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'plain' }] }, finishReason: 'STOP' }],
+      }),
+    }))
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }])
     expect(out.content).toBeUndefined()
     expect(out.text).toBe('plain')
@@ -1792,44 +2755,91 @@ describe('GoogleProvider', () => {
 
   it('mapParts: thinking 블록을 {text, thought:true, thoughtSignature}로 회신한다(멀티턴 왕복)', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    await p.chat([
-      { role: 'user', content: 'q' },
-      { role: 'assistant', content: [
-        { type: 'thinking', text: '사고', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
-        { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
-      ] },
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'fc1', name: 'lookup', content: '값' }] },
-    ], { thinking: { effort: 'high' }, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
-    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ role: string; parts: unknown[] }> }
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    await p.chat(
+      [
+        { role: 'user', content: 'q' },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'thinking',
+              text: '사고',
+              providerMeta: { google: { thoughtSignature: 'TSIG' } },
+            },
+            {
+              type: 'tool_use',
+              id: 'fc1',
+              name: 'lookup',
+              input: { id: 1 },
+              providerMeta: { google: { thoughtSignature: 'FCSIG' } },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', toolUseId: 'fc1', name: 'lookup', content: '값' }],
+        },
+      ],
+      { thinking: { effort: 'high' }, tools: [{ name: 'lookup', parameters: { type: 'object' } }] },
+    )
+    const body = JSON.parse(calls[0].init.body) as {
+      contents: Array<{ role: string; parts: unknown[] }>
+    }
     const model = body.contents.find((c) => c.role === 'model')!
     expect(model.parts[0]).toEqual({ text: '사고', thought: true, thoughtSignature: 'TSIG' })
-    expect(model.parts[1]).toEqual({ functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc1' }, thoughtSignature: 'FCSIG' })
+    expect(model.parts[1]).toEqual({
+      functionCall: { name: 'lookup', args: { id: 1 }, id: 'fc1' },
+      thoughtSignature: 'FCSIG',
+    })
   })
 
   it('mapParts: thinking 블록에 sig 가 없으면 thoughtSignature 미전송', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    await p.chat([
-      { role: 'user', content: 'q' },
-      { role: 'assistant', content: [{ type: 'thinking', text: '사고' }] },
-    ], { thinking: { effort: 'high' } })
-    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ role: string; parts: unknown[] }> }
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    await p.chat(
+      [
+        { role: 'user', content: 'q' },
+        { role: 'assistant', content: [{ type: 'thinking', text: '사고' }] },
+      ],
+      { thinking: { effort: 'high' } },
+    )
+    const body = JSON.parse(calls[0].init.body) as {
+      contents: Array<{ role: string; parts: unknown[] }>
+    }
     const model = body.contents.find((c) => c.role === 'model')!
     expect(model.parts[0]).toEqual({ text: '사고', thought: true })
   })
 
   it('mapParts: 서명된 text 블록은 thoughtSignature 를 echo 하고, 없으면 미전송한다 (Codex P2)', async () => {
     const { http, calls } = mockHttp(okBody)
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     await p.chat([
       { role: 'user', content: 'q' },
-      { role: 'assistant', content: [
-        { type: 'text', text: '서명됨', providerMeta: { google: { thoughtSignature: 'TXTSIG' } } },
-        { type: 'text', text: '평범' },
-      ] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: '서명됨',
+            providerMeta: { google: { thoughtSignature: 'TXTSIG' } },
+          },
+          { type: 'text', text: '평범' },
+        ],
+      },
     ])
-    const body = JSON.parse(calls[0].init.body) as { contents: Array<{ role: string; parts: unknown[] }> }
+    const body = JSON.parse(calls[0].init.body) as {
+      contents: Array<{ role: string; parts: unknown[] }>
+    }
     const model = body.contents.find((c) => c.role === 'model')!
     expect(model.parts[0]).toEqual({ text: '서명됨', thoughtSignature: 'TXTSIG' })
     expect(model.parts[1]).toEqual({ text: '평범' })
@@ -1862,7 +2872,12 @@ describe('provider streaming (SSE)', () => {
     ])
     const p = createAnthropicProvider(baseAnthropic, http)
     const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} })
-    expect(out.usage).toEqual({ inputTokens: 9, outputTokens: 2, cacheCreationInputTokens: 50, cacheReadInputTokens: 80 })
+    expect(out.usage).toEqual({
+      inputTokens: 9,
+      outputTokens: 2,
+      cacheCreationInputTokens: 50,
+      cacheReadInputTokens: 80,
+    })
   })
 
   it('OpenAI: stream:true + include_usage, 델타와 usage 파싱', async () => {
@@ -1872,14 +2887,20 @@ describe('provider streaming (SSE)', () => {
       'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n',
       'data: [DONE]\n\n',
     ])
-    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const p = createOpenAiProvider(
+      { id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' },
+      http,
+    )
     const deltas: string[] = []
     const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: (d) => deltas.push(d) })
     expect(deltas).toEqual(['H', 'i'])
     expect(out.text).toBe('Hi')
     expect(out.finishReason).toBe('stop')
     expect(out.usage).toEqual({ inputTokens: 3, outputTokens: 2 })
-    const body = JSON.parse(calls[0].init.body) as { stream?: boolean; stream_options?: { include_usage?: boolean } }
+    const body = JSON.parse(calls[0].init.body) as {
+      stream?: boolean
+      stream_options?: { include_usage?: boolean }
+    }
     expect(body.stream).toBe(true)
     expect(body.stream_options?.include_usage).toBe(true)
   })
@@ -1901,7 +2922,10 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"안"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"text":"녕"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2}}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' },
+      http,
+    )
     const deltas: string[] = []
     const out = await p.chat([{ role: 'user', content: 'hi' }], { onToken: (d) => deltas.push(d) })
     expect(deltas).toEqual(['안', '녕'])
@@ -1931,7 +2955,9 @@ describe('provider streaming (SSE)', () => {
     })
     expect(deltas).toEqual(['검색'])
     expect(out.text).toBe('검색')
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'tu1', name: 'search', input: { q: 'hi' } }])
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'tu1', name: 'search', input: { q: 'hi' } },
+    ])
     expect(out.finishReason).toBe('tool_use')
     expect((JSON.parse(calls[0].init.body) as { stream?: boolean }).stream).toBe(true)
   })
@@ -1941,7 +2967,9 @@ describe('provider streaming (SSE)', () => {
       body: JSON.stringify({ content: [{ type: 'text', text: 'x' }], stop_reason: 'end_turn' }),
     }))
     const p = createAnthropicProvider(baseAnthropic, http)
-    await p.chat([{ role: 'user', content: 'q' }], { tools: [{ name: 't', parameters: { type: 'object' } }] })
+    await p.chat([{ role: 'user', content: 'q' }], {
+      tools: [{ name: 't', parameters: { type: 'object' } }],
+    })
     expect((JSON.parse(calls[0].init.body) as { stream?: boolean }).stream).toBeUndefined()
   })
 
@@ -1953,14 +2981,19 @@ describe('provider streaming (SSE)', () => {
       'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":6}}\n\n',
       'data: [DONE]\n\n',
     ])
-    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const p = createOpenAiProvider(
+      { id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' },
+      http,
+    )
     const deltas: string[] = []
     const out = await p.chat([{ role: 'user', content: 'q' }], {
       onToken: (d) => deltas.push(d),
       tools: [{ name: 'get_weather', parameters: { type: 'object' } }],
     })
     expect(deltas).toEqual(['날씨'])
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'seoul' } }])
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'seoul' } },
+    ])
     expect(out.finishReason).toBe('tool_use')
     expect(out.usage).toEqual({ inputTokens: 4, outputTokens: 6 })
   })
@@ -1970,7 +3003,10 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"찾아"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"id":7}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":5}}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' },
+      http,
+    )
     const deltas: string[] = []
     const out = await p.chat([{ role: 'user', content: 'q' }], {
       onToken: (d) => deltas.push(d),
@@ -1985,25 +3021,39 @@ describe('provider streaming (SSE)', () => {
     const { http } = mockStreamHttp([
       'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_s1","name":"lookup","args":{"id":7}}}]},"finishReason":"STOP"}]}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], {
       onToken: () => {},
       tools: [{ name: 'lookup', parameters: { type: 'object' } }],
     })
-    expect(out.toolCalls).toEqual([{ type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 } }])
+    expect(out.toolCalls).toEqual([
+      { type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 } },
+    ])
   })
 
   it('Google: 스트리밍 part 레벨 thoughtSignature 를 providerMeta.google 로 캡처한다 (#17-P1)', async () => {
     const { http } = mockStreamHttp([
       'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_s1","name":"lookup","args":{"id":7}},"thoughtSignature":"SIG_S"}]},"finishReason":"STOP"}]}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], {
       onToken: () => {},
       tools: [{ name: 'lookup', parameters: { type: 'object' } }],
     })
     expect(out.toolCalls).toEqual([
-      { type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 }, providerMeta: { google: { thoughtSignature: 'SIG_S' } } },
+      {
+        type: 'tool_use',
+        id: 'fc_s1',
+        name: 'lookup',
+        input: { id: 7 },
+        providerMeta: { google: { thoughtSignature: 'SIG_S' } },
+      },
     ])
   })
 
@@ -2013,9 +3063,15 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"안"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"text":"녕"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4}}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     const deltas: string[] = []
-    const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: (d) => deltas.push(d) })
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      thinking: { effort: 'high' },
+      onToken: (d) => deltas.push(d),
+    })
     expect(deltas).toEqual(['안', '녕']) // 사고 요약은 onToken 으로 안 흘림(가시 토큰 아님)
     expect(out.text).toBe('안녕')
     expect(out.content).toEqual([
@@ -2028,7 +3084,10 @@ describe('provider streaming (SSE)', () => {
     const { http } = mockStreamHttp([
       'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
     expect(out.content).toBeUndefined()
     expect(out.text).toBe('hi')
@@ -2040,14 +3099,32 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"생각","thought":true,"thoughtSignature":"TSIG"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc_s1","name":"lookup","args":{"id":7}},"thoughtSignature":"FCSIG"}]},"finishReason":"STOP"}]}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.toolCalls).toEqual([
-      { type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+      {
+        type: 'tool_use',
+        id: 'fc_s1',
+        name: 'lookup',
+        input: { id: 7 },
+        providerMeta: { google: { thoughtSignature: 'FCSIG' } },
+      },
     ])
     expect(out.content).toEqual([
       { type: 'thinking', text: '생각', providerMeta: { google: { thoughtSignature: 'TSIG' } } },
-      { type: 'tool_use', id: 'fc_s1', name: 'lookup', input: { id: 7 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+      {
+        type: 'tool_use',
+        id: 'fc_s1',
+        name: 'lookup',
+        input: { id: 7 },
+        providerMeta: { google: { thoughtSignature: 'FCSIG' } },
+      },
     ])
   })
 
@@ -2057,7 +3134,10 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"최종","thoughtSignature":"TXTSIG"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"text":" 답"}]},"finishReason":"STOP"}]}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
     expect(out.text).toBe('최종 답')
     expect(out.content).toEqual([
@@ -2073,7 +3153,10 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"답변"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"TXTSIG"}]},"finishReason":"STOP"}]}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {} })
     expect(out.text).toBe('답변')
     expect(out.content).toEqual([
@@ -2089,11 +3172,23 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"고민","thought":true}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"fc1","name":"lookup","args":{"id":1}},"thoughtSignature":"FCSIG"}]},"finishReason":"STOP"}]}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.content).toEqual([
       { type: 'thinking', text: '고민', providerMeta: undefined },
-      { type: 'tool_use', id: 'fc1', name: 'lookup', input: { id: 1 }, providerMeta: { google: { thoughtSignature: 'FCSIG' } } },
+      {
+        type: 'tool_use',
+        id: 'fc1',
+        name: 'lookup',
+        input: { id: 1 },
+        providerMeta: { google: { thoughtSignature: 'FCSIG' } },
+      },
     ])
   })
 
@@ -2103,8 +3198,14 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"단계2","thought":true,"thoughtSignature":"SIG2"}]}}]}\n\n',
       'data: {"candidates":[{"content":{"parts":[{"text":"답"}]},"finishReason":"STOP"}]}\n\n',
     ])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' }, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { thinking: { effort: 'high' }, onToken: () => {} })
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3-pro', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      thinking: { effort: 'high' },
+      onToken: () => {},
+    })
     expect(out.content).toEqual([
       { type: 'thinking', text: '단계1', providerMeta: { google: { thoughtSignature: 'SIG1' } } },
       { type: 'thinking', text: '단계2', providerMeta: { google: { thoughtSignature: 'SIG2' } } },
@@ -2168,7 +3269,10 @@ describe('provider streaming (SSE)', () => {
       'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"write","arguments":"{\\"x\\":1}"}}]},"finish_reason":"tool_calls"}]}\n\n',
       'data: [DONE]\n\n',
     ])
-    const p = createOpenAiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' }, http)
+    const p = createOpenAiProvider(
+      { id: 'o', provider: 'openai', displayName: 'O', model: 'gpt-4o', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'q' }], {
       onToken: () => {},
       tools: [{ name: 'read', parameters: { type: 'object' } }],
@@ -2185,7 +3289,9 @@ describe('provider streaming (SSE)', () => {
       'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}\n\n',
     ])
     const p = createAnthropicProvider(baseAnthropic, http)
-    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+    await expect(
+      p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }),
+    ).rejects.toBeInstanceOf(ApiProviderError)
   })
 
   it('OpenAI streaming: 중간 error 페이로드는 ApiProviderError 로 throw(부분응답 위장 방지, anthropic 과 대칭)', async () => {
@@ -2194,7 +3300,9 @@ describe('provider streaming (SSE)', () => {
       'data: {"error":{"message":"overloaded","type":"server_error"}}\n\n',
     ])
     const p = createOpenAiProvider(baseOpenai, http)
-    const err = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }).catch((e: unknown) => e)
+    const err = await p
+      .chat([{ role: 'user', content: 'x' }], { onToken: () => {} })
+      .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ApiProviderError)
     expect(err).toMatchObject({ provider: 'openai', status: 200 })
     expect((err as ApiProviderError).detail).toContain('overloaded')
@@ -2206,7 +3314,9 @@ describe('provider streaming (SSE)', () => {
       'data: {"error":{"code":503,"message":"overloaded","status":"UNAVAILABLE"}}\n\n',
     ])
     const p = createGoogleProvider(baseGoogle, http)
-    const err = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }).catch((e: unknown) => e)
+    const err = await p
+      .chat([{ role: 'user', content: 'x' }], { onToken: () => {} })
+      .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ApiProviderError)
     expect(err).toMatchObject({ provider: 'google', status: 200 })
     expect((err as ApiProviderError).detail).toContain('overloaded')
@@ -2218,7 +3328,9 @@ describe('provider streaming (SSE)', () => {
       'data: {"choices":[{"delta":{"content":"림"},"finish_reason":null}]}\n\n',
     ])
     const p = createOpenAiProvider(baseOpenai, http)
-    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+    await expect(
+      p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }),
+    ).rejects.toBeInstanceOf(ApiProviderError)
   })
 
   it('Google streaming: finishReason 없이 끝나면 ApiProviderError 로 표면화한다(잘림 stop 위장 방지 — #7)', async () => {
@@ -2227,7 +3339,9 @@ describe('provider streaming (SSE)', () => {
       'data: {"candidates":[{"content":{"parts":[{"text":"림"}]}}]}\n\n',
     ])
     const p = createGoogleProvider(baseGoogle, http)
-    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+    await expect(
+      p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }),
+    ).rejects.toBeInstanceOf(ApiProviderError)
   })
 
   it('Anthropic streaming: message_delta(stop_reason) 없이 끝나면 ApiProviderError 로 표면화한다(잘림 stop 위장 방지 — #7)', async () => {
@@ -2236,18 +3350,27 @@ describe('provider streaming (SSE)', () => {
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
     ])
     const p = createAnthropicProvider(baseAnthropic, http)
-    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+    await expect(
+      p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }),
+    ).rejects.toBeInstanceOf(ApiProviderError)
   })
 
   it('Anthropic streaming: 이벤트 0개(빈 200 스트림)도 ApiProviderError 로 표면화한다(잘림 stop 위장 방지 — #7)', async () => {
     const { http } = mockStreamHttp([])
     const p = createAnthropicProvider(baseAnthropic, http)
-    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+    await expect(
+      p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }),
+    ).rejects.toBeInstanceOf(ApiProviderError)
   })
 
   it('Google: 프롬프트 차단(promptFeedback, 후보 없음)은 content_filter 로 표면화한다', async () => {
-    const { http } = mockHttp(() => ({ body: JSON.stringify({ promptFeedback: { blockReason: 'SAFETY' } }) }))
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({ promptFeedback: { blockReason: 'SAFETY' } }),
+    }))
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'x' }])
     expect(out.text).toBe('')
     expect(out.finishReason).toBe('content_filter')
@@ -2255,7 +3378,10 @@ describe('provider streaming (SSE)', () => {
 
   it('Google streaming: 프롬프트 차단도 content_filter 로 표면화한다', async () => {
     const { http } = mockStreamHttp(['data: {"promptFeedback":{"blockReason":"OTHER"}}\n\n'])
-    const p = createGoogleProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' }, http)
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-3.5-flash', apiKey: 'k' },
+      http,
+    )
     const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })
     expect(out.finishReason).toBe('content_filter')
   })
@@ -2293,7 +3419,10 @@ describe('provider streaming (SSE)', () => {
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
     ])
     const p = createAnthropicProvider(baseAnthropic, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.content).toEqual([
       { type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'SIG_O' } } },
       { type: 'tool_use', id: 'tu1', name: 'lookup', input: {} },
@@ -2330,10 +3459,26 @@ describe('provider streaming (SSE)', () => {
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
     ])
     const p = createAnthropicProvider(baseAnthropic, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'a', parameters: { type: 'object' } }] })
-    expect((out.content ?? []).map((b) => b.type)).toEqual(['thinking', 'tool_use', 'thinking', 'tool_use'])
-    expect(out.content?.[0]).toEqual({ type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'S0' } } })
-    expect(out.content?.[2]).toEqual({ type: 'thinking', text: '', providerMeta: { anthropic: { signature: 'S2' } } })
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'a', parameters: { type: 'object' } }],
+    })
+    expect((out.content ?? []).map((b) => b.type)).toEqual([
+      'thinking',
+      'tool_use',
+      'thinking',
+      'tool_use',
+    ])
+    expect(out.content?.[0]).toEqual({
+      type: 'thinking',
+      text: '',
+      providerMeta: { anthropic: { signature: 'S0' } },
+    })
+    expect(out.content?.[2]).toEqual({
+      type: 'thinking',
+      text: '',
+      providerMeta: { anthropic: { signature: 'S2' } },
+    })
     expect(out.toolCalls).toEqual([
       { type: 'tool_use', id: 't1', name: 'a', input: {} },
       { type: 'tool_use', id: 't3', name: 'b', input: {} },
@@ -2350,7 +3495,10 @@ describe('provider streaming (SSE)', () => {
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
     ])
     const p = createAnthropicProvider(baseAnthropic, http)
-    const out = await p.chat([{ role: 'user', content: 'q' }], { onToken: () => {}, tools: [{ name: 'lookup', parameters: { type: 'object' } }] })
+    const out = await p.chat([{ role: 'user', content: 'q' }], {
+      onToken: () => {},
+      tools: [{ name: 'lookup', parameters: { type: 'object' } }],
+    })
     expect(out.content).toEqual([
       { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: 'RD_S' } } },
       { type: 'tool_use', id: 'tu1', name: 'lookup', input: {} },
@@ -2388,9 +3536,15 @@ describe('스트리밍 구조화-출력 400 graceful degradation (#26 후속 b)'
       responseSchema: schemaOpt,
     })
     expect(calls).toHaveLength(2)
-    const b0 = JSON.parse(calls[0].init.body) as { output_config?: Record<string, unknown>; stream?: boolean }
+    const b0 = JSON.parse(calls[0].init.body) as {
+      output_config?: Record<string, unknown>
+      stream?: boolean
+    }
     expect(b0.output_config?.format).toBeDefined()
-    const b1 = JSON.parse(calls[1].init.body) as { output_config?: Record<string, unknown>; stream?: boolean }
+    const b1 = JSON.parse(calls[1].init.body) as {
+      output_config?: Record<string, unknown>
+      stream?: boolean
+    }
     expect(b1.output_config).toBeUndefined()
     expect(b1.stream).toBe(true) // 재시도도 스트리밍 요청 유지
     expect(out.text).toBe('{}')
@@ -2418,7 +3572,10 @@ describe('스트리밍 구조화-출력 400 graceful degradation (#26 후속 b)'
       'data: [DONE]\n\n',
     ])
     const p = createOpenAiProvider(baseOpenai, http)
-    const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {}, responseSchema: schemaOpt })
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      onToken: () => {},
+      responseSchema: schemaOpt,
+    })
     expect(calls).toHaveLength(2)
     const b0 = JSON.parse(calls[0].init.body) as { response_format?: unknown; stream?: boolean }
     expect(b0.response_format).toBeDefined()
@@ -2433,7 +3590,10 @@ describe('스트리밍 구조화-출력 400 graceful degradation (#26 후속 b)'
       'data: {"candidates":[{"content":{"parts":[{"text":"{}"}]},"finishReason":"STOP"}]}\n\n',
     ])
     const p = createGoogleProvider(baseGoogle, http)
-    const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {}, responseSchema: schemaOpt })
+    const out = await p.chat([{ role: 'user', content: 'x' }], {
+      onToken: () => {},
+      responseSchema: schemaOpt,
+    })
     expect(calls).toHaveLength(2)
     expect(calls[1].url).toContain('streamGenerateContent?alt=sse') // 재시도도 스트리밍 엔드포인트 유지
     const b1 = JSON.parse(calls[1].init.body) as { generationConfig?: Record<string, unknown> }
@@ -2445,16 +3605,36 @@ describe('스트리밍 구조화-출력 400 graceful degradation (#26 후속 b)'
   it('스트리밍 400 이라도 responseSchema 가 없으면 재시도하지 않는다(에러 보존)', async () => {
     const { http, calls } = mock400ThenStream([])
     const p = createAnthropicProvider(baseAnthropic, http)
-    await expect(p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })).rejects.toBeInstanceOf(ApiProviderError)
+    await expect(
+      p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} }),
+    ).rejects.toBeInstanceOf(ApiProviderError)
     expect(calls).toHaveLength(1)
   })
 })
 
 describe('createApiProvider (registry)', () => {
   it('dispatches to the correct provider implementation', () => {
-    const a = createApiProvider({ id: 'a', provider: 'anthropic', displayName: 'A', model: 'm', apiKey: 'k' })
-    const o = createApiProvider({ id: 'o', provider: 'openai', displayName: 'O', model: 'm', apiKey: 'k' })
-    const g = createApiProvider({ id: 'g', provider: 'google', displayName: 'G', model: 'm', apiKey: 'k' })
+    const a = createApiProvider({
+      id: 'a',
+      provider: 'anthropic',
+      displayName: 'A',
+      model: 'm',
+      apiKey: 'k',
+    })
+    const o = createApiProvider({
+      id: 'o',
+      provider: 'openai',
+      displayName: 'O',
+      model: 'm',
+      apiKey: 'k',
+    })
+    const g = createApiProvider({
+      id: 'g',
+      provider: 'google',
+      displayName: 'G',
+      model: 'm',
+      apiKey: 'k',
+    })
     expect(a.provider).toBe('anthropic')
     expect(o.provider).toBe('openai')
     expect(g.provider).toBe('google')
@@ -2467,7 +3647,16 @@ describe('sendWithSchemaFallback', () => {
 
   it('성공(200)이면 재시도 없이 그대로 반환', async () => {
     let n = 0
-    const res = await sendWithSchemaFallback(async () => { n++; return ok() }, true, () => { throw new Error('strip 호출 금지') })
+    const res = await sendWithSchemaFallback(
+      async () => {
+        n++
+        return ok()
+      },
+      true,
+      () => {
+        throw new Error('strip 호출 금지')
+      },
+    )
     expect(res.status).toBe(200)
     expect(n).toBe(1)
   })
@@ -2476,9 +3665,14 @@ describe('sendWithSchemaFallback', () => {
     let n = 0
     let stripped = false
     const res = await sendWithSchemaFallback(
-      async () => { n++; return n === 1 ? bad400() : ok() },
+      async () => {
+        n++
+        return n === 1 ? bad400() : ok()
+      },
       true,
-      () => { stripped = true },
+      () => {
+        stripped = true
+      },
     )
     expect(stripped).toBe(true)
     expect(n).toBe(2)
@@ -2487,7 +3681,16 @@ describe('sendWithSchemaFallback', () => {
 
   it('스키마 없으면 400 이라도 재시도하지 않는다', async () => {
     let n = 0
-    const res = await sendWithSchemaFallback(async () => { n++; return bad400() }, false, () => { throw new Error('strip 금지') })
+    const res = await sendWithSchemaFallback(
+      async () => {
+        n++
+        return bad400()
+      },
+      false,
+      () => {
+        throw new Error('strip 금지')
+      },
+    )
     expect(n).toBe(1)
     expect(res.status).toBe(400)
   })

@@ -14,12 +14,14 @@ jobs:
   quality:
     name: typecheck · lint · test · build
     runs-on: ubuntu-latest
+    env:
+      HUSKY: 0
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: '.nvmrc'
           cache: npm
 
       - name: Install
@@ -30,6 +32,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Format check (prettier)
+        run: npm run format:check
 
       - name: Test (vitest)
         run: npm test
@@ -44,12 +49,14 @@ jobs:
   windows-tests:
     name: windows vitest (win32 보안 회귀)
     runs-on: windows-latest
+    env:
+      HUSKY: 0
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: '.nvmrc'
           cache: npm
 
       # vitest 는 electron 바이너리가 필요 없다(테스트는 electron 모듈을 import 하지 않음, build 도 안 함).

@@ -6,7 +6,11 @@ import { createMemoryStore } from '../store/memory'
 import type { DiffResult, Workspace } from '../workspace/git'
 import { runProject } from './orchestrator'
 
-function fakeSession(id: string, responder: () => string, kind: LlmConnectionKind = 'api'): LlmSession {
+function fakeSession(
+  id: string,
+  responder: () => string,
+  kind: LlmConnectionKind = 'api',
+): LlmSession {
   return {
     id,
     descriptor: { id, kind, displayName: id, ref: id, model: '' },
@@ -23,7 +27,9 @@ function deterministic() {
 }
 
 /** diff/커밋을 기록하는 가짜 워크스페이스. collectDiff 는 호출마다 diffByCall 을 소비한다. */
-function fakeWorkspace(diffByCall: DiffResult[] = []): Workspace & { commits: string[]; reverts: number } {
+function fakeWorkspace(
+  diffByCall: DiffResult[] = [],
+): Workspace & { commits: string[]; reverts: number } {
   let i = 0
   const commits: string[] = []
   const ws = {
@@ -51,7 +57,12 @@ describe('runProject', () => {
   it('plans, implements (direct edit), reviews (approve), and summarizes', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
-    sessions.add(fakeSession('planner', () => '[{"title":"작업A","description":"a"},{"title":"작업B","description":"b"}]'))
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"작업A","description":"a"},{"title":"작업B","description":"b"}]',
+      ),
+    )
     let implCalls = 0
     sessions.add(
       fakeSession(
@@ -121,7 +132,10 @@ describe('runProject', () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(
-      fakeSession('planner', () => '[{"title":"T1","description":"a"},{"title":"T2","description":"b"}]'),
+      fakeSession(
+        'planner',
+        () => '[{"title":"T1","description":"a"},{"title":"T2","description":"b"}]',
+      ),
     )
     const controller = new AbortController()
     let implCalls = 0
@@ -139,7 +153,12 @@ describe('runProject', () => {
     sessions.add(impl)
     sessions.add(fakeSession('rev', () => 'APPROVE'))
     let summarizerCalls = 0
-    sessions.add(fakeSession('sum', () => { summarizerCalls++; return '요약' }))
+    sessions.add(
+      fakeSession('sum', () => {
+        summarizerCalls++
+        return '요약'
+      }),
+    )
 
     let verifyCalls = 0
     const result = await runProject('goal', {
@@ -156,7 +175,17 @@ describe('runProject', () => {
       signal: controller.signal,
       verify: async () => {
         verifyCalls++
-        return [{ kind: 'test', command: 'npm test', passed: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1 }]
+        return [
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed: true,
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            durationMs: 1,
+          },
+        ]
       },
     })
 
@@ -196,7 +225,9 @@ describe('runProject', () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     // planner 가 architect 역할 작업을 만든다 — architect 는 배정에 없어 implementer 로 폴백
-    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d","role":"architect"}]'))
+    sessions.add(
+      fakeSession('planner', () => '[{"title":"T","description":"d","role":"architect"}]'),
+    )
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
@@ -418,7 +449,10 @@ describe('runProject', () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(
-      fakeSession('planner', () => '[{"title":"T1","description":"a"},{"title":"T2","description":"b"}]'),
+      fakeSession(
+        'planner',
+        () => '[{"title":"T1","description":"a"},{"title":"T2","description":"b"}]',
+      ),
     )
     let calls = 0
     const impl: LlmSession = {
@@ -469,7 +503,10 @@ describe('runProject', () => {
     const sessions = createSessionManager()
     // A(인덱스0)는 B(인덱스1)에 의존 → 목록 순서와 무관하게 B 가 먼저 실행돼야 한다
     sessions.add(
-      fakeSession('planner', () => '[{"title":"A","description":"a","dependsOn":[1]},{"title":"B","description":"b"}]'),
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a","dependsOn":[1]},{"title":"B","description":"b"}]',
+      ),
     )
     const order: string[] = []
     sessions.add(recordingImplementer(order))
@@ -568,7 +605,8 @@ describe('runProject', () => {
     sessions.add(
       fakeSession(
         'planner',
-        () => '[{"title":"A","description":"a","dependsOn":[1]},{"title":"B","description":"b","dependsOn":[0]}]',
+        () =>
+          '[{"title":"A","description":"a","dependsOn":[1]},{"title":"B","description":"b","dependsOn":[0]}]',
       ),
     )
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
@@ -650,7 +688,11 @@ describe('runProject', () => {
       ],
       workspace: ws,
       workspaceRoot: '/ws',
-      gate: { async request() { return 'approved' } },
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
     })
     expect(result.tasks[0].status).toBe('done')
     expect(ws.commits).toHaveLength(1)
@@ -660,9 +702,20 @@ describe('runProject', () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     // planner 가 작업에 role:"reviewer" 를 붙인다 — 모든 작업은 편집하므로 implementer 로 라우팅돼야 한다.
-    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d","role":"reviewer"}]'))
+    sessions.add(
+      fakeSession('planner', () => '[{"title":"T","description":"d","role":"reviewer"}]'),
+    )
     let implCalls = 0
-    sessions.add(fakeSession('impl', () => { implCalls++; return '구현' }, 'cli'))
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
     sessions.add(fakeSession('rev', () => 'APPROVE', 'api')) // 리뷰어는 API(비편집)
     const result = await runProject('goal', {
       store,
@@ -687,7 +740,12 @@ describe('runProject', () => {
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
     let reviewerCalls = 0
-    sessions.add(fakeSession('rev', () => { reviewerCalls++; return 'APPROVE' }))
+    sessions.add(
+      fakeSession('rev', () => {
+        reviewerCalls++
+        return 'APPROVE'
+      }),
+    )
     sessions.add(fakeSession('sum', () => '요약')) // 별도 summarizer — 리뷰어가 요약 폴백으로 재사용되지 않게
     // 민감 파일(.env) → destructive. gate 없음 → 리뷰어에게 보내기 전에 거부돼야 한다.
     const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
@@ -716,7 +774,12 @@ describe('runProject', () => {
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
     let reviewerCalls = 0
-    sessions.add(fakeSession('rev', () => { reviewerCalls++; return 'APPROVE' }))
+    sessions.add(
+      fakeSession('rev', () => {
+        reviewerCalls++
+        return 'APPROVE'
+      }),
+    )
     sessions.add(fakeSession('sum', () => '요약')) // 별도 summarizer — 리뷰어 폴백 재사용 방지
     const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
     const result = await runProject('goal', {
@@ -730,7 +793,11 @@ describe('runProject', () => {
       ],
       workspace: ws,
       workspaceRoot: '/ws',
-      gate: { async request() { return 'approved' } },
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
     })
     expect(result.tasks[0].status).toBe('done')
     expect(reviewerCalls).toBe(1) // 승인 후에는 리뷰어가 호출된다
@@ -789,7 +856,15 @@ describe('runProject', () => {
       workspace: fakeWorkspace(),
       workspaceRoot: '/ws',
       verify: async () => [
-        { kind: 'test', command: 'npm test', passed: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1 },
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: true,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          durationMs: 1,
+        },
       ],
     })
     expect(result.verifications).toHaveLength(1)
@@ -815,7 +890,15 @@ describe('runProject', () => {
       workspaceRoot: '/ws',
       maxVerifyFixRounds: 0,
       verify: async () => [
-        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', durationMs: 1 },
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
       ],
     })
     expect(store.getProject(result.projectId)?.status).toBe('failed')
@@ -901,7 +984,16 @@ describe('runProject', () => {
       maxVerifyFixRounds: 1,
       // gate 미지정 → 위험 verify-fix 변경은 거부(안전 기본값)
       verify: async () => [
-        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          analysis: 'x',
+          durationMs: 1,
+        },
       ],
     })
 
@@ -956,7 +1048,16 @@ describe('runProject', () => {
         verifyCalls++
         const passed = verifyCalls >= 2 // 1차 실패, 보정 실행 후 2차 통과
         return [
-          { kind: 'test', command: 'npm test', passed, exitCode: passed ? 0 : 1, stdout: '', stderr: passed ? '' : 'boom', analysis: passed ? undefined : 'boom', durationMs: 1 },
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed,
+            exitCode: passed ? 0 : 1,
+            stdout: '',
+            stderr: passed ? '' : 'boom',
+            analysis: passed ? undefined : 'boom',
+            durationMs: 1,
+          },
         ]
       },
     })
@@ -995,7 +1096,16 @@ describe('runProject', () => {
       maxVerifyFixRounds: 0,
       // maxReplanRounds 미지정 → 기본 0(비활성)
       verify: async () => [
-        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          analysis: 'x',
+          durationMs: 1,
+        },
       ],
     })
     expect(plannerCalls).toBe(1) // 초기 계획만, 보정 계획 호출 없음
@@ -1041,7 +1151,16 @@ describe('runProject', () => {
       verify: async () => {
         verifyCalls++
         return [
-          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed: false,
+            exitCode: 1,
+            stdout: '',
+            stderr: 'x',
+            analysis: 'x',
+            durationMs: 1,
+          },
         ]
       },
     })
@@ -1090,7 +1209,16 @@ describe('runProject', () => {
       verify: async () => {
         verifyCalls++
         return [
-          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed: false,
+            exitCode: 1,
+            stdout: '',
+            stderr: 'x',
+            analysis: 'x',
+            durationMs: 1,
+          },
         ]
       },
     })
@@ -1139,7 +1267,16 @@ describe('runProject', () => {
       maxReplanRounds: 2,
       onEvent: (e) => events.push(e),
       verify: async () => [
-        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          analysis: 'x',
+          durationMs: 1,
+        },
       ],
     })
     const replanEvent = events.find((e) => e.type === 'replan')
@@ -1158,7 +1295,9 @@ describe('runProject', () => {
     sessions.add(
       fakeSession('planner', () => {
         plannerCalls++
-        return plannerCalls === 1 ? '[{"title":"T","description":"d"}]' : '{"tasks":[{"title":"보정","description":"fix"}]}'
+        return plannerCalls === 1
+          ? '[{"title":"T","description":"d"}]'
+          : '{"tasks":[{"title":"보정","description":"fix"}]}'
       }),
     )
     let implCalls = 0
@@ -1191,7 +1330,16 @@ describe('runProject', () => {
       verify: async () => {
         verifyCalls++
         return [
-          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed: false,
+            exitCode: 1,
+            stdout: '',
+            stderr: 'x',
+            analysis: 'x',
+            durationMs: 1,
+          },
         ]
       },
     })
@@ -1206,7 +1354,9 @@ describe('runProject', () => {
     sessions.add(
       fakeSession('planner', () => {
         plannerCalls++
-        return plannerCalls === 1 ? '[{"title":"T","description":"d"}]' : '{"tasks":[{"title":"보정","description":"fix"}]}'
+        return plannerCalls === 1
+          ? '[{"title":"T","description":"d"}]'
+          : '{"tasks":[{"title":"보정","description":"fix"}]}'
       }),
     )
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
@@ -1240,7 +1390,16 @@ describe('runProject', () => {
         verifyCalls++
         const passed = verifyCalls >= 2 // 1차 실패 → replan → 2차 통과
         return [
-          { kind: 'test', command: 'npm test', passed, exitCode: passed ? 0 : 1, stdout: '', stderr: passed ? '' : 'x', analysis: passed ? undefined : 'x', durationMs: 1 },
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed,
+            exitCode: passed ? 0 : 1,
+            stdout: '',
+            stderr: passed ? '' : 'x',
+            analysis: passed ? undefined : 'x',
+            durationMs: 1,
+          },
         ]
       },
     })
@@ -1283,7 +1442,16 @@ describe('runProject', () => {
       verify: async () => {
         verifyCalls++
         return [
-          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed: false,
+            exitCode: 1,
+            stdout: '',
+            stderr: 'x',
+            analysis: 'x',
+            durationMs: 1,
+          },
         ]
       },
     })
@@ -1384,7 +1552,15 @@ describe('runProject', () => {
       verify: async () => {
         verifyCalls++
         return [
-          { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', durationMs: 1 },
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed: false,
+            exitCode: 1,
+            stdout: '',
+            stderr: 'x',
+            durationMs: 1,
+          },
         ]
       },
     })
@@ -1582,7 +1758,9 @@ describe('runProject', () => {
     expect(t.output).toContain('실행 오류') // 원래 작업 오류
     expect(t.output).toContain('되돌리기 실패') // revert 실패도 표면화(무성흡수 금지)
     expect(t.output).toContain('git reset 실패') // revert 오류 원문 보존
-    expect(events.some((e) => e.type === 'task.failed' && e.message.includes('되돌리기 실패'))).toBe(true)
+    expect(
+      events.some((e) => e.type === 'task.failed' && e.message.includes('되돌리기 실패')),
+    ).toBe(true)
   })
 
   it('verify-fix 정리 중 revert 실패를 무성흡수하지 않고 표면화한다 (#7)', async () => {
@@ -1632,10 +1810,21 @@ describe('runProject', () => {
       maxVerifyFixRounds: 1,
       onEvent: (e) => events.push(e),
       verify: async () => [
-        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', analysis: 'x', durationMs: 1 },
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          analysis: 'x',
+          durationMs: 1,
+        },
       ],
     })
-    const fixEvent = events.find((e) => e.type === 'verify.fixing' && e.message.includes('수정 실패'))
+    const fixEvent = events.find(
+      (e) => e.type === 'verify.fixing' && e.message.includes('수정 실패'),
+    )
     expect(fixEvent).toBeDefined()
     expect(fixEvent?.message).toContain('되돌리기 실패') // verify-fix revert 실패 표면화
     expect(fixEvent?.message).toContain('git clean 실패') // revert 오류 원문 보존
@@ -1699,7 +1888,15 @@ describe('runProject', () => {
       maxVerifyFixRounds: 0,
       onEvent: (e) => events.push(e),
       verify: async () => [
-        { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', durationMs: 1 },
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
       ],
     })
     const done = events.find((e) => e.type === 'project.done')

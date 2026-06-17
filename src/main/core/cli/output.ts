@@ -33,7 +33,11 @@ export function parseCodexJsonl(raw: string): string {
     } catch {
       continue
     }
-    if (evt.type === 'item.completed' && evt.item?.type === 'agent_message' && typeof evt.item.text === 'string') {
+    if (
+      evt.type === 'item.completed' &&
+      evt.item?.type === 'agent_message' &&
+      typeof evt.item.text === 'string'
+    ) {
       last = evt.item.text
     }
   }
@@ -86,15 +90,22 @@ export function parseStreamLine(format: StreamParseFormat, line: string): string
   }
   switch (format) {
     case 'claude-stream':
-      return e.type === 'stream_event' && e.event?.delta?.type === 'text_delta' && typeof e.event.delta.text === 'string'
+      return e.type === 'stream_event' &&
+        e.event?.delta?.type === 'text_delta' &&
+        typeof e.event.delta.text === 'string'
         ? e.event.delta.text
         : ''
     case 'gemini-stream':
-      return e.type === 'message' && e.role === 'assistant' && e.delta === true && typeof e.content === 'string'
+      return e.type === 'message' &&
+        e.role === 'assistant' &&
+        e.delta === true &&
+        typeof e.content === 'string'
         ? e.content
         : ''
     case 'codex-jsonl':
-      return e.type === 'item.completed' && e.item?.type === 'agent_message' && typeof e.item.text === 'string'
+      return e.type === 'item.completed' &&
+        e.item?.type === 'agent_message' &&
+        typeof e.item.text === 'string'
         ? e.item.text
         : ''
     default:

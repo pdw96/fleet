@@ -1,7 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import {
+  _electron as electron,
+  expect,
+  test,
+  type ElectronApplication,
+  type Page,
+} from '@playwright/test'
 
 /**
  * MCP 호스트 GUI e2e — 실제 Electron 빌드를 띄워 "04 — MCP" 패널에서 로컬 목 MCP 서버에 연결하고,
@@ -54,9 +60,9 @@ test('MCP 서버를 연결하고 도구 노출·감사 이벤트를 관측한다
   // 감사 이벤트 관측: listEvents() 로 MCP 연결 라이프사이클을 확인한다.
   const events = await page.evaluate(
     () =>
-      (window as unknown as { fleet: { listEvents(): Promise<AuditEvent[]> } }).fleet.listEvents() as Promise<
-        AuditEvent[]
-      >,
+      (
+        window as unknown as { fleet: { listEvents(): Promise<AuditEvent[]> } }
+      ).fleet.listEvents() as Promise<AuditEvent[]>,
   )
   const mcpEvents = events.filter((e) => e.type.startsWith('mcp.'))
   console.log('관측된 MCP 감사 이벤트:', JSON.stringify(mcpEvents, null, 2))

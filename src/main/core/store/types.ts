@@ -109,7 +109,12 @@ export interface Store {
   createRoom(input: { title: string; participants?: string[] }): ChatRoom
   getRoom(id: string): ChatRoom | undefined
   listRooms(): ChatRoom[]
-  appendMessage(input: { roomId: string; author: ChatAuthor; role?: AgentRole; content: string }): ChatMessage
+  appendMessage(input: {
+    roomId: string
+    author: ChatAuthor
+    role?: AgentRole
+    content: string
+  }): ChatMessage
   listMessages(roomId: string): ChatMessage[]
 
   // ── audit events ──

@@ -48,7 +48,12 @@ export function App() {
         </div>
         <nav className="nav">
           {TABS.map((t) => (
-            <button key={t.id} className="nav-btn" data-active={tab === t.id} onClick={() => setTab(t.id)}>
+            <button
+              key={t.id}
+              className="nav-btn"
+              data-active={tab === t.id}
+              onClick={() => setTab(t.id)}
+            >
               {t.label}
             </button>
           ))}
@@ -64,7 +69,9 @@ export function App() {
 
       <main className="main">
         <div className="wrap">
-          {tab === 'sessions' && <SessionsPanel sessions={sessions} onRefresh={() => void refreshSessions()} />}
+          {tab === 'sessions' && (
+            <SessionsPanel sessions={sessions} onRefresh={() => void refreshSessions()} />
+          )}
           {tab === 'project' && <ProjectPanel sessions={sessions} />}
           {tab === 'chat' && <ChatPanel sessions={sessions} />}
         </div>

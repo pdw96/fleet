@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { buildImplementPrompt, buildReviewPrompt, buildSummaryPrompt, buildVerifyFixPrompt, parseReviewVerdict, REVIEW_SCHEMA } from './review'
+import {
+  buildImplementPrompt,
+  buildReviewPrompt,
+  buildSummaryPrompt,
+  buildVerifyFixPrompt,
+  parseReviewVerdict,
+  REVIEW_SCHEMA,
+} from './review'
 import type { VerificationResult } from '../../../shared/types'
 
 describe('parseReviewVerdict', () => {
@@ -89,7 +96,16 @@ describe('buildVerifyFixPrompt', () => {
 
   it('asks the agent to fix failures in the workspace', () => {
     const p = buildVerifyFixPrompt('목표', [
-      { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'boom', analysis: 'boom', durationMs: 1 },
+      {
+        kind: 'test',
+        command: 'npm test',
+        passed: false,
+        exitCode: 1,
+        stdout: '',
+        stderr: 'boom',
+        analysis: 'boom',
+        durationMs: 1,
+      },
     ])
     expect(p).toContain('boom')
     expect(p).toContain('워크스페이스')

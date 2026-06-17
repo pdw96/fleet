@@ -25,36 +25,50 @@ afterEach(async () => {
 
 describe('createWorkspaceReadTools', () => {
   it('exposes read_file/list_directory/grep/glob', () => {
-    expect(createWorkspaceReadTools(root).map((t) => t.definition.name).sort()).toEqual([
-      'glob',
-      'grep',
-      'list_directory',
-      'read_file',
-    ])
+    expect(
+      createWorkspaceReadTools(root)
+        .map((t) => t.definition.name)
+        .sort(),
+    ).toEqual(['glob', 'grep', 'list_directory', 'read_file'])
   })
 
   it('read_file 은 워크스페이스 내 파일을 읽는다', async () => {
-    const out = await pick(createWorkspaceReadTools(root), 'read_file').execute({ path: 'a.txt' }, {})
+    const out = await pick(createWorkspaceReadTools(root), 'read_file').execute(
+      { path: 'a.txt' },
+      {},
+    )
     expect(out).toContain('hello world')
   })
 
   it('list_directory 는 항목 수가 한도를 넘으면 절단 마커를 붙인다', async () => {
-    const out = await pick(createWorkspaceReadTools(root, { maxDirEntries: 2 }), 'list_directory').execute({ path: '.' }, {})
+    const out = await pick(
+      createWorkspaceReadTools(root, { maxDirEntries: 2 }),
+      'list_directory',
+    ).execute({ path: '.' }, {})
     expect(out).toContain('목록 불완전')
   })
 
   it('grep 은 매치 한도 도달 시 불완전 마커를 붙인다', async () => {
-    const out = await pick(createWorkspaceReadTools(root, { maxGrepMatches: 1 }), 'grep').execute({ pattern: 'e' }, {})
+    const out = await pick(createWorkspaceReadTools(root, { maxGrepMatches: 1 }), 'grep').execute(
+      { pattern: 'e' },
+      {},
+    )
     expect(out).toContain('결과 불완전')
   })
 
   it('glob 은 스캔 한도 도달 시 불완전 마커를 붙인다', async () => {
-    const out = await pick(createWorkspaceReadTools(root, { maxGlobScan: 1 }), 'glob').execute({ pattern: '**/*' }, {})
+    const out = await pick(createWorkspaceReadTools(root, { maxGlobScan: 1 }), 'glob').execute(
+      { pattern: '**/*' },
+      {},
+    )
     expect(out).toContain('불완전')
   })
 
   it('glob 은 다중 ** 패턴을 메모이제이션으로 정확히 매칭한다', async () => {
-    const out = await pick(createWorkspaceReadTools(root), 'glob').execute({ pattern: '**/**/b.ts' }, {})
+    const out = await pick(createWorkspaceReadTools(root), 'glob').execute(
+      { pattern: '**/**/b.ts' },
+      {},
+    )
     expect(out).toContain('sub/b.ts')
   })
 
@@ -62,7 +76,10 @@ describe('createWorkspaceReadTools', () => {
     const ctrl = new AbortController()
     ctrl.abort()
     await expect(
-      pick(createWorkspaceReadTools(root), 'grep').execute({ pattern: 'hello' }, { signal: ctrl.signal }),
+      pick(createWorkspaceReadTools(root), 'grep').execute(
+        { pattern: 'hello' },
+        { signal: ctrl.signal },
+      ),
     ).rejects.toThrow(/취소/)
   })
 
@@ -70,7 +87,10 @@ describe('createWorkspaceReadTools', () => {
     const ctrl = new AbortController()
     ctrl.abort()
     await expect(
-      pick(createWorkspaceReadTools(root), 'glob').execute({ pattern: '**/*' }, { signal: ctrl.signal }),
+      pick(createWorkspaceReadTools(root), 'glob').execute(
+        { pattern: '**/*' },
+        { signal: ctrl.signal },
+      ),
     ).rejects.toThrow(/취소/)
   })
 
@@ -87,7 +107,10 @@ describe('createWorkspaceReadTools', () => {
   })
 
   it('list_directory 는 항목을 나열한다(디렉터리는 / 접미사)', async () => {
-    const out = await pick(createWorkspaceReadTools(root), 'list_directory').execute({ path: '.' }, {})
+    const out = await pick(createWorkspaceReadTools(root), 'list_directory').execute(
+      { path: '.' },
+      {},
+    )
     expect(out).toContain('a.txt')
     expect(out).toContain('sub/')
   })
@@ -99,7 +122,10 @@ describe('createWorkspaceReadTools', () => {
   })
 
   it('glob 은 패턴으로 파일을 찾는다', async () => {
-    const out = await pick(createWorkspaceReadTools(root), 'glob').execute({ pattern: '**/*.ts' }, {})
+    const out = await pick(createWorkspaceReadTools(root), 'glob').execute(
+      { pattern: '**/*.ts' },
+      {},
+    )
     expect(out).toContain('sub/b.ts')
   })
 
@@ -121,19 +147,27 @@ describe('createWorkspaceReadTools', () => {
     } catch {
       return // 심볼릭 링크 생성 권한 없음(Windows 비관리자) → 스킵
     }
-    expect(pick(createWorkspaceReadTools(root), 'read_file').classify({ path: 'config.txt' })).toBe('destructive')
+    expect(pick(createWorkspaceReadTools(root), 'read_file').classify({ path: 'config.txt' })).toBe(
+      'destructive',
+    )
   })
 
   it('read_file 은 대형 파일을 전체 적재 없이 앞부분만 반환한다', async () => {
     await fs.writeFile(path.join(root, 'big.txt'), 'x'.repeat(300 * 1024))
-    const out = await pick(createWorkspaceReadTools(root), 'read_file').execute({ path: 'big.txt' }, {})
+    const out = await pick(createWorkspaceReadTools(root), 'read_file').execute(
+      { path: 'big.txt' },
+      {},
+    )
     expect(out).toContain('바이트만 표시)')
     expect(out.length).toBeLessThan(300 * 1024)
   })
 
   it('grep 은 대형 파일을 읽기 전에 건너뛴다', async () => {
     await fs.writeFile(path.join(root, 'big.txt'), 'NEEDLE'.padEnd(300 * 1024, '_'))
-    const out = await pick(createWorkspaceReadTools(root), 'grep').execute({ pattern: 'NEEDLE' }, {})
+    const out = await pick(createWorkspaceReadTools(root), 'grep').execute(
+      { pattern: 'NEEDLE' },
+      {},
+    )
     expect(out).toBe('(일치 없음)') // 대형 파일은 스캔 제외
   })
 

@@ -50,7 +50,10 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   // thinking(reasoning) 노브를 매핑하는 provider(anthropic·openai·google 전부) — provider 별 모델-인지
   // 정규화는 provider 책임(Gemini: 3.x thinkingLevel·2.5 thinkingBudget·그외 미전송 + starvation maxOutputTokens 가드).
   const thinkingSupported =
-    provider === 'anthropic' || provider === 'openai' || provider === 'google' || provider === 'openai-compatible'
+    provider === 'anthropic' ||
+    provider === 'openai' ||
+    provider === 'google' ||
+    provider === 'openai-compatible'
 
   const asError = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
@@ -212,14 +215,22 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
           <span className="eyebrow">01 — CLI</span>
           <h2 className="panel-title">구독제 / TUI LLM</h2>
           <div className="right">
-            <button className="btn btn-ghost btn-sm" onClick={() => void detect()} disabled={detecting}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => void detect()}
+              disabled={detecting}
+            >
               {detecting ? '감지 중…' : '다시 감지'}
             </button>
           </div>
         </div>
 
         <label className="check" style={{ marginBottom: 10 }}>
-          <input type="checkbox" checked={stateful} onChange={(e) => setStateful(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={stateful}
+            onChange={(e) => setStateful(e.target.checked)}
+          />
           <span>
             세션 재개(대화 맥락 유지) — CLI 자체 --resume 으로 멀티턴.{' '}
             <span className="note-warn">⚠ 오케스트레이터와 공유 시 검증용.</span>
@@ -253,7 +264,10 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
         <ul className="list">
           {clis.map((c) => (
             <li key={c.id} className="line-item">
-              <span className="dot" style={{ background: c.installed ? 'var(--ok)' : 'var(--faint)' }} />
+              <span
+                className="dot"
+                style={{ background: c.installed ? 'var(--ok)' : 'var(--faint)' }}
+              />
               <span className="name" style={{ minWidth: 116 }}>
                 {c.displayName}
               </span>
@@ -299,13 +313,22 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             </select>
           </div>
           <div>
-            <label className="field-label" htmlFor="api-model">모델</label>
-            <input id="api-model" className="field" value={model} onChange={(e) => setModel(e.target.value)} />
+            <label className="field-label" htmlFor="api-model">
+              모델
+            </label>
+            <input
+              id="api-model"
+              className="field"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+            />
           </div>
         </div>
         {provider === 'openai-compatible' && (
           <div style={{ marginTop: 12 }}>
-            <label className="field-label" htmlFor="api-base-url">Base URL</label>
+            <label className="field-label" htmlFor="api-base-url">
+              Base URL
+            </label>
             <input
               id="api-base-url"
               className="field"
@@ -314,7 +337,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               placeholder="https://openrouter.ai/api/v1"
             />
             <p className="meta" style={{ marginTop: 6 }}>
-              OpenAI Chat Completions 호환 엔드포인트(OpenRouter·로컬 vLLM 등). 키는 해당 서비스의 API 키.
+              OpenAI Chat Completions 호환 엔드포인트(OpenRouter·로컬 vLLM 등). 키는 해당 서비스의
+              API 키.
             </p>
           </div>
         )}
@@ -362,8 +386,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               <option value="1h">1시간 (extended-cache)</option>
             </select>
             <p className="meta" style={{ marginTop: 6 }}>
-              5분을 초과해 같은 프리픽스가 재전송되는 tail 경로(긴 빌드·느린 MCP 도구 루프)에서만 이득입니다. 1시간
-              캐시 쓰기는 비용이 약 2배라 평소엔 기본(5분)을 권장합니다.
+              5분을 초과해 같은 프리픽스가 재전송되는 tail 경로(긴 빌드·느린 MCP 도구 루프)에서만
+              이득입니다. 1시간 캐시 쓰기는 비용이 약 2배라 평소엔 기본(5분)을 권장합니다.
             </p>
           </div>
         )}
@@ -381,7 +405,11 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
           className="btn"
           style={{ marginTop: 14 }}
           onClick={() => void registerApi()}
-          disabled={busy || !apiKey.trim() || (provider === 'openai-compatible' && (!baseUrl.trim() || !model.trim()))}
+          disabled={
+            busy ||
+            !apiKey.trim() ||
+            (provider === 'openai-compatible' && (!baseUrl.trim() || !model.trim()))
+          }
         >
           API 세션 등록
         </button>
@@ -415,9 +443,20 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                 제거
               </button>
               <div
-                style={{ flexBasis: '100%', display: 'flex', gap: 6, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}
+                style={{
+                  flexBasis: '100%',
+                  display: 'flex',
+                  gap: 6,
+                  marginTop: 10,
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                }}
               >
-                <span className="field-label" style={{ margin: 0 }} title="capability-scored 정책에서 이 LLM 에게 우선 배정할 역할">
+                <span
+                  className="field-label"
+                  style={{ margin: 0 }}
+                  title="capability-scored 정책에서 이 LLM 에게 우선 배정할 역할"
+                >
                   잘하는 역할
                 </span>
                 {ASSIGNABLE_ROLES.map((role) => {
@@ -466,11 +505,16 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
           <ul className="list" style={{ marginTop: 12 }}>
             {mcpStatus.map((s) => (
               <li key={s.name} className="line-item">
-                <span className="dot" style={{ background: s.connected ? 'var(--ok)' : 'var(--faint)' }} />
+                <span
+                  className="dot"
+                  style={{ background: s.connected ? 'var(--ok)' : 'var(--faint)' }}
+                />
                 <span className="name" style={{ minWidth: 116 }}>
                   {s.name}
                 </span>
-                <span className="meta">{s.connected ? `${s.toolCount} tools` : (s.error ?? '연결 실패')}</span>
+                <span className="meta">
+                  {s.connected ? `${s.toolCount} tools` : (s.error ?? '연결 실패')}
+                </span>
                 {s.tools.length > 0 && <code className="id">{s.tools.join(', ')}</code>}
               </li>
             ))}

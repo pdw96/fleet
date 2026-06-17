@@ -89,7 +89,8 @@ export function parsePlannedTasks(text: string, opts?: { allowEmpty?: boolean })
     const o = (raw ?? {}) as Record<string, unknown>
     const title = typeof o.title === 'string' && o.title.trim() ? o.title.trim() : `작업 ${i + 1}`
     const description = typeof o.description === 'string' ? o.description : ''
-    const role = typeof o.role === 'string' && VALID_ROLES.has(o.role) ? (o.role as AgentRole) : undefined
+    const role =
+      typeof o.role === 'string' && VALID_ROLES.has(o.role) ? (o.role as AgentRole) : undefined
     const dependsOn = Array.isArray(o.dependsOn)
       ? o.dependsOn.filter((n): n is number => typeof n === 'number')
       : undefined
@@ -98,7 +99,11 @@ export function parsePlannedTasks(text: string, opts?: { allowEmpty?: boolean })
 }
 
 /** planner 세션을 사용해 목표를 작업으로 분해. signal 로 분해 중 취소를 전파한다. */
-export async function planTasks(goal: string, planner: LlmSession, signal?: AbortSignal): Promise<PlannedTask[]> {
+export async function planTasks(
+  goal: string,
+  planner: LlmSession,
+  signal?: AbortSignal,
+): Promise<PlannedTask[]> {
   // fresh: 분해는 독립 1회 호출(세션 맥락에 의존하지 않는 자기완결 프롬프트).
   // signal: 분해 진행 중 취소되면 planner 호출도 중단한다.
   const reply = await planner.send(buildPlannerPrompt(goal), {
@@ -114,7 +119,10 @@ export async function planTasks(goal: string, planner: LlmSession, signal?: Abor
 export function buildReplanPrompt(goal: string, failures: readonly VerificationResult[]): string {
   // 실패 상세(analysis 없으면 stderr)는 매우 클 수 있어 verify-fix 와 동일한 캡으로 자른다 — planner 컨텍스트 폭주 방지.
   const failureText = failures
-    .map((f) => `- [${f.kind}] ${f.command}\n${(f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP).trim()}`)
+    .map(
+      (f) =>
+        `- [${f.kind}] ${f.command}\n${(f.analysis ?? f.stderr ?? '').slice(0, FIX_DETAIL_CAP).trim()}`,
+    )
     .join('\n')
   // 보정 작업은 오케스트레이터가 항상 implementer 로 실행한다(task.role 은 표시용 라벨) → 예시 role 도 implementer 로 고정.
   return [

@@ -15,7 +15,11 @@ export interface VerifyExecResult {
   spawnError?: string
 }
 
-export type VerifyRunner = (cmd: VerifyCommand, timeoutMs: number, signal?: AbortSignal) => Promise<VerifyExecResult>
+export type VerifyRunner = (
+  cmd: VerifyCommand,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) => Promise<VerifyExecResult>
 
 const MAX_BUFFER = 10 * 1024 * 1024
 
@@ -28,7 +32,11 @@ export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs, signal) =>
       { cwd: cmd.cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: MAX_BUFFER, signal },
       (err, stdout, stderr) => {
         const e = err as
-          | (NodeJS.ErrnoException & { code?: number | string; killed?: boolean; signal?: NodeJS.Signals | null })
+          | (NodeJS.ErrnoException & {
+              code?: number | string
+              killed?: boolean
+              signal?: NodeJS.Signals | null
+            })
           | null
         // 취소(AbortSignal) 로 죽은 자식은 정상 실패가 아니라 ABORTED 로 보고한다(timeout 검사보다 먼저).
         if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) {
@@ -40,7 +48,12 @@ export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs, signal) =>
           return
         }
         if (e && (e.killed || e.signal === 'SIGTERM')) {
-          resolve({ code: null, stdout: stdout?.toString() ?? '', stderr: stderr?.toString() ?? '', spawnError: 'ETIMEDOUT' })
+          resolve({
+            code: null,
+            stdout: stdout?.toString() ?? '',
+            stderr: stderr?.toString() ?? '',
+            spawnError: 'ETIMEDOUT',
+          })
           return
         }
         const code = e ? (typeof e.code === 'number' ? e.code : 1) : 0
@@ -68,7 +81,10 @@ export interface RunVerifyOptions {
 }
 
 /** 단일 검증 명령 실행 → VerificationResult. */
-export async function runVerification(cmd: VerifyCommand, opts: RunVerifyOptions = {}): Promise<VerificationResult> {
+export async function runVerification(
+  cmd: VerifyCommand,
+  opts: RunVerifyOptions = {},
+): Promise<VerificationResult> {
   const runner = opts.runner ?? defaultVerifyRunner
   const now = opts.now ?? (() => Date.now())
   const timeoutMs = opts.timeoutMs ?? 120_000

@@ -99,13 +99,22 @@ function mapContent(content: string | ContentBlock[]): unknown {
       case 'tool_use':
         return { type: 'tool_use', id: b.id, name: b.name, input: b.input }
       case 'tool_result':
-        return { type: 'tool_result', tool_use_id: b.toolUseId, content: b.content, is_error: b.isError }
+        return {
+          type: 'tool_result',
+          tool_use_id: b.toolUseId,
+          content: b.content,
+          is_error: b.isError,
+        }
       case 'thinking': {
         // redacted_thinking 은 가시 텍스트/서명 없이 불투명 data 만 — redactedData 로 보존됐으면 그대로 재방출.
         const redacted = b.providerMeta?.anthropic?.redactedData
         if (redacted !== undefined) return { type: 'redacted_thinking', data: redacted }
         // Anthropic 은 도구 사용 중 thinking 블록을 signature 와 함께 tool_use 앞에 echo 해야 한다(순서·byte-exact).
-        return { type: 'thinking', thinking: b.text, signature: b.providerMeta?.anthropic?.signature }
+        return {
+          type: 'thinking',
+          thinking: b.text,
+          signature: b.providerMeta?.anthropic?.signature,
+        }
       }
       default:
         return assertNever(b)
@@ -159,7 +168,12 @@ async function readStream(
 ): Promise<ChatResult> {
   let text = ''
   let stop: string | undefined
-  const usage: { inputTokens?: number; outputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokens?: number } = {}
+  const usage: {
+    inputTokens?: number
+    outputTokens?: number
+    cacheCreationInputTokens?: number
+    cacheReadInputTokens?: number
+  } = {}
   // 인덱스 → tool_use 누적기(시작 순서 보존). 텍스트 블록과 인덱스가 섞여도 정렬해 복원한다.
   const toolAccum = new Map<number, { id: string; name: string; json: string }>()
   // 인덱스 → thinking 누적기(thinking_delta 텍스트 + signature_delta 서명). 순서보존 content 적재용.
@@ -174,7 +188,14 @@ async function readStream(
       type?: string
       index?: number
       content_block?: { type?: string; id?: string; name?: string; data?: string }
-      delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string; thinking?: string; signature?: string }
+      delta?: {
+        type?: string
+        text?: string
+        partial_json?: string
+        stop_reason?: string
+        thinking?: string
+        signature?: string
+      }
       message?: { usage?: AnthropicUsage }
       usage?: { output_tokens?: number }
       error?: { type?: string; message?: string }
@@ -187,31 +208,70 @@ async function readStream(
     // HTTP 200 스트림 중에도 error 이벤트(overloaded_error 등)가 올 수 있다. 부분 응답을
     // 성공으로 위장하지 않고 즉시 에러로 표면화한다(silent truncation 방지 — #7).
     if (ev.type === 'error') {
-      throw new ApiProviderError('anthropic', 200, JSON.stringify(ev.error ?? { type: 'stream_error' }))
+      throw new ApiProviderError(
+        'anthropic',
+        200,
+        JSON.stringify(ev.error ?? { type: 'stream_error' }),
+      )
     }
     if (ev.type === 'message_start') {
       // 캐시 토큰은 입력측이라 message_start 의 usage 로 온다(message_delta 는 output_tokens 만).
       usage.inputTokens = ev.message?.usage?.input_tokens ?? usage.inputTokens
-      usage.cacheCreationInputTokens = ev.message?.usage?.cache_creation_input_tokens ?? usage.cacheCreationInputTokens
-      usage.cacheReadInputTokens = ev.message?.usage?.cache_read_input_tokens ?? usage.cacheReadInputTokens
-    } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && typeof ev.index === 'number') {
-      toolAccum.set(ev.index, { id: ev.content_block.id ?? '', name: ev.content_block.name ?? '', json: '' })
-    } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'thinking' && typeof ev.index === 'number') {
+      usage.cacheCreationInputTokens =
+        ev.message?.usage?.cache_creation_input_tokens ?? usage.cacheCreationInputTokens
+      usage.cacheReadInputTokens =
+        ev.message?.usage?.cache_read_input_tokens ?? usage.cacheReadInputTokens
+    } else if (
+      ev.type === 'content_block_start' &&
+      ev.content_block?.type === 'tool_use' &&
+      typeof ev.index === 'number'
+    ) {
+      toolAccum.set(ev.index, {
+        id: ev.content_block.id ?? '',
+        name: ev.content_block.name ?? '',
+        json: '',
+      })
+    } else if (
+      ev.type === 'content_block_start' &&
+      ev.content_block?.type === 'thinking' &&
+      typeof ev.index === 'number'
+    ) {
       thinkingAccum.set(ev.index, { text: '', signature: '' })
-    } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'redacted_thinking' && typeof ev.index === 'number') {
+    } else if (
+      ev.type === 'content_block_start' &&
+      ev.content_block?.type === 'redacted_thinking' &&
+      typeof ev.index === 'number'
+    ) {
       redactedAccum.set(ev.index, ev.content_block.data ?? '')
-    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) {
+    } else if (
+      ev.type === 'content_block_delta' &&
+      ev.delta?.type === 'text_delta' &&
+      ev.delta.text
+    ) {
       text += ev.delta.text
       onToken(ev.delta.text)
-      if (typeof ev.index === 'number') textByIndex.set(ev.index, (textByIndex.get(ev.index) ?? '') + ev.delta.text)
-    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'input_json_delta' && typeof ev.index === 'number') {
+      if (typeof ev.index === 'number')
+        textByIndex.set(ev.index, (textByIndex.get(ev.index) ?? '') + ev.delta.text)
+    } else if (
+      ev.type === 'content_block_delta' &&
+      ev.delta?.type === 'input_json_delta' &&
+      typeof ev.index === 'number'
+    ) {
       const acc = toolAccum.get(ev.index)
       if (acc) acc.json += ev.delta.partial_json ?? ''
-    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'thinking_delta' && typeof ev.index === 'number') {
+    } else if (
+      ev.type === 'content_block_delta' &&
+      ev.delta?.type === 'thinking_delta' &&
+      typeof ev.index === 'number'
+    ) {
       // thinking 은 onToken 으로 흘리지 않는다(reasoning 은 가시 응답 토큰 아님 — textOf 규율과 일치).
       const acc = thinkingAccum.get(ev.index)
       if (acc) acc.text += ev.delta.thinking ?? ''
-    } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'signature_delta' && typeof ev.index === 'number') {
+    } else if (
+      ev.type === 'content_block_delta' &&
+      ev.delta?.type === 'signature_delta' &&
+      typeof ev.index === 'number'
+    ) {
       const acc = thinkingAccum.get(ev.index)
       if (acc) acc.signature = ev.delta.signature ?? ''
     } else if (ev.type === 'message_delta') {
@@ -233,18 +293,30 @@ async function readStream(
   if (thinkingAccum.size > 0 || redactedAccum.size > 0) {
     const byIndex = new Map<number, ContentBlock>()
     for (const [i, t] of thinkingAccum)
-      byIndex.set(i, { type: 'thinking', text: t.text, providerMeta: t.signature ? { anthropic: { signature: t.signature } } : undefined })
+      byIndex.set(i, {
+        type: 'thinking',
+        text: t.text,
+        providerMeta: t.signature ? { anthropic: { signature: t.signature } } : undefined,
+      })
     for (const [i, d] of redactedAccum)
-      byIndex.set(i, { type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: d } } })
+      byIndex.set(i, {
+        type: 'thinking',
+        text: '',
+        providerMeta: { anthropic: { redactedData: d } },
+      })
     for (const [i, tx] of textByIndex) if (tx) byIndex.set(i, { type: 'text', text: tx })
-    for (const [i, t] of toolAccum) byIndex.set(i, { type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) })
+    for (const [i, t] of toolAccum)
+      byIndex.set(i, { type: 'tool_use', id: t.id, name: t.name, input: parseToolInput(t.json) })
     content = [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, b]) => b)
   }
   return { text, toolCalls, content, finishReason: mapFinish(stop), rawFinishReason: stop, usage }
 }
 
 /** Anthropic Messages API provider. */
-export function createAnthropicProvider(config: ApiProviderConfig, http: HttpClient = defaultHttp): ApiProvider {
+export function createAnthropicProvider(
+  config: ApiProviderConfig,
+  http: HttpClient = defaultHttp,
+): ApiProvider {
   return {
     id: config.id,
     provider: 'anthropic',
@@ -293,12 +365,18 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
       //  (1) thinking 켜짐: 확장 thinking 은 temperature 와 충돌(구형은 temperature=1 강제, 신형은 미지원).
       //  (2) no-sampling 모델(Fable·Opus 4.7/4.8): thinking 무관하게 temperature 자체를 거부 → 하드 400.
       //      `!thinking` 만으론 thinking 미지정 + temperature 명시 교집합에서 400 이라 모델 게이트를 동반한다.
-      if (temperature !== undefined && !thinking && !NO_SAMPLING_MODELS.test(config.model)) body.temperature = temperature
+      if (temperature !== undefined && !thinking && !NO_SAMPLING_MODELS.test(config.model))
+        body.temperature = temperature
       if (opts.tools?.length) {
-        body.tools = opts.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }))
+        body.tools = opts.tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.parameters,
+        }))
         // 확장 thinking 은 강제 도구사용(tool_choice any/tool)과 비호환(400) → thinking 켜지면 'required'(any)를
         // 기본 auto 로 낮춘다. 'none'/'auto' 는 thinking 과 호환되므로 유지.
-        const effectiveChoice = thinking && opts.toolChoice === 'required' ? 'auto' : opts.toolChoice
+        const effectiveChoice =
+          thinking && opts.toolChoice === 'required' ? 'auto' : opts.toolChoice
         const tc = mapToolChoice(effectiveChoice)
         if (tc) body.tool_choice = tc
       }
@@ -408,14 +486,30 @@ export function createAnthropicProvider(config: ApiProviderConfig, http: HttpCli
         .map((c) => ({ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }))
       // thinking 이 하나라도 있으면 순서보존 content 를 적재한다(멀티턴 tool 루프 signature 왕복용).
       // 없으면 미설정 → loop 는 text+toolCalls 폴백(현행 동작 byte-동일, 무회귀).
-      const content: ContentBlock[] | undefined = blocks.some((c) => c.type === 'thinking' || c.type === 'redacted_thinking')
+      const content: ContentBlock[] | undefined = blocks.some(
+        (c) => c.type === 'thinking' || c.type === 'redacted_thinking',
+      )
         ? blocks.flatMap((c): ContentBlock[] => {
             if (c.type === 'thinking')
-              return [{ type: 'thinking', text: c.thinking ?? '', providerMeta: c.signature ? { anthropic: { signature: c.signature } } : undefined }]
+              return [
+                {
+                  type: 'thinking',
+                  text: c.thinking ?? '',
+                  providerMeta: c.signature ? { anthropic: { signature: c.signature } } : undefined,
+                },
+              ]
             if (c.type === 'redacted_thinking')
-              return [{ type: 'thinking', text: '', providerMeta: { anthropic: { redactedData: c.data } } }]
-            if (c.type === 'text' && typeof c.text === 'string') return [{ type: 'text', text: c.text }]
-            if (c.type === 'tool_use') return [{ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }]
+              return [
+                {
+                  type: 'thinking',
+                  text: '',
+                  providerMeta: { anthropic: { redactedData: c.data } },
+                },
+              ]
+            if (c.type === 'text' && typeof c.text === 'string')
+              return [{ type: 'text', text: c.text }]
+            if (c.type === 'tool_use')
+              return [{ type: 'tool_use', id: c.id ?? '', name: c.name ?? '', input: c.input }]
             return [] // 미지 블록은 content 에서 제외(어시스턴트 응답엔 image 등 없음)
           })
         : undefined

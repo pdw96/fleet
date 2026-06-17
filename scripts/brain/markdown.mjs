@@ -14,8 +14,12 @@ function depList(ids) {
 
 const LAYER_ORDER = ['renderer', 'preload', 'main', 'core', 'shared']
 const LAYER_LABEL = {
-  renderer: '화면 renderer', preload: '다리 preload', main: '본체 main',
-  core: '두뇌 core', shared: '공용 사전 shared', runtime: '바깥 세계 runtime',
+  renderer: '화면 renderer',
+  preload: '다리 preload',
+  main: '본체 main',
+  core: '두뇌 core',
+  shared: '공용 사전 shared',
+  runtime: '바깥 세계 runtime',
 }
 
 export function toMarkdown(graph) {
@@ -41,8 +45,12 @@ export function toMarkdown(graph) {
   const L = []
   L.push('# Fleet — 코드베이스 브레인 (자동 생성)')
   L.push('')
-  L.push('> `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.')
-  L.push(`> ${meta.fileCount} files · ${meta.linkCount} import wires · ${meta.channels} IPC channels · 생성 ${(meta.generatedAt || '').slice(0, 16)} UTC`)
+  L.push(
+    '> `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.',
+  )
+  L.push(
+    `> ${meta.fileCount} files · ${meta.linkCount} import wires · ${meta.channels} IPC channels · 생성 ${(meta.generatedAt || '').slice(0, 16)} UTC`,
+  )
   L.push('> 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).')
   L.push('')
 
@@ -56,7 +64,11 @@ export function toMarkdown(graph) {
 
   // 한눈에: 허브/진입점/레지스트리/게이트
   const hubs = nodes.filter((n) => n.hub).sort((a, b) => b.degree - a.degree)
-  const flag = (pred) => nodes.filter(pred).map((n) => shortId(n.id)).sort()
+  const flag = (pred) =>
+    nodes
+      .filter(pred)
+      .map((n) => shortId(n.id))
+      .sort()
   L.push('## 한눈에')
   L.push(`- **허브**(많이 연결): ${hubs.map((n) => `${shortId(n.id)}(${n.degree})`).join(' · ')}`)
   L.push(`- **진입점**: ${flag((n) => n.entry).join(' · ')}`)
@@ -66,10 +78,14 @@ export function toMarkdown(graph) {
 
   // 런타임 배선(import 로 안 보이는 연결)
   L.push('## 런타임 배선 (import 로는 안 보이는 연결)')
-  const ipcToPreload = overlayLinks.filter((l) => l.kind === 'ipc' && l.target === 'preload/index.ts').map((l) => shortId(l.source))
+  const ipcToPreload = overlayLinks
+    .filter((l) => l.kind === 'ipc' && l.target === 'preload/index.ts')
+    .map((l) => shortId(l.source))
   const pm = overlayLinks.find((l) => l.kind === 'ipc' && l.source === 'preload/index.ts')
   if (ipcToPreload.length) {
-    L.push(`- ${ipcToPreload.join(', ')} →(window.fleet)→ preload/index.ts${pm ? ` → main/index.ts (${pm.label}) → engine` : ''}`)
+    L.push(
+      `- ${ipcToPreload.join(', ')} →(window.fleet)→ preload/index.ts${pm ? ` → main/index.ts (${pm.label}) → engine` : ''}`,
+    )
   }
   const extLabel = (id) => (overlayNodes.find((n) => n.id === id) || {}).label || id
   for (const l of overlayLinks.filter((l) => l.kind === 'runtime')) {
@@ -80,7 +96,8 @@ export function toMarkdown(graph) {
   // 모듈별 상세
   L.push('## 모듈별 (파일 — 역할 · →의존 · ←피의존)')
   const orderedGroups = [...groups.entries()].sort((a, b) => {
-    const la = LAYER_ORDER.indexOf(a[1].layer), lb = LAYER_ORDER.indexOf(b[1].layer)
+    const la = LAYER_ORDER.indexOf(a[1].layer),
+      lb = LAYER_ORDER.indexOf(b[1].layer)
     if (la !== lb) return la - lb
     const da = a[1].files.reduce((s, n) => s + n.degree, 0)
     const db = b[1].files.reduce((s, n) => s + n.degree, 0)
@@ -101,7 +118,9 @@ export function toMarkdown(graph) {
   }
   L.push('')
   L.push('---')
-  L.push('_이 파일은 자동 생성물이다. 코드 변경 후 `npm run brain` 으로 갱신. 설명은 `scripts/brain/descriptions.json` 에서 손볼 수 있다._')
+  L.push(
+    '_이 파일은 자동 생성물이다. 코드 변경 후 `npm run brain` 으로 갱신. 설명은 `scripts/brain/descriptions.json` 에서 손볼 수 있다._',
+  )
   L.push('')
   return L.join('\n')
 }

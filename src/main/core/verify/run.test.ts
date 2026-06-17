@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { allPassed, defaultVerifyRunner, runAllVerifications, runVerification, summarizeFailure, type VerifyRunner } from './run'
+import {
+  allPassed,
+  defaultVerifyRunner,
+  runAllVerifications,
+  runVerification,
+  summarizeFailure,
+  type VerifyRunner,
+} from './run'
 
 describe('summarizeFailure', () => {
   it('extracts the first error-like line', () => {
@@ -15,7 +22,10 @@ describe('runVerification', () => {
     const runner: VerifyRunner = async () => ({ code: 0, stdout: 'all good', stderr: '' })
     let t = 0
     const now = (): number => (t += 5)
-    const r = await runVerification({ kind: 'test', command: 'npm', args: ['test'] }, { runner, now })
+    const r = await runVerification(
+      { kind: 'test', command: 'npm', args: ['test'] },
+      { runner, now },
+    )
     expect(r.passed).toBe(true)
     expect(r.analysis).toBeUndefined()
     expect(r.command).toBe('npm test')
@@ -31,7 +41,12 @@ describe('runVerification', () => {
   })
 
   it('handles spawn errors (missing command)', async () => {
-    const runner: VerifyRunner = async () => ({ code: null, stdout: '', stderr: '', spawnError: 'ENOENT' })
+    const runner: VerifyRunner = async () => ({
+      code: null,
+      stdout: '',
+      stderr: '',
+      spawnError: 'ENOENT',
+    })
     const r = await runVerification({ kind: 'smoke', command: 'missing', args: [] }, { runner })
     expect(r.passed).toBe(false)
     expect(r.analysis).toContain('ENOENT')
@@ -44,7 +59,10 @@ describe('runVerification', () => {
       received = signal
       return { code: 0, stdout: '', stderr: '' }
     }
-    await runVerification({ kind: 'test', command: 'npm', args: ['test'] }, { runner, signal: controller.signal })
+    await runVerification(
+      { kind: 'test', command: 'npm', args: ['test'] },
+      { runner, signal: controller.signal },
+    )
     expect(received).toBe(controller.signal)
   })
 })
@@ -73,7 +91,9 @@ describe('defaultVerifyRunner', () => {
 describe('runAllVerifications / allPassed', () => {
   it('aggregates results and reports overall pass state', async () => {
     const runner: VerifyRunner = async (cmd) =>
-      cmd.kind === 'lint' ? { code: 1, stdout: '', stderr: 'fail' } : { code: 0, stdout: '', stderr: '' }
+      cmd.kind === 'lint'
+        ? { code: 1, stdout: '', stderr: 'fail' }
+        : { code: 0, stdout: '', stderr: '' }
     const results = await runAllVerifications(
       [
         { kind: 'typecheck', command: 'tsc', args: [] },
