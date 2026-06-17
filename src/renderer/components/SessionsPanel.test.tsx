@@ -69,7 +69,10 @@ describe('SessionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
 
     await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
     expect(cfg.provider).toBe('anthropic')
     expect(cfg.thinking).toEqual({ effort: 'xhigh' })
     // 세션 설정은 비영속·불가시라 displayName 에 노출해 어느 세션이 thinking 인지 확인 가능하게 한다.
@@ -84,7 +87,10 @@ describe('SessionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
 
     await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
     expect('thinking' in cfg).toBe(false)
     expect(String(cfg.displayName)).not.toContain('thinking')
   })
@@ -99,7 +105,10 @@ describe('SessionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
 
     await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
     expect(cfg.provider).toBe('openai')
     expect(cfg.thinking).toEqual({ effort: 'high' })
     expect(String(cfg.displayName)).toContain('thinking:high')
@@ -115,7 +124,10 @@ describe('SessionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
 
     await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
     expect(cfg.provider).toBe('google')
     expect(cfg.thinking).toEqual({ effort: 'high' })
     expect(String(cfg.displayName)).toContain('thinking:high')
@@ -133,12 +145,17 @@ describe('SessionsPanel', () => {
     const fleet = mockFleet()
     render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
-    fireEvent.change(screen.getByLabelText(/Base URL/i), { target: { value: 'https://openrouter.ai/api/v1' } })
+    fireEvent.change(screen.getByLabelText(/Base URL/i), {
+      target: { value: 'https://openrouter.ai/api/v1' },
+    })
     fireEvent.change(screen.getByLabelText('모델'), { target: { value: 'qwen/qwen3-32b' } })
     fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
     await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
     expect(cfg.provider).toBe('openai-compatible')
     expect(cfg.baseUrl).toBe('https://openrouter.ai/api/v1')
     expect(cfg.model).toBe('qwen/qwen3-32b')
@@ -167,7 +184,10 @@ describe('SessionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
 
     await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
     expect(cfg.provider).toBe('anthropic')
     expect(cfg.cacheTtl).toBe('1h')
     expect(String(cfg.displayName)).toContain('cache:1h')
@@ -194,7 +214,10 @@ describe('SessionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
 
     await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>
+    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
     // provider 게이트(provider==='anthropic' &&)만이 stale '1h' 의 누출을 막는다 — 게이트 제거 뮤테이션 차단.
     expect(cfg.provider).toBe('openai')
     expect('cacheTtl' in cfg).toBe(false)
@@ -202,7 +225,9 @@ describe('SessionsPanel', () => {
   })
 
   it('MCP 서버 JSON 을 적용하고 상태를 표시한다', async () => {
-    const status = [{ name: 'fs', connected: true, toolCount: 2, tools: ['mcp__fs__read', 'mcp__fs__write'] }]
+    const status = [
+      { name: 'fs', connected: true, toolCount: 2, tools: ['mcp__fs__read', 'mcp__fs__write'] },
+    ]
     const fleet = mockFleet({ setMcpServers: vi.fn().mockResolvedValue(status) })
     render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
@@ -212,7 +237,9 @@ describe('SessionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'MCP 적용' }))
 
     await waitFor(() =>
-      expect(fleet.setMcpServers).toHaveBeenCalledWith([{ name: 'fs', command: 'node', args: ['server.js'] }]),
+      expect(fleet.setMcpServers).toHaveBeenCalledWith([
+        { name: 'fs', command: 'node', args: ['server.js'] },
+      ]),
     )
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
   })
@@ -233,7 +260,9 @@ describe('SessionsPanel', () => {
     const fleet = mockFleet({
       getMcpStatus: vi
         .fn()
-        .mockResolvedValue([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }]),
+        .mockResolvedValue([
+          { name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] },
+        ]),
     })
     render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
@@ -245,7 +274,9 @@ describe('SessionsPanel', () => {
   function dyingServerStatus() {
     return vi
       .fn()
-      .mockResolvedValueOnce([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }])
+      .mockResolvedValueOnce([
+        { name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] },
+      ])
       .mockResolvedValue([{ name: 'fs', connected: false, toolCount: 0, tools: [], error: 'exit' }])
   }
 
@@ -308,7 +339,9 @@ describe('SessionsPanel', () => {
       const fleet = mockFleet({
         getMcpStatus: vi
           .fn()
-          .mockResolvedValueOnce([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }])
+          .mockResolvedValueOnce([
+            { name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] },
+          ])
           .mockResolvedValue([]),
       })
       render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
@@ -350,7 +383,11 @@ describe('SessionsPanel', () => {
 
   it('탭이 숨김(hidden)으로 전환될 때는 재조회하지 않는다(visibility 가드)', async () => {
     const fleet = mockFleet({
-      getMcpStatus: vi.fn().mockResolvedValue([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }]),
+      getMcpStatus: vi
+        .fn()
+        .mockResolvedValue([
+          { name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] },
+        ]),
     })
     render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
@@ -371,7 +408,9 @@ describe('SessionsPanel', () => {
     const fleet = mockFleet({
       getMcpStatus: vi
         .fn()
-        .mockResolvedValueOnce([{ name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] }])
+        .mockResolvedValueOnce([
+          { name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] },
+        ])
         .mockRejectedValue(new Error('ipc down')),
     })
     render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)

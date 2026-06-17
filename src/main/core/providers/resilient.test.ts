@@ -3,7 +3,12 @@ import { createResilientHttp } from './resilient'
 import type { HttpClient, HttpInit, HttpResponse } from './types'
 
 const noSleep = async (): Promise<void> => {}
-const init: HttpInit = { method: 'POST', headers: {}, body: '{}', signal: new AbortController().signal }
+const init: HttpInit = {
+  method: 'POST',
+  headers: {},
+  body: '{}',
+  signal: new AbortController().signal,
+}
 const resp = (status: number, body = ''): HttpResponse => ({
   ok: status >= 200 && status < 300,
   status,

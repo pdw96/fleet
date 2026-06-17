@@ -33,7 +33,10 @@ interface OpenAiUsage {
   prompt_tokens_details?: { cached_tokens?: number }
 }
 interface OpenAiResponse {
-  choices?: Array<{ message?: { content?: string; refusal?: string; tool_calls?: OpenAiToolCall[] }; finish_reason?: string }>
+  choices?: Array<{
+    message?: { content?: string; refusal?: string; tool_calls?: OpenAiToolCall[] }
+    finish_reason?: string
+  }>
   usage?: OpenAiUsage
 }
 
@@ -48,7 +51,8 @@ function mapUsage(u: OpenAiUsage | undefined): TokenUsage {
   const cached = u?.prompt_tokens_details?.cached_tokens
   const prompt = u?.prompt_tokens
   const usage: TokenUsage = {
-    inputTokens: cached !== undefined && prompt !== undefined ? Math.max(0, prompt - cached) : prompt,
+    inputTokens:
+      cached !== undefined && prompt !== undefined ? Math.max(0, prompt - cached) : prompt,
     outputTokens: u?.completion_tokens,
   }
   if (cached !== undefined) usage.cacheReadInputTokens = cached
@@ -95,7 +99,10 @@ function isProModel(model: string): boolean {
  * per-call/config thinking 노브를 OpenAI reasoning_effort 값으로 정규화한다.
  * 반환 undefined = reasoning_effort 미전송(미지원 모델 · effort 미지정 → 서버 기본 medium).
  */
-function resolveReasoningEffort(model: string, knob: ApiCallOptions['thinking']): string | undefined {
+function resolveReasoningEffort(
+  model: string,
+  knob: ApiCallOptions['thinking'],
+): string | undefined {
   if (!knob || knob.effort === undefined || !supportsReasoningEffort(model)) return undefined
   const effort = knob.effort
   if (isProModel(model)) {
@@ -115,7 +122,8 @@ function mapContent(content: string | ContentBlock[]): string | unknown[] {
   if (!hasImage) return textOf(content) // 텍스트 전용이면 단순 문자열
   return content.flatMap((b): unknown[] => {
     if (b.type === 'text') return [{ type: 'text', text: b.text }]
-    if (b.type === 'image') return [{ type: 'image_url', image_url: { url: `data:${b.mimeType};base64,${b.data}` } }]
+    if (b.type === 'image')
+      return [{ type: 'image_url', image_url: { url: `data:${b.mimeType};base64,${b.data}` } }]
     // tool_use/tool_result 는 buildMessages 가 별도 메시지(tool_calls·role:'tool')로 처리한다.
     // 여기로 오는 경우는 없지만(buildMessages 가 우회) 방어적 텍스트 폴백을 남긴다.
     return [{ type: 'text', text: textOf([b]) }]
@@ -125,7 +133,11 @@ function mapContent(content: string | ContentBlock[]): string | unknown[] {
 interface OpenAiMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | unknown[] | null
-  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
+  tool_calls?: Array<{
+    id: string
+    type: 'function'
+    function: { name: string; arguments: string }
+  }>
   tool_call_id?: string
 }
 
@@ -142,17 +154,28 @@ function buildMessages(turns: ChatTurn[]): OpenAiMessage[] {
     // 루프는 tool_result 만 담은 user 턴을 만든다. 혼합 턴(텍스트+tool_result)이면 텍스트가 tool 메시지 뒤로 온다.
     if (blocks?.some((b) => b.type === 'tool_result')) {
       for (const b of blocks) {
-        if (b.type === 'tool_result') out.push({ role: 'tool', tool_call_id: b.toolUseId, content: b.content })
+        if (b.type === 'tool_result')
+          out.push({ role: 'tool', tool_call_id: b.toolUseId, content: b.content })
       }
-      const text = blocks.filter((b): b is TextBlock => b.type === 'text').map((b) => b.text).join('')
+      const text = blocks
+        .filter((b): b is TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('')
       if (text) out.push({ role: 'user', content: text })
       continue
     }
     if (blocks?.some((b) => b.type === 'tool_use')) {
       const toolCalls = blocks
         .filter((b): b is ToolUseBlock => b.type === 'tool_use')
-        .map((b) => ({ id: b.id, type: 'function' as const, function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) } }))
-      const text = blocks.filter((b): b is TextBlock => b.type === 'text').map((b) => b.text).join('')
+        .map((b) => ({
+          id: b.id,
+          type: 'function' as const,
+          function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+        }))
+      const text = blocks
+        .filter((b): b is TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('')
       out.push({ role: 'assistant', content: text || null, tool_calls: toolCalls })
       continue
     }
@@ -197,7 +220,11 @@ async function readStream(
         delta?: {
           content?: string
           refusal?: string
-          tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
+          tool_calls?: Array<{
+            index?: number
+            id?: string
+            function?: { name?: string; arguments?: string }
+          }>
         }
         finish_reason?: string
       }>
@@ -238,7 +265,13 @@ async function readStream(
     .map(([, t]) => ({ type: 'tool_use', id: t.id, name: t.name, input: parseArgs(t.args) }))
   // 거부가 누적됐고 도구 호출이 없으면 빈 응답으로 흡수하지 않고 content_filter 로 표면화한다(#7, 버퍼 경로와 대칭).
   if (refusal && toolCalls.length === 0) {
-    return { text: '', toolCalls: [], finishReason: 'content_filter', rawFinishReason: `refusal: ${refusal}`, usage }
+    return {
+      text: '',
+      toolCalls: [],
+      finishReason: 'content_filter',
+      rawFinishReason: `refusal: ${refusal}`,
+      usage,
+    }
   }
   // 클린 종료인데 finish_reason 미수신 = 비정상 종료(연결 끊김 등). mapFinish(undefined)='stop' 으로 위장하면
   // 잘린 부분 응답이 성공으로 흡수된다 → silent truncation 표면화(#7, 3사 공통). 거부는 위에서 이미 종결.
@@ -249,7 +282,10 @@ async function readStream(
 }
 
 /** OpenAI Chat Completions API provider. */
-export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient = defaultHttp): ApiProvider {
+export function createOpenAiProvider(
+  config: ApiProviderConfig,
+  http: HttpClient = defaultHttp,
+): ApiProvider {
   return {
     id: config.id,
     provider: config.provider,
@@ -282,7 +318,10 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
         const effort = (opts.thinking ?? config.thinking)?.effort
         if (effort !== undefined) body.reasoning_effort = effort === 'max' ? 'high' : effort
       } else {
-        const reasoningEffort = resolveReasoningEffort(config.model, opts.thinking ?? config.thinking)
+        const reasoningEffort = resolveReasoningEffort(
+          config.model,
+          opts.thinking ?? config.thinking,
+        )
         if (reasoningEffort) body.reasoning_effort = reasoningEffort
       }
       if (opts.tools?.length) {
@@ -295,7 +334,11 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       if (opts.responseSchema) {
         body.response_format = {
           type: 'json_schema',
-          json_schema: { name: opts.responseSchema.name, schema: opts.responseSchema.schema, strict: true },
+          json_schema: {
+            name: opts.responseSchema.name,
+            schema: opts.responseSchema.schema,
+            strict: true,
+          },
         }
       }
       // onToken 이 있으면 SSE 스트리밍 — 도구 동봉 요청도 스트리밍하며 tool_calls 를 누적한다(SP3).
@@ -309,7 +352,9 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
       const headers = { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` }
       const send = (): Promise<HttpResponse> =>
         http(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: opts.signal })
-      const stripSchema = (): void => { delete body.response_format }
+      const stripSchema = (): void => {
+        delete body.response_format
+      }
       let res: HttpResponse
       if (compatible && body.reasoning_effort !== undefined) {
         // 두 opt-in 필드(reasoning_effort·response_format)가 함께 실릴 때 불투명한 400 의 원인을 알 수 없으므로
@@ -374,7 +419,8 @@ export function createOpenAiProvider(config: ApiProviderConfig, http: HttpClient
 /** openai-compatible 의 baseUrl 을 정규화해 /chat/completions 엔드포인트로 만든다. 누락 시 throw. */
 function requireBaseUrl(config: ApiProviderConfig): string {
   const base = config.baseUrl?.trim()
-  if (!base) throw new Error(`[openai-compatible] baseUrl 이 설정되지 않았습니다 (id=${config.id}).`)
+  if (!base)
+    throw new Error(`[openai-compatible] baseUrl 이 설정되지 않았습니다 (id=${config.id}).`)
   return base.replace(/\/+$/, '') + '/chat/completions'
 }
 

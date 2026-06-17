@@ -103,12 +103,15 @@ describe('planTasks', () => {
 describe('PLANNER_SCHEMA', () => {
   it('루트는 object 이고 tasks 배열을 가진다(OpenAI strict 호환)', () => {
     expect(PLANNER_SCHEMA.type).toBe('object')
-    expect((PLANNER_SCHEMA.properties as Record<string, { type?: string }>).tasks.type).toBe('array')
+    expect((PLANNER_SCHEMA.properties as Record<string, { type?: string }>).tasks.type).toBe(
+      'array',
+    )
     expect(PLANNER_SCHEMA.additionalProperties).toBe(false)
   })
 
   it('item 스키마는 모든 property 를 required 로 둔다(OpenAI strict 호환)', () => {
-    const items = (PLANNER_SCHEMA.properties as { tasks: { items: { required: string[] } } }).tasks.items
+    const items = (PLANNER_SCHEMA.properties as { tasks: { items: { required: string[] } } }).tasks
+      .items
     expect([...items.required].sort()).toEqual(['dependsOn', 'description', 'role', 'title'])
   })
 })
@@ -116,7 +119,16 @@ describe('PLANNER_SCHEMA', () => {
 describe('buildReplanPrompt', () => {
   it('목표와 검증 실패 요약(kind/command/analysis)을 포함한다', () => {
     const p = buildReplanPrompt('목표X', [
-      { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'boom', analysis: '테스트 깨짐', durationMs: 1 },
+      {
+        kind: 'test',
+        command: 'npm test',
+        passed: false,
+        exitCode: 1,
+        stdout: '',
+        stderr: 'boom',
+        analysis: '테스트 깨짐',
+        durationMs: 1,
+      },
     ])
     expect(p).toContain('목표X')
     expect(p).toContain('npm test')
@@ -126,7 +138,15 @@ describe('buildReplanPrompt', () => {
 
   it('analysis 가 없으면 stderr 로 폴백한다', () => {
     const p = buildReplanPrompt('목표', [
-      { kind: 'lint', command: 'npm run lint', passed: false, exitCode: 1, stdout: '', stderr: 'lint error text', durationMs: 1 },
+      {
+        kind: 'lint',
+        command: 'npm run lint',
+        passed: false,
+        exitCode: 1,
+        stdout: '',
+        stderr: 'lint error text',
+        durationMs: 1,
+      },
     ])
     expect(p).toContain('lint error text')
   })
@@ -134,7 +154,15 @@ describe('buildReplanPrompt', () => {
   it('거대한 실패 상세는 2000자로 잘라 planner 컨텍스트 폭주를 막는다', () => {
     const huge = 'x'.repeat(10_000)
     const p = buildReplanPrompt('목표', [
-      { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: huge, durationMs: 1 },
+      {
+        kind: 'test',
+        command: 'npm test',
+        passed: false,
+        exitCode: 1,
+        stdout: '',
+        stderr: huge,
+        durationMs: 1,
+      },
     ])
     expect(p).toContain('x'.repeat(2_000)) // 캡 이내는 포함
     expect(p).not.toContain('x'.repeat(2_001)) // 캡 초과분은 잘림
@@ -142,10 +170,22 @@ describe('buildReplanPrompt', () => {
 })
 
 describe('planCorrectiveTasks', () => {
-  const fail: VerificationResult = { kind: 'test', command: 'npm test', passed: false, exitCode: 1, stdout: '', stderr: 'x', durationMs: 1 }
+  const fail: VerificationResult = {
+    kind: 'test',
+    command: 'npm test',
+    passed: false,
+    exitCode: 1,
+    stdout: '',
+    stderr: 'x',
+    durationMs: 1,
+  }
 
   it('보정 작업 목록을 분해한다', async () => {
-    const tasks = await planCorrectiveTasks('g', [fail], fakeSession('{"tasks":[{"title":"수정","description":"d"}]}'))
+    const tasks = await planCorrectiveTasks(
+      'g',
+      [fail],
+      fakeSession('{"tasks":[{"title":"수정","description":"d"}]}'),
+    )
     expect(tasks).toHaveLength(1)
     expect(tasks[0].title).toBe('수정')
   })

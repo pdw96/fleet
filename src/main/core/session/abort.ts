@@ -14,7 +14,11 @@
  * 독립 보존하므로, 큐 대기 중 취소된 send 는 실제 호출 없이 건너뛰고 다음 send 순서도 안 깨진다.
  * signal 미지정이면 p 를 그대로 반환한다(무회귀).
  */
-export function settleOrAbort<T>(p: Promise<T>, signal: AbortSignal | undefined, isStarted: () => boolean): Promise<T> {
+export function settleOrAbort<T>(
+  p: Promise<T>,
+  signal: AbortSignal | undefined,
+  isStarted: () => boolean,
+): Promise<T> {
   if (!signal) return p
   // 진입 시점(아직 실행 전)에 이미 abort 됐으면 즉시 거부 — 큐 대기조차 시작하지 않는다.
   if (signal.aborted && !isStarted()) return Promise.reject(abortError(signal))

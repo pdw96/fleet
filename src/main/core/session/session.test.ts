@@ -1,15 +1,33 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CliAdapter, LlmDescriptor } from '../../../shared/types'
 import type { CommandRunner } from '../cli/detect'
-import type { ApiCallOptions, ApiProvider, ChatTurn, ContentBlock, TokenUsage } from '../providers/types'
+import type {
+  ApiCallOptions,
+  ApiProvider,
+  ChatTurn,
+  ContentBlock,
+  TokenUsage,
+} from '../providers/types'
 import { createToolRegistry } from '../tools/registry'
 import { createApiSession } from './api-session'
 import { buildHeadlessArgs, createCliSession } from './cli-session'
 import { createSessionManager } from './manager'
 import type { LlmSession } from './types'
 
-const apiDesc: LlmDescriptor = { id: 'gpt', kind: 'api', displayName: 'GPT', ref: 'cfg-1', model: 'gpt-4o' }
-const cliDesc: LlmDescriptor = { id: 'claude', kind: 'cli', displayName: 'Claude', ref: 'claude', model: '' }
+const apiDesc: LlmDescriptor = {
+  id: 'gpt',
+  kind: 'api',
+  displayName: 'GPT',
+  ref: 'cfg-1',
+  model: 'gpt-4o',
+}
+const cliDesc: LlmDescriptor = {
+  id: 'claude',
+  kind: 'cli',
+  displayName: 'Claude',
+  ref: 'claude',
+  model: '',
+}
 const claudeAdapter: CliAdapter = {
   id: 'claude',
   displayName: 'Claude Code',
@@ -57,7 +75,9 @@ describe('createApiSession', () => {
       { type: 'text', text: '답' },
     ]
     const provider: ApiProvider = {
-      id: 'g', provider: 'google', model: 'm',
+      id: 'g',
+      provider: 'google',
+      model: 'm',
       async chat(messages) {
         seen.push(structuredClone(messages))
         return { text: '답', toolCalls: [], content: ordered, finishReason: 'stop' }
@@ -81,9 +101,18 @@ describe('createApiSession', () => {
   it('사고(thinking)만 하고 가시 답변이 없는 응답은 무성 빈 reply 대신 에러로 표면화한다 (Codex P2 — #7)', async () => {
     // includeThoughts 응답에서 thought 파트만 오고 visible text/tool 이 없으면 finish=stop 이어도 빈 reply.
     const provider: ApiProvider = {
-      id: 'g', provider: 'google', model: 'm',
+      id: 'g',
+      provider: 'google',
+      model: 'm',
       async chat() {
-        return { text: '', toolCalls: [], content: [{ type: 'thinking', text: '사고', providerMeta: { google: { thoughtSignature: 'S' } } }], finishReason: 'stop' }
+        return {
+          text: '',
+          toolCalls: [],
+          content: [
+            { type: 'thinking', text: '사고', providerMeta: { google: { thoughtSignature: 'S' } } },
+          ],
+          finishReason: 'stop',
+        }
       },
     }
     const s = createApiSession(apiDesc, provider)
@@ -92,7 +121,9 @@ describe('createApiSession', () => {
 
   it('thinking content 없이 빈 text + stop 은 기존대로 빈 문자열 반환(무회귀 — thought-only 가드 과발동 방지)', async () => {
     const provider: ApiProvider = {
-      id: 'g', provider: 'google', model: 'm',
+      id: 'g',
+      provider: 'google',
+      model: 'm',
       async chat() {
         return { text: '', toolCalls: [], finishReason: 'stop' }
       },
@@ -133,7 +164,12 @@ describe('createApiSession', () => {
       provider: 'google',
       model: 'm',
       async chat() {
-        return { text: '', toolCalls: [], finishReason: 'content_filter', rawFinishReason: 'SAFETY' }
+        return {
+          text: '',
+          toolCalls: [],
+          finishReason: 'content_filter',
+          rawFinishReason: 'SAFETY',
+        }
       },
     }
     const s = createApiSession(apiDesc, provider)
@@ -159,7 +195,12 @@ describe('createApiSession', () => {
       provider: 'anthropic',
       model: 'm',
       async chat() {
-        return { text: '부분 답변', toolCalls: [], finishReason: 'length', rawFinishReason: 'max_tokens' }
+        return {
+          text: '부분 답변',
+          toolCalls: [],
+          finishReason: 'length',
+          rawFinishReason: 'max_tokens',
+        }
       },
     }
     const s = createApiSession(apiDesc, provider)
@@ -174,14 +215,28 @@ describe('createApiSession', () => {
       model: 'm',
       async chat() {
         return n++ === 0
-          ? { text: '', toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }], finishReason: 'tool_use' }
+          ? {
+              text: '',
+              toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }],
+              finishReason: 'tool_use',
+            }
           : { text: '최종', toolCalls: [], finishReason: 'stop' }
       },
     }
     const registry = createToolRegistry([
-      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+      {
+        definition: { name: 'echo', parameters: { type: 'object' } },
+        classify: () => 'safe',
+        async execute() {
+          return 'r'
+        },
+      },
     ])
-    const gate = { async request() { return 'approved' as const } }
+    const gate = {
+      async request() {
+        return 'approved' as const
+      },
+    }
     const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
     expect(await s.send('go')).toBe('최종')
   })
@@ -194,14 +249,28 @@ describe('createApiSession', () => {
       model: 'm',
       async chat() {
         return n++ === 0
-          ? { text: '', toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }], finishReason: 'tool_use' }
+          ? {
+              text: '',
+              toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }],
+              finishReason: 'tool_use',
+            }
           : { text: '최종', toolCalls: [], finishReason: 'stop' }
       },
     }
     const registry = createToolRegistry([
-      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+      {
+        definition: { name: 'echo', parameters: { type: 'object' } },
+        classify: () => 'safe',
+        async execute() {
+          return 'r'
+        },
+      },
     ])
-    const gate = { async request() { return 'approved' as const } }
+    const gate = {
+      async request() {
+        return 'approved' as const
+      },
+    }
     const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
     const steps: string[] = []
     await s.send('go', { onToolStep: (st) => steps.push(`${st.name}:${st.phase}`) })
@@ -218,14 +287,28 @@ describe('createApiSession', () => {
       async chat(messages) {
         seen.push(structuredClone(messages))
         return n++ === 0
-          ? { text: '', toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }], finishReason: 'tool_use' }
+          ? {
+              text: '',
+              toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }],
+              finishReason: 'tool_use',
+            }
           : { text: 'ok', toolCalls: [], finishReason: 'stop' }
       },
     }
     const registry = createToolRegistry([
-      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+      {
+        definition: { name: 'echo', parameters: { type: 'object' } },
+        classify: () => 'safe',
+        async execute() {
+          return 'r'
+        },
+      },
     ])
-    const gate = { async request() { return 'approved' as const } }
+    const gate = {
+      async request() {
+        return 'approved' as const
+      },
+    }
     const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
     await s.send('독립질문', { fresh: true }) // 도구 왕복(2회 chat) — history 미오염이어야 함
     await s.send('다음') // 누적 경로: fresh 질문/도구 턴 없이 '다음'만 보여야 한다
@@ -235,7 +318,9 @@ describe('createApiSession', () => {
   it('send 의 responseSchema 를 provider 로 전달한다(구조화 출력)', async () => {
     let seenOpts: ApiCallOptions | undefined
     const provider: ApiProvider = {
-      id: 'fake', provider: 'anthropic', model: 'm',
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
       async chat(_messages, opts) {
         seenOpts = opts
         return { text: '{}', toolCalls: [], finishReason: 'stop' }
@@ -250,16 +335,28 @@ describe('createApiSession', () => {
   it('bypassTools 면 tool loop 를 건너뛰고 도구 없이 단발 chat 한다(분석 호출용)', async () => {
     let seenTools: unknown = 'UNSET'
     const provider: ApiProvider = {
-      id: 'fake', provider: 'anthropic', model: 'm',
+      id: 'fake',
+      provider: 'anthropic',
+      model: 'm',
       async chat(_messages, opts) {
         seenTools = opts?.tools
         return { text: 'ok', toolCalls: [], finishReason: 'stop' }
       },
     }
     const registry = createToolRegistry([
-      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+      {
+        definition: { name: 'echo', parameters: { type: 'object' } },
+        classify: () => 'safe',
+        async execute() {
+          return 'r'
+        },
+      },
     ])
-    const gate = { async request() { return 'approved' as const } }
+    const gate = {
+      async request() {
+        return 'approved' as const
+      },
+    }
     const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
     expect(await s.send('go', { bypassTools: true })).toBe('ok')
     expect(seenTools).toBeUndefined() // 루프 우회 → tools 미부착
@@ -313,7 +410,10 @@ describe('createApiSession', () => {
 
     ac.abort() // A 진행 중에 B 취소
     const settled = await Promise.race([
-      pB.then(() => 'resolved', () => 'rejected'),
+      pB.then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
       new Promise<string>((r) => setTimeout(() => r('pending'), 50)),
     ])
     expect(settled).toBe('rejected') // prior(A) 대기 없이 즉시 거부
@@ -336,37 +436,58 @@ describe('createApiSession', () => {
   })
 
   // ── usage sink (usage-accounting) ────────────────────────────────────────────
-  const usageProvider = (usage: TokenUsage | undefined, finishReason: 'stop' | 'length' = 'stop'): ApiProvider => ({
-    id: 'u', provider: 'anthropic', model: 'm',
+  const usageProvider = (
+    usage: TokenUsage | undefined,
+    finishReason: 'stop' | 'length' = 'stop',
+  ): ApiProvider => ({
+    id: 'u',
+    provider: 'anthropic',
+    model: 'm',
     async chat() {
-      return { text: finishReason === 'length' ? '' : 'ok', toolCalls: [], finishReason, rawFinishReason: 'x', usage }
+      return {
+        text: finishReason === 'length' ? '' : 'ok',
+        toolCalls: [],
+        finishReason,
+        rawFinishReason: 'x',
+        usage,
+      }
     },
   })
 
   it('성공 send 의 응답 usage 를 onUsage sink 로 전달한다', async () => {
     const usages: TokenUsage[] = []
-    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 12, outputTokens: 8 }), { onUsage: (u) => usages.push(u) })
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 12, outputTokens: 8 }), {
+      onUsage: (u) => usages.push(u),
+    })
     expect(await s.send('hi')).toBe('ok')
     expect(usages).toEqual([{ inputTokens: 12, outputTokens: 8 }])
   })
 
   it('onUsage 는 fresh(독립) 경로에서도 발화한다', async () => {
     const usages: TokenUsage[] = []
-    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 3, outputTokens: 1 }), { onUsage: (u) => usages.push(u) })
+    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 3, outputTokens: 1 }), {
+      onUsage: (u) => usages.push(u),
+    })
     await s.send('독립', { fresh: true })
     expect(usages).toEqual([{ inputTokens: 3, outputTokens: 1 }])
   })
 
   it('onUsage 는 unwrap 이 throw 하는 빈 응답(토큰 한도)에도 발화한다 — 소비 토큰은 집계해야 한다', async () => {
     const usages: TokenUsage[] = []
-    const s = createApiSession(apiDesc, usageProvider({ inputTokens: 50, outputTokens: 0 }, 'length'), { onUsage: (u) => usages.push(u) })
+    const s = createApiSession(
+      apiDesc,
+      usageProvider({ inputTokens: 50, outputTokens: 0 }, 'length'),
+      { onUsage: (u) => usages.push(u) },
+    )
     await expect(s.send('x')).rejects.toThrow(/토큰|length|max_tokens|잘/)
     expect(usages).toEqual([{ inputTokens: 50, outputTokens: 0 }])
   })
 
   it('응답에 usage 가 없으면 onUsage 를 호출하지 않는다', async () => {
     const usages: TokenUsage[] = []
-    const s = createApiSession(apiDesc, usageProvider(undefined), { onUsage: (u) => usages.push(u) })
+    const s = createApiSession(apiDesc, usageProvider(undefined), {
+      onUsage: (u) => usages.push(u),
+    })
     await s.send('hi')
     expect(usages).toEqual([])
   })
@@ -388,17 +509,37 @@ describe('createApiSession', () => {
 
   it('onUsage 가 도구 루프 최대 반복 초과 throw 에서도 누적 usage 를 발화한다(가장 비싼 경로 집계)', async () => {
     const provider: ApiProvider = {
-      id: 'u', provider: 'anthropic', model: 'm',
+      id: 'u',
+      provider: 'anthropic',
+      model: 'm',
       async chat() {
-        return { text: '', toolCalls: [{ type: 'tool_use', id: 't', name: 'echo', input: {} }], finishReason: 'tool_use', usage: { inputTokens: 5, outputTokens: 2 } }
+        return {
+          text: '',
+          toolCalls: [{ type: 'tool_use', id: 't', name: 'echo', input: {} }],
+          finishReason: 'tool_use',
+          usage: { inputTokens: 5, outputTokens: 2 },
+        }
       },
     }
     const registry = createToolRegistry([
-      { definition: { name: 'echo', parameters: { type: 'object' } }, classify: () => 'safe', async execute() { return 'r' } },
+      {
+        definition: { name: 'echo', parameters: { type: 'object' } },
+        classify: () => 'safe',
+        async execute() {
+          return 'r'
+        },
+      },
     ])
-    const gate = { async request() { return 'approved' as const } }
+    const gate = {
+      async request() {
+        return 'approved' as const
+      },
+    }
     const usages: TokenUsage[] = []
-    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate, maxIterations: 2 }), onUsage: (u) => usages.push(u) })
+    const s = createApiSession(apiDesc, provider, {
+      toolDeps: () => ({ registry, gate, maxIterations: 2 }),
+      onUsage: (u) => usages.push(u),
+    })
     await expect(s.send('go')).rejects.toThrow(/최대/)
     expect(usages).toEqual([{ inputTokens: 10, outputTokens: 4 }]) // 2 라운드 합산
   })
@@ -407,15 +548,26 @@ describe('createApiSession', () => {
     // usage 를 채우고 본 메시지를 기록하는 provider.
     const seen: ChatTurn[][] = []
     const provider: ApiProvider = {
-      id: 'u', provider: 'anthropic', model: 'm',
+      id: 'u',
+      provider: 'anthropic',
+      model: 'm',
       async chat(messages) {
         seen.push(structuredClone(messages))
         const last = messages.at(-1)?.content ?? ''
         const text = typeof last === 'string' ? last : ''
-        return { text: `echo:${text}`, toolCalls: [], finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } }
+        return {
+          text: `echo:${text}`,
+          toolCalls: [],
+          finishReason: 'stop',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        }
       },
     }
-    const s = createApiSession(apiDesc, provider, { onUsage: () => { throw new Error('sink boom') } })
+    const s = createApiSession(apiDesc, provider, {
+      onUsage: () => {
+        throw new Error('sink boom')
+      },
+    })
     expect(await s.send('A')).toBe('echo:A') // sink throw 가 성공 send 를 거부시키지 않음
     expect(await s.send('B')).toBe('echo:B')
     // 둘째 send 가 첫 교환을 history 로 본다 → 커밋이 깨지지 않았다.
@@ -456,7 +608,10 @@ describe('createCliSession', () => {
       return { code: 0, stdout: '응답\n', stderr: '' }
     }
     const stdinAdapter: CliAdapter = {
-      id: 'gemini', displayName: 'Gemini', command: 'gemini', versionArgs: ['--version'],
+      id: 'gemini',
+      displayName: 'Gemini',
+      command: 'gemini',
+      versionArgs: ['--version'],
       promptVia: 'stdin',
       headless: { args: ['-p', ''] },
     }
@@ -486,7 +641,10 @@ describe('createCliSession', () => {
       return { code: 0, stdout: 'ok', stderr: '' }
     }
     const adapter: CliAdapter = {
-      id: 'gemini', displayName: 'Gemini', command: 'gemini', versionArgs: ['--version'],
+      id: 'gemini',
+      displayName: 'Gemini',
+      command: 'gemini',
+      versionArgs: ['--version'],
       promptVia: 'stdin',
       headless: { args: ['-p', ''] },
       session: {
@@ -513,14 +671,23 @@ describe('createCliSession', () => {
   })
 
   it('throws when the command is missing', async () => {
-    const runner: CommandRunner = async () => ({ code: null, stdout: '', stderr: '', spawnError: 'ENOENT' })
+    const runner: CommandRunner = async () => ({
+      code: null,
+      stdout: '',
+      stderr: '',
+      spawnError: 'ENOENT',
+    })
     const s = createCliSession(cliDesc, claudeAdapter, runner)
     await expect(s.send('x')).rejects.toThrow('ENOENT')
   })
 
   it('throws when adapter has no headless support', async () => {
     const noHeadless: CliAdapter = { id: 'x', displayName: 'X', command: 'x', versionArgs: [] }
-    const s = createCliSession(cliDesc, noHeadless, async () => ({ code: 0, stdout: '', stderr: '' }))
+    const s = createCliSession(cliDesc, noHeadless, async () => ({
+      code: 0,
+      stdout: '',
+      stderr: '',
+    }))
     await expect(s.send('x')).rejects.toThrow('헤드리스')
   })
 
@@ -546,7 +713,13 @@ describe('createCliSession', () => {
         stderr: '',
       }
     }
-    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const codexDesc: LlmDescriptor = {
+      id: 'codex',
+      kind: 'cli',
+      displayName: 'Codex',
+      ref: 'codex',
+      model: '',
+    }
     const s = createCliSession(codexDesc, codexAdapter, runner)
     let chunk = ''
     expect(await s.send('질문', { onChunk: (c) => (chunk = c) })).toBe('정제된 응답')
@@ -576,7 +749,7 @@ describe('createCliSession', () => {
     expect(calls[1]).toEqual(['-p', 'q2']) // 매번 헤드리스, 세션 인자 없음
   })
 
-  it("preassigned 세션: 첫 호출 --session-id, 재개 --resume, 동일 UUID 재사용", async () => {
+  it('preassigned 세션: 첫 호출 --session-id, 재개 --resume, 동일 UUID 재사용', async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {
       calls.push(args)
@@ -603,7 +776,7 @@ describe('createCliSession', () => {
     expect(calls[1]).toEqual(['-p', '--resume', id, '둘째 질문']) // 같은 id 로 재개
   })
 
-  it("codex-thread 세션: 첫 응답의 thread_id 를 캡처해 resume 인자에 사용한다", async () => {
+  it('codex-thread 세션: 첫 응답의 thread_id 를 캡처해 resume 인자에 사용한다', async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {
       calls.push(args)
@@ -613,7 +786,13 @@ describe('createCliSession', () => {
           : '{"type":"item.completed","item":{"type":"agent_message","text":"R2"}}'
       return { code: 0, stdout, stderr: '' }
     }
-    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const codexDesc: LlmDescriptor = {
+      id: 'codex',
+      kind: 'cli',
+      displayName: 'Codex',
+      ref: 'codex',
+      model: '',
+    }
     const adapter: CliAdapter = {
       id: 'codex',
       displayName: 'Codex CLI',
@@ -633,13 +812,15 @@ describe('createCliSession', () => {
     expect(calls[1]).toEqual(['exec', 'resume', '--json', 'abc-123', 'q2'])
   })
 
-  it("preassigned: 첫 호출 실패는 세션을 오염시키지 않고 둘째 send 가 start 로 재시도한다", async () => {
+  it('preassigned: 첫 호출 실패는 세션을 오염시키지 않고 둘째 send 가 start 로 재시도한다', async () => {
     const calls: string[][] = []
     let n = 0
     const runner: CommandRunner = async (_c, args) => {
       calls.push(args)
       n++
-      return n === 1 ? { code: 1, stdout: '', stderr: 'rate limit' } : { code: 0, stdout: 'ok', stderr: '' }
+      return n === 1
+        ? { code: 1, stdout: '', stderr: 'rate limit' }
+        : { code: 0, stdout: 'ok', stderr: '' }
     }
     const adapter: CliAdapter = {
       ...claudeAdapter,
@@ -658,7 +839,7 @@ describe('createCliSession', () => {
     expect(calls[1][1]).toBe('--session-id')
   })
 
-  it("프롬프트에 리터럴 {sessionId} 가 있어도 치환되지 않는다(토큰 충돌 방지)", async () => {
+  it('프롬프트에 리터럴 {sessionId} 가 있어도 치환되지 않는다(토큰 충돌 방지)', async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {
       calls.push(args)
@@ -679,7 +860,7 @@ describe('createCliSession', () => {
     expect(calls[0][3]).toBe('내 토큰은 {sessionId} 이다') // 프롬프트 내 리터럴 보존(=id 로 치환 안 됨)
   })
 
-  it("fresh: stateful 세션이라도 헤드리스 1회로 실행하고 재개 상태를 건드리지 않는다", async () => {
+  it('fresh: stateful 세션이라도 헤드리스 1회로 실행하고 재개 상태를 건드리지 않는다', async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {
       calls.push(args)
@@ -712,11 +893,18 @@ describe('createCliSession', () => {
       return { code: 0, stdout: 'ok', stderr: '' }
     }
     const adapter: CliAdapter = {
-      id: 'x', displayName: 'X', command: 'x', versionArgs: ['--version'],
+      id: 'x',
+      displayName: 'X',
+      command: 'x',
+      versionArgs: ['--version'],
       headless: { args: ['-p', '{prompt}'] },
       edit: { args: ['agent', '-C', '{workspace}', '{prompt}'] },
     }
-    const session = createCliSession({ id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' }, adapter, runner)
+    const session = createCliSession(
+      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' },
+      adapter,
+      runner,
+    )
     const text = await session.send('do it', { workspace: '/ws' })
     expect(text).toBe('ok')
     expect(seenCwd).toBe('/ws')
@@ -730,7 +918,11 @@ describe('createCliSession', () => {
       return { code: 0, stdout: 'ok', stderr: '' }
     }
     const adapter: CliAdapter = {
-      id: 'x', displayName: 'X', command: 'x', versionArgs: ['--version'], modelFlag: '--model',
+      id: 'x',
+      displayName: 'X',
+      command: 'x',
+      versionArgs: ['--version'],
+      modelFlag: '--model',
       headless: { args: ['-p', '{prompt}'] },
     }
     const withModel = createCliSession(
@@ -742,7 +934,11 @@ describe('createCliSession', () => {
     expect(seenArgs).toEqual(['-p', 'hi', '--model', 'claude-opus-4-8'])
 
     // 빈 모델이면 플래그를 생략한다(CLI 기본 모델 사용 — 기존 동작 보존).
-    const noModel = createCliSession({ id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' }, adapter, runner)
+    const noModel = createCliSession(
+      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' },
+      adapter,
+      runner,
+    )
     await noModel.send('hi')
     expect(seenArgs).toEqual(['-p', 'hi'])
 
@@ -763,8 +959,12 @@ describe('createCliSession', () => {
       return { code: 0, stdout: 'ok', stderr: '' }
     }
     const claudeLike: CliAdapter = {
-      id: 'claude', displayName: 'Claude', command: 'claude', versionArgs: ['--version'],
-      mcpConfigFlag: '--mcp-config', mcpStrictArg: '--strict-mcp-config',
+      id: 'claude',
+      displayName: 'Claude',
+      command: 'claude',
+      versionArgs: ['--version'],
+      mcpConfigFlag: '--mcp-config',
+      mcpStrictArg: '--strict-mcp-config',
       headless: { args: ['-p', '{prompt}'] },
     }
     const cfg = '{"mcpServers":{"x":{"command":"npx"}}}'
@@ -796,11 +996,18 @@ describe('createCliSession', () => {
         return { code: 0, stdout: '{"type":"noise"}\n', stderr: '' }
       }
       const adapter: CliAdapter = {
-        id: 'claude', displayName: 'Claude', command: 'claude', versionArgs: ['--version'],
+        id: 'claude',
+        displayName: 'Claude',
+        command: 'claude',
+        versionArgs: ['--version'],
         headless: { args: ['-p', '{prompt}'], parse: 'text' },
         streaming: { args: [], parse: 'claude-stream' },
       }
-      const s = createCliSession({ id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '' }, adapter, runner)
+      const s = createCliSession(
+        { id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '' },
+        adapter,
+        runner,
+      )
       await s.send('hi', { onChunk: () => {} }) // onChunk → 스트리밍 경로 활성화
       expect(warn).toHaveBeenCalledOnce()
       expect(String(warn.mock.calls[0][0])).toMatch(/드리프트/)
@@ -818,11 +1025,18 @@ describe('createCliSession', () => {
         return { code: 0, stdout: line + '\n', stderr: '' }
       }
       const adapter: CliAdapter = {
-        id: 'claude', displayName: 'Claude', command: 'claude', versionArgs: ['--version'],
+        id: 'claude',
+        displayName: 'Claude',
+        command: 'claude',
+        versionArgs: ['--version'],
         headless: { args: ['-p', '{prompt}'], parse: 'text' },
         streaming: { args: [], parse: 'claude-stream' },
       }
-      const s = createCliSession({ id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '' }, adapter, runner)
+      const s = createCliSession(
+        { id: 'c', kind: 'cli', displayName: 'C', ref: 'claude', model: '' },
+        adapter,
+        runner,
+      )
       expect(await s.send('hi', { onChunk: () => {} })).toBe('안녕')
       expect(warn).not.toHaveBeenCalled()
     } finally {
@@ -830,7 +1044,7 @@ describe('createCliSession', () => {
     }
   })
 
-  it("편집 모드는 adapter.edit.parse 로 stdout 을 정제한다(headless.parse 가 아니라)", async () => {
+  it('편집 모드는 adapter.edit.parse 로 stdout 을 정제한다(headless.parse 가 아니라)', async () => {
     // headless.parse='text' 면 JSONL 원문이 그대로 나오지만, edit.parse='codex-jsonl' 이면 agent_message 만 추출돼야 한다.
     const agentLine = '{"type":"item.completed","item":{"type":"agent_message","text":"편집 결과"}}'
     const runner: CommandRunner = async () => ({
@@ -846,7 +1060,13 @@ describe('createCliSession', () => {
       headless: { args: ['exec', '--json', '{prompt}'], parse: 'text' },
       edit: { args: ['agent', '-C', '{workspace}', '{prompt}'], parse: 'codex-jsonl' },
     }
-    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const codexDesc: LlmDescriptor = {
+      id: 'codex',
+      kind: 'cli',
+      displayName: 'Codex',
+      ref: 'codex',
+      model: '',
+    }
     const s = createCliSession(codexDesc, adapter, runner)
     // 편집 모드(workspace 지정) → edit.parse(codex-jsonl)로 정제 → agent_message 만
     expect(await s.send('do it', { workspace: '/ws' })).toBe('편집 결과')
@@ -886,7 +1106,7 @@ describe('createCliSession', () => {
     await expect(s.send('p', { workspace: '/ws' })).rejects.toThrow('편집 모드')
   })
 
-  it("동일 세션 동시 send 를 직렬화한다(codex id 캡처 레이스 방지)", async () => {
+  it('동일 세션 동시 send 를 직렬화한다(codex id 캡처 레이스 방지)', async () => {
     const calls: string[][] = []
     const runner: CommandRunner = async (_c, args) => {
       calls.push(args)
@@ -899,7 +1119,13 @@ describe('createCliSession', () => {
           : '{"type":"item.completed","item":{"type":"agent_message","text":"R2"}}'
       return { code: 0, stdout, stderr: '' }
     }
-    const codexDesc: LlmDescriptor = { id: 'codex', kind: 'cli', displayName: 'Codex', ref: 'codex', model: '' }
+    const codexDesc: LlmDescriptor = {
+      id: 'codex',
+      kind: 'cli',
+      displayName: 'Codex',
+      ref: 'codex',
+      model: '',
+    }
     const adapter: CliAdapter = {
       id: 'codex',
       displayName: 'Codex CLI',
@@ -945,7 +1171,10 @@ describe('createCliSession', () => {
 
     ac.abort()
     const settled = await Promise.race([
-      pB.then(() => 'resolved', () => 'rejected'),
+      pB.then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
       new Promise<string>((r) => setTimeout(() => r('pending'), 50)),
     ])
     expect(settled).toBe('rejected')
@@ -959,7 +1188,10 @@ describe('createCliSession', () => {
     // 편집(workspace) CLI 의 defaultRunner 는 abort 시 즉시 거부하지 않고 killTree/stream-close 까지 기다린 뒤
     // 정착해, 오케스트레이터의 후속 revert 가 살아있는 자식 프로세스와 경합하지 않게 보장한다. 취소 즉시성
     // (settleOrAbort)이 '실행 시작 후' 이 단계를 가로채 조기 거부하면 그 불변식이 깨진다(started 가드로 방지).
-    const editAdapter: CliAdapter = { ...claudeAdapter, edit: { args: ['--edit', '{workspace}', '{prompt}'] } }
+    const editAdapter: CliAdapter = {
+      ...claudeAdapter,
+      edit: { args: ['--edit', '{workspace}', '{prompt}'] },
+    }
     let runnerStarted = false
     let releaseRunner: () => void = () => {}
     const runner: CommandRunner = async () => {
@@ -974,7 +1206,10 @@ describe('createCliSession', () => {
 
     ac.abort() // 실행 중 취소
     const settled = await Promise.race([
-      p.then(() => 'resolved', () => 'rejected'),
+      p.then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
       new Promise<string>((r) => setTimeout(() => r('pending'), 50)),
     ])
     expect(settled).toBe('pending') // runner 정착 전엔 send 도 정착하지 않아야 한다(조기 거부 금지)
@@ -1029,7 +1264,11 @@ describe('createSessionManager', () => {
   it('manages CLI and API sessions uniformly', async () => {
     const { provider } = fakeProvider()
     const apiSession = createApiSession(apiDesc, provider)
-    const cliSession = createCliSession(cliDesc, claudeAdapter, async () => ({ code: 0, stdout: 'ok', stderr: '' }))
+    const cliSession = createCliSession(cliDesc, claudeAdapter, async () => ({
+      code: 0,
+      stdout: 'ok',
+      stderr: '',
+    }))
 
     const m = createSessionManager()
     m.add(apiSession)
@@ -1037,7 +1276,12 @@ describe('createSessionManager', () => {
 
     expect(m.list()).toHaveLength(2)
     expect(m.has('gpt')).toBe(true)
-    expect(m.descriptors().map((d) => d.kind).sort()).toEqual(['api', 'cli'])
+    expect(
+      m
+        .descriptors()
+        .map((d) => d.kind)
+        .sort(),
+    ).toEqual(['api', 'cli'])
 
     // 다형성: 종류와 무관하게 동일 인터페이스로 호출
     const sessions: LlmSession[] = m.list()

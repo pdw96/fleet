@@ -19,7 +19,9 @@ const OUT_MD = path.join(ROOT, 'brain.md')
 
 export function build() {
   if (!fs.existsSync(LIB)) {
-    throw new Error('force-graph 가 없습니다. `npm install` 로 devDependencies 를 설치하세요: ' + LIB)
+    throw new Error(
+      'force-graph 가 없습니다. `npm install` 로 devDependencies 를 설치하세요: ' + LIB,
+    )
   }
   const template = fs.readFileSync(TEMPLATE, 'utf8')
   const lib = fs.readFileSync(LIB, 'utf8')
@@ -43,7 +45,9 @@ export function build() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const r = build()
   const kb = (fs.statSync(r.out).size / 1024).toFixed(0)
-  console.log(`✓ fleet-brain.html (${kb} KB) — ${r.fileCount} files · ${r.linkCount} wires · ${r.channels} channels`)
+  console.log(
+    `✓ fleet-brain.html (${kb} KB) — ${r.fileCount} files · ${r.linkCount} wires · ${r.channels} channels`,
+  )
   console.log(`  → ${r.out}`)
   console.log(`✓ brain.md (${(r.mdBytes / 1024).toFixed(1)} KB) — 에이전트용 다이제스트`)
   console.log(`  → ${r.outMd}`)

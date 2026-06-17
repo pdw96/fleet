@@ -70,7 +70,9 @@ export function createCliSession(
   const mcpArgs = (): string[] => {
     const c = descriptor.mcpConfig?.trim()
     if (!c || !adapter.mcpConfigFlag) return []
-    return adapter.mcpStrictArg ? [adapter.mcpConfigFlag, c, adapter.mcpStrictArg] : [adapter.mcpConfigFlag, c]
+    return adapter.mcpStrictArg
+      ? [adapter.mcpConfigFlag, c, adapter.mcpStrictArg]
+      : [adapter.mcpConfigFlag, c]
   }
 
   /** 모든 실행 인자 끝에 공통으로 붙는 부가 인자(모델·MCP). */
@@ -109,7 +111,12 @@ export function createCliSession(
       const res = await runner(
         adapter.command,
         [...args, ...extraArgs(), ...stream.args],
-        { timeoutMs: sendOpts.timeoutMs ?? timeoutMs, cwd: sendOpts.workspace, signal: sendOpts.signal, stdinInput },
+        {
+          timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
+          cwd: sendOpts.workspace,
+          signal: sendOpts.signal,
+          stdinInput,
+        },
         onStdout,
       )
       emitLine(buf) // 마지막 개행 없는 잔여 라인
@@ -141,12 +148,21 @@ export function createCliSession(
     if (!adapter.headless) {
       throw new Error(`${adapter.displayName}는 헤드리스 1회 실행을 지원하지 않습니다.`)
     }
-    const { text } = await execute(buildHeadlessArgs(adapter, prompt), sendOpts, adapter.headless?.parse, stdinFor(prompt))
+    const { text } = await execute(
+      buildHeadlessArgs(adapter, prompt),
+      sendOpts,
+      adapter.headless?.parse,
+      stdinFor(prompt),
+    )
     return text
   }
 
   // 편집 모드는 항상 stateless/fresh: cwd=workspace 에서 1회 실행해 파일을 직접 편집한다.
-  const runEditing = async (prompt: string, workspace: string, sendOpts: SendOptions): Promise<string> => {
+  const runEditing = async (
+    prompt: string,
+    workspace: string,
+    sendOpts: SendOptions,
+  ): Promise<string> => {
     if (!adapter.edit) throw new Error(`${adapter.displayName}는 편집 모드를 지원하지 않습니다.`)
     // 편집 모드 stdout 정제는 edit.parse 를 우선한다(편집 CLI 의 출력 포맷이 헤드리스와 다를 수 있다).
     const { text } = await execute(
@@ -158,18 +174,27 @@ export function createCliSession(
     return text
   }
 
-  const runStateful = async (s: CliSessionSpec, prompt: string, sendOpts: SendOptions): Promise<string> => {
+  const runStateful = async (
+    s: CliSessionSpec,
+    prompt: string,
+    sendOpts: SendOptions,
+  ): Promise<string> => {
     const resuming = started // 성공적으로 시작된 세션만 재개한다(첫 실패 후엔 start 로 재시도).
     // start 시도마다 새 id 를 생성한다(직전 실패 id 는 미사용 상태이므로 재사용하지 않는다).
     if (!resuming && s.idSource === 'preassigned') sessionId = randomUUID()
     const template = resuming ? s.resumeArgs : s.startArgs
     // {sessionId} 를 먼저 치환하고 사용자 프롬프트를 마지막에 주입 → 프롬프트 내 리터럴 토큰 충돌 방지.
-    const args = template.map((a) => a.replaceAll('{sessionId}', sessionId ?? '').replaceAll('{prompt}', prompt))
+    const args = template.map((a) =>
+      a.replaceAll('{sessionId}', sessionId ?? '').replaceAll('{prompt}', prompt),
+    )
     // execute 내 assertRunOk → 실패 시 started 미전환. stdin 어댑터는 프롬프트를 stdin 으로 보낸다.
     const { res, text } = await execute(args, sendOpts, adapter.headless?.parse, stdinFor(prompt))
     if (!resuming && s.idSource === 'codex-thread') {
       const tid = extractCodexThreadId(res.stdout)
-      if (!tid) throw new Error(`${adapter.command}: 응답에서 thread_id 를 찾지 못해 세션을 시작할 수 없습니다.`)
+      if (!tid)
+        throw new Error(
+          `${adapter.command}: 응답에서 thread_id 를 찾지 못해 세션을 시작할 수 없습니다.`,
+        )
       sessionId = tid
     }
     started = true // 모든 throw 를 통과한 뒤에만 resume 모드로 전환
@@ -192,7 +217,9 @@ export function createCliSession(
         // workspace 가 있으면 편집 모드가 최우선(항상 fresh/stateless): cwd=workspace 에서 파일 직접 편집.
         if (sendOpts.workspace) return runEditing(prompt, sendOpts.workspace, sendOpts)
         // fresh 면 stateful 세션이라도 헤드리스 1회(재개 상태 불변) → 오케스트레이터 독립 호출.
-        return spec && !sendOpts.fresh ? runStateful(spec, prompt, sendOpts) : runStateless(prompt, sendOpts)
+        return spec && !sendOpts.fresh
+          ? runStateful(spec, prompt, sendOpts)
+          : runStateless(prompt, sendOpts)
       })()
       chain = link.catch(() => {}) // 직렬화 체인은 에러로 끊기지 않게(순서만 보존)
       // 큐 대기 중에만 취소를 즉시 반영한다. 실행 시작(자식 spawn) 후의 취소는 runner 의 killTree/close-후-정착을

@@ -1,7 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import {
+  _electron as electron,
+  expect,
+  test,
+  type ElectronApplication,
+  type Page,
+} from '@playwright/test'
 
 /**
  * 회귀 가드(#27 Next②): 진행 중인 프로젝트 실행이 탭 전환(ProjectPanel 언마운트→리마운트)에도

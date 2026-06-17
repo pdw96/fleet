@@ -81,7 +81,9 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
     (_e, adapterId: string, opts?: { stateful?: boolean; model?: string; mcpConfig?: string }) =>
       engine.registerCliSession(adapterId, opts),
   )
-  ipcMain.handle('fleet:session:registerApi', (_e, config: ApiProviderConfig) => engine.registerApiSession(config))
+  ipcMain.handle('fleet:session:registerApi', (_e, config: ApiProviderConfig) =>
+    engine.registerApiSession(config),
+  )
   ipcMain.handle('fleet:session:list', () => engine.listSessions())
   ipcMain.handle('fleet:session:remove', (_e, id: string) => engine.removeSession(id))
   ipcMain.handle('fleet:session:capabilities', (_e, id: string, roles: AgentRole[]) =>
@@ -90,8 +92,12 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
 
   // 프로젝트 / 오케스트레이션
   ipcMain.handle('fleet:project:list', () => engine.listProjects())
-  ipcMain.handle('fleet:project:tasks', (_e, projectId: string) => engine.getProjectTasks(projectId))
-  ipcMain.handle('fleet:project:events', (_e, projectId: string) => engine.listProjectEvents(projectId))
+  ipcMain.handle('fleet:project:tasks', (_e, projectId: string) =>
+    engine.getProjectTasks(projectId),
+  )
+  ipcMain.handle('fleet:project:events', (_e, projectId: string) =>
+    engine.listProjectEvents(projectId),
+  )
   ipcMain.handle('fleet:project:lastActive:get', () => engine.getLastActiveProject())
   ipcMain.handle('fleet:project:lastActive:set', (_e, projectId: string | null) =>
     engine.setLastActiveProject(projectId),
@@ -116,8 +122,12 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   )
   ipcMain.handle('fleet:chat:listRooms', () => engine.listRooms())
   ipcMain.handle('fleet:chat:history', (_e, roomId: string) => engine.roomHistory(roomId))
-  ipcMain.handle('fleet:chat:postUser', (_e, roomId: string, content: string) => engine.postUserMessage(roomId, content))
-  ipcMain.handle('fleet:chat:askLlm', (_e, roomId: string, llmId: string) => engine.askLlm(roomId, llmId))
+  ipcMain.handle('fleet:chat:postUser', (_e, roomId: string, content: string) =>
+    engine.postUserMessage(roomId, content),
+  )
+  ipcMain.handle('fleet:chat:askLlm', (_e, roomId: string, llmId: string) =>
+    engine.askLlm(roomId, llmId),
+  )
   ipcMain.handle('fleet:chat:discuss', (_e, roomId: string, llmIds: string[], rounds?: number) =>
     engine.discussRoom(roomId, llmIds, rounds),
   )
@@ -125,7 +135,9 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   ipcMain.handle('fleet:chat:activity', () => engine.getChatActivity())
 
   // MCP 호스트
-  ipcMain.handle('fleet:mcp:setServers', (_e, servers: McpServerSpec[]) => engine.setMcpServers(servers))
+  ipcMain.handle('fleet:mcp:setServers', (_e, servers: McpServerSpec[]) =>
+    engine.setMcpServers(servers),
+  )
   ipcMain.handle('fleet:mcp:getStatus', () => engine.getMcpStatus())
 
   // 감사

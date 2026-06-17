@@ -116,7 +116,8 @@ export function ProjectPanel({ sessions }: Props) {
   // 마운트: 오케스트레이터 라이브 이벤트 구독(방 필터는 selectedIdRef 로).
   useEffect(() => {
     const unsub = window.fleet.onOrchestratorEvent((e) => {
-      const pid = typeof e.data?.['projectId'] === 'string' ? (e.data['projectId'] as string) : undefined
+      const pid =
+        typeof e.data?.['projectId'] === 'string' ? (e.data['projectId'] as string) : undefined
       // 취소 버튼용 in-flight id. selectProject 가 selectedIdRef 를 동기로 잡으므로 project.created 직후
       // 도착하는 task.progress(영속 안 됨, 재조회로 복원 불가)도 곧바로 라이브 로그 필터를 통과한다.
       if (e.type === 'project.created' && pid) {
@@ -155,7 +156,8 @@ export function ProjectPanel({ sessions }: Props) {
         void refreshProjects()
       // 현재 열려 있는 프로젝트의 이벤트만 라이브 로그/보드에 반영(크로스-프로젝트 누수 방지).
       if (pid && pid === selectedIdRef.current) {
-        const eventId = typeof e.data?.['eventId'] === 'string' ? (e.data['eventId'] as string) : undefined
+        const eventId =
+          typeof e.data?.['eventId'] === 'string' ? (e.data['eventId'] as string) : undefined
         setLog((prev) => [...prev, { type: e.type, message: e.message, id: eventId }])
         liveDuringLoadRef.current += 1 // 진행 중 로드가 끝날 때 스냅샷 뒤로 보존할 라이브 행 카운트(아래 선택 effect 가 리셋·소비)
         // 보드는 마일스톤에서만 갱신. refreshTasks 가 boardToken 으로 순서를 보장하고, 선택 스냅샷보다 새 갱신이면
@@ -197,7 +199,11 @@ export function ProjectPanel({ sessions }: Props) {
       if (loadTokenRef.current !== token || selectedIdRef.current !== selectedId) return
       // 로드 중(또는 이후) 라이브 refreshTasks 가 보드를 더 최신으로 갱신했으면 오래된 스냅샷으로 덮어쓰지 않는다.
       if (boardToken === boardTokenRef.current) setTasks(t)
-      const snapshot: LogLine[] = ev.map((e) => ({ type: e.type, message: e.message ?? '', id: e.id }))
+      const snapshot: LogLine[] = ev.map((e) => ({
+        type: e.type,
+        message: e.message ?? '',
+        id: e.id,
+      }))
       const snapshotIds = new Set(snapshot.map((s) => s.id))
       // 로드 중 도착한 라이브 행을 스냅샷 뒤에 보존하되, 스냅샷에 이미 영속된 같은 id 의 행만 중복으로 제외한다.
       // id 로 dedup 하므로 (type,message)가 같은 서로 다른 마일스톤(예: 여러 작업의 '리뷰 승인')은 보존되고,
@@ -238,7 +244,12 @@ export function ProjectPanel({ sessions }: Props) {
         policy === 'manual'
           ? ASSIGNABLE_ROLES.map((role) => ({ role, llmId: manual[role] ?? sessions[0]?.id ?? '' }))
           : undefined
-      const r = await window.fleet.runProject({ goal: goal.trim(), policy, assignments, maxReplanRounds })
+      const r = await window.fleet.runProject({
+        goal: goal.trim(),
+        policy,
+        assignments,
+        maxReplanRounds,
+      })
       if (selectedIdRef.current === r.projectId) setSummary(r.summary) // 끝난 프로젝트가 아직 열려 있을 때만 요약 표시
       await refreshProjects()
       if (selectedIdRef.current) await refreshTasks(selectedIdRef.current)
@@ -253,21 +264,33 @@ export function ProjectPanel({ sessions }: Props) {
   }
 
   const canRun = sessions.length > 0 && goal.trim().length > 0 && !running
-  const llmName = (id?: string) => (id ? (sessions.find((s) => s.id === id)?.displayName ?? id) : undefined)
+  const llmName = (id?: string) =>
+    id ? (sessions.find((s) => s.id === id)?.displayName ?? id) : undefined
   // capability-scored 인데 어떤 세션에도 역량이 없으면 사실상 round-robin — 침묵 격하 경고(2개 이상일 때만 의미).
   const noCapsConfigured =
-    policy === 'capability-scored' && sessions.length > 1 && !sessions.some((s) => s.capabilities?.length)
+    policy === 'capability-scored' &&
+    sessions.length > 1 &&
+    !sessions.some((s) => s.capabilities?.length)
   const selected = projects.find((p) => p.id === selectedId)
 
   return (
     <div className="project-layout">
       <aside className="panel rooms">
         <span className="eyebrow">프로젝트</span>
-        <button className="room-btn" data-active={selectedId === null} onClick={() => selectProject(null)}>
+        <button
+          className="room-btn"
+          data-active={selectedId === null}
+          onClick={() => selectProject(null)}
+        >
           + 새 프로젝트
         </button>
         {projects.map((p) => (
-          <button key={p.id} className="room-btn" data-active={p.id === selectedId} onClick={() => selectProject(p.id)}>
+          <button
+            key={p.id}
+            className="room-btn"
+            data-active={p.id === selectedId}
+            onClick={() => selectProject(p.id)}
+          >
             <span className="proj-title">{p.title}</span>
             <span className="proj-status" style={{ color: statusColor(p.status) }}>
               {p.status}
@@ -298,14 +321,21 @@ export function ProjectPanel({ sessions }: Props) {
           <div className="row" style={{ alignItems: 'flex-end', marginTop: 12 }}>
             <div style={{ width: 220 }}>
               <label className="field-label">역할 배정 정책</label>
-              <select className="field" value={policy} onChange={(e) => setPolicy(e.target.value as AssignmentPolicy)}>
+              <select
+                className="field"
+                value={policy}
+                onChange={(e) => setPolicy(e.target.value as AssignmentPolicy)}
+              >
                 <option value="round-robin">round-robin</option>
                 <option value="capability-scored">capability-scored</option>
                 <option value="manual">manual</option>
               </select>
             </div>
             <div style={{ width: 160 }}>
-              <label className="field-label" title="검증 실패가 verify-fix 로도 안 풀릴 때 planner 가 보정 작업을 추가 생성해 재시도하는 라운드 수">
+              <label
+                className="field-label"
+                title="검증 실패가 verify-fix 로도 안 풀릴 때 planner 가 보정 작업을 추가 생성해 재시도하는 라운드 수"
+              >
                 보정 재계획
               </label>
               <select
@@ -322,7 +352,12 @@ export function ProjectPanel({ sessions }: Props) {
                 ))}
               </select>
             </div>
-            <button className="btn" style={{ marginLeft: 'auto' }} onClick={() => void run()} disabled={!canRun}>
+            <button
+              className="btn"
+              style={{ marginLeft: 'auto' }}
+              onClick={() => void run()}
+              disabled={!canRun}
+            >
               {running ? '실행 중…' : '오케스트레이션 실행'}
             </button>
             {running && activeProjectId && (
@@ -343,8 +378,8 @@ export function ProjectPanel({ sessions }: Props) {
           </div>
           {noCapsConfigured && (
             <p className="note-warn" style={{ marginBottom: 0 }}>
-              capability-scored 선택됨 — 어떤 세션에도 역량이 설정되지 않아 사실상 round-robin 으로 동작합니다. [세션] 탭에서
-              역할을 지정하세요.
+              capability-scored 선택됨 — 어떤 세션에도 역량이 설정되지 않아 사실상 round-robin 으로
+              동작합니다. [세션] 탭에서 역할을 지정하세요.
             </p>
           )}
           {policy === 'manual' && sessions.length > 0 && (
@@ -367,7 +402,11 @@ export function ProjectPanel({ sessions }: Props) {
               ))}
             </div>
           )}
-          {error && <p className="note-bad" style={{ marginBottom: 0 }}>오류: {error}</p>}
+          {error && (
+            <p className="note-bad" style={{ marginBottom: 0 }}>
+              오류: {error}
+            </p>
+          )}
         </section>
 
         {/* 선택된 프로젝트 — 저장소 기준 진행 로그 + 보드. 탭/창 전환·재마운트해도 복원된다. */}
@@ -379,7 +418,10 @@ export function ProjectPanel({ sessions }: Props) {
                 <h2 className="panel-title">진행 상황{selected ? ` · ${selected.title}` : ''}</h2>
                 {selected && (
                   <div className="right">
-                    <span className="chip" style={{ color: statusColor(selected.status), borderColor: 'currentColor' }}>
+                    <span
+                      className="chip"
+                      style={{ color: statusColor(selected.status), borderColor: 'currentColor' }}
+                    >
                       {selected.status}
                     </span>
                   </div>
@@ -410,19 +452,32 @@ export function ProjectPanel({ sessions }: Props) {
                     <li key={t.id} className="line-item">
                       <span
                         className="chip"
-                        style={{ color: statusColor(t.status), borderColor: 'currentColor', minWidth: 62, justifyContent: 'center' }}
+                        style={{
+                          color: statusColor(t.status),
+                          borderColor: 'currentColor',
+                          minWidth: 62,
+                          justifyContent: 'center',
+                        }}
                       >
                         {t.status === 'skipped' ? '건너뜀' : t.status}
                       </span>
                       <span className="name">{t.title}</span>
                       {t.role && <span className="meta">{t.role}</span>}
                       {t.assignedLlmId && (
-                        <span className="meta" title="실행 LLM" style={{ color: 'var(--accent, currentColor)' }}>
+                        <span
+                          className="meta"
+                          title="실행 LLM"
+                          style={{ color: 'var(--accent, currentColor)' }}
+                        >
                           → {llmName(t.assignedLlmId)}
                         </span>
                       )}
                       {t.changedFiles && t.changedFiles.length > 0 && (
-                        <span className="chip" title={t.changedFiles.join('\n')} style={{ marginLeft: 'auto' }}>
+                        <span
+                          className="chip"
+                          title={t.changedFiles.join('\n')}
+                          style={{ marginLeft: 'auto' }}
+                        >
                           변경 {t.changedFiles.length}개
                         </span>
                       )}

@@ -20,7 +20,11 @@ process.stdin.on('data', (chunk) => {
 
     let result
     if (msg.method === 'initialize') {
-      result = { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'mock', version: '0.0.0' } }
+      result = {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        serverInfo: { name: 'mock', version: '0.0.0' },
+      }
     } else if (msg.method === 'tools/list') {
       result = {
         tools: [
@@ -32,7 +36,9 @@ process.stdin.on('data', (chunk) => {
         ],
       }
     } else if (msg.method === 'tools/call') {
-      result = { content: [{ type: 'text', text: `echo: ${JSON.stringify(msg.params?.arguments ?? {})}` }] }
+      result = {
+        content: [{ type: 'text', text: `echo: ${JSON.stringify(msg.params?.arguments ?? {})}` }],
+      }
     } else {
       result = {}
     }

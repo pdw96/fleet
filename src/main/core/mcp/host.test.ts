@@ -28,7 +28,11 @@ function fakeSpawn(reply: (spec: McpServerSpec, method: string, params: unknown)
         try {
           payload = { jsonrpc: '2.0', id: msg.id, result: reply(spec, msg.method, msg.params) }
         } catch (e) {
-          payload = { jsonrpc: '2.0', id: msg.id, error: { code: -1, message: (e as Error).message } }
+          payload = {
+            jsonrpc: '2.0',
+            id: msg.id,
+            error: { code: -1, message: (e as Error).message },
+          }
         }
         queueMicrotask(() => out(`${JSON.stringify(payload)}\n`))
       },
@@ -67,7 +71,9 @@ function deferredSpawn() {
         if (msg.id == null) return // 알림
         if (msg.method === 'initialize') {
           queueMicrotask(() =>
-            out(`${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: {} } })}\n`),
+            out(
+              `${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: {} } })}\n`,
+            ),
           )
         } else if (msg.method === 'tools/list') {
           pendingLists.set(spec.name, [...(pendingLists.get(spec.name) ?? []), msg.id!])
@@ -86,7 +92,9 @@ function deferredSpawn() {
   const resolveList = (server: string, toolNames: string[]): void => {
     const id = (pendingLists.get(server) ?? []).shift()
     if (id == null) throw new Error(`대기 중인 tools/list 가 없습니다: ${server}`)
-    outs.get(server)!(`${JSON.stringify({ jsonrpc: '2.0', id, result: { tools: toolNames.map((name) => ({ name })) } })}\n`)
+    outs.get(server)!(
+      `${JSON.stringify({ jsonrpc: '2.0', id, result: { tools: toolNames.map((name) => ({ name })) } })}\n`,
+    )
   }
   const pendingListCount = (server: string): number => (pendingLists.get(server) ?? []).length
   return { spawn, notifiers, resolveList, pendingListCount }
@@ -101,7 +109,8 @@ const rejectAll = { request: async () => 'rejected' as const }
 
 const echoReply = (spec: McpServerSpec, method: string): unknown => {
   if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
-  if (method === 'tools/list') return { tools: [{ name: 'echo', description: 'e', inputSchema: { type: 'object' } }] }
+  if (method === 'tools/list')
+    return { tools: [{ name: 'echo', description: 'e', inputSchema: { type: 'object' } }] }
   if (method === 'tools/call') return { content: [{ type: 'text', text: `hi from ${spec.name}` }] }
   return {}
 }
@@ -111,7 +120,9 @@ describe('createMcpHost', () => {
     const { spawn } = fakeSpawn(echoReply)
     const host = createMcpHost({ spawn })
     const status = await host.setServers([{ name: 'srv', command: 'x' }])
-    expect(status).toEqual([{ name: 'srv', connected: true, toolCount: 1, tools: ['mcp__srv__echo'] }])
+    expect(status).toEqual([
+      { name: 'srv', connected: true, toolCount: 1, tools: ['mcp__srv__echo'] },
+    ])
     const tools = host.tools()
     expect(tools.map((t) => t.definition.name)).toEqual(['mcp__srv__echo'])
     expect(await tools[0].execute({}, {})).toBe('hi from srv')
@@ -133,7 +144,10 @@ describe('createMcpHost', () => {
     expect(bad?.connected).toBe(false)
     expect(bad?.error).toContain('boom')
     expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__good__echo'])
-    expect(audit).toHaveBeenCalledWith('mcp.server.failed', expect.objectContaining({ name: 'bad' }))
+    expect(audit).toHaveBeenCalledWith(
+      'mcp.server.failed',
+      expect.objectContaining({ name: 'bad' }),
+    )
   })
 
   it('중복 서버 이름은 throw 한다', async () => {
@@ -208,7 +222,10 @@ describe('createMcpHost', () => {
     expect(status[0].error).toMatch(/거부/)
     expect(spawns).toEqual([]) // spawn 안 됨 — 게이트 이전에 막힘
     expect(host.tools()).toHaveLength(0)
-    expect(audit).toHaveBeenCalledWith('mcp.server.rejected', expect.objectContaining({ name: 'srv' }))
+    expect(audit).toHaveBeenCalledWith(
+      'mcp.server.rejected',
+      expect.objectContaining({ name: 'srv' }),
+    )
   })
 
   it('gate 에 shell·destructive·명령줄로 승인을 요청한다', async () => {
@@ -225,7 +242,9 @@ describe('createMcpHost', () => {
     const { spawn } = fakeSpawn(echoReply)
     const request = vi.fn(async () => 'approved' as const)
     const host = createMcpHost({ spawn, gate: { request } })
-    await host.setServers([{ name: 'srv', command: 'node', args: ['s.js'], cwd: '/tmp/work', env: { SECRET: 'xyz' } }])
+    await host.setServers([
+      { name: 'srv', command: 'node', args: ['s.js'], cwd: '/tmp/work', env: { SECRET: 'xyz' } },
+    ])
     expect(request).toHaveBeenCalledWith(
       expect.objectContaining({ target: 'node s.js (cwd: /tmp/work) (env: SECRET)' }),
     )
@@ -264,7 +283,10 @@ describe('createMcpHost', () => {
     const status = await host.setServers([{ name: 'srv', command: 'x' }])
     expect(status[0].toolCount).toBe(1)
     expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__do_thing'])
-    expect(audit).toHaveBeenCalledWith('mcp.tool.skipped', expect.objectContaining({ reason: 'duplicate name' }))
+    expect(audit).toHaveBeenCalledWith(
+      'mcp.tool.skipped',
+      expect.objectContaining({ reason: 'duplicate name' }),
+    )
   })
 
   it('연결된 서버가 종료되면 도구를 무효화하고 disconnected 로 표시한다', async () => {
@@ -346,7 +368,11 @@ describe('createMcpHost', () => {
           const msg = JSON.parse(line) as { id?: number; method: string }
           if (msg.id == null) return
           if (spec.name === 'slow') return // 응답 없음 → initialize 가 매달림
-          queueMicrotask(() => out(`${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: echoReply(spec, msg.method) })}\n`))
+          queueMicrotask(() =>
+            out(
+              `${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: echoReply(spec, msg.method) })}\n`,
+            ),
+          )
         },
         onStdout: (h) => {
           out = h
@@ -389,7 +415,10 @@ describe('createMcpHost', () => {
     await vi.waitFor(() => expect(host.tools()).toHaveLength(2))
     expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a', 'mcp__srv__b'])
     expect(host.status()[0]).toMatchObject({ name: 'srv', connected: true, toolCount: 2 })
-    expect(audit).toHaveBeenCalledWith('mcp.tools.changed', expect.objectContaining({ name: 'srv', toolCount: 2 }))
+    expect(audit).toHaveBeenCalledWith(
+      'mcp.tools.changed',
+      expect.objectContaining({ name: 'srv', toolCount: 2 }),
+    )
   })
 
   it('tools/list_changed 로 도구가 줄면 제거된 도구는 더 이상 노출하지 않는다', async () => {
@@ -424,7 +453,10 @@ describe('createMcpHost', () => {
     failList = true
     notifiers.get('srv')!(LIST_CHANGED)
     await vi.waitFor(() =>
-      expect(audit).toHaveBeenCalledWith('mcp.tools.refresh_failed', expect.objectContaining({ name: 'srv' })),
+      expect(audit).toHaveBeenCalledWith(
+        'mcp.tools.refresh_failed',
+        expect.objectContaining({ name: 'srv' }),
+      ),
     )
     expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a']) // 기존 유지
     expect(audit).not.toHaveBeenCalledWith('mcp.tools.changed', expect.anything()) // 실패 경로는 changed 미방출
@@ -453,16 +485,24 @@ describe('createMcpHost', () => {
 
     resolveList('srv', ['a', 'b', 'c']) // 2차(마지막) 새로고침 응답 — 이게 최종 상태여야 한다
     await vi.waitFor(() => expect(host.tools()).toHaveLength(3))
-    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__a', 'mcp__srv__b', 'mcp__srv__c'])
+    expect(host.tools().map((t) => t.definition.name)).toEqual([
+      'mcp__srv__a',
+      'mcp__srv__b',
+      'mcp__srv__c',
+    ])
     expect(host.status()[0].toolCount).toBe(3)
   })
 
   it('tools/list_changed 가 서버 간 이름 충돌을 새로 만들면 진 서버 도구를 가린다', async () => {
-    const tools: Record<string, { name: string }[]> = { 'foo.bar': [{ name: 'x' }], foo_bar: [{ name: 'y' }] }
+    const tools: Record<string, { name: string }[]> = {
+      'foo.bar': [{ name: 'x' }],
+      foo_bar: [{ name: 'y' }],
+    }
     const { spawn, notifiers } = fakeSpawn((spec, method) => {
       if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
       if (method === 'tools/list') return { tools: tools[spec.name] }
-      if (method === 'tools/call') return { content: [{ type: 'text', text: `hi from ${spec.name}` }] }
+      if (method === 'tools/call')
+        return { content: [{ type: 'text', text: `hi from ${spec.name}` }] }
       return {}
     })
     const audit = vi.fn()
@@ -472,17 +512,28 @@ describe('createMcpHost', () => {
       { name: 'foo.bar', command: 'a' },
       { name: 'foo_bar', command: 'b' },
     ])
-    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__foo_bar__x', 'mcp__foo_bar__y'])
+    expect(host.tools().map((t) => t.definition.name)).toEqual([
+      'mcp__foo_bar__x',
+      'mcp__foo_bar__y',
+    ])
     expect(host.status().find((s) => s.name === 'foo_bar')?.toolCount).toBe(1)
     // 승자(foo.bar)가 'y' 를 추가 → 패자의 mcp__foo_bar__y 와 런타임 충돌. 승자가 가져간다.
     tools['foo.bar'] = [{ name: 'x' }, { name: 'y' }]
     notifiers.get('foo.bar')!(LIST_CHANGED)
-    await vi.waitFor(() => expect(host.status().find((s) => s.name === 'foo_bar')?.toolCount).toBe(0))
-    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__foo_bar__x', 'mcp__foo_bar__y'])
+    await vi.waitFor(() =>
+      expect(host.status().find((s) => s.name === 'foo_bar')?.toolCount).toBe(0),
+    )
+    expect(host.tools().map((t) => t.definition.name)).toEqual([
+      'mcp__foo_bar__x',
+      'mcp__foo_bar__y',
+    ])
     // 충돌한 y 는 승자(foo.bar)의 것이어야 한다 — 패자 도구는 가려진다.
     const y = host.tools().find((t) => t.definition.name === 'mcp__foo_bar__y')!
     expect(await y.execute({}, {})).toBe('hi from foo.bar')
-    expect(audit).toHaveBeenCalledWith('mcp.tool.skipped', expect.objectContaining({ reason: 'duplicate name (cross-server)' }))
+    expect(audit).toHaveBeenCalledWith(
+      'mcp.tool.skipped',
+      expect.objectContaining({ reason: 'duplicate name (cross-server)' }),
+    )
   })
 
   it('연결이 종료된 뒤 도착한 tools/list_changed 는 무시한다(죽은 서버 미새로고침)', async () => {

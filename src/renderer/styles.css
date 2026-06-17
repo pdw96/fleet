@@ -87,7 +87,9 @@
 .ask-btn:focus-visible,
 .check input:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--signal-line);
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--signal-line);
 }
 
 html,
@@ -107,7 +109,10 @@ body {
     radial-gradient(1100px 560px at 82% -12%, rgba(255, 194, 75, 0.07), transparent 60%),
     radial-gradient(820px 480px at -8% -6%, rgba(79, 224, 192, 0.05), transparent 55%),
     radial-gradient(rgba(233, 228, 220, 0.022) 1px, transparent 1px);
-  background-size: auto, auto, 23px 23px;
+  background-size:
+    auto,
+    auto,
+    23px 23px;
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -211,7 +216,10 @@ body::after {
   padding: 7px 16px;
   border-radius: 999px;
   cursor: pointer;
-  transition: color 0.18s, background 0.18s, box-shadow 0.18s;
+  transition:
+    color 0.18s,
+    background 0.18s,
+    box-shadow 0.18s;
 }
 .nav-btn:hover {
   color: var(--text);
@@ -219,7 +227,9 @@ body::after {
 .nav-btn[data-active='true'] {
   color: #1a1407;
   background: var(--signal);
-  box-shadow: 0 0 0 1px var(--signal-line), 0 6px 18px -8px rgba(255, 194, 75, 0.6);
+  box-shadow:
+    0 0 0 1px var(--signal-line),
+    0 6px 18px -8px rgba(255, 194, 75, 0.6);
   font-weight: 600;
 }
 
@@ -324,7 +334,13 @@ body::after {
   position: absolute;
   inset: 0 0 auto 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, var(--line-2) 20%, var(--line-2) 80%, transparent);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--line-2) 20%,
+    var(--line-2) 80%,
+    transparent
+  );
 }
 
 .panel-head {
@@ -378,7 +394,12 @@ body::after {
   background: var(--signal);
   color: #1a1407;
   cursor: pointer;
-  transition: transform 0.12s, box-shadow 0.18s, background 0.18s, opacity 0.18s, border-color 0.18s,
+  transition:
+    transform 0.12s,
+    box-shadow 0.18s,
+    background 0.18s,
+    opacity 0.18s,
+    border-color 0.18s,
     color 0.18s;
 }
 .btn:hover:not(:disabled) {
@@ -453,7 +474,10 @@ body::after {
   border-radius: var(--radius-sm);
   padding: 9px 12px;
   outline: none;
-  transition: border-color 0.16s, box-shadow 0.16s, background 0.16s;
+  transition:
+    border-color 0.16s,
+    box-shadow 0.16s,
+    background 0.16s;
 }
 .field::placeholder {
   color: var(--faint);
@@ -523,7 +547,9 @@ select.field {
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  transition: border-color 0.16s, background 0.16s;
+  transition:
+    border-color 0.16s,
+    background 0.16s;
 }
 .line-item:hover {
   border-color: var(--line-2);
@@ -606,7 +632,10 @@ code.id {
   border-radius: var(--radius-sm);
   padding: 10px 12px 10px 16px;
   cursor: pointer;
-  transition: color 0.16s, background 0.16s, border-color 0.16s;
+  transition:
+    color 0.16s,
+    background 0.16s,
+    border-color 0.16s;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -729,7 +758,9 @@ code.id {
   border-radius: 11px;
   overflow: hidden;
   /* 히어로: 정적 메시지 옆에서 떠 보이도록 민트 글로우 */
-  box-shadow: 0 0 0 1px rgba(79, 224, 192, 0.16), 0 14px 34px -18px rgba(79, 224, 192, 0.5);
+  box-shadow:
+    0 0 0 1px rgba(79, 224, 192, 0.16),
+    0 14px 34px -18px rgba(79, 224, 192, 0.5);
   animation: fadeUp 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 .stream::before {
@@ -740,7 +771,12 @@ code.id {
   bottom: 0;
   width: 3px;
   /* 밝은 띠가 위로 흐르는 스윕 — '토큰이 흐른다'는 운동감 */
-  background: linear-gradient(180deg, rgba(79, 224, 192, 0.2) 0%, var(--live) 50%, rgba(79, 224, 192, 0.2) 100%);
+  background: linear-gradient(
+    180deg,
+    rgba(79, 224, 192, 0.2) 0%,
+    var(--live) 50%,
+    rgba(79, 224, 192, 0.2) 100%
+  );
   background-size: 100% 200%;
   animation: livesweep 1.5s linear infinite;
 }
@@ -831,7 +867,10 @@ code.id {
   border-radius: 999px;
   padding: 6px 13px;
   cursor: pointer;
-  transition: border-color 0.16s, background 0.16s, transform 0.12s;
+  transition:
+    border-color 0.16s,
+    background 0.16s,
+    transform 0.12s;
 }
 .ask-btn::before {
   content: '▸ ';
@@ -961,7 +1000,9 @@ code.id {
   width: 100%;
   max-width: 480px;
   border-color: rgba(255, 111, 111, 0.4);
-  box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 111, 111, 0.16);
+  box-shadow:
+    0 24px 60px -24px rgba(0, 0, 0, 0.9),
+    0 0 0 1px rgba(255, 111, 111, 0.16);
 }
 .modal-summary {
   font-size: 14px;

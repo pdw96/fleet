@@ -137,7 +137,12 @@ describe('installCrashRecovery', () => {
     const f = fakeWebContents()
     const sched = fakeScheduler()
     let t = 0
-    installCrashRecovery(f.wc, { log: () => {}, schedule: sched.schedule, now: () => t, maxReloads: 3 })
+    installCrashRecovery(f.wc, {
+      log: () => {},
+      schedule: sched.schedule,
+      now: () => t,
+      maxReloads: 3,
+    })
 
     for (let i = 0; i < 5; i++) {
       f.crash('crashed')
@@ -153,7 +158,12 @@ describe('installCrashRecovery', () => {
     const f = fakeWebContents()
     const sched = fakeScheduler()
     let t = 0
-    installCrashRecovery(f.wc, { log: () => {}, schedule: sched.schedule, now: () => t, maxReloads: 1 })
+    installCrashRecovery(f.wc, {
+      log: () => {},
+      schedule: sched.schedule,
+      now: () => t,
+      maxReloads: 1,
+    })
 
     f.crash('crashed') // 1회차 → 예약(백오프 500)
     expect(sched.delays()).toEqual([500])

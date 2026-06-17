@@ -39,6 +39,9 @@ try {
     }
   })
 } catch (err) {
-  console.error('fs.watch(recursive) 실패 — 이 플랫폼은 recursive 워치를 지원하지 않을 수 있습니다:', err.message)
+  console.error(
+    'fs.watch(recursive) 실패 — 이 플랫폼은 recursive 워치를 지원하지 않을 수 있습니다:',
+    err.message,
+  )
   process.exit(1)
 }

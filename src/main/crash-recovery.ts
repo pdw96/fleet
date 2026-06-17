@@ -32,7 +32,10 @@ export interface RenderProcessGoneInfo {
 
 /** installCrashRecovery 가 필요로 하는 webContents 의 최소 표면(실제 Electron.WebContents 가 구조적으로 만족). */
 export interface RecoverableWebContents {
-  on(event: 'render-process-gone', listener: (event: unknown, details: RenderProcessGoneInfo) => void): unknown
+  on(
+    event: 'render-process-gone',
+    listener: (event: unknown, details: RenderProcessGoneInfo) => void,
+  ): unknown
   reload(): void
   isDestroyed(): boolean
 }
@@ -77,7 +80,10 @@ const SKIP_LOG_REASONS = new Set(['clean-exit', 'killed'])
 /**
  * 한 webContents 에 렌더러 크래시 자동 reload 복구를 설치한다(창마다 1회 호출 — 각 창이 자기 wc 를 reload).
  */
-export function installCrashRecovery(wc: RecoverableWebContents, options: CrashRecoveryOptions = {}): void {
+export function installCrashRecovery(
+  wc: RecoverableWebContents,
+  options: CrashRecoveryOptions = {},
+): void {
   const resetMs = options.resetMs ?? 30_000
   const maxReloads = options.maxReloads ?? 3
   const baseDelayMs = options.baseDelayMs ?? 500
@@ -98,14 +104,18 @@ export function installCrashRecovery(wc: RecoverableWebContents, options: CrashR
 
     if (SKIP_RELOAD_REASONS.has(details.reason)) {
       // reason=clean-exit(종료코드 0) 은 정상 종료라 reload 하지 않는다. killed(외부 강제 종료)는 여기 없다 — 복구 대상.
-      log(`[fleet] 렌더러 정상 종료(reason=${details.reason}, exitCode=${details.exitCode}) — reload 생략`)
+      log(
+        `[fleet] 렌더러 정상 종료(reason=${details.reason}, exitCode=${details.exitCode}) — reload 생략`,
+      )
       return
     }
 
     crashCount += 1
     if (crashCount > maxReloads) {
       // reload 폭주 차단: 짧은 구간에 연속 크래시가 한도를 넘으면 포기(흰 화면 유지 > 무한 재크래시).
-      log(`[fleet] 렌더러 연속 크래시 ${crashCount}회(reason=${details.reason}) — reload 포기(한도 ${maxReloads} 초과)`)
+      log(
+        `[fleet] 렌더러 연속 크래시 ${crashCount}회(reason=${details.reason}) — reload 포기(한도 ${maxReloads} 초과)`,
+      )
       return
     }
 
@@ -132,7 +142,10 @@ export interface ChildProcessGoneInfo {
 
 /** installChildProcessObserver 가 필요로 하는 app 의 최소 표면(실제 Electron.App 이 구조적으로 만족). */
 export interface ChildProcessObservable {
-  on(event: 'child-process-gone', listener: (event: unknown, details: ChildProcessGoneInfo) => void): unknown
+  on(
+    event: 'child-process-gone',
+    listener: (event: unknown, details: ChildProcessGoneInfo) => void,
+  ): unknown
 }
 
 /**

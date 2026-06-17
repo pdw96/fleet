@@ -11,7 +11,11 @@ describe('ALL_ROLES', () => {
 
 describe('assignRoles', () => {
   it('round-robin cycles llms across roles', () => {
-    const r = assignRoles({ roles: ['planner', 'implementer', 'reviewer'], llmIds: ['a', 'b'], policy: 'round-robin' })
+    const r = assignRoles({
+      roles: ['planner', 'implementer', 'reviewer'],
+      llmIds: ['a', 'b'],
+      policy: 'round-robin',
+    })
     expect(r.map((x) => x.llmId)).toEqual(['a', 'b', 'a'])
   })
 

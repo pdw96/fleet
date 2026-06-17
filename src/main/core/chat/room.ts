@@ -34,7 +34,12 @@ export interface ChatController {
   /** 특정 LLM 을 지목해 대화 기록을 보여주고 다음 발언을 받는다. */
   askLlm(llmId: string, opts?: AskOptions): Promise<ChatMessage>
   /** 여러 LLM 이 주제에 대해 rounds 회 순차 토론. signal abort 시 남은 턴을 건너뛴다. */
-  discuss(topic: string, llmIds: readonly string[], rounds?: number, signal?: AbortSignal): Promise<ChatMessage[]>
+  discuss(
+    topic: string,
+    llmIds: readonly string[],
+    rounds?: number,
+    signal?: AbortSignal,
+  ): Promise<ChatMessage[]>
   history(): ChatMessage[]
 }
 
@@ -53,7 +58,11 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
     messages
       .map((m) => {
         const who =
-          m.author.type === 'user' ? '사용자' : m.author.type === 'system' ? '시스템' : nameFor(m.author.llmId)
+          m.author.type === 'user'
+            ? '사용자'
+            : m.author.type === 'system'
+              ? '시스템'
+              : nameFor(m.author.llmId)
         return `${who}: ${m.content}`
       })
       .join('\n')
@@ -91,7 +100,8 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
             : '다음은 작업방의 대화 기록이다. 다른 참여자의 의견을 검토하고 토론/반박/검증에 참여하라.'
       } else {
         context = renderMessages(all) || '(아직 발언 없음)'
-        intro = '다음은 작업방의 대화 기록이다. 다른 참여자의 의견을 검토하고 토론/반박/검증에 참여하라.'
+        intro =
+          '다음은 작업방의 대화 기록이다. 다른 참여자의 의견을 검토하고 토론/반박/검증에 참여하라.'
       }
 
       const roleLine = opts.role ? `당신의 역할: ${opts.role}\n` : ''
@@ -104,8 +114,17 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
       // onToken 이 있으면 onChunk 로 연결돼 스트리밍 활성화(없으면 onChunk=undefined → 버퍼링).
       // onToolStep 은 API 세션 도구 루프의 라이브 도구 단계 싱크로 연결된다(CLI 세션은 무시).
       // signal 은 취소(cancelChat) 신호 — api/cli-session 이 honor 해 in-flight 호출을 중단한다.
-      const reply = await session.send(prompt, { signal: opts.signal, onChunk: opts.onToken, onToolStep: opts.onToolStep })
-      return store.appendMessage({ roomId, author: { type: 'llm', llmId }, role: opts.role, content: reply })
+      const reply = await session.send(prompt, {
+        signal: opts.signal,
+        onChunk: opts.onToken,
+        onToolStep: opts.onToolStep,
+      })
+      return store.appendMessage({
+        roomId,
+        author: { type: 'llm', llmId },
+        role: opts.role,
+        content: reply,
+      })
     },
 
     async discuss(topic, llmIds, rounds = 1, signal) {

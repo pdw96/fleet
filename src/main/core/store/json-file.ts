@@ -3,7 +3,14 @@ import { join } from 'node:path'
 import { createMemoryStore } from './memory'
 import type { Store, StoreOptions, StoreState } from './types'
 
-const EMPTY: StoreState = { projects: [], tasks: [], rooms: [], messages: [], events: [], sessions: [] }
+const EMPTY: StoreState = {
+  projects: [],
+  tasks: [],
+  rooms: [],
+  messages: [],
+  events: [],
+  sessions: [],
+}
 
 /**
  * 디스크 영속 저장소. 초기 로드 후 매 변경마다 JSON 스냅샷을 동기 기록한다.
@@ -13,7 +20,10 @@ const EMPTY: StoreState = { projects: [], tasks: [], rooms: [], messages: [], ev
  * - 손상 복구: 로드 시 JSON 파싱 실패하면 원본을 `.corrupt` 로 백업해 데이터 손실을 가시화한 뒤 빈 상태로 시작.
  * - 쓰기 실패(디스크 풀/권한)는 로깅 후 격리 → IPC 핸들러 전체를 중단시키지 않는다.
  */
-export function createJsonFileStore(dir: string, opts: Omit<StoreOptions, 'initial' | 'persist'> = {}): Store {
+export function createJsonFileStore(
+  dir: string,
+  opts: Omit<StoreOptions, 'initial' | 'persist'> = {},
+): Store {
   mkdirSync(dir, { recursive: true })
   const file = join(dir, 'fleet-store.json')
   const tmp = `${file}.tmp`

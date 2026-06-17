@@ -13,5 +13,7 @@ package-lock.json
 # Second Brain 자동 생성물
 fleet-brain.html
 brain.tmp.json
+# Second Brain HTML 템플릿 — __GRAPH_DATA__·<!--__FORCE_GRAPH_LIB__--> 치환 토큰 보호 + 생성물 성격이라 포맷 제외.
+scripts/brain/template.html
 # 손으로 다듬은 한글 prose 문서 — 차후 opt-in
 *.md

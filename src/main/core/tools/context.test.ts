@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { ChatTurn, ToolResultBlock } from '../providers/types'
 import { approxTokens, DEFAULT_CONTEXT_POLICY, pruneToolResults, PRUNE_STUB } from './context'
 
-const toolResult = (id: string, content: string): ToolResultBlock => ({ type: 'tool_result', toolUseId: id, content })
+const toolResult = (id: string, content: string): ToolResultBlock => ({
+  type: 'tool_result',
+  toolUseId: id,
+  content,
+})
 
 describe('approxTokens', () => {
   it('ASCII content 의 대략 토큰(chars/4)을 합산한다', () => {
@@ -70,7 +74,10 @@ describe('pruneToolResults', () => {
 
   it('isError 표식은 stub 치환 시 제거한다', () => {
     const turns: ChatTurn[] = [
-      { role: 'user', content: [{ type: 'tool_result', toolUseId: 't0', content: big, isError: true }] }, // 정리 대상
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', toolUseId: 't0', content: big, isError: true }],
+      }, // 정리 대상
       { role: 'user', content: [toolResult('t1', big)] },
       { role: 'user', content: [toolResult('t2', big)] }, // 미전송 최신 → 보존
     ]
@@ -160,7 +167,10 @@ describe('pruneToolResults', () => {
     for (const id of ['o0', 'o1', 'o2', 'o3', 'o4']) pushRound(turns, id) // 이미 전송된 5개
     // 직전 iter 의 미전송 병렬 배치: 한 어시스턴트 턴이 도구 3개 호출 → 한 user 턴에 결과 3개.
     const batch: ToolResultBlock[] = ['b0', 'b1', 'b2'].map((id) => toolResult(id, big))
-    turns.push({ role: 'assistant', content: batch.map((b) => ({ type: 'tool_use', id: b.toolUseId, name: 'e', input: {} })) })
+    turns.push({
+      role: 'assistant',
+      content: batch.map((b) => ({ type: 'tool_use', id: b.toolUseId, name: 'e', input: {} })),
+    })
     turns.push({ role: 'user', content: batch })
     pruneToolResults(turns, { triggerInputTokens: 10, keepRecentToolUses: 3 })
     for (const r of batch) expect(r.content).toBe(big) // 미전송 배치 3개 전부 보존(keep=3 초과여도)

@@ -16,7 +16,11 @@ export interface KillProc {
   on(event: 'error' | 'exit' | 'close', handler: (...args: unknown[]) => void): unknown
   unref?(): void
 }
-export type KillSpawnFn = (command: string, args: readonly string[], options: SpawnOptions) => KillProc
+export type KillSpawnFn = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => KillProc
 
 /** 테스트에서 플랫폼/스폰을 주입하기 위한 옵션. 프로덕션은 기본값(process.platform + node spawn). */
 export interface KillTreeOptions {

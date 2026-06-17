@@ -54,7 +54,12 @@ export function createApprovalGate(opts: GateOptions = {}): ApprovalGate {
   return {
     async request(partial) {
       const req: ApprovalRequest = { ...partial, id: idGen(), ts: now() }
-      opts.onEvent?.('approval.requested', { id: req.id, kind: req.kind, target: req.target, risk: req.risk })
+      opts.onEvent?.('approval.requested', {
+        id: req.id,
+        kind: req.kind,
+        target: req.target,
+        risk: req.risk,
+      })
 
       let decision: ApprovalDecision
       if (autoApprove.has(req.risk)) {

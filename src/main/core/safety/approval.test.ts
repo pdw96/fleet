@@ -20,19 +20,27 @@ describe('risk classification', () => {
 describe('createApprovalGate', () => {
   it('auto-approves configured risk levels', async () => {
     const gate = createApprovalGate({ autoApprove: ['safe', 'caution'] })
-    expect(await gate.request({ kind: 'file-write', summary: '', target: 'a', risk: 'caution' })).toBe('approved')
+    expect(
+      await gate.request({ kind: 'file-write', summary: '', target: 'a', risk: 'caution' }),
+    ).toBe('approved')
   })
 
   it('rejects destructive actions without an approver (safe default)', async () => {
     const gate = createApprovalGate({ autoApprove: ['safe'] })
-    expect(await gate.request({ kind: 'shell', summary: '', target: 'rm -rf /', risk: 'destructive' })).toBe('rejected')
+    expect(
+      await gate.request({ kind: 'shell', summary: '', target: 'rm -rf /', risk: 'destructive' }),
+    ).toBe('rejected')
   })
 
   it('routes non-auto risks to the approver', async () => {
     const approved = createApprovalGate({ autoApprove: ['safe'], approver: async () => true })
     const rejected = createApprovalGate({ autoApprove: ['safe'], approver: async () => false })
-    expect(await approved.request({ kind: 'shell', summary: '', target: 'x', risk: 'destructive' })).toBe('approved')
-    expect(await rejected.request({ kind: 'shell', summary: '', target: 'x', risk: 'destructive' })).toBe('rejected')
+    expect(
+      await approved.request({ kind: 'shell', summary: '', target: 'x', risk: 'destructive' }),
+    ).toBe('approved')
+    expect(
+      await rejected.request({ kind: 'shell', summary: '', target: 'x', risk: 'destructive' }),
+    ).toBe('rejected')
   })
 
   it('emits audit events for request and decision', async () => {

@@ -67,7 +67,11 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
       const names: string[] = []
       for (const t of e.tools) {
         if (exposed.has(t.definition.name)) {
-          audit('mcp.tool.skipped', { server: e.spec.name, tool: t.definition.name, reason: 'duplicate name (cross-server)' })
+          audit('mcp.tool.skipped', {
+            server: e.spec.name,
+            tool: t.definition.name,
+            reason: 'duplicate name (cross-server)',
+          })
           continue
         }
         exposed.add(t.definition.name)
@@ -96,7 +100,11 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
    * tools/list 결과를 FleetTool[] 로 감싼다(이름 sanitize·서버 내 중복·길이 제약 + 감사 경고).
    * connect 의 최초 발견과 tools/list_changed 새로고침이 공유해 래핑 규칙을 한 곳에 둔다.
    */
-  function buildTools(spec: McpServerSpec, infos: McpToolInfo[], client: McpClient): { tools: FleetTool[]; names: string[] } {
+  function buildTools(
+    spec: McpServerSpec,
+    infos: McpToolInfo[],
+    client: McpClient,
+  ): { tools: FleetTool[]; names: string[] } {
     const tools: FleetTool[] = []
     const names: string[] = []
     const seen = new Set<string>()
@@ -137,7 +145,10 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
       infos = await client.listTools()
     } catch (err) {
       // 새로고침 실패(타임아웃·error 응답·연결 종료)는 기존 도구를 유지하고 표면화만 한다.
-      audit('mcp.tools.refresh_failed', { name, error: err instanceof Error ? err.message : String(err) })
+      audit('mcp.tools.refresh_failed', {
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      })
       return
     }
     // listTools 왕복 동안 교체/제거/종료됐으면 결과를 버린다(stale 덮어쓰기 방지).
@@ -224,7 +235,13 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
           entries.set(spec.name, {
             spec,
             tools: [],
-            status: { name: spec.name, connected: false, toolCount: 0, tools: [], error: '실행 승인이 거부되었습니다.' },
+            status: {
+              name: spec.name,
+              connected: false,
+              toolCount: 0,
+              tools: [],
+              error: '실행 승인이 거부되었습니다.',
+            },
           })
           audit('mcp.server.rejected', { name: spec.name, command: cmd })
           continue

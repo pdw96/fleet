@@ -2,7 +2,10 @@ import type { RiskLevel } from '../../../shared/types'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { DiffResult } from '../workspace/git'
 
-export interface DiffRisk { risk: RiskLevel; reasons: string[] }
+export interface DiffRisk {
+  risk: RiskLevel
+  reasons: string[]
+}
 
 /** diff 위험 분류: 민감 파일·대량 삭제 → destructive, 그 외 → caution. */
 export function classifyDiffRisk(diff: DiffResult, deleteThreshold = 5): DiffRisk {

@@ -34,7 +34,10 @@ export class ToolLoopExceededError extends Error {
  * 양쪽 다 미설정인 필드는 결과에서도 생략한다 → 전 구간 usage 가 없으면 결과도 undefined
  * (무회귀). 도구루프가 매 iter 의 비용을 누적하는 데 쓴다.
  */
-function addUsage(acc: TokenUsage | undefined, next: TokenUsage | undefined): TokenUsage | undefined {
+function addUsage(
+  acc: TokenUsage | undefined,
+  next: TokenUsage | undefined,
+): TokenUsage | undefined {
   if (!next) return acc
   if (!acc) return { ...next }
   const sum = (a?: number, b?: number): number | undefined =>
@@ -119,7 +122,10 @@ export async function runToolLoop(
         // 것 방지 + 직전 kept 결과 패리티(max 면 fresh>keep 일 때 직전 kept 를 잃음, Codex P2). fresh=0(새 send)
         // 이면 keep=policy.keep 그대로다.
         const fresh = freshToolResultBatchSize(turns)
-        chatOpts.contextManagement = { ...policy, keepRecentToolUses: fresh + policy.keepRecentToolUses }
+        chatOpts.contextManagement = {
+          ...policy,
+          keepRecentToolUses: fresh + policy.keepRecentToolUses,
+        }
       } else pruneToolResults(turns, policy, toolsTokens)
     }
     const result = await provider.chat(turns, chatOpts)
@@ -185,7 +191,13 @@ export async function runToolLoop(
       }
 
       // 승인 후 실행 직전 running 칩을 띄운다(인자 요약 포함).
-      onToolStep?.({ id: stepId, name: call.name, phase: 'running', risk, summary: argPreview || undefined })
+      onToolStep?.({
+        id: stepId,
+        name: call.name,
+        phase: 'running',
+        risk,
+        summary: argPreview || undefined,
+      })
       try {
         const content = await tool.execute(call.input, { signal: opts.signal })
         audit('tool.executed', { name: call.name })

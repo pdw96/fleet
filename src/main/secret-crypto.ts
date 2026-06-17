@@ -17,7 +17,9 @@ export function createSafeStorageCrypto(): SecretCrypto {
         if (!safeStorage.isEncryptionAvailable()) return false
         // Linux 키링 부재 시 basic_text(평문 폴백)는 실보호가 0 → 미사용 취급(secure-by-default).
         // mac(Keychain)/win(DPAPI)은 항상 실암호화.
-        return process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'
+        return (
+          process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'
+        )
       } catch {
         return false
       }

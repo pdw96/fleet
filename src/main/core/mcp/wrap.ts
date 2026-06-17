@@ -48,7 +48,11 @@ export function contentToString(content: Array<Record<string, unknown>>): string
  * provider 이름 제약(64자)을 넘으면 null 을 반환한다(호출자가 skip + 감사 경고).
  * 위험도는 항상 destructive — annotations(readOnlyHint)는 서버 자기신고라 신뢰하지 않는다(MCP 스펙).
  */
-export function wrapMcpTool(serverName: string, tool: McpToolInfo, client: McpClient): FleetTool | null {
+export function wrapMcpTool(
+  serverName: string,
+  tool: McpToolInfo,
+  client: McpClient,
+): FleetTool | null {
   const toolPart = sanitize(tool.name)
   if (toolPart.length === 0) return null // 빈 도구 이름 — 식별·호출 불가
   const name = `mcp__${sanitize(serverName)}__${toolPart}`

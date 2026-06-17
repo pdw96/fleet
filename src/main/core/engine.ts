@@ -184,7 +184,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const appendAudit = (type: string, data: Record<string, unknown>): void => {
     store.appendEvent({ type, data })
   }
-  const gate = createApprovalGate({ autoApprove: ['safe', 'caution'], approver: opts.approver, onEvent: appendAudit })
+  const gate = createApprovalGate({
+    autoApprove: ['safe', 'caution'],
+    approver: opts.approver,
+    onEvent: appendAudit,
+  })
   // MCP 호스트: 외부 MCP 서버의 도구를 FleetTool 로 노출한다(setMcpServers 로 연결).
   // gate 를 주입해 새 서버 spawn(임의 로컬 프로세스 실행)이 승인 게이트를 통과하게 한다(안전 우선).
   const mcpHost = opts.mcpHost ?? createMcpHost({ onAudit: appendAudit, gate })
@@ -196,7 +200,14 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     workspaceDir ? createWorkspace(workspaceDir, opts.gitRunner) : undefined
   const currentVerify = (signal?: AbortSignal) => {
     const dir = workspaceDir
-    return dir ? () => runAllVerifications(npmVerifyCommands(dir), { runner: opts.verifyRunner, timeoutMs: VERIFY_TIMEOUT_MS, signal }) : undefined
+    return dir
+      ? () =>
+          runAllVerifications(npmVerifyCommands(dir), {
+            runner: opts.verifyRunner,
+            timeoutMs: VERIFY_TIMEOUT_MS,
+            signal,
+          })
+      : undefined
   }
 
   // ── 채팅 진행 상태(단일 소스 오브 트루스) ──────────────────────────────────
@@ -206,7 +217,14 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   /** in-flight 스트림의 누적 버퍼(텍스트·도구 단계). start 에서 생성, delta/tool 에서 누적(seq++), end/error 에서 제거. */
   const activeStreams = new Map<
     string,
-    { roomId: string; llmId: string; role?: AgentRole; text: string; seq: number; steps: ToolStep[] }
+    {
+      roomId: string
+      llmId: string
+      role?: AgentRole
+      text: string
+      seq: number
+      steps: ToolStep[]
+    }
   >()
   /** roomId → 진행 중 ask/discuss 연산 수. 0→1 에서 busy, 1→0 에서 idle 을 방출한다. */
   const activeOps = new Map<string, number>()
@@ -284,7 +302,12 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       return message
     } catch (err) {
       activeStreams.delete(streamId)
-      emit({ kind: 'error', streamId, roomId, message: err instanceof Error ? err.message : String(err) })
+      emit({
+        kind: 'error',
+        streamId,
+        roomId,
+        message: err instanceof Error ? err.message : String(err),
+      })
       throw err
     }
   }
@@ -313,7 +336,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // capabilities 미지정(신규 등록)이면 시드, 지정(복원)이면 그 값을 적용.
       capabilities: input.capabilities ?? seedCapabilities(input.adapterId),
     }
-    sessions.add(createCliSession(descriptor, adapter, runner, undefined, { stateful: input.stateful }))
+    sessions.add(
+      createCliSession(descriptor, adapter, runner, undefined, { stateful: input.stateful }),
+    )
     return descriptor
   }
 
@@ -332,7 +357,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
   // 라이브 API 세션을 만들어 매니저에 추가한다(순수 — store/audit 부작용 없음). register·restore 공용.
   // capabilities 미지정(신규 등록)이면 provider 시드, 지정(복원)이면 그 값을 적용한다(buildCliSession 대칭).
-  const buildApiSession = (config: ApiProviderConfig, capabilities?: AgentRole[]): LlmDescriptor => {
+  const buildApiSession = (
+    config: ApiProviderConfig,
+    capabilities?: AgentRole[],
+  ): LlmDescriptor => {
     const id = `api:${config.id}`
     const descriptor: LlmDescriptor = {
       id,
@@ -395,7 +423,12 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           continue
         }
         // 런타임 형태 검증 — store JSON 은 타입 보장이 없다(손상 엔트리 방어).
-        if (typeof ps.id !== 'string' || !ps.config || typeof ps.config.provider !== 'string' || typeof ps.encryptedApiKey !== 'string') {
+        if (
+          typeof ps.id !== 'string' ||
+          !ps.config ||
+          typeof ps.config.provider !== 'string' ||
+          typeof ps.encryptedApiKey !== 'string'
+        ) {
           console.warn('[fleet] API 세션 복원 skip — 손상 엔트리:', (ps as { id?: unknown }).id)
           continue
         }
@@ -404,10 +437,17 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           apiKey = secretCrypto.decrypt(ps.encryptedApiKey)
         } catch (e) {
           // e.message 만 로깅 — error 객체 전체는 향후 decrypt 구현이 암호문/평문 단편을 담을 수 있어 방어.
-          console.warn('[fleet] API 세션 복원 skip — 복호화 실패(키회전/손상):', ps.id, e instanceof Error ? e.message : String(e))
+          console.warn(
+            '[fleet] API 세션 복원 skip — 복호화 실패(키회전/손상):',
+            ps.id,
+            e instanceof Error ? e.message : String(e),
+          )
           continue
         }
-        buildApiSession({ ...ps.config, apiKey }, Array.isArray(ps.capabilities) ? ps.capabilities : undefined)
+        buildApiSession(
+          { ...ps.config, apiKey },
+          Array.isArray(ps.capabilities) ? ps.capabilities : undefined,
+        )
       }
       // else: 미지 kind(전방호환) → skip
     } catch (err) {
@@ -434,7 +474,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         mcpConfig: sessionOpts?.mcpConfig,
       })
       syncPersistedSession(descriptor) // 영속(재시작 복원용)
-      store.appendEvent({ type: 'session.registered', data: { id: descriptor.id, kind: 'cli', stateful: !!sessionOpts?.stateful } })
+      store.appendEvent({
+        type: 'session.registered',
+        data: { id: descriptor.id, kind: 'cli', stateful: !!sessionOpts?.stateful },
+      })
       return descriptor
     },
 
@@ -458,10 +501,17 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           })
         } catch (err) {
           // err.message 만 로깅 — 시크릿(encrypt) 경로라 error 객체 전체 노출을 피한다(decrypt 로그와 대칭).
-          console.warn('[fleet] API 세션 영속 skip — 암호화 실패:', descriptor.id, err instanceof Error ? err.message : String(err))
+          console.warn(
+            '[fleet] API 세션 영속 skip — 암호화 실패:',
+            descriptor.id,
+            err instanceof Error ? err.message : String(err),
+          )
         }
       }
-      store.appendEvent({ type: 'session.registered', data: { id: descriptor.id, kind: 'api', provider: config.provider } })
+      store.appendEvent({
+        type: 'session.registered',
+        data: { id: descriptor.id, kind: 'api', provider: config.provider },
+      })
       return descriptor
     },
 
@@ -508,37 +558,61 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // 편집하며 첫 실행의 revert 와 경합해 워크스페이스를 파괴하는 것을 막는다(DESIGN.md 순차 전제).
       // activeRuns 는 project.created(runProject 첫 await 이전 동기 방출)에서 채워지므로, 진입 시점에
       // 이미 반영돼 있어 신뢰 가능하다. cancelRun/project.done/dispose 가 비우면 다음 실행이 허용된다.
-      if (activeRuns.size > 0) throw new Error('이미 진행 중인 프로젝트 실행이 있습니다. 완료 또는 취소 후 다시 시도하세요.')
+      if (activeRuns.size > 0)
+        throw new Error(
+          '이미 진행 중인 프로젝트 실행이 있습니다. 완료 또는 취소 후 다시 시도하세요.',
+        )
       const llmIds = sessions.list().map((s) => s.id)
-      if (llmIds.length === 0) throw new Error('등록된 LLM 세션이 없습니다. 먼저 세션을 등록하세요.')
+      if (llmIds.length === 0)
+        throw new Error('등록된 LLM 세션이 없습니다. 먼저 세션을 등록하세요.')
       // 직접 편집 모델은 산출물 워크스페이스가 필수다(없으면 작업이 전부 skip 되어 의미가 없다).
-      if (!workspaceDir) throw new Error('워크스페이스가 선택되지 않았습니다. 먼저 산출물 워크스페이스를 선택하세요.')
+      if (!workspaceDir)
+        throw new Error(
+          '워크스페이스가 선택되지 않았습니다. 먼저 산출물 워크스페이스를 선택하세요.',
+        )
       // 세션별 적합 역할을 capability-scored 채점 맵으로 모은다(끊겼던 연결고리). 역량 없는 세션은 제외.
       const capabilities = Object.fromEntries(
-        sessions.descriptors().flatMap((d) => (d.capabilities?.length ? [[d.id, d.capabilities]] : [])),
+        sessions
+          .descriptors()
+          .flatMap((d) => (d.capabilities?.length ? [[d.id, d.capabilities]] : [])),
       )
       let assignments =
         input.assignments ??
-        assignRoles({ roles: ASSIGNABLE_ROLES, llmIds, policy: input.policy ?? 'round-robin', capabilities })
+        assignRoles({
+          roles: ASSIGNABLE_ROLES,
+          llmIds,
+          policy: input.policy ?? 'round-robin',
+          capabilities,
+        })
       // 구현(implementer) 역할은 워크스페이스를 직접 편집할 수 있는 CLI 세션이어야 한다.
       // capability-scored/round-robin 이 CLI 가 있는데도 API 를 implementer 슬롯에 넣을 수 있으므로,
       // CLI 세션이 하나라도 있으면 그쪽으로 재배정한다. CLI 가 전혀 없을 때만 계획 전에 fail-fast 한다.
-      const cliSessionIds = sessions.list().filter((s) => s.descriptor.kind === 'cli').map((s) => s.id)
+      const cliSessionIds = sessions
+        .list()
+        .filter((s) => s.descriptor.kind === 'cli')
+        .map((s) => s.id)
       if (cliSessionIds.length === 0) {
-        throw new Error('구현(implementer) 역할에는 워크스페이스를 직접 편집할 수 있는 CLI 세션이 필요합니다. CLI 세션(claude/codex/gemini)을 등록하세요.')
+        throw new Error(
+          '구현(implementer) 역할에는 워크스페이스를 직접 편집할 수 있는 CLI 세션이 필요합니다. CLI 세션(claude/codex/gemini)을 등록하세요.',
+        )
       }
       const curImplId = resolveLlmForRole(assignments, 'implementer', 'implementer')
       const curImpl = curImplId ? sessions.get(curImplId) : undefined
       if (!curImpl || curImpl.descriptor.kind !== 'cli') {
         const cliId = cliSessionIds[0]
-        assignments = [...assignments.filter((a) => a.role !== 'implementer'), { role: 'implementer', llmId: cliId }]
+        assignments = [
+          ...assignments.filter((a) => a.role !== 'implementer'),
+          { role: 'implementer', llmId: cliId },
+        ]
         store.appendEvent({ type: 'assignment.implementer_reassigned', data: { to: cliId } })
       }
       // 렌더러는 main 기준 신뢰 경계 바깥이다 — UI 셀렉트(0..MAX_REPLAN_ROUNDS)를 우회한 devtools/커스텀
       // 렌더러가 임의 큰 값으로 무한정 planner/구현/검증 사이클(검증이 계속 실패하는 한)을 돌리지 못하도록
       // engine 경계에서 상한을 강제한다(하한·정수·유한성도 함께 보정 — orchestrator 에 sane 값만 넘어가게).
       const requestedReplan = Math.floor(input.maxReplanRounds ?? 0)
-      const maxReplanRounds = Number.isFinite(requestedReplan) ? Math.min(Math.max(requestedReplan, 0), MAX_REPLAN_ROUNDS) : 0
+      const maxReplanRounds = Number.isFinite(requestedReplan)
+        ? Math.min(Math.max(requestedReplan, 0), MAX_REPLAN_ROUNDS)
+        : 0
       // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
       const controller = new AbortController()
       const onEvent = (e: OrchestratorEvent) => {
@@ -580,8 +654,16 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // project.done(onEvent) 또는 runProjectFlow finally 가 수행한다.
       // 영속 이벤트 id 를 라이브 페이로드(data.eventId)에도 실어 보낸다 — 렌더러가 스냅샷 재조회 시
       // 라이브로 받은 run.cancelled 와 영속본을 같은 id 로 dedup 하도록(중복 '실행 취소됨' 방지).
-      const persisted = store.appendEvent({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId } })
-      opts.onOrchestratorEvent?.({ type: 'run.cancelled', message: '실행 취소됨', data: { projectId, eventId: persisted.id } })
+      const persisted = store.appendEvent({
+        type: 'run.cancelled',
+        message: '실행 취소됨',
+        data: { projectId },
+      })
+      opts.onOrchestratorEvent?.({
+        type: 'run.cancelled',
+        message: '실행 취소됨',
+        data: { projectId, eventId: persisted.id },
+      })
     },
 
     getRunActivity() {
@@ -622,9 +704,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // 방 취소 컨트롤러 신호(cancelChat)를 발언에 싣되, 호출자가 자체 signal 을 넘겼으면 덮어쓰지 않고
       // 합성한다(둘 중 하나라도 abort 시 취소) — 코어 호출자의 per-call 타임아웃/취소가 유실되지 않게.
       const signal = anySignal(askOpts?.signal, activeChatRuns.get(roomId)?.signal)
-      return streamedAsk(createChatController({ store, sessions, roomId }), roomId, llmId, { ...askOpts, signal }).finally(
-        () => exitOp(roomId),
-      )
+      return streamedAsk(createChatController({ store, sessions, roomId }), roomId, llmId, {
+        ...askOpts,
+        signal,
+      }).finally(() => exitOp(roomId))
     },
 
     async discussRoom(roomId, llmIds, rounds = 1) {
@@ -678,7 +761,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
     async setMcpServers(servers) {
       const status = await mcpHost.setServers(servers)
-      store.appendEvent({ type: 'mcp.servers.set', data: { count: servers.length, names: servers.map((s) => s.name) } })
+      store.appendEvent({
+        type: 'mcp.servers.set',
+        data: { count: servers.length, names: servers.map((s) => s.name) },
+      })
       return status
     },
 

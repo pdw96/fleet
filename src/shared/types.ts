@@ -237,7 +237,12 @@ export interface RoleAssignment {
 export type AssignmentPolicy = 'manual' | 'round-robin' | 'capability-scored'
 
 /** 오케스트레이터가 실제로 배정·실행하는 역할 집합 (요구사항 8 MVP). 배정 UI·채점도 이 집합으로 제한한다. */
-export const ASSIGNABLE_ROLES: readonly AgentRole[] = ['planner', 'implementer', 'reviewer', 'summarizer']
+export const ASSIGNABLE_ROLES: readonly AgentRole[] = [
+  'planner',
+  'implementer',
+  'reviewer',
+  'summarizer',
+]
 
 export type TaskStatus = 'pending' | 'running' | 'review' | 'done' | 'failed' | 'skipped'
 

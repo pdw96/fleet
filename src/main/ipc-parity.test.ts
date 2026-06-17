@@ -27,7 +27,9 @@ function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 }
 
-const preloadSrc = stripComments(readFileSync(new URL('../preload/index.ts', import.meta.url), 'utf8'))
+const preloadSrc = stripComments(
+  readFileSync(new URL('../preload/index.ts', import.meta.url), 'utf8'),
+)
 const mainSrc = stripComments(readFileSync(new URL('./index.ts', import.meta.url), 'utf8'))
 
 // 하드코딩 리터럴 정규식(ReDoS 무관 — `[^'"]+` 단일 문자클래스). `\s*` 로 멀티라인 `call(\n  'ch'` 도 잡는다.
@@ -83,7 +85,8 @@ describe('IPC 채널 패리티 (preload ↔ main)', () => {
   })
 
   it('주석에 박힌 예시 호출은 채널로 집계하지 않는다 (stripComments 회귀)', () => {
-    const sample = "// ipcRenderer.invoke('fleet:commented:out')\n/* ipcMain.handle('fleet:block', fn) */"
+    const sample =
+      "// ipcRenderer.invoke('fleet:commented:out')\n/* ipcMain.handle('fleet:block', fn) */"
     const cleaned = stripComments(sample)
     expect(channels(cleaned, INVOKE_RE)).toEqual([])
     expect(channels(cleaned, HANDLE_RE)).toEqual([])

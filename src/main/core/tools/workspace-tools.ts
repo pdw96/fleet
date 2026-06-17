@@ -110,10 +110,16 @@ function listDirectoryTool(root: string, lim: ResolvedLimits): FleetTool {
   return {
     definition: {
       name: 'list_directory',
-      description: '워크스페이스 내 디렉터리 항목을 나열한다(path 생략 시 루트). 디렉터리는 / 접미사.',
+      description:
+        '워크스페이스 내 디렉터리 항목을 나열한다(path 생략 시 루트). 디렉터리는 / 접미사.',
       parameters: {
         type: 'object',
-        properties: { path: { type: 'string', description: '워크스페이스 루트 기준 디렉터리 경로(생략 시 루트)' } },
+        properties: {
+          path: {
+            type: 'string',
+            description: '워크스페이스 루트 기준 디렉터리 경로(생략 시 루트)',
+          },
+        },
       },
     },
     classify: () => 'safe',
@@ -136,7 +142,8 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
   return {
     definition: {
       name: 'grep',
-      description: '워크스페이스 내 파일 내용을 정규식으로 검색한다. 결과는 "상대경로:줄번호:내용".',
+      description:
+        '워크스페이스 내 파일 내용을 정규식으로 검색한다. 결과는 "상대경로:줄번호:내용".',
       parameters: {
         type: 'object',
         properties: {
@@ -155,7 +162,9 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
       // (a+)+$ 같은 짧은 패턴이 긴 라인에서 메인 프로세스를 멈출 수 있어 safe-regex 로 차단한다.
       // (safe-regex 는 휴리스틱이라 모든 케이스를 잡지는 않으나 대표적 파국 클래스를 막는다.)
       if (!safe(pattern)) {
-        throw new Error('grep: 잠재적 ReDoS(파국적 백트래킹) 패턴이라 거부합니다. 더 단순한 정규식을 쓰세요.')
+        throw new Error(
+          'grep: 잠재적 ReDoS(파국적 백트래킹) 패턴이라 거부합니다. 더 단순한 정규식을 쓰세요.',
+        )
       }
       let re: RegExp
       try {
@@ -192,7 +201,8 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
       }
       // 매치 캡에 정확히 도달한 채 순회가 끝난 경우도 불완전으로 표시한다(silent partial 방지 — #7).
       if (out.length >= lim.maxGrepMatches) truncated = true
-      if (out.length === 0) return truncated ? '(일치 없음 — 스캔 한도 도달로 결과 불완전)' : '(일치 없음)'
+      if (out.length === 0)
+        return truncated ? '(일치 없음 — 스캔 한도 도달로 결과 불완전)' : '(일치 없음)'
       return truncated ? `${out.join('\n')}\n…(스캔/매치 한도 도달 — 결과 불완전)` : out.join('\n')
     },
   }
@@ -264,9 +274,14 @@ function globMatchSegments(
   const seg = segs[si]
   let ok = false
   if (seg.kind === 'literal') {
-    ok = str.startsWith(seg.value, ci) && globMatchSegments(segs, si + 1, str, ci + seg.value.length, failed, stride)
+    ok =
+      str.startsWith(seg.value, ci) &&
+      globMatchSegments(segs, si + 1, str, ci + seg.value.length, failed, stride)
   } else if (seg.kind === 'question') {
-    ok = ci < str.length && str[ci] !== '/' && globMatchSegments(segs, si + 1, str, ci + 1, failed, stride)
+    ok =
+      ci < str.length &&
+      str[ci] !== '/' &&
+      globMatchSegments(segs, si + 1, str, ci + 1, failed, stride)
   } else if (seg.kind === 'star') {
     // * 는 슬래시를 넘을 수 없음 — 현재 세그먼트 내에서만 탐색
     for (let j = ci; j <= str.length; j++) {
@@ -326,15 +341,21 @@ function globTool(root: string, lim: ResolvedLimits): FleetTool {
         if (SENSITIVE_FILE.test(rel)) continue
         if (globMatch(pattern, rel)) out.push(rel)
       }
-      if (out.length === 0) return truncated ? '(일치 없음 — 스캔 한도 도달로 결과 불완전)' : '(일치 없음)'
-      return truncated ? `${out.sort().join('\n')}\n…(스캔/결과 한도 도달 — 목록 불완전)` : out.sort().join('\n')
+      if (out.length === 0)
+        return truncated ? '(일치 없음 — 스캔 한도 도달로 결과 불완전)' : '(일치 없음)'
+      return truncated
+        ? `${out.sort().join('\n')}\n…(스캔/결과 한도 도달 — 목록 불완전)`
+        : out.sort().join('\n')
     },
   }
 }
 
 /** 워크스페이스 루트(root)를 기준으로 한 읽기전용 도구 세트. 모두 root 내부로 격리된다.
  *  한도(limits)는 미지정 시 기본값을 쓴다(테스트에서 작은 값 주입 가능). */
-export function createWorkspaceReadTools(root: string, limits: WorkspaceToolLimits = {}): FleetTool[] {
+export function createWorkspaceReadTools(
+  root: string,
+  limits: WorkspaceToolLimits = {},
+): FleetTool[] {
   const lim: ResolvedLimits = {
     maxFileBytes: limits.maxFileBytes ?? MAX_FILE_BYTES,
     maxGrepFiles: limits.maxGrepFiles ?? MAX_GREP_FILES,
@@ -343,5 +364,10 @@ export function createWorkspaceReadTools(root: string, limits: WorkspaceToolLimi
     maxGlobScan: limits.maxGlobScan ?? MAX_GLOB_SCAN,
     maxDirEntries: limits.maxDirEntries ?? MAX_DIR_ENTRIES,
   }
-  return [readFileTool(root, lim), listDirectoryTool(root, lim), grepTool(root, lim), globTool(root, lim)]
+  return [
+    readFileTool(root, lim),
+    listDirectoryTool(root, lim),
+    grepTool(root, lim),
+    globTool(root, lim),
+  ]
 }
