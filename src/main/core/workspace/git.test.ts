@@ -205,6 +205,21 @@ describe('createWorkspace diff/keep/revert', () => {
   })
 })
 
+describe('createWorkspace.addWorktree', () => {
+  it('creates a detached worktree at a sanitized path from base', async () => {
+    const g = fakeGit() // 모든 명령 code:0
+    const ws = createWorkspace('/ws', g.runner)
+    const wt = await ws.addWorktree('task/abc 1', 'base123')
+    const cmds = g.calls.map((c) => c.join(' '))
+    // --detach + base + sanitize(특수문자→_)
+    expect(cmds.some((c) => c.includes('worktree add --detach') && c.includes('base123'))).toBe(
+      true,
+    )
+    expect(cmds.some((c) => /worktree add --detach .*task_abc_1/.test(c))).toBe(true)
+    expect(wt.path).toMatch(/task_abc_1/)
+  })
+})
+
 describe('createWorkspace index.lock 경합 재시도', () => {
   it('retries a git op that fails with an index.lock conflict until it succeeds', async () => {
     const g = fakeGit()
