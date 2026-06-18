@@ -188,12 +188,15 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
    * 단일 작업 실행 핵심 로직: 직접 편집→diff 교차리뷰 루프→위험게이트→keep.
    * 결과를 done/failed 집합에 반영하고, done 경로에서 keep 커밋 해시를 반환한다.
    * Task 5(병렬 스케줄러)가 작업별 worktree·독립 세션을 주입할 수 있도록 ws·implementer 를 인자로 받는다.
+   * @param editRoot 편집 에이전트(implementer.send)의 cwd. 병렬 시 worktree 경로(wt.path), 순차 시 메인(opts.workspaceRoot).
+   *   (P1 #1) 이 값을 send({workspace})로 넘겨야 편집이 격리된 worktree 안에서 일어난다 — 메인을 쓰면 격리가 무력화된다.
    * @returns done 경로: keep 커밋 해시(string). 실패·스킵·미승인·취소: undefined.
    */
   const runTaskIn = async (
     task: Task,
     ws: Workspace | undefined,
     implementer: import('../session/types').LlmSession | undefined,
+    editRoot: string | undefined,
   ): Promise<string | undefined> => {
     // implementer 세션 미존재 가드 — 기존 failed 처리와 동일
     if (!implementer) {
@@ -244,7 +247,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           buildImplementPrompt(goal, task.title, task.description, feedback || undefined),
           {
             fresh: true,
-            workspace: opts.workspaceRoot,
+            // (P1 #1) editRoot = 병렬이면 worktree(wt.path), 순차면 메인(opts.workspaceRoot).
+            // 편집이 격리된 worktree 안에서 일어나도록 메인이 아니라 이 경로를 cwd 로 쓴다.
+            workspace: editRoot,
             signal: opts.signal,
             timeoutMs: taskTimeoutMs,
             onChunk: (delta) =>
@@ -377,7 +382,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const seqImplementerId = resolveLlmForRole(assignments, 'implementer', 'implementer')
   const seqImplementer = seqImplementerId ? sessions.get(seqImplementerId) : undefined
   const runTask = (task: Task): Promise<string | undefined> =>
-    runTaskIn(task, opts.workspace, seqImplementer)
+    // 순차 경로: 편집 cwd 는 메인 워크스페이스(opts.workspaceRoot) — 무회귀.
+    runTaskIn(task, opts.workspace, seqImplementer, opts.workspaceRoot)
 
   // 위상 스케줄: 의존성이 모두 done 인 작업을 생성 순서대로 실행한다(결정론).
   // 의존 작업이 failed/skipped 면 해당 작업은 실행 없이 skipped 로 전파한다.
@@ -448,7 +454,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       // 3) 편집 병렬(작업별 독립 worktree·세션). 실패는 allSettled 로 격리.
       //    각 fulfilled value = keep 해시(done) 또는 undefined(실패/스킵/미승인/취소).
       const settled = await Promise.allSettled(
-        wts.map(({ task, wt }) => runTaskIn(task, wt, makeEditSession())),
+        // (P1 #1) 편집 cwd = wt.path — 편집이 작업별 worktree 안에서 일어나 격리가 성립한다.
+        wts.map(({ task, wt }) => runTaskIn(task, wt, makeEditSession(), wt.path)),
       )
       // 4) 생성순 통합(결정론) + 정리(순차). 충돌·취소여도 worktree 는 반드시 정리한다.
       for (let k = 0; k < wts.length; k++) {

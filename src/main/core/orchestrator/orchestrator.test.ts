@@ -2327,4 +2327,86 @@ describe('runProject', () => {
     // abort 시 main HEAD 잔존 커밋 0 — integrate 호출 없어야 함.
     expect(ws.integrated).toEqual([])
   })
+
+  // P1 #1: 병렬 편집은 메인 checkout(opts.workspaceRoot)이 아니라 작업별 worktree(wt.path)를 cwd 로 써야 한다.
+  // 이를 어기면 모든 병렬 편집이 메인을 수정해 worktree 는 빈 diff, integrate dirty 가드가 실패 → 격리 무력화.
+  it('P1#1: 병렬 편집 send 의 workspace cwd 는 메인이 아니라 작업별 worktree 경로다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 각 편집 send 가 받은 workspace(cwd)를 기록하는 팩토리.
+    const editWorkspaces: (string | undefined)[] = []
+    let made = 0
+    const makeEditSession = (): LlmSession => {
+      const id = `impl-${++made}`
+      return {
+        id,
+        descriptor: { id, kind: 'cli', displayName: id, ref: id, model: '' },
+        async send(_prompt, opts) {
+          editWorkspaces.push(opts?.workspace)
+          return '구현'
+        },
+        async dispose() {},
+      }
+    }
+    const ws = parallelFakeWorkspace()
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession,
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    // 두 편집 모두 worktree 경로(/wt/<taskId>)를 cwd 로 받아야 한다 — 메인('/ws')이면 격리 무력화.
+    expect(editWorkspaces).toHaveLength(2)
+    expect(editWorkspaces.every((w) => w?.startsWith('/wt/'))).toBe(true)
+    expect(editWorkspaces).not.toContain('/ws') // 메인 checkout 으로 새지 않음
+  })
+
+  // P1#1(무회귀): 순차 모드는 여전히 메인 워크스페이스 경로(opts.workspaceRoot)를 편집 cwd 로 쓴다.
+  it('P1#1(순차): 순차 편집 send 의 workspace cwd 는 메인 워크스페이스 경로(workspaceRoot)다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const editWorkspaces: (string | undefined)[] = []
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_prompt, opts) {
+        editWorkspaces.push(opts?.workspace)
+        return '구현'
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    expect(editWorkspaces).toEqual(['/ws']) // 순차 경로 무회귀: 메인 워크스페이스 cwd 유지
+  })
 })
