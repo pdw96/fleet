@@ -2494,8 +2494,9 @@ describe('runProject', () => {
       makeEditSession: () => fakeSession('edit', () => '구현', 'cli'),
     })
 
-    // 첫 worktree(생성 성공한 것)는 누수 없이 정리돼야 한다 — project.done 경로 보존.
-    expect(removed.length).toBeGreaterThanOrEqual(1)
+    // 생성-실패 배치에서 A 1건 정리 + 재시도 sweep 에서 A 성공 후 정리 1건 = 총 2건.
+    // 무관한 정리가 통과 조건이 되던 >=1 대신, 실제 생성+정리 횟수와 일치하는 정확한 값을 단언한다.
+    expect(removed.length).toBe(2)
     expect(store.getProject(result.projectId)).toBeDefined()
     // 생성 실패로 배치가 진행 못 하면 무한 루프가 아니라 종료해야 한다(잔여 작업은 failed/skipped).
     expect(result.tasks.length).toBe(2)

@@ -518,7 +518,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
               failed.add(task.id)
             }
           }
-          await ws.removeWorktree(task.id)
+          // 정리 실패를 흡수 — P2#3 생성-실패 catch 블록과 parity. sweep/배치 흐름을 끊지 않는다.
+          await ws.removeWorktree(task.id).catch(() => {})
           const idxR = pending.indexOf(task.id)
           if (idxR >= 0) pending.splice(idxR, 1)
           continue
@@ -556,8 +557,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
             })
           }
         }
-        // 정리(순차) — 충돌·취소·실패여도 worktree 잔존 0 보장.
-        await ws.removeWorktree(task.id)
+        // 정리(순차) — 충돌·취소·실패여도 worktree 잔존 0 보장. 정리 실패는 흡수(P2#3 parity).
+        await ws.removeWorktree(task.id).catch(() => {})
         const idx = pending.indexOf(task.id)
         if (idx >= 0) pending.splice(idx, 1)
       }
