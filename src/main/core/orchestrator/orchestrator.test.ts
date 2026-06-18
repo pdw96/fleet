@@ -2324,5 +2324,7 @@ describe('runProject', () => {
     // 생성한 worktree 는 전부 정리됐다 — 잔존 worktree 0.
     expect(ws.worktreesRemoved).toBe(ws.worktreesCreated)
     expect(ws.worktreesCreated).toBeGreaterThan(0)
+    // abort 시 main HEAD 잔존 커밋 0 — integrate 호출 없어야 함.
+    expect(ws.integrated).toEqual([])
   })
 })
