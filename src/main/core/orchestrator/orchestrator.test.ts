@@ -2026,4 +2026,52 @@ describe('runProject', () => {
     expect(factoryCalled).toBe(0) // 무회귀: 기본 순차 모드에서 팩토리 미호출 검증
     expect(result.tasks[0].status).toBe('done')
   })
+
+  // Task 4: runTaskIn keep 해시 반환 검증 ─────────────────────────────────────────────────
+  // runTaskIn 은 runProject 내부 클로저라 직접 호출 불가. ws.keep spy 를 통해 반환값을
+  // 가로채, done 경로에서 runTaskIn 이 keep 반환 해시를 올바르게 수신·캡처했는지 간접 검증.
+  it('Task4: done 경로에서 ws.keep 이 반환한 해시가 정상 캡처된다(commit-N 형식)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"T1","description":"d1"},{"title":"T2","description":"d2"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // keep 호출마다 반환 해시를 기록하는 spy workspace
+    const keepHashes: string[] = []
+    let keepCallCount = 0
+    const baseWs = fakeWorkspace()
+    const spyWs: typeof baseWs = {
+      ...baseWs,
+      async keep(message: string) {
+        const hash = await baseWs.keep(message)
+        keepHashes.push(hash)
+        keepCallCount++
+        return hash
+      },
+    }
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: spyWs,
+      workspaceRoot: '/ws',
+    })
+
+    // 두 작업 모두 done — keep 이 두 번 호출돼야 한다
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    expect(keepCallCount).toBe(2)
+    // keep 반환 해시가 commit-N 형식인지 확인 — runTaskIn 이 ws.keep 반환값을 받아 리턴하는 경로 검증
+    expect(keepHashes).toEqual(['commit-1', 'commit-2'])
+  })
 })

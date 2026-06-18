@@ -184,14 +184,18 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const done = new Set<string>()
   const failed = new Set<string>()
 
-  /** 단일 작업 실행: 직접 편집→diff 교차리뷰 루프→위험게이트→keep. 결과를 done/failed 집합에 반영한다. */
-  const runTask = async (task: Task): Promise<void> => {
-    const ws = opts.workspace
-    // #1: 모든 작업은 워크스페이스를 편집하므로 항상 implementer 역할로 실행 세션을 해소한다.
-    // planner 가 role:"reviewer"(혹은 다른 비-implementer)를 붙여도 비편집 세션으로 오라우팅되지 않게 한다
-    // (task.role 은 표시용 라벨로만 보존된다).
-    const implementerId = resolveLlmForRole(assignments, 'implementer', 'implementer')
-    const implementer = implementerId ? sessions.get(implementerId) : undefined
+  /**
+   * 단일 작업 실행 핵심 로직: 직접 편집→diff 교차리뷰 루프→위험게이트→keep.
+   * 결과를 done/failed 집합에 반영하고, done 경로에서 keep 커밋 해시를 반환한다.
+   * Task 5(병렬 스케줄러)가 작업별 worktree·독립 세션을 주입할 수 있도록 ws·implementer 를 인자로 받는다.
+   * @returns done 경로: keep 커밋 해시(string). 실패·스킵·미승인·취소: undefined.
+   */
+  const runTaskIn = async (
+    task: Task,
+    ws: Workspace | undefined,
+    implementer: import('../session/types').LlmSession | undefined,
+  ): Promise<string | undefined> => {
+    // implementer 세션 미존재 가드 — 기존 failed 처리와 동일
     if (!implementer) {
       store.updateTask(task.id, { status: 'failed', output: '구현 역할에 배정된 LLM 없음' })
       emit({
@@ -200,7 +204,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       failed.add(task.id)
-      return
+      return undefined
     }
     // 직접 편집은 CLI 세션만 가능(API는 파일을 못 만짐).
     if (implementer.descriptor.kind !== 'cli' || !ws) {
@@ -214,8 +218,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       failed.add(task.id)
-      return
+      return undefined
     }
+    const implementerId = implementer.id
     store.updateTask(task.id, { status: 'running', assignedLlmId: implementerId })
     emit({ type: 'task.started', message: `작업 시작: ${task.title}`, data: { taskId: task.id } })
 
@@ -278,7 +283,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
               data: { taskId: task.id },
             })
             failed.add(task.id)
-            return
+            return undefined
           }
         }
 
@@ -321,10 +326,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           data: { taskId: task.id },
         })
         failed.add(task.id)
-        return
+        return undefined
       }
 
-      await ws.keep(`[${task.title}] by ${implementerId}`)
+      // done 경로: keep 커밋 해시를 캡처해 반환 — Task 5 병렬 통합(ws.integrate)에서 사용.
+      const keepHash = await ws.keep(`[${task.title}] by ${implementerId}`)
       store.updateTask(task.id, {
         status: 'done',
         output: `변경 ${diff.files.length}개 적용`,
@@ -336,6 +342,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       done.add(task.id)
+      return keepHash
     } catch (err) {
       // LLM 호출(네트워크/CLI) 실패를 작업 단위로 격리한다 — 한 작업 실패가 전체 실행을 중단시키지 않는다.
       // 부분 편집을 되돌린다. revert 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
@@ -349,7 +356,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           message: `${task.title}: 실행 취소됨${revertNote}`,
           data: { taskId: task.id },
         })
-        return
+        return undefined
       }
       const message = err instanceof Error ? err.message : String(err)
       store.updateTask(task.id, { status: 'failed', output: `실행 오류: ${message}${revertNote}` })
@@ -359,8 +366,18 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       failed.add(task.id)
+      return undefined
     }
   }
+
+  // 단일 워크스페이스·단일 implementer 로 기존과 동일하게 실행(무회귀 경로).
+  // #1: 모든 작업은 워크스페이스를 편집하므로 항상 implementer 역할로 실행 세션을 해소한다.
+  // planner 가 role:"reviewer"(혹은 다른 비-implementer)를 붙여도 비편집 세션으로 오라우팅되지 않게 한다
+  // (task.role 은 표시용 라벨로만 보존된다).
+  const seqImplementerId = resolveLlmForRole(assignments, 'implementer', 'implementer')
+  const seqImplementer = seqImplementerId ? sessions.get(seqImplementerId) : undefined
+  const runTask = (task: Task): Promise<string | undefined> =>
+    runTaskIn(task, opts.workspace, seqImplementer)
 
   // 위상 스케줄: 의존성이 모두 done 인 작업을 생성 순서대로 실행한다(결정론).
   // 의존 작업이 failed/skipped 면 해당 작업은 실행 없이 skipped 로 전파한다.
