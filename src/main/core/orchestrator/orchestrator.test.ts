@@ -49,6 +49,14 @@ function fakeWorkspace(
     async revert() {
       ws.reverts++
     },
+    // Task 2 신규 API — 오케스트레이터 테스트는 worktree 경로를 아직 사용하지 않으므로 stub.
+    async addWorktree() {
+      throw new Error('addWorktree stub — not used in orchestrator tests')
+    },
+    async integrate() {
+      return { ok: true }
+    },
+    async removeWorktree() {},
   }
   return ws
 }
@@ -333,6 +341,13 @@ describe('runProject', () => {
         return 'commit'
       },
       async revert() {},
+      async addWorktree() {
+        throw new Error('addWorktree stub')
+      },
+      async integrate() {
+        return { ok: true }
+      },
+      async removeWorktree() {},
     }
     await expect(
       runProject('goal', {
@@ -1739,6 +1754,13 @@ describe('runProject', () => {
       async revert() {
         throw new Error('git reset 실패')
       },
+      async addWorktree() {
+        throw new Error('addWorktree stub')
+      },
+      async integrate() {
+        return { ok: true }
+      },
+      async removeWorktree() {},
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
@@ -1795,6 +1817,13 @@ describe('runProject', () => {
       async revert() {
         throw new Error('git clean 실패')
       },
+      async addWorktree() {
+        throw new Error('addWorktree stub')
+      },
+      async integrate() {
+        return { ok: true }
+      },
+      async removeWorktree() {},
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {

@@ -68,6 +68,15 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
   // 반드시 성공해야 하는 git 명령. index.lock 경합(편집 에이전트의 자체 git)에는
   // 백오프 재시도하고, 끈질긴 스테일 락은 제거한다 — 오케스트레이터는 순차 실행이라
   // 이 시점에 동시 git 프로세스가 없음이 보장된다(락 제거가 안전).
+  // 락 파일 경로를 git 에 묻는다(linked worktree 는 <main>/.git/worktrees/<id>/index.lock).
+  // 실패하면 기존 추정 경로로 폴백한다(일반 레포 루트 호환).
+  const lockPath = async (): Promise<string> => {
+    const r = await run(['rev-parse', '--git-path', 'index.lock'])
+    return r.code === 0 && r.stdout.trim()
+      ? resolve(root, r.stdout.trim())
+      : join(root, '.git', 'index.lock')
+  }
+
   const ok = async (args: string[]): Promise<GitResult> => {
     let last: GitResult | undefined
     for (let attempt = 0; attempt < LOCK_RETRIES; attempt++) {
@@ -76,7 +85,7 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       last = r
       if (!LOCK_RE.test(r.stderr)) break // 락 외 에러는 재시도하지 않는다
       await wait(150 * (attempt + 1))
-      const lock = join(root, '.git', 'index.lock')
+      const lock = await lockPath()
       if (attempt >= 1 && existsSync(lock)) {
         try {
           rmSync(lock)
