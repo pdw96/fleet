@@ -661,26 +661,21 @@ describe('FleetEngine', () => {
   // engine 경계에서 정수화·[1,MAX_CONCURRENCY] clamp 후 orchestrator 에 전달.
   // 순수함수 clampConcurrency 로 단위 테스트한다(engine 통합 하네스 대신).
   describe('clampConcurrency', () => {
-    it('clamps maxConcurrency to an integer within [1,4] at the engine boundary', () => {
-      // over-range → MAX_CONCURRENCY
-      expect(clampConcurrency(7)).toBe(MAX_CONCURRENCY)
-      // under-range → 1
-      expect(clampConcurrency(0)).toBe(1)
-      // 정수 범위 → floor
-      expect(clampConcurrency(2.9)).toBe(2)
-      // 미지정 → 1(기본)
-      expect(clampConcurrency(undefined)).toBe(1)
-      // 음수 → 1(하한)
-      expect(clampConcurrency(-5)).toBe(1)
-      // 정상 범위 → 동일값
-      expect(clampConcurrency(1)).toBe(1)
-      expect(clampConcurrency(2)).toBe(2)
-      expect(clampConcurrency(3)).toBe(3)
-      expect(clampConcurrency(4)).toBe(4)
-      // NaN / Infinity → 1
-      expect(clampConcurrency(NaN)).toBe(1)
-      expect(clampConcurrency(Infinity)).toBe(1)
-      expect(clampConcurrency(-Infinity)).toBe(1)
+    it.each([
+      ['over-range → MAX_CONCURRENCY', 7, MAX_CONCURRENCY],
+      ['under-range → 1', 0, 1],
+      ['정수 범위 → floor', 2.9, 2],
+      ['미지정 → 1(기본)', undefined, 1],
+      ['음수 → 1(하한)', -5, 1],
+      ['정상 범위: 1', 1, 1],
+      ['정상 범위: 2', 2, 2],
+      ['정상 범위: 3', 3, 3],
+      ['정상 범위: 4', 4, 4],
+      ['NaN → 1', NaN, 1],
+      ['Infinity → 1', Infinity, 1],
+      ['-Infinity → 1', -Infinity, 1],
+    ])('%s', (_desc: string, input: number | undefined, expected: number) => {
+      expect(clampConcurrency(input)).toBe(expected)
     })
   })
 

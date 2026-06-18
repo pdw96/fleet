@@ -170,6 +170,10 @@ export interface FleetEngine {
   listEvents(): FleetEvent[]
 }
 
+/** engine 경계 보정: 렌더러(신뢰 밖)가 비정수·과대값으로 무제한 fan-out 하지 못하게 [1,MAX_CONCURRENCY] 정수로 강제. */
+export const clampConcurrency = (n: number | undefined): number =>
+  Number.isFinite(n) ? Math.min(Math.max(Math.floor(n as number), 1), MAX_CONCURRENCY) : 1
+
 export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const store = opts.store ?? createMemoryStore()
   const sessions = opts.sessions ?? createSessionManager()
@@ -196,9 +200,6 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   let workspaceDir: string | null = opts.workspaceDir ?? null
   // 진행 중 실행: projectId → AbortController. project.created 에서 등록, project.done 에서 해제.
   const activeRuns = new Map<string, AbortController>()
-  // engine 경계 보정: 렌더러(신뢰 밖)가 비정수·과대값으로 무제한 fan-out 하지 못하게 [1,MAX_CONCURRENCY] 정수로 강제.
-  const clampConcurrency = (n: number | undefined): number =>
-    Number.isFinite(n) ? Math.min(Math.max(Math.floor(n as number), 1), MAX_CONCURRENCY) : 1
   const currentWorkspace = () =>
     workspaceDir ? createWorkspace(workspaceDir, opts.gitRunner) : undefined
   const currentVerify = (signal?: AbortSignal) => {
@@ -794,7 +795,3 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
   }
 }
-
-/** engine 경계 보정: 렌더러(신뢰 밖)가 비정수·과대값으로 무제한 fan-out 하지 못하게 [1,MAX_CONCURRENCY] 정수로 강제. */
-export const clampConcurrency = (n: number | undefined): number =>
-  Number.isFinite(n) ? Math.min(Math.max(Math.floor(n as number), 1), MAX_CONCURRENCY) : 1
