@@ -2021,8 +2021,9 @@ describe('runProject', () => {
       },
     })
 
-    // maxConcurrency 미지정(기본 1=순차 모드)이므로 팩토리는 현재 미사용.
-    // Task 5(병렬 스케줄러)가 배선되면 factoryCalled > 0 이 된다.
+    // maxConcurrency 미지정(기본 1=순차 모드)이므로 팩토리는 호출되지 않아야 한다(순차 폴백).
+    // Task 5(병렬 스케줄러)가 배선되면 maxConcurrency > 1 일 때 factoryCalled > 0 이 된다.
+    expect(factoryCalled).toBe(0) // 무회귀: 기본 순차 모드에서 팩토리 미호출 검증
     expect(result.tasks[0].status).toBe('done')
   })
 })

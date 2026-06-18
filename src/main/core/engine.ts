@@ -620,12 +620,15 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // 병렬 모드용: implementer CLI 를 작업별 독립 인스턴스로 복제하는 팩토리(편집은 stateless 라 안전).
       // 호출마다 새 createCliSession 인스턴스(자체 chain)를 만들어 반환 → CLI chain 직렬화 우회(#80 결함①).
       // 순차 모드(maxConcurrency === 1, 기본값)면 팩토리를 전달하지 않아 기존 단일 implementer 그대로(무회귀).
+      // 어댑터가 cliRegistry 에 등록돼 있을 때만 팩토리를 만든다(미등록 → 순차 폴백, non-null assertion 회피).
       const implId = resolveLlmForRole(assignments, 'implementer', 'implementer')
       const implSession = implId ? sessions.get(implId) : undefined
       const implDescriptor = implSession?.descriptor
+      const editAdapter =
+        implDescriptor?.kind === 'cli' ? cliRegistry.get(implDescriptor.ref) : undefined
       const makeEditSession =
-        clampConcurrency(input.maxConcurrency) > 1 && implDescriptor?.kind === 'cli'
-          ? () => createCliSession(implDescriptor, cliRegistry.get(implDescriptor.ref)!, runner)
+        clampConcurrency(input.maxConcurrency) > 1 && editAdapter != null
+          ? () => createCliSession(implDescriptor!, editAdapter, runner)
           : undefined
 
       // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
