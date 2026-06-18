@@ -64,6 +64,13 @@ export interface RunOptions {
   /** 실행 취소 신호. abort 시 진행 중 작업을 revert 하고 중단한다. */
   signal?: AbortSignal
   onEvent?: (e: OrchestratorEvent) => void
+  /**
+   * 병렬 모드(maxConcurrency > 1)에서 작업별 독립 편집 세션을 만드는 팩토리.
+   * 호출마다 implementer 와 동등한 새 독립 CLI 세션 인스턴스(자체 chain)를 반환한다.
+   * 미지정이거나 순차 모드(maxConcurrency === 1)면 단일 implementer 세션을 그대로 사용한다(무회귀).
+   * (#80 결함①: worktree 격리 시에도 단일 CLI chain 직렬화를 우회하는 핵심 배선)
+   */
+  makeEditSession?: () => import('../session/types').LlmSession
 }
 
 /**

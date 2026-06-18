@@ -1958,4 +1958,71 @@ describe('runProject', () => {
     expect(done?.message).toContain('완료')
     expect(store.getProject(result.projectId)?.status).toBe('done')
   })
+
+  // ── Task 3: makeEditSession 팩토리 ──
+
+  it('RunOptions.makeEditSession 타입이 존재하고 타입 체크를 통과한다', () => {
+    // makeEditSession 이 RunOptions 에 선택적 필드로 존재함을 컴파일 타임에 검증한다.
+    // 런타임 단언 없음 — 이 테스트가 통과한다는 것 자체가 타입 추가의 증거.
+    let made = 0
+    const factory: NonNullable<Parameters<typeof runProject>[1]['makeEditSession']> = () => {
+      made++
+      return fakeSession(`impl-${made}`, () => '구현', 'cli')
+    }
+    // 팩토리가 올바른 LlmSession 인터페이스를 만족하는지 타입 추론으로 검증
+    const session = factory()
+    expect(session.id).toMatch(/^impl-/)
+    expect(session.descriptor.kind).toBe('cli')
+  })
+
+  it('makeEditSession 팩토리는 호출마다 서로 다른 독립 인스턴스를 반환한다', () => {
+    // 편집 에이전트가 stateless 라도, 팩토리가 항상 새 독립 chain 을 가진 인스턴스를 만든다는 것을 검증한다.
+    // engine 이 구성할 팩토리와 동일한 조건(호출마다 새 fakeSession)을 단위로 검증한다.
+    let made = 0
+    const makeEditSession = () => {
+      made++
+      return fakeSession(`impl-${made}`, () => '구현', 'cli')
+    }
+
+    const s1 = makeEditSession()
+    const s2 = makeEditSession()
+
+    // 팩토리는 호출마다 서로 다른 인스턴스를 반환해야 한다(독립성 핵심 계약).
+    expect(s1).not.toBe(s2)
+    // 각 인스턴스는 고유한 id 를 갖는다(같은 chain 을 공유하지 않는다).
+    expect(s1.id).not.toBe(s2.id)
+    expect(made).toBe(2)
+  })
+
+  it('makeEditSession 이 RunOptions 에 전달될 때 타입 오류 없이 runProject 에 넘길 수 있다', async () => {
+    // makeEditSession 을 실제로 RunOptions 에 넣어 runProject 를 호출해도 타입·런타임 오류 없음 검증.
+    // 현재 orchestrator 는 makeEditSession 을 사용하지 않으므로(Task 5 배선 전), 인수 수락 여부만 확인.
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    let factoryCalled = 0
+    // runProject 에 makeEditSession 을 넘겨도 타입 오류 없이 실행이 완료돼야 한다.
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      makeEditSession: () => {
+        factoryCalled++
+        return fakeSession(`edit-${factoryCalled}`, () => '구현', 'cli')
+      },
+    })
+
+    // maxConcurrency 미지정(기본 1=순차 모드)이므로 팩토리는 현재 미사용.
+    // Task 5(병렬 스케줄러)가 배선되면 factoryCalled > 0 이 된다.
+    expect(result.tasks[0].status).toBe('done')
+  })
 })

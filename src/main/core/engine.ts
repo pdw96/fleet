@@ -617,6 +617,17 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const maxReplanRounds = Number.isFinite(requestedReplan)
         ? Math.min(Math.max(requestedReplan, 0), MAX_REPLAN_ROUNDS)
         : 0
+      // 병렬 모드용: implementer CLI 를 작업별 독립 인스턴스로 복제하는 팩토리(편집은 stateless 라 안전).
+      // 호출마다 새 createCliSession 인스턴스(자체 chain)를 만들어 반환 → CLI chain 직렬화 우회(#80 결함①).
+      // 순차 모드(maxConcurrency === 1, 기본값)면 팩토리를 전달하지 않아 기존 단일 implementer 그대로(무회귀).
+      const implId = resolveLlmForRole(assignments, 'implementer', 'implementer')
+      const implSession = implId ? sessions.get(implId) : undefined
+      const implDescriptor = implSession?.descriptor
+      const makeEditSession =
+        clampConcurrency(input.maxConcurrency) > 1 && implDescriptor?.kind === 'cli'
+          ? () => createCliSession(implDescriptor, cliRegistry.get(implDescriptor.ref)!, runner)
+          : undefined
+
       // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
       const controller = new AbortController()
       const onEvent = (e: OrchestratorEvent) => {
@@ -641,6 +652,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           verify: currentVerify(controller.signal),
           signal: controller.signal,
           onEvent,
+          makeEditSession,
         })
       } finally {
         // 정상 경로는 project.done 에서 제거되지만, 조기 throw 시에도 누수 없이 정리한다.
