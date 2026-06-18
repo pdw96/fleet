@@ -55,6 +55,8 @@ export interface RunOptions {
   maxVerifyFixRounds?: number
   /** 검증 실패 시 planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/음수/NaN → 0(비활성). */
   maxReplanRounds?: number
+  /** 독립 작업 최대 동시 실행 수(기본 1=순차). 1 이면 기존 순차 경로를 그대로 탄다(무회귀). */
+  maxConcurrency?: number
   /** 작업 LLM 호출 타임아웃(편집 에이전트는 길다). send 에 전달. */
   taskTimeoutMs?: number
   /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */

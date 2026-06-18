@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentRole, ChatStreamEvent, OrchestratorEvent } from '../../shared/types'
-import { MAX_REPLAN_ROUNDS } from '../../shared/types'
+import { MAX_REPLAN_ROUNDS, MAX_CONCURRENCY } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
-import { createFleetEngine } from './engine'
+import { createFleetEngine, clampConcurrency } from './engine'
 import type { McpHost } from './mcp/types'
 import type { HttpClient } from './providers/types'
 import { createSessionManager } from './session/manager'
@@ -655,6 +655,33 @@ describe('FleetEngine', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // ④ maxConcurrency 가 IPC→engine→runProject 로 배선됐는지 검증.
+  // engine 경계에서 정수화·[1,MAX_CONCURRENCY] clamp 후 orchestrator 에 전달.
+  // 순수함수 clampConcurrency 로 단위 테스트한다(engine 통합 하네스 대신).
+  describe('clampConcurrency', () => {
+    it('clamps maxConcurrency to an integer within [1,4] at the engine boundary', () => {
+      // over-range → MAX_CONCURRENCY
+      expect(clampConcurrency(7)).toBe(MAX_CONCURRENCY)
+      // under-range → 1
+      expect(clampConcurrency(0)).toBe(1)
+      // 정수 범위 → floor
+      expect(clampConcurrency(2.9)).toBe(2)
+      // 미지정 → 1(기본)
+      expect(clampConcurrency(undefined)).toBe(1)
+      // 음수 → 1(하한)
+      expect(clampConcurrency(-5)).toBe(1)
+      // 정상 범위 → 동일값
+      expect(clampConcurrency(1)).toBe(1)
+      expect(clampConcurrency(2)).toBe(2)
+      expect(clampConcurrency(3)).toBe(3)
+      expect(clampConcurrency(4)).toBe(4)
+      // NaN / Infinity → 1
+      expect(clampConcurrency(NaN)).toBe(1)
+      expect(clampConcurrency(Infinity)).toBe(1)
+      expect(clampConcurrency(-Infinity)).toBe(1)
+    })
   })
 
   it('setSessionCapabilities stores capabilities on the live descriptor', () => {

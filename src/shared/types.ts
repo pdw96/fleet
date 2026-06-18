@@ -362,6 +362,11 @@ export interface OrchestratorEvent {
  */
 export const MAX_REPLAN_ROUNDS = 3
 
+/**
+ * 한 프로젝트 내 독립 작업의 최대 동시 실행 수. 1=순차(기본·무회귀). engine 경계에서 [1,MAX_CONCURRENCY] 정수 clamp.
+ */
+export const MAX_CONCURRENCY = 4
+
 export interface RunProjectRequest {
   goal: string
   policy?: AssignmentPolicy
@@ -370,6 +375,8 @@ export interface RunProjectRequest {
   maxReviewRounds?: number
   /** 검증 실패가 verify-fix 로도 안 풀릴 때, planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/미지정=비활성. */
   maxReplanRounds?: number
+  /** 의존성 없는 독립 작업의 최대 동시 실행 수(기본 1=순차). engine 이 [1,MAX_CONCURRENCY] 정수로 보정. */
+  maxConcurrency?: number
   taskTimeoutMs?: number
   /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
   continueOnFailure?: boolean
