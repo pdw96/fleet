@@ -462,9 +462,13 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         const { task } = wts[k]
         const r = settled[k]
         const keepHash = r.status === 'fulfilled' ? r.value : undefined
-        // done 표시 + keep 해시 보유 + abort 아닐 때만 통합.
+        // (P1 #2) 변경 없는(원래-빈) worktree 는 통합을 스킵한다 — 구버전 git 에서 빈 cherry-pick 이
+        //   `unknown option`/empty-stop 으로 깨지지 않도록 사전 방어. runTaskIn 이 store 에 기록한
+        //   changedFiles 로 판정한다(변경 0 → 통합 불필요, 작업은 이미 done 으로 정직).
+        const changed = store.getTask(task.id)?.changedFiles ?? []
+        // done 표시 + keep 해시 보유 + 변경 있음 + abort 아닐 때만 통합.
         // abort 중이면 integrate 를 스킵해 main HEAD 잔존 커밋 0 보장.
-        if (done.has(task.id) && keepHash && !opts.signal?.aborted) {
+        if (done.has(task.id) && keepHash && changed.length > 0 && !opts.signal?.aborted) {
           const res = await ws.integrate(keepHash)
           if (!res.ok) {
             // 통합 충돌 → done 철회·failed 전환(결정론적 작업 상태 계약).

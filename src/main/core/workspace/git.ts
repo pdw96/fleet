@@ -181,7 +181,9 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       const dirty = await run(['status', '--porcelain'])
       if (dirty.code === 0 && dirty.stdout.trim() !== '')
         return { ok: false, conflict: '메인 워크스페이스가 정리되지 않음(dirty) — 통합 보류' }
-      // identity 명시(미설정 머신) + 빈 keep 커밋 허용(--allow-empty) + 중복 변경 드롭(--empty=drop).
+      // identity 명시(미설정 머신) + 빈 keep 커밋 허용(--allow-empty, 오래된 호환 옵션).
+      // (P1 #2) --empty=drop 은 git 2.45+ 전용이라 구버전(2.43/2.44)에서 `error: unknown option` 으로
+      //   모든 통합이 깨진다. Fleet 은 시스템 git 을 핀하지 않으므로 --empty=drop 을 쓰지 않는다.
       // ok() 의 index.lock 강제 제거는 외부 사용자 git 과 경합 위험이라 통합 경로에선 쓰지 않는다.
       const r = await run([
         '-c',
@@ -190,11 +192,23 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
         'user.email=fleet@local',
         'cherry-pick',
         '--allow-empty',
-        '--empty=drop',
         keepCommit,
       ])
       if (r.code === 0) return { ok: true }
-      await run(['cherry-pick', '--abort']) // main HEAD 를 직전 상태로 복구
+      // (P1 #2) 빈/중복 cherry-pick 을 실제 CONFLICT 와 구분한다.
+      // 두 작업이 같은 변경을 만들면 구버전 git 은 stop+에러("previous cherry-pick is now empty" /
+      // "nothing to commit")를 낸다 — 변경은 이미 main 에 반영됐으므로 --skip 으로 진행 상태를 정리하고 성공 처리한다.
+      // 실제 머지 충돌만 abort→실패로 보고한다.
+      // 주의: empty 메시지엔 "possibly due to conflict resolution" 보일러플레이트가 들어가므로
+      //   대소문자 무시 'conflict' 로 충돌을 판별하면 빈 케이스를 오분류한다.
+      //   git 의 실제 충돌 마커는 대문자 `CONFLICT (...)` / `Merge conflict in` 형식이라 이걸로만 판별한다.
+      const EMPTY_RE = /now empty|nothing to commit|empty commit/i
+      const REAL_CONFLICT_RE = /CONFLICT \(|Merge conflict in/
+      if (EMPTY_RE.test(r.stderr) && !REAL_CONFLICT_RE.test(r.stderr)) {
+        await run(['cherry-pick', '--skip']) // 빈/중복 → 진행 상태 정리(이미 main 에 반영됨)
+        return { ok: true }
+      }
+      await run(['cherry-pick', '--abort']) // 실제 충돌 → main HEAD 를 직전 상태로 복구
       return { ok: false, conflict: r.stderr.trim() || `cherry-pick 실패(code ${r.code})` }
     },
     async removeWorktree(taskId) {

@@ -74,6 +74,8 @@ function parallelFakeWorkspace(
   opts: {
     onIntegrate?: (keepHash: string) => void
     conflictOn?: string
+    /** 변경 없음(collectDiff 가 빈 files)을 시뮬레이션한다 — P1 #2 빈 worktree 통합 스킵 검증용. */
+    emptyDiff?: boolean
   } = {},
 ): Workspace & {
   worktreesCreated: number
@@ -114,6 +116,8 @@ function parallelFakeWorkspace(
           return `base-${taskId}`
         },
         async collectDiff(): Promise<DiffResult> {
+          // emptyDiff 면 변경 없음(원래-빈 worktree) — P1 #2: 호출자가 integrate 를 스킵해야 한다.
+          if (opts.emptyDiff) return { files: [], patch: '', truncated: false }
           return { files: [`src/${taskId}.ts`], patch: '+x', truncated: false }
         },
         async keep(message: string) {
@@ -2408,5 +2412,41 @@ describe('runProject', () => {
       workspaceRoot: '/ws',
     })
     expect(editWorkspaces).toEqual(['/ws']) // 순차 경로 무회귀: 메인 워크스페이스 cwd 유지
+  })
+
+  // P1 #2: 변경 없는(원래-빈) worktree 는 integrate 를 호출하지 않는다.
+  // (구버전 git 에서 빈 cherry-pick 이 깨지지 않도록 호출자가 사전 스킵 — 작업은 여전히 done.)
+  it('P1#2: 변경 없는 worktree 는 integrate 를 호출하지 않고 done 으로 둔다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const ws = parallelFakeWorkspace({ emptyDiff: true })
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+    })
+
+    // 변경이 없어도 작업은 정상 완료(done) — 빈 worktree 는 실패가 아니다.
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    expect(ws.integrated).toEqual([]) // 빈 worktree → integrate 미호출(구버전 빈 cherry-pick 방어)
+    expect(ws.worktreesRemoved).toBe(2) // 그래도 정리는 한다
   })
 })
