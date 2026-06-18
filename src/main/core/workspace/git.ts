@@ -174,12 +174,7 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       // worktree 전용 워크스페이스: 자체 .git(gitdir 파일)·자체 index 를 가지므로 createWorkspace 를 그 root 로 만든다.
       // ensureRepo 는 호출하지 않는다(이미 메인 레포의 linked worktree).
       const inner = createWorkspace(wtPath, git)
-      return Object.assign(inner, {
-        path: wtPath,
-        async remove() {
-          await ok(['worktree', 'remove', '--force', wtPath])
-        },
-      })
+      return Object.assign(inner, { path: wtPath })
     },
     async integrate(keepCommit) {
       // 메인이 dirty 면 cherry-pick 이 실패하므로 사전 차단(메인은 보통 checkpoint HEAD 라 clean).

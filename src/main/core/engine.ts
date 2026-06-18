@@ -626,9 +626,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const implDescriptor = implSession?.descriptor
       const editAdapter =
         implDescriptor?.kind === 'cli' ? cliRegistry.get(implDescriptor.ref) : undefined
+      const mc = clampConcurrency(input.maxConcurrency)
       const makeEditSession =
-        clampConcurrency(input.maxConcurrency) > 1 && editAdapter != null
-          ? () => createCliSession(implDescriptor!, editAdapter, runner)
+        mc > 1 && editAdapter != null
+          ? // 편집 세션은 항상 stateless(cli-session.ts:34-35) — stateful 옵션 불필요.
+            () => createCliSession(implDescriptor!, editAdapter, runner)
           : undefined
 
       // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.
@@ -646,7 +648,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           assignments,
           maxReviewRounds: input.maxReviewRounds,
           maxReplanRounds,
-          maxConcurrency: clampConcurrency(input.maxConcurrency),
+          maxConcurrency: mc,
           taskTimeoutMs: input.taskTimeoutMs,
           continueOnFailure: input.continueOnFailure,
           workspace: currentWorkspace(),
