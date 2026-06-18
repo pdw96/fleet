@@ -284,21 +284,43 @@ describe('createWorkspace.removeWorktree', () => {
 
   it('resolves the lock path via --git-path for a linked worktree', async () => {
     // 결함 ②: linked worktree 의 .git 은 gitdir 파일 → 락은 <main>/.git/worktrees/<id>/index.lock.
-    // ok() 의 stale-lock 제거가 rev-parse --git-path index.lock 로 worktree 락을 가리켜야 한다.
+    // ok() 의 stale-lock 제거가 rev-parse --git-path index.lock 으로 worktree 락을 동적으로 해소해야 한다.
+    //
+    // 시나리오: checkpoint()→rev-parse HEAD 의 첫 시도가 LOCK_RE 매치 에러를 반환.
+    // ok() 는 재시도(attempt=1)에 진입하고 attempt>=1 이므로 lockPath()를 호출한다.
+    // lockPath() 는 rev-parse --git-path index.lock 을 실행 → lockProbed=true.
+    // 두 번째 rev-parse HEAD 시도는 성공(code:0) → ok() 가 정상 반환.
     const g = fakeGit()
     let lockProbed = false
+    // addWorktree 내부의 worktree add 호출 횟수를 추적해 첫 rev-parse HEAD 시도를 구분한다
+    let revParseHeadCalls = 0
     g.setReply((args) => {
+      // lockPath() 호출: rev-parse --git-path index.lock → 호출 여부 기록 + 유효 경로 반환
       if (args[0] === 'rev-parse' && args.includes('--git-path')) {
         lockProbed = true
         return { code: 0, stdout: '/ws/../.git/worktrees/t1/index.lock', stderr: '' }
       }
-      // 첫 시도는 lock 경합 실패, 이후 성공 → stale-lock 경로를 타게 함
-      return { code: 0, stdout: 'HEAD', stderr: '' }
+      // checkpoint() 내부의 rev-parse HEAD: 첫 호출만 LOCK_RE 에러, 이후는 성공
+      if (args[0] === 'rev-parse' && args.includes('HEAD')) {
+        revParseHeadCalls++
+        if (revParseHeadCalls === 1) {
+          // LOCK_RE = /index\.lock|Another git process/i 에 매치 → ok() 가 재시도 경로 진입
+          return {
+            code: 128,
+            stdout: '',
+            stderr: "fatal: Unable to create '/ws/.git/index.lock': File exists.",
+          }
+        }
+        return { code: 0, stdout: 'deadbeef', stderr: '' }
+      }
+      // worktree add 등 나머지 명령은 모두 성공
+      return { code: 0, stdout: '', stderr: '' }
     })
     const ws = createWorkspace('/ws', g.runner)
     const wt = await ws.addWorktree('t1', 'base')
     await wt.checkpoint()
-    expect(lockProbed || true).toBe(true) // 락 경로 해소 헬퍼 존재 확인(상세는 구현에 맞춰 단언)
+    // lockPath()가 실제로 호출됐음을 단언 — || true 없이 회귀 방지력 보장
+    expect(lockProbed).toBe(true)
   })
 })
 
