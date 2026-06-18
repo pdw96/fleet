@@ -220,6 +220,58 @@ describe('createWorkspace.addWorktree', () => {
   })
 })
 
+describe('createWorkspace.integrate', () => {
+  it('cherry-picks a keep commit onto main with Fleet identity and empty handling', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' } // main clean
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const r = await ws.integrate('keep1')
+    const cmds = g.calls.map((c) => c.join(' '))
+    expect(r.ok).toBe(true)
+    expect(
+      cmds.some(
+        (c) =>
+          c.includes('user.name=Fleet') &&
+          c.includes('cherry-pick') &&
+          c.includes('--allow-empty') &&
+          c.includes('--empty=drop') &&
+          c.includes('keep1'),
+      ),
+    ).toBe(true)
+  })
+
+  it('aborts and reports conflict when cherry-pick fails', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
+      if (args.includes('cherry-pick') && args.includes('keepX'))
+        return { code: 1, stdout: '', stderr: 'CONFLICT (content): merge conflict in src/x.ts' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const r = await ws.integrate('keepX')
+    const cmds = g.calls.map((c) => c.join(' '))
+    expect(r.ok).toBe(false)
+    expect(r.conflict).toContain('CONFLICT')
+    expect(cmds.some((c) => c.includes('cherry-pick --abort'))).toBe(true)
+  })
+
+  it('refuses to integrate when main worktree is dirty', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'status') return { code: 0, stdout: ' M src/x.ts', stderr: '' } // dirty
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const r = await ws.integrate('keep1')
+    expect(r.ok).toBe(false)
+    expect(r.conflict).toMatch(/dirty|미정리/)
+  })
+})
+
 describe('createWorkspace index.lock 경합 재시도', () => {
   it('retries a git op that fails with an index.lock conflict until it succeeds', async () => {
     const g = fakeGit()
