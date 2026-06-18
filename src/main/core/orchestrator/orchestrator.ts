@@ -447,10 +447,44 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       const batch = runnable.slice(0, concurrency)
       const base = await ws.checkpoint()
       // 2) worktree 순차 생성(common gitdir 보호).
+      // (P2 #3) 생성 도중 addWorktree 가 throw(예: 스테일 .fleet-wt-* 잔존)하면, 그때까지 누적된
+      //   worktree 가 정리 섹션 도달 전 디스크에 잔존한다. try 로 감싸 누적분을 전부 정리하고,
+      //   실패한 작업은 failed 처리한 뒤 이번 배치를 건너뛴다(project.done 경로 보존).
       const wts: { task: Task; wt: TaskWorktree }[] = []
-      for (const task of batch) {
-        wts.push({ task, wt: await ws.addWorktree(task.id, base) })
+      let createFailed = false
+      try {
+        for (const task of batch) {
+          wts.push({ task, wt: await ws.addWorktree(task.id, base) })
+        }
+      } catch (err) {
+        createFailed = true
+        const message = err instanceof Error ? err.message : String(err)
+        // 이미 만든 worktree 를 전부 정리(누수 0). 정리 실패는 다음 작업 정리를 막지 않게 흡수.
+        for (const { task } of wts) {
+          await ws.removeWorktree(task.id).catch(() => {})
+          const idx = pending.indexOf(task.id)
+          if (idx >= 0) pending.splice(idx, 1)
+        }
+        // 정리한(생성 성공했던) 작업들은 아직 실행 안 됐으므로 pending 으로 되돌린다 — 다음 sweep 재시도.
+        for (const { task } of wts) pending.push(task.id)
+        // 생성에 실패한 작업(batch 에서 wts 에 안 들어간 첫 작업)을 failed 처리해 무한 재시도를 막는다.
+        const failedTask = batch.find((t) => !wts.some((w) => w.task.id === t.id))
+        if (failedTask) {
+          store.updateTask(failedTask.id, {
+            status: 'failed',
+            output: `worktree 생성 실패: ${message}`,
+          })
+          emit({
+            type: 'task.failed',
+            message: `${failedTask.title}: worktree 생성 실패 - ${message}`,
+            data: { taskId: failedTask.id },
+          })
+          failed.add(failedTask.id)
+          const idx = pending.indexOf(failedTask.id)
+          if (idx >= 0) pending.splice(idx, 1)
+        }
       }
+      if (createFailed) continue // 이번 배치 통합/편집 스킵 — 다음 sweep 으로
       // 3) 편집 병렬(작업별 독립 worktree·세션). 실패는 allSettled 로 격리.
       //    각 fulfilled value = keep 해시(done) 또는 undefined(실패/스킵/미승인/취소).
       const settled = await Promise.allSettled(
@@ -461,14 +495,51 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       for (let k = 0; k < wts.length; k++) {
         const { task } = wts[k]
         const r = settled[k]
-        const keepHash = r.status === 'fulfilled' ? r.value : undefined
+        // (P2 #5) runTaskIn 의 try/catch 밖(예: ws.checkpoint)에서 reject 하면 allSettled 가 rejected 다.
+        //   이 경우 task 가 running 인 채 남으므로 failed 처리한다(실패 이벤트 없이 영구 running 방지).
+        //   취소(abort) 중 reject 는 취소로 라벨한다(다른 abort 경로와 일관).
+        if (r.status === 'rejected') {
+          if (!done.has(task.id) && !failed.has(task.id)) {
+            if (opts.signal?.aborted) {
+              store.updateTask(task.id, { status: 'skipped', output: '실행 취소됨' })
+              emit({
+                type: 'task.skipped',
+                message: `${task.title}: 실행 취소됨`,
+                data: { taskId: task.id },
+              })
+            } else {
+              const message = r.reason instanceof Error ? r.reason.message : String(r.reason)
+              store.updateTask(task.id, { status: 'failed', output: `실행 오류: ${message}` })
+              emit({
+                type: 'task.failed',
+                message: `${task.title}: 실행 오류 - ${message}`,
+                data: { taskId: task.id },
+              })
+              failed.add(task.id)
+            }
+          }
+          await ws.removeWorktree(task.id)
+          const idxR = pending.indexOf(task.id)
+          if (idxR >= 0) pending.splice(idxR, 1)
+          continue
+        }
+        const keepHash = r.value
         // (P1 #2) 변경 없는(원래-빈) worktree 는 통합을 스킵한다 — 구버전 git 에서 빈 cherry-pick 이
         //   `unknown option`/empty-stop 으로 깨지지 않도록 사전 방어. runTaskIn 이 store 에 기록한
         //   changedFiles 로 판정한다(변경 0 → 통합 불필요, 작업은 이미 done 으로 정직).
         const changed = store.getTask(task.id)?.changedFiles ?? []
-        // done 표시 + keep 해시 보유 + 변경 있음 + abort 아닐 때만 통합.
-        // abort 중이면 integrate 를 스킵해 main HEAD 잔존 커밋 0 보장.
-        if (done.has(task.id) && keepHash && changed.length > 0 && !opts.signal?.aborted) {
+        if (done.has(task.id) && keepHash && opts.signal?.aborted) {
+          // (P2 #4) abort 로 통합을 스킵한다. runTaskIn 이 이미 done 으로 갱신했지만 cherry-pick 은
+          //   수행되지 않았으므로(main 미반영) done 을 철회하고 skipped 로 다운그레이드한다(오해 방지).
+          done.delete(task.id)
+          store.updateTask(task.id, { status: 'skipped', output: '실행 취소됨(통합 전)' })
+          emit({
+            type: 'task.skipped',
+            message: `${task.title}: 실행 취소됨(통합 전)`,
+            data: { taskId: task.id },
+          })
+        } else if (done.has(task.id) && keepHash && changed.length > 0) {
+          // done 표시 + keep 해시 보유 + 변경 있음 + abort 아님 → 통합.
           const res = await ws.integrate(keepHash)
           if (!res.ok) {
             // 통합 충돌 → done 철회·failed 전환(결정론적 작업 상태 계약).

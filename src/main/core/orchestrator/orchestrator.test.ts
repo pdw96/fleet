@@ -2449,4 +2449,171 @@ describe('runProject', () => {
     expect(ws.integrated).toEqual([]) // 빈 worktree → integrate 미호출(구버전 빈 cherry-pick 방어)
     expect(ws.worktreesRemoved).toBe(2) // 그래도 정리는 한다
   })
+
+  // P2 #3: worktree 생성 루프 중간에 addWorktree 가 throw 하면, 그 전에 만든 worktree 가
+  // 정리 섹션 도달 전 디스크에 잔존한다. 누적된 worktree 를 전부 정리하고 진행해야 한다.
+  it('P2#3: addWorktree 가 중간에 실패하면 그때까지 만든 worktree 를 전부 정리한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const base = parallelFakeWorkspace()
+    let addCalls = 0
+    const removed: string[] = []
+    // 첫 addWorktree 는 성공, 둘째는 throw(스테일 .fleet-wt-* 잔존 시뮬레이션).
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        addCalls++
+        if (addCalls === 2) throw new Error('스테일 worktree 잔존: .fleet-wt-B')
+        return base.addWorktree(taskId, b)
+      },
+      async removeWorktree(taskId: string) {
+        removed.push(taskId)
+        return base.removeWorktree(taskId)
+      },
+    }
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: () => fakeSession('edit', () => '구현', 'cli'),
+    })
+
+    // 첫 worktree(생성 성공한 것)는 누수 없이 정리돼야 한다 — project.done 경로 보존.
+    expect(removed.length).toBeGreaterThanOrEqual(1)
+    expect(store.getProject(result.projectId)).toBeDefined()
+    // 생성 실패로 배치가 진행 못 하면 무한 루프가 아니라 종료해야 한다(잔여 작업은 failed/skipped).
+    expect(result.tasks.length).toBe(2)
+    // 모든 작업이 종결 상태(running 잔존 0).
+    expect(result.tasks.every((t) => t.status !== 'running')).toBe(true)
+  })
+
+  // P2 #4: abort 가 통합을 스킵해도 runTaskIn 이 이미 task 를 done 으로 갱신했다.
+  // cherry-pick 안 됐는데 done 보고는 오해 — skipped 로 다운그레이드해야 한다.
+  it('P2#4: abort 로 통합이 스킵된 작업은 done 이 아니라 skipped 다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const controller = new AbortController()
+    const ws = parallelFakeWorkspace()
+    // 두 편집 모두 done 까지 마친 뒤, 통합 직전에 abort 를 건다.
+    // B 의 편집 send 가 끝나는 시점에 abort → 통합 루프는 둘 다 스킵해야 한다.
+    let made = 0
+    const makeEditSession = (): LlmSession => {
+      const id = `impl-${++made}`
+      const isLast = made === 2
+      return {
+        id,
+        descriptor: { id, kind: 'cli', displayName: id, ref: id, model: '' },
+        async send() {
+          if (isLast) controller.abort() // 둘 다 편집 완료 직후 취소
+          return '구현'
+        },
+        async dispose() {},
+      }
+    }
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      signal: controller.signal,
+      makeEditSession,
+    })
+
+    // abort 로 통합이 스킵됐으므로 어떤 작업도 done 으로 남으면 안 된다(main 미반영을 정직 반영).
+    expect(result.tasks.some((t) => t.status === 'done')).toBe(false)
+    expect(result.tasks.every((t) => t.status === 'skipped')).toBe(true)
+    expect(ws.integrated).toEqual([]) // 통합 미수행
+    expect(ws.worktreesRemoved).toBe(ws.worktreesCreated) // 정리는 완료
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  // P2 #5: runTaskIn 의 try/catch 밖(예: ws.checkpoint)에서 reject 하면 allSettled 결과가
+  // rejected 인데, 현재는 undefined(keepHash 없음)로만 처리돼 task 가 running 인 채 pending 에서 제거된다.
+  it('P2#5: 편집 전(checkpoint) reject 한 작업은 running 잔존이 아니라 failed 다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const baseWs = parallelFakeWorkspace()
+    // 첫 worktree 의 checkpoint() 가 reject — runTaskIn try 진입 전이라 try/catch 가 못 잡는다.
+    let addCalls = 0
+    const ws: typeof baseWs = {
+      ...baseWs,
+      async addWorktree(taskId: string, b: string) {
+        addCalls++
+        const wt = await baseWs.addWorktree(taskId, b)
+        if (addCalls === 1) {
+          // 첫 작업의 worktree checkpoint 가 try 밖에서 throw → allSettled rejected
+          return Object.assign(wt, {
+            async checkpoint() {
+              throw new Error('worktree checkpoint 실패(try 밖)')
+            },
+          })
+        }
+        return wt
+      },
+    }
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: () => fakeSession('edit', () => '구현', 'cli'),
+      onEvent: (e) => events.push(e),
+    })
+
+    // 어떤 작업도 running 으로 영구 잔존하면 안 된다.
+    expect(result.tasks.every((t) => t.status !== 'running')).toBe(true)
+    // checkpoint 가 reject 한 작업은 failed 로 종결되고 task.failed 가 방출돼야 한다.
+    const failedTask = result.tasks.find((t) => t.status === 'failed')
+    expect(failedTask).toBeDefined()
+    expect(events.some((e) => e.type === 'task.failed')).toBe(true)
+    // 그래도 worktree 는 정리된다(잔존 0).
+    expect(ws.worktreesRemoved).toBe(ws.worktreesCreated)
+  })
 })
