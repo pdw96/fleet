@@ -32,12 +32,17 @@ const LOCK_RE = /index\.lock|Another git process/i
 const LOCK_RETRIES = 4
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+export type TaskWorktree = Workspace & { path: string }
+
 export interface Workspace {
   ensureRepo(): Promise<void>
   checkpoint(): Promise<string>
   collectDiff(base: string): Promise<DiffResult>
   keep(message: string): Promise<string>
   revert(base: string): Promise<void>
+  addWorktree(taskId: string, base: string): Promise<TaskWorktree>
+  integrate(keepCommit: string): Promise<{ ok: boolean; conflict?: string }>
+  removeWorktree(taskId: string): Promise<void>
 }
 
 const GIT_TIMEOUT_MS = 120_000
@@ -52,11 +57,26 @@ export const defaultGitRunner: GitRunner = {
     })),
 }
 
+// taskId 의 특수문자를 _로 치환해 디렉터리명으로 사용 가능하게 만든다.
+const sanitize = (id: string): string => id.replace(/[^a-zA-Z0-9_-]/g, '_')
+// worktree 디렉터리: 메인 레포 밖(임시)에 두어 collectDiff(add -A)·clean 대상에 안 잡히게 한다.
+const worktreeDir = (root: string, id: string): string =>
+  join(root, '..', `.fleet-wt-${sanitize(id)}`)
+
 export function createWorkspace(root: string, git: GitRunner = defaultGitRunner): Workspace {
   const run = (args: string[]) => git.run(args, root)
   // 반드시 성공해야 하는 git 명령. index.lock 경합(편집 에이전트의 자체 git)에는
   // 백오프 재시도하고, 끈질긴 스테일 락은 제거한다 — 오케스트레이터는 순차 실행이라
   // 이 시점에 동시 git 프로세스가 없음이 보장된다(락 제거가 안전).
+  // 락 파일 경로를 git 에 묻는다(linked worktree 는 <main>/.git/worktrees/<id>/index.lock).
+  // 실패하면 기존 추정 경로로 폴백한다(일반 레포 루트 호환).
+  const lockPath = async (): Promise<string> => {
+    const r = await run(['rev-parse', '--git-path', 'index.lock'])
+    return r.code === 0 && r.stdout.trim()
+      ? resolve(root, r.stdout.trim())
+      : join(root, '.git', 'index.lock')
+  }
+
   const ok = async (args: string[]): Promise<GitResult> => {
     let last: GitResult | undefined
     for (let attempt = 0; attempt < LOCK_RETRIES; attempt++) {
@@ -65,7 +85,7 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       last = r
       if (!LOCK_RE.test(r.stderr)) break // 락 외 에러는 재시도하지 않는다
       await wait(150 * (attempt + 1))
-      const lock = join(root, '.git', 'index.lock')
+      const lock = await lockPath()
       if (attempt >= 1 && existsSync(lock)) {
         try {
           rmSync(lock)
@@ -147,6 +167,52 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       await ok(['reset', '--hard', base])
       // -ffd: 중첩 git 저장소도 제거한다(git 은 nested repo 제거에 -ff 를 요구).
       await ok(['clean', '-ffd'])
+    },
+    async addWorktree(taskId, base) {
+      const wtPath = worktreeDir(root, taskId)
+      await ok(['worktree', 'add', '--detach', wtPath, base])
+      // worktree 전용 워크스페이스: 자체 .git(gitdir 파일)·자체 index 를 가지므로 createWorkspace 를 그 root 로 만든다.
+      // ensureRepo 는 호출하지 않는다(이미 메인 레포의 linked worktree).
+      const inner = createWorkspace(wtPath, git)
+      return Object.assign(inner, { path: wtPath })
+    },
+    async integrate(keepCommit) {
+      // 메인이 dirty 면 cherry-pick 이 실패하므로 사전 차단(메인은 보통 checkpoint HEAD 라 clean).
+      const dirty = await run(['status', '--porcelain'])
+      if (dirty.code === 0 && dirty.stdout.trim() !== '')
+        return { ok: false, conflict: '메인 워크스페이스가 정리되지 않음(dirty) — 통합 보류' }
+      // identity 명시(미설정 머신) + 빈 keep 커밋 허용(--allow-empty, 오래된 호환 옵션).
+      // (P1 #2) --empty=drop 은 git 2.45+ 전용이라 구버전(2.43/2.44)에서 `error: unknown option` 으로
+      //   모든 통합이 깨진다. Fleet 은 시스템 git 을 핀하지 않으므로 --empty=drop 을 쓰지 않는다.
+      // ok() 의 index.lock 강제 제거는 외부 사용자 git 과 경합 위험이라 통합 경로에선 쓰지 않는다.
+      const r = await run([
+        '-c',
+        'user.name=Fleet',
+        '-c',
+        'user.email=fleet@local',
+        'cherry-pick',
+        '--allow-empty',
+        keepCommit,
+      ])
+      if (r.code === 0) return { ok: true }
+      // (P1 #2) 빈/중복 cherry-pick 을 실제 CONFLICT 와 구분한다.
+      // 두 작업이 같은 변경을 만들면 구버전 git 은 stop+에러("previous cherry-pick is now empty" /
+      // "nothing to commit")를 낸다 — 변경은 이미 main 에 반영됐으므로 --skip 으로 진행 상태를 정리하고 성공 처리한다.
+      // 실제 머지 충돌만 abort→실패로 보고한다.
+      // 주의: empty 메시지엔 "possibly due to conflict resolution" 보일러플레이트가 들어가므로
+      //   대소문자 무시 'conflict' 로 충돌을 판별하면 빈 케이스를 오분류한다.
+      //   git 의 실제 충돌 마커는 대문자 `CONFLICT (...)` / `Merge conflict in` 형식이라 이걸로만 판별한다.
+      const EMPTY_RE = /now empty|nothing to commit|empty commit/i
+      const REAL_CONFLICT_RE = /CONFLICT \(|Merge conflict in/
+      if (EMPTY_RE.test(r.stderr) && !REAL_CONFLICT_RE.test(r.stderr)) {
+        await run(['cherry-pick', '--skip']) // 빈/중복 → 진행 상태 정리(이미 main 에 반영됨)
+        return { ok: true }
+      }
+      await run(['cherry-pick', '--abort']) // 실제 충돌 → main HEAD 를 직전 상태로 복구
+      return { ok: false, conflict: r.stderr.trim() || `cherry-pick 실패(code ${r.code})` }
+    },
+    async removeWorktree(taskId) {
+      await ok(['worktree', 'remove', '--force', worktreeDir(root, taskId)])
     },
   }
 }

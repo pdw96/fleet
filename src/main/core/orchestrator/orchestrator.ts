@@ -9,7 +9,7 @@ import type {
 import type { ApprovalGate } from '../safety/approval'
 import type { SessionManager } from '../session/manager'
 import type { Store } from '../store/types'
-import type { Workspace } from '../workspace/git'
+import type { TaskWorktree, Workspace } from '../workspace/git'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
 import { planCorrectiveTasks, planTasks, type PlannedTask } from './plan'
@@ -55,6 +55,8 @@ export interface RunOptions {
   maxVerifyFixRounds?: number
   /** 검증 실패 시 planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/음수/NaN → 0(비활성). */
   maxReplanRounds?: number
+  /** 독립 작업 최대 동시 실행 수(기본 1=순차). 1 이면 기존 순차 경로를 그대로 탄다(무회귀). */
+  maxConcurrency?: number
   /** 작업 LLM 호출 타임아웃(편집 에이전트는 길다). send 에 전달. */
   taskTimeoutMs?: number
   /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
@@ -62,6 +64,13 @@ export interface RunOptions {
   /** 실행 취소 신호. abort 시 진행 중 작업을 revert 하고 중단한다. */
   signal?: AbortSignal
   onEvent?: (e: OrchestratorEvent) => void
+  /**
+   * 병렬 모드(maxConcurrency > 1)에서 작업별 독립 편집 세션을 만드는 팩토리.
+   * 호출마다 implementer 와 동등한 새 독립 CLI 세션 인스턴스(자체 chain)를 반환한다.
+   * 미지정이거나 순차 모드(maxConcurrency === 1)면 단일 implementer 세션을 그대로 사용한다(무회귀).
+   * (#80 결함①: worktree 격리 시에도 단일 CLI chain 직렬화를 우회하는 핵심 배선)
+   */
+  makeEditSession?: () => import('../session/types').LlmSession
 }
 
 /**
@@ -175,14 +184,21 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const done = new Set<string>()
   const failed = new Set<string>()
 
-  /** 단일 작업 실행: 직접 편집→diff 교차리뷰 루프→위험게이트→keep. 결과를 done/failed 집합에 반영한다. */
-  const runTask = async (task: Task): Promise<void> => {
-    const ws = opts.workspace
-    // #1: 모든 작업은 워크스페이스를 편집하므로 항상 implementer 역할로 실행 세션을 해소한다.
-    // planner 가 role:"reviewer"(혹은 다른 비-implementer)를 붙여도 비편집 세션으로 오라우팅되지 않게 한다
-    // (task.role 은 표시용 라벨로만 보존된다).
-    const implementerId = resolveLlmForRole(assignments, 'implementer', 'implementer')
-    const implementer = implementerId ? sessions.get(implementerId) : undefined
+  /**
+   * 단일 작업 실행 핵심 로직: 직접 편집→diff 교차리뷰 루프→위험게이트→keep.
+   * 결과를 done/failed 집합에 반영하고, done 경로에서 keep 커밋 해시를 반환한다.
+   * Task 5(병렬 스케줄러)가 작업별 worktree·독립 세션을 주입할 수 있도록 ws·implementer 를 인자로 받는다.
+   * @param editRoot 편집 에이전트(implementer.send)의 cwd. 병렬 시 worktree 경로(wt.path), 순차 시 메인(opts.workspaceRoot).
+   *   (P1 #1) 이 값을 send({workspace})로 넘겨야 편집이 격리된 worktree 안에서 일어난다 — 메인을 쓰면 격리가 무력화된다.
+   * @returns done 경로: keep 커밋 해시(string). 실패·스킵·미승인·취소: undefined.
+   */
+  const runTaskIn = async (
+    task: Task,
+    ws: Workspace | undefined,
+    implementer: import('../session/types').LlmSession | undefined,
+    editRoot: string | undefined,
+  ): Promise<string | undefined> => {
+    // implementer 세션 미존재 가드 — 기존 failed 처리와 동일
     if (!implementer) {
       store.updateTask(task.id, { status: 'failed', output: '구현 역할에 배정된 LLM 없음' })
       emit({
@@ -191,7 +207,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       failed.add(task.id)
-      return
+      return undefined
     }
     // 직접 편집은 CLI 세션만 가능(API는 파일을 못 만짐).
     if (implementer.descriptor.kind !== 'cli' || !ws) {
@@ -205,8 +221,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       failed.add(task.id)
-      return
+      return undefined
     }
+    const implementerId = implementer.id
     store.updateTask(task.id, { status: 'running', assignedLlmId: implementerId })
     emit({ type: 'task.started', message: `작업 시작: ${task.title}`, data: { taskId: task.id } })
 
@@ -230,7 +247,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           buildImplementPrompt(goal, task.title, task.description, feedback || undefined),
           {
             fresh: true,
-            workspace: opts.workspaceRoot,
+            // (P1 #1) editRoot = 병렬이면 worktree(wt.path), 순차면 메인(opts.workspaceRoot).
+            // 편집이 격리된 worktree 안에서 일어나도록 메인이 아니라 이 경로를 cwd 로 쓴다.
+            workspace: editRoot,
             signal: opts.signal,
             timeoutMs: taskTimeoutMs,
             onChunk: (delta) =>
@@ -269,7 +288,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
               data: { taskId: task.id },
             })
             failed.add(task.id)
-            return
+            return undefined
           }
         }
 
@@ -312,10 +331,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           data: { taskId: task.id },
         })
         failed.add(task.id)
-        return
+        return undefined
       }
 
-      await ws.keep(`[${task.title}] by ${implementerId}`)
+      // done 경로: keep 커밋 해시를 캡처해 반환 — Task 5 병렬 통합(ws.integrate)에서 사용.
+      const keepHash = await ws.keep(`[${task.title}] by ${implementerId}`)
       store.updateTask(task.id, {
         status: 'done',
         output: `변경 ${diff.files.length}개 적용`,
@@ -327,6 +347,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       done.add(task.id)
+      return keepHash
     } catch (err) {
       // LLM 호출(네트워크/CLI) 실패를 작업 단위로 격리한다 — 한 작업 실패가 전체 실행을 중단시키지 않는다.
       // 부분 편집을 되돌린다. revert 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
@@ -340,7 +361,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           message: `${task.title}: 실행 취소됨${revertNote}`,
           data: { taskId: task.id },
         })
-        return
+        return undefined
       }
       const message = err instanceof Error ? err.message : String(err)
       store.updateTask(task.id, { status: 'failed', output: `실행 오류: ${message}${revertNote}` })
@@ -350,15 +371,204 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       failed.add(task.id)
+      return undefined
     }
   }
+
+  // 단일 워크스페이스·단일 implementer 로 기존과 동일하게 실행(무회귀 경로).
+  // #1: 모든 작업은 워크스페이스를 편집하므로 항상 implementer 역할로 실행 세션을 해소한다.
+  // planner 가 role:"reviewer"(혹은 다른 비-implementer)를 붙여도 비편집 세션으로 오라우팅되지 않게 한다
+  // (task.role 은 표시용 라벨로만 보존된다).
+  const seqImplementerId = resolveLlmForRole(assignments, 'implementer', 'implementer')
+  const seqImplementer = seqImplementerId ? sessions.get(seqImplementerId) : undefined
+  const runTask = (task: Task): Promise<string | undefined> =>
+    // 순차 경로: 편집 cwd 는 메인 워크스페이스(opts.workspaceRoot) — 무회귀.
+    runTaskIn(task, opts.workspace, seqImplementer, opts.workspaceRoot)
 
   // 위상 스케줄: 의존성이 모두 done 인 작업을 생성 순서대로 실행한다(결정론).
   // 의존 작업이 failed/skipped 면 해당 작업은 실행 없이 skipped 로 전파한다.
   const pending = tasks.map((t) => t.id)
+
+  // 의존 작업이 실패/스킵된 작업을 실행 없이 skipped 로 전파한다(순차·병렬 공용).
+  // @returns 전파를 1건 이상 수행했으면 true(진행 있음).
+  const propagateDepFailures = (): boolean => {
+    let progressed = false
+    for (let i = 0; i < pending.length; ) {
+      const task = byId.get(pending[i])
+      if (!task) {
+        pending.splice(i, 1)
+        continue
+      }
+      const deps = task.dependsOn ?? []
+      if (deps.some((d) => failed.has(d))) {
+        store.updateTask(task.id, { status: 'skipped', output: '의존 작업 실패로 건너뜀' })
+        emit({
+          type: 'task.skipped',
+          message: `${task.title}: 의존 작업 실패로 건너뜀`,
+          data: { taskId: task.id },
+        })
+        failed.add(task.id)
+        pending.splice(i, 1)
+        progressed = true
+        continue
+      }
+      i++
+    }
+    return progressed
+  }
+
+  // ── 병렬 sweep(maxConcurrency > 1) ──
+  // 매 라운드 실행가능(deps 모두 done) 집합을 concurrency 만큼 묶어 worktree 격리로 동시 실행한다.
+  // worktree 생성/정리·메인 통합은 순차(common gitdir·main HEAD 보호), 편집만 병렬.
+  // 결정론: 통합은 작업 생성 순서(병렬 완료 순서 아님)로 cherry-pick 한다.
+  // canParallel 이 false 면 이 블록을 통째로 건너뛰고 기존 순차 루프를 그대로 탄다(무회귀).
+  const concurrency = Math.max(1, Math.floor(opts.maxConcurrency ?? 1))
+  const canParallel =
+    concurrency > 1 &&
+    !!opts.workspace &&
+    !!opts.makeEditSession &&
+    typeof opts.workspace.addWorktree === 'function'
+  if (canParallel) {
+    const ws = opts.workspace as Workspace
+    const makeEditSession = opts.makeEditSession as () => import('../session/types').LlmSession
+    while (pending.length > 0 && !opts.signal?.aborted) {
+      // 1) 의존 실패 전파(기존 로직 재사용) 후, 실행가능 집합 수집.
+      propagateDepFailures()
+      if (pending.length === 0 || opts.signal?.aborted) break
+      const runnable = pending
+        .map((id) => byId.get(id))
+        .filter((t): t is Task => {
+          if (!t) return false
+          const deps = t.dependsOn ?? []
+          return !deps.some((d) => failed.has(d)) && deps.every((d) => done.has(d))
+        })
+      if (runnable.length === 0) break // 진행 불가(의존성 미해소·순환) → 잔여는 아래 cleanup 으로
+
+      const batch = runnable.slice(0, concurrency)
+      const base = await ws.checkpoint()
+      // 2) worktree 순차 생성(common gitdir 보호).
+      // (P2 #3) 생성 도중 addWorktree 가 throw(예: 스테일 .fleet-wt-* 잔존)하면, 그때까지 누적된
+      //   worktree 가 정리 섹션 도달 전 디스크에 잔존한다. try 로 감싸 누적분을 전부 정리하고,
+      //   실패한 작업은 failed 처리한 뒤 이번 배치를 건너뛴다(project.done 경로 보존).
+      const wts: { task: Task; wt: TaskWorktree }[] = []
+      let createFailed = false
+      try {
+        for (const task of batch) {
+          wts.push({ task, wt: await ws.addWorktree(task.id, base) })
+        }
+      } catch (err) {
+        createFailed = true
+        const message = err instanceof Error ? err.message : String(err)
+        // 이미 만든 worktree 를 전부 정리(누수 0). 정리 실패는 다음 작업 정리를 막지 않게 흡수.
+        for (const { task } of wts) {
+          await ws.removeWorktree(task.id).catch(() => {})
+          const idx = pending.indexOf(task.id)
+          if (idx >= 0) pending.splice(idx, 1)
+        }
+        // 정리한(생성 성공했던) 작업들은 아직 실행 안 됐으므로 pending 으로 되돌린다 — 다음 sweep 재시도.
+        for (const { task } of wts) pending.push(task.id)
+        // 생성에 실패한 작업(batch 에서 wts 에 안 들어간 첫 작업)을 failed 처리해 무한 재시도를 막는다.
+        const failedTask = batch.find((t) => !wts.some((w) => w.task.id === t.id))
+        if (failedTask) {
+          store.updateTask(failedTask.id, {
+            status: 'failed',
+            output: `worktree 생성 실패: ${message}`,
+          })
+          emit({
+            type: 'task.failed',
+            message: `${failedTask.title}: worktree 생성 실패 - ${message}`,
+            data: { taskId: failedTask.id },
+          })
+          failed.add(failedTask.id)
+          const idx = pending.indexOf(failedTask.id)
+          if (idx >= 0) pending.splice(idx, 1)
+        }
+      }
+      if (createFailed) continue // 이번 배치 통합/편집 스킵 — 다음 sweep 으로
+      // 3) 편집 병렬(작업별 독립 worktree·세션). 실패는 allSettled 로 격리.
+      //    각 fulfilled value = keep 해시(done) 또는 undefined(실패/스킵/미승인/취소).
+      const settled = await Promise.allSettled(
+        // (P1 #1) 편집 cwd = wt.path — 편집이 작업별 worktree 안에서 일어나 격리가 성립한다.
+        wts.map(({ task, wt }) => runTaskIn(task, wt, makeEditSession(), wt.path)),
+      )
+      // 4) 생성순 통합(결정론) + 정리(순차). 충돌·취소여도 worktree 는 반드시 정리한다.
+      for (let k = 0; k < wts.length; k++) {
+        const { task } = wts[k]
+        const r = settled[k]
+        // (P2 #5) runTaskIn 의 try/catch 밖(예: ws.checkpoint)에서 reject 하면 allSettled 가 rejected 다.
+        //   이 경우 task 가 running 인 채 남으므로 failed 처리한다(실패 이벤트 없이 영구 running 방지).
+        //   취소(abort) 중 reject 는 취소로 라벨한다(다른 abort 경로와 일관).
+        if (r.status === 'rejected') {
+          if (!done.has(task.id) && !failed.has(task.id)) {
+            if (opts.signal?.aborted) {
+              store.updateTask(task.id, { status: 'skipped', output: '실행 취소됨' })
+              emit({
+                type: 'task.skipped',
+                message: `${task.title}: 실행 취소됨`,
+                data: { taskId: task.id },
+              })
+            } else {
+              const message = r.reason instanceof Error ? r.reason.message : String(r.reason)
+              store.updateTask(task.id, { status: 'failed', output: `실행 오류: ${message}` })
+              emit({
+                type: 'task.failed',
+                message: `${task.title}: 실행 오류 - ${message}`,
+                data: { taskId: task.id },
+              })
+              failed.add(task.id)
+            }
+          }
+          // 정리 실패를 흡수 — P2#3 생성-실패 catch 블록과 parity. sweep/배치 흐름을 끊지 않는다.
+          await ws.removeWorktree(task.id).catch(() => {})
+          const idxR = pending.indexOf(task.id)
+          if (idxR >= 0) pending.splice(idxR, 1)
+          continue
+        }
+        const keepHash = r.value
+        // (P1 #2) 변경 없는(원래-빈) worktree 는 통합을 스킵한다 — 구버전 git 에서 빈 cherry-pick 이
+        //   `unknown option`/empty-stop 으로 깨지지 않도록 사전 방어. runTaskIn 이 store 에 기록한
+        //   changedFiles 로 판정한다(변경 0 → 통합 불필요, 작업은 이미 done 으로 정직).
+        const changed = store.getTask(task.id)?.changedFiles ?? []
+        if (done.has(task.id) && keepHash && opts.signal?.aborted) {
+          // (P2 #4) abort 로 통합을 스킵한다. runTaskIn 이 이미 done 으로 갱신했지만 cherry-pick 은
+          //   수행되지 않았으므로(main 미반영) done 을 철회하고 skipped 로 다운그레이드한다(오해 방지).
+          done.delete(task.id)
+          store.updateTask(task.id, { status: 'skipped', output: '실행 취소됨(통합 전)' })
+          emit({
+            type: 'task.skipped',
+            message: `${task.title}: 실행 취소됨(통합 전)`,
+            data: { taskId: task.id },
+          })
+        } else if (done.has(task.id) && keepHash && changed.length > 0) {
+          // done 표시 + keep 해시 보유 + 변경 있음 + abort 아님 → 통합.
+          const res = await ws.integrate(keepHash)
+          if (!res.ok) {
+            // 통합 충돌 → done 철회·failed 전환(결정론적 작업 상태 계약).
+            done.delete(task.id)
+            failed.add(task.id)
+            store.updateTask(task.id, {
+              status: 'failed',
+              output: `통합 충돌: ${res.conflict ?? ''}`,
+            })
+            emit({
+              type: 'task.failed',
+              message: `${task.title}: 통합 충돌`,
+              data: { taskId: task.id },
+            })
+          }
+        }
+        // 정리(순차) — 충돌·취소·실패여도 worktree 잔존 0 보장. 정리 실패는 흡수(P2#3 parity).
+        await ws.removeWorktree(task.id).catch(() => {})
+        const idx = pending.indexOf(task.id)
+        if (idx >= 0) pending.splice(idx, 1)
+      }
+    }
+    // abort/잔여(순환 의존 등)는 아래 공용 cleanup 으로 흘려보낸다.
+  }
+
   let progressed = true
   let aborted = false
-  while (pending.length > 0 && progressed && !aborted) {
+  while (!canParallel && pending.length > 0 && progressed && !aborted) {
     progressed = false
     for (let i = 0; i < pending.length; ) {
       const task = byId.get(pending[i])

@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentRole, ChatStreamEvent, OrchestratorEvent } from '../../shared/types'
-import { MAX_REPLAN_ROUNDS } from '../../shared/types'
+import { MAX_REPLAN_ROUNDS, MAX_CONCURRENCY } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
-import { createFleetEngine } from './engine'
+import { createFleetEngine, clampConcurrency } from './engine'
 import type { McpHost } from './mcp/types'
 import type { HttpClient } from './providers/types'
 import { createSessionManager } from './session/manager'
@@ -655,6 +655,28 @@ describe('FleetEngine', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // ④ maxConcurrency 가 IPC→engine→runProject 로 배선됐는지 검증.
+  // engine 경계에서 정수화·[1,MAX_CONCURRENCY] clamp 후 orchestrator 에 전달.
+  // 순수함수 clampConcurrency 로 단위 테스트한다(engine 통합 하네스 대신).
+  describe('clampConcurrency', () => {
+    it.each([
+      ['over-range → MAX_CONCURRENCY', 7, MAX_CONCURRENCY],
+      ['under-range → 1', 0, 1],
+      ['정수 범위 → floor', 2.9, 2],
+      ['미지정 → 1(기본)', undefined, 1],
+      ['음수 → 1(하한)', -5, 1],
+      ['정상 범위: 1', 1, 1],
+      ['정상 범위: 2', 2, 2],
+      ['정상 범위: 3', 3, 3],
+      ['정상 범위: 4', 4, 4],
+      ['NaN → 1', NaN, 1],
+      ['Infinity → 1', Infinity, 1],
+      ['-Infinity → 1', -Infinity, 1],
+    ])('%s', (_desc: string, input: number | undefined, expected: number) => {
+      expect(clampConcurrency(input)).toBe(expected)
+    })
   })
 
   it('setSessionCapabilities stores capabilities on the live descriptor', () => {

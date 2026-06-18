@@ -3,7 +3,7 @@ import type { LlmConnectionKind, OrchestratorEvent } from '../../../shared/types
 import { createSessionManager } from '../session/manager'
 import type { LlmSession } from '../session/types'
 import { createMemoryStore } from '../store/memory'
-import type { DiffResult, Workspace } from '../workspace/git'
+import type { DiffResult, TaskWorktree, Workspace } from '../workspace/git'
 import { runProject } from './orchestrator'
 
 function fakeSession(
@@ -49,8 +49,108 @@ function fakeWorkspace(
     async revert() {
       ws.reverts++
     },
+    // Task 2 신규 API — 오케스트레이터 테스트는 worktree 경로를 아직 사용하지 않으므로 stub.
+    async addWorktree() {
+      throw new Error('addWorktree stub — not used in orchestrator tests')
+    },
+    async integrate() {
+      return { ok: true }
+    },
+    async removeWorktree() {},
   }
   return ws
+}
+
+/**
+ * 병렬 sweep 검증용 가짜 워크스페이스.
+ * - addWorktree(taskId, base): 작업별 가짜 worktree 를 반환한다. 그 worktree 의 keep()은
+ *   keep 메시지에서 작업 제목을 파싱해 `keep-<title>` 형태의 결정적 해시를 돌려준다
+ *   (생성 순서·통합 순서 단언이 제목 기반으로 안정적이도록).
+ * - integrate(keepHash): onIntegrate 콜백에 통합 순서를 기록한다. conflictOn 과 일치하면 충돌 반환.
+ * - removeWorktree: 정리 횟수를 센다.
+ * keepCommitsInCreationOrder 는 worktree 생성(=addWorktree 호출) 순서대로의 keep 해시 목록.
+ */
+function parallelFakeWorkspace(
+  opts: {
+    onIntegrate?: (keepHash: string) => void
+    conflictOn?: string
+    /** 변경 없음(collectDiff 가 빈 files)을 시뮬레이션한다 — P1 #2 빈 worktree 통합 스킵 검증용. */
+    emptyDiff?: boolean
+  } = {},
+): Workspace & {
+  worktreesCreated: number
+  worktreesRemoved: number
+  removed: string[]
+  keepCommitsInCreationOrder: string[]
+  integrated: string[]
+} {
+  // keep 메시지 `[<title>] by <impl>` 에서 제목을 뽑아 결정적 해시로 만든다.
+  const hashFor = (message: string): string => {
+    const m = /^\[(.+?)\]/.exec(message)
+    return `keep-${m ? m[1] : message}`
+  }
+  const state = {
+    worktreesCreated: 0,
+    worktreesRemoved: 0,
+    removed: [] as string[],
+    keepCommitsInCreationOrder: [] as string[],
+    integrated: [] as string[],
+    async ensureRepo() {},
+    async checkpoint() {
+      return 'base-main'
+    },
+    async collectDiff(): Promise<DiffResult> {
+      return { files: ['src/x.ts'], patch: '+x', truncated: false }
+    },
+    async keep(message: string) {
+      return hashFor(message)
+    },
+    async revert() {},
+    async addWorktree(taskId: string, _base: string): Promise<TaskWorktree> {
+      state.worktreesCreated++
+      // 작업별 worktree: keep()이 제목 기반 결정적 해시를 반환하고, 생성 순서대로 기록한다.
+      const wt: TaskWorktree = {
+        path: `/wt/${taskId}`,
+        async ensureRepo() {},
+        async checkpoint() {
+          return `base-${taskId}`
+        },
+        async collectDiff(): Promise<DiffResult> {
+          // emptyDiff 면 변경 없음(원래-빈 worktree) — P1 #2: 호출자가 integrate 를 스킵해야 한다.
+          if (opts.emptyDiff) return { files: [], patch: '', truncated: false }
+          return { files: [`src/${taskId}.ts`], patch: '+x', truncated: false }
+        },
+        async keep(message: string) {
+          const hash = hashFor(message)
+          state.keepCommitsInCreationOrder.push(hash)
+          return hash
+        },
+        async revert() {},
+        async addWorktree() {
+          throw new Error('중첩 addWorktree 미지원')
+        },
+        async integrate() {
+          return { ok: true }
+        },
+        async removeWorktree() {},
+      }
+      return wt
+    },
+    async integrate(keepHash: string) {
+      state.integrated.push(keepHash)
+      state.onIntegrate?.(keepHash)
+      if (opts.conflictOn && keepHash === opts.conflictOn) {
+        return { ok: false, conflict: `모의 충돌: ${keepHash}` }
+      }
+      return { ok: true }
+    },
+    async removeWorktree(taskId: string) {
+      state.worktreesRemoved++
+      state.removed.push(taskId)
+    },
+    onIntegrate: opts.onIntegrate,
+  }
+  return state
 }
 
 describe('runProject', () => {
@@ -333,6 +433,13 @@ describe('runProject', () => {
         return 'commit'
       },
       async revert() {},
+      async addWorktree() {
+        throw new Error('addWorktree stub')
+      },
+      async integrate() {
+        return { ok: true }
+      },
+      async removeWorktree() {},
     }
     await expect(
       runProject('goal', {
@@ -1739,6 +1846,13 @@ describe('runProject', () => {
       async revert() {
         throw new Error('git reset 실패')
       },
+      async addWorktree() {
+        throw new Error('addWorktree stub')
+      },
+      async integrate() {
+        return { ok: true }
+      },
+      async removeWorktree() {},
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
@@ -1795,6 +1909,13 @@ describe('runProject', () => {
       async revert() {
         throw new Error('git clean 실패')
       },
+      async addWorktree() {
+        throw new Error('addWorktree stub')
+      },
+      async integrate() {
+        return { ok: true }
+      },
+      async removeWorktree() {},
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
@@ -1928,5 +2049,572 @@ describe('runProject', () => {
     const done = events.find((e) => e.type === 'project.done')
     expect(done?.message).toContain('완료')
     expect(store.getProject(result.projectId)?.status).toBe('done')
+  })
+
+  // ── Task 3: makeEditSession 팩토리 ──
+
+  it('RunOptions.makeEditSession 타입이 존재하고 타입 체크를 통과한다', () => {
+    // makeEditSession 이 RunOptions 에 선택적 필드로 존재함을 컴파일 타임에 검증한다.
+    // 런타임 단언 없음 — 이 테스트가 통과한다는 것 자체가 타입 추가의 증거.
+    let made = 0
+    const factory: NonNullable<Parameters<typeof runProject>[1]['makeEditSession']> = () => {
+      made++
+      return fakeSession(`impl-${made}`, () => '구현', 'cli')
+    }
+    // 팩토리가 올바른 LlmSession 인터페이스를 만족하는지 타입 추론으로 검증
+    const session = factory()
+    expect(session.id).toMatch(/^impl-/)
+    expect(session.descriptor.kind).toBe('cli')
+  })
+
+  it('makeEditSession 팩토리는 호출마다 서로 다른 독립 인스턴스를 반환한다', () => {
+    // 편집 에이전트가 stateless 라도, 팩토리가 항상 새 독립 chain 을 가진 인스턴스를 만든다는 것을 검증한다.
+    // engine 이 구성할 팩토리와 동일한 조건(호출마다 새 fakeSession)을 단위로 검증한다.
+    let made = 0
+    const makeEditSession = () => {
+      made++
+      return fakeSession(`impl-${made}`, () => '구현', 'cli')
+    }
+
+    const s1 = makeEditSession()
+    const s2 = makeEditSession()
+
+    // 팩토리는 호출마다 서로 다른 인스턴스를 반환해야 한다(독립성 핵심 계약).
+    expect(s1).not.toBe(s2)
+    // 각 인스턴스는 고유한 id 를 갖는다(같은 chain 을 공유하지 않는다).
+    expect(s1.id).not.toBe(s2.id)
+    expect(made).toBe(2)
+  })
+
+  it('makeEditSession 이 RunOptions 에 전달될 때 타입 오류 없이 runProject 에 넘길 수 있다', async () => {
+    // makeEditSession 을 실제로 RunOptions 에 넣어 runProject 를 호출해도 타입·런타임 오류 없음 검증.
+    // 현재 orchestrator 는 makeEditSession 을 사용하지 않으므로(Task 5 배선 전), 인수 수락 여부만 확인.
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    let factoryCalled = 0
+    // runProject 에 makeEditSession 을 넘겨도 타입 오류 없이 실행이 완료돼야 한다.
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      makeEditSession: () => {
+        factoryCalled++
+        return fakeSession(`edit-${factoryCalled}`, () => '구현', 'cli')
+      },
+    })
+
+    // maxConcurrency 미지정(기본 1=순차 모드)이므로 팩토리는 호출되지 않아야 한다(순차 폴백).
+    // Task 5(병렬 스케줄러)가 배선되면 maxConcurrency > 1 일 때 factoryCalled > 0 이 된다.
+    expect(factoryCalled).toBe(0) // 무회귀: 기본 순차 모드에서 팩토리 미호출 검증
+    expect(result.tasks[0].status).toBe('done')
+  })
+
+  // Task 4: runTaskIn keep 해시 반환 검증 ─────────────────────────────────────────────────
+  // runTaskIn 은 runProject 내부 클로저라 직접 호출 불가. ws.keep spy 를 통해 반환값을
+  // 가로채, done 경로에서 runTaskIn 이 keep 반환 해시를 올바르게 수신·캡처했는지 간접 검증.
+  it('Task4: done 경로에서 ws.keep 이 반환한 해시가 정상 캡처된다(commit-N 형식)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"T1","description":"d1"},{"title":"T2","description":"d2"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // keep 호출마다 반환 해시를 기록하는 spy workspace
+    const keepHashes: string[] = []
+    let keepCallCount = 0
+    const baseWs = fakeWorkspace()
+    const spyWs: typeof baseWs = {
+      ...baseWs,
+      async keep(message: string) {
+        const hash = await baseWs.keep(message)
+        keepHashes.push(hash)
+        keepCallCount++
+        return hash
+      },
+    }
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: spyWs,
+      workspaceRoot: '/ws',
+    })
+
+    // 두 작업 모두 done — keep 이 두 번 호출돼야 한다
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    expect(keepCallCount).toBe(2)
+    // keep 반환 해시가 commit-N 형식인지 확인 — runTaskIn 이 ws.keep 반환값을 받아 리턴하는 경로 검증
+    expect(keepHashes).toEqual(['commit-1', 'commit-2'])
+  })
+
+  // ── Task 5: 병렬 sweep 스케줄러 ──
+
+  /** 두 작업이 동시에 편집에 진입함을 관측하는 배리어형 편집 세션 팩토리. */
+  function makeBarrierEditFactory(expected: number): {
+    factory: () => LlmSession
+    maxConcurrentEdits: () => number
+  } {
+    let inFlight = 0
+    let maxInFlight = 0
+    let resolveAll: (() => void) | undefined
+    const allEntered = new Promise<void>((r) => {
+      resolveAll = r
+    })
+    let n = 0
+    const factory = (): LlmSession => {
+      const id = `impl-${++n}`
+      return {
+        id,
+        descriptor: { id, kind: 'cli', displayName: id, ref: id, model: '' },
+        async send() {
+          inFlight++
+          maxInFlight = Math.max(maxInFlight, inFlight)
+          // 모든 작업이 진입하면 배리어를 푼다 — 직렬 실행이면 첫 진입에서 영영 안 풀린다.
+          if (inFlight >= expected) resolveAll?.()
+          await allEntered
+          inFlight--
+          return '구현'
+        },
+        async dispose() {},
+      }
+    }
+    return { factory, maxConcurrentEdits: () => maxInFlight }
+  }
+
+  it('runs independent tasks in parallel and integrates in creation order (maxConcurrency=2)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    // 의존성 없는 A·B — 병렬 실행 가능.
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    // 순차 implementer 도 등록(무회귀 분기 가드는 makeEditSession 으로 병렬 진입).
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const order: string[] = []
+    const ws = parallelFakeWorkspace({ onIntegrate: (c) => order.push(c) })
+    const { factory, maxConcurrentEdits } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    expect(maxConcurrentEdits()).toBe(2) // 두 편집이 실제로 동시 진입(직렬이면 1)
+    expect(ws.worktreesCreated).toBe(2)
+    expect(ws.worktreesRemoved).toBe(2) // 정리 누락 없음
+    // 통합은 생성 순서(병렬 완료 순서 아님) — 결정론.
+    expect(order).toEqual(ws.keepCommitsInCreationOrder)
+    expect(order).toEqual(['keep-A', 'keep-B'])
+  })
+
+  it('isolates a conflicting task as failed without poisoning others (maxConcurrency=2)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // A 의 keep 해시(keep-A) 통합이 충돌한다.
+    const ws = parallelFakeWorkspace({ conflictOn: 'keep-A' })
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+    })
+
+    const byTitle = Object.fromEntries(result.tasks.map((t) => [t.title, t.status]))
+    expect(byTitle.A).toBe('failed') // 통합 충돌 → failed
+    expect(byTitle.B).toBe('done') // 다른 작업은 오염되지 않음
+    expect(ws.worktreesRemoved).toBe(2) // 충돌이어도 둘 다 정리
+    expect(ws.worktreesCreated).toBe(2)
+  })
+
+  it('reverts and cleans all in-flight worktrees on abort (maxConcurrency=2)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const controller = new AbortController()
+    const ws = parallelFakeWorkspace()
+    // 첫 편집(A) 진입 시 취소하고 throw — in-flight 병렬 작업의 abort 시뮬레이션.
+    let made = 0
+    const makeEditSession = (): LlmSession => {
+      const id = `impl-${++made}`
+      const isA = made === 1
+      return {
+        id,
+        descriptor: { id, kind: 'cli', displayName: id, ref: id, model: '' },
+        async send() {
+          if (isA) {
+            controller.abort()
+            throw new Error('aborted mid-edit')
+          }
+          return '구현'
+        },
+        async dispose() {},
+      }
+    }
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      signal: controller.signal,
+      makeEditSession,
+    })
+
+    expect(store.getProject(result.projectId)?.status).toBe('failed') // 취소=failed 종료
+    // 생성한 worktree 는 전부 정리됐다 — 잔존 worktree 0.
+    expect(ws.worktreesRemoved).toBe(ws.worktreesCreated)
+    expect(ws.worktreesCreated).toBeGreaterThan(0)
+    // abort 시 main HEAD 잔존 커밋 0 — integrate 호출 없어야 함.
+    expect(ws.integrated).toEqual([])
+  })
+
+  // P1 #1: 병렬 편집은 메인 checkout(opts.workspaceRoot)이 아니라 작업별 worktree(wt.path)를 cwd 로 써야 한다.
+  // 이를 어기면 모든 병렬 편집이 메인을 수정해 worktree 는 빈 diff, integrate dirty 가드가 실패 → 격리 무력화.
+  it('P1#1: 병렬 편집 send 의 workspace cwd 는 메인이 아니라 작업별 worktree 경로다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 각 편집 send 가 받은 workspace(cwd)를 기록하는 팩토리.
+    const editWorkspaces: (string | undefined)[] = []
+    let made = 0
+    const makeEditSession = (): LlmSession => {
+      const id = `impl-${++made}`
+      return {
+        id,
+        descriptor: { id, kind: 'cli', displayName: id, ref: id, model: '' },
+        async send(_prompt, opts) {
+          editWorkspaces.push(opts?.workspace)
+          return '구현'
+        },
+        async dispose() {},
+      }
+    }
+    const ws = parallelFakeWorkspace()
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession,
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    // 두 편집 모두 worktree 경로(/wt/<taskId>)를 cwd 로 받아야 한다 — 메인('/ws')이면 격리 무력화.
+    expect(editWorkspaces).toHaveLength(2)
+    expect(editWorkspaces.every((w) => w?.startsWith('/wt/'))).toBe(true)
+    expect(editWorkspaces).not.toContain('/ws') // 메인 checkout 으로 새지 않음
+  })
+
+  // P1#1(무회귀): 순차 모드는 여전히 메인 워크스페이스 경로(opts.workspaceRoot)를 편집 cwd 로 쓴다.
+  it('P1#1(순차): 순차 편집 send 의 workspace cwd 는 메인 워크스페이스 경로(workspaceRoot)다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const editWorkspaces: (string | undefined)[] = []
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_prompt, opts) {
+        editWorkspaces.push(opts?.workspace)
+        return '구현'
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    expect(editWorkspaces).toEqual(['/ws']) // 순차 경로 무회귀: 메인 워크스페이스 cwd 유지
+  })
+
+  // P1 #2: 변경 없는(원래-빈) worktree 는 integrate 를 호출하지 않는다.
+  // (구버전 git 에서 빈 cherry-pick 이 깨지지 않도록 호출자가 사전 스킵 — 작업은 여전히 done.)
+  it('P1#2: 변경 없는 worktree 는 integrate 를 호출하지 않고 done 으로 둔다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const ws = parallelFakeWorkspace({ emptyDiff: true })
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+    })
+
+    // 변경이 없어도 작업은 정상 완료(done) — 빈 worktree 는 실패가 아니다.
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    expect(ws.integrated).toEqual([]) // 빈 worktree → integrate 미호출(구버전 빈 cherry-pick 방어)
+    expect(ws.worktreesRemoved).toBe(2) // 그래도 정리는 한다
+  })
+
+  // P2 #3: worktree 생성 루프 중간에 addWorktree 가 throw 하면, 그 전에 만든 worktree 가
+  // 정리 섹션 도달 전 디스크에 잔존한다. 누적된 worktree 를 전부 정리하고 진행해야 한다.
+  it('P2#3: addWorktree 가 중간에 실패하면 그때까지 만든 worktree 를 전부 정리한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const base = parallelFakeWorkspace()
+    let addCalls = 0
+    const removed: string[] = []
+    // 첫 addWorktree 는 성공, 둘째는 throw(스테일 .fleet-wt-* 잔존 시뮬레이션).
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        addCalls++
+        if (addCalls === 2) throw new Error('스테일 worktree 잔존: .fleet-wt-B')
+        return base.addWorktree(taskId, b)
+      },
+      async removeWorktree(taskId: string) {
+        removed.push(taskId)
+        return base.removeWorktree(taskId)
+      },
+    }
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: () => fakeSession('edit', () => '구현', 'cli'),
+    })
+
+    // 생성-실패 배치에서 A 1건 정리 + 재시도 sweep 에서 A 성공 후 정리 1건 = 총 2건.
+    // 무관한 정리가 통과 조건이 되던 >=1 대신, 실제 생성+정리 횟수와 일치하는 정확한 값을 단언한다.
+    expect(removed.length).toBe(2)
+    expect(store.getProject(result.projectId)).toBeDefined()
+    // 생성 실패로 배치가 진행 못 하면 무한 루프가 아니라 종료해야 한다(잔여 작업은 failed/skipped).
+    expect(result.tasks.length).toBe(2)
+    // 모든 작업이 종결 상태(running 잔존 0).
+    expect(result.tasks.every((t) => t.status !== 'running')).toBe(true)
+  })
+
+  // P2 #4: abort 가 통합을 스킵해도 runTaskIn 이 이미 task 를 done 으로 갱신했다.
+  // cherry-pick 안 됐는데 done 보고는 오해 — skipped 로 다운그레이드해야 한다.
+  it('P2#4: abort 로 통합이 스킵된 작업은 done 이 아니라 skipped 다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const controller = new AbortController()
+    const ws = parallelFakeWorkspace()
+    // 두 편집 모두 done 까지 마친 뒤, 통합 직전에 abort 를 건다.
+    // B 의 편집 send 가 끝나는 시점에 abort → 통합 루프는 둘 다 스킵해야 한다.
+    let made = 0
+    const makeEditSession = (): LlmSession => {
+      const id = `impl-${++made}`
+      const isLast = made === 2
+      return {
+        id,
+        descriptor: { id, kind: 'cli', displayName: id, ref: id, model: '' },
+        async send() {
+          if (isLast) controller.abort() // 둘 다 편집 완료 직후 취소
+          return '구현'
+        },
+        async dispose() {},
+      }
+    }
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      signal: controller.signal,
+      makeEditSession,
+    })
+
+    // abort 로 통합이 스킵됐으므로 어떤 작업도 done 으로 남으면 안 된다(main 미반영을 정직 반영).
+    expect(result.tasks.some((t) => t.status === 'done')).toBe(false)
+    expect(result.tasks.every((t) => t.status === 'skipped')).toBe(true)
+    expect(ws.integrated).toEqual([]) // 통합 미수행
+    expect(ws.worktreesRemoved).toBe(ws.worktreesCreated) // 정리는 완료
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  // P2 #5: runTaskIn 의 try/catch 밖(예: ws.checkpoint)에서 reject 하면 allSettled 결과가
+  // rejected 인데, 현재는 undefined(keepHash 없음)로만 처리돼 task 가 running 인 채 pending 에서 제거된다.
+  it('P2#5: 편집 전(checkpoint) reject 한 작업은 running 잔존이 아니라 failed 다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const baseWs = parallelFakeWorkspace()
+    // 첫 worktree 의 checkpoint() 가 reject — runTaskIn try 진입 전이라 try/catch 가 못 잡는다.
+    let addCalls = 0
+    const ws: typeof baseWs = {
+      ...baseWs,
+      async addWorktree(taskId: string, b: string) {
+        addCalls++
+        const wt = await baseWs.addWorktree(taskId, b)
+        if (addCalls === 1) {
+          // 첫 작업의 worktree checkpoint 가 try 밖에서 throw → allSettled rejected
+          return Object.assign(wt, {
+            async checkpoint() {
+              throw new Error('worktree checkpoint 실패(try 밖)')
+            },
+          })
+        }
+        return wt
+      },
+    }
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: () => fakeSession('edit', () => '구현', 'cli'),
+      onEvent: (e) => events.push(e),
+    })
+
+    // 어떤 작업도 running 으로 영구 잔존하면 안 된다.
+    expect(result.tasks.every((t) => t.status !== 'running')).toBe(true)
+    // checkpoint 가 reject 한 작업은 failed 로 종결되고 task.failed 가 방출돼야 한다.
+    const failedTask = result.tasks.find((t) => t.status === 'failed')
+    expect(failedTask).toBeDefined()
+    expect(events.some((e) => e.type === 'task.failed')).toBe(true)
+    // 그래도 worktree 는 정리된다(잔존 0).
+    expect(ws.worktreesRemoved).toBe(ws.worktreesCreated)
   })
 })

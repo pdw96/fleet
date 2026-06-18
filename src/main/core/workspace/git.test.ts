@@ -205,6 +205,157 @@ describe('createWorkspace diff/keep/revert', () => {
   })
 })
 
+describe('createWorkspace.addWorktree', () => {
+  it('creates a detached worktree at a sanitized path from base', async () => {
+    const g = fakeGit() // 모든 명령 code:0
+    const ws = createWorkspace('/ws', g.runner)
+    const wt = await ws.addWorktree('task/abc 1', 'base123')
+    const cmds = g.calls.map((c) => c.join(' '))
+    // --detach + base + sanitize(특수문자→_)
+    expect(cmds.some((c) => c.includes('worktree add --detach') && c.includes('base123'))).toBe(
+      true,
+    )
+    expect(cmds.some((c) => /worktree add --detach .*task_abc_1/.test(c))).toBe(true)
+    expect(wt.path).toMatch(/task_abc_1/)
+  })
+})
+
+describe('createWorkspace.integrate', () => {
+  it('cherry-picks a keep commit onto main with Fleet identity and --allow-empty (no --empty=drop)', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' } // main clean
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const r = await ws.integrate('keep1')
+    const cmds = g.calls.map((c) => c.join(' '))
+    expect(r.ok).toBe(true)
+    // P1 #2: --allow-empty(구버전 호환)만 유지하고 --empty=drop(2.45+ 전용)은 제거한다.
+    expect(
+      cmds.some(
+        (c) =>
+          c.includes('user.name=Fleet') &&
+          c.includes('cherry-pick') &&
+          c.includes('--allow-empty') &&
+          c.includes('keep1'),
+      ),
+    ).toBe(true)
+    expect(cmds.some((c) => c.includes('--empty'))).toBe(false) // 구버전(2.43/2.44) 호환
+  })
+
+  it('aborts and reports conflict when cherry-pick has a real CONFLICT', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
+      if (args.includes('cherry-pick') && args.includes('keepX'))
+        return { code: 1, stdout: '', stderr: 'CONFLICT (content): merge conflict in src/x.ts' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const r = await ws.integrate('keepX')
+    const cmds = g.calls.map((c) => c.join(' '))
+    expect(r.ok).toBe(false)
+    expect(r.conflict).toContain('CONFLICT')
+    expect(cmds.some((c) => c.includes('cherry-pick --abort'))).toBe(true)
+    expect(cmds.some((c) => c.includes('cherry-pick --skip'))).toBe(false) // CONFLICT 는 skip 아님
+  })
+
+  // P1 #2: 중복(두 작업이 같은 변경)으로 cherry-pick 이 빈 결과가 되면 구버전 git 은
+  // "previous cherry-pick is now empty" / "nothing to commit" 로 stop+에러를 낸다.
+  // 이를 CONFLICT 와 구분해 --skip 후 ok:true(이미 main 에 반영됨)로 처리해야 한다.
+  it('treats an empty/duplicate cherry-pick as success via --skip (not a conflict)', async () => {
+    const g = fakeGit()
+    let skipped = false
+    g.setReply((args) => {
+      if (args[0] === 'status') return { code: 0, stdout: '', stderr: '' }
+      if (args.includes('cherry-pick') && args.includes('--skip')) {
+        skipped = true
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      if (args.includes('cherry-pick') && args.includes('dupKeep'))
+        return {
+          code: 1,
+          stdout: '',
+          stderr:
+            'The previous cherry-pick is now empty, possibly due to conflict resolution.\nnothing to commit, working tree clean',
+        }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const r = await ws.integrate('dupKeep')
+    const cmds = g.calls.map((c) => c.join(' '))
+    expect(r.ok).toBe(true) // 중복은 이미 main 에 반영된 것 → 성공
+    expect(skipped).toBe(true)
+    expect(cmds.some((c) => c.includes('cherry-pick --skip'))).toBe(true)
+    expect(cmds.some((c) => c.includes('cherry-pick --abort'))).toBe(false) // abort 아님
+  })
+
+  it('refuses to integrate when main worktree is dirty', async () => {
+    const g = fakeGit()
+    g.setReply((args) => {
+      if (args[0] === 'status') return { code: 0, stdout: ' M src/x.ts', stderr: '' } // dirty
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const r = await ws.integrate('keep1')
+    expect(r.ok).toBe(false)
+    expect(r.conflict).toMatch(/dirty|미정리/)
+  })
+})
+
+describe('createWorkspace.removeWorktree', () => {
+  it('removes a worktree with --force', async () => {
+    const g = fakeGit()
+    const ws = createWorkspace('/ws', g.runner)
+    await ws.removeWorktree('t1')
+    expect(
+      g.calls.map((c) => c.join(' ')).some((c) => /worktree remove --force .*t1/.test(c)),
+    ).toBe(true)
+  })
+
+  it('resolves the lock path via --git-path for a linked worktree', async () => {
+    // 결함 ②: linked worktree 의 .git 은 gitdir 파일 → 락은 <main>/.git/worktrees/<id>/index.lock.
+    // ok() 의 stale-lock 제거가 rev-parse --git-path index.lock 으로 worktree 락을 동적으로 해소해야 한다.
+    //
+    // 시나리오: checkpoint()→rev-parse HEAD 의 첫 시도가 LOCK_RE 매치 에러를 반환.
+    // ok() 는 재시도(attempt=1)에 진입하고 attempt>=1 이므로 lockPath()를 호출한다.
+    // lockPath() 는 rev-parse --git-path index.lock 을 실행 → lockProbed=true.
+    // 두 번째 rev-parse HEAD 시도는 성공(code:0) → ok() 가 정상 반환.
+    const g = fakeGit()
+    let lockProbed = false
+    // addWorktree 내부의 worktree add 호출 횟수를 추적해 첫 rev-parse HEAD 시도를 구분한다
+    let revParseHeadCalls = 0
+    g.setReply((args) => {
+      // lockPath() 호출: rev-parse --git-path index.lock → 호출 여부 기록 + 유효 경로 반환
+      if (args[0] === 'rev-parse' && args.includes('--git-path')) {
+        lockProbed = true
+        return { code: 0, stdout: '/ws/../.git/worktrees/t1/index.lock', stderr: '' }
+      }
+      // checkpoint() 내부의 rev-parse HEAD: 첫 호출만 LOCK_RE 에러, 이후는 성공
+      if (args[0] === 'rev-parse' && args.includes('HEAD')) {
+        revParseHeadCalls++
+        if (revParseHeadCalls === 1) {
+          // LOCK_RE = /index\.lock|Another git process/i 에 매치 → ok() 가 재시도 경로 진입
+          return {
+            code: 128,
+            stdout: '',
+            stderr: "fatal: Unable to create '/ws/.git/index.lock': File exists.",
+          }
+        }
+        return { code: 0, stdout: 'deadbeef', stderr: '' }
+      }
+      // worktree add 등 나머지 명령은 모두 성공
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    const ws = createWorkspace('/ws', g.runner)
+    const wt = await ws.addWorktree('t1', 'base')
+    await wt.checkpoint()
+    // lockPath()가 실제로 호출됐음을 단언 — || true 없이 회귀 방지력 보장
+    expect(lockProbed).toBe(true)
+  })
+})
+
 describe('createWorkspace index.lock 경합 재시도', () => {
   it('retries a git op that fails with an index.lock conflict until it succeeds', async () => {
     const g = fakeGit()
