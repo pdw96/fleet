@@ -40,6 +40,14 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
   })
 }
 
+// 마운트 비동기 하이드레이션(listProjects·getRunActivity·getWorkspace 등)이 act() 안에서 정착하도록 flush한다.
+// React 19 의 엄격한 act 환경에서 마운트-후 비동기 setState 가 act() 밖이라 뜨던 경고를 제거(동작 무변경).
+async function renderSettled(ui: Parameters<typeof render>[0]) {
+  const result = render(ui)
+  await act(async () => {})
+  return result
+}
+
 const SESSION: LlmDescriptor = { id: 'llm-1', kind: 'cli', displayName: 'Claude', ref: 'claude' }
 const P1: Project = {
   id: 'p1',
@@ -77,7 +85,7 @@ afterEach(() => {
 describe('ProjectPanel', () => {
   it('shows the workspace-inactive hint and disables run without sessions', async () => {
     mockFleet()
-    render(<ProjectPanel sessions={[]} />)
+    await renderSettled(<ProjectPanel sessions={[]} />)
     expect(await screen.findByText(/워크스페이스 미설정/)).toBeTruthy()
     const runBtn = screen.getByRole('button', { name: '오케스트레이션 실행' }) as HTMLButtonElement
     expect(runBtn.disabled).toBe(true)
@@ -85,13 +93,13 @@ describe('ProjectPanel', () => {
 
   it('shows the active workspace path when one is set', async () => {
     mockFleet({ getWorkspace: vi.fn().mockResolvedValue('/tmp/ws') })
-    render(<ProjectPanel sessions={[]} />)
+    await renderSettled(<ProjectPanel sessions={[]} />)
     expect(await screen.findByText(/산출물·검증 활성/)).toBeTruthy()
   })
 
   it('lists existing projects in the sidebar on mount', async () => {
     mockFleet({ listProjects: vi.fn().mockResolvedValue([P1, P2]) })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     expect(await screen.findByText('로그인 기능')).toBeTruthy()
     expect(screen.getByText('결제 연동')).toBeTruthy()
   })
@@ -111,7 +119,7 @@ describe('ProjectPanel', () => {
         },
       ]),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     expect(await screen.findByText('변경 2개')).toBeTruthy()
     expect(screen.getByText('2개 작업으로 분해')).toBeTruthy()
     expect(fleet.getProjectTasks).toHaveBeenCalledWith('p1')
@@ -124,10 +132,10 @@ describe('ProjectPanel', () => {
       getLastActiveProject: vi.fn().mockResolvedValue('p1'),
       getProjectTasks: vi.fn().mockResolvedValue([T1]),
     })
-    const view = render(<ProjectPanel sessions={[SESSION]} />)
+    const view = await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     expect(await screen.findByText('변경 2개')).toBeTruthy()
     view.unmount()
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     expect(await screen.findByText('변경 2개')).toBeTruthy()
   })
 
@@ -136,7 +144,7 @@ describe('ProjectPanel', () => {
       listProjects: vi.fn().mockResolvedValue([P1]),
       getLastActiveProject: vi.fn().mockResolvedValue('p1'),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     fleet.fire({
       type: 'task.done',
@@ -148,7 +156,7 @@ describe('ProjectPanel', () => {
 
   it('shows a 취소 button while running and calls cancelRun with the in-flight projectId', async () => {
     const fleet = mockFleet({ runProject: vi.fn(() => new Promise(() => {})) })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
     fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
     fleet.fire({ type: 'project.created', message: '프로젝트 생성', data: { projectId: 'proj-9' } })
@@ -163,7 +171,7 @@ describe('ProjectPanel', () => {
       listProjects: vi.fn().mockResolvedValue([P1]),
       getLastActiveProject: vi.fn().mockResolvedValue('p1'),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     fleet.fire({ type: 'task.done', message: '구현 A 완료', data: { projectId: 'p1' } })
     expect(await screen.findByText('구현 A 완료')).toBeTruthy()
@@ -172,7 +180,7 @@ describe('ProjectPanel', () => {
   // Now ④(#12): 보정 재계획 라운드 셀렉트 값이 runProject 요청으로 전달돼야 한다(데드코드였던 maxReplanRounds 활성화).
   it('passes the selected maxReplanRounds to runProject', async () => {
     const fleet = mockFleet()
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText(/워크스페이스 미설정/)
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
     fireEvent.change(screen.getByLabelText('보정 재계획'), { target: { value: '2' } })
@@ -185,7 +193,7 @@ describe('ProjectPanel', () => {
   // 기본값(비활성=0)은 그대로 전달돼 무회귀(opt-in 유지).
   it('defaults maxReplanRounds to 0 (replan disabled) when the select is untouched', async () => {
     const fleet = mockFleet()
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText(/워크스페이스 미설정/)
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
     await act(async () => {
@@ -201,7 +209,7 @@ describe('ProjectPanel', () => {
         .fn()
         .mockRejectedValue(new Error('planner 역할에 배정된 LLM 세션이 없습니다.')),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText(/워크스페이스 미설정/)
     const before = fleet.listProjects.mock.calls.length
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
@@ -222,7 +230,7 @@ describe('ProjectPanel', () => {
           }),
       ),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
     fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
@@ -248,7 +256,7 @@ describe('ProjectPanel', () => {
           }),
       ),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     await vi.waitFor(() => expect(fleet.listProjectEvents).toHaveBeenCalledWith('p1')) // 선택 effect 가 스냅샷 로드 디스패치
     fleet.fire({ type: 'task.done', message: '로딩중도착', data: { projectId: 'p1' } }) // 로드 중 라이브 도착
@@ -267,7 +275,7 @@ describe('ProjectPanel', () => {
     const finished = { ...P2, status: 'done' as const }
     const listProjects = vi.fn().mockResolvedValueOnce([running]).mockResolvedValue([finished])
     const fleet = mockFleet({ listProjects, getLastActiveProject: vi.fn().mockResolvedValue('p2') })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('결제 연동')
     const before = listProjects.mock.calls.length
     await act(async () => {
@@ -283,7 +291,7 @@ describe('ProjectPanel', () => {
     const executing = { ...P2, status: 'executing' as const }
     const listProjects = vi.fn().mockResolvedValueOnce([planning]).mockResolvedValue([executing])
     const fleet = mockFleet({ listProjects, getLastActiveProject: vi.fn().mockResolvedValue('p2') })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('결제 연동')
     const before = listProjects.mock.calls.length
     await act(async () => {
@@ -306,7 +314,7 @@ describe('ProjectPanel', () => {
           }),
       ),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     await vi.waitFor(() => expect(fleet.listProjectEvents).toHaveBeenCalledWith('p1'))
     // 라이브 이벤트는 영속 id(eventId)를 함께 싣고 온다(orchestrator emit). 스냅샷의 같은 id 와 dedup 된다.
@@ -337,7 +345,7 @@ describe('ProjectPanel', () => {
           }),
       ),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     await vi.waitFor(() => expect(fleet.listProjectEvents).toHaveBeenCalledWith('p1'))
     // 로드 중 두 번째 '리뷰 승인'(id e2)이 라이브로 도착 — 스냅샷의 첫 번째(id e1)와 같은 message 지만 다른 이벤트.
@@ -370,7 +378,7 @@ describe('ProjectPanel', () => {
         },
       ]),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     expect(await screen.findByText('변경 2개')).toBeTruthy() // P1 보드 로드됨
     expect(screen.getByText('A 진행로그')).toBeTruthy()
     // P2 로 전환 시 스냅샷을 지연시켜, 동기 클리어 여부만 검증
@@ -392,7 +400,7 @@ describe('ProjectPanel', () => {
       getProjectTasks,
       runProject: vi.fn().mockResolvedValue({ projectId: 'p1', tasks: [], summary: 'S요약' }),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
     await act(async () => {
@@ -426,7 +434,7 @@ describe('ProjectPanel', () => {
       getLastActiveProject: vi.fn().mockResolvedValue('p1'),
       getProjectTasks,
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     await vi.waitFor(() => expect(getProjectTasks).toHaveBeenCalledWith('p1'))
     await act(async () => {
@@ -458,7 +466,7 @@ describe('ProjectPanel', () => {
       listProjects: vi.fn().mockResolvedValue([P1, P2]),
       getProjectTasks,
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('결제 연동')
     await vi.waitFor(() => expect(getProjectTasks).toHaveBeenCalledTimes(1)) // 마운트 P2 자동선택 로드(#1, 지연) 디스패치됨
     await act(async () => {
@@ -482,7 +490,7 @@ describe('ProjectPanel', () => {
       listProjectEvents: vi.fn().mockResolvedValue([]), // 새 프로젝트라 영속 이벤트 없음
       runProject: vi.fn(() => new Promise(() => {})), // 실행 진행 중(미완)
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText(/워크스페이스 미설정/)
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
     fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
@@ -511,7 +519,7 @@ describe('ProjectPanel', () => {
         },
       ]),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     expect(await screen.findByText('변경 2개')).toBeTruthy() // P1 보드 로드됨
     expect(screen.getByText('A 진행로그')).toBeTruthy()
     await act(async () => {
@@ -536,7 +544,7 @@ describe('ProjectPanel', () => {
       listProjectEvents: vi.fn().mockResolvedValue([]),
       runProject: vi.fn(() => new Promise(() => {})),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능') // 사이드바 로드됨, 자동선택은 getLastActiveProject 펜딩으로 보류
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
     fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
@@ -569,7 +577,7 @@ describe('ProjectPanel', () => {
       getLastActiveProject: vi.fn().mockResolvedValue('p1'),
       getProjectTasks,
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await vi.waitFor(() => expect(getProjectTasks).toHaveBeenCalledTimes(1)) // 선택 스냅샷(#1)
     await act(async () => {
       fleet.fire({ type: 'task.review', message: 'r1', data: { projectId: 'p1' } })
@@ -605,7 +613,7 @@ describe('ProjectPanel', () => {
       getProjectTasks,
       listProjectEvents: vi.fn().mockResolvedValue([]),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('로그인 기능')
     await vi.waitFor(() => expect(getProjectTasks).toHaveBeenCalledTimes(1)) // #1(지연) 디스패치, selectedId=p1 커밋
     // + 새 프로젝트(null) → p1 을 단일 act 로 — 최종 selectedId 가 다시 p1 이라 [selectedId] effect 가 재실행되지 않는다.
@@ -636,7 +644,7 @@ describe('ProjectPanel', () => {
       ) // #2 plan.created(느림 → executing)
       .mockResolvedValue([done]) // #3 project.done(즉시 → done)
     const fleet = mockFleet({ listProjects, getLastActiveProject: vi.fn().mockResolvedValue('p2') })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('결제 연동')
     // 두 마일스톤을 단일 배치로 — 핸들러가 refreshProjects 두 개를 순서대로 디스패치(plan.created #2, project.done #3)
     await act(async () => {
@@ -659,7 +667,7 @@ describe('ProjectPanel', () => {
     const verifying = { ...P2, status: 'verifying' as const }
     const listProjects = vi.fn().mockResolvedValueOnce([executing]).mockResolvedValue([verifying])
     const fleet = mockFleet({ listProjects, getLastActiveProject: vi.fn().mockResolvedValue('p2') })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('결제 연동')
     const before = listProjects.mock.calls.length
     await act(async () => {
@@ -681,7 +689,7 @@ describe('ProjectPanel', () => {
       getLastActiveProject: vi.fn().mockResolvedValue('p2'),
       getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     // 스냅샷 복원으로 취소 버튼이 나타난다(run() 프로미스 없이도 — 마운트-옵저버).
     expect(await screen.findByRole('button', { name: '취소' })).toBeTruthy()
     expect(fleet.getRunActivity).toHaveBeenCalled()
@@ -707,7 +715,7 @@ describe('ProjectPanel', () => {
       listProjectEvents: vi.fn().mockResolvedValue([]),
       getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }), // 실제 진행 중 실행은 p2
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     const cancelBtn = await screen.findByRole('button', { name: '취소' }) // running(p2) 복원
     fireEvent.click(cancelBtn)
     await act(async () => {})
@@ -727,7 +735,7 @@ describe('ProjectPanel', () => {
           }),
       ),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText('결제 연동')
     // 스냅샷 펜딩 중 라이브 종료가 먼저 도착(하이드레이션 윈도우 레이스).
     await act(async () => {
@@ -750,7 +758,7 @@ describe('ProjectPanel', () => {
       listProjectEvents: vi.fn().mockResolvedValue([]),
       getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }),
     })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByRole('button', { name: '취소' }) // running 잠금 복원
     fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), {
       target: { value: '두번째 목표' },
@@ -774,7 +782,7 @@ describe('ProjectPanel', () => {
   // X(Next②): 마운트-옵저버가 라이브 project.created 만으로도 running 잠금을 켜야 한다(스냅샷이 빈 경우의 사각 봉합).
   it('locks running on a live project.created even without a local run() (observer)', async () => {
     const fleet = mockFleet({ listProjects: vi.fn().mockResolvedValue([]) })
-    render(<ProjectPanel sessions={[SESSION]} />)
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByText(/워크스페이스 미설정/)
     // 이 인스턴스는 run() 을 호출하지 않았다 — 다른 경로로 시작된 실행의 created 만 관측.
     await act(async () => {

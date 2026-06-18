@@ -27,6 +27,14 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
   return fleet
 }
 
+// 마운트 비동기 effect(detect·getMcpStatus)가 act() 안에서 정착하도록 flush한다.
+// React 19 의 엄격한 act 환경에서 마운트-후 비동기 setState 가 act() 밖이라 뜨던 경고를 제거(동작 무변경).
+async function renderSettled(ui: Parameters<typeof render>[0]) {
+  const result = render(ui)
+  await act(async () => {})
+  return result
+}
+
 afterEach(() => {
   delete (window as unknown as { fleet?: unknown }).fleet
   // jsdom 은 visibilityState 를 기본 'visible' 로 두지만, hidden 분기 테스트가 인스턴스 프로퍼티로
@@ -39,7 +47,7 @@ describe('SessionsPanel', () => {
   it('surfaces an error and does not refresh when CLI registration fails', async () => {
     mockFleet({ registerCliSession: vi.fn().mockRejectedValue(new Error('등록 실패함')) })
     const onRefresh = vi.fn()
-    render(<SessionsPanel sessions={[]} onRefresh={onRefresh} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={onRefresh} />)
 
     fireEvent.click(await screen.findByRole('button', { name: '세션 등록' }))
 
@@ -52,7 +60,7 @@ describe('SessionsPanel', () => {
   it('refreshes after a successful CLI registration', async () => {
     const fleet = mockFleet()
     const onRefresh = vi.fn()
-    render(<SessionsPanel sessions={[]} onRefresh={onRefresh} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={onRefresh} />)
 
     fireEvent.click(await screen.findByRole('button', { name: '세션 등록' }))
 
@@ -62,7 +70,7 @@ describe('SessionsPanel', () => {
 
   it('Anthropic thinking effort 를 선택하면 registerApiSession config 에 thinking 이 실린다 (#11-thinking 활성화)', async () => {
     const fleet = mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'xhigh' } })
     fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
@@ -81,7 +89,7 @@ describe('SessionsPanel', () => {
 
   it('thinking 기본(끄기)이면 config 에 thinking 키 자체를 넣지 않는다', async () => {
     const fleet = mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
@@ -97,7 +105,7 @@ describe('SessionsPanel', () => {
 
   it('OpenAI thinking effort 를 선택하면 config 에 thinking 이 실린다 (reasoning_effort 패리티)', async () => {
     const fleet = mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
     fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'high' } })
@@ -116,7 +124,7 @@ describe('SessionsPanel', () => {
 
   it('Google thinking effort 를 선택하면 config 에 thinking 이 실린다 (gemini-thinkingconfig UI 활성화 2단계)', async () => {
     const fleet = mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
     fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'high' } })
@@ -135,7 +143,7 @@ describe('SessionsPanel', () => {
 
   it('openai-compatible 선택 시 Base URL 입력칸과 effort 셀렉트가 노출된다', async () => {
     mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
     expect(screen.getByLabelText(/Base URL/i)).toBeTruthy()
     expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
@@ -143,7 +151,7 @@ describe('SessionsPanel', () => {
 
   it('openai-compatible 등록 config 에 baseUrl·provider 가 실린다', async () => {
     const fleet = mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
     fireEvent.change(screen.getByLabelText(/Base URL/i), {
       target: { value: 'https://openrouter.ai/api/v1' },
@@ -163,7 +171,7 @@ describe('SessionsPanel', () => {
 
   it('anthropic·openai·google 모두 thinking effort 셀렉트를 노출한다(3사 thinking 패리티)', async () => {
     mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     // anthropic(기본) 노출
     expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
@@ -177,7 +185,7 @@ describe('SessionsPanel', () => {
 
   it('anthropic 에서 캐시 TTL 1h 선택 → registerApiSession config 에 cacheTtl 가 실린다 (#72)', async () => {
     const fleet = mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText(/캐시 TTL/i), { target: { value: '1h' } })
     fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
@@ -195,7 +203,7 @@ describe('SessionsPanel', () => {
 
   it('비-anthropic provider 에는 캐시 TTL 컨트롤이 노출되지 않는다 (#72 anthropic 한정)', async () => {
     mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
     // anthropic(기본)에는 노출
     expect(screen.getByLabelText(/캐시 TTL/i)).toBeTruthy()
     // openai 로 전환하면 비노출
@@ -205,7 +213,7 @@ describe('SessionsPanel', () => {
 
   it('anthropic→1h 선택 후 openai 로 전환하면 stale cacheTtl 가 config 에 누출되지 않는다 (#72 provider 게이트)', async () => {
     const fleet = mockFleet()
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     // anthropic 에서 1h 선택 → provider 전환(셀렉트 onChange 는 cacheTtl state 를 리셋하지 않아 '1h' 잔존)
     fireEvent.change(screen.getByLabelText(/캐시 TTL/i), { target: { value: '1h' } })
@@ -229,7 +237,7 @@ describe('SessionsPanel', () => {
       { name: 'fs', connected: true, toolCount: 2, tools: ['mcp__fs__read', 'mcp__fs__write'] },
     ]
     const fleet = mockFleet({ setMcpServers: vi.fn().mockResolvedValue(status) })
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText(/MCP 서버/i), {
       target: { value: '[{"name":"fs","command":"node","args":["server.js"]}]' },
@@ -246,7 +254,7 @@ describe('SessionsPanel', () => {
 
   it('잘못된 MCP JSON 은 IPC 호출 없이 에러를 표시한다', async () => {
     const fleet = mockFleet({ setMcpServers: vi.fn() })
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     fireEvent.change(screen.getByLabelText(/MCP 서버/i), { target: { value: '깨진 json' } })
     fireEvent.click(screen.getByRole('button', { name: 'MCP 적용' }))
@@ -264,7 +272,7 @@ describe('SessionsPanel', () => {
           { name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] },
         ]),
     })
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
     expect(fleet.getMcpStatus).toHaveBeenCalled()
@@ -282,7 +290,7 @@ describe('SessionsPanel', () => {
 
   it('윈도우 포커스 복귀 시 MCP 상태를 재조회해 stale 표시를 갱신한다', async () => {
     const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
     // 마운트 하이드레이트: 연결 상태(도구 노출) 표시
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
@@ -297,7 +305,7 @@ describe('SessionsPanel', () => {
 
   it('탭 가시성 복귀 시 MCP 상태를 재조회한다', async () => {
     const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
 
     fireEvent(document, new Event('visibilitychange'))
@@ -310,7 +318,7 @@ describe('SessionsPanel', () => {
     vi.useFakeTimers()
     try {
       const fleet = mockFleet({ getMcpStatus: dyingServerStatus() })
-      render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+      await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
 
       // 마운트 하이드레이트 promise flush → 연결 상태 + 폴링 타이머 가동
       await act(async () => {})
@@ -344,7 +352,7 @@ describe('SessionsPanel', () => {
           ])
           .mockResolvedValue([]),
       })
-      render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+      await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
       await act(async () => {})
       expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 마운트(연결)
 
@@ -368,7 +376,7 @@ describe('SessionsPanel', () => {
     vi.useFakeTimers()
     try {
       const fleet = mockFleet({ getMcpStatus: vi.fn().mockResolvedValue([]) })
-      render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+      await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
       await act(async () => {})
       expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 마운트 1회만
 
@@ -389,7 +397,7 @@ describe('SessionsPanel', () => {
           { name: 'fs', connected: true, toolCount: 1, tools: ['mcp__fs__read'] },
         ]),
     })
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
     expect(fleet.getMcpStatus).toHaveBeenCalledTimes(1) // 마운트 1회
 
@@ -413,7 +421,7 @@ describe('SessionsPanel', () => {
         ])
         .mockRejectedValue(new Error('ipc down')),
     })
-    render(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
     expect(await screen.findByText(/mcp__fs__read/)).toBeTruthy()
 
     // 포커스 재조회가 reject → .catch 로 무음 흡수, 직전 권위 상태를 그대로 유지
