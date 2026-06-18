@@ -3,7 +3,7 @@ import type { LlmConnectionKind, OrchestratorEvent } from '../../../shared/types
 import { createSessionManager } from '../session/manager'
 import type { LlmSession } from '../session/types'
 import { createMemoryStore } from '../store/memory'
-import type { DiffResult, Workspace } from '../workspace/git'
+import type { DiffResult, TaskWorktree, Workspace } from '../workspace/git'
 import { runProject } from './orchestrator'
 
 function fakeSession(
@@ -59,6 +59,94 @@ function fakeWorkspace(
     async removeWorktree() {},
   }
   return ws
+}
+
+/**
+ * 병렬 sweep 검증용 가짜 워크스페이스.
+ * - addWorktree(taskId, base): 작업별 가짜 worktree 를 반환한다. 그 worktree 의 keep()은
+ *   keep 메시지에서 작업 제목을 파싱해 `keep-<title>` 형태의 결정적 해시를 돌려준다
+ *   (생성 순서·통합 순서 단언이 제목 기반으로 안정적이도록).
+ * - integrate(keepHash): onIntegrate 콜백에 통합 순서를 기록한다. conflictOn 과 일치하면 충돌 반환.
+ * - removeWorktree: 정리 횟수를 센다.
+ * keepCommitsInCreationOrder 는 worktree 생성(=addWorktree 호출) 순서대로의 keep 해시 목록.
+ */
+function parallelFakeWorkspace(
+  opts: {
+    onIntegrate?: (keepHash: string) => void
+    conflictOn?: string
+  } = {},
+): Workspace & {
+  worktreesCreated: number
+  worktreesRemoved: number
+  removed: string[]
+  keepCommitsInCreationOrder: string[]
+  integrated: string[]
+} {
+  // keep 메시지 `[<title>] by <impl>` 에서 제목을 뽑아 결정적 해시로 만든다.
+  const hashFor = (message: string): string => {
+    const m = /^\[(.+?)\]/.exec(message)
+    return `keep-${m ? m[1] : message}`
+  }
+  const state = {
+    worktreesCreated: 0,
+    worktreesRemoved: 0,
+    removed: [] as string[],
+    keepCommitsInCreationOrder: [] as string[],
+    integrated: [] as string[],
+    async ensureRepo() {},
+    async checkpoint() {
+      return 'base-main'
+    },
+    async collectDiff(): Promise<DiffResult> {
+      return { files: ['src/x.ts'], patch: '+x', truncated: false }
+    },
+    async keep(message: string) {
+      return hashFor(message)
+    },
+    async revert() {},
+    async addWorktree(taskId: string, _base: string): Promise<TaskWorktree> {
+      state.worktreesCreated++
+      // 작업별 worktree: keep()이 제목 기반 결정적 해시를 반환하고, 생성 순서대로 기록한다.
+      const wt: TaskWorktree = {
+        path: `/wt/${taskId}`,
+        async ensureRepo() {},
+        async checkpoint() {
+          return `base-${taskId}`
+        },
+        async collectDiff(): Promise<DiffResult> {
+          return { files: [`src/${taskId}.ts`], patch: '+x', truncated: false }
+        },
+        async keep(message: string) {
+          const hash = hashFor(message)
+          state.keepCommitsInCreationOrder.push(hash)
+          return hash
+        },
+        async revert() {},
+        async addWorktree() {
+          throw new Error('중첩 addWorktree 미지원')
+        },
+        async integrate() {
+          return { ok: true }
+        },
+        async removeWorktree() {},
+      }
+      return wt
+    },
+    async integrate(keepHash: string) {
+      state.integrated.push(keepHash)
+      state.onIntegrate?.(keepHash)
+      if (opts.conflictOn && keepHash === opts.conflictOn) {
+        return { ok: false, conflict: `모의 충돌: ${keepHash}` }
+      }
+      return { ok: true }
+    },
+    async removeWorktree(taskId: string) {
+      state.worktreesRemoved++
+      state.removed.push(taskId)
+    },
+    onIntegrate: opts.onIntegrate,
+  }
+  return state
 }
 
 describe('runProject', () => {
@@ -2073,5 +2161,168 @@ describe('runProject', () => {
     expect(keepCallCount).toBe(2)
     // keep 반환 해시가 commit-N 형식인지 확인 — runTaskIn 이 ws.keep 반환값을 받아 리턴하는 경로 검증
     expect(keepHashes).toEqual(['commit-1', 'commit-2'])
+  })
+
+  // ── Task 5: 병렬 sweep 스케줄러 ──
+
+  /** 두 작업이 동시에 편집에 진입함을 관측하는 배리어형 편집 세션 팩토리. */
+  function makeBarrierEditFactory(expected: number): {
+    factory: () => LlmSession
+    maxConcurrentEdits: () => number
+  } {
+    let inFlight = 0
+    let maxInFlight = 0
+    let resolveAll: (() => void) | undefined
+    const allEntered = new Promise<void>((r) => {
+      resolveAll = r
+    })
+    let n = 0
+    const factory = (): LlmSession => {
+      const id = `impl-${++n}`
+      return {
+        id,
+        descriptor: { id, kind: 'cli', displayName: id, ref: id, model: '' },
+        async send() {
+          inFlight++
+          maxInFlight = Math.max(maxInFlight, inFlight)
+          // 모든 작업이 진입하면 배리어를 푼다 — 직렬 실행이면 첫 진입에서 영영 안 풀린다.
+          if (inFlight >= expected) resolveAll?.()
+          await allEntered
+          inFlight--
+          return '구현'
+        },
+        async dispose() {},
+      }
+    }
+    return { factory, maxConcurrentEdits: () => maxInFlight }
+  }
+
+  it('runs independent tasks in parallel and integrates in creation order (maxConcurrency=2)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    // 의존성 없는 A·B — 병렬 실행 가능.
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    // 순차 implementer 도 등록(무회귀 분기 가드는 makeEditSession 으로 병렬 진입).
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const order: string[] = []
+    const ws = parallelFakeWorkspace({ onIntegrate: (c) => order.push(c) })
+    const { factory, maxConcurrentEdits } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    expect(maxConcurrentEdits()).toBe(2) // 두 편집이 실제로 동시 진입(직렬이면 1)
+    expect(ws.worktreesCreated).toBe(2)
+    expect(ws.worktreesRemoved).toBe(2) // 정리 누락 없음
+    // 통합은 생성 순서(병렬 완료 순서 아님) — 결정론.
+    expect(order).toEqual(ws.keepCommitsInCreationOrder)
+    expect(order).toEqual(['keep-A', 'keep-B'])
+  })
+
+  it('isolates a conflicting task as failed without poisoning others (maxConcurrency=2)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // A 의 keep 해시(keep-A) 통합이 충돌한다.
+    const ws = parallelFakeWorkspace({ conflictOn: 'keep-A' })
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+    })
+
+    const byTitle = Object.fromEntries(result.tasks.map((t) => [t.title, t.status]))
+    expect(byTitle.A).toBe('failed') // 통합 충돌 → failed
+    expect(byTitle.B).toBe('done') // 다른 작업은 오염되지 않음
+    expect(ws.worktreesRemoved).toBe(2) // 충돌이어도 둘 다 정리
+    expect(ws.worktreesCreated).toBe(2)
+  })
+
+  it('reverts and cleans all in-flight worktrees on abort (maxConcurrency=2)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const controller = new AbortController()
+    const ws = parallelFakeWorkspace()
+    // 첫 편집(A) 진입 시 취소하고 throw — in-flight 병렬 작업의 abort 시뮬레이션.
+    let made = 0
+    const makeEditSession = (): LlmSession => {
+      const id = `impl-${++made}`
+      const isA = made === 1
+      return {
+        id,
+        descriptor: { id, kind: 'cli', displayName: id, ref: id, model: '' },
+        async send() {
+          if (isA) {
+            controller.abort()
+            throw new Error('aborted mid-edit')
+          }
+          return '구현'
+        },
+        async dispose() {},
+      }
+    }
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      signal: controller.signal,
+      makeEditSession,
+    })
+
+    expect(store.getProject(result.projectId)?.status).toBe('failed') // 취소=failed 종료
+    // 생성한 worktree 는 전부 정리됐다 — 잔존 worktree 0.
+    expect(ws.worktreesRemoved).toBe(ws.worktreesCreated)
+    expect(ws.worktreesCreated).toBeGreaterThan(0)
   })
 })

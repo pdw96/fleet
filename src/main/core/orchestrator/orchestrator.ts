@@ -9,7 +9,7 @@ import type {
 import type { ApprovalGate } from '../safety/approval'
 import type { SessionManager } from '../session/manager'
 import type { Store } from '../store/types'
-import type { Workspace } from '../workspace/git'
+import type { TaskWorktree, Workspace } from '../workspace/git'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
 import { planCorrectiveTasks, planTasks, type PlannedTask } from './plan'
@@ -382,9 +382,109 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // 위상 스케줄: 의존성이 모두 done 인 작업을 생성 순서대로 실행한다(결정론).
   // 의존 작업이 failed/skipped 면 해당 작업은 실행 없이 skipped 로 전파한다.
   const pending = tasks.map((t) => t.id)
+
+  // 의존 작업이 실패/스킵된 작업을 실행 없이 skipped 로 전파한다(순차·병렬 공용).
+  // @returns 전파를 1건 이상 수행했으면 true(진행 있음).
+  const propagateDepFailures = (): boolean => {
+    let progressed = false
+    for (let i = 0; i < pending.length; ) {
+      const task = byId.get(pending[i])
+      if (!task) {
+        pending.splice(i, 1)
+        continue
+      }
+      const deps = task.dependsOn ?? []
+      if (deps.some((d) => failed.has(d))) {
+        store.updateTask(task.id, { status: 'skipped', output: '의존 작업 실패로 건너뜀' })
+        emit({
+          type: 'task.skipped',
+          message: `${task.title}: 의존 작업 실패로 건너뜀`,
+          data: { taskId: task.id },
+        })
+        failed.add(task.id)
+        pending.splice(i, 1)
+        progressed = true
+        continue
+      }
+      i++
+    }
+    return progressed
+  }
+
+  // ── 병렬 sweep(maxConcurrency > 1) ──
+  // 매 라운드 실행가능(deps 모두 done) 집합을 concurrency 만큼 묶어 worktree 격리로 동시 실행한다.
+  // worktree 생성/정리·메인 통합은 순차(common gitdir·main HEAD 보호), 편집만 병렬.
+  // 결정론: 통합은 작업 생성 순서(병렬 완료 순서 아님)로 cherry-pick 한다.
+  // canParallel 이 false 면 이 블록을 통째로 건너뛰고 기존 순차 루프를 그대로 탄다(무회귀).
+  const concurrency = Math.max(1, Math.floor(opts.maxConcurrency ?? 1))
+  const canParallel =
+    concurrency > 1 &&
+    !!opts.workspace &&
+    !!opts.makeEditSession &&
+    typeof opts.workspace.addWorktree === 'function'
+  if (canParallel) {
+    const ws = opts.workspace as Workspace
+    const makeEditSession = opts.makeEditSession as () => import('../session/types').LlmSession
+    while (pending.length > 0 && !opts.signal?.aborted) {
+      // 1) 의존 실패 전파(기존 로직 재사용) 후, 실행가능 집합 수집.
+      propagateDepFailures()
+      if (pending.length === 0 || opts.signal?.aborted) break
+      const runnable = pending
+        .map((id) => byId.get(id))
+        .filter((t): t is Task => {
+          if (!t) return false
+          const deps = t.dependsOn ?? []
+          return !deps.some((d) => failed.has(d)) && deps.every((d) => done.has(d))
+        })
+      if (runnable.length === 0) break // 진행 불가(의존성 미해소·순환) → 잔여는 아래 cleanup 으로
+
+      const batch = runnable.slice(0, concurrency)
+      const base = await ws.checkpoint()
+      // 2) worktree 순차 생성(common gitdir 보호).
+      const wts: { task: Task; wt: TaskWorktree }[] = []
+      for (const task of batch) {
+        wts.push({ task, wt: await ws.addWorktree(task.id, base) })
+      }
+      // 3) 편집 병렬(작업별 독립 worktree·세션). 실패는 allSettled 로 격리.
+      //    각 fulfilled value = keep 해시(done) 또는 undefined(실패/스킵/미승인/취소).
+      const settled = await Promise.allSettled(
+        wts.map(({ task, wt }) => runTaskIn(task, wt, makeEditSession())),
+      )
+      // 4) 생성순 통합(결정론) + 정리(순차). 충돌·취소여도 worktree 는 반드시 정리한다.
+      for (let k = 0; k < wts.length; k++) {
+        const { task } = wts[k]
+        const r = settled[k]
+        const keepHash = r.status === 'fulfilled' ? r.value : undefined
+        // done 표시 + keep 해시 보유 시에만 통합. keepHash 없으면(빈/실패/취소) 통합 스킵.
+        if (done.has(task.id) && keepHash) {
+          const res = await ws.integrate(keepHash)
+          if (!res.ok) {
+            // 통합 충돌 → done 철회·failed 전환(결정론적 작업 상태 계약).
+            done.delete(task.id)
+            failed.add(task.id)
+            store.updateTask(task.id, {
+              status: 'failed',
+              output: `통합 충돌: ${res.conflict ?? ''}`,
+            })
+            emit({
+              type: 'task.failed',
+              message: `${task.title}: 통합 충돌`,
+              data: { taskId: task.id },
+            })
+          }
+        }
+        // 정리(순차) — 충돌·취소·실패여도 worktree 잔존 0 보장.
+        await ws.removeWorktree(task.id)
+        const idx = pending.indexOf(task.id)
+        if (idx >= 0) pending.splice(idx, 1)
+      }
+    }
+    // abort/잔여(순환 의존 등)는 아래 공용 cleanup 으로 흘려보낸다.
+  }
+
   let progressed = true
   let aborted = false
-  while (pending.length > 0 && progressed && !aborted) {
+  while (!canParallel && pending.length > 0 && progressed && !aborted) {
     progressed = false
     for (let i = 0; i < pending.length; ) {
       const task = byId.get(pending[i])
