@@ -5,6 +5,7 @@ import type {
   FleetBridge,
   McpServerSpec,
   OrchestratorEvent,
+  UpdateEvent,
 } from '../shared/types'
 
 const api: FleetBridge = {
@@ -78,6 +79,19 @@ const api: FleetBridge = {
     }
   },
   respondApproval: (id, approved) => ipcRenderer.invoke('fleet:approval:respond', id, approved),
+  getUpdateState: () => ipcRenderer.invoke('fleet:update:getState'),
+  checkForUpdate: () => ipcRenderer.invoke('fleet:update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('fleet:update:download'),
+  installUpdate: () => ipcRenderer.invoke('fleet:update:install'),
+  dismissUpdate: () => ipcRenderer.invoke('fleet:update:dismiss'),
+  onUpdateEvent: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: UpdateEvent): void =>
+      callback(event)
+    ipcRenderer.on('fleet:update:event', listener)
+    return () => {
+      ipcRenderer.removeListener('fleet:update:event', listener)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('fleet', api)

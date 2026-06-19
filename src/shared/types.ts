@@ -551,4 +551,18 @@ export interface FleetBridge {
   onApprovalRequest(callback: (req: ApprovalRequest) => void): () => void
   /** 승인 모달 결정 회신(메인이 id 로 상관). */
   respondApproval(id: string, approved: boolean): Promise<void>
+
+  // 자동 업데이트
+  /** 업데이트 상태 스냅샷(배너 마운트 하이드레이트). */
+  getUpdateState(): Promise<UpdateEvent>
+  /** 수동 업데이트 확인(백그라운드 분류). */
+  checkForUpdate(): Promise<void>
+  /** 다운로드 시작(사용자 액션). */
+  downloadUpdate(): Promise<void>
+  /** 다운로드분 설치·재시작(quitAndInstall). */
+  installUpdate(): Promise<void>
+  /** 배너 닫기 — main currentState=idle. */
+  dismissUpdate(): Promise<void>
+  /** 업데이트 이벤트 구독(해제 함수 반환). */
+  onUpdateEvent(callback: (event: UpdateEvent) => void): () => void
 }
