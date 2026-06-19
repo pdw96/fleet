@@ -20,6 +20,14 @@ jobs:
         with:
           node-version-file: '.nvmrc'
           cache: npm
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$PKG" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG"
+            exit 1
+          fi
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
