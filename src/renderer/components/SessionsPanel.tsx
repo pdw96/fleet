@@ -201,7 +201,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
     } catch (e) {
       if (seq === modelReqSeq.current) setError(`모델 조회 실패: ${asError(e)}`)
     } finally {
-      if (seq === modelReqSeq.current) setLoadingModels(false)
+      // 로딩 해제는 무조건 — 버튼이 로딩 중 disabled 라 동시 요청이 없고(이게 유일한 in-flight),
+      // 입력 변경으로 seq 가 밀려도 스피너가 '불러오는 중…' 에 영구히 갇히지 않게 한다(Codex P2).
+      setLoadingModels(false)
     }
   }
 

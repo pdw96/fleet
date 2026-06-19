@@ -299,6 +299,8 @@ describe('SessionsPanel', () => {
       (o) => (o as HTMLOptionElement).value,
     )
     expect(opts).toEqual([]) // stale 결과 미반영(provider 변경으로 비워진 상태 유지)
+    // 로딩 상태는 풀려야 한다(스피너 '불러오는 중…' 영구 고정 방지 — Codex P2). 버튼 라벨이 복귀했는지로 검증.
+    expect(screen.getByRole('button', { name: '모델 불러오기' })).toBeTruthy()
   })
 
   it('openai-compatible 에서 baseUrl 미입력이면 모델 불러오기 버튼이 비활성이다 (#13 UX dead-end 방지)', async () => {
