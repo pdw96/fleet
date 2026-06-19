@@ -51,10 +51,23 @@ describe('UpdateBanner', () => {
   })
 
   it('라이브 이벤트가 스냅샷을 이긴다(라이브 우선)', async () => {
-    const { fire } = mockFleet({ kind: 'available', version: '0.2.0' })
+    const { fire } = mockFleet()
+    // getUpdateState 를 수동 제어 deferred promise 로 교체
+    let resolveSnap!: (e: UpdateEvent) => void
+    const snap = new Promise<UpdateEvent>((r) => {
+      resolveSnap = r
+    })
+    ;(window as unknown as { fleet: { getUpdateState: unknown } }).fleet.getUpdateState = vi
+      .fn()
+      .mockReturnValue(snap)
     render(<UpdateBanner />)
-    fire({ kind: 'not-available' }) // 스냅샷 resolve 전 라이브 도착
-    await act(async () => {})
+    // 스냅샷이 아직 PENDING인 상태에서 라이브 이벤트 먼저 도착
+    fire({ kind: 'not-available' })
+    // 이제 스냅샷 resolve — ref 가드가 있으면 이 값은 무시돼야 한다
+    await act(async () => {
+      resolveSnap({ kind: 'available', version: '0.2.0' })
+    })
+    // 라이브 이벤트(not-available)가 이겼으므로 [다운로드] 버튼이 없어야 함
     expect(screen.queryByRole('button', { name: '다운로드' })).toBeNull()
   })
 
