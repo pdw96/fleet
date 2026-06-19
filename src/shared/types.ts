@@ -425,6 +425,21 @@ export interface ToolStep {
   summary?: string
 }
 
+/**
+ * 자동 업데이트 상태/이벤트 (main → 렌더러). main(currentState)이 권위 스냅샷이며
+ * 렌더러는 onUpdateEvent 구독 + getUpdateState 하이드레이트로 동기화한다.
+ * idle/checking/not-available/unsupported → 배너 미표시.
+ */
+export type UpdateEvent =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'available'; version: string }
+  | { kind: 'not-available' }
+  | { kind: 'progress'; percent: number }
+  | { kind: 'downloaded'; version: string }
+  | { kind: 'error'; message: string }
+  | { kind: 'unsupported' }
+
 export type ChatStreamEvent =
   | { kind: 'start'; streamId: string; roomId: string; llmId: string; role?: AgentRole }
   | { kind: 'delta'; streamId: string; roomId: string; delta: string; seq: number }
