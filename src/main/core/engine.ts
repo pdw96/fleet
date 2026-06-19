@@ -13,6 +13,7 @@ import type {
   LlmDescriptor,
   McpServerSpec,
   McpServerStatus,
+  ModelOption,
   Project,
   RunActivity,
   RunProjectRequest,
@@ -120,6 +121,8 @@ export interface FleetEngine {
   removeSession(id: string): Promise<void>
   /** 세션의 적합 역할(capability-scored 근거)을 설정하고 갱신된 descriptor 를 반환한다. */
   setSessionCapabilities(id: string, roles: AgentRole[]): LlmDescriptor
+  /** provider 모델 목록을 라이브 조회한다(#13). listModels 미구현 provider 는 빈 배열, 호출 실패(HTTP/인증)는 throw 를 그대로 전파한다. */
+  listProviderModels(config: ApiProviderConfig): Promise<ModelOption[]>
 
   // ── 프로젝트 / 오케스트레이션 ──
   listProjects(): Project[]
@@ -521,6 +524,13 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
     listSessions() {
       return sessions.descriptors()
+    },
+
+    async listProviderModels(config) {
+      // provider listModels 부재(미구현)면 [](렌더러는 하드코딩 PROVIDER_DEFAULTS 자유입력 폴백).
+      // HTTP/인증 실패는 throw 를 그대로 전파해 렌더러가 '모델 조회 실패' 사유를 표시하게 한다 — 명시적
+      // '모델 불러오기' 액션이라 무성 [] 보다 사유 노출이 낫다. ApiProviderError.detail 은 응답 본문(키 미포함). #13
+      return (await createApiProvider(config, http).listModels?.()) ?? []
     },
 
     setSessionCapabilities(id, roles) {

@@ -6,6 +6,7 @@ import type {
   LlmDescriptor,
   McpServerSpec,
   McpServerStatus,
+  ModelOption,
   ReasoningEffort,
 } from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
@@ -40,6 +41,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
+  // 라이브 조회한 모델 목록(#13). 비면 모델 입력란은 PROVIDER_DEFAULTS 자유입력 폴백을 유지한다.
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
   // thinking effort 세션 기본값('' = 끄기). Anthropic(adaptive)·OpenAI(reasoning_effort)·Google(thinkingConfig) 매핑.
   const [effort, setEffort] = useState<'' | ReasoningEffort>('')
   // 캐시 TTL 세션 기본값(Anthropic 한정). '' = 기본(5m), '1h' = extended-cache. #72.
@@ -169,6 +173,30 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
       setMcpStatus(await window.fleet.setMcpServers(specs as McpServerSpec[]))
     } catch (e) {
       setError(`MCP 적용 실패: ${asError(e)}`)
+    }
+  }
+
+  // 현재 provider+키로 사용 가능한 모델을 라이브 조회한다(#13). 결과는 datalist 제안으로 노출되며
+  // 입력란은 그대로 자유입력 — 실패하면 사유를 표시하고 PROVIDER_DEFAULTS 기본값을 유지한다.
+  async function loadModels() {
+    if (!apiKey.trim()) return
+    if (provider === 'openai-compatible' && !baseUrl.trim()) return
+    setLoadingModels(true)
+    setError(null)
+    try {
+      const probe: ApiProviderConfig = {
+        id: `probe-${provider}`,
+        provider,
+        displayName: provider,
+        model,
+        apiKey: apiKey.trim(),
+        ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
+      }
+      setModelOptions(await window.fleet.listModels(probe))
+    } catch (e) {
+      setError(`모델 조회 실패: ${asError(e)}`)
+    } finally {
+      setLoadingModels(false)
     }
   }
 
@@ -304,6 +332,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                 const p = e.target.value as ApiProviderConfig['provider']
                 setProvider(p)
                 setModel(PROVIDER_DEFAULTS[p])
+                setModelOptions([]) // provider 전환 시 이전 provider 의 stale 모델 목록 제거
               }}
             >
               <option value="anthropic">Anthropic</option>
@@ -316,12 +345,36 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             <label className="field-label" htmlFor="api-model">
               모델
             </label>
-            <input
-              id="api-model"
-              className="field"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            />
+            <div className="row" style={{ display: 'flex', gap: 8 }}>
+              <input
+                id="api-model"
+                className="field"
+                style={{ flex: 1 }}
+                list="api-model-options"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => void loadModels()}
+                disabled={
+                  loadingModels ||
+                  !apiKey.trim() ||
+                  (provider === 'openai-compatible' && !baseUrl.trim())
+                }
+              >
+                {loadingModels ? '불러오는 중…' : '모델 불러오기'}
+              </button>
+            </div>
+            {/* 라이브 조회 모델을 자유입력 input 의 제안 목록으로 노출(#13) — 입력란은 그대로 편집 가능. */}
+            <datalist id="api-model-options">
+              {modelOptions.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label ?? m.id}
+                </option>
+              ))}
+            </datalist>
           </div>
         </div>
         {provider === 'openai-compatible' && (
@@ -333,7 +386,10 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               id="api-base-url"
               className="field"
               value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
+              onChange={(e) => {
+                setBaseUrl(e.target.value)
+                setModelOptions([]) // baseUrl 변경 → 이전 엔드포인트의 stale 제안 제거
+              }}
               placeholder="https://openrouter.ai/api/v1"
             />
             <p className="meta" style={{ marginTop: 6 }}>
@@ -398,7 +454,10 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             type="password"
             value={apiKey}
             placeholder="sk-..."
-            onChange={(e) => setApiKey(e.target.value)}
+            onChange={(e) => {
+              setApiKey(e.target.value)
+              setModelOptions([]) // 키 변경 → 이전 키로 받은 stale 제안 제거
+            }}
           />
         </div>
         <button

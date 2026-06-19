@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ApiProviderConfig } from '../../../shared/types'
 import { createAnthropicProvider } from './anthropic'
 import { createGoogleProvider } from './google'
@@ -6,6 +6,7 @@ import { createOpenAiProvider } from './openai'
 import { createApiProvider } from './registry'
 import {
   ApiProviderError,
+  defaultHttp,
   sendWithSchemaFallback,
   type HttpClient,
   type HttpInit,
@@ -3693,5 +3694,143 @@ describe('sendWithSchemaFallback', () => {
     )
     expect(n).toBe(1)
     expect(res.status).toBe(400)
+  })
+})
+
+describe('listModels (#13 라이브 모델 조회)', () => {
+  it('anthropic: data[] → {id,label}, display_name 없으면 id 만, GET /v1/models?limit + 인증 헤더', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({
+        data: [
+          { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6', type: 'model' },
+          { id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8', type: 'model' },
+          { id: 'claude-future-1', type: 'model' }, // display_name 없음 → label 미포함
+        ],
+        has_more: false,
+      }),
+    }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    const models = await p.listModels!()
+
+    expect(models).toEqual([
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      { id: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { id: 'claude-future-1' },
+    ])
+    // limit=1000 으로 전 카탈로그를 한 페이지에 받는다(기본 limit=20 절단 방지).
+    expect(calls[0].url).toBe('https://api.anthropic.com/v1/models?limit=1000')
+    expect(calls[0].init.method).toBe('GET')
+    expect(calls[0].init.headers['x-api-key']).toBe('key-a')
+    expect(calls[0].init.headers['anthropic-version']).toBe('2023-06-01')
+  })
+
+  it('openai: data[] → {id}, 비-chat 계열(임베딩·whisper·dall-e) 제외·audio chat 은 보존, GET /v1/models + Bearer', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'gpt-5.5', object: 'model' },
+          { id: 'text-embedding-3-large', object: 'model' }, // 제외(embedding)
+          { id: 'whisper-1', object: 'model' }, // 제외(whisper)
+          { id: 'dall-e-3', object: 'model' }, // 제외(dall-e)
+          { id: 'gpt-4o', object: 'model' },
+          { id: 'gpt-4o-audio-preview', object: 'model' }, // 보존 — 오디오 모달리티 chat 모델(audio 토큰 미적용)
+        ],
+      }),
+    }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const models = await p.listModels!()
+
+    expect(models).toEqual([{ id: 'gpt-5.5' }, { id: 'gpt-4o' }, { id: 'gpt-4o-audio-preview' }])
+    expect(calls[0].url).toBe('https://api.openai.com/v1/models')
+    expect(calls[0].init.method).toBe('GET')
+    expect(calls[0].init.headers.authorization).toBe('Bearer key-o')
+  })
+
+  it('openai-compatible: baseUrl 루트 + /models 로 조회(후행 슬래시 정규화)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ object: 'list', data: [{ id: 'llama-3.3-70b', object: 'model' }] }),
+    }))
+    const cfg: ApiProviderConfig = {
+      id: 'c1',
+      provider: 'openai-compatible',
+      displayName: 'OR',
+      model: 'x',
+      apiKey: 'key-c',
+      baseUrl: 'https://openrouter.ai/api/v1/',
+      maxTokens: 256,
+    }
+    const p = createOpenAiProvider(cfg, http)
+    const models = await p.listModels!()
+
+    expect(models).toEqual([{ id: 'llama-3.3-70b' }])
+    expect(calls[0].url).toBe('https://openrouter.ai/api/v1/models')
+  })
+
+  it('google: generateContent 모델만, models/ 프리픽스 제거, displayName 라벨', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({
+        models: [
+          {
+            name: 'models/gemini-3.5-flash',
+            displayName: 'Gemini 3.5 Flash',
+            supportedGenerationMethods: ['generateContent', 'countTokens'],
+          },
+          {
+            name: 'models/embedding-001',
+            displayName: 'Embedding 001',
+            supportedGenerationMethods: ['embedContent'],
+          },
+          {
+            name: 'models/gemini-2.5-pro',
+            displayName: 'Gemini 2.5 Pro',
+            supportedGenerationMethods: ['generateContent'],
+          },
+          { name: 'models/aqa', displayName: 'AQA' }, // supportedGenerationMethods 없음 → 제외(?? false)
+        ],
+      }),
+    }))
+    const p = createGoogleProvider(baseGoogle, http)
+    const models = await p.listModels!()
+
+    expect(models).toEqual([
+      { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    ])
+    expect(calls[0].url).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000',
+    )
+    expect(calls[0].init.method).toBe('GET')
+    expect(calls[0].init.headers['x-goog-api-key']).toBe('key-g')
+  })
+
+  it('비-2xx 응답은 ApiProviderError 로 표면화한다(engine 이 폴백 결정)', async () => {
+    const { http } = mockHttp(() => ({ ok: false, status: 401, body: 'invalid key' }))
+    const p = createAnthropicProvider(baseAnthropic, http)
+    await expect(p.listModels!()).rejects.toBeInstanceOf(ApiProviderError)
+  })
+})
+
+describe('defaultHttp (GET/HEAD body-strip · #13 listModels 전제)', () => {
+  it('GET 은 body 없이 fetch 를 호출하고(fetch 가 GET+body 거부), POST 는 body 를 싣는다', async () => {
+    const calls: { url: string; init: RequestInit }[] = []
+    const fakeFetch = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ url, init })
+      return { ok: true, status: 200, text: async () => '{}', body: null } as unknown as Response
+    })
+    vi.stubGlobal('fetch', fakeFetch)
+    try {
+      await defaultHttp('https://x/models', { method: 'GET', headers: { a: '1' }, body: '' })
+      await defaultHttp('https://x/chat', { method: 'POST', headers: { a: '1' }, body: '{"q":1}' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    // GET: body 키 자체가 fetch 에 전달되지 않는다(undici 가 GET+body 를 TypeError 로 거부하므로).
+    expect('body' in calls[0].init).toBe(false)
+    expect(calls[0].init.method).toBe('GET')
+    expect(calls[0].init.headers).toEqual({ a: '1' })
+    // POST: body 는 그대로 전달된다(무회귀).
+    expect(calls[1].init.body).toBe('{"q":1}')
   })
 })

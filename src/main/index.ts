@@ -89,6 +89,9 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   ipcMain.handle('fleet:session:capabilities', (_e, id: string, roles: AgentRole[]) =>
     engine.setSessionCapabilities(id, roles),
   )
+  ipcMain.handle('fleet:session:listModels', (_e, config: ApiProviderConfig) =>
+    engine.listProviderModels(config),
+  )
 
   // 프로젝트 / 오케스트레이션
   ipcMain.handle('fleet:project:list', () => engine.listProjects())

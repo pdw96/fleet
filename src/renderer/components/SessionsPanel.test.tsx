@@ -232,6 +232,62 @@ describe('SessionsPanel', () => {
     expect(String(cfg.displayName)).not.toContain('cache:1h')
   })
 
+  it('모델 불러오기 클릭 → listModels 결과를 datalist 옵션으로 노출한다 (#13)', async () => {
+    const fleet = mockFleet({
+      listModels: vi.fn().mockResolvedValue([
+        { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+        { id: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
+      ]),
+    })
+    const result = await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
+
+    await waitFor(() => expect(fleet.listModels).toHaveBeenCalled())
+    const cfg = (fleet.listModels as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
+    expect(cfg.provider).toBe('anthropic')
+    expect(cfg.apiKey).toBe('key-1')
+
+    await waitFor(() => {
+      const opts = [...result.container.querySelectorAll('datalist option')].map(
+        (o) => (o as HTMLOptionElement).value,
+      )
+      expect(opts).toEqual(['claude-sonnet-4-6', 'claude-opus-4-8'])
+    })
+  })
+
+  it('listModels 실패 시 에러를 표시하고 모델 입력 자유입력 폴백을 유지한다 (#13)', async () => {
+    mockFleet({ listModels: vi.fn().mockRejectedValue(new Error('조회 실패함')) })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('조회 실패함')
+    // 입력란은 하드코딩 기본값(PROVIDER_DEFAULTS.anthropic)을 유지한다 — 자유입력 폴백.
+    expect((screen.getByLabelText('모델') as HTMLInputElement).value).toBe('claude-sonnet-4-6')
+  })
+
+  it('openai-compatible 에서 baseUrl 미입력이면 모델 불러오기 버튼이 비활성이다 (#13 UX dead-end 방지)', async () => {
+    mockFleet({ listModels: vi.fn() })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+
+    const btn = screen.getByRole('button', { name: '모델 불러오기' }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true) // baseUrl 비어 있음 → 비활성(침묵 무반응 방지)
+
+    fireEvent.change(screen.getByLabelText(/Base URL/i), {
+      target: { value: 'https://openrouter.ai/api/v1' },
+    })
+    expect(btn.disabled).toBe(false) // baseUrl 채우면 활성
+  })
+
   it('MCP 서버 JSON 을 적용하고 상태를 표시한다', async () => {
     const status = [
       { name: 'fs', connected: true, toolCount: 2, tools: ['mcp__fs__read', 'mcp__fs__write'] },

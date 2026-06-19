@@ -20,6 +20,7 @@ const api: FleetBridge = {
   removeSession: (id) => ipcRenderer.invoke('fleet:session:remove', id),
   setSessionCapabilities: (id, roles) =>
     ipcRenderer.invoke('fleet:session:capabilities', id, roles),
+  listModels: (config) => ipcRenderer.invoke('fleet:session:listModels', config),
 
   // 프로젝트 / 오케스트레이션
   listProjects: () => ipcRenderer.invoke('fleet:project:list'),

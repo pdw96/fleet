@@ -181,6 +181,15 @@ export interface ApiProviderConfig {
   cacheTtl?: CacheTtl
 }
 
+/**
+ * provider 모델 목록 API 로 라이브 조회한 모델 항목. id=모델 식별자(세션에 제출하는 값),
+ * label=표시명(없으면 id 를 표시). 하드코딩 PROVIDER_DEFAULTS 표류 제거용 — 실패 시 폴백. #13
+ */
+export interface ModelOption {
+  id: string
+  label?: string
+}
+
 /** 등록된 LLM 디스크립터 (CLI 또는 API 통합). */
 export interface LlmDescriptor {
   id: string
@@ -477,6 +486,8 @@ export interface FleetBridge {
   removeSession(id: string): Promise<void>
   /** 세션의 적합 역할(capabilities)을 설정한다. capability-scored 배정의 근거. */
   setSessionCapabilities(id: string, roles: AgentRole[]): Promise<LlmDescriptor>
+  /** provider API 로 모델 목록을 라이브 조회한다. 미지원 provider 는 빈 배열, HTTP/인증 실패는 reject(렌더러가 사유 표시·입력은 하드코딩 폴백). #13 */
+  listModels(config: ApiProviderConfig): Promise<ModelOption[]>
 
   // 프로젝트 / 오케스트레이션
   listProjects(): Promise<Project[]>

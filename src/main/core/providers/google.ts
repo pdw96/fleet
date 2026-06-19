@@ -4,6 +4,7 @@ import {
   ApiProviderError,
   assertNever,
   defaultHttp,
+  getJson,
   requireApiKey,
   sendWithSchemaFallback,
   textOf,
@@ -15,6 +16,7 @@ import {
   type FinishReason,
   type HttpClient,
   type HttpResponse,
+  type ModelOption,
   type ProviderMeta,
   type ReasoningEffort,
   type ToolUseBlock,
@@ -392,6 +394,29 @@ export function createGoogleProvider(
     id: config.id,
     provider: 'google',
     model: config.model,
+    async listModels(signal?: AbortSignal): Promise<ModelOption[]> {
+      const apiKey = requireApiKey(config)
+      // pageSize=1000(문서상 최대)로 한 페이지에 전 카탈로그를 받는다 — 기본 50 페이지네이션 절단 방지.
+      const json = (await getJson(
+        http,
+        'google',
+        `${BASE}?pageSize=1000`,
+        { 'x-goog-api-key': apiKey },
+        signal,
+      )) as {
+        models?: { name?: string; displayName?: string; supportedGenerationMethods?: string[] }[]
+      }
+      return (json.models ?? [])
+        .filter(
+          (m): m is { name: string; displayName?: string; supportedGenerationMethods?: string[] } =>
+            typeof m.name === 'string' &&
+            (m.supportedGenerationMethods?.includes('generateContent') ?? false),
+        )
+        .map((m) => {
+          const id = m.name.replace(/^models\//, '')
+          return { id, ...(m.displayName ? { label: m.displayName } : {}) }
+        })
+    },
     async chat(messages: ChatTurn[], opts: ApiCallOptions = {}): Promise<ChatResult> {
       const apiKey = requireApiKey(config)
       const temperature = opts.temperature ?? config.temperature
