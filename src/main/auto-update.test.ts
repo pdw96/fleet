@@ -134,4 +134,34 @@ describe('installAutoUpdate — 무장', () => {
     expect(controller.getState()).toEqual({ kind: 'idle' })
     expect(sent).toEqual([]) // dismiss 는 broadcast 안 함
   })
+
+  it('install 후 error → 배너(install=사용자 기동, activeOp=install 유지 의도 문서화)', () => {
+    const { updater, sent, controller } = make()
+    // update-downloaded 로 check 종단(activeOp=null)
+    updater.emit('update-downloaded', { version: '0.2.0' })
+    // install 호출 → activeOp='install' 설정 + quitAndInstall 호출(no-op)
+    controller.install()
+    // quitAndInstall 이후 updater 가 error 를 발화하면 배너로 분류
+    updater.emit('error', new Error('install fail'))
+    expect(sent.at(-1)).toEqual({ kind: 'error', message: 'install fail' })
+  })
+
+  it('update-not-available → state=not-available + activeOp 클리어(이후 error 는 백그라운드)', () => {
+    const { updater, sent, controller } = make()
+    updater.emit('update-not-available')
+    expect(sent.at(-1)).toEqual({ kind: 'not-available' })
+    expect(controller.getState()).toEqual({ kind: 'not-available' })
+    // activeOp 는 update-not-available 에서 null 로 클리어되어야 함
+    const before = sent.length
+    updater.emit('error', new Error('bg'))
+    expect(sent.length).toBe(before) // 새 send 없음(백그라운드 분류)
+  })
+
+  it("백그라운드 체크 에러 → log-only(타이밍 보충): installAutoUpdate 가 void controller.check()를\n       호출해 activeOp='check'를 동기적으로 설정한 뒤 checkForUpdates()를 await 하므로,\n       error 이벤트를 즉시 발화해도 올바르게 백그라운드로 분류된다", () => {
+    const { updater, sent, log } = make()
+    // 기동 직후 error — activeOp='check' 상태에서 발화되므로 백그라운드
+    updater.emit('error', new Error('startup-fail'))
+    expect(sent).toEqual([])
+    expect(log.warn).toHaveBeenCalledTimes(1)
+  })
 })
