@@ -1031,3 +1031,27 @@ code.id {
   font-size: 11px;
   color: var(--faint);
 }
+
+.update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--panel, #25262b);
+  border: 1px solid var(--line, #3a3b40);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  z-index: 50;
+  font-size: 13px;
+}
+.update-banner-error {
+  border-color: var(--bad, #e5484d);
+}
+.btn-ghost {
+  background: transparent;
+  opacity: 0.75;
+}
