@@ -6,14 +6,10 @@ on:
 permissions:
   contents: write
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    env:
-      HUSKY: 0
+  # 매트릭스 publish 전에 draft 릴리스를 한 곳에서 미리 생성 — 동시 생성 race 방지(P2-D),
+  # prerelease 태그(v*-*) 는 생성 시점에 prerelease 로 표시(P2-E).
+  prepare:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,24 +24,59 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG"
             exit 1
           fi
+      - name: Create draft release (idempotent; prerelease if tag has a -segment)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; reusing"
+            exit 0
+          fi
+          PRERELEASE=""
+          case "$GITHUB_REF_NAME" in
+            *-*) PRERELEASE="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            $PRERELEASE
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
       - run: npm run build
+      # draft 가 이미 존재하므로 electron-builder 는 생성하지 않고 자산만 업로드.
       - run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 모든 플랫폼 빌드가 draft 에 자산을 올린 뒤에만 릴리스를 공개 (부분 릴리스 노출 방지)
-  publish-release:
+  # 양 플랫폼 build 가 모두 성공해 draft 에 자산을 올린 뒤에만 공개(부분 릴리스 노출 방지).
+  release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
       - name: Publish the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
