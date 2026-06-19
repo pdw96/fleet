@@ -4,6 +4,10 @@
   "private": true,
   "description": "멀티 LLM 오케스트레이션 데스크톱 앱",
   "author": "Dowon Park",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pdw96/fleet.git"
+  },
   "main": "./out/main/index.js",
   "engines": {
     "node": ">=22.22.1 <23 || >=24"
@@ -15,6 +19,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "dist": "electron-vite build && electron-builder",
+    "dist:dir": "electron-vite build && electron-builder --dir",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json && tsc -p tsconfig.e2e.json",
     "lint": "eslint .",
@@ -38,6 +44,7 @@
     "@types/safe-regex": "^1.1.6",
     "@vitejs/plugin-react": "^4.3.2",
     "electron": "^33.0.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
     "eslint": "^9.13.0",
     "eslint-config-prettier": "^10.1.8",
