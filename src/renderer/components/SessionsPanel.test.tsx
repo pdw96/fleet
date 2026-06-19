@@ -303,6 +303,23 @@ describe('SessionsPanel', () => {
     expect(screen.getByRole('button', { name: '모델 불러오기' })).toBeTruthy()
   })
 
+  it('조회가 settle 되기 전에 입력을 바꾸면 응답을 기다리지 않고 즉시 로딩이 풀려 재시도 가능하다 (#13 Codex P2)', async () => {
+    // listModels 를 영원히 pending 으로 둬 in-flight 상태를 고정(느린/불통 엔드포인트 모사).
+    const listModels = vi.fn(() => new Promise<never>(() => {}))
+    mockFleet({ listModels })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
+    await waitFor(() => expect(listModels).toHaveBeenCalled())
+    // 로딩 중 — 버튼 라벨이 '불러오는 중…' 으로 바뀌어 '모델 불러오기' 는 사라진다.
+    expect(screen.queryByRole('button', { name: '모델 불러오기' })).toBeNull()
+
+    // 요청이 settle 되기 전에 provider 변경 → 즉시 로딩 해제(응답 대기 없이 재시도 가능)
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
+    expect(screen.getByRole('button', { name: '모델 불러오기' })).toBeTruthy()
+  })
+
   it('openai-compatible 에서 baseUrl 미입력이면 모델 불러오기 버튼이 비활성이다 (#13 UX dead-end 방지)', async () => {
     mockFleet({ listModels: vi.fn() })
     await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)

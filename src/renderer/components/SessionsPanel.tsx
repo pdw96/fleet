@@ -180,6 +180,15 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   }
 
   // 현재 provider+키로 사용 가능한 모델을 라이브 조회한다(#13). 결과는 datalist 제안으로 노출되며
+  // 진행 중 모델 조회를 무효화하고 stale 제안·로딩 상태를 즉시 정리한다. provider/key/baseUrl 이
+  // 바뀔 때 호출 — seq 를 밀어 늦게 온 응답을 폐기하고, 로딩을 즉시 풀어 새 입력으로 바로 재시도하게 한다
+  // (느린/불통 엔드포인트의 in-flight 요청이 settle 될 때까지 버튼이 잠기던 stuck 제거 — Codex P2).
+  function invalidateModelLookup() {
+    setModelOptions([])
+    setLoadingModels(false)
+    modelReqSeq.current++
+  }
+
   // 입력란은 그대로 자유입력 — 실패하면 사유를 표시하고 PROVIDER_DEFAULTS 기본값을 유지한다.
   async function loadModels() {
     if (!apiKey.trim()) return
@@ -201,9 +210,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
     } catch (e) {
       if (seq === modelReqSeq.current) setError(`모델 조회 실패: ${asError(e)}`)
     } finally {
-      // 로딩 해제는 무조건 — 버튼이 로딩 중 disabled 라 동시 요청이 없고(이게 유일한 in-flight),
-      // 입력 변경으로 seq 가 밀려도 스피너가 '불러오는 중…' 에 영구히 갇히지 않게 한다(Codex P2).
-      setLoadingModels(false)
+      // 이 요청이 여전히 최신일 때만 해제 — 더 새 요청이 진행 중이면 그 로딩을 조기 해제하지 않는다.
+      // 입력 변경 시엔 invalidateModelLookup 이 이미 즉시 해제하므로 stuck 되지 않는다.
+      if (seq === modelReqSeq.current) setLoadingModels(false)
     }
   }
 
@@ -339,8 +348,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                 const p = e.target.value as ApiProviderConfig['provider']
                 setProvider(p)
                 setModel(PROVIDER_DEFAULTS[p])
-                setModelOptions([]) // provider 전환 시 이전 provider 의 stale 모델 목록 제거
-                modelReqSeq.current++ // in-flight 조회 응답도 무효화(stale 레이스 차단)
+                invalidateModelLookup() // provider 전환 → stale 제안·in-flight 응답·로딩 즉시 정리
               }}
             >
               <option value="anthropic">Anthropic</option>
@@ -396,8 +404,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               value={baseUrl}
               onChange={(e) => {
                 setBaseUrl(e.target.value)
-                setModelOptions([]) // baseUrl 변경 → 이전 엔드포인트의 stale 제안 제거
-                modelReqSeq.current++ // in-flight 조회 응답도 무효화
+                invalidateModelLookup() // baseUrl 변경 → 이전 엔드포인트의 stale 제안·in-flight·로딩 정리
               }}
               placeholder="https://openrouter.ai/api/v1"
             />
@@ -465,8 +472,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             placeholder="sk-..."
             onChange={(e) => {
               setApiKey(e.target.value)
-              setModelOptions([]) // 키 변경 → 이전 키로 받은 stale 제안 제거
-              modelReqSeq.current++ // in-flight 조회 응답도 무효화
+              invalidateModelLookup() // 키 변경 → 이전 키로 받은 stale 제안·in-flight·로딩 정리
             }}
           />
         </div>

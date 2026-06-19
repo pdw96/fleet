@@ -3737,6 +3737,8 @@ describe('listModels (#13 라이브 모델 조회)', () => {
           { id: 'gpt-3.5-turbo-instruct', object: 'model' }, // 제외(레거시 completions 전용)
           { id: 'davinci-002', object: 'model' }, // 제외(레거시 completions)
           { id: 'babbage-002', object: 'model' }, // 제외(레거시 completions)
+          { id: 'gpt-4o-realtime-preview', object: 'model' }, // 제외(Realtime 전용)
+          { id: 'sora-2', object: 'model' }, // 제외(비디오)
           { id: 'gpt-4o', object: 'model' },
           { id: 'gpt-4o-audio-preview', object: 'model' }, // 보존 — 오디오 모달리티 chat 모델(audio 토큰 미적용)
         ],
