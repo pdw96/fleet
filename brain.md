@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 56 files · 138 import wires · 32 IPC channels · 생성 2026-06-17T12:45 UTC
+> 56 files · 138 import wires · 33 IPC channels · 생성 2026-06-19T11:09 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -19,7 +19,7 @@
 - **승인 게이트**(위험작업 차단): safety/approval
 
 ## 런타임 배선 (import 로는 안 보이는 연결)
-- renderer/App, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel →(window.fleet)→ preload/index.ts → main/index.ts (32 IPC channels) → engine
+- renderer/App, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel →(window.fleet)→ preload/index.ts → main/index.ts (33 IPC channels) → engine
 - session/cli-session → claude · codex · gemini
 - session/api-session → Anthropic · OpenAI · Google
 - mcp/stdio → MCP servers
@@ -36,7 +36,7 @@
 - **renderer/components/ApprovalModal** — 위험한 작업을 하기 전에 사용자에게 허락을 받는 확인 창 _파일 삭제·명령 실행 같은 위험 작업이 생기면 '거부/승인' 팝업을 띄우고, 정해진 시간이 지나면 자동으로 거부합니다. 실수로 엔터를 눌러도 거부 쪽으로 떨어지게 해 위험한 작업이 잘못 승인되는 걸 막습니다._
   - →의존: shared/types · ←피의존: renderer/App · 140줄
 - **renderer/components/SessionsPanel** — 어떤 AI를 쓸지 등록하고 설정하는 세션 관리 화면 _컴퓨터에 깔린 클로드·코덱스 같은 CLI 도구를 감지해 등록하거나, API 키를 넣어 Anthropic·OpenAI·Google AI를 추가하고, 각 AI가 잘하는 역할과 외부 도구(MCP) 연결도 지정합니다._
-  - →의존: shared/types · ←피의존: renderer/App · 527줄
+  - →의존: shared/types · ←피의존: renderer/App · 602줄
 - **renderer/ui** — 화면의 색과 클래스 이름을 다루는 작은 도우미 모음 _작업 상태(완료·실패·진행 중 등)에 맞는 색을 골라 주고, 채팅에 참여한 AI마다 고유한 색을 정해 누가 말했는지 한눈에 구분되게 합니다. 조건에 맞는 화면 스타일 이름을 합치는 간단한 기능도 들어 있습니다._
   - →의존: — · ←피의존: renderer/components/ChatPanel, renderer/components/ProjectPanel · 46줄
 - **renderer/main** — 앱 화면을 맨 처음 켜서 빈 페이지에 띄우는 시작 부품 _웹 페이지의 빈 자리를 찾아 그 안에 위의 App 화면 전체를 그려 넣어 앱을 처음 띄웁니다. 개발 중 실수를 더 잘 잡아주는 점검 모드로 감싸 실행합니다._
@@ -44,11 +44,11 @@
 
 ### preload · preload — 화면(앱 창)과 앱의 두뇌(본체)를 안전하게 이어주는 다리로, 화면이 본체에 일을 시키고 결과를 돌려받게 해 주는 창구 역할을 한다.
 - **preload/index** — 앱 화면과 본체 사이를 안전하게 잇는 단 하나의 통로(창구) 부품 _화면 쪽 코드는 본체에 직접 손대지 못하고, 이 파일이 미리 정해 둔 'fleet'이라는 안내 데스크를 통해서만 요청을 전달한다. 마치 은행 창구처럼, 손님(화면)이 정해진 양식으로만 요청하고 직원(본체)이 처리해 결과를 돌려주는 구조라 안전하다._
-  - →의존: shared/types · ←피의존: — · 83줄
+  - →의존: shared/types · ←피의존: — · 84줄
 
 ### main · main — Fleet 앱의 본체(메인 프로세스)를 켜고, 창과 보안 빗장을 설치하며, 화면과 AI 엔진을 안전하게 연결하는 시동·관문 묶음이다.
 - **main/index** — 앱에 시동을 걸어 창을 띄우고 화면과 AI 엔진을 이어주는 '시동·교환대' _앱이 준비되면 AI 엔진을 만들고, 화면(창)을 띄우며, 화면이 보내는 모든 요청(세션 등록·채팅·프로젝트 실행·승인 응답 등)을 엔진의 해당 기능으로 연결하는 전화 교환대 역할을 한다. 창을 만들 때 보안 빗장 두 개(이동 차단·권한 차단)를 걸고, 앱을 끌 때는 켜져 있던 AI 프로그램들을 깔끔히 정리한 뒤 종료해 '좀비' 프로세스가 남지 않게 한다._
-  - →의존: engine, main/crash-recovery, main/e2e, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, store/json-file · ←피의존: — · 223줄
+  - →의존: engine, main/crash-recovery, main/e2e, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, store/json-file · ←피의존: — · 226줄
 - **main/e2e** — 자동 테스트할 때만 켜지는 '연습용 가짜 AI' 장치 _진짜 AI를 부르는 대신 미리 정해둔 답을 흉내 내, 화면 자동검사(Playwright)가 흔들림 없이 돌아가게 한다. 가짜 AI 둘과 토론방 하나, 임시 작업폴더를 미리 깔아두며, 일부러 '응답 중' 상태에서 멈춰 탭을 옮겼다 돌아와도 진행 표시가 살아있는지 확인하게 해준다. FLEET_E2E 라는 스위치가 정확히 '1'일 때만 작동하고 평소엔 절대 끼어들지 않는다._
   - →의존: cli/detect, engine · ←피의존: main/index · 39줄
 - **main/secret-crypto** — API 키 같은 비밀번호를 운영체제 금고로 잠갔다 푸는 '비밀 자물쇠' _맥의 키체인, 윈도우의 DPAPI 같은 운영체제 내장 금고를 이용해 API 키를 암호화해 저장하고, 필요할 때 다시 풀어준다. 리눅스에서 진짜 암호화가 안 되는 경우(평문 저장)는 보호가 0이라 아예 '사용 불가'로 처리해, 비밀이 무방비로 새지 않게 막는다._
@@ -62,15 +62,15 @@
 
 ### providers · core — 클로드·제미니·GPT 같은 여러 AI 서비스의 서로 다른 대화 방식을 똑같은 형태로 맞춰주고, 인터넷 장애에도 잘 견디게 해주는 'AI 통역·연결 창구' 모음.
 - **providers/types** — 모든 AI 창구가 똑같이 쓰는 공통 약속(데이터 모양)과 기본 도구를 모아 둔 규격집 _대화 한 마디, 답변 결과, 도구 호출, 토큰 사용량 같은 데이터의 표준 모양을 정의해 어떤 AI든 같은 형태로 주고받게 한다. 또 API 키 확인, 인터넷 통신 기본 도구, 오류 표현 같은 공용 부품도 함께 담고 있다._
-  - →의존: shared/types · ←피의존: engine, providers/anthropic, providers/google, providers/openai, providers/registry, providers/resilient, session/api-session, tools/context, tools/loop, tools/types · 260줄
+  - →의존: shared/types · ←피의존: engine, providers/anthropic, providers/google, providers/openai, providers/registry, providers/resilient, session/api-session, tools/context, tools/loop, tools/types · 295줄
 - **providers/registry** — 설정에 적힌 AI 종류를 보고 알맞은 창구를 골라 만들어 주는 안내데스크 _'anthropic·openai·google' 중 무엇인지 보고 그에 맞는 대화 창구를 하나 만들어 돌려준다. 새 AI 서비스를 추가할 때 여기 한 곳만 고치면 되도록 분기점을 모아 둔 곳이다._
   - →의존: providers/anthropic, providers/google, providers/openai, providers/types, shared/types · ←피의존: engine · 31줄
 - **providers/anthropic** — 클로드(Anthropic) AI 와 대화하는 전용 창구 _클로드에게 질문을 보내고 답을 받아오며, 답이 한 글자씩 실시간으로 오게 하는 처리도 한다. 또 클로드의 '깊이 생각하기' 기능이 켜지면 답이 잘리지 않게 답변 분량을 더 넉넉히 잡아주고, 모델 종류에 맞춰 안 통하는 설정은 알아서 빼준다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 532줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 549줄
 - **providers/google** — 구글 제미니(Gemini) AI 와 대화하는 전용 창구 _제미니에게 질문을 보내고 답을 받아오며, 제미니 버전(2.5/3 등)마다 다른 '생각 깊이' 설정 방식을 알아서 맞춰 보낸다. 생각하기를 켜면 답이 굶지 않도록 답변 분량을 늘리고, 제미니가 답을 차단했는지도 가려낸다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 530줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 555줄
 - **providers/openai** — OpenAI(GPT) 및 같은 방식을 쓰는 호환 AI 와 대화하는 전용 창구 _GPT 에게 질문을 보내고 답을 받아오며, o1·GPT-5 같은 추론 모델이 거부하는 설정(온도·토큰 항목 등)을 모델에 맞게 알아서 바꿔 보낸다. 같은 방식을 쓰는 다른 회사 AI(openai-compatible)도 이 창구로 함께 처리한다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 436줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 473줄
 - **providers/sse** — 실시간으로 조각조각 도착하는 답변 데이터를 한 덩어리씩 깔끔히 잘라 주는 도구 _AI 가 답을 한 글자씩 흘려보낼 때 인터넷으로 들어오는 데이터 조각에서 실제 내용만 골라내고, 의미 없는 줄이나 종료 신호는 걸러낸다. 글자가 중간에 끊겨 깨지지 않도록 안전하게 이어 붙인다._
   - →의존: — · ←피의존: providers/anthropic, providers/google, providers/openai · 27줄
 - **providers/resilient** — 인터넷 장애·지연에도 요청이 잘 끝나게 감싸 주는 안전장치 _응답이 너무 안 오면 무한정 기다리지 않게 제한시간을 걸고, 일시적 오류(과부하·서버 오류)면 잠깐 쉬었다 자동으로 다시 시도한다. 단, 사용자가 직접 취소하면 재시도하지 않고 즉시 멈춘다._
@@ -78,7 +78,7 @@
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
-  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git · ←피의존: engine · 633줄
+  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git · ←피의존: engine · 843줄
 - **orchestrator/plan** — 큰 목표를 실행 가능한 작은 작업 목록으로 쪼개 주는 계획 분해기 _기획 담당 AI에게 목표를 4~8개의 작업으로 나눠 달라고 요청하고, AI가 돌려준 응답이 형식이 조금 어긋나도 너그럽게 읽어내 작업 목록으로 정리합니다. 검증(테스트·빌드)이 실패하면 그 실패 내용을 다시 AI에게 알려 부족한 부분만 채울 '추가 보정 작업'도 뽑아냅니다._
   - →의존: orchestrator/assignment, orchestrator/review, session/types, shared/types · ←피의존: orchestrator/orchestrator · 159줄
 - **orchestrator/assignment** — 어떤 AI에게 어떤 역할(기획·구현·검토 등)을 맡길지 정하는 자리 배정표 _'계획짜기·설계·구현·검토·테스트' 같은 7가지 역할을 정해진 규칙(수동 지정·차례로 돌리기·잘하는 사람 우선)에 따라 AI들에게 나눠 줍니다. 같은 입력이면 늘 같은 결과가 나오고, '잘하는 사람 우선' 규칙에서도 한 AI에게 일이 몰리지 않도록 적게 쓴 AI를 먼저 골라 균형을 맞춥니다._
@@ -102,7 +102,7 @@
 
 ### engine · core — 여러 AI(구독형 CLI와 API)를 한곳에서 등록·관리하고, 채팅과 프로젝트 작업을 진행시키는 앱의 중앙 관제실 역할을 하는 모듈이다.
 - **engine** — 앱의 모든 핵심 기능을 한곳에 모아 화면 쪽에 단일 창구로 내주는 '중앙 관제실' 부품 _AI 세션 등록·삭제, 채팅 주고받기, 프로젝트 작업 실행과 취소, 외부 도구 연결 같은 기능을 묶어 화면(IPC) 쪽에서 부르기 쉬운 하나의 입구로 제공한다. 앱을 다시 켜도 저장해 둔 AI 세션을 다시 살려내고, API 키는 OS 암호화로 안전하게 보관·복원한다._
-  - →의존: chat/room, cli/detect, cli/registry, mcp/host, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, providers/resilient, providers/types, +13 · ←피의존: main/e2e, main/index · 793줄
+  - →의존: chat/room, cli/detect, cli/registry, mcp/host, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, providers/resilient, providers/types, +13 · ←피의존: main/e2e, main/index · 825줄
 
 ### mcp · core — 바깥에서 가져온 도구 프로그램(MCP 서버)을 Fleet 안으로 안전하게 연결해, AI들이 쓸 수 있는 도구로 바꿔 관리하는 모듈이다.
 - **mcp/types** — 이 모듈의 부품들이 공유하는 약속(설계도) 모음 파일 _자식 프로세스, 통신 통로, 도구 정보, 서버 관리자 등이 각각 어떤 기능을 갖춰야 하는지 형태만 정의해 둔다. 실제 동작 코드는 없고, 부품들이 서로 같은 규격으로 끼워 맞춰지도록 하는 인터페이스다._
@@ -156,7 +156,7 @@
 
 ### workspace · core — AI들이 작업방에서 코드를 고칠 때, 시작 시점을 기록해 두고 무엇이 바뀌었는지 보여주거나 통째로 되돌릴 수 있게 해주는 안전장치 모듈.
 - **workspace/git** — AI가 코드를 고치기 전 상태를 저장해 두고, 바뀐 내용을 모아 보여주거나 처음으로 되돌리는 작업 기록 관리원 _작업방을 버전 관리 저장소(git)로 만들어 '시작 사진'을 찍어두고, AI가 무엇을 바꿨는지 변경 목록과 그 내용(diff)을 모아 보여주거나, 마음에 안 들면 시작 사진 시점으로 통째로 되돌립니다. 사용자가 미리 만들어둔 작업은 시작 때 따로 보존해 지워지지 않게 하고, 여러 AI가 동시에 저장소를 건드려 생기는 잠금 충돌은 잠깐 기다렸다 다시 시도하며, 변경 내용이 너무 길면 6만 자에서 잘라 보여줍니다._
-  - →의존: cli/detect · ←피의존: engine, orchestrator/diff-risk, orchestrator/orchestrator · 153줄
+  - →의존: cli/detect · ←피의존: engine, orchestrator/diff-risk, orchestrator/orchestrator · 219줄
 
 ### process · core — AI 도구를 강제로 멈출 때, 겉껍데기뿐 아니라 그 아래 딸린 자식 프로그램들까지 한꺼번에 깔끔히 종료시키는 일을 맡는 모듈.
 - **process/kill-tree** — 실행 중인 AI 프로그램과 그것이 줄줄이 띄운 하위 프로그램들을 통째로 종료시키는 부품 _작업을 취소하거나 시간 초과로 멈출 때, 윈도우에서는 시스템의 taskkill 명령(/T 트리·/F 강제)으로 부모부터 손자까지 가족 전체를 한 번에 끝낸다. 윈도우가 아니면 그냥 프로그램 하나만 끄면 충분하므로 바로 멈춘다._
@@ -172,7 +172,7 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/detect, cli/output, cli/registry, engine, main/index, mcp/host, mcp/stdio, mcp/types, mcp/wrap, +26 · 522줄
+  - →의존: — · ←피의존: chat/room, cli/detect, cli/output, cli/registry, engine, main/index, mcp/host, mcp/stdio, mcp/types, mcp/wrap, +26 · 540줄
 
 ---
 _이 파일은 자동 생성물이다. 코드 변경 후 `npm run brain` 으로 갱신. 설명은 `scripts/brain/descriptions.json` 에서 손볼 수 있다._

@@ -3,6 +3,7 @@ import { sseData } from './sse'
 import {
   ApiProviderError,
   defaultHttp,
+  getJson,
   requireApiKey,
   sendWithSchemaFallback,
   textOf,
@@ -14,12 +15,28 @@ import {
   type FinishReason,
   type HttpClient,
   type HttpResponse,
+  type ModelOption,
   type TextBlock,
   type TokenUsage,
   type ToolUseBlock,
 } from './types'
 
 const ENDPOINT = 'https://api.openai.com/v1/chat/completions'
+const MODELS_ENDPOINT = 'https://api.openai.com/v1/models'
+// Chat Completions 로 호출 불가한 OpenAI 모델 계열(임베딩·음성·이미지·모더레이션·Responses 전용) —
+// 모델 피커 노이즈·오선택 400 방지. 안정적 제품 계열명만 denylist 한다(allowlist 가 아니라 #13 의 하드코딩
+// 표류를 최소화). chat 모델 누락보다 비-chat 노출이 덜 해롭도록 보수적으로 유지한다. 'audio' 토큰은 제외한다 —
+// gpt-4o-audio-preview 처럼 오디오 모달리티 chat 모델을 오제외하기 때문(순수 음성은 whisper/tts/transcribe 로 잡힘).
+// /v1/chat/completions 로 호출 불가한 비-chat 계열을 best-effort 로 거른다(모델 피커 노이즈·오선택 400
+// 방지). 완전 열거가 불가능한 denylist 라 새 계열이 나오면 추가하지만, 입력란이 자유입력+폴백이라 누락된
+// 한두 모델이 제안돼도 사용자가 직접 교정 가능 — chat 모델 누락(false-positive)이 더 해로우니 보수적으로 둔다.
+//   • 임베딩/음성/이미지/모더레이션: embedding·whisper·tts·dall-e·transcribe·image (audio 는 chat 변종과 겹쳐 제외)
+//   • Responses 전용: computer-use(-preview)·realtime·*-pro(pro 티어는 o-pro·gpt-5.5-pro 모두 Responses
+//     전용 — context7 OpenAI changelog 확인. chat 모델엔 '-pro' 접미사가 없어 false-positive 위험 없음)
+//   • 레거시 completions: instruct·davinci·babbage · 비디오: sora
+// (Codex P2/P3 반복 반영). 장기적으론 per-model capability 조회가 정답(#13 후속).
+const OPENAI_NON_CHAT =
+  /embedding|whisper|tts|dall-?e|moderation|transcrib|image|computer-use|instruct|davinci|babbage|realtime|sora|-pro\b/i
 
 interface OpenAiToolCall {
   id?: string
@@ -290,6 +307,26 @@ export function createOpenAiProvider(
     id: config.id,
     provider: config.provider,
     model: config.model,
+    async listModels(signal?: AbortSignal): Promise<ModelOption[]> {
+      const apiKey = requireApiKey(config)
+      const compatible = config.provider === 'openai-compatible'
+      const url = compatible ? requireBaseRoot(config) + '/models' : MODELS_ENDPOINT
+      const json = (await getJson(
+        http,
+        config.provider,
+        url,
+        { authorization: `Bearer ${apiKey}` },
+        signal,
+      )) as { data?: { id?: string }[] }
+      return (
+        (json.data ?? [])
+          .map((m) => m.id)
+          .filter((id): id is string => typeof id === 'string')
+          // openai-compatible 게이트웨이는 비-chat 분류가 제각각이라 필터하지 않는다(미지의 chat 모델 누락 방지).
+          .filter((id) => compatible || !OPENAI_NON_CHAT.test(id))
+          .map((id) => ({ id }))
+      )
+    },
     async chat(messages: ChatTurn[], opts: ApiCallOptions = {}): Promise<ChatResult> {
       const apiKey = requireApiKey(config)
       const compatible = config.provider === 'openai-compatible'
@@ -416,12 +453,17 @@ export function createOpenAiProvider(
   }
 }
 
-/** openai-compatible 의 baseUrl 을 정규화해 /chat/completions 엔드포인트로 만든다. 누락 시 throw. */
-function requireBaseUrl(config: ApiProviderConfig): string {
+/** openai-compatible baseUrl 의 후행 슬래시를 제거한 루트. 누락 시 throw. (엔드포인트 도출 공용) */
+function requireBaseRoot(config: ApiProviderConfig): string {
   const base = config.baseUrl?.trim()
   if (!base)
     throw new Error(`[openai-compatible] baseUrl 이 설정되지 않았습니다 (id=${config.id}).`)
-  return base.replace(/\/+$/, '') + '/chat/completions'
+  return base.replace(/\/+$/, '')
+}
+
+/** openai-compatible 의 baseUrl 을 정규화해 /chat/completions 엔드포인트로 만든다. 누락 시 throw. */
+function requireBaseUrl(config: ApiProviderConfig): string {
+  return requireBaseRoot(config) + '/chat/completions'
 }
 
 /** tool_call arguments 는 JSON 문자열이다. 파싱 실패 시 원문을 보존한다. */

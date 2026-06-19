@@ -4,6 +4,7 @@ import {
   ApiProviderError,
   assertNever,
   defaultHttp,
+  getJson,
   requireApiKey,
   textOf,
   type ApiCallOptions,
@@ -14,11 +15,13 @@ import {
   type FinishReason,
   type HttpClient,
   type HttpResponse,
+  type ModelOption,
   type ReasoningEffort,
   type ToolUseBlock,
 } from './types'
 
 const ENDPOINT = 'https://api.anthropic.com/v1/messages'
+const MODELS_ENDPOINT = 'https://api.anthropic.com/v1/models'
 const API_VERSION = '2023-06-01'
 /** 기본 max_tokens. 과거 1024 는 현대 모델에서 쉽게 truncation 을 유발한다. */
 const DEFAULT_MAX_TOKENS = 4096
@@ -322,6 +325,20 @@ export function createAnthropicProvider(
     provider: 'anthropic',
     model: config.model,
     nativeContextManagement: true,
+    async listModels(signal?: AbortSignal): Promise<ModelOption[]> {
+      const apiKey = requireApiKey(config)
+      // limit=1000(문서상 최대)로 한 페이지에 전 카탈로그를 받는다 — 기본 limit=20 페이지네이션 절단 방지.
+      const json = (await getJson(
+        http,
+        'anthropic',
+        `${MODELS_ENDPOINT}?limit=1000`,
+        { 'x-api-key': apiKey, 'anthropic-version': API_VERSION },
+        signal,
+      )) as { data?: { id?: string; display_name?: string }[] }
+      return (json.data ?? [])
+        .filter((m): m is { id: string; display_name?: string } => typeof m.id === 'string')
+        .map((m) => ({ id: m.id, ...(m.display_name ? { label: m.display_name } : {}) }))
+    },
     async chat(messages: ChatTurn[], opts: ApiCallOptions = {}): Promise<ChatResult> {
       const apiKey = requireApiKey(config)
       const system = messages

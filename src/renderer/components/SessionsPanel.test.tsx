@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { CliDetectionResult } from '../../shared/types'
+import type { CliDetectionResult, ModelOption } from '../../shared/types'
 import { SessionsPanel } from './SessionsPanel'
 
 const installedCli: CliDetectionResult = {
@@ -230,6 +230,109 @@ describe('SessionsPanel', () => {
     expect(cfg.provider).toBe('openai')
     expect('cacheTtl' in cfg).toBe(false)
     expect(String(cfg.displayName)).not.toContain('cache:1h')
+  })
+
+  it('모델 불러오기 클릭 → listModels 결과를 datalist 옵션으로 노출한다 (#13)', async () => {
+    const fleet = mockFleet({
+      listModels: vi.fn().mockResolvedValue([
+        { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+        { id: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
+      ]),
+    })
+    const result = await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
+
+    await waitFor(() => expect(fleet.listModels).toHaveBeenCalled())
+    const cfg = (fleet.listModels as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
+      string,
+      unknown
+    >
+    expect(cfg.provider).toBe('anthropic')
+    expect(cfg.apiKey).toBe('key-1')
+
+    await waitFor(() => {
+      const opts = [...result.container.querySelectorAll('datalist option')].map(
+        (o) => (o as HTMLOptionElement).value,
+      )
+      expect(opts).toEqual(['claude-sonnet-4-6', 'claude-opus-4-8'])
+    })
+  })
+
+  it('listModels 실패 시 에러를 표시하고 모델 입력 자유입력 폴백을 유지한다 (#13)', async () => {
+    mockFleet({ listModels: vi.fn().mockRejectedValue(new Error('조회 실패함')) })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('조회 실패함')
+    // 입력란은 하드코딩 기본값(PROVIDER_DEFAULTS.anthropic)을 유지한다 — 자유입력 폴백.
+    expect((screen.getByLabelText('모델') as HTMLInputElement).value).toBe('claude-sonnet-4-6')
+  })
+
+  it('조회 중 provider 를 바꾸면 늦게 온 stale 응답이 datalist 를 덮어쓰지 않는다 (#13 레이스 가드)', async () => {
+    let resolveList!: (v: ModelOption[]) => void
+    const listModels = vi.fn(
+      () =>
+        new Promise<ModelOption[]>((r) => {
+          resolveList = r
+        }),
+    )
+    mockFleet({ listModels })
+    const result = await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
+    await waitFor(() => expect(listModels).toHaveBeenCalled())
+
+    // 응답 도착 전에 provider 변경 → in-flight 요청 무효화
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
+    // 늦게 도착한 이전(anthropic) 결과
+    await act(async () => {
+      resolveList([{ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }])
+    })
+
+    const opts = [...result.container.querySelectorAll('datalist option')].map(
+      (o) => (o as HTMLOptionElement).value,
+    )
+    expect(opts).toEqual([]) // stale 결과 미반영(provider 변경으로 비워진 상태 유지)
+    // 로딩 상태는 풀려야 한다(스피너 '불러오는 중…' 영구 고정 방지 — Codex P2). 버튼 라벨이 복귀했는지로 검증.
+    expect(screen.getByRole('button', { name: '모델 불러오기' })).toBeTruthy()
+  })
+
+  it('조회가 settle 되기 전에 입력을 바꾸면 응답을 기다리지 않고 즉시 로딩이 풀려 재시도 가능하다 (#13 Codex P2)', async () => {
+    // listModels 를 영원히 pending 으로 둬 in-flight 상태를 고정(느린/불통 엔드포인트 모사).
+    const listModels = vi.fn(() => new Promise<never>(() => {}))
+    mockFleet({ listModels })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
+    await waitFor(() => expect(listModels).toHaveBeenCalled())
+    // 로딩 중 — 버튼 라벨이 '불러오는 중…' 으로 바뀌어 '모델 불러오기' 는 사라진다.
+    expect(screen.queryByRole('button', { name: '모델 불러오기' })).toBeNull()
+
+    // 요청이 settle 되기 전에 provider 변경 → 즉시 로딩 해제(응답 대기 없이 재시도 가능)
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
+    expect(screen.getByRole('button', { name: '모델 불러오기' })).toBeTruthy()
+  })
+
+  it('openai-compatible 에서 baseUrl 미입력이면 모델 불러오기 버튼이 비활성이다 (#13 UX dead-end 방지)', async () => {
+    mockFleet({ listModels: vi.fn() })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+
+    const btn = screen.getByRole('button', { name: '모델 불러오기' }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true) // baseUrl 비어 있음 → 비활성(침묵 무반응 방지)
+
+    fireEvent.change(screen.getByLabelText(/Base URL/i), {
+      target: { value: 'https://openrouter.ai/api/v1' },
+    })
+    expect(btn.disabled).toBe(false) // baseUrl 채우면 활성
   })
 
   it('MCP 서버 JSON 을 적용하고 상태를 표시한다', async () => {

@@ -1,7 +1,13 @@
-import type { ApiProviderConfig, CacheTtl, ReasoningEffort, ToolStep } from '../../../shared/types'
+import type {
+  ApiProviderConfig,
+  CacheTtl,
+  ModelOption,
+  ReasoningEffort,
+  ToolStep,
+} from '../../../shared/types'
 
 // ReasoningEffort 는 렌더러 설정 UI 와 공유돼 shared/types.ts 로 이동(단일 진실 원천) — 기존 import 경로 호환 재export.
-export type { ReasoningEffort }
+export type { ModelOption, ReasoningEffort }
 
 // ── 콘텐츠 블록 (멀티모달 · 도구 호출 대비) ─────────────────────────────────
 /**
@@ -182,6 +188,7 @@ export interface ApiCallOptions {
 export interface HttpInit {
   method: string
   headers: Record<string, string>
+  /** 요청 본문. GET/HEAD 는 fetch 가 body 를 거부하므로 defaultHttp 가 전송 시 생략한다(여기선 '' 로 전달). */
   body: string
   signal?: AbortSignal
 }
@@ -198,7 +205,12 @@ export type HttpClient = (url: string, init: HttpInit) => Promise<HttpResponse>
 
 /** 기본 HTTP 클라이언트: Node 전역 fetch 래핑. */
 export const defaultHttp: HttpClient = async (url, init) => {
-  const res = await fetch(url, init)
+  // fetch 는 GET/HEAD 에 body 가 실리면 TypeError 를 던진다 — bodyless 메서드는 body 를 빼고 호출한다.
+  const bodyless = init.method === 'GET' || init.method === 'HEAD'
+  const res = await fetch(
+    url,
+    bodyless ? { method: init.method, headers: init.headers, signal: init.signal } : init,
+  )
   // Node 의 fetch Response.body 는 async-iterable 한 ReadableStream<Uint8Array> 다.
   return {
     ok: res.ok,
@@ -217,6 +229,11 @@ export interface ApiProvider {
   readonly nativeContextManagement?: boolean
   /** 대화 턴 배열 → 구조화된 어시스턴트 응답(text · 도구호출 · 종료사유 · 사용량). */
   chat(messages: ChatTurn[], opts?: ApiCallOptions): Promise<ChatResult>
+  /**
+   * 사용 가능한 모델 목록을 provider API 로 라이브 조회한다(#13). 미구현 provider 도 있으므로 선택적 —
+   * 호출자(engine)는 부재/throw 를 빈 배열로 폴백 처리해 렌더러가 하드코딩 기본값을 쓰게 한다.
+   */
+  listModels?(signal?: AbortSignal): Promise<ModelOption[]>
 }
 
 export class ApiProviderError extends Error {
@@ -256,4 +273,22 @@ export async function sendWithSchemaFallback(
 /** 분기 누락을 컴파일 타임에 잡는다 — 새 ContentBlock variant 추가 시 모든 switch default 가 TS 에러. */
 export function assertNever(x: never): never {
   throw new Error(`Unhandled ContentBlock variant: ${JSON.stringify(x)}`)
+}
+
+/**
+ * GET 으로 JSON 본문을 받아 파싱한다(listModels 공용). 비-2xx 는 ApiProviderError 로 표면화해
+ * 호출자(engine)가 폴백을 결정하게 한다. 본문 없는 GET 이므로 body 를 싣지 않는다.
+ */
+export async function getJson(
+  http: HttpClient,
+  provider: string,
+  url: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  // body: '' 는 계약상 필수 필드 충족용 — defaultHttp 가 GET 전송 시 실제로 빼고 보낸다.
+  const res = await http(url, { method: 'GET', headers, body: '', signal })
+  const text = await res.text()
+  if (!res.ok) throw new ApiProviderError(provider, res.status, text.slice(0, 500))
+  return JSON.parse(text) as unknown
 }

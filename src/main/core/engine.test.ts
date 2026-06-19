@@ -2045,3 +2045,32 @@ describe('FleetEngine — 세션 영속·복원 (재시작)', () => {
     expect(e2.listSessions()[0].capabilities).toEqual(['planner', 'reviewer'])
   })
 })
+
+describe('listProviderModels (#13 라이브 모델 조회)', () => {
+  const cfg = {
+    id: 'a',
+    provider: 'anthropic' as const,
+    displayName: 'Claude',
+    model: 'claude-sonnet-4-6',
+    apiKey: 'k',
+  }
+
+  it('provider.listModels 결과를 반환한다', async () => {
+    const http: HttpClient = async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ data: [{ id: 'claude-sonnet-4-6', display_name: 'Sonnet' }] }),
+    })
+    const engine = createFleetEngine({ http })
+    expect(await engine.listProviderModels(cfg)).toEqual([
+      { id: 'claude-sonnet-4-6', label: 'Sonnet' },
+    ])
+  })
+
+  it('provider 가 throw 하면 그대로 전파한다(렌더러가 사유 표시·입력 폴백)', async () => {
+    const http: HttpClient = async () => ({ ok: false, status: 401, text: async () => 'nope' })
+    const engine = createFleetEngine({ http })
+    await expect(engine.listProviderModels(cfg)).rejects.toThrow()
+  })
+})

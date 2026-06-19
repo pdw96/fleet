@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   AgentRole,
   ApiProviderConfig,
@@ -6,6 +6,7 @@ import type {
   LlmDescriptor,
   McpServerSpec,
   McpServerStatus,
+  ModelOption,
   ReasoningEffort,
 } from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
@@ -40,6 +41,12 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [model, setModel] = useState(PROVIDER_DEFAULTS.anthropic)
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
+  // 라이브 조회한 모델 목록(#13). 비면 모델 입력란은 PROVIDER_DEFAULTS 자유입력 폴백을 유지한다.
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
+  // 모델 조회 요청 시퀀스. provider/key/baseUrl 이 바뀌면 증가시켜, 이전 입력으로 보낸 in-flight 응답이
+  // 늦게 도착해 stale 한 제안으로 datalist 를 덮어쓰는 레이스를 막는다(Codex P2).
+  const modelReqSeq = useRef(0)
   // thinking effort 세션 기본값('' = 끄기). Anthropic(adaptive)·OpenAI(reasoning_effort)·Google(thinkingConfig) 매핑.
   const [effort, setEffort] = useState<'' | ReasoningEffort>('')
   // 캐시 TTL 세션 기본값(Anthropic 한정). '' = 기본(5m), '1h' = extended-cache. #72.
@@ -169,6 +176,43 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
       setMcpStatus(await window.fleet.setMcpServers(specs as McpServerSpec[]))
     } catch (e) {
       setError(`MCP 적용 실패: ${asError(e)}`)
+    }
+  }
+
+  // 현재 provider+키로 사용 가능한 모델을 라이브 조회한다(#13). 결과는 datalist 제안으로 노출되며
+  // 진행 중 모델 조회를 무효화하고 stale 제안·로딩 상태를 즉시 정리한다. provider/key/baseUrl 이
+  // 바뀔 때 호출 — seq 를 밀어 늦게 온 응답을 폐기하고, 로딩을 즉시 풀어 새 입력으로 바로 재시도하게 한다
+  // (느린/불통 엔드포인트의 in-flight 요청이 settle 될 때까지 버튼이 잠기던 stuck 제거 — Codex P2).
+  function invalidateModelLookup() {
+    setModelOptions([])
+    setLoadingModels(false)
+    modelReqSeq.current++
+  }
+
+  // 입력란은 그대로 자유입력 — 실패하면 사유를 표시하고 PROVIDER_DEFAULTS 기본값을 유지한다.
+  async function loadModels() {
+    if (!apiKey.trim()) return
+    if (provider === 'openai-compatible' && !baseUrl.trim()) return
+    const seq = ++modelReqSeq.current // 이 요청의 토큰 — 응답 도착 시 최신 요청인지 확인
+    setLoadingModels(true)
+    setError(null)
+    try {
+      const probe: ApiProviderConfig = {
+        id: `probe-${provider}`,
+        provider,
+        displayName: provider,
+        model,
+        apiKey: apiKey.trim(),
+        ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
+      }
+      const options = await window.fleet.listModels(probe)
+      if (seq === modelReqSeq.current) setModelOptions(options) // stale 응답(입력 변경됨)은 폐기
+    } catch (e) {
+      if (seq === modelReqSeq.current) setError(`모델 조회 실패: ${asError(e)}`)
+    } finally {
+      // 이 요청이 여전히 최신일 때만 해제 — 더 새 요청이 진행 중이면 그 로딩을 조기 해제하지 않는다.
+      // 입력 변경 시엔 invalidateModelLookup 이 이미 즉시 해제하므로 stuck 되지 않는다.
+      if (seq === modelReqSeq.current) setLoadingModels(false)
     }
   }
 
@@ -304,6 +348,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                 const p = e.target.value as ApiProviderConfig['provider']
                 setProvider(p)
                 setModel(PROVIDER_DEFAULTS[p])
+                invalidateModelLookup() // provider 전환 → stale 제안·in-flight 응답·로딩 즉시 정리
               }}
             >
               <option value="anthropic">Anthropic</option>
@@ -316,12 +361,36 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             <label className="field-label" htmlFor="api-model">
               모델
             </label>
-            <input
-              id="api-model"
-              className="field"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            />
+            <div className="row" style={{ display: 'flex', gap: 8 }}>
+              <input
+                id="api-model"
+                className="field"
+                style={{ flex: 1 }}
+                list="api-model-options"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => void loadModels()}
+                disabled={
+                  loadingModels ||
+                  !apiKey.trim() ||
+                  (provider === 'openai-compatible' && !baseUrl.trim())
+                }
+              >
+                {loadingModels ? '불러오는 중…' : '모델 불러오기'}
+              </button>
+            </div>
+            {/* 라이브 조회 모델을 자유입력 input 의 제안 목록으로 노출(#13) — 입력란은 그대로 편집 가능. */}
+            <datalist id="api-model-options">
+              {modelOptions.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label ?? m.id}
+                </option>
+              ))}
+            </datalist>
           </div>
         </div>
         {provider === 'openai-compatible' && (
@@ -333,7 +402,10 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               id="api-base-url"
               className="field"
               value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
+              onChange={(e) => {
+                setBaseUrl(e.target.value)
+                invalidateModelLookup() // baseUrl 변경 → 이전 엔드포인트의 stale 제안·in-flight·로딩 정리
+              }}
               placeholder="https://openrouter.ai/api/v1"
             />
             <p className="meta" style={{ marginTop: 6 }}>
@@ -398,7 +470,10 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             type="password"
             value={apiKey}
             placeholder="sk-..."
-            onChange={(e) => setApiKey(e.target.value)}
+            onChange={(e) => {
+              setApiKey(e.target.value)
+              invalidateModelLookup() // 키 변경 → 이전 키로 받은 stale 제안·in-flight·로딩 정리
+            }}
           />
         </div>
         <button
