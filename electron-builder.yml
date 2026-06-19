@@ -1,0 +1,17 @@
+appId: dev.pdw96.fleet
+productName: Fleet
+directories:
+  output: dist
+files:
+  - out/**
+  - package.json
+asar: true
+publish:
+  provider: github
+  owner: pdw96
+  repo: fleet
+win:
+  target: nsis
+linux:
+  target: AppImage
+  category: Development

@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **unsigned 전용**: `win.sign: false`. 코드서명/유료 인증서 일절 추가 안 함.
+- **unsigned 전용**: 인증서 미설정 = 자동 unsigned(`win` 블록은 `target: nsis` 만 — v26.15.3 스키마에 `win.sign` 부재). 코드서명/유료 인증서 일절 추가 안 함.
 - **타깃 = Windows NSIS + Linux AppImage 만**. macOS DMG 추가 금지(후속).
 - **electron-builder 메이저 = ^26.x** (착수 시 `npm view electron-builder version` 으로 현행 확인 후 핀).
 - **release 태그 = `v${package.json.version}`** — electron-builder 는 산출물 버전을 package.json 에서 읽는다(태그 아님). 불일치 금지.
@@ -105,13 +105,12 @@ publish:
   repo: fleet
 win:
   target: nsis
-  sign: false
 linux:
   target: AppImage
   category: Development
 ```
 
-> 주석/정렬 공백 없이 작성(스펙 결정 #9·codex P3). `directories.output: dist` 는 `.gitignore` 에 이미 포함.
+> 주석/정렬 공백 없이 작성(스펙 결정 #9·codex P3). `directories.output: dist` 는 `.gitignore` 에 이미 포함. **unsigned 는 인증서 미설정으로 자동** — v26.15.3 스키마에 `win.sign` 키 없음(있으면 schema 검증 400).
 
 - [ ] **Step 2: 포맷 검증**
 

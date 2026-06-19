@@ -17,7 +17,7 @@ Fleet 은 Electron 데스크톱 앱이지만 배포 산출물(설치 파일)을 
 AGENTS.md 「리뷰 피드백 교차검증」 + context7 규칙에 따라 현행 문서로 양면 검증:
 
 - **context7 — Electron 지원정책(`/websites/electronjs`)**: 최신 3개 stable 메이저만 지원("if the latest release is 42.1.x, then 41.0.x and 40.2.x are supported"), 8주마다 새 메이저, 3개 밖 = 보안 픽스 없음. → 현행 latest ≈ v42 라인, **Electron 33 은 EOL**(본 PR 의 직접 대상은 아니나 #76 의 근거).
-- **context7 — electron-builder(`/electron-userland/electron-builder`)**: win/mac/linux + auto-update 표준 솔루션. **unsigned 빌드 1급 지원** — Windows `sign: false`/`null` 로 코드서명 비활성(아이콘/메타데이터는 편집). `directories.output` 으로 산출 디렉터리 지정. → **유료 인증서 없이 NSIS/AppImage 산출 가능** 확인(이전 큐레이션의 "코드서명 유료 종속" 강등 근거가 unsigned 경로로 회피됨).
+- **context7 — electron-builder(`/electron-userland/electron-builder`)**: win/mac/linux + auto-update 표준 솔루션. **unsigned 빌드 지원** — 인증서 설정(CSC_LINK 등)이 없으면 기본이 unsigned. `directories.output` 으로 산출 디렉터리 지정. → **유료 인증서 없이 NSIS/AppImage 산출 가능** 확인(이전 큐레이션의 "코드서명 유료 종속" 강등 근거가 unsigned 경로로 회피됨). **정정(실행 중 발견)**: context7 master 스니펫의 `win.sign: false` 노브는 설치된 **v26.15.3 스키마에 부재**(스키마 검증 400) → `win` 블록은 `target: nsis` 만, unsigned 는 인증서 미설정으로 자동 달성.
 - **실제 레포 대조**: `out/{main,preload,renderer}` 존재(빌드됨), `package.json:7 main=./out/main/index.js`, `.gitignore` 에 `dist/`·`build/`·`out/` 이미 포함, dependencies = `cross-spawn`·`safe-regex`(둘 다 순수 JS, 네이티브 바인딩 없음).
 - **codex exec (read-only, 실제 실행) 사전검증**: 빌드 산출물·release 플로우를 실제로 점검. **확정된 non-issue**: ① electron-vite 가 `cross-spawn`/`safe-regex` 를 **번들**(`out/main/index.js` 에 `require('cross-spawn')` 없음·번들 코드 존재) → `files: out/** + package.json` 으로 충분, node_modules prod deps 불요. ② `out/**` 레이아웃 정합(main 이 `../preload/index.js`·`../renderer/index.html` 로드). ③ **asarUnpack 불요**(`node-pty` 없음·deps 순수 JS·외부 CLI/MCP 는 PATH/config 로 spawn, 패키지드 네이티브 바이너리 아님 — `cli/detect.ts`·`mcp/stdio.ts`). **발견 결함 4건(P2×3·P3×1)은 아래 §결정 보강·상세설계에 반영**.
 
@@ -27,7 +27,7 @@ AGENTS.md 「리뷰 피드백 교차검증」 + context7 규칙에 따라 현행
 |---|---|---|
 | 1 | **패키징 도구 = electron-builder** | context7 + 큐레이션 일치. forge 는 electron-vite 통합 약함, 수동은 인스톨러/업데이트 메타 재구현 → 기각 |
 | 2 | **타깃 = Windows NSIS(.exe) + Linux AppImage** | dev=Windows 11, 기존 CI=win+ubuntu 러너와 정합. macOS DMG 는 후속(Mac 러너 + notarization 유료) |
-| 3 | **unsigned** | `win.sign: false`. AppImage 는 서명 무관. SmartScreen 경고는 unsigned 정상거동(문서화). 유료 인증서 불요 |
+| 3 | **unsigned** | 인증서 미설정 = 자동 unsigned(`win` 블록은 `target: nsis` 만 — v26.15.3 스키마에 `win.sign` 부재). AppImage 는 서명 무관. SmartScreen 경고는 unsigned 정상거동(문서화). 유료 인증서 불요 |
 | 4 | **CI release 워크플로 포함** | `release.yml` 태그 push(`v*`) → win+ubuntu 매트릭스 → `electron-builder --publish always` → GitHub Release. Linux AppImage 는 Windows dev 로컬 빌드 곤란이라 CI 가 사실상 유일 산출 경로 |
 | 5 | **autoUpdater = 후속 PR** | 릴리스 피드(GitHub Releases) 선행 필요. 본 PR 이 그 피드·`latest*.yml` 메타데이터를 세워 forward-compat 확보 |
 | 6 | **커스텀 아이콘 = 후속** | PR1 은 electron-builder 기본 아이콘. 디자인 자산 래빗홀 회피 |
@@ -69,8 +69,7 @@ publish:
   owner: pdw96            # codex P2-3 — 추론 대신 명시
   repo: fleet
 win:
-  target: nsis
-  sign: false             # unsigned (context7 확인) — 유료 인증서 불요
+  target: nsis            # unsigned 자동(인증서 미설정) — v26.15.3 스키마에 win.sign 없음
 linux:
   target: AppImage
   category: Development
