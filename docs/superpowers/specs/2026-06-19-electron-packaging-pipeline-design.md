@@ -19,6 +19,7 @@ AGENTS.md 「리뷰 피드백 교차검증」 + context7 규칙에 따라 현행
 - **context7 — Electron 지원정책(`/websites/electronjs`)**: 최신 3개 stable 메이저만 지원("if the latest release is 42.1.x, then 41.0.x and 40.2.x are supported"), 8주마다 새 메이저, 3개 밖 = 보안 픽스 없음. → 현행 latest ≈ v42 라인, **Electron 33 은 EOL**(본 PR 의 직접 대상은 아니나 #76 의 근거).
 - **context7 — electron-builder(`/electron-userland/electron-builder`)**: win/mac/linux + auto-update 표준 솔루션. **unsigned 빌드 1급 지원** — Windows `sign: false`/`null` 로 코드서명 비활성(아이콘/메타데이터는 편집). `directories.output` 으로 산출 디렉터리 지정. → **유료 인증서 없이 NSIS/AppImage 산출 가능** 확인(이전 큐레이션의 "코드서명 유료 종속" 강등 근거가 unsigned 경로로 회피됨).
 - **실제 레포 대조**: `out/{main,preload,renderer}` 존재(빌드됨), `package.json:7 main=./out/main/index.js`, `.gitignore` 에 `dist/`·`build/`·`out/` 이미 포함, dependencies = `cross-spawn`·`safe-regex`(둘 다 순수 JS, 네이티브 바인딩 없음).
+- **codex exec (read-only, 실제 실행) 사전검증**: 빌드 산출물·release 플로우를 실제로 점검. **확정된 non-issue**: ① electron-vite 가 `cross-spawn`/`safe-regex` 를 **번들**(`out/main/index.js` 에 `require('cross-spawn')` 없음·번들 코드 존재) → `files: out/** + package.json` 으로 충분, node_modules prod deps 불요. ② `out/**` 레이아웃 정합(main 이 `../preload/index.js`·`../renderer/index.html` 로드). ③ **asarUnpack 불요**(`node-pty` 없음·deps 순수 JS·외부 CLI/MCP 는 PATH/config 로 spawn, 패키지드 네이티브 바이너리 아님 — `cli/detect.ts`·`mcp/stdio.ts`). **발견 결함 4건(P2×3·P3×1)은 아래 §결정 보강·상세설계에 반영**.
 
 ## 결정 (사용자 승인 완료)
 
@@ -30,6 +31,9 @@ AGENTS.md 「리뷰 피드백 교차검증」 + context7 규칙에 따라 현행
 | 4 | **CI release 워크플로 포함** | `release.yml` 태그 push(`v*`) → win+ubuntu 매트릭스 → `electron-builder --publish always` → GitHub Release. Linux AppImage 는 Windows dev 로컬 빌드 곤란이라 CI 가 사실상 유일 산출 경로 |
 | 5 | **autoUpdater = 후속 PR** | 릴리스 피드(GitHub Releases) 선행 필요. 본 PR 이 그 피드·`latest*.yml` 메타데이터를 세워 forward-compat 확보 |
 | 6 | **커스텀 아이콘 = 후속** | PR1 은 electron-builder 기본 아이콘. 디자인 자산 래빗홀 회피 |
+| 7 | **release.yml 이 publish 전 4 게이트 실행** (codex P2-1) | 태그는 push/PR CI 트리거 밖(`ci.yml:3`) → 게이트 미적용 broken 빌드 게시 방지. typecheck·lint·format:check·test 후 build→publish. test 는 win32 보안회귀 위해 양 러너 |
+| 8 | **release 태그 = `v${package.json.version}` 강제** (codex P2-2) | electron-builder 는 산출물 버전을 package.json 에서 읽음(태그 아님, `app.getVersion()` `index.ts:69`). 불일치 시 메타 오염. 검증은 version `0.1.0-pre.1` 범프 + 태그 `v0.1.0-pre.1` |
+| 9 | **publish 타깃 명시** `owner: pdw96`·`repo: fleet` + package.json `repository` 추가 (codex P2-3) | repository 메타 부재 → publish 가 git remote 추론 의존. 명시로 제거 |
 
 ## 상세 설계 (파일별)
 
@@ -42,9 +46,12 @@ AGENTS.md 「리뷰 피드백 교차검증」 + context7 규칙에 따라 현행
 // scripts 추가
 "dist": "electron-vite build && electron-builder",        // 번들→패키지 (현재 플랫폼 기본 타깃)
 "dist:dir": "electron-vite build && electron-builder --dir" // 언팩(빠른 로컬 기동 확인)
+
+// repository 추가 (codex P2-3 — publish 타깃 명시화)
+"repository": { "type": "git", "url": "https://github.com/pdw96/fleet.git" }
 ```
 
-> `version: 0.1.0`·`private: true` 유지. `private: true` 는 electron-builder publish 와 무관(publish 는 `--publish` 플래그·`publish` 설정으로 제어).
+> `private: true` 유지(electron-builder publish 와 무관 — `--publish` 플래그/`publish` 설정으로 제어). **version 은 release 검증 시 `0.1.0-pre.1` 로 범프**(결정 #8): electron-builder 가 산출물 버전을 package.json 에서 읽으므로 태그(`v0.1.0-pre.1`)와 일치시켜야 함.
 
 ### 2. `electron-builder.yml` (신규)
 
@@ -59,6 +66,8 @@ files:
 asar: true
 publish:
   provider: github        # latest*.yml 업데이트 메타 생성(향후 autoUpdater forward-compat)
+  owner: pdw96            # codex P2-3 — 추론 대신 명시
+  repo: fleet
 win:
   target: nsis
   sign: false             # unsigned (context7 확인) — 유료 인증서 불요
@@ -96,13 +105,19 @@ jobs:
           node-version-file: '.nvmrc'
           cache: npm
       - run: npm ci
+      # publish 전 품질 게이트 (codex P2-1 — 태그는 ci.yml 트리거 밖)
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test                 # 양 러너 — win32 보안회귀 커버
       - run: npm run build            # electron-vite build → out/
       - run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-> 기존 `ci.yml` 패턴(checkout@v4 · setup-node@v4 `.nvmrc` · `HUSKY: 0`) 재사용. 러너 OS 가 자기 플랫폼 타깃만 빌드(windows→nsis, ubuntu→AppImage). `--publish always` 가 동일 태그의 Release 에 양쪽 산출물 누적 게시.
+> 기존 `ci.yml` 패턴(checkout@v4 · setup-node@v4 `.nvmrc` · `HUSKY: 0`) 재사용. 러너 OS 가 자기 플랫폼 타깃만 빌드(windows→nsis, ubuntu→AppImage). `--publish always` 가 동일 태그의 Release 에 양쪽 산출물 누적 게시. **게이트가 publish 를 선행**(broken 빌드 게시 차단). 태그(`v*`)는 push/PR `ci.yml` 트리거 밖이라 여기서 게이트를 재실행.
+> **Prettier 정합(codex P3)**: `electron-builder.yml`·`release.yml` 은 `.prettierignore` 대상 아님 → `format:check` 게이트에 걸린다. 실제 파일은 prettier 포맷(정렬 주석 금지)으로 작성·`npm run format` 1회.
 
 ### 4. `DESIGN.md` 갱신
 
@@ -136,7 +151,7 @@ git tag v0.1.0-pre1 && git push --tags
 ## 테스트 / 검증 (완수 정의)
 
 - **로컬(Windows dev)**: `npm run dist:dir` 언팩 기동 smoke → `npm run dist` 로 NSIS `.exe` 생성 → 설치 → 기동 smoke(수동 1회).
-- **CI**: pre-release 태그(`v0.1.0-pre1`)로 `release.yml` 1회 검증 — windows+ubuntu 양 잡 그린, GitHub Release 에 `.exe`·`.AppImage`·`latest*.yml` 게시 확인.
+- **CI**: version 을 `0.1.0-pre.1` 로 범프 후 일치 태그(`v0.1.0-pre.1`)로 `release.yml` 1회 검증(결정 #8) — windows+ubuntu 양 잡(게이트→build→publish) 그린, GitHub Release 에 `.exe`·`.AppImage`·`latest*.yml` 게시 확인. 검증 후 version 은 정식 릴리스 시점에 확정.
 - **4 게이트**: `typecheck`·`lint`·`test`·`build` 그린 + CI(ubuntu+win) 그린.
 - **범위 외**: 패키지드 인스톨러의 **자동** 기동 테스트(기존 Playwright e2e 는 electron-vite 빌드 기동이지 인스톨러 아님) — PR1 수동 smoke 로 대체, 자동화는 후속.
 
