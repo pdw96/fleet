@@ -31,11 +31,12 @@ const MODELS_ENDPOINT = 'https://api.openai.com/v1/models'
 // 방지). 완전 열거가 불가능한 denylist 라 새 계열이 나오면 추가하지만, 입력란이 자유입력+폴백이라 누락된
 // 한두 모델이 제안돼도 사용자가 직접 교정 가능 — chat 모델 누락(false-positive)이 더 해로우니 보수적으로 둔다.
 //   • 임베딩/음성/이미지/모더레이션: embedding·whisper·tts·dall-e·transcribe·image (audio 는 chat 변종과 겹쳐 제외)
-//   • Responses/Realtime 전용: computer-use(-preview)·realtime·o<n>…-pro(o1-pro·o3-pro 등 — gpt-5-pro 는 chat 호환이라 미포함)
+//   • Responses 전용: computer-use(-preview)·realtime·*-pro(pro 티어는 o-pro·gpt-5.5-pro 모두 Responses
+//     전용 — context7 OpenAI changelog 확인. chat 모델엔 '-pro' 접미사가 없어 false-positive 위험 없음)
 //   • 레거시 completions: instruct·davinci·babbage · 비디오: sora
 // (Codex P2/P3 반복 반영). 장기적으론 per-model capability 조회가 정답(#13 후속).
 const OPENAI_NON_CHAT =
-  /embedding|whisper|tts|dall-?e|moderation|transcrib|image|computer-use|instruct|davinci|babbage|realtime|sora|o[0-9][a-z0-9-]*-pro/i
+  /embedding|whisper|tts|dall-?e|moderation|transcrib|image|computer-use|instruct|davinci|babbage|realtime|sora|-pro\b/i
 
 interface OpenAiToolCall {
   id?: string

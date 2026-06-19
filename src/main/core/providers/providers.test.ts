@@ -3739,10 +3739,10 @@ describe('listModels (#13 라이브 모델 조회)', () => {
           { id: 'babbage-002', object: 'model' }, // 제외(레거시 completions)
           { id: 'gpt-4o-realtime-preview', object: 'model' }, // 제외(Realtime 전용)
           { id: 'sora-2', object: 'model' }, // 제외(비디오)
-          { id: 'o3-pro', object: 'model' }, // 제외(o-시리즈 -pro = Responses 전용)
+          { id: 'o3-pro', object: 'model' }, // 제외(-pro = Responses 전용)
+          { id: 'gpt-5.5-pro', object: 'model' }, // 제외(-pro = Responses 전용 · context7 확인)
           { id: 'gpt-4o', object: 'model' },
           { id: 'gpt-4o-audio-preview', object: 'model' }, // 보존 — 오디오 모달리티 chat 모델(audio 토큰 미적용)
-          { id: 'gpt-5-pro', object: 'model' }, // 보존 — gpt-5-pro 는 chat 호환(o-pro 패턴과 구분)
           { id: 'o3-mini', object: 'model' }, // 보존 — -pro 아님(과제외 회귀 가드)
         ],
       }),
@@ -3754,7 +3754,6 @@ describe('listModels (#13 라이브 모델 조회)', () => {
       { id: 'gpt-5.5' },
       { id: 'gpt-4o' },
       { id: 'gpt-4o-audio-preview' },
-      { id: 'gpt-5-pro' },
       { id: 'o3-mini' },
     ])
     expect(calls[0].url).toBe('https://api.openai.com/v1/models')
