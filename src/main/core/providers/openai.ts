@@ -27,11 +27,15 @@ const MODELS_ENDPOINT = 'https://api.openai.com/v1/models'
 // 모델 피커 노이즈·오선택 400 방지. 안정적 제품 계열명만 denylist 한다(allowlist 가 아니라 #13 의 하드코딩
 // 표류를 최소화). chat 모델 누락보다 비-chat 노출이 덜 해롭도록 보수적으로 유지한다. 'audio' 토큰은 제외한다 —
 // gpt-4o-audio-preview 처럼 오디오 모달리티 chat 모델을 오제외하기 때문(순수 음성은 whisper/tts/transcribe 로 잡힘).
-// computer-use(-preview)·realtime 은 Responses/Realtime 전용, instruct/davinci/babbage 는 레거시
-// completions 전용, sora 는 비디오라 /chat/completions 가 항상 거부 → 제외(Codex P2/P3). 모두 안정적
-// 계열명이라 false-positive 위험 낮다('audio' 만 chat 변종과 겹쳐 제외).
+// /v1/chat/completions 로 호출 불가한 비-chat 계열을 best-effort 로 거른다(모델 피커 노이즈·오선택 400
+// 방지). 완전 열거가 불가능한 denylist 라 새 계열이 나오면 추가하지만, 입력란이 자유입력+폴백이라 누락된
+// 한두 모델이 제안돼도 사용자가 직접 교정 가능 — chat 모델 누락(false-positive)이 더 해로우니 보수적으로 둔다.
+//   • 임베딩/음성/이미지/모더레이션: embedding·whisper·tts·dall-e·transcribe·image (audio 는 chat 변종과 겹쳐 제외)
+//   • Responses/Realtime 전용: computer-use(-preview)·realtime·o<n>…-pro(o1-pro·o3-pro 등 — gpt-5-pro 는 chat 호환이라 미포함)
+//   • 레거시 completions: instruct·davinci·babbage · 비디오: sora
+// (Codex P2/P3 반복 반영). 장기적으론 per-model capability 조회가 정답(#13 후속).
 const OPENAI_NON_CHAT =
-  /embedding|whisper|tts|dall-?e|moderation|transcrib|image|computer-use|instruct|davinci|babbage|realtime|sora/i
+  /embedding|whisper|tts|dall-?e|moderation|transcrib|image|computer-use|instruct|davinci|babbage|realtime|sora|o[0-9][a-z0-9-]*-pro/i
 
 interface OpenAiToolCall {
   id?: string
