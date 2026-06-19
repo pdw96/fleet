@@ -201,6 +201,7 @@ renderer 의 시각 정체성은 "멀티 LLM 을 지휘하는 정밀 계측기"�
 7. 대화 로그 저장·재로딩
 8. 프로젝트 목표 입력 + 작업 분해
 9. 전체 `test`/`typecheck`/`lint` 통과, 코어 엔진 헤드리스 검증
+10. (배포) electron-builder 로 unsigned Windows NSIS + Linux AppImage 산출 + 태그 기반 GitHub Release CI. autoUpdater·macOS·코드서명·커스텀 아이콘은 후속(#74 트랙)
 
 ---
 
@@ -210,3 +211,8 @@ renderer 의 시각 정체성은 "멀티 LLM 을 지휘하는 정밀 계측기"�
 - `npm run lint` (eslint)
 - `npm test` (vitest, 코어 엔진 단위/통합)
 - `npm run build` (electron-vite build) — 산출물 생성 = 기동 가능성 smoke
+
+### 배포 (#74)
+
+- `npm run dist` — `electron-vite build` 후 electron-builder 로 현재 플랫폼 인스톨러를 `dist/` 에 생성(`build` 의 smoke 정의와 별개). `npm run dist:dir` 은 언팩 디렉터리(빠른 로컬 기동 확인).
+- 릴리스: `package.json` version 을 올리고 일치 태그(`v${version}`)를 push → `.github/workflows/release.yml` 이 windows+ubuntu 에서 게이트→빌드→GitHub Release 게시(unsigned). autoUpdater·macOS·코드서명은 후속.
