@@ -1,6 +1,6 @@
 # 이슈 #74 후속(PR2) — electron-updater autoUpdater 도입 (notify·user-controlled) 설계
 
-- **날짜**: 2026-06-20 (v2 — codex exec gpt-5.5 적대리뷰 반영: P1 기동 이벤트 유실·P2a CJS interop·P2b 백그라운드 에러 노이즈·P2c darwin)
+- **날짜**: 2026-06-20 (v3 — codex exec gpt-5.5 2라운드 적대리뷰 반영. v2: P1 기동 이벤트 유실·P2a CJS interop·P2b 에러 노이즈·P2c darwin. v3: activeOp 누수(종단 클리어)·dismiss main 권위·번들 검증 표현 정정)
 - **대상**: GitHub 이슈 #74 `후속(배포): Electron 패키징 파이프라인 (builder/forge·autoUpdater·코드서명)` (pdw96/fleet, `area:electron` `tier:later`) 의 **후속 슬라이스 PR2**
 - **유형**: 빌드/배포 + 런타임 배선 (앱 코어 로직 무변경 · main 프로세스에 업데이트 모듈 1개 + IPC 1네임스페이스 + 렌더러 배너 1개 추가)
 - **브랜치**: `feat/electron-autoupdater`
@@ -47,9 +47,10 @@ AGENTS.md 「리뷰 피드백 교차검증」 + context7 규칙 + **codex exec(g
 | 7 | **autoInstallOnAppQuit = 기본(true) 유지** | [다운로드]로 이미 동의 → [나중에] = 다음 자연 종료에 적용. [지금] = `quitAndInstall()` 즉시. |
 | 8 | **CJS = named import** `import { autoUpdater } from 'electron-updater'` (codex P2a) | external+CJS interop 서 default import 래핑 위험 회피. |
 | 9 | **스냅샷/하이드레이션** (codex P1) | main 이 last `UpdateEvent` 스냅샷 보유 + `fleet:update:getState` IPC. 배너는 마운트 시 **구독 먼저 → 라이브 미수신이면 getState 로 하이드레이트**(라이브 우선). 기동 자동 체크가 렌더러 준비 전 발화해도 유실 없음. |
-| 10 | **백그라운드 체크 에러 = log-only** (codex P2b) | 기동 자동 체크(오프라인·신규릴리스 없음·전송실패)는 매 기동 배너 노이즈 → **log 만**, 배너 미표시(state=not-available 유지). **사용자 액션(download/install) 에러만 배너 표시**. 모듈이 `lastUserAction` 플래그로 구분. |
+| 10 | **백그라운드 체크 에러 = log-only** (codex P2b) | 기동 자동 체크(오프라인·신규릴리스 없음·전송실패)는 매 기동 배너 노이즈 → **log 만**, 배너 미표시(state=not-available). **사용자 액션(download/install) 에러만 배너**. 모듈이 **연산 스코프 `activeOp`** 로 구분하며 **종단 이벤트서 `null` 클리어**(v3 codex P2 — `lastUserAction` 누수: 클리어 누락 시 후속 백그라운드 에러가 사용자 에러로 오분류). |
 | 11 | **아이콘 = 후속 PR** (사용자 승인) | 디자인 자산·`build/` gitignore 래빗홀 회피. |
 | 12 | **electron-builder.yml 변경 없음** | 피드(`publish:github`)·`latest*.yml` 는 PR1 이 세움. prerelease 는 런타임 노브. |
+| 13 | **배너 dismiss = main 권위** (v3 codex P2) | [닫기]/[나중에] → `fleet:update:dismiss` 로 main `currentState=idle` + 로컬 idle. 렌더러-로컬만 닫으면 crash-reload/remount 시 `getUpdateState()` 가 `error` 재하이드레이트 → 닫은 배너 재출현. 인용한 `ChatPanel`/`ProjectPanel` 도 main 을 권위로 두므로 동형. |
 
 ## 상세 설계 (파일별)
 
@@ -94,6 +95,7 @@ getUpdateState(): Promise<UpdateEvent>          // 마운트 하이드레이트(
 checkForUpdate(): Promise<void>
 downloadUpdate(): Promise<void>
 installUpdate(): Promise<void>
+dismissUpdate(): Promise<void>                  // 배너 닫기 — main currentState=idle
 onUpdateEvent(cb: (e: UpdateEvent) => void): () => void
 ```
 
@@ -125,6 +127,7 @@ export interface UpdateController {
   check(): Promise<void>                   // 기동 자동 = 백그라운드(에러 log-only)
   download(): Promise<void>                // 사용자 액션(에러 배너)
   install(): void                          // 사용자 액션
+  dismiss(): void                          // 배너 닫기 — currentState=idle(main 권위, codex P2)
 }
 
 export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController
@@ -132,11 +135,25 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController
 
 동작:
 - **가드**: `!isPackaged || isE2E || platform==='darwin'` → 미무장. `currentState={kind:'unsupported'}`, 컨트롤러 메서드 = no-op(+ `unsupported` 1회 send). 이벤트 리스너/네트워크 없음.
-- **무장**: `updater.autoDownload=false`·`updater.allowPrerelease=true`·`updater.logger` 설정. `currentState={kind:'idle'}` 로 시작. 내부 `lastUserAction: 'download'|'install'|null`.
-  - 이벤트 매핑(각각 `currentState` 갱신 + `send`): `checking-for-update`→`checking` · `update-available`(info)→`available{version}` · `update-not-available`→`not-available` · `download-progress`(p)→`progress{percent}` · `update-downloaded`(info)→`downloaded{version}`.
-  - **`error`(e)**: `lastUserAction` 있으면 → `error{message}` 갱신+send(배너). 없으면(=백그라운드 체크) → **logger.warn 만**, `currentState`=`not-available` 로 정리(배너 무노출), `send` 안 함. (codex P2b·P2c)
+- **무장**: `updater.autoDownload=false`·`updater.allowPrerelease=true`·`updater.logger` 설정. `currentState={kind:'idle'}` 로 시작.
+  - **연산 스코프 `activeOp: 'check'|'download'|'install'|null`** (codex P2 — `lastUserAction` 누수 수정): 컨트롤러 메서드 진입 시 설정, **종단 이벤트 핸들러에서 명시적으로 `null` 로 클리어**. `check`는 백그라운드, `download`/`install`은 사용자 스코프.
+  - 이벤트 매핑(각각 `currentState` 갱신 + `send`):
+    - `checking-for-update`→`checking`.
+    - `update-available`(info)→`available{version}` — **check 종단**: `activeOp=null`.
+    - `update-not-available`→`not-available` — **check 종단**: `activeOp=null`.
+    - `download-progress`(p)→`progress{percent}`.
+    - `update-downloaded`(info)→`downloaded{version}` — **download 종단**: `activeOp=null`.
+  - **`error`(e)** — 발화 시점 `activeOp` 로 분류:
+    - `activeOp ∈ {download, install}`(사용자) → `currentState=error{message}` + send(배너). 그 후 `activeOp=null`.
+    - `activeOp ∈ {check, null}`(백그라운드/유휴) → **logger.warn 만**, `currentState=not-available`(배너 무노출), `send` 안 함. 그 후 `activeOp=null`. (codex P2b)
+    - ⇒ download 완료(`update-downloaded`)·download 거부 후 발생하는 **후속 백그라운드 에러는 더 이상 사용자 에러로 오분류되지 않음**(activeOp 이 종단서 클리어됨).
   - 기동 시 `check()` 1회(백그라운드). 스냅샷+하이드레이트(결정 9)로 타이밍 유실 무해.
-- **컨트롤러**: `getState()`→`currentState` · `check()`→`lastUserAction=null`→`checkForUpdates()`(throw 흡수→백그라운드 에러 경로) · `download()`→`lastUserAction='download'`→`downloadUpdate()` · `install()`→`lastUserAction='install'`→`quitAndInstall()`.
+- **컨트롤러**:
+  - `getState()`→`currentState`.
+  - `check()`→`activeOp='check'`→`checkForUpdates()`(throw 도 흡수: catch 서 `activeOp` 유지한 채 error 핸들러 경로 통일 위해 reject 를 동일 분류로 — 즉 백그라운드면 log-only).
+  - `download()`→`activeOp='download'`→`downloadUpdate()`(reject 시 사용자 에러 → error 핸들러가 배너, 이후 `activeOp=null`).
+  - `install()`→`activeOp='install'`→`quitAndInstall()`.
+  - `dismiss()`→`currentState={kind:'idle'}`(send 없음 — 렌더러가 호출 직후 로컬도 idle). **main 권위라 remount/getState 하이드레이트 시 배너 재출현 없음**(codex P2).
 
 ### 5. `src/main/index.ts` — 배선 (IPC 리터럴 소유)
 
@@ -166,6 +183,7 @@ ipcMain.handle('fleet:update:getState', () => updater.getState())
 ipcMain.handle('fleet:update:check', () => updater.check())
 ipcMain.handle('fleet:update:download', () => updater.download())
 ipcMain.handle('fleet:update:install', () => updater.install())
+ipcMain.handle('fleet:update:dismiss', () => updater.dismiss())
 ```
 
 ### 6. `src/preload/index.ts` — 브리지
@@ -175,6 +193,7 @@ getUpdateState: () => ipcRenderer.invoke('fleet:update:getState'),
 checkForUpdate: () => ipcRenderer.invoke('fleet:update:check'),
 downloadUpdate: () => ipcRenderer.invoke('fleet:update:download'),
 installUpdate: () => ipcRenderer.invoke('fleet:update:install'),
+dismissUpdate: () => ipcRenderer.invoke('fleet:update:dismiss'),
 onUpdateEvent: (callback) => {
   const listener = (_e, ev: UpdateEvent) => callback(ev)
   ipcRenderer.on('fleet:update:event', listener)
@@ -186,8 +205,8 @@ onUpdateEvent: (callback) => {
 
 - `useEffect`(마운트 1회): **먼저 `onUpdateEvent` 구독**(unsubscribe 정리) → 그 다음 `getUpdateState()` 호출, **단 그 사이 라이브 이벤트를 이미 받았으면 스냅샷으로 덮어쓰지 않음**(라이브 우선; `ChatPanel`/`ProjectPanel` 하이드레이션 가드와 동형, ref 플래그 1개).
 - 상태: `UpdateEvent`. 렌더: `available`→"vX 사용 가능 [다운로드]" · `progress`→진행률 바(percent) · `downloaded`→"재시작해 적용 [지금][나중에]" · `error`→"업데이트 확인 실패 [닫기]" · `idle`/`checking`/`not-available`/`unsupported`→null.
-- 액션: [다운로드]→`downloadUpdate()` · [지금]→`installUpdate()` · [나중에]/[닫기]→로컬 dismiss(`idle`).
-- `App.tsx` 에 `<UpdateBanner />` 1줄 마운트(footer 위 또는 topbar 아래).
+- 액션: [다운로드]→`downloadUpdate()` · [지금]→`installUpdate()` · **[나중에]/[닫기]→`dismissUpdate()`(main currentState=idle) + 로컬 idle** — main 권위라 crash-reload/remount 후 `getUpdateState()` 하이드레이트 시 닫은 배너 재출현 없음(codex P2). [나중에]로 닫아도 다운로드분은 `autoInstallOnAppQuit` 으로 다음 종료 시 적용.
+- `App.tsx` 에 `<UpdateBanner />` 1줄 마운트(footer 위 또는 topbar 아래; 셸 레벨 상주 — 탭 전환에 언마운트 안 됨, `ApprovalModal` 동형).
 
 ## 데이터 흐름
 
@@ -197,11 +216,13 @@ onUpdateEvent: (callback) => {
        ├ checking → currentState/배너 조용
        ├ not-available → 배너 없음
        ├ available(vX) → 배너 "vX 사용 가능 [다운로드]"
-       │    └ [다운로드] → download()(lastUserAction='download')
+       │    └ [다운로드] → download()(activeOp='download')
        │         ├ progress(%) → 진행률 바
-       │         └ downloaded(vX) → "재시작해 적용 [지금][나중에]"
-       │              └ [지금] → install()→quitAndInstall() → will-quit(dispose) → 설치·재기동
-       └ error(백그라운드) → log only(배너 X)   |   error(다운로드/설치) → 배너
+       │         └ downloaded(vX) → "재시작해 적용 [지금][나중에]" (activeOp=null 클리어)
+       │              ├ [지금] → install()→quitAndInstall() → will-quit(dispose) → 설치·재기동
+       │              └ [나중에]/[닫기] → dismiss()→currentState=idle
+       └ error: activeOp∈{download,install} → 배너   |   activeOp∈{check,null} → log only(배너 X)
+         (이후 항상 activeOp=null)
 
 렌더러 배너 마운트 → onUpdateEvent 구독 → (라이브 미수신 시) getUpdateState() 하이드레이트
 ```
@@ -215,8 +236,8 @@ onUpdateEvent: (callback) => {
 - **will-quit 상호작용**: `quitAndInstall()`→`app.quit()`→기존 `will-quit`(preventDefault→`engine.dispose()`→re-quit, 3s 백스톱). `isQuitting` 가드로 데드락 아님(지연만) — **다운로드 완료 후 실제 install 경로를 명시 테스트**(codex P3).
 - **AppImage**: 실 런치는 `APPIMAGE` 자동 설정. 미설정 환경 워크어라운드는 문서 노트만.
 - **unsigned 업데이트**: NSIS unsigned 서명검증 skip 동작, AppImage 서명 무관.
-- **번들링(P3)**: 외부화 누락 시 동적 require 깨짐 → dist:dir 언팩서 **(a)** `out/main/index.js` 에 cross-spawn/safe-regex `require` 무회귀 + **(b)** `node_modules/electron-updater` 존재 이중 단언 + 기동 smoke.
-- **IPC parity**: 신규 5채널(getState/check/download/install + event) preload/main 리터럴 정확 추가 — `ipc-parity.test.ts` 강제.
+- **번들링(P3 — 표현 정정)**: 외부화 누락 시 동적 require 깨짐 → dist:dir 언팩서 **(a)** `out/main/index.js` 에 `require('electron-updater')` **외부 require 존재**(=외부화 성공) + cross-spawn/safe-regex 는 **외부 require 부재**(=인라인 번들 유지, `require('cross-spawn')`/`require('safe-regex')` 가 나타나면 회귀) + **(b)** 패키지드 `node_modules/electron-updater` 존재. 셋 다 단언 + 기동 smoke.
+- **IPC parity**: 신규 6채널(getState/check/download/install/dismiss invoke·handle + event send/on/removeListener) preload/main 리터럴 정확 추가 — `ipc-parity.test.ts`(집합 일치 + 리터럴-콜 카운트, 고정 개수 단언 없음 — codex 확인) 강제.
 
 ## 테스트 / 검증 (완수 정의)
 
@@ -225,11 +246,13 @@ onUpdateEvent: (callback) => {
   - 패키지드(non-darwin) → `autoDownload=false`·`allowPrerelease=true` 설정.
   - 각 updater 이벤트(emit) → 대응 `UpdateEvent` 매핑 + `getState()` 스냅샷 반영.
   - **백그라운드 `error`(check 후) → send 안 함·log 만·state=not-available**; **download/install 후 `error` → `error` 이벤트 send**.
+  - **activeOp 누수 회귀 가드(codex P2)**: `download → update-downloaded → (이후) 백그라운드 error` → 배너 X(log-only); `download → error(배너) → (이후) 백그라운드 error` → 두 번째는 배너 X. (종단서 activeOp=null 클리어 검증.)
+  - **`dismiss()` → `getState()`=idle** (이후 하이드레이트 시 배너 무재출현, codex P2).
   - 기동 시 `checkForUpdates` 1회·throw 흡수.
-  - `download()`/`install()` → `downloadUpdate`/`quitAndInstall` 통과 + `lastUserAction` 설정.
-- **`src/main/ipc-parity.test.ts`**: 신규 5채널 자동 강제(통과).
-- **`src/renderer/components/UpdateBanner.test.tsx`**(신규): 구독→하이드레이트(라이브 우선 가드)·상태기계(available→download→progress→downloaded→install)·dismiss.
-- **로컬(Windows dev)**: `npm run dist:dir` → 언팩서 cross-spawn/safe-regex 무회귀 + `node_modules/electron-updater` 존재 + 기동 smoke.
+  - `download()`/`install()` → `downloadUpdate`/`quitAndInstall` 통과 + `activeOp` 설정.
+- **`src/main/ipc-parity.test.ts`**: 신규 6채널 자동 강제(통과).
+- **`src/renderer/components/UpdateBanner.test.tsx`**(신규): 구독→하이드레이트(라이브 우선 가드)·상태기계(available→download→progress→downloaded→install)·**dismiss→`dismissUpdate()` 호출 + 로컬 idle**.
+- **로컬(Windows dev)**: `npm run dist:dir` → `out/main/index.js` 에 `require('electron-updater')` 외부 require 존재 + cross-spawn/safe-regex 외부 require 부재(번들 유지) + 언팩 `node_modules/electron-updater` 존재 + 기동 smoke.
 - **(선택) CI release E2E**: PR1 처럼 `v0.1.0-pre.2` 태그 1회 → 3-잡 green + 패키지드 앱 updater 무장 기동(검증 후 release/tag 정리, master 무오염).
 - **4 게이트**: `typecheck`·`lint`·`format:check`·`test` green + CI(win+ubuntu) green.
 
