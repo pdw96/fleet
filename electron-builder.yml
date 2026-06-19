@@ -10,7 +10,7 @@ publish:
   provider: github
   owner: pdw96
   repo: fleet
-  releaseType: release
+  releaseType: draft
 win:
   target: nsis
 linux:
