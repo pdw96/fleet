@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { CliDetectionResult } from '../../shared/types'
+import type { CliDetectionResult, ModelOption } from '../../shared/types'
 import { SessionsPanel } from './SessionsPanel'
 
 const installedCli: CliDetectionResult = {
@@ -271,6 +271,34 @@ describe('SessionsPanel', () => {
     expect(alert.textContent).toContain('조회 실패함')
     // 입력란은 하드코딩 기본값(PROVIDER_DEFAULTS.anthropic)을 유지한다 — 자유입력 폴백.
     expect((screen.getByLabelText('모델') as HTMLInputElement).value).toBe('claude-sonnet-4-6')
+  })
+
+  it('조회 중 provider 를 바꾸면 늦게 온 stale 응답이 datalist 를 덮어쓰지 않는다 (#13 레이스 가드)', async () => {
+    let resolveList!: (v: ModelOption[]) => void
+    const listModels = vi.fn(
+      () =>
+        new Promise<ModelOption[]>((r) => {
+          resolveList = r
+        }),
+    )
+    mockFleet({ listModels })
+    const result = await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
+    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
+    await waitFor(() => expect(listModels).toHaveBeenCalled())
+
+    // 응답 도착 전에 provider 변경 → in-flight 요청 무효화
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
+    // 늦게 도착한 이전(anthropic) 결과
+    await act(async () => {
+      resolveList([{ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }])
+    })
+
+    const opts = [...result.container.querySelectorAll('datalist option')].map(
+      (o) => (o as HTMLOptionElement).value,
+    )
+    expect(opts).toEqual([]) // stale 결과 미반영(provider 변경으로 비워진 상태 유지)
   })
 
   it('openai-compatible 에서 baseUrl 미입력이면 모델 불러오기 버튼이 비활성이다 (#13 UX dead-end 방지)', async () => {

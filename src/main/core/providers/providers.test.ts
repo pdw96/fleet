@@ -3733,6 +3733,7 @@ describe('listModels (#13 라이브 모델 조회)', () => {
           { id: 'text-embedding-3-large', object: 'model' }, // 제외(embedding)
           { id: 'whisper-1', object: 'model' }, // 제외(whisper)
           { id: 'dall-e-3', object: 'model' }, // 제외(dall-e)
+          { id: 'computer-use-preview', object: 'model' }, // 제외(Responses 전용)
           { id: 'gpt-4o', object: 'model' },
           { id: 'gpt-4o-audio-preview', object: 'model' }, // 보존 — 오디오 모달리티 chat 모델(audio 토큰 미적용)
         ],

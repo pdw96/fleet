@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   AgentRole,
   ApiProviderConfig,
@@ -44,6 +44,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   // 라이브 조회한 모델 목록(#13). 비면 모델 입력란은 PROVIDER_DEFAULTS 자유입력 폴백을 유지한다.
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
+  // 모델 조회 요청 시퀀스. provider/key/baseUrl 이 바뀌면 증가시켜, 이전 입력으로 보낸 in-flight 응답이
+  // 늦게 도착해 stale 한 제안으로 datalist 를 덮어쓰는 레이스를 막는다(Codex P2).
+  const modelReqSeq = useRef(0)
   // thinking effort 세션 기본값('' = 끄기). Anthropic(adaptive)·OpenAI(reasoning_effort)·Google(thinkingConfig) 매핑.
   const [effort, setEffort] = useState<'' | ReasoningEffort>('')
   // 캐시 TTL 세션 기본값(Anthropic 한정). '' = 기본(5m), '1h' = extended-cache. #72.
@@ -181,6 +184,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   async function loadModels() {
     if (!apiKey.trim()) return
     if (provider === 'openai-compatible' && !baseUrl.trim()) return
+    const seq = ++modelReqSeq.current // 이 요청의 토큰 — 응답 도착 시 최신 요청인지 확인
     setLoadingModels(true)
     setError(null)
     try {
@@ -192,11 +196,12 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
         apiKey: apiKey.trim(),
         ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
       }
-      setModelOptions(await window.fleet.listModels(probe))
+      const options = await window.fleet.listModels(probe)
+      if (seq === modelReqSeq.current) setModelOptions(options) // stale 응답(입력 변경됨)은 폐기
     } catch (e) {
-      setError(`모델 조회 실패: ${asError(e)}`)
+      if (seq === modelReqSeq.current) setError(`모델 조회 실패: ${asError(e)}`)
     } finally {
-      setLoadingModels(false)
+      if (seq === modelReqSeq.current) setLoadingModels(false)
     }
   }
 
@@ -333,6 +338,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                 setProvider(p)
                 setModel(PROVIDER_DEFAULTS[p])
                 setModelOptions([]) // provider 전환 시 이전 provider 의 stale 모델 목록 제거
+                modelReqSeq.current++ // in-flight 조회 응답도 무효화(stale 레이스 차단)
               }}
             >
               <option value="anthropic">Anthropic</option>
@@ -389,6 +395,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
               onChange={(e) => {
                 setBaseUrl(e.target.value)
                 setModelOptions([]) // baseUrl 변경 → 이전 엔드포인트의 stale 제안 제거
+                modelReqSeq.current++ // in-flight 조회 응답도 무효화
               }}
               placeholder="https://openrouter.ai/api/v1"
             />
@@ -457,6 +464,7 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             onChange={(e) => {
               setApiKey(e.target.value)
               setModelOptions([]) // 키 변경 → 이전 키로 받은 stale 제안 제거
+              modelReqSeq.current++ // in-flight 조회 응답도 무효화
             }}
           />
         </div>

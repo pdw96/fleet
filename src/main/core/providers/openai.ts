@@ -23,11 +23,12 @@ import {
 
 const ENDPOINT = 'https://api.openai.com/v1/chat/completions'
 const MODELS_ENDPOINT = 'https://api.openai.com/v1/models'
-// chat 이 아닌 OpenAI 모델 계열(임베딩·음성·이미지·모더레이션) — 모델 피커 노이즈·오선택 400 방지.
-// 안정적 제품 계열명만 denylist 한다(allowlist 가 아니라 #13 의 하드코딩 표류를 최소화). chat 모델 누락보다
-// 비-chat 노출이 덜 해롭도록 보수적으로 유지한다. 'audio' 토큰은 제외한다 — gpt-4o-audio-preview 처럼
-// 오디오 모달리티를 쓰는 chat 모델을 오제외하기 때문(false-positive). 순수 음성은 whisper/tts/transcribe 로 잡힌다.
-const OPENAI_NON_CHAT = /embedding|whisper|tts|dall-?e|moderation|transcrib|image/i
+// Chat Completions 로 호출 불가한 OpenAI 모델 계열(임베딩·음성·이미지·모더레이션·Responses 전용) —
+// 모델 피커 노이즈·오선택 400 방지. 안정적 제품 계열명만 denylist 한다(allowlist 가 아니라 #13 의 하드코딩
+// 표류를 최소화). chat 모델 누락보다 비-chat 노출이 덜 해롭도록 보수적으로 유지한다. 'audio' 토큰은 제외한다 —
+// gpt-4o-audio-preview 처럼 오디오 모달리티 chat 모델을 오제외하기 때문(순수 음성은 whisper/tts/transcribe 로 잡힘).
+// computer-use(-preview)는 Responses 전용이라 /chat/completions 가 항상 거부 → 제외(Codex P2).
+const OPENAI_NON_CHAT = /embedding|whisper|tts|dall-?e|moderation|transcrib|image|computer-use/i
 
 interface OpenAiToolCall {
   id?: string
