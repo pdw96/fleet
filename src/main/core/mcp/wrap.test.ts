@@ -147,6 +147,32 @@ describe('wrapMcpTool', () => {
     expect(out).toContain('자만 표시')
   })
 
+  it('비텍스트 content(resource_link/image)만 + structuredContent 면 placeholder 와 구조화 JSON 을 모두 표면화한다', async () => {
+    // contentToString 이 placeholder('[resource_link …]')를 만들어 text!=='' 이지만, 실제 text content 는
+    // 없으므로 structuredContent 가 유실되면 안 된다(Codex P2). placeholder 보존 + 구조화 JSON 덧붙임.
+    const client = fakeClient({
+      async callTool() {
+        return {
+          content: [{ type: 'resource_link', uri: 'file://a', name: 'a' }],
+          structuredContent: { rows: 3 },
+        }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toContain('[resource_link') // 비텍스트 placeholder 보존
+    expect(out).toContain('"rows":3') // 구조화 데이터도 표면화(손실 방지)
+  })
+
+  it('실제 text content 가 있으면 structuredContent 를 덧붙이지 않는다(동등 직렬화 중복 방지)', async () => {
+    const client = fakeClient({
+      async callTool() {
+        return { content: [{ type: 'text', text: 'plain' }], structuredContent: { x: 1 } }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toBe('plain')
+  })
+
   it('도구 호출당 progress audit 수를 cap 한다(악의/버그 서버 폭주·freeze 방지)', async () => {
     let delivered = 0
     const client = fakeClient({
