@@ -4,6 +4,7 @@
   "private": true,
   "description": "멀티 LLM 오케스트레이션 데스크톱 앱",
   "author": "Dowon Park",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/pdw96/fleet.git"
