@@ -637,4 +637,28 @@ describe('createMcpHost', () => {
       total: 2,
     })
   })
+
+  it('execution.taskSupport=required 도구는 노출하지 않고 감사한다(task flow 미구현)', async () => {
+    const { spawn } = fakeSpawn((_spec, method) => {
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
+      if (method === 'tools/list')
+        return {
+          tools: [
+            { name: 'plain' },
+            { name: 'opt', execution: { taskSupport: 'optional' } },
+            { name: 'req', execution: { taskSupport: 'required' } },
+          ],
+        }
+      return {}
+    })
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, onAudit: audit })
+    await host.setServers([{ name: 'srv', command: 'x' }])
+    // required 만 제외 — plain·optional 은 plain tools/call 로 호출 가능하므로 노출.
+    expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__srv__plain', 'mcp__srv__opt'])
+    expect(audit).toHaveBeenCalledWith(
+      'mcp.tool.skipped',
+      expect.objectContaining({ tool: 'req', reason: expect.stringContaining('task') }),
+    )
+  })
 })

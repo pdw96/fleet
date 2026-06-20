@@ -34,6 +34,12 @@ export interface McpToolInfo {
   inputSchema?: Record<string, unknown>
   /** MCP 도구 annotations. 신뢰 서버 외엔 untrusted 라 위험도 강등에 쓰지 않는다(MCP 스펙). */
   annotations?: { readOnlyHint?: boolean; [k: string]: unknown }
+  /**
+   * task-augmented 실행 지원도(2025-11-25). 'required' 는 task invocation(params.task → tasks/result
+   * 폴링)을 강제하므로 plain tools/call 로는 실패한다 — Fleet 은 task flow 미구현이라 노출하지 않는다.
+   * 'optional'/'forbidden'(기본)은 plain call 가능해 그대로 노출한다.
+   */
+  execution?: { taskSupport?: 'forbidden' | 'optional' | 'required' }
 }
 
 /** tools/call 결과. */

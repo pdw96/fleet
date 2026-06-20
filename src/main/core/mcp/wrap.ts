@@ -6,6 +6,12 @@ import type { McpClient, McpProgress, McpToolInfo } from './types'
 const MAX_RESULT_CHARS = 64 * 1024
 /** provider 도구 이름 길이 제약([A-Za-z0-9_-]{1,64}). */
 const MAX_TOOL_NAME_LEN = 64
+/**
+ * 도구 호출 1회당 표면화할 progress 알림 수 상한. 각 progress 는 감사 eventlog 에 영속(매 알림마다
+ * 전체 스냅샷 재기록)되므로 악의/버그 서버의 고빈도 progress 가 디스크 폭주·앱 freeze 를 내지 않도록
+ * 호출 스코프에서 cap 한다. 정상 마일스톤 진행은 이 상한 이내라 손실 없다.
+ */
+const MAX_PROGRESS_EVENTS_PER_CALL = 100
 
 /** provider 도구 이름 제약에 맞게 정규화. */
 function sanitize(s: string): string {
@@ -70,7 +76,17 @@ export function wrapMcpTool(
     },
     classify: () => risk,
     async execute(input, ctx) {
-      const result = await client.callTool(tool.name, input, { signal: ctx.signal, onProgress })
+      // 호출 스코프 progress cap — onProgress 가 있을 때만 래핑(없으면 콜백 비용 0).
+      let progressCount = 0
+      const cappedProgress = onProgress
+        ? (e: McpProgress): void => {
+            if (progressCount++ < MAX_PROGRESS_EVENTS_PER_CALL) onProgress(e)
+          }
+        : undefined
+      const result = await client.callTool(tool.name, input, {
+        signal: ctx.signal,
+        onProgress: cappedProgress,
+      })
       let text = contentToString(result.content)
       // conformant 서버는 structuredContent 와 동등한 텍스트 content 를 함께 보내(스펙 SHOULD) 텍스트
       // 우선 소비로 무손실이다. 텍스트가 비고 structuredContent 만 온 경우(SHOULD 위반)만 JSON fallback.

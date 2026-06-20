@@ -146,6 +146,22 @@ describe('wrapMcpTool', () => {
     expect(out!.length).toBeLessThan(70 * 1024) // MAX_RESULT_CHARS(64KB) + 절단 안내문 이내
     expect(out).toContain('자만 표시')
   })
+
+  it('도구 호출당 progress audit 수를 cap 한다(악의/버그 서버 폭주·freeze 방지)', async () => {
+    let delivered = 0
+    const client = fakeClient({
+      async callTool(_name, _args, opts) {
+        for (let i = 0; i < 1000; i++) opts?.onProgress?.({ progress: i }) // 서버가 progress 폭주
+        return { content: [{ type: 'text', text: 'ok' }] }
+      },
+    })
+    const tool = wrapMcpTool('s', { name: 't' }, client, () => {
+      delivered++
+    })
+    await tool?.execute({}, {})
+    expect(delivered).toBeLessThanOrEqual(100) // MAX_PROGRESS_EVENTS_PER_CALL — bounded
+    expect(delivered).toBeGreaterThan(0) // 정상 progress 는 통과
+  })
 })
 
 describe('contentToString', () => {
