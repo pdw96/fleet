@@ -31,7 +31,7 @@ describe('createMcpClient', () => {
     const c = createMcpClient(f.transport)
     const p = c.initialize()
     expect(f.sent[0]).toMatchObject({ method: 'initialize', id: 1 })
-    f.reply({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } })
+    f.reply({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-11-25' } })
     await p
     expect(f.sent[1]).toMatchObject({ method: 'notifications/initialized' })
     expect(f.sent[1]['id']).toBeUndefined()
@@ -433,5 +433,161 @@ describe('createMcpClient', () => {
     // pending 은 살아있어야 한다 — 실제 응답(method 없음)으로만 resolve.
     f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
     expect(await p).toEqual({ content: [], isError: false })
+  })
+
+  it('initialize 는 최신 프로토콜 버전(2025-11-25)을 보낸다', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const p = c.initialize()
+    expect(f.sent[0]).toMatchObject({
+      method: 'initialize',
+      params: { protocolVersion: '2025-11-25' },
+    })
+    f.reply({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-11-25' } })
+    await p
+  })
+
+  it('callTool 은 structuredContent 를 함께 보존한다', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const p = c.callTool('t', {})
+    f.reply({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        content: [{ type: 'text', text: '{"temp":22}' }],
+        structuredContent: { temp: 22 },
+      },
+    })
+    expect(await p).toEqual({
+      content: [{ type: 'text', text: '{"temp":22}' }],
+      isError: false,
+      structuredContent: { temp: 22 },
+    })
+  })
+
+  it('structuredContent 가 없으면 결과에 그 키를 넣지 않는다(기존 소비자 무회귀)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const p = c.callTool('t', {})
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'ok' }] } })
+    const r = await p
+    expect('structuredContent' in r).toBe(false)
+  })
+
+  it('callTool 에 onProgress 를 주면 요청 params._meta.progressToken 을 실어 보낸다', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const p = c.callTool('t', { a: 1 }, { onProgress: () => {} })
+    const params = (f.sent[0] as { params: Record<string, unknown> }).params
+    expect((params['_meta'] as { progressToken?: unknown }).progressToken).toBeDefined()
+    // 기존 인자는 보존된다(_meta 만 추가).
+    expect(params['arguments']).toEqual({ a: 1 })
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    await p
+  })
+
+  it('onProgress 없이 호출하면 _meta 를 싣지 않는다(와이어 byte 무회귀)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const p = c.callTool('t', {})
+    expect((f.sent[0] as { params: Record<string, unknown> }).params['_meta']).toBeUndefined()
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    await p
+  })
+
+  it('notifications/progress 를 해당 요청의 onProgress 로 라우팅한다(progressToken 은 params 최상위)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const events: Array<{ progress: number; total?: number; message?: string }> = []
+    const p = c.callTool('t', {}, { onProgress: (e) => events.push(e) })
+    const token = (f.sent[0] as { params: { _meta: { progressToken: unknown } } }).params._meta
+      .progressToken
+    // 알림(id 없음)이며 progressToken 은 params 최상위(요청 _meta 와 위치가 다름).
+    f.reply({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: { progressToken: token, progress: 50, total: 100, message: '절반' },
+    })
+    f.reply({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: { progressToken: token, progress: 100, total: 100 },
+    })
+    expect(events).toEqual([
+      { progress: 50, total: 100, message: '절반' },
+      { progress: 100, total: 100 },
+    ])
+    expect(f.sent).toHaveLength(1) // 알림에는 응답하지 않는다(JSON-RPC)
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    await p
+  })
+
+  it('요청 완료 후 늦게 온 progress 알림은 콜백을 호출하지 않는다(토큰 해제)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const events: unknown[] = []
+    const p = c.callTool('t', {}, { onProgress: (e) => events.push(e) })
+    const token = (f.sent[0] as { params: { _meta: { progressToken: unknown } } }).params._meta
+      .progressToken
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    await p
+    expect(() =>
+      f.reply({
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params: { progressToken: token, progress: 10 },
+      }),
+    ).not.toThrow()
+    expect(events).toHaveLength(0)
+  })
+
+  it('알 수 없는 progressToken 의 progress 알림은 안전하게 무시한다', () => {
+    const f = fakeTransport()
+    createMcpClient(f.transport)
+    expect(() =>
+      f.reply({
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params: { progressToken: 'nope', progress: 1 },
+      }),
+    ).not.toThrow()
+    expect(f.sent).toHaveLength(0)
+  })
+
+  it('거대 progress message 는 잘라서 전달한다(무바운드 영속/표면화 방지)', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    let received: { progress: number; message?: string } | undefined
+    const p = c.callTool('t', {}, { onProgress: (e) => (received = e) })
+    const token = (f.sent[0] as { params: { _meta: { progressToken: unknown } } }).params._meta
+      .progressToken
+    f.reply({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: { progressToken: token, progress: 1, message: 'm'.repeat(5000) },
+    })
+    expect(received?.message).toBeDefined()
+    expect(received!.message!.length).toBeLessThanOrEqual(1024)
+    f.reply({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    await p
+  })
+
+  it('abort 시 progressToken 도 해제해 이후 progress 가 새지 않는다', async () => {
+    const f = fakeTransport()
+    const c = createMcpClient(f.transport)
+    const ac = new AbortController()
+    const events: unknown[] = []
+    const p = c.callTool('t', {}, { signal: ac.signal, onProgress: (e) => events.push(e) })
+    const token = (f.sent[0] as { params: { _meta: { progressToken: unknown } } }).params._meta
+      .progressToken
+    ac.abort()
+    await expect(p).rejects.toThrow(/취소/)
+    f.reply({
+      jsonrpc: '2.0',
+      method: 'notifications/progress',
+      params: { progressToken: token, progress: 50 },
+    })
+    expect(events).toHaveLength(0)
   })
 })

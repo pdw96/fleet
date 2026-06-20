@@ -90,6 +90,62 @@ describe('wrapMcpTool', () => {
   it('빈 도구 이름은 null 을 반환한다', () => {
     expect(wrapMcpTool('s', { name: '' }, fakeClient())).toBeNull()
   })
+
+  it('content 가 비고 structuredContent 만 있으면 JSON 직렬화로 fallback 한다(text-less 서버 방어)', async () => {
+    const client = fakeClient({
+      async callTool() {
+        return { content: [], structuredContent: { temp: 22, unit: 'C' } }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toBe(JSON.stringify({ temp: 22, unit: 'C' }))
+  })
+
+  it('텍스트 content 가 있으면 structuredContent 가 있어도 텍스트를 우선한다(SHOULD 동등 직렬화 무손실)', async () => {
+    const client = fakeClient({
+      async callTool() {
+        return { content: [{ type: 'text', text: 'plain' }], structuredContent: { x: 1 } }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toBe('plain')
+  })
+
+  it('execute 는 주입된 onProgress 를 callTool 로 전달한다', async () => {
+    const seen: Array<{ progress: number; total?: number; message?: string }> = []
+    const client = fakeClient({
+      async callTool(_name, _args, opts) {
+        opts?.onProgress?.({ progress: 5, total: 10, message: '진행' })
+        return { content: [{ type: 'text', text: 'ok' }] }
+      },
+    })
+    const tool = wrapMcpTool('s', { name: 't' }, client, (e) => seen.push(e))
+    await tool?.execute({}, {})
+    expect(seen).toEqual([{ progress: 5, total: 10, message: '진행' }])
+  })
+
+  it('onProgress 미주입 시에도 callTool 은 정상 동작한다(진행 콜백 선택적)', async () => {
+    const client = fakeClient({
+      async callTool() {
+        return { content: [{ type: 'text', text: 'ok' }] }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toBe('ok')
+  })
+
+  it('structuredContent fallback 도 길이 바운드를 적용한다(무바운드 컨텍스트 폭주 방지)', async () => {
+    // content 비고 거대 structuredContent 만 온 SHOULD 위반/악의 서버 — fallback 직렬화도 잘려야 한다.
+    const huge = 'x'.repeat(100 * 1024)
+    const client = fakeClient({
+      async callTool() {
+        return { content: [], structuredContent: { blob: huge } }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out!.length).toBeLessThan(70 * 1024) // MAX_RESULT_CHARS(64KB) + 절단 안내문 이내
+    expect(out).toContain('자만 표시')
+  })
 })
 
 describe('contentToString', () => {

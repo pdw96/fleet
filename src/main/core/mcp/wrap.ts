@@ -1,6 +1,6 @@
 import type { RiskLevel } from '../../../shared/types'
 import type { FleetTool } from '../tools/types'
-import type { McpClient, McpToolInfo } from './types'
+import type { McpClient, McpProgress, McpToolInfo } from './types'
 
 /** 결과 문자열 길이 상한(컨텍스트 폭주 방지). */
 const MAX_RESULT_CHARS = 64 * 1024
@@ -47,11 +47,13 @@ export function contentToString(content: Array<Record<string, unknown>>): string
  * MCP 도구 1개를 FleetTool 로 감싼다. 이름은 mcp__<server>__<tool> 로 프리픽스한다.
  * provider 이름 제약(64자)을 넘으면 null 을 반환한다(호출자가 skip + 감사 경고).
  * 위험도는 항상 destructive — annotations(readOnlyHint)는 서버 자기신고라 신뢰하지 않는다(MCP 스펙).
+ * onProgress 를 주면 long-running 도구 호출의 진행 알림을 그쪽으로 흘려보낸다(호스트가 감사로 연결).
  */
 export function wrapMcpTool(
   serverName: string,
   tool: McpToolInfo,
   client: McpClient,
+  onProgress?: (e: McpProgress) => void,
 ): FleetTool | null {
   const toolPart = sanitize(tool.name)
   if (toolPart.length === 0) return null // 빈 도구 이름 — 식별·호출 불가
@@ -68,8 +70,15 @@ export function wrapMcpTool(
     },
     classify: () => risk,
     async execute(input, ctx) {
-      const result = await client.callTool(tool.name, input, { signal: ctx.signal })
-      const text = contentToString(result.content)
+      const result = await client.callTool(tool.name, input, { signal: ctx.signal, onProgress })
+      let text = contentToString(result.content)
+      // conformant 서버는 structuredContent 와 동등한 텍스트 content 를 함께 보내(스펙 SHOULD) 텍스트
+      // 우선 소비로 무손실이다. 텍스트가 비고 structuredContent 만 온 경우(SHOULD 위반)만 JSON fallback.
+      // 동일 변환 경로(contentToString)를 거쳐 MAX_RESULT_CHARS 바운드를 적용한다 — 거대 구조화 결과가
+      // 길이 캡을 우회해 컨텍스트로 새지 않도록(untrusted 서버 방어).
+      if (text === '' && result.structuredContent != null) {
+        text = contentToString([{ type: 'text', text: JSON.stringify(result.structuredContent) }])
+      }
       if (result.isError) throw new Error(text || 'MCP 도구 오류')
       return text
     },

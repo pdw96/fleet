@@ -109,7 +109,10 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     const names: string[] = []
     const seen = new Set<string>()
     for (const info of infos) {
-      const wrapped = wrapMcpTool(spec.name, info, client)
+      // 진행 알림은 호스트 감사 싱크로 흘려보낸다(최소 표면화 — eventlog 로 조회 가능). 실시간 UI 는 후속.
+      const wrapped = wrapMcpTool(spec.name, info, client, (e) =>
+        audit('mcp.tool.progress', { server: spec.name, tool: info.name, ...e }),
+      )
       if (!wrapped) {
         audit('mcp.tool.skipped', { server: spec.name, tool: info.name, reason: 'invalid name' })
         continue

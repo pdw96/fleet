@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 58 files · 142 import wires · 39 IPC channels · 생성 2026-06-20T02:05 UTC
+> 58 files · 142 import wires · 39 IPC channels · 생성 2026-06-20T13:43 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -110,15 +110,15 @@
 
 ### mcp · core — 바깥에서 가져온 도구 프로그램(MCP 서버)을 Fleet 안으로 안전하게 연결해, AI들이 쓸 수 있는 도구로 바꿔 관리하는 모듈이다.
 - **mcp/types** — 이 모듈의 부품들이 공유하는 약속(설계도) 모음 파일 _자식 프로세스, 통신 통로, 도구 정보, 서버 관리자 등이 각각 어떤 기능을 갖춰야 하는지 형태만 정의해 둔다. 실제 동작 코드는 없고, 부품들이 서로 같은 규격으로 끼워 맞춰지도록 하는 인터페이스다._
-  - →의존: safety/approval, shared/types, tools/types · ←피의존: engine, mcp/client, mcp/host, mcp/stdio, mcp/wrap · 85줄
+  - →의존: safety/approval, shared/types, tools/types · ←피의존: engine, mcp/client, mcp/host, mcp/stdio, mcp/wrap · 105줄
 - **mcp/host** — 여러 도구 서버를 한꺼번에 켜고 끄고 정리하는 총괄 관리자 부품 _서버 목록을 받아 새것은 연결하고 빠진 것은 닫으며, 새 서버를 실행하기 전에는 사용자 승인(ApprovalGate)을 먼저 받는다. 같은 이름의 도구가 겹치면 먼저 등록된 쪽만 노출하고, 서버가 죽거나 도구 목록이 바뀌면 상태를 다시 계산한다._
-  - →의존: mcp/client, mcp/stdio, mcp/types, mcp/wrap, shared/types, tools/types · ←피의존: engine · 312줄
+  - →의존: mcp/client, mcp/stdio, mcp/types, mcp/wrap, shared/types, tools/types · ←피의존: engine · 315줄
 - **mcp/stdio** — 도구 서버 프로그램을 실제로 실행하고 글자를 주고받게 연결하는 부품 _외부 프로그램을 자식 프로세스로 띄우고, 들어오는 글자를 줄바꿈 단위로 잘라 하나의 메시지로 묶어 전달한다. 깨진 메시지 한 줄은 버려서 연결 전체가 무너지지 않게 하고, 종료 통지는 정확히 한 번만 가도록 모은다._
   - →의존: mcp/types, process/kill-tree, shared/types · ←피의존: mcp/host · 92줄
 - **mcp/wrap** — 외부 도구 하나를 Fleet 안에서 쓸 수 있는 표준 도구로 포장하는 부품 _도구 이름을 'mcp__서버명__도구명' 형식으로 바꾸고 규칙에 안 맞는 글자는 정리하며, 모든 외부 도구를 '위험(승인 필요)'으로 분류한다. 도구 실행 결과는 글자로 합치되 64KB를 넘으면 잘라서 화면이 폭주하지 않게 한다._
-  - →의존: mcp/types, shared/types, tools/types · ←피의존: mcp/host · 78줄
+  - →의존: mcp/types, shared/types, tools/types · ←피의존: mcp/host · 87줄
 - **mcp/client** — 외부 도구 서버 한 곳과 대화를 주고받는 통신 담당 부품 _요청에 번호표를 붙여 보내고 같은 번호의 답이 오면 짝지어 돌려준다. 30초가 지나거나 사용자가 취소하면 대기를 정리하고 서버에도 '취소' 통보를 보내며, 연결이 끊기면 기다리던 요청을 모두 실패 처리한다._
-  - →의존: mcp/types · ←피의존: mcp/host · 211줄
+  - →의존: mcp/types · ←피의존: mcp/host · 278줄
 
 ### tools · core — AI가 작업방 안의 파일을 직접 읽고 찾아볼 수 있게 해주는 '도구 묶음'과, 그 도구들을 안전하게 반복 사용하도록 진행을 관리하는 살림꾼 모음.
 - **tools/types** — 도구가 어떤 모양과 기능을 갖춰야 하는지 정해두는 규격서(설계도) _도구라면 반드시 가져야 할 것들(AI에게 보여줄 설명, 위험도 판정, 실제 실행 함수)과 도구 명부·진행 관리자가 주고받을 정보의 형태를 약속으로 정의한다. 실제 동작 코드는 없고, 다른 파일들이 따라야 할 틀만 담는다._

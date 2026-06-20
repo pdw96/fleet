@@ -72,7 +72,7 @@ function deferredSpawn() {
         if (msg.method === 'initialize') {
           queueMicrotask(() =>
             out(
-              `${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: {} } })}\n`,
+              `${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-11-25', capabilities: {} } })}\n`,
             ),
           )
         } else if (msg.method === 'tools/list') {
@@ -108,7 +108,7 @@ const approveAll = { request: async () => 'approved' as const }
 const rejectAll = { request: async () => 'rejected' as const }
 
 const echoReply = (spec: McpServerSpec, method: string): unknown => {
-  if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+  if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
   if (method === 'tools/list')
     return { tools: [{ name: 'echo', description: 'e', inputSchema: { type: 'object' } }] }
   if (method === 'tools/call') return { content: [{ type: 'text', text: `hi from ${spec.name}` }] }
@@ -252,7 +252,7 @@ describe('createMcpHost', () => {
 
   it('서버 간 이름 충돌은 한 서버만 노출하고 진 서버를 status·감사로 표면화한다', async () => {
     const { spawn } = fakeSpawn((_spec, method) => {
-      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
       if (method === 'tools/list') return { tools: [{ name: 'x' }] }
       return {}
     })
@@ -274,7 +274,7 @@ describe('createMcpHost', () => {
 
   it('sanitize 후 충돌하는 도구는 하나만 노출하고 나머지는 skip 한다', async () => {
     const { spawn } = fakeSpawn((_spec, method) => {
-      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
       if (method === 'tools/list') return { tools: [{ name: 'do.thing' }, { name: 'do_thing' }] } // 둘 다 mcp__srv__do_thing
       return {}
     })
@@ -400,7 +400,7 @@ describe('createMcpHost', () => {
   it('서버가 tools/list_changed 를 보내면 도구 목록을 다시 가져와 노출을 갱신한다', async () => {
     let toolSet: { name: string }[] = [{ name: 'a' }]
     const { spawn, notifiers } = fakeSpawn((_spec, method) => {
-      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
       if (method === 'tools/list') return { tools: toolSet }
       return {}
     })
@@ -424,7 +424,7 @@ describe('createMcpHost', () => {
   it('tools/list_changed 로 도구가 줄면 제거된 도구는 더 이상 노출하지 않는다', async () => {
     let toolSet: { name: string }[] = [{ name: 'a' }, { name: 'b' }]
     const { spawn, notifiers } = fakeSpawn((_spec, method) => {
-      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
       if (method === 'tools/list') return { tools: toolSet }
       return {}
     })
@@ -440,7 +440,7 @@ describe('createMcpHost', () => {
   it('tools/list_changed 새로고침이 실패하면 기존 도구를 유지하고 감사한다', async () => {
     let failList = false
     const { spawn, notifiers } = fakeSpawn((_spec, method) => {
-      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
       if (method === 'tools/list') {
         if (failList) throw new Error('list boom')
         return { tools: [{ name: 'a' }] }
@@ -499,7 +499,7 @@ describe('createMcpHost', () => {
       foo_bar: [{ name: 'y' }],
     }
     const { spawn, notifiers } = fakeSpawn((spec, method) => {
-      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
       if (method === 'tools/list') return { tools: tools[spec.name] }
       if (method === 'tools/call')
         return { content: [{ type: 'text', text: `hi from ${spec.name}` }] }
@@ -539,7 +539,7 @@ describe('createMcpHost', () => {
   it('연결이 종료된 뒤 도착한 tools/list_changed 는 무시한다(죽은 서버 미새로고침)', async () => {
     let toolSet: { name: string }[] = [{ name: 'a' }]
     const { spawn, notifiers, closers } = fakeSpawn((_spec, method) => {
-      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
       if (method === 'tools/list') return { tools: toolSet }
       return {}
     })
@@ -555,7 +555,7 @@ describe('createMcpHost', () => {
 
   it('승자 서버가 종료되면 가려졌던 서버의 도구·status 가 복원된다', async () => {
     const { spawn, closers } = fakeSpawn((_spec, method) => {
-      if (method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: {} }
+      if (method === 'initialize') return { protocolVersion: '2025-11-25', capabilities: {} }
       if (method === 'tools/list') return { tools: [{ name: 'x' }] }
       return {}
     })
@@ -569,5 +569,72 @@ describe('createMcpHost', () => {
     expect(host.tools().map((t) => t.definition.name)).toEqual(['mcp__foo_bar__x']) // 패자 도구 노출
     expect(host.status().find((s) => s.name === 'foo_bar')?.toolCount).toBe(1) // status 복원
     expect(host.status().find((s) => s.name === 'foo.bar')?.connected).toBe(false)
+  })
+
+  it('도구 호출 progress 알림을 mcp.tool.progress 로 감사한다', async () => {
+    // tools/call 요청의 _meta.progressToken 을 읽어 같은 토큰으로 진행 알림 2개를 보낸 뒤 결과를 응답한다.
+    const spawn: SpawnFn = (_spec) => {
+      let out: (chunk: string) => void = () => {}
+      return {
+        write: (line) => {
+          const msg = JSON.parse(line) as {
+            id?: number
+            method: string
+            params?: { _meta?: { progressToken?: number } }
+          }
+          if (msg.id == null) return
+          if (msg.method === 'initialize') {
+            queueMicrotask(() =>
+              out(
+                `${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-11-25', capabilities: {} } })}\n`,
+              ),
+            )
+          } else if (msg.method === 'tools/list') {
+            queueMicrotask(() =>
+              out(
+                `${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'slow' }] } })}\n`,
+              ),
+            )
+          } else if (msg.method === 'tools/call') {
+            const token = msg.params?._meta?.progressToken
+            queueMicrotask(() => {
+              if (token != null) {
+                out(
+                  `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: 1, total: 2 } })}\n`,
+                )
+                out(
+                  `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: token, progress: 2, total: 2 } })}\n`,
+                )
+              }
+              out(
+                `${JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'done' }] } })}\n`,
+              )
+            })
+          }
+        },
+        onStdout: (h) => {
+          out = h
+        },
+        onClose: () => {},
+        kill: () => {},
+      }
+    }
+    const audit = vi.fn()
+    const host = createMcpHost({ spawn, onAudit: audit })
+    await host.setServers([{ name: 'srv', command: 'x' }])
+    const tool = host.tools().find((t) => t.definition.name === 'mcp__srv__slow')!
+    expect(await tool.execute({}, {})).toBe('done')
+    expect(audit).toHaveBeenCalledWith('mcp.tool.progress', {
+      server: 'srv',
+      tool: 'slow',
+      progress: 1,
+      total: 2,
+    })
+    expect(audit).toHaveBeenCalledWith('mcp.tool.progress', {
+      server: 'srv',
+      tool: 'slow',
+      progress: 2,
+      total: 2,
+    })
   })
 })

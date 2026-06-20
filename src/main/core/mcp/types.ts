@@ -41,6 +41,22 @@ export interface McpCallResult {
   /** content 항목 배열({type:'text'|'image'|'resource'|...}). */
   content: Array<Record<string, unknown>>
   isError?: boolean
+  /**
+   * 구조화 결과(MCP structuredContent). 서버가 제공할 때만 존재한다. conformant 서버는 동등한
+   * 텍스트 content 도 함께 보내므로(스펙 SHOULD) 텍스트 소비만으로 무손실이지만, text 가 없는
+   * 서버를 위해 보존한다(wrap 의 fallback 직렬화에서 사용).
+   */
+  structuredContent?: Record<string, unknown>
+}
+
+/** MCP notifications/progress 의 진행 이벤트(progressToken 상관은 client 내부에서 처리). */
+export interface McpProgress {
+  /** 현재 진행값(단조 증가). */
+  progress: number
+  /** 전체값(알려진 경우만). */
+  total?: number
+  /** 사람이 읽는 상태 문자열(선택). */
+  message?: string
 }
 
 /** 단일 MCP 서버 세션. */
@@ -48,7 +64,11 @@ export interface McpClient {
   /** initialize → notifications/initialized. */
   initialize(): Promise<void>
   listTools(): Promise<McpToolInfo[]>
-  callTool(name: string, args: unknown, opts?: { signal?: AbortSignal }): Promise<McpCallResult>
+  callTool(
+    name: string,
+    args: unknown,
+    opts?: { signal?: AbortSignal; onProgress?: (e: McpProgress) => void },
+  ): Promise<McpCallResult>
   /** 연결 종료(자식 종료/명시적 close) 통지. 호스트가 죽은 서버의 도구를 무효화하는 데 쓴다. */
   onClose(handler: (err?: Error) => void): void
   /** 서버의 notifications/tools/list_changed 통지. 호스트가 도구 목록을 다시 가져오는 데 쓴다. */
