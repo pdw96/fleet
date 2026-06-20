@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AppInfo, LlmDescriptor } from '../shared/types'
 import { ApprovalModal } from './components/ApprovalModal'
+import { UpdateBanner } from './components/UpdateBanner'
 import { ChatPanel } from './components/ChatPanel'
 import { ProjectPanel } from './components/ProjectPanel'
 import { SessionsPanel } from './components/SessionsPanel'
@@ -86,6 +87,7 @@ export function App() {
         </footer>
       )}
 
+      <UpdateBanner />
       <ApprovalModal />
     </div>
   )

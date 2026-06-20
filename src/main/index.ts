@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { autoUpdater } from 'electron-updater'
 import type {
   AgentRole,
   ApiProviderConfig,
@@ -9,7 +10,9 @@ import type {
   McpServerSpec,
   OrchestratorEvent,
   RunProjectRequest,
+  UpdateEvent,
 } from '../shared/types'
+import { installAutoUpdate } from './auto-update'
 import { createFleetEngine, type FleetEngine } from './core/engine'
 import { createIpcApprover, type IpcApprover } from './core/safety/approval-bridge'
 import { createJsonFileStore } from './core/store/json-file'
@@ -34,6 +37,12 @@ function broadcastChatStream(event: ChatStreamEvent): void {
 function broadcastApprovalRequest(req: ApprovalRequest): void {
   for (const w of BrowserWindow.getAllWindows()) {
     w.webContents.send('fleet:approval:request', req)
+  }
+}
+
+function broadcastUpdateEvent(event: UpdateEvent): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('fleet:update:event', event)
   }
 }
 
@@ -209,6 +218,21 @@ void app.whenReady().then(() => {
     setTimeout(done, 3000) // dispose 가 지연/멈춰도 종료 보장(연결 자식은 dispose 동기 1단계에서 이미 정리)
   })
   createWindow()
+
+  // 자동 업데이트: 패키지드·non-E2E·non-darwin 에서만 무장. 컨트롤러가 IPC 의 권위 소스.
+  const updater = installAutoUpdate({
+    updater: autoUpdater,
+    send: broadcastUpdateEvent,
+    isPackaged: app.isPackaged,
+    isE2E: process.env['FLEET_E2E'] === '1' || !!process.env['FLEET_SMOKE'],
+    platform: process.platform,
+    logger: console,
+  })
+  ipcMain.handle('fleet:update:getState', () => updater.getState())
+  ipcMain.handle('fleet:update:check', () => updater.check())
+  ipcMain.handle('fleet:update:download', () => updater.download())
+  ipcMain.handle('fleet:update:install', () => updater.install())
+  ipcMain.handle('fleet:update:dismiss', () => updater.dismiss())
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

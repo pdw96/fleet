@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 56 files · 138 import wires · 33 IPC channels · 생성 2026-06-19T11:09 UTC
+> 58 files · 142 import wires · 39 IPC channels · 생성 2026-06-20T02:05 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -13,13 +13,13 @@
 - **바깥 세계 runtime** — 앱 밖의 실제 대상 — 설치된 AI CLI(클로드/코덱스/제미니), AI 회사 API, 외부 도구(MCP) 서버.
 
 ## 한눈에
-- **허브**(많이 연결): shared/types(36) · engine(25) · providers/types(11) · orchestrator/orchestrator(10) · tools/types(10) · main/index(9)
+- **허브**(많이 연결): shared/types(38) · engine(25) · providers/types(11) · orchestrator/orchestrator(10) · tools/types(10) · main/index(10)
 - **진입점**: main/e2e · main/index · preload/index · renderer/main
 - **레지스트리**(확장점, 분기 대신 등록): cli/registry · providers/registry · tools/registry
 - **승인 게이트**(위험작업 차단): safety/approval
 
 ## 런타임 배선 (import 로는 안 보이는 연결)
-- renderer/App, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel →(window.fleet)→ preload/index.ts → main/index.ts (33 IPC channels) → engine
+- renderer/App, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner →(window.fleet)→ preload/index.ts → main/index.ts (39 IPC channels) → engine
 - session/cli-session → claude · codex · gemini
 - session/api-session → Anthropic · OpenAI · Google
 - mcp/stdio → MCP servers
@@ -28,7 +28,7 @@
 
 ### renderer · renderer — 사용자가 실제로 보고 클릭하는 앱 화면 전체를 그리고, 세션 등록·프로젝트 실행·AI 채팅·승인 같은 모든 조작 화면을 담당하는 부분입니다.
 - **renderer/App** — 앱 화면의 큰 틀과 위쪽 탭 메뉴를 그리는 부품 _맨 위 'FLEET' 제목과 세션·프로젝트·채팅 세 탭을 보여주고, 누른 탭에 맞는 화면을 갈아끼웁니다. 현재 등록된 AI 세션 개수와 위험 작업 승인 창도 항상 켜 둡니다._
-  - →의존: renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, shared/types · ←피의존: renderer/main · 93줄
+  - →의존: renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, shared/types · ←피의존: renderer/main · 95줄
 - **renderer/components/ChatPanel** — 여러 AI와 한 작업방에서 대화하고 자동 토론을 시키는 채팅 화면 _작업방을 만들어 사용자가 메시지를 보내고 특정 AI에게 묻거나 여러 AI를 자동으로 토론시킬 수 있으며, AI 답변이 한 글자씩 실시간으로 흘러나오는 모습을 말풍선으로 보여줍니다. 탭을 떠났다 돌아와도 진행 중이던 대화가 사라지지 않게 상태를 되살립니다._
   - →의존: renderer/ui, shared/types · ←피의존: renderer/App · 479줄
 - **renderer/components/ProjectPanel** — 목표를 적으면 여러 AI가 역할을 나눠 작업하게 시키는 프로젝트 실행 화면 _원하는 목표와 역할 배정 방식을 입력해 '실행'을 누르면 AI들이 계획·작업·검증을 진행하고, 그 과정을 진행 로그와 작업 보드로 실시간 보여주며 도중에 취소할 수도 있습니다._
@@ -37,6 +37,8 @@
   - →의존: shared/types · ←피의존: renderer/App · 140줄
 - **renderer/components/SessionsPanel** — 어떤 AI를 쓸지 등록하고 설정하는 세션 관리 화면 _컴퓨터에 깔린 클로드·코덱스 같은 CLI 도구를 감지해 등록하거나, API 키를 넣어 Anthropic·OpenAI·Google AI를 추가하고, 각 AI가 잘하는 역할과 외부 도구(MCP) 연결도 지정합니다._
   - →의존: shared/types · ←피의존: renderer/App · 602줄
+- **renderer/components/UpdateBanner**
+  - →의존: shared/types · ←피의존: renderer/App · 72줄
 - **renderer/ui** — 화면의 색과 클래스 이름을 다루는 작은 도우미 모음 _작업 상태(완료·실패·진행 중 등)에 맞는 색을 골라 주고, 채팅에 참여한 AI마다 고유한 색을 정해 누가 말했는지 한눈에 구분되게 합니다. 조건에 맞는 화면 스타일 이름을 합치는 간단한 기능도 들어 있습니다._
   - →의존: — · ←피의존: renderer/components/ChatPanel, renderer/components/ProjectPanel · 46줄
 - **renderer/main** — 앱 화면을 맨 처음 켜서 빈 페이지에 띄우는 시작 부품 _웹 페이지의 빈 자리를 찾아 그 안에 위의 App 화면 전체를 그려 넣어 앱을 처음 띄웁니다. 개발 중 실수를 더 잘 잡아주는 점검 모드로 감싸 실행합니다._
@@ -44,13 +46,15 @@
 
 ### preload · preload — 화면(앱 창)과 앱의 두뇌(본체)를 안전하게 이어주는 다리로, 화면이 본체에 일을 시키고 결과를 돌려받게 해 주는 창구 역할을 한다.
 - **preload/index** — 앱 화면과 본체 사이를 안전하게 잇는 단 하나의 통로(창구) 부품 _화면 쪽 코드는 본체에 직접 손대지 못하고, 이 파일이 미리 정해 둔 'fleet'이라는 안내 데스크를 통해서만 요청을 전달한다. 마치 은행 창구처럼, 손님(화면)이 정해진 양식으로만 요청하고 직원(본체)이 처리해 결과를 돌려주는 구조라 안전하다._
-  - →의존: shared/types · ←피의존: — · 84줄
+  - →의존: shared/types · ←피의존: — · 98줄
 
 ### main · main — Fleet 앱의 본체(메인 프로세스)를 켜고, 창과 보안 빗장을 설치하며, 화면과 AI 엔진을 안전하게 연결하는 시동·관문 묶음이다.
 - **main/index** — 앱에 시동을 걸어 창을 띄우고 화면과 AI 엔진을 이어주는 '시동·교환대' _앱이 준비되면 AI 엔진을 만들고, 화면(창)을 띄우며, 화면이 보내는 모든 요청(세션 등록·채팅·프로젝트 실행·승인 응답 등)을 엔진의 해당 기능으로 연결하는 전화 교환대 역할을 한다. 창을 만들 때 보안 빗장 두 개(이동 차단·권한 차단)를 걸고, 앱을 끌 때는 켜져 있던 AI 프로그램들을 깔끔히 정리한 뒤 종료해 '좀비' 프로세스가 남지 않게 한다._
-  - →의존: engine, main/crash-recovery, main/e2e, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, store/json-file · ←피의존: — · 226줄
+  - →의존: engine, main/auto-update, main/crash-recovery, main/e2e, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, store/json-file · ←피의존: — · 250줄
 - **main/e2e** — 자동 테스트할 때만 켜지는 '연습용 가짜 AI' 장치 _진짜 AI를 부르는 대신 미리 정해둔 답을 흉내 내, 화면 자동검사(Playwright)가 흔들림 없이 돌아가게 한다. 가짜 AI 둘과 토론방 하나, 임시 작업폴더를 미리 깔아두며, 일부러 '응답 중' 상태에서 멈춰 탭을 옮겼다 돌아와도 진행 표시가 살아있는지 확인하게 해준다. FLEET_E2E 라는 스위치가 정확히 '1'일 때만 작동하고 평소엔 절대 끼어들지 않는다._
   - →의존: cli/detect, engine · ←피의존: main/index · 39줄
+- **main/auto-update**
+  - →의존: shared/types · ←피의존: main/index · 152줄
 - **main/secret-crypto** — API 키 같은 비밀번호를 운영체제 금고로 잠갔다 푸는 '비밀 자물쇠' _맥의 키체인, 윈도우의 DPAPI 같은 운영체제 내장 금고를 이용해 API 키를 암호화해 저장하고, 필요할 때 다시 풀어준다. 리눅스에서 진짜 암호화가 안 되는 경우(평문 저장)는 보호가 0이라 아예 '사용 불가'로 처리해, 비밀이 무방비로 새지 않게 막는다._
   - →의존: secret/types · ←피의존: main/index · 36줄
 - **main/crash-recovery** — 렌더러가 죽어 흰 화면이 되면 자동으로 다시 띄워 복구하는 '크래시 구급대' _AI 화면(렌더러)이 갑자기 죽으면 창이 흰 화면으로 멈추는데, 이를 감지해 잠깐 기다렸다 화면을 다시 불러와 복구한다. 같은 크래시가 연달아 나면 간격을 점점 늘리고 한도를 넘으면 멈춰 무한 깜빡임을 막고, 앱을 끄는 중이거나 창이 이미 닫혔으면 다시 띄우지 않는다. 외부에서 강제 종료(killed)된 렌더러도 창은 살아있어 복구 대상이며, GPU 같은 보조 프로세스가 죽는 건 크롬이 알아서 되살리므로 기록만 남긴다._
@@ -70,7 +74,7 @@
 - **providers/google** — 구글 제미니(Gemini) AI 와 대화하는 전용 창구 _제미니에게 질문을 보내고 답을 받아오며, 제미니 버전(2.5/3 등)마다 다른 '생각 깊이' 설정 방식을 알아서 맞춰 보낸다. 생각하기를 켜면 답이 굶지 않도록 답변 분량을 늘리고, 제미니가 답을 차단했는지도 가려낸다._
   - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 555줄
 - **providers/openai** — OpenAI(GPT) 및 같은 방식을 쓰는 호환 AI 와 대화하는 전용 창구 _GPT 에게 질문을 보내고 답을 받아오며, o1·GPT-5 같은 추론 모델이 거부하는 설정(온도·토큰 항목 등)을 모델에 맞게 알아서 바꿔 보낸다. 같은 방식을 쓰는 다른 회사 AI(openai-compatible)도 이 창구로 함께 처리한다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 473줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 478줄
 - **providers/sse** — 실시간으로 조각조각 도착하는 답변 데이터를 한 덩어리씩 깔끔히 잘라 주는 도구 _AI 가 답을 한 글자씩 흘려보낼 때 인터넷으로 들어오는 데이터 조각에서 실제 내용만 골라내고, 의미 없는 줄이나 종료 신호는 걸러낸다. 글자가 중간에 끊겨 깨지지 않도록 안전하게 이어 붙인다._
   - →의존: — · ←피의존: providers/anthropic, providers/google, providers/openai · 27줄
 - **providers/resilient** — 인터넷 장애·지연에도 요청이 잘 끝나게 감싸 주는 안전장치 _응답이 너무 안 오면 무한정 기다리지 않게 제한시간을 걸고, 일시적 오류(과부하·서버 오류)면 잠깐 쉬었다 자동으로 다시 시도한다. 단, 사용자가 직접 취소하면 재시도하지 않고 즉시 멈춘다._
@@ -172,7 +176,7 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/detect, cli/output, cli/registry, engine, main/index, mcp/host, mcp/stdio, mcp/types, mcp/wrap, +26 · 540줄
+  - →의존: — · ←피의존: chat/room, cli/detect, cli/output, cli/registry, engine, main/auto-update, main/index, mcp/host, mcp/stdio, mcp/types, +28 · 569줄
 
 ---
 _이 파일은 자동 생성물이다. 코드 변경 후 `npm run brain` 으로 갱신. 설명은 `scripts/brain/descriptions.json` 에서 손볼 수 있다._
