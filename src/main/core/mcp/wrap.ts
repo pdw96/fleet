@@ -88,20 +88,20 @@ export function wrapMcpTool(
         onProgress: cappedProgress,
       })
       let text = contentToString(result.content)
-      // conformant 서버는 structuredContent 와 동등한 텍스트 content 를 함께 보내(스펙 SHOULD) 텍스트
-      // 우선 소비로 무손실이다. 그 동등 텍스트가 없을 때만(실제 text content 부재) structuredContent 를
-      // 표면화한다 — 판정은 렌더 결과가 아니라 'text 타입 항목의 부재'로 한다. content 가 비텍스트
-      // placeholder(image/resource_link)뿐이면 contentToString 이 placeholder 를 내 text!=='' 가 되지만
-      // 구조화 payload 는 여전히 유실되므로(Codex P2), placeholder 를 보존한 채 JSON 을 덧붙인다.
-      const hasTextContent = result.content.some(
-        (c) => c['type'] === 'text' && typeof c['text'] === 'string' && c['text'] !== '',
-      )
-      if (!hasTextContent && result.structuredContent != null) {
+      // structuredContent 보존: 서버는 동등 텍스트 직렬화를 SHOULD(MUST 아님) 하므로, 텍스트만 쓰면
+      // (a) text 가 비었거나 비텍스트 placeholder(image/resource_link)뿐인 경우, (b) text 가 사람용
+      // 요약이고 structuredContent 가 그와 다른 비중복 구조 데이터인 경우 payload 가 유실된다(Codex P2).
+      // 판정은 '렌더 결과가 비었나'가 아니라 'text 가 동등 직렬화를 이미 포함하나'로 한다 — 포함하면
+      // 중복이라 생략하고, 아니면 보존해 덧붙인다(placeholder/요약은 유지). 정확 매칭만 중복 처리하므로
+      // 모호하면 무손실 쪽으로 기운다(약간의 중복 < payload 손실).
+      if (result.structuredContent != null) {
         const json = JSON.stringify(result.structuredContent)
-        const merged = text === '' ? json : `${text}\n${json}`
-        // 동일 변환 경로(contentToString)를 거쳐 MAX_RESULT_CHARS 바운드를 적용한다 — 거대 구조화
-        // 결과가 길이 캡을 우회해 컨텍스트로 새지 않도록(untrusted 서버 방어).
-        text = contentToString([{ type: 'text', text: merged }])
+        if (!text.includes(json)) {
+          const merged = text === '' ? json : `${text}\n${json}`
+          // 동일 변환 경로(contentToString)로 MAX_RESULT_CHARS 바운드를 적용한다(거대 구조화 결과가
+          // 길이 캡을 우회해 컨텍스트로 새지 않도록 — untrusted 서버 방어).
+          text = contentToString([{ type: 'text', text: merged }])
+        }
       }
       if (result.isError) throw new Error(text || 'MCP 도구 오류')
       return text

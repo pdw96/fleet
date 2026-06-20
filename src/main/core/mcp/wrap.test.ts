@@ -101,14 +101,15 @@ describe('wrapMcpTool', () => {
     expect(out).toBe(JSON.stringify({ temp: 22, unit: 'C' }))
   })
 
-  it('텍스트 content 가 있으면 structuredContent 가 있어도 텍스트를 우선한다(SHOULD 동등 직렬화 무손실)', async () => {
+  it('동등 직렬화 텍스트가 이미 있으면 structuredContent 를 중복으로 덧붙이지 않는다', async () => {
+    const sc = { x: 1 }
     const client = fakeClient({
       async callTool() {
-        return { content: [{ type: 'text', text: 'plain' }], structuredContent: { x: 1 } }
+        return { content: [{ type: 'text', text: JSON.stringify(sc) }], structuredContent: sc }
       },
     })
     const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
-    expect(out).toBe('plain')
+    expect(out).toBe(JSON.stringify(sc)) // 중복 없이 한 번만
   })
 
   it('execute 는 주입된 onProgress 를 callTool 로 전달한다', async () => {
@@ -163,14 +164,17 @@ describe('wrapMcpTool', () => {
     expect(out).toContain('"rows":3') // 구조화 데이터도 표면화(손실 방지)
   })
 
-  it('실제 text content 가 있으면 structuredContent 를 덧붙이지 않는다(동등 직렬화 중복 방지)', async () => {
+  it('text 요약과 다른 non-duplicative structuredContent 는 둘 다 보존한다(SHOULD-not-MUST)', async () => {
+    // 서버는 동등 텍스트 직렬화를 SHOULD(MUST 아님) 하므로 사람용 요약 text + 비중복 구조 데이터가 올 수
+    // 있다 — 텍스트만 쓰면 구조 payload 가 유실되므로 둘 다 표면화한다(Codex P2).
     const client = fakeClient({
       async callTool() {
-        return { content: [{ type: 'text', text: 'plain' }], structuredContent: { x: 1 } }
+        return { content: [{ type: 'text', text: '날씨 요약' }], structuredContent: { tempC: 22 } }
       },
     })
     const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
-    expect(out).toBe('plain')
+    expect(out).toContain('날씨 요약') // 사람용 텍스트 보존
+    expect(out).toContain('"tempC":22') // 구조화 데이터도 보존(손실 방지)
   })
 
   it('도구 호출당 progress audit 수를 cap 한다(악의/버그 서버 폭주·freeze 방지)', async () => {
