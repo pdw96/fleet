@@ -97,9 +97,10 @@ export function wrapMcpTool(
       if (result.structuredContent != null) {
         const json = JSON.stringify(result.structuredContent)
         if (!text.includes(json)) {
-          const merged = text === '' ? json : `${text}\n${json}`
-          // 동일 변환 경로(contentToString)로 MAX_RESULT_CHARS 바운드를 적용한다(거대 구조화 결과가
-          // 길이 캡을 우회해 컨텍스트로 새지 않도록 — untrusted 서버 방어).
+          // structured JSON 을 앞에 둔다 — text 가 길어 길이 캡(MAX_RESULT_CHARS)에 걸리면 뒤가 잘리므로,
+          // JSON 을 앞세워 보존한다(잘린 JSON 은 파싱 불가라 unstructured text 보다 보존 우선). 동일 변환
+          // 경로(contentToString)로 합산 결과에 바운드를 적용한다(거대 구조화 결과도 컨텍스트로 안 새도록).
+          const merged = text === '' ? json : `${json}\n${text}`
           text = contentToString([{ type: 'text', text: merged }])
         }
       }

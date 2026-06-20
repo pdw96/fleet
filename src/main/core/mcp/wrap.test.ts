@@ -148,6 +148,22 @@ describe('wrapMcpTool', () => {
     expect(out).toContain('자만 표시')
   })
 
+  it('긴 unstructured text 와 함께 와도 structuredContent 가 잘리지 않는다(길이 캡서 우선 보존)', async () => {
+    // text 가 이미 MAX_RESULT_CHARS 를 넘으면 뒤에 붙인 JSON 이 재절단서 날아간다(Codex P2) — JSON 을
+    // 앞에 둬 보존한다. 잘린 JSON 은 파싱 불가라 unstructured text 보다 보존 우선.
+    const client = fakeClient({
+      async callTool() {
+        return {
+          content: [{ type: 'text', text: 'x'.repeat(100 * 1024) }], // MAX_RESULT_CHARS 초과
+          structuredContent: { marker: 'KEPT' },
+        }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toContain('"marker":"KEPT"') // 긴 text 에 밀려 잘리지 않음
+    expect(out!.length).toBeLessThan(70 * 1024) // 여전히 바운드
+  })
+
   it('비텍스트 content(resource_link/image)만 + structuredContent 면 placeholder 와 구조화 JSON 을 모두 표면화한다', async () => {
     // contentToString 이 placeholder('[resource_link …]')를 만들어 text!=='' 이지만, 실제 text content 는
     // 없으므로 structuredContent 가 유실되면 안 된다(Codex P2). placeholder 보존 + 구조화 JSON 덧붙임.
