@@ -109,7 +109,20 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     const names: string[] = []
     const seen = new Set<string>()
     for (const info of infos) {
-      const wrapped = wrapMcpTool(spec.name, info, client)
+      // task-augmented 실행이 필수('required')인 도구는 plain tools/call 로 실패한다(task flow 미구현)
+      // — 모델에 노출하면 선택 시 깨지므로 제외하고 감사로 표면화한다(2025-11-25 광고의 안전한 마감).
+      if (info.execution?.taskSupport === 'required') {
+        audit('mcp.tool.skipped', {
+          server: spec.name,
+          tool: info.name,
+          reason: 'task-required (task flow 미지원)',
+        })
+        continue
+      }
+      // 진행 알림은 호스트 감사 싱크로 흘려보낸다(최소 표면화 — eventlog 로 조회 가능). 실시간 UI 는 후속.
+      const wrapped = wrapMcpTool(spec.name, info, client, (e) =>
+        audit('mcp.tool.progress', { server: spec.name, tool: info.name, ...e }),
+      )
       if (!wrapped) {
         audit('mcp.tool.skipped', { server: spec.name, tool: info.name, reason: 'invalid name' })
         continue

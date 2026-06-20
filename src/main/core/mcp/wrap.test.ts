@@ -90,6 +90,124 @@ describe('wrapMcpTool', () => {
   it('빈 도구 이름은 null 을 반환한다', () => {
     expect(wrapMcpTool('s', { name: '' }, fakeClient())).toBeNull()
   })
+
+  it('content 가 비고 structuredContent 만 있으면 JSON 직렬화로 fallback 한다(text-less 서버 방어)', async () => {
+    const client = fakeClient({
+      async callTool() {
+        return { content: [], structuredContent: { temp: 22, unit: 'C' } }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toBe(JSON.stringify({ temp: 22, unit: 'C' }))
+  })
+
+  it('동등 직렬화 텍스트가 이미 있으면 structuredContent 를 중복으로 덧붙이지 않는다', async () => {
+    const sc = { x: 1 }
+    const client = fakeClient({
+      async callTool() {
+        return { content: [{ type: 'text', text: JSON.stringify(sc) }], structuredContent: sc }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toBe(JSON.stringify(sc)) // 중복 없이 한 번만
+  })
+
+  it('execute 는 주입된 onProgress 를 callTool 로 전달한다', async () => {
+    const seen: Array<{ progress: number; total?: number; message?: string }> = []
+    const client = fakeClient({
+      async callTool(_name, _args, opts) {
+        opts?.onProgress?.({ progress: 5, total: 10, message: '진행' })
+        return { content: [{ type: 'text', text: 'ok' }] }
+      },
+    })
+    const tool = wrapMcpTool('s', { name: 't' }, client, (e) => seen.push(e))
+    await tool?.execute({}, {})
+    expect(seen).toEqual([{ progress: 5, total: 10, message: '진행' }])
+  })
+
+  it('onProgress 미주입 시에도 callTool 은 정상 동작한다(진행 콜백 선택적)', async () => {
+    const client = fakeClient({
+      async callTool() {
+        return { content: [{ type: 'text', text: 'ok' }] }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toBe('ok')
+  })
+
+  it('structuredContent fallback 도 길이 바운드를 적용한다(무바운드 컨텍스트 폭주 방지)', async () => {
+    // content 비고 거대 structuredContent 만 온 SHOULD 위반/악의 서버 — fallback 직렬화도 잘려야 한다.
+    const huge = 'x'.repeat(100 * 1024)
+    const client = fakeClient({
+      async callTool() {
+        return { content: [], structuredContent: { blob: huge } }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out!.length).toBeLessThan(70 * 1024) // MAX_RESULT_CHARS(64KB) + 절단 안내문 이내
+    expect(out).toContain('자만 표시')
+  })
+
+  it('긴 unstructured text 와 함께 와도 structuredContent 가 잘리지 않는다(길이 캡서 우선 보존)', async () => {
+    // text 가 이미 MAX_RESULT_CHARS 를 넘으면 뒤에 붙인 JSON 이 재절단서 날아간다(Codex P2) — JSON 을
+    // 앞에 둬 보존한다. 잘린 JSON 은 파싱 불가라 unstructured text 보다 보존 우선.
+    const client = fakeClient({
+      async callTool() {
+        return {
+          content: [{ type: 'text', text: 'x'.repeat(100 * 1024) }], // MAX_RESULT_CHARS 초과
+          structuredContent: { marker: 'KEPT' },
+        }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toContain('"marker":"KEPT"') // 긴 text 에 밀려 잘리지 않음
+    expect(out!.length).toBeLessThan(70 * 1024) // 여전히 바운드
+  })
+
+  it('비텍스트 content(resource_link/image)만 + structuredContent 면 placeholder 와 구조화 JSON 을 모두 표면화한다', async () => {
+    // contentToString 이 placeholder('[resource_link …]')를 만들어 text!=='' 이지만, 실제 text content 는
+    // 없으므로 structuredContent 가 유실되면 안 된다(Codex P2). placeholder 보존 + 구조화 JSON 덧붙임.
+    const client = fakeClient({
+      async callTool() {
+        return {
+          content: [{ type: 'resource_link', uri: 'file://a', name: 'a' }],
+          structuredContent: { rows: 3 },
+        }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toContain('[resource_link') // 비텍스트 placeholder 보존
+    expect(out).toContain('"rows":3') // 구조화 데이터도 표면화(손실 방지)
+  })
+
+  it('text 요약과 다른 non-duplicative structuredContent 는 둘 다 보존한다(SHOULD-not-MUST)', async () => {
+    // 서버는 동등 텍스트 직렬화를 SHOULD(MUST 아님) 하므로 사람용 요약 text + 비중복 구조 데이터가 올 수
+    // 있다 — 텍스트만 쓰면 구조 payload 가 유실되므로 둘 다 표면화한다(Codex P2).
+    const client = fakeClient({
+      async callTool() {
+        return { content: [{ type: 'text', text: '날씨 요약' }], structuredContent: { tempC: 22 } }
+      },
+    })
+    const out = await wrapMcpTool('s', { name: 't' }, client)?.execute({}, {})
+    expect(out).toContain('날씨 요약') // 사람용 텍스트 보존
+    expect(out).toContain('"tempC":22') // 구조화 데이터도 보존(손실 방지)
+  })
+
+  it('도구 호출당 progress audit 수를 cap 한다(악의/버그 서버 폭주·freeze 방지)', async () => {
+    let delivered = 0
+    const client = fakeClient({
+      async callTool(_name, _args, opts) {
+        for (let i = 0; i < 1000; i++) opts?.onProgress?.({ progress: i }) // 서버가 progress 폭주
+        return { content: [{ type: 'text', text: 'ok' }] }
+      },
+    })
+    const tool = wrapMcpTool('s', { name: 't' }, client, () => {
+      delivered++
+    })
+    await tool?.execute({}, {})
+    expect(delivered).toBeLessThanOrEqual(100) // MAX_PROGRESS_EVENTS_PER_CALL — bounded
+    expect(delivered).toBeGreaterThan(0) // 정상 progress 는 통과
+  })
 })
 
 describe('contentToString', () => {

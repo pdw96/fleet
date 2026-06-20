@@ -1,10 +1,23 @@
-import type { McpCallResult, McpClient, McpClientOptions, McpToolInfo, McpTransport } from './types'
+import type {
+  McpCallResult,
+  McpClient,
+  McpClientOptions,
+  McpProgress,
+  McpToolInfo,
+  McpTransport,
+} from './types'
 
 /** 우리가 보내는 MCP 프로토콜 버전. 서버가 더 낮은 버전을 echo 해도 하드 실패하지 않는다. */
-const PROTOCOL_VERSION = '2025-06-18'
+const PROTOCOL_VERSION = '2025-11-25'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 /** tools/list 페이지네이션 추종 상한 — 악의/버그 서버의 무한 페이지네이션을 결정론적으로 끊는다. */
 const MAX_TOOLS_LIST_PAGES = 100
+/**
+ * progress 알림 message 길이 상한. message 는 짧은 상태 문자열(스펙)이지만 악의/버그 서버가 거대
+ * 문자열을 고빈도로 보내면 감사 eventlog 에 무바운드로 영속(매 알림마다 전체 스냅샷 재기록)된다 —
+ * 입력측에서 잘라 막는다(orchestrator 의 task.progress 영속 제외와 같은 동기).
+ */
+const MAX_PROGRESS_MESSAGE_CHARS = 1024
 /** clientInfo.version — package.json 과 동기화(드리프트 시 수정). */
 const CLIENT_VERSION = '0.1.0'
 
@@ -14,6 +27,8 @@ interface Pending {
   timer: unknown
   /** abort 리스너 해제(있으면). settle 이 호출해 공유 signal 에 리스너가 누적되지 않게 한다. */
   detach?: () => void
+  /** 이 요청에 부착한 progressToken(있으면). settle 이 진행 콜백을 해제하는 데 쓴다. */
+  progressToken?: number
 }
 
 /**
@@ -25,7 +40,11 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
   const setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
   const clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
   const pending = new Map<number, Pending>()
+  // progressToken → 진행 콜백. 요청에 _meta.progressToken 을 실어 보낸 in-flight 호출만 등록되고,
+  // settle(응답·타임아웃·abort)·연결 종료 시 해제해 완료된 요청의 늦은 progress 가 새지 않게 한다.
+  const progressCallbacks = new Map<number, (e: McpProgress) => void>()
   let nextId = 1
+  let nextProgressToken = 1
   let closed = false
   let closeError: Error | undefined
   let closeHandler: ((err?: Error) => void) | undefined
@@ -42,7 +61,29 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
     pending.delete(id)
     clearTimer(p.timer)
     p.detach?.()
+    if (p.progressToken != null) progressCallbacks.delete(p.progressToken)
     return p
+  }
+
+  /**
+   * notifications/progress 를 해당 요청의 onProgress 로 라우팅한다. 알림의 progressToken 은 params
+   * 최상위에 온다(요청은 _meta 안). 미상/완료된 토큰·비정상 형태는 조용히 무시한다(알림 견고성).
+   */
+  function routeProgress(rawParams: unknown): void {
+    const params = rawParams as
+      | { progressToken?: unknown; progress?: unknown; total?: unknown; message?: unknown }
+      | undefined
+    const token = params?.progressToken
+    if (typeof token !== 'number' || typeof params?.progress !== 'number') return
+    const cb = progressCallbacks.get(token)
+    if (!cb) return
+    cb({
+      progress: params.progress,
+      ...(typeof params.total === 'number' ? { total: params.total } : {}),
+      ...(typeof params.message === 'string'
+        ? { message: params.message.slice(0, MAX_PROGRESS_MESSAGE_CHARS) }
+        : {}),
+    })
   }
 
   transport.onMessage((msg) => {
@@ -54,6 +95,7 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
         // 서버 발신 알림(notifications/*) — 아는 것만 처리하고 나머지는 무시한다.
         // 알림에는 응답을 보내지 않는다(JSON-RPC). 도구 목록 변경은 호스트가 다시 가져온다(#19).
         if (msg['method'] === 'notifications/tools/list_changed') toolsChangedHandler?.()
+        else if (msg['method'] === 'notifications/progress') routeProgress(msg['params'])
         return
       }
       // 서버 발신 요청: ping 만 빈 결과로 응답하고, 그 외 미지원 메서드는 method-not-found 로 회신.
@@ -90,6 +132,7 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
       p.reject(closeError)
     }
     pending.clear()
+    progressCallbacks.clear() // 진행 콜백도 회수(닫힌 연결에 늦게 온 progress 무시)
     closeHandler?.(closeError) // 외부(호스트) 구독자에게 종료를 통지
   })
 
@@ -98,7 +141,7 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
    * 버릴 때만 호출 — 알림을 안 보내면 long-running/destructive 도구가 서버측에서 계속 실행된다.
    * 호출부에서 (a) 아직 in-flight 인 요청에 대해서만, (b) initialize 가 아닐 때만, (c) 연결이
    * 닫히기 전에만 부르므로 스펙의 전송 조건을 만족한다. closed 가드는 방어적 중복.
-   * 스펙: https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/cancellation
+   * 스펙: https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation
    */
   function notifyCancelled(id: number, reason: string): void {
     if (closed) return
@@ -113,10 +156,23 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
     method: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
+    onProgress?: (e: McpProgress) => void,
   ): Promise<Record<string, unknown>> {
     if (closed) return Promise.reject(closeError ?? new Error('MCP 연결이 닫혔습니다.'))
     if (signal?.aborted) return Promise.reject(new Error('요청이 취소되었습니다.'))
     const id = nextId++
+    // onProgress 가 있을 때만 progressToken 을 만들어 _meta 에 싣는다(없으면 와이어 byte 불변).
+    // 기존 params 를 보존하고 _meta.progressToken 만 병합한다(서버는 같은 토큰으로 progress 회신).
+    let progressToken: number | undefined
+    let outParams = params
+    if (onProgress) {
+      progressToken = nextProgressToken++
+      progressCallbacks.set(progressToken, onProgress)
+      outParams = {
+        ...params,
+        _meta: { ...(params['_meta'] as Record<string, unknown> | undefined), progressToken },
+      }
+    }
     // initialize 는 취소 대상이 아니다(MCP 스펙) — 그 외 요청만 abort/타임아웃 시 서버에 취소 알림.
     const cancellable = method !== 'initialize'
     return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -142,9 +198,10 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
         reject,
         timer,
         detach: signal ? () => signal.removeEventListener('abort', onAbort) : undefined,
+        progressToken,
       })
       if (signal) signal.addEventListener('abort', onAbort)
-      transport.send({ jsonrpc: '2.0', id, method, params })
+      transport.send({ jsonrpc: '2.0', id, method, params: outParams })
     })
   }
 
@@ -190,11 +247,21 @@ export function createMcpClient(transport: McpTransport, opts: McpClientOptions 
       return all
     },
     async callTool(name, args, callOpts): Promise<McpCallResult> {
-      const result = await request('tools/call', { name, arguments: args ?? {} }, callOpts?.signal)
+      const result = await request(
+        'tools/call',
+        { name, arguments: args ?? {} },
+        callOpts?.signal,
+        callOpts?.onProgress,
+      )
       const content = result['content']
+      const structured = result['structuredContent']
       return {
         content: Array.isArray(content) ? (content as Array<Record<string, unknown>>) : [],
         isError: result['isError'] === true,
+        // structuredContent 는 서버가 줄 때만 보존한다(없으면 키 자체를 넣지 않아 기존 소비자 무회귀).
+        ...(structured != null && typeof structured === 'object'
+          ? { structuredContent: structured as Record<string, unknown> }
+          : {}),
       }
     },
     onClose(handler) {
