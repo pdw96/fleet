@@ -58,6 +58,9 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [channel, setChannel] = useState<UpdaterChannel>('stable')
   // 사용자가 채널을 토글하면 마운트 하이드레이션의 늦은 응답이 그 선택을 덮어쓰지 않게 막는다.
   const channelEdited = useRef(false)
+  // 하이드레이션 완료 여부 — 완료 전엔 표시값(기본 stable)이 실제 영속값과 다를 수 있어, 중복-스킵
+  // early-return 을 하이드레이션 후로 미뤄 사용자의 첫 클릭이 유실되지 않게 한다.
+  const channelHydrated = useRef(false)
 
   // thinking(reasoning) 노브를 매핑하는 provider(anthropic·openai·google 전부) — provider 별 모델-인지
   // 정규화는 provider 책임(Gemini: 3.x thinkingLevel·2.5 thinkingBudget·그외 미전송 + starvation maxOutputTokens 가드).
@@ -78,13 +81,15 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   // 업데이트 채널 초기 로드(#98) — main store 가 권위 소스.
   useEffect(() => {
     void window.fleet.getUpdaterChannel().then((c) => {
+      channelHydrated.current = true
       if (!channelEdited.current) setChannel(c) // 사용자가 이미 토글했으면 늦은 하이드레이션 무시
     })
   }, [])
 
   async function changeChannel(next: UpdaterChannel): Promise<void> {
-    if (next === channel) return
     channelEdited.current = true // 이후 도착하는 하이드레이션 응답이 이 선택을 덮어쓰지 않게
+    // 하이드레이션 후에만 중복 스킵 — 완료 전엔 표시값이 실제와 다를 수 있어 클릭을 항상 반영한다.
+    if (channelHydrated.current && next === channel) return
     const prev = channel
     setChannel(next) // 낙관적 반영
     try {

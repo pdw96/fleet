@@ -126,6 +126,27 @@ describe('installAutoUpdate — 무장', () => {
     expect(controller.getState()).not.toEqual({ kind: 'downloaded', version: '0.2.0' })
   })
 
+  it('#98 새 다운로드 시작 후 구 다운로드의 완료(다른 버전)는 버전으로 억제(오설치 방지)', async () => {
+    const { updater, sent, controller } = make()
+    updater.emit('update-available', { version: 'A' })
+    await controller.download() // 다운로드 A(downloadVersion=A)
+    updater.emit('update-available', { version: 'B' })
+    await controller.download() // 다운로드 B(downloadVersion=B) — gen 은 그대로
+    const before = sent.length
+    updater.emit('update-downloaded', { version: 'A' }) // 구 A 완료 — 버전 불일치로 억제
+    expect(sent.length).toBe(before)
+    updater.emit('update-downloaded', { version: 'B' }) // 현 B 완료 — 표시
+    expect(sent.at(-1)).toEqual({ kind: 'downloaded', version: 'B' })
+  })
+
+  it('#98 setChannel 은 idle 을 broadcast 해 렌더러의 스테일 배너를 제거', () => {
+    const { updater, sent, controller } = make()
+    updater.emit('update-available', { version: '0.2.0' }) // available 배너
+    const before = sent.length
+    controller.setChannel('beta')
+    expect(sent.slice(before)).toContainEqual({ kind: 'idle' }) // idle 방송으로 배너 제거
+  })
+
   it('#98 in-flight 체크 중 setChannel → coalescing 회피, settle 후 새 채널로 재확인', async () => {
     let release!: () => void
     const pending = new Promise<undefined>((r) => {

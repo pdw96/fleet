@@ -81,6 +81,8 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
   // #98 채널 세대: setChannel 마다 증가. 구 채널 작업(다운로드·체크)의 잔여 이벤트를 무효화한다.
   let gen = 0
   let downloadGen = 0 // 초기엔 현 세대와 일치(채널 전환 전 다운로드 이벤트는 억제 안 함)
+  let downloadVersion: string | undefined // 진행 중 다운로드의 대상 버전 — 새 다운로드가 gen 을
+  // 덮어써도 구 채널 다운로드의 완료를 구분(버전 불일치)해 오설치를 막는다.
   let checkGen = 0 // 진행 중 체크가 속한 세대 — available/not-available 결과를 세대로 게이트
   // checkForUpdates 는 electron-updater 가 in-flight 호출을 coalesce 한다. 채널 전환 재확인이
   // 진행 중 체크에 합쳐져 새 allowPrerelease/channel 로 재발행되지 않는 것을 막는 직렬화 가드.
@@ -121,8 +123,13 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
   })
   updater.on('update-downloaded', (info: unknown) => {
     activeOp = null // download 종단
-    if (downloadGen !== gen) return // #98: 떠난 채널의 다운로드 완료 배너(오설치 유도) 억제
-    set({ kind: 'downloaded', version: readVersion(info) })
+    // #98: 떠난 채널의 다운로드 완료 배너(오설치 유도) 억제 — (a) 채널 전환 후 새 다운로드 없이
+    // 구 완료가 늦게 오면 세대 불일치로, (b) 전환 후 새 다운로드가 gen 을 덮은 뒤 구 완료가 오면
+    // 버전 불일치로 거른다.
+    if (downloadGen !== gen) return
+    const v = readVersion(info)
+    if (downloadVersion !== undefined && v !== downloadVersion) return
+    set({ kind: 'downloaded', version: v })
   })
   updater.on('error', (err: unknown) => {
     const userInitiated = activeOp === 'download' || activeOp === 'install'
@@ -163,6 +170,8 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
     download: async () => {
       activeOp = 'download'
       downloadGen = gen // 이 다운로드가 속한 채널 세대 — 이후 채널 전환 시 잔여 이벤트 식별용
+      // 대상 버전 기록(available 에서만 download 가능) — 동시 다운로드를 버전으로 구분.
+      downloadVersion = currentState.kind === 'available' ? currentState.version : undefined
       try {
         await updater.downloadUpdate()
       } catch {
@@ -182,7 +191,7 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
       // 1회 재발행). 영속은 호출부(store)가 담당 — 여기선 런타임 적용만.
       applyChannel(channel)
       gen++
-      currentState = { kind: 'idle' }
+      set({ kind: 'idle' }) // broadcast — 이미 마운트된 렌더러의 구 채널 배너(클릭 가능)를 즉시 제거
       void controller.check()
     },
   }
