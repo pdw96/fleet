@@ -46,6 +46,14 @@ jobs:
 
   build:
     needs: prepare
+    # build 잡은 attestation 용 id-token/attestations(write)가 추가로 필요한데, job-level permissions 를
+    # 선언하면 미명시 스코프가 none 으로 떨어진다. electron-builder --publish always 는 GH_TOKEN
+    # (=secrets.GITHUB_TOKEN = 잡 토큰)으로 Release 에 자산을 업로드하므로 contents:write 를 반드시 유지한다
+    # (read 로 내리면 "Resource not accessible by integration" 으로 publish 실패 — Codex P1). checkout 도 write 가 충족.
+    permissions:
+      contents: write # electron-builder --publish always 자산 업로드 + checkout (GITHUB_TOKEN 스코프)
+      id-token: write # sigstore OIDC 서명 토큰 (attest-build-provenance 필수)
+      attestations: write # attestations API 기록 (필수)
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +77,13 @@ jobs:
       - run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 산출물 서명: electron-builder 가 dist/ 에 설치본을 만든 직후 build provenance attestation 생성.
+      # 매트릭스 레그별로 자기 OS 산출물만 가리킨다(win=*.exe / linux=*.AppImage) — 0-match 면 액션 실패라
+      # OS 조건부 subject-path 필수. *.exe 는 .exe.blockmap·latest.yml 을 매치하지 않아 레그당 정확히 1개.
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ matrix.os == 'windows-latest' && 'dist/*.exe' || 'dist/*.AppImage' }}
 
   # 양 플랫폼 build 가 모두 성공해 draft 에 자산을 올린 뒤에만 공개(부분 릴리스 노출 방지).
   release:
