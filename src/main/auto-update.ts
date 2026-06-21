@@ -17,10 +17,17 @@ import type { UpdateEvent, UpdaterChannel } from '../shared/types'
 export interface UpdaterPort {
   autoDownload: boolean
   allowPrerelease: boolean
+  /** 피드 채널(`${channel}.yml`). GitHub provider 는 태그를 무시하므로 명시 설정 필요(#98). */
+  channel: string | null
   on(event: string, listener: (...args: unknown[]) => void): void
   checkForUpdates(): Promise<unknown>
   downloadUpdate(): Promise<unknown>
   quitAndInstall(): void
+}
+
+/** 채널 선호 → electron-updater 피드 채널. stable=latest.yml, beta=beta.yml(prerelease 허용 동반). */
+function feedChannel(channel: UpdaterChannel): string {
+  return channel === 'beta' ? 'beta' : 'latest'
 }
 
 export interface AutoUpdateDeps {
@@ -69,15 +76,27 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
   const { updater, send } = deps
   let currentState: UpdateEvent = { kind: 'idle' }
   let activeOp: 'check' | 'download' | 'install' | null = null
+  // #98 채널 세대: setChannel 마다 증가. 구 채널에서 시작된 다운로드의 잔여 이벤트를 무효화한다.
+  let gen = 0
+  let downloadGen = 0 // 초기엔 현 세대와 일치(채널 전환 전 다운로드 이벤트는 억제 안 함)
+  // checkForUpdates 는 electron-updater 가 in-flight 호출을 coalesce 한다. 채널 전환 재확인이
+  // 진행 중 체크에 합쳐져 새 allowPrerelease/channel 로 재발행되지 않는 것을 막는 직렬화 가드.
+  let checking = false
+  let recheckPending = false
 
   const set = (e: UpdateEvent): void => {
     currentState = e
     send(e)
   }
 
+  // #98: 채널 선호로 피드 채널 + prerelease 허용 결정(기본 stable=latest·false). 미주입이면 stable.
+  const applyChannel = (channel: UpdaterChannel): void => {
+    updater.channel = feedChannel(channel)
+    updater.allowPrerelease = channel === 'beta'
+  }
+
   updater.autoDownload = false
-  // #98: 채널 선호로 prerelease 허용 결정(기본 stable=false). 미주입이면 stable.
-  updater.allowPrerelease = (deps.getChannel?.() ?? 'stable') === 'beta'
+  applyChannel(deps.getChannel?.() ?? 'stable')
 
   updater.on('checking-for-update', () => set({ kind: 'checking' }))
   updater.on('update-available', (info: unknown) => {
@@ -89,10 +108,12 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
     set({ kind: 'not-available' })
   })
   updater.on('download-progress', (p: unknown) => {
+    if (downloadGen !== gen) return // #98: 채널 전환 전 시작된 구 채널 다운로드의 잔여 progress 무시
     set({ kind: 'progress', percent: readPercent(p) })
   })
   updater.on('update-downloaded', (info: unknown) => {
     activeOp = null // download 종단
+    if (downloadGen !== gen) return // #98: 떠난 채널의 다운로드 완료 배너(오설치 유도) 억제
     set({ kind: 'downloaded', version: readVersion(info) })
   })
   updater.on('error', (err: unknown) => {
@@ -111,14 +132,28 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
     getState: () => currentState,
     check: async () => {
       activeOp = 'check'
+      // #98: in-flight 체크가 있으면 coalescing 으로 새 채널 설정이 반영 안 되므로, 직접 재발행하지
+      // 않고 보류 플래그만 세운다. 진행 중 체크가 settle 되면 새 allowPrerelease/channel 로 1회 재확인.
+      if (checking) {
+        recheckPending = true
+        return
+      }
+      checking = true
       try {
         await updater.checkForUpdates()
       } catch {
         // 'error' 이벤트가 백그라운드로 분류하므로 reject 는 흡수한다.
+      } finally {
+        checking = false
+        if (recheckPending) {
+          recheckPending = false
+          void controller.check()
+        }
       }
     },
     download: async () => {
       activeOp = 'download'
+      downloadGen = gen // 이 다운로드가 속한 채널 세대 — 이후 채널 전환 시 잔여 이벤트 식별용
       try {
         await updater.downloadUpdate()
       } catch {
@@ -133,9 +168,11 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
       currentState = { kind: 'idle' } // main 권위, broadcast 없음(렌더러도 로컬 idle)
     },
     setChannel: (channel) => {
-      // #98: prerelease 허용을 새 채널에 맞추고, 스테일 배너(이전 채널의 available 등)를 리셋한 뒤
-      // 새 채널의 최신 버전을 재확인한다. 영속은 호출부(store)가 담당 — 여기선 런타임 적용만.
-      updater.allowPrerelease = channel === 'beta'
+      // #98: 피드 채널(beta.yml)+prerelease 허용을 새 채널에 맞추고, 세대를 올려 구 채널 다운로드의
+      // 잔여 이벤트를 무효화한 뒤, 스테일 배너를 리셋하고 새 채널을 재확인한다(in-flight 면 settle 후
+      // 1회 재발행). 영속은 호출부(store)가 담당 — 여기선 런타임 적용만.
+      applyChannel(channel)
+      gen++
       currentState = { kind: 'idle' }
       void controller.check()
     },
