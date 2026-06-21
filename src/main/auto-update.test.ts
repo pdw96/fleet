@@ -10,7 +10,10 @@ function fakeUpdater() {
   const quitAndInstall = vi.fn()
   const u: UpdaterPort & { emit: (ev: string, ...a: unknown[]) => void } = {
     autoDownload: true,
+    autoInstallOnAppQuit: true,
     allowPrerelease: false,
+    allowDowngrade: false,
+    channel: null,
     on: (ev, l) => {
       listeners.set(ev, l as (...a: unknown[]) => void)
     },
@@ -60,11 +63,123 @@ describe('installAutoUpdate — 가드', () => {
 })
 
 describe('installAutoUpdate — 무장', () => {
-  it('autoDownload=false·allowPrerelease=true 설정 + 기동 백그라운드 체크 1회', () => {
+  it('autoDownload=false·기본 stable → channel=latest·allowPrerelease=false·allowDowngrade=false + 체크 1회', () => {
     const { updater, checkForUpdates } = make()
     expect(updater.autoDownload).toBe(false)
-    expect(updater.allowPrerelease).toBe(true)
+    expect(updater.autoInstallOnAppQuit).toBe(false) // #98: 종료 시 자동설치 끔(명시 install 만)
+    expect(updater.channel).toBe('latest') // #98: stable = latest.yml 피드
+    expect(updater.allowPrerelease).toBe(false) // #98: 기본 stable(베타 opt-in)
+    expect(updater.allowDowngrade).toBe(false) // #98: stable 은 다운그레이드 거부(채널 부작용 무력화)
     expect(checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+
+  it('#98 getChannel=beta → channel=beta·allowPrerelease=true·allowDowngrade=true 로 무장', () => {
+    const { updater } = make({ getChannel: () => 'beta' })
+    expect(updater.channel).toBe('beta') // beta.yml 피드(generateUpdatesFilesForAllChannels)
+    expect(updater.allowPrerelease).toBe(true)
+    expect(updater.allowDowngrade).toBe(true) // beta 진입 시 높은 stable→낮은 beta 허용
+  })
+
+  it('#98 채널 전환 전 시작된 구 채널 체크의 update-available 결과는 억제(스테일 배너 방지)', async () => {
+    let release!: () => void
+    const pending = new Promise<undefined>((r) => {
+      release = () => r(undefined)
+    })
+    const { u: updater } = fakeUpdater()
+    updater.checkForUpdates = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(undefined)
+    const sent: UpdateEvent[] = []
+    const controller = installAutoUpdate({
+      updater,
+      send: (e) => sent.push(e),
+      isPackaged: true,
+      isE2E: false,
+      platform: 'win32',
+    })
+    // 기동(stable) 체크 in-flight 중 채널 전환(gen++). 구 체크가 늦게 update-available 발화.
+    controller.setChannel('beta')
+    updater.emit('update-available', { version: '0.2.0-stable' }) // 구 채널 결과 — 억제돼야 함
+    expect(sent.some((e) => e.kind === 'available')).toBe(false)
+    expect(controller.getState()).toEqual({ kind: 'idle' }) // 스테일 결과 미노출
+    release()
+  })
+
+  it('#98 setChannel(beta) → channel/allowPrerelease·리셋 즉시 적용 + (settle 후) 재확인', async () => {
+    const { updater, controller, checkForUpdates } = make() // 기동 체크(in-flight)
+    expect(updater.channel).toBe('latest')
+    updater.emit('update-available', { version: '0.2.0' }) // 배너 상태로
+    controller.setChannel('beta')
+    expect(updater.channel).toBe('beta') // 즉시 적용
+    expect(updater.allowPrerelease).toBe(true) // 즉시 적용
+    expect(controller.getState()).toEqual({ kind: 'idle' }) // 즉시 스테일 배너 제거
+    // 기동 체크가 in-flight 라 coalescing 회피로 재확인은 보류 → settle 후 새 채널로 1회 재발행.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(checkForUpdates).toHaveBeenCalledTimes(2) // 기동 + 채널변경 재확인
+  })
+
+  it('#98 채널 전환 후 구 채널 다운로드의 잔여 update-downloaded 는 억제(오설치 방지)', async () => {
+    const { updater, sent, controller } = make()
+    updater.emit('update-available', { version: '0.2.0' }) // stable 에서 발견
+    await controller.download() // stable 다운로드 시작(downloadGen=0)
+    controller.setChannel('beta') // 채널 전환(gen=1) → 이후 stable 다운로드 이벤트는 stale
+    const before = sent.length
+    updater.emit('update-downloaded', { version: '0.2.0' }) // 구 채널 완료 — 억제돼야 함
+    expect(sent.length).toBe(before) // downloaded 배너 send 없음
+    expect(controller.getState()).not.toEqual({ kind: 'downloaded', version: '0.2.0' })
+  })
+
+  it('#98 새 다운로드 시작 후 구 다운로드의 완료(다른 버전)는 버전으로 억제(오설치 방지)', async () => {
+    const { updater, sent, controller } = make()
+    updater.emit('update-available', { version: 'A' })
+    await controller.download() // 다운로드 A(downloadVersion=A)
+    updater.emit('update-available', { version: 'B' })
+    await controller.download() // 다운로드 B(downloadVersion=B) — gen 은 그대로
+    const before = sent.length
+    updater.emit('update-downloaded', { version: 'A' }) // 구 A 완료 — 버전 불일치로 억제
+    expect(sent.length).toBe(before)
+    updater.emit('update-downloaded', { version: 'B' }) // 현 B 완료 — 표시
+    expect(sent.at(-1)).toEqual({ kind: 'downloaded', version: 'B' })
+  })
+
+  it('#98 setChannel 은 idle 을 broadcast 해 렌더러의 스테일 배너를 제거', () => {
+    const { updater, sent, controller } = make()
+    updater.emit('update-available', { version: '0.2.0' }) // available 배너
+    const before = sent.length
+    controller.setChannel('beta')
+    expect(sent.slice(before)).toContainEqual({ kind: 'idle' }) // idle 방송으로 배너 제거
+  })
+
+  it('#98 in-flight 체크 중 setChannel → coalescing 회피, settle 후 새 채널로 재확인', async () => {
+    let release!: () => void
+    const pending = new Promise<undefined>((r) => {
+      release = () => r(undefined)
+    })
+    const { u: updater } = fakeUpdater()
+    const checkMock = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(undefined)
+    updater.checkForUpdates = checkMock
+    const sent: UpdateEvent[] = []
+    const controller = installAutoUpdate({
+      updater,
+      send: (e) => sent.push(e),
+      isPackaged: true,
+      isE2E: false,
+      platform: 'win32',
+    })
+    // 기동 체크가 in-flight(pending). 그 사이 채널 전환 → 재확인은 보류만 되어야 한다.
+    controller.setChannel('beta')
+    expect(checkMock).toHaveBeenCalledTimes(1) // 아직 재발행 안 됨(coalescing 회피)
+    release() // 기동 체크 settle
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(checkMock).toHaveBeenCalledTimes(2) // settle 후 새 채널로 1회 재확인
+    expect(updater.channel).toBe('beta')
+  })
+
+  it('#98 미무장에서 setChannel 은 no-op(updater 무접촉)', () => {
+    const { updater, controller } = make({ isPackaged: false })
+    controller.setChannel('beta')
+    expect(updater.allowPrerelease).toBe(false) // 페이크 기본값 불변
+    expect(updater.channel).toBe(null)
   })
 
   it('updater 이벤트를 UpdateEvent 로 매핑 + getState 스냅샷 반영', () => {

@@ -21,6 +21,8 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     removeSession: vi.fn().mockResolvedValue(undefined),
     registerApiSession: vi.fn().mockResolvedValue(undefined),
     getMcpStatus: vi.fn().mockResolvedValue([]), // 마운트 시 하이드레이트 호출
+    getUpdaterChannel: vi.fn().mockResolvedValue('stable'), // #98 마운트 시 채널 조회
+    setUpdaterChannel: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
   ;(window as unknown as { fleet: unknown }).fleet = fleet
@@ -365,6 +367,55 @@ describe('SessionsPanel', () => {
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('MCP')
     expect(fleet.setMcpServers).not.toHaveBeenCalled()
+  })
+
+  it('#98 베타 클릭 → setUpdaterChannel(beta) 호출 + 마운트 시 채널 하이드레이트', async () => {
+    const fleet = mockFleet()
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    expect(fleet.getUpdaterChannel).toHaveBeenCalled() // 마운트 하이드레이트
+    fireEvent.click(screen.getByRole('button', { name: /베타/ }))
+    await waitFor(() => expect(fleet.setUpdaterChannel).toHaveBeenCalledWith('beta'))
+  })
+
+  it('#98 마운트 시 main 의 현재 채널(beta)을 반영한다', async () => {
+    mockFleet({ getUpdaterChannel: vi.fn().mockResolvedValue('beta') })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    expect(await screen.findByText(/프리릴리스를 먼저/)).toBeTruthy() // 베타 안내문 = 채널 beta
+  })
+
+  it('#98 사용자 토글 후 늦게 도착한 채널 하이드레이션은 무시된다(레이스 가드)', async () => {
+    let resolveHydrate!: (c: 'stable' | 'beta') => void
+    const fleet = mockFleet({
+      getUpdaterChannel: vi.fn().mockReturnValue(
+        new Promise((r) => {
+          resolveHydrate = r
+        }),
+      ),
+    })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /베타/ })) // 하이드레이션 미정 중 토글
+    await waitFor(() => expect(fleet.setUpdaterChannel).toHaveBeenCalledWith('beta'))
+    resolveHydrate('stable') // 늦은 stable 하이드레이션 — 사용자 선택을 덮으면 안 됨
+    await act(async () => {})
+    expect(screen.getByText(/프리릴리스를 먼저/)).toBeTruthy() // 여전히 beta
+  })
+
+  it('#98 하이드레이션 전 stable 클릭도 setUpdaterChannel(stable) 전송(첫 클릭 유실 방지)', async () => {
+    let resolveHydrate!: (c: 'stable' | 'beta') => void
+    const fleet = mockFleet({
+      getUpdaterChannel: vi.fn().mockReturnValue(
+        new Promise((r) => {
+          resolveHydrate = r
+        }),
+      ),
+    })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    // 하이드레이션 미정 — 표시는 기본 stable. 실제 persisted 가 beta 여도 사용자의 stable 클릭은 반영돼야 함.
+    fireEvent.click(screen.getByRole('button', { name: /안정/ }))
+    await waitFor(() => expect(fleet.setUpdaterChannel).toHaveBeenCalledWith('stable'))
+    resolveHydrate('beta') // 늦은 beta 하이드레이션 — 사용자 선택(stable)을 덮으면 안 됨
+    await act(async () => {})
+    expect(screen.getByText(/정식 릴리스만/)).toBeTruthy() // 여전히 stable
   })
 
   it('마운트 시 현재 MCP 상태를 하이드레이트한다(탭 재마운트 복원)', async () => {

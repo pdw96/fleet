@@ -11,11 +11,13 @@ import type {
   OrchestratorEvent,
   RunProjectRequest,
   UpdateEvent,
+  UpdaterChannel,
 } from '../shared/types'
 import { installAutoUpdate } from './auto-update'
 import { createFleetEngine, type FleetEngine } from './core/engine'
 import { createIpcApprover, type IpcApprover } from './core/safety/approval-bridge'
 import { createJsonFileStore } from './core/store/json-file'
+import type { Store } from './core/store/types'
 import { e2eRunner, seedE2eFixtures } from './e2e'
 import { installNavigationGuards } from './window-guards'
 import { installPermissionGuards } from './permission-guards'
@@ -46,7 +48,7 @@ function broadcastUpdateEvent(event: UpdateEvent): void {
   }
 }
 
-function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover } {
+function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover; store: Store } {
   // 명시적 '1' 만 E2E 로 활성화 — FLEET_E2E=0/false 나 상속된 빈 값으로 프로덕션 런치가
   // 페이크 러너(영구 in-flight)·픽스처 시드로 새지 않게 한다.
   const e2e = process.env['FLEET_E2E'] === '1'
@@ -67,7 +69,7 @@ function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover } {
     secretCrypto: createSafeStorageCrypto(),
   })
   if (e2e) seedE2eFixtures(engine) // 페이크 세션 2개 + 방 1개 시드
-  return { engine, ipcApprover }
+  return { engine, ipcApprover, store } // store: updater 채널(#98) 읽기/쓰기에 직접 사용
 }
 
 function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
@@ -201,7 +203,7 @@ function createWindow(): void {
 }
 
 void app.whenReady().then(() => {
-  const { engine, ipcApprover } = buildEngine()
+  const { engine, ipcApprover, store } = buildEngine()
   registerIpc(engine, ipcApprover)
   // 보조 프로세스(GPU·Utility 등) 종료 관측 — child-process-gone 은 app 에만 발화한다. Chromium 이
   // 자동 재기동하므로 reload 하지 않고 진단 로그만 남긴다(스코프 명시적 한정). 계약은 crash-recovery.ts 참조.
@@ -227,12 +229,21 @@ void app.whenReady().then(() => {
     isE2E: process.env['FLEET_E2E'] === '1' || !!process.env['FLEET_SMOKE'],
     platform: process.platform,
     logger: console,
+    getChannel: () => store.getUpdaterChannel(), // #98: 무장 시 초기 allowPrerelease 결정
   })
   ipcMain.handle('fleet:update:getState', () => updater.getState())
   ipcMain.handle('fleet:update:check', () => updater.check())
   ipcMain.handle('fleet:update:download', () => updater.download())
   ipcMain.handle('fleet:update:install', () => updater.install())
   ipcMain.handle('fleet:update:dismiss', () => updater.dismiss())
+  // #98 업데이트 채널: store 에 영속(권위) + updater 런타임 적용(allowPrerelease·재확인).
+  ipcMain.handle('fleet:update:getChannel', () => store.getUpdaterChannel())
+  ipcMain.handle('fleet:update:setChannel', (_e, channel: UpdaterChannel) => {
+    // 신뢰 경계 정규화 — 타입 우회 IPC 로 들어온 미지 값은 안전 기본 stable 로 가둔다(영속 오염 방지).
+    const ch: UpdaterChannel = channel === 'beta' ? 'beta' : 'stable'
+    store.setUpdaterChannel(ch)
+    updater.setChannel(ch)
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

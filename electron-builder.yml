@@ -6,6 +6,9 @@ files:
   - out/**
   - package.json
 asar: true
+# 채널별 업데이트 피드 생성(#98) — 안정=latest.yml, 베타(x.y.z-beta.N)=beta.yml.
+# electron-updater 가 autoUpdater.channel 로 베타 스트림을 읽으려면 채널별 yml 산출이 필요하다.
+generateUpdatesFilesForAllChannels: true
 publish:
   provider: github
   owner: pdw96

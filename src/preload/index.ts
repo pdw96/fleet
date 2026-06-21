@@ -92,6 +92,8 @@ const api: FleetBridge = {
       ipcRenderer.removeListener('fleet:update:event', listener)
     }
   },
+  getUpdaterChannel: () => ipcRenderer.invoke('fleet:update:getChannel'),
+  setUpdaterChannel: (channel) => ipcRenderer.invoke('fleet:update:setChannel', channel),
 }
 
 contextBridge.exposeInMainWorld('fleet', api)

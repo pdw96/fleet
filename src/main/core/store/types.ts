@@ -7,6 +7,7 @@ import type {
   FleetEvent,
   Project,
   Task,
+  UpdaterChannel,
 } from '../../../shared/types'
 
 /** 재시작 간 복원할 직렬화 세션. cli|api 판별 유니온. */
@@ -56,6 +57,8 @@ export interface StoreState {
   sessions: PersistedSession[]
   /** 프로젝트 탭에서 마지막으로 본 프로젝트(렌더러 복원용). 미설정이면 부재. */
   lastActiveProjectId?: string
+  /** 자동 업데이트 채널 선호(#98). 미설정(구버전 파일·신규)이면 stable 로 해석. */
+  updaterChannel?: UpdaterChannel
 }
 
 export interface StoreOptions {
@@ -128,6 +131,11 @@ export interface Store {
   setLastActiveProject(projectId: string | null): void
   /** 마지막 본 프로젝트 id 경량 읽기 — 전체 상태 clone(snapshot) 없이 한 필드만 반환. */
   getLastActiveProjectId(): string | undefined
+
+  /** 업데이트 채널 경량 읽기 — 미설정이면 기본 'stable'. #98 */
+  getUpdaterChannel(): UpdaterChannel
+  /** 업데이트 채널 영속 설정. #98 */
+  setUpdaterChannel(channel: UpdaterChannel): void
 
   // ── persisted sessions (재시작 복원) ──
   /** CLI 세션 디스크립터 upsert(id 키). engine.removeSession 과 구분 위해 delete-. */
