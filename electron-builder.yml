@@ -13,6 +13,9 @@ publish:
   releaseType: draft
 win:
   target: nsis
+nsis:
+  # 공백 없는 산출물명(Fleet-Setup-<ver>.exe) — electron-updater latest.yml 의 %20 URL 인코딩 회귀 회피.
+  artifactName: '${productName}-Setup-${version}.${ext}'
 linux:
   target: AppImage
   category: Development

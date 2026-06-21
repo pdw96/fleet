@@ -1,0 +1,24 @@
+# GitHub 자동 생성 릴리스 노트 분류 설정.
+# release.yml 워크플로의 prepare 잡이 `gh release create --generate-notes` 로 draft 를 만들 때
+# GitHub 이 이 파일을 자동으로 읽어 PR 을 카테고리로 분류한다(별도 와이어링 불요).
+# 스키마: docs.github.com — automatically generated release notes (context7 /github/docs 검증).
+changelog:
+  exclude:
+    labels:
+      - type:meta
+  categories:
+    - title: 🚀 Features
+      labels:
+        - enhancement
+    - title: 🐛 Bug Fixes
+      labels:
+        - bug
+    - title: 📚 Documentation
+      labels:
+        - documentation
+    - title: 🧰 Dependencies & DevX
+      labels:
+        - area:devx
+    - title: 🔧 Other Changes
+      labels:
+        - '*'
