@@ -1,6 +1,9 @@
 # Dependabot version updates. 보안 업데이트(alerts 기반)는 레포 설정에서 별도 ON.
 # 정책: 마이너/패치는 주간 1 PR로 묶고(봇 자동), 메이저(electron/vite/vitest 등)는
 # 그룹 밖이라 개별 PR로 분리 → #27/#98 수동 트랙에서 적대검증 후 머지.
+# 예외: @types/node 메이저는 차단(아래 ignore) — 타입은 출하 런타임(Electron 42.4.1 = Node
+# 24.16.0)의 Node 메이저에 맞춰 ^24 고정. 그 위(25/26+) 메이저는 typecheck 통과·런타임 크래시
+# footgun → Electron 이 실제로 Node 메이저를 올릴 때 수동 동반 번프.
 version: 2
 updates:
   - package-ecosystem: 'npm'
@@ -20,6 +23,12 @@ updates:
         update-types:
           - 'minor'
           - 'patch'
+    ignore:
+      # 출하 런타임(Electron 42.4.1 = Node 24.16.0)에 맞춰 @types/node ^24 고정.
+      # 마이너/패치(24.x)는 그룹으로 계속 추적, 메이저(25/26+)만 차단.
+      - dependency-name: '@types/node'
+        update-types:
+          - 'version-update:semver-major'
 
   - package-ecosystem: 'github-actions'
     directory: '/'
