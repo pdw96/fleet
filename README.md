@@ -1,5 +1,7 @@
 # Fleet
 
+[![CI](https://github.com/pdw96/fleet/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/pdw96/fleet/actions/workflows/ci.yml)
+
 멀티 LLM 오케스트레이션 데스크톱 앱 — 여러 LLM(구독제 CLI/TUI + API)이 하나의 작업방에서
 협업하여 사용자의 프로젝트를 높은 정확도로 완수한다.
 
