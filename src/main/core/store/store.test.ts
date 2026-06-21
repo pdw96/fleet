@@ -138,6 +138,24 @@ describe('memory store — chat & events', () => {
   })
 })
 
+describe('memory store — updater channel (#98)', () => {
+  it('기본 채널은 stable (미설정 시 snapshot 엔 부재)', () => {
+    const store = createMemoryStore(deterministic())
+    expect(store.getUpdaterChannel()).toBe('stable')
+    expect(store.snapshot().updaterChannel).toBeUndefined()
+  })
+
+  it('채널 설정 → 조회·snapshot 반영 + persist 훅 호출', () => {
+    const persist = vi.fn<(s: StoreState) => void>()
+    const store = createMemoryStore({ ...deterministic(), persist })
+    store.setUpdaterChannel('beta')
+    expect(store.getUpdaterChannel()).toBe('beta')
+    expect(store.snapshot().updaterChannel).toBe('beta')
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(persist.mock.calls.at(-1)?.[0].updaterChannel).toBe('beta')
+  })
+})
+
 describe('memory store — persistence hook', () => {
   it('calls persist after every mutation with a snapshot', () => {
     const persist = vi.fn<(s: StoreState) => void>()
@@ -170,6 +188,13 @@ describe('json-file store', () => {
     expect(b.listProjects()).toHaveLength(1)
     expect(b.listProjects()[0].goal).toBe('영속 테스트')
     expect(b.listTasks(p.id)).toHaveLength(1)
+  })
+
+  it('updaterChannel 을 디스크 영속 후 새 인스턴스에서 동일 로드', () => {
+    const a = createJsonFileStore(dir, deterministic())
+    a.setUpdaterChannel('beta')
+    const b = createJsonFileStore(dir)
+    expect(b.getUpdaterChannel()).toBe('beta')
   })
 
   it('starts empty when no file exists', () => {

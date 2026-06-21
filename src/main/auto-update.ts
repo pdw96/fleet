@@ -11,7 +11,7 @@
  * 연산 스코프(activeOp)로 error 를 분류: check/유휴 중 에러 = 백그라운드(log-only, 배너 무노출),
  * download/install 중 에러 = 사용자(배너). 종단 이벤트서 activeOp 를 null 로 클리어해 누수를 막는다.
  */
-import type { UpdateEvent } from '../shared/types'
+import type { UpdateEvent, UpdaterChannel } from '../shared/types'
 
 /** electron-updater autoUpdater 가 구조적으로 만족하는 최소 표면. */
 export interface UpdaterPort {
@@ -32,6 +32,8 @@ export interface AutoUpdateDeps {
   isE2E: boolean
   platform: NodeJS.Platform
   logger?: Pick<Console, 'info' | 'warn' | 'error'>
+  /** 무장 시 초기 allowPrerelease 를 결정할 채널 조회(#98). 미주입이면 stable. */
+  getChannel?: () => UpdaterChannel
 }
 
 export interface UpdateController {
@@ -45,6 +47,8 @@ export interface UpdateController {
   install(): void
   /** 배너 닫기 — currentState=idle(권위). */
   dismiss(): void
+  /** 업데이트 채널 변경 적용(#98) — allowPrerelease 갱신 + 스테일 상태 리셋 + 새 채널 재확인. */
+  setChannel(channel: UpdaterChannel): void
 }
 
 export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
@@ -58,6 +62,7 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
       download: async (): Promise<void> => {},
       install: (): void => {},
       dismiss: (): void => {},
+      setChannel: (): void => {}, // 미무장 — updater 무접촉(채널은 store 에만 영속)
     }
   }
 
@@ -71,7 +76,8 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
   }
 
   updater.autoDownload = false
-  updater.allowPrerelease = true
+  // #98: 채널 선호로 prerelease 허용 결정(기본 stable=false). 미주입이면 stable.
+  updater.allowPrerelease = (deps.getChannel?.() ?? 'stable') === 'beta'
 
   updater.on('checking-for-update', () => set({ kind: 'checking' }))
   updater.on('update-available', (info: unknown) => {
@@ -125,6 +131,13 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
     },
     dismiss: () => {
       currentState = { kind: 'idle' } // main 권위, broadcast 없음(렌더러도 로컬 idle)
+    },
+    setChannel: (channel) => {
+      // #98: prerelease 허용을 새 채널에 맞추고, 스테일 배너(이전 채널의 available 등)를 리셋한 뒤
+      // 새 채널의 최신 버전을 재확인한다. 영속은 호출부(store)가 담당 — 여기선 런타임 적용만.
+      updater.allowPrerelease = channel === 'beta'
+      currentState = { kind: 'idle' }
+      void controller.check()
     },
   }
 

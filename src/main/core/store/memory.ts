@@ -179,6 +179,15 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
       return state.lastActiveProjectId
     },
 
+    // ── updater 채널(#98) ──
+    getUpdaterChannel() {
+      return state.updaterChannel ?? 'stable' // 미설정(구버전·신규)은 안전 기본 stable
+    },
+    setUpdaterChannel(channel) {
+      state.updaterChannel = channel
+      save()
+    },
+
     // ── persisted sessions ──
     putSession(session) {
       // upsert-by-id 만 — 배열을 filter-rewrite 하지 않아 미지 kind 엔트리(전방호환)를 보존한다.

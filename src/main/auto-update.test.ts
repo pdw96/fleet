@@ -60,11 +60,41 @@ describe('installAutoUpdate — 가드', () => {
 })
 
 describe('installAutoUpdate — 무장', () => {
-  it('autoDownload=false·allowPrerelease=true 설정 + 기동 백그라운드 체크 1회', () => {
+  it('autoDownload=false·기본 채널 stable → allowPrerelease=false + 기동 백그라운드 체크 1회', () => {
     const { updater, checkForUpdates } = make()
     expect(updater.autoDownload).toBe(false)
-    expect(updater.allowPrerelease).toBe(true)
+    expect(updater.allowPrerelease).toBe(false) // #98: 기본 stable(베타 opt-in)
     expect(checkForUpdates).toHaveBeenCalledTimes(1)
+  })
+
+  it('#98 getChannel=beta → allowPrerelease=true 로 무장', () => {
+    const { updater } = make({ getChannel: () => 'beta' })
+    expect(updater.allowPrerelease).toBe(true)
+  })
+
+  it('#98 setChannel(beta) → allowPrerelease 즉시 적용 + 재확인 + state 리셋', () => {
+    const { updater, controller, checkForUpdates } = make() // 기동 체크 1회(stable)
+    expect(updater.allowPrerelease).toBe(false)
+    updater.emit('update-available', { version: '0.2.0' }) // 배너 상태로
+    controller.setChannel('beta')
+    expect(updater.allowPrerelease).toBe(true)
+    expect(checkForUpdates).toHaveBeenCalledTimes(2) // 기동 + 채널변경 재확인
+    expect(controller.getState()).toEqual({ kind: 'idle' }) // 새 채널 재확인 전 스테일 배너 제거
+  })
+
+  it('#98 진행 중(downloaded) 상태에서 setChannel → idle 리셋 + 재확인', () => {
+    const { updater, controller, checkForUpdates } = make()
+    updater.emit('update-downloaded', { version: '0.2.0' }) // 다운로드 완료 배너
+    expect(controller.getState()).toEqual({ kind: 'downloaded', version: '0.2.0' })
+    controller.setChannel('beta')
+    expect(controller.getState()).toEqual({ kind: 'idle' }) // 스테일 배너 제거
+    expect(checkForUpdates).toHaveBeenCalledTimes(2) // 기동 + 채널변경 재확인
+  })
+
+  it('#98 미무장에서 setChannel 은 no-op(updater 무접촉)', () => {
+    const { updater, controller } = make({ isPackaged: false })
+    controller.setChannel('beta')
+    expect(updater.allowPrerelease).toBe(false) // 페이크 기본값 불변
   })
 
   it('updater 이벤트를 UpdateEvent 로 매핑 + getState 스냅샷 반영', () => {

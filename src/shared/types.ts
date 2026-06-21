@@ -440,6 +440,12 @@ export type UpdateEvent =
   | { kind: 'error'; message: string }
   | { kind: 'unsupported' }
 
+/**
+ * 자동 업데이트 채널(#98). stable=안정 릴리스만, beta=프리릴리스(allowPrerelease) 포함.
+ * 기본 stable — 베타는 사용자 opt-in. 미설정 구버전 store 파일은 stable 로 해석.
+ */
+export type UpdaterChannel = 'stable' | 'beta'
+
 export type ChatStreamEvent =
   | { kind: 'start'; streamId: string; roomId: string; llmId: string; role?: AgentRole }
   | { kind: 'delta'; streamId: string; roomId: string; delta: string; seq: number }
@@ -565,4 +571,8 @@ export interface FleetBridge {
   dismissUpdate(): Promise<void>
   /** 업데이트 이벤트 구독(해제 함수 반환). */
   onUpdateEvent(callback: (event: UpdateEvent) => void): () => void
+  /** 업데이트 채널 조회(기본 stable). #98 */
+  getUpdaterChannel(): Promise<UpdaterChannel>
+  /** 업데이트 채널 설정 — 영속 + updater.allowPrerelease 즉시 적용 + 새 채널 재확인. #98 */
+  setUpdaterChannel(channel: UpdaterChannel): Promise<void>
 }

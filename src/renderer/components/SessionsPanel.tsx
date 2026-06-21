@@ -8,6 +8,7 @@ import type {
   McpServerStatus,
   ModelOption,
   ReasoningEffort,
+  UpdaterChannel,
 } from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
 
@@ -53,6 +54,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   const [cacheTtl, setCacheTtl] = useState<'' | '1h'>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 자동 업데이트 채널(#98). main(store)이 권위 — 마운트 시 1회 조회하고 토글 시 낙관적 반영.
+  const [channel, setChannel] = useState<UpdaterChannel>('stable')
 
   // thinking(reasoning) 노브를 매핑하는 provider(anthropic·openai·google 전부) — provider 별 모델-인지
   // 정규화는 provider 책임(Gemini: 3.x thinkingLevel·2.5 thinkingBudget·그외 미전송 + starvation maxOutputTokens 가드).
@@ -69,6 +72,23 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
     // 마운트 1회 CLI 감지(detect 는 reactive 값을 닫지 않음) — 의존성 추가 불요·재실행 의도 없음.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 업데이트 채널 초기 로드(#98) — main store 가 권위 소스.
+  useEffect(() => {
+    void window.fleet.getUpdaterChannel().then(setChannel)
+  }, [])
+
+  async function changeChannel(next: UpdaterChannel): Promise<void> {
+    if (next === channel) return
+    const prev = channel
+    setChannel(next) // 낙관적 반영
+    try {
+      await window.fleet.setUpdaterChannel(next)
+    } catch (e) {
+      setChannel(prev) // 실패 → 롤백(화면과 main 권위 일치 유지)
+      setError(asError(e))
+    }
+  }
 
   async function detect() {
     setDetecting(true)
@@ -595,6 +615,37 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
             ))}
           </ul>
         )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <span className="eyebrow">05 — 업데이트</span>
+          <h2 className="panel-title">업데이트 채널</h2>
+        </div>
+        <span className="field-label" style={{ margin: 0 }}>
+          이 채널의 업데이트만 확인합니다.
+        </span>
+        <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+          {(['stable', 'beta'] as const).map((c) => (
+            <button
+              key={c}
+              className="chip"
+              onClick={() => void changeChannel(c)}
+              style={{
+                cursor: 'pointer',
+                color: channel === c ? 'var(--ok)' : 'var(--faint)',
+                borderColor: 'currentColor',
+              }}
+            >
+              {c === 'stable' ? '안정(stable)' : '베타(beta)'}
+            </button>
+          ))}
+        </div>
+        <p className="meta" style={{ marginTop: 8 }}>
+          {channel === 'stable'
+            ? '안정 — 검증된 정식 릴리스만 받습니다(권장).'
+            : '베타 — 프리릴리스를 먼저 받습니다(미검증 빌드 포함).'}
+        </p>
       </section>
     </div>
   )

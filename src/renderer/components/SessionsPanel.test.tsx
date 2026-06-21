@@ -21,6 +21,8 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     removeSession: vi.fn().mockResolvedValue(undefined),
     registerApiSession: vi.fn().mockResolvedValue(undefined),
     getMcpStatus: vi.fn().mockResolvedValue([]), // 마운트 시 하이드레이트 호출
+    getUpdaterChannel: vi.fn().mockResolvedValue('stable'), // #98 마운트 시 채널 조회
+    setUpdaterChannel: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
   ;(window as unknown as { fleet: unknown }).fleet = fleet
@@ -365,6 +367,20 @@ describe('SessionsPanel', () => {
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toContain('MCP')
     expect(fleet.setMcpServers).not.toHaveBeenCalled()
+  })
+
+  it('#98 베타 클릭 → setUpdaterChannel(beta) 호출 + 마운트 시 채널 하이드레이트', async () => {
+    const fleet = mockFleet()
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    expect(fleet.getUpdaterChannel).toHaveBeenCalled() // 마운트 하이드레이트
+    fireEvent.click(screen.getByRole('button', { name: /베타/ }))
+    await waitFor(() => expect(fleet.setUpdaterChannel).toHaveBeenCalledWith('beta'))
+  })
+
+  it('#98 마운트 시 main 의 현재 채널(beta)을 반영한다', async () => {
+    mockFleet({ getUpdaterChannel: vi.fn().mockResolvedValue('beta') })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    expect(await screen.findByText(/프리릴리스를 먼저/)).toBeTruthy() // 베타 안내문 = 채널 beta
   })
 
   it('마운트 시 현재 MCP 상태를 하이드레이트한다(탭 재마운트 복원)', async () => {
