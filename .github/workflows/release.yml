@@ -46,11 +46,12 @@ jobs:
 
   build:
     needs: prepare
-    # OIDC/attestation 권한을 이 잡에만 국소화(top-level contents:write 불변 — prepare/release 의
-    # gh release create/edit 가 contents:write 필요). job-level permissions 선언 시 미명시 스코프는
-    # none 으로 떨어지므로 checkout·npm ci 용 contents:read 를 반드시 명시.
+    # build 잡은 attestation 용 id-token/attestations(write)가 추가로 필요한데, job-level permissions 를
+    # 선언하면 미명시 스코프가 none 으로 떨어진다. electron-builder --publish always 는 GH_TOKEN
+    # (=secrets.GITHUB_TOKEN = 잡 토큰)으로 Release 에 자산을 업로드하므로 contents:write 를 반드시 유지한다
+    # (read 로 내리면 "Resource not accessible by integration" 으로 publish 실패 — Codex P1). checkout 도 write 가 충족.
     permissions:
-      contents: read
+      contents: write # electron-builder --publish always 자산 업로드 + checkout (GITHUB_TOKEN 스코프)
       id-token: write # sigstore OIDC 서명 토큰 (attest-build-provenance 필수)
       attestations: write # attestations API 기록 (필수)
     strategy:
