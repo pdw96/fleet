@@ -10,6 +10,7 @@ function fakeUpdater() {
   const quitAndInstall = vi.fn()
   const u: UpdaterPort & { emit: (ev: string, ...a: unknown[]) => void } = {
     autoDownload: true,
+    autoInstallOnAppQuit: true,
     allowPrerelease: false,
     allowDowngrade: false,
     channel: null,
@@ -65,6 +66,7 @@ describe('installAutoUpdate — 무장', () => {
   it('autoDownload=false·기본 stable → channel=latest·allowPrerelease=false·allowDowngrade=false + 체크 1회', () => {
     const { updater, checkForUpdates } = make()
     expect(updater.autoDownload).toBe(false)
+    expect(updater.autoInstallOnAppQuit).toBe(false) // #98: 종료 시 자동설치 끔(명시 install 만)
     expect(updater.channel).toBe('latest') // #98: stable = latest.yml 피드
     expect(updater.allowPrerelease).toBe(false) // #98: 기본 stable(베타 opt-in)
     expect(updater.allowDowngrade).toBe(false) // #98: stable 은 다운그레이드 거부(채널 부작용 무력화)

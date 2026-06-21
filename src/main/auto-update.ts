@@ -16,6 +16,8 @@ import type { UpdateEvent, UpdaterChannel } from '../shared/types'
 /** electron-updater autoUpdater 가 구조적으로 만족하는 최소 표면. */
 export interface UpdaterPort {
   autoDownload: boolean
+  /** 종료 시 자동 설치(기본 true). 명시-제어 앱이라 false 로 — 설치는 quitAndInstall 로만(#98). */
+  autoInstallOnAppQuit: boolean
   allowPrerelease: boolean
   /** 더 낮은 버전 수용 여부. channel 설정의 부작용으로 켜질 수 있어 채널별로 명시 제어(#98). */
   allowDowngrade: boolean
@@ -104,6 +106,10 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
   }
 
   updater.autoDownload = false
+  // 종료 시 자동 설치 끔(#98) — autoDownload=false 와 같은 명시-제어 철학. 다운로드분은 사용자가
+  // 배너에서 명시적으로 설치(quitAndInstall)할 때만 적용된다. 채널 전환으로 배너를 숨긴 뒤 떠난 채널의
+  // 설치본이 다음 종료에 조용히 설치되는 위험(autoInstallOnAppQuit 기본 true)을 원천 차단한다.
+  updater.autoInstallOnAppQuit = false
   applyChannel(deps.getChannel?.() ?? 'stable')
 
   updater.on('checking-for-update', () => set({ kind: 'checking' }))
