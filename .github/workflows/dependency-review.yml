@@ -1,5 +1,7 @@
-# PR diff 에 새로 들어오는 의존성의 취약점/문제 라이선스를 머지 전 차단.
-# 메이저 번프(#74류) PR 의 트랜지티브 CVE 를 게이트에서 1차로 가시화한다.
+# PR diff 에 새로 들어오는 의존성의 고위험 취약점(CVE)을 머지 전 가시화한다.
+# 메이저 번프(#74류) PR 의 트랜지티브 CVE 가 주 타깃 — Fleet 의존성은 26/29 가 devDependency 라
+# fail-on-scopes 에 development 를 명시해야 툴체인 번프가 게이트에 걸린다(action 기본값 runtime 은 dev 스킵).
+# 라이선스 차단은 미설정(취약점 전용 게이트) — 필요 시 allow-licenses/deny-licenses 추가.
 name: Dependency Review
 on: [pull_request]
 
@@ -16,3 +18,4 @@ jobs:
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
