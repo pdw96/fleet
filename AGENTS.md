@@ -103,5 +103,11 @@ project number `1`, owner `pdw96`).
 **새 이슈 생성 시**: `area:{provider,orchestrator,mcp,renderer,electron,devx}` + `tier:{next,later}`
 (+ 필요 시 `type:{spike,meta,security}`) 라벨 부여 + #27 sub-issue 편입(`gh issue edit <N> --parent 27`,
 또는 생성 시 `gh issue create … --parent 27`; gh ≥2.94 네이티브 플래그 — 구식 `gh api … /sub_issues`+DB id 불요).
+**멀티-PR 트랙 의존성**(블로킹 관계 — 부모/자식 계층과 별개): 한 이슈가 다른 이슈의 선행이면
+네이티브 dependency 로 인코딩한다 — `gh issue edit <N> --add-blocked-by <M>`(N 이 M 에 막힘)·
+`--add-blocking <M>`(N 이 M 을 막음); 해제 `--remove-blocked-by`/`--remove-blocking`, 확인
+`gh api repos/pdw96/fleet/issues/<N>/dependencies/{blocked_by,blocking}`. gh ≥2.95 네이티브
+플래그(add→read→remove 라운드트립 실측 정상). GitHub 퍼블릭 프리뷰·동일 레포 한정 →
+prose 「<M> 선행」 주석 대신 플랫폼 관계로 인코딩(트랙 진행 시 막힌 이슈가 보드/이슈에서 가시화).
 보드 추가는 **Auto-add 워크플로가 `tier:` 라벨 매칭 시 자동**(수동 fallback: `gh project item-add 1 --owner pdw96 --url …`). 기능
 이슈는 `enhancement` 유지. 차기 작업 공급원 = #27 말미 🔬 컷오프 갭 / Hermes 후보 또는 재랭킹.
