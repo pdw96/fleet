@@ -23,7 +23,9 @@ npm test            # vitest — 코어 엔진 단위/통합 (헤드리스)
 npm run build       # electron-vite build = 기동 가능성 smoke
 ```
 
-CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 위 4개를 강제한다.
+CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 위 4개를 강제한다. 또한 **master ruleset
+(`master protection`)이 `typecheck · lint · test · build`·`windows vitest (win32 보안 회귀)` 잡을
+required status check 로 걸어, 통과 전 머지를 플랫폼 차원에서 차단한다(관례 → 강제).**
 `npm run test:e2e`(playwright)는 느려 CI 게이트에 없다 — 로컬에서 필요 시 수동 실행.
 
 ## 아키텍처 규칙 (어기지 말 것)
@@ -79,24 +81,27 @@ project number `1`, owner `pdw96`).
 1. **선정** — `gh issue view 27 --repo pdw96/fleet` 로 본문 «🎯 착수 sub-issues» 트래커를 확인하고
    `tier:next` 최상위를 집는다(나열 순서 = 권장 착수순; 후보가 비었거나 모호하면 사용자에게 확인).
    `gh issue list --repo pdw96/fleet --label tier:next` 로도 필터 가능.
-2. **브랜치** — 기본 브랜치(현재 `master`) 직접 작업 금지. `feat/<slug>` 특성 브랜치 생성.
+2. **브랜치** — 기본 브랜치(현재 `master`) 직접 작업 금지(**ruleset 이 직접 push·force-push·삭제를
+   플랫폼 차단**; 비상시 repo admin bypass). `feat/<slug>` 특성 브랜치 생성.
 3. **사이클** — 비자명하면 브레인스토밍 → 스펙(`docs/superpowers/specs/`) → 계획. TDD(RED→GREEN).
    품질 게이트 4종 green(위 「품질 게이트」 참조; preload 변경 시 dev 재시작). 적대 리뷰.
 4. **PR** — 본문에 `Closes #<N>` 를 넣는다(머지 시 이슈 자동 닫힘 → #27 sub-issue 진행률 자동 갱신).
    PR open 후 **Codex 봇 자동리뷰를 기다려** 반영(위 「리뷰 피드백 교차검증」) → 사용자 확인 후 squash 머지.
+   **ruleset 이 required check 통과 + 미해결 리뷰 스레드 resolve 를 머지 전 강제** — Codex 인라인 지적은
+   반영/반박 후 스레드를 resolve(`gh api graphql … resolveReviewThread`) 해야 머지 가능.
    - **Codex 봇 운영**: 자동리뷰가 항상 즉발은 아니다(보통 7~20분; 무응답 시 `@codex review`
      코멘트로 명시 트리거, 인지하면 트리거 코멘트에 👀 리액션). **이슈가 없을 때 clean 승인은
      인라인/리뷰 없이 👍 리액션-only 가 흔하다** → `gh api repos/pdw96/fleet/issues/<pr>/reactions`
      도 확인하라(comments/reviews 만 보면 놓친다). 봇 로그인 = `chatgpt-codex-connector[bot]`
      (필터 `test("codex")`). ~4라운드 넘으면 레이트리밋 가능.
 5. **머지 후 동기화** — (a) 이슈 닫힘·#27 진행률 = `Closes #N` 으로 자동. (b) **보드 Status → Done**:
-   보드 내장 워크플로("Item closed → Done")가 켜져 있으면 자동, 아니면 `gh project item-edit` 로 수동
-   (수동 id 출처 — `--project-id`(`PVT_…`): `gh project view 1 --owner pdw96 --format json` 의 `.id` ·
-   `--field-id` + Status `--single-select-option-id`(Done): `gh project field-list 1 --owner pdw96 --format json` ·
-   `--id`(`PVTI_…` 항목): `gh project item-list 1 --owner pdw96 --limit 200 --format json` 에서 `.content.number==<N>` 로 필터 — `item-list` 기본 limit 30 이라 보드가 커지면 `--limit` 상향 필수).
+   보드 내장 워크플로(Item closed→Done · Auto-add(`tier:` 라벨) · Item added→Todo · Reopened→In Progress)가
+   켜져 있어 자동. 예외 보정이 필요할 때만 `gh project item-edit`
+   (id 출처 = `gh project {view,field-list,item-list} 1 --owner pdw96 --format json`; `item-list` 기본 limit 30 → 큰 보드는 `--limit` 상향).
    (c) **#27 본문**: 🎯 트래커 체크 + ✅완료/changelog 이동(수동 — 분석 기록).
 
 **새 이슈 생성 시**: `area:{provider,orchestrator,mcp,renderer,electron,devx}` + `tier:{next,later}`
-(+ 필요 시 `type:{spike,meta,security}`) 라벨 부여 + #27 sub-issue 편입(`gh api … /sub_issues`,
-`sub_issue_id`=대상 이슈의 **DB id**) + 보드 추가(`gh project item-add 1 --owner pdw96 --url …`). 기능
+(+ 필요 시 `type:{spike,meta,security}`) 라벨 부여 + #27 sub-issue 편입(`gh issue edit <N> --parent 27`,
+또는 생성 시 `gh issue create … --parent 27`; gh ≥2.94 네이티브 플래그 — 구식 `gh api … /sub_issues`+DB id 불요).
+보드 추가는 **Auto-add 워크플로가 `tier:` 라벨 매칭 시 자동**(수동 fallback: `gh project item-add 1 --owner pdw96 --url …`). 기능
 이슈는 `enhancement` 유지. 차기 작업 공급원 = #27 말미 🔬 컷오프 갭 / Hermes 후보 또는 재랭킹.
