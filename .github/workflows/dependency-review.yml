@@ -1,0 +1,18 @@
+# PR diff 에 새로 들어오는 의존성의 취약점/문제 라이선스를 머지 전 차단.
+# 메이저 번프(#74류) PR 의 트랜지티브 CVE 를 게이트에서 1차로 가시화한다.
+name: Dependency Review
+on: [pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
