@@ -74,7 +74,18 @@ jobs:
       - run: npm test
       - run: npm run build
       # draft 가 이미 존재하므로 electron-builder 는 생성하지 않고 자산만 업로드.
-      - run: npx electron-builder --publish always
+      # prerelease 태그(v*-beta*/-alpha*)는 publish 채널을 명시한다 — GitHub provider 는 버전 태그에서
+      # 채널을 추론하지 않으므로(electron-builder 문서), 명시 없이는 beta 클라이언트(autoUpdater.channel=beta)가
+      # 읽을 beta.yml 이 잘못 발행된다(#98). stable 태그는 인자 없이 기존 경로 유지(무영향).
+      - name: Publish (prerelease 는 채널 명시)
+        shell: bash
+        run: |
+          CHANNEL_ARG=""
+          case "$GITHUB_REF_NAME" in
+            *-beta*) CHANNEL_ARG="-c.publish.channel=beta" ;;
+            *-alpha*) CHANNEL_ARG="-c.publish.channel=alpha" ;;
+          esac
+          npx electron-builder --publish always $CHANNEL_ARG
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # 산출물 서명: electron-builder 가 dist/ 에 설치본을 만든 직후 build provenance attestation 생성.

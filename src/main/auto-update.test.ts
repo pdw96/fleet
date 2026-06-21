@@ -11,6 +11,7 @@ function fakeUpdater() {
   const u: UpdaterPort & { emit: (ev: string, ...a: unknown[]) => void } = {
     autoDownload: true,
     allowPrerelease: false,
+    allowDowngrade: false,
     channel: null,
     on: (ev, l) => {
       listeners.set(ev, l as (...a: unknown[]) => void)
@@ -61,18 +62,43 @@ describe('installAutoUpdate — 가드', () => {
 })
 
 describe('installAutoUpdate — 무장', () => {
-  it('autoDownload=false·기본 채널 stable → channel=latest·allowPrerelease=false + 기동 체크 1회', () => {
+  it('autoDownload=false·기본 stable → channel=latest·allowPrerelease=false·allowDowngrade=false + 체크 1회', () => {
     const { updater, checkForUpdates } = make()
     expect(updater.autoDownload).toBe(false)
     expect(updater.channel).toBe('latest') // #98: stable = latest.yml 피드
     expect(updater.allowPrerelease).toBe(false) // #98: 기본 stable(베타 opt-in)
+    expect(updater.allowDowngrade).toBe(false) // #98: stable 은 다운그레이드 거부(채널 부작용 무력화)
     expect(checkForUpdates).toHaveBeenCalledTimes(1)
   })
 
-  it('#98 getChannel=beta → channel=beta·allowPrerelease=true 로 무장', () => {
+  it('#98 getChannel=beta → channel=beta·allowPrerelease=true·allowDowngrade=true 로 무장', () => {
     const { updater } = make({ getChannel: () => 'beta' })
     expect(updater.channel).toBe('beta') // beta.yml 피드(generateUpdatesFilesForAllChannels)
     expect(updater.allowPrerelease).toBe(true)
+    expect(updater.allowDowngrade).toBe(true) // beta 진입 시 높은 stable→낮은 beta 허용
+  })
+
+  it('#98 채널 전환 전 시작된 구 채널 체크의 update-available 결과는 억제(스테일 배너 방지)', async () => {
+    let release!: () => void
+    const pending = new Promise<undefined>((r) => {
+      release = () => r(undefined)
+    })
+    const { u: updater } = fakeUpdater()
+    updater.checkForUpdates = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(undefined)
+    const sent: UpdateEvent[] = []
+    const controller = installAutoUpdate({
+      updater,
+      send: (e) => sent.push(e),
+      isPackaged: true,
+      isE2E: false,
+      platform: 'win32',
+    })
+    // 기동(stable) 체크 in-flight 중 채널 전환(gen++). 구 체크가 늦게 update-available 발화.
+    controller.setChannel('beta')
+    updater.emit('update-available', { version: '0.2.0-stable' }) // 구 채널 결과 — 억제돼야 함
+    expect(sent.some((e) => e.kind === 'available')).toBe(false)
+    expect(controller.getState()).toEqual({ kind: 'idle' }) // 스테일 결과 미노출
+    release()
   })
 
   it('#98 setChannel(beta) → channel/allowPrerelease·리셋 즉시 적용 + (settle 후) 재확인', async () => {

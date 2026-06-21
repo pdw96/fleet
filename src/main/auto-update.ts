@@ -17,6 +17,8 @@ import type { UpdateEvent, UpdaterChannel } from '../shared/types'
 export interface UpdaterPort {
   autoDownload: boolean
   allowPrerelease: boolean
+  /** 더 낮은 버전 수용 여부. channel 설정의 부작용으로 켜질 수 있어 채널별로 명시 제어(#98). */
+  allowDowngrade: boolean
   /** 피드 채널(`${channel}.yml`). GitHub provider 는 태그를 무시하므로 명시 설정 필요(#98). */
   channel: string | null
   on(event: string, listener: (...args: unknown[]) => void): void
@@ -76,9 +78,10 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
   const { updater, send } = deps
   let currentState: UpdateEvent = { kind: 'idle' }
   let activeOp: 'check' | 'download' | 'install' | null = null
-  // #98 채널 세대: setChannel 마다 증가. 구 채널에서 시작된 다운로드의 잔여 이벤트를 무효화한다.
+  // #98 채널 세대: setChannel 마다 증가. 구 채널 작업(다운로드·체크)의 잔여 이벤트를 무효화한다.
   let gen = 0
   let downloadGen = 0 // 초기엔 현 세대와 일치(채널 전환 전 다운로드 이벤트는 억제 안 함)
+  let checkGen = 0 // 진행 중 체크가 속한 세대 — available/not-available 결과를 세대로 게이트
   // checkForUpdates 는 electron-updater 가 in-flight 호출을 coalesce 한다. 채널 전환 재확인이
   // 진행 중 체크에 합쳐져 새 allowPrerelease/channel 로 재발행되지 않는 것을 막는 직렬화 가드.
   let checking = false
@@ -89,10 +92,13 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
     send(e)
   }
 
-  // #98: 채널 선호로 피드 채널 + prerelease 허용 결정(기본 stable=latest·false). 미주입이면 stable.
+  // #98: 채널 선호로 피드 채널 + prerelease 허용을 정한다(기본 stable=latest·false). 미주입이면 stable.
+  // allowDowngrade 는 channel 설정 부작용으로 켜질 수 있어(generateUpdatesFilesForAllChannels) 명시 제어 —
+  // stable 은 다운그레이드 거부(롤백·메타 혼선 시 구버전 설치 방지), beta 는 허용(높은 stable→낮은 beta 진입).
   const applyChannel = (channel: UpdaterChannel): void => {
     updater.channel = feedChannel(channel)
     updater.allowPrerelease = channel === 'beta'
+    updater.allowDowngrade = channel === 'beta'
   }
 
   updater.autoDownload = false
@@ -101,10 +107,12 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
   updater.on('checking-for-update', () => set({ kind: 'checking' }))
   updater.on('update-available', (info: unknown) => {
     activeOp = null // check 종단
+    if (checkGen !== gen) return // #98: 채널 전환 전 시작된 구 채널 체크의 결과 무시(스테일 배너 방지)
     set({ kind: 'available', version: readVersion(info) })
   })
   updater.on('update-not-available', () => {
     activeOp = null // check 종단
+    if (checkGen !== gen) return // #98: 구 채널 체크의 not-available 무시(새 채널 재확인이 권위)
     set({ kind: 'not-available' })
   })
   updater.on('download-progress', (p: unknown) => {
@@ -139,6 +147,7 @@ export function installAutoUpdate(deps: AutoUpdateDeps): UpdateController {
         return
       }
       checking = true
+      checkGen = gen // 이 체크가 속한 채널 세대 — 결과 이벤트 게이트 기준
       try {
         await updater.checkForUpdates()
       } catch {

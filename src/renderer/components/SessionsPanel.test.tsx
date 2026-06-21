@@ -383,6 +383,23 @@ describe('SessionsPanel', () => {
     expect(await screen.findByText(/프리릴리스를 먼저/)).toBeTruthy() // 베타 안내문 = 채널 beta
   })
 
+  it('#98 사용자 토글 후 늦게 도착한 채널 하이드레이션은 무시된다(레이스 가드)', async () => {
+    let resolveHydrate!: (c: 'stable' | 'beta') => void
+    const fleet = mockFleet({
+      getUpdaterChannel: vi.fn().mockReturnValue(
+        new Promise((r) => {
+          resolveHydrate = r
+        }),
+      ),
+    })
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /베타/ })) // 하이드레이션 미정 중 토글
+    await waitFor(() => expect(fleet.setUpdaterChannel).toHaveBeenCalledWith('beta'))
+    resolveHydrate('stable') // 늦은 stable 하이드레이션 — 사용자 선택을 덮으면 안 됨
+    await act(async () => {})
+    expect(screen.getByText(/프리릴리스를 먼저/)).toBeTruthy() // 여전히 beta
+  })
+
   it('마운트 시 현재 MCP 상태를 하이드레이트한다(탭 재마운트 복원)', async () => {
     const fleet = mockFleet({
       getMcpStatus: vi
