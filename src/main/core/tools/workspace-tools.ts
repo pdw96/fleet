@@ -170,7 +170,12 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
       try {
         re = new RegExp(pattern) // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- 패턴 작성자는 오케스트레이션 모델(준신뢰), 대상은 사용자 워크스페이스 파일. 길이 200자 제한 + 스캔/매치 바운드로 ReDoS 영향 한정. + safe-regex 사전검증
       } catch (err) {
-        throw new Error(`grep: 잘못된 정규식: ${err instanceof Error ? err.message : String(err)}`)
+        throw new Error(
+          `grep: 잘못된 정규식: ${err instanceof Error ? err.message : String(err)}`,
+          {
+            cause: err,
+          },
+        )
       }
       const rootReal = await fs.realpath(root)
       const start = await resolveWithin(root, asStr((input as { path?: unknown })?.path) ?? '.')

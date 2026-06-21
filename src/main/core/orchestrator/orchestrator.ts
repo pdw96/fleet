@@ -125,7 +125,6 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   emit({ type: 'project.created', message: `프로젝트 생성: ${project.title}`, data: { projectId } })
 
   // ── 1) 목표 분해 ── (planner 는 위에서 검증됨)
-  let plannedCount = 0
   try {
     const planned = await planTasks(goal, planner, opts.signal)
     store.updateProject(project.id, { status: 'executing' })
@@ -146,7 +145,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         .map((d) => createdIds[d])
       if (deps.length > 0) store.updateTask(createdIds[i], { dependsOn: deps })
     })
-    plannedCount = planned.length
+    const plannedCount = planned.length
     emit({
       type: 'plan.created',
       message: `${plannedCount}개 작업으로 분해`,
