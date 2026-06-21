@@ -11,5 +11,10 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
-  reporter: [['list']],
+  // CI 에서만 재시도 — flaky 한 Electron 기동을 흡수하되 로컬은 즉시 실패로 빠른 피드백.
+  retries: process.env.CI ? 2 : 0,
+  // list = 로그 가독성, html(open:never) = 분리 워크플로 아티팩트(playwright-report/, gitignore).
+  reporter: [['list'], ['html', { open: 'never' }]],
+  // 재시도 발생 시에만 trace 수집(test-results/, gitignore) — 실패 디버깅용, 정상 실행 오버헤드 0.
+  use: { trace: 'on-first-retry' },
 })
