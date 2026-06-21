@@ -71,5 +71,11 @@
     "*.{json,css,yml,yaml,html}": [
       "prettier --write"
     ]
+  },
+  "overrides": {
+    "form-data": "^4.0.6",
+    "vite": {
+      "esbuild": "^0.28.1"
+    }
   }
 }
