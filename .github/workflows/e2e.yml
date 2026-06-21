@@ -31,6 +31,13 @@ jobs:
       - name: Install
         run: npm ci
 
+      # 이 레포의 electron 패키지는 postinstall 바이너리 다운로드가 자동 실행되지 않는다
+      # (npm ci 가 ~5s 에 끝나고 node_modules/electron/dist/ 가 비어 첫 dispatch 가 chrome-sandbox
+      # 부재로 실패함을 실측). ci.yml 게이트는 electron-vite build(JS 번들)·vitest 라 바이너리가
+      # 불필요했지만 e2e 는 실 Electron 을 띄우므로 명시 설치한다(install.js 는 isInstalled 가드로 idempotent).
+      - name: Electron 바이너리 설치
+        run: node node_modules/electron/install.js
+
       # Electron(=Chromium/GTK) 런타임 시스템 라이브러리 설치. 전체 설치로 ubuntu 24.04 의
       # t64 패키지명 전환(libasound2t64·libgtk-3-0t64 등)을 playwright 가 버전별로 알아서 해석한다.
       # (xvfb 는 ubuntu-latest 러너에 사전설치 — 별도 불요.)
