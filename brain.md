@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 60 files · 151 import wires · 41 IPC channels · 생성 2026-06-22T11:41 UTC
+> 60 files · 151 import wires · 41 IPC channels · 생성 2026-06-22T16:40 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -82,7 +82,7 @@
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
-  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 894줄
+  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 939줄
 - **orchestrator/diff-risk** — AI가 바꾼 코드가 위험한 변경인지 판정하는 위험 신호등 _AI가 고친 내용을 보고 비밀번호 같은 민감한 파일을 건드렸거나, 파일을 너무 많이 지웠거나, 변경 내용이 너무 길어 끝이 잘려 확인이 불가능하면 '위험'으로 표시하고 그 이유를 함께 알려 줍니다. 의심스러우면 안전하게 '위험' 쪽으로 분류합니다._
   - →의존: safety/approval, shared/types, workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 37줄
 - **orchestrator/plan** — 큰 목표를 실행 가능한 작은 작업 목록으로 쪼개 주는 계획 분해기 _기획 담당 AI에게 목표를 4~8개의 작업으로 나눠 달라고 요청하고, AI가 돌려준 응답이 형식이 조금 어긋나도 너그럽게 읽어내 작업 목록으로 정리합니다. 검증(테스트·빌드)이 실패하면 그 실패 내용을 다시 AI에게 알려 부족한 부분만 채울 '추가 보정 작업'도 뽑아냅니다._
@@ -90,7 +90,7 @@
 - **orchestrator/assignment** — 어떤 AI에게 어떤 역할(기획·구현·검토 등)을 맡길지 정하는 자리 배정표 _'계획짜기·설계·구현·검토·테스트' 같은 7가지 역할을 정해진 규칙(수동 지정·차례로 돌리기·잘하는 사람 우선)에 따라 AI들에게 나눠 줍니다. 같은 입력이면 늘 같은 결과가 나오고, '잘하는 사람 우선' 규칙에서도 한 AI에게 일이 몰리지 않도록 적게 쓴 AI를 먼저 골라 균형을 맞춥니다._
   - →의존: shared/types · ←피의존: engine, orchestrator/orchestrator, orchestrator/plan · 96줄
 - **orchestrator/ignored-guard**
-  - →의존: workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 33줄
+  - →의존: workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 44줄
 - **orchestrator/review** — 각 단계에서 AI에게 보낼 지시문을 만들고 검토 결과를 읽어내는 대화 문구 담당 _구현·검토·요약·수정 단계마다 AI에게 보낼 안내 문구를 상황에 맞게 만들어 주고, 검토 AI의 답에서 '승인인지 수정 요청인지'와 그 피드백을 뽑아냅니다. AI가 형식을 안 지킨 어수선한 답을 줘도 핵심을 읽어내도록 대비책을 갖췄습니다._
   - →의존: shared/types · ←피의존: orchestrator/orchestrator, orchestrator/plan · 121줄
 
@@ -146,7 +146,7 @@
 - **workspace/git** — AI가 코드를 고치기 전 상태를 저장해 두고, 바뀐 내용을 모아 보여주거나 처음으로 되돌리는 작업 기록 관리원 _작업방을 버전 관리 저장소(git)로 만들어 '시작 사진'을 찍어두고, AI가 무엇을 바꿨는지 변경 목록과 그 내용(diff)을 모아 보여주거나, 마음에 안 들면 시작 사진 시점으로 통째로 되돌립니다. 사용자가 미리 만들어둔 작업은 시작 때 따로 보존해 지워지지 않게 하고, 여러 AI가 동시에 저장소를 건드려 생기는 잠금 충돌은 잠깐 기다렸다 다시 시도하며, 변경 내용이 너무 길면 6만 자에서 잘라 보여줍니다._
   - →의존: cli/detect, workspace/ignored-baseline · ←피의존: engine, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/ignored-baseline · 239줄
 - **workspace/ignored-baseline**
-  - →의존: safety/approval, workspace/git · ←피의존: orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/git · 226줄
+  - →의존: safety/approval, workspace/git · ←피의존: orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/git · 361줄
 
 ### cli · core — 클로드·코덱스·제미니 같은 명령어형 AI 프로그램(CLI)이 컴퓨터에 깔려 있는지 확인하고, 그 프로그램을 실제로 실행해 답변 글자만 깔끔하게 뽑아내며, 각 프로그램의 사용법(명령어 종류)을 한곳에 정리해 두는 모듈이다.
 - **cli/detect** — AI 명령어 프로그램을 실제로 실행하고, 깔려 있는지·어느 버전인지 확인하는 부품 _사람이 터미널에 명령어를 치듯 클로드·코덱스·제미니 프로그램을 대신 실행해 그 결과(출력 글자)를 받아온다. '--version'을 물어 설치 여부와 버전을 알아내고, 응답이 너무 오래 걸리거나(시간초과) 사용자가 중간에 취소하면 그 프로그램과 거기서 또 생긴 자식 프로그램들까지 끝까지 종료시킨 뒤 마무리한다. 여러 AI를 한꺼번에 동시 점검하는 기능도 있다._
