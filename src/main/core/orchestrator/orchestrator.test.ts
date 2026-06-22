@@ -57,6 +57,13 @@ function fakeWorkspace(
       return { ok: true }
     },
     async removeWorktree() {},
+    async captureIgnoredBaseline() {
+      return { entries: new Map(), skipped: [] }
+    },
+    async collectIgnoredChanges() {
+      return { changes: [], unrestorable: [] }
+    },
+    async restoreIgnoredBaseline() {},
   }
   return ws
 }
@@ -133,6 +140,13 @@ function parallelFakeWorkspace(
           return { ok: true }
         },
         async removeWorktree() {},
+        async captureIgnoredBaseline() {
+          return { entries: new Map(), skipped: [] }
+        },
+        async collectIgnoredChanges() {
+          return { changes: [], unrestorable: [] }
+        },
+        async restoreIgnoredBaseline() {},
       }
       return wt
     },
@@ -148,6 +162,13 @@ function parallelFakeWorkspace(
       state.worktreesRemoved++
       state.removed.push(taskId)
     },
+    async captureIgnoredBaseline() {
+      return { entries: new Map(), skipped: [] }
+    },
+    async collectIgnoredChanges() {
+      return { changes: [], unrestorable: [] }
+    },
+    async restoreIgnoredBaseline() {},
     onIntegrate: opts.onIntegrate,
   }
   return state
@@ -440,6 +461,13 @@ describe('runProject', () => {
         return { ok: true }
       },
       async removeWorktree() {},
+      async captureIgnoredBaseline() {
+        return { entries: new Map(), skipped: [] }
+      },
+      async collectIgnoredChanges() {
+        return { changes: [], unrestorable: [] }
+      },
+      async restoreIgnoredBaseline() {},
     }
     await expect(
       runProject('goal', {
@@ -1853,6 +1881,13 @@ describe('runProject', () => {
         return { ok: true }
       },
       async removeWorktree() {},
+      async captureIgnoredBaseline() {
+        return { entries: new Map(), skipped: [] }
+      },
+      async collectIgnoredChanges() {
+        return { changes: [], unrestorable: [] }
+      },
+      async restoreIgnoredBaseline() {},
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
@@ -1916,6 +1951,13 @@ describe('runProject', () => {
         return { ok: true }
       },
       async removeWorktree() {},
+      async captureIgnoredBaseline() {
+        return { entries: new Map(), skipped: [] }
+      },
+      async collectIgnoredChanges() {
+        return { changes: [], unrestorable: [] }
+      },
+      async restoreIgnoredBaseline() {},
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
