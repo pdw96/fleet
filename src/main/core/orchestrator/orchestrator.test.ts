@@ -2865,4 +2865,363 @@ describe('runProject', () => {
     // task.failed 이벤트 방출됨
     expect(events.some((e) => e.type === 'task.failed')).toBe(true)
   })
+
+  // ── Task 7: verify-fix ignored 가드 배선 회귀 ──
+
+  it('회귀3: verify-fix 중 ignored 파일 삭제 후 abort → rollbackWithIgnored(restoreIgnoredBaseline) 호출 + task skipped', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const controller = new AbortController()
+    let implCalls = 0
+    sessions.add({
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        implCalls++
+        if (implCalls >= 2) {
+          // verify-fix 수정 호출 시 abort + throw
+          controller.abort()
+          throw new Error('aborted mid-fix')
+        }
+        return '구현'
+      },
+      async dispose() {},
+    })
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const restoreSpy = vi.fn(async () => {})
+    // ignored: deleted 파일이 있음(deleted → 복구 대상)
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'deleted', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로 diff
+        { files: ['src/b.ts'], patch: '+b', truncated: false }, // verify-fix diff
+      ],
+      { collectResult, restoreSpy },
+    )
+
+    const events: OrchestratorEvent[] = []
+    // verifyCalls 카운터로 첫 검증은 실패(수정 진입), 수정 중 abort
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+      maxVerifyFixRounds: 1,
+      onEvent: (e) => events.push(e),
+      verify: async () => {
+        verifyCalls++
+        // 첫 번째 검증은 실패(verify-fix 진입), 이후는 abort 로 도달 불가
+        const passed = verifyCalls > 1
+        return [
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed,
+            exitCode: passed ? 0 : 1,
+            stdout: '',
+            stderr: passed ? '' : 'boom',
+            durationMs: 1,
+          },
+        ]
+      },
+    })
+
+    // abort 로 취소됐으므로 project 는 failed
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+    // verify-fix catch(abort) 에서 rollbackWithIgnored 가 호출됐는지 — restoreIgnoredBaseline spy 검증
+    expect(restoreSpy).toHaveBeenCalled()
+    // verify-fix 이벤트에 수정 실패 메시지가 있어야 한다
+    const fixEvent = events.find(
+      (e) => e.type === 'verify.fixing' && e.message.includes('수정 실패'),
+    )
+    expect(fixEvent).toBeDefined()
+  })
+
+  it('회귀5: verify-fix 에서 unrestorable ignored → classifyDiffRisk destructive → gate 호출(escalate), 거부 시 rollback', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const restoreSpy = vi.fn(async () => {})
+    // unrestorable ignored 변경 → classifyDiffRisk 가 '복원 불가' reason 을 포함한 destructive 로 분류해야 한다
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: 'secrets/creds.json', change: 'modified', sensitive: true }],
+      unrestorable: [{ path: 'secrets/creds.json', reason: 'over-cap' }],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로 diff(안전)
+        { files: ['src/b.ts'], patch: '+b', truncated: false }, // verify-fix diff
+      ],
+      { collectResult, restoreSpy },
+    )
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return 'rejected' // 거부 → rollback
+        },
+      },
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // gate 가 destructive 로 호출됐는지(verify-fix 경로에서 escalate)
+    expect(gateRequests.length).toBeGreaterThan(0)
+    expect(gateRequests[0].risk).toBe('destructive')
+    // rollbackWithIgnored 가 호출됐는지 — restoreIgnoredBaseline spy
+    expect(restoreSpy).toHaveBeenCalled()
+    // project 는 검증 실패(수정 미승인)
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('회귀6: verify-fix 에서 baseline 보유 후 예외 발생 → finally 에서 disposeBaseline 호출(entries 비워짐)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // taskSendDone: 첫 send(작업 구현)가 완료되면 true 로 전환 — 이후 send 는 verify-fix 수정이므로 예외
+    let taskSendDone = false
+    sessions.add({
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        if (taskSendDone) throw new Error('수정 호출 실패') // verify-fix 에서 예외
+        taskSendDone = true
+        return '구현'
+      },
+      async dispose() {},
+    })
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // baseline 에 entries 를 채워두어 disposeBaseline 후 비워지는 것을 관찰한다.
+    const baselineEntries = new Map<string, import('../workspace/ignored-baseline').IgnoredEntry>([
+      [
+        '.env',
+        {
+          path: '.env',
+          size: 4,
+          mtimeMs: 1000,
+          hash: 'abc',
+          sensitive: true,
+          backup: Buffer.from('KEY=1'),
+        },
+      ],
+    ])
+    const capturedBaselines: IgnoredBaseline[] = []
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로
+        { files: [], patch: '', truncated: false }, // verify-fix diff
+      ],
+      {
+        captureResult: async () => {
+          const bl: IgnoredBaseline = { entries: baselineEntries, skipped: [] }
+          capturedBaselines.push(bl)
+          return bl
+        },
+        collectResult: { changes: [], unrestorable: [] },
+      },
+    )
+
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // verify-fix 경로에서 captureIgnoredBaseline 이 호출됐어야 한다(implCalls >= 2 조건이 verify-fix 에서 실행됨)
+    // 예외 발생 후 finally disposeBaseline 이 호출됐으면 entries 가 비워진다.
+    // capturedBaselines 중 verify-fix 용 baseline 의 entries 가 비워졌는지 확인
+    // (runTaskIn 경로도 capture 하므로 두 번 이상 호출될 수 있다 — 마지막 하나를 검사)
+    expect(capturedBaselines.length).toBeGreaterThanOrEqual(1)
+    // 모든 캡처된 baseline 의 entries 가 disposeBaseline 으로 비워졌는지
+    for (const bl of capturedBaselines) {
+      expect(bl.entries.size).toBe(0) // disposeBaseline 이 호출됐으면 0
+    }
+  })
+
+  it('회귀7: 병렬 worktree 경로에서 worktree ws 의 ignored 메서드가 호출되고 ignored_changes 이벤트 방출됨', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // worktree 별 ignored 메서드 호출을 추적하는 parallelFakeWorkspace 확장
+    const wtCaptureCalls: string[] = [] // taskId 별 captureIgnoredBaseline 호출 기록
+    const wtCollectCalls: string[] = [] // taskId 별 collectIgnoredChanges 호출 기록
+
+    const base = parallelFakeWorkspace()
+    // addWorktree 를 오버라이드해 spy 가 포함된 worktree 를 반환한다.
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        const wt = await base.addWorktree(taskId, b)
+        // ignored 메서드에 spy 추가
+        const origCapture = wt.captureIgnoredBaseline.bind(wt)
+        const origCollect = wt.collectIgnoredChanges.bind(wt)
+        return {
+          ...wt,
+          async captureIgnoredBaseline() {
+            wtCaptureCalls.push(taskId)
+            return origCapture()
+          },
+          async collectIgnoredChanges(bl: IgnoredBaseline) {
+            wtCollectCalls.push(taskId)
+            return origCollect(bl)
+          },
+        }
+      },
+    }
+
+    const events: OrchestratorEvent[] = []
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+      onEvent: (e) => events.push(e),
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    // 병렬 worktree 각각의 captureIgnoredBaseline 이 호출됐는지
+    expect(wtCaptureCalls.length).toBe(2)
+    // 각 worktree 의 collectIgnoredChanges 도 호출됐는지
+    expect(wtCollectCalls.length).toBe(2)
+    // worktree 정리(removeWorktree) 완료 후 잔존 없음 — base 의 카운터를 참조(spread 는 값 복사)
+    expect(base.worktreesRemoved).toBe(2)
+  })
+
+  it('verify-fix capture-fail: captureIgnoredBaseline 실패 → break + verify.fixing 이벤트(민감 백업 실패)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 첫 captureIgnoredBaseline 호출(작업 경로)은 성공, 두 번째(verify-fix)는 실패
+    let captureCalls = 0
+    const ws = fakeWorkspace([{ files: ['src/a.ts'], patch: '+a', truncated: false }], {
+      captureResult: async () => {
+        captureCalls++
+        if (captureCalls >= 2) throw new Error('민감 파일 백업 용량 초과')
+        return { entries: new Map(), skipped: [] }
+      },
+    })
+
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 2,
+      onEvent: (e) => events.push(e),
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // verify-fix 루프에서 capture 실패 → break → 수정 미실행
+    expect(implCalls).toBe(1) // 작업 구현 1회만, verify-fix 수정 호출 0
+    // verify.fixing 이벤트에 민감 백업 실패 메시지
+    const captureFailEvent = events.find(
+      (e) => e.type === 'verify.fixing' && e.message.includes('민감 ignored 백업 실패'),
+    )
+    expect(captureFailEvent).toBeDefined()
+    expect(captureFailEvent?.message).toContain('민감 파일 백업 용량 초과')
+    // project 는 검증 실패
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
 })

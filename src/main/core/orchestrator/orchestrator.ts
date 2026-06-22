@@ -26,22 +26,6 @@ import {
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
 
-/**
- * 워크스페이스를 되돌리되, revert 실패를 무성흡수(`.catch(()=>{})`)하지 않고 사람이 읽는 주석으로 표면화한다(#7).
- * 격리 경로(작업 오류·verify-fix catch)에서 호출하므로 revert 예외가 상위 실행을 중단시키지 않게 흡수하되,
- * 워크스페이스에 부분 변경이 잔존한다는 사실은 호출자가 메시지에 덧붙여 알릴 수 있게 한다.
- * @returns 성공 시 빈 문자열, 실패 시 ` · 되돌리기 실패: <원문>(워크스페이스 부분 변경 잔존)`
- */
-async function revertSafely(ws: Pick<Workspace, 'revert'>, base: string): Promise<string> {
-  try {
-    await ws.revert(base)
-    return ''
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return ` · 되돌리기 실패: ${message}(워크스페이스 부분 변경 잔존)`
-  }
-}
-
 export interface RunOptions {
   store: Store
   sessions: SessionManager
@@ -744,6 +728,18 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { projectId: project.id, round },
       })
       const base = await opts.workspace.checkpoint()
+      // captureIgnoredBaseline 실패(민감 파일 백업 불가) = 이번 라운드 중단.
+      let vfBaseline: IgnoredBaseline | undefined
+      try {
+        vfBaseline = await opts.workspace.captureIgnoredBaseline()
+      } catch (err) {
+        emit({
+          type: 'verify.fixing',
+          message: `민감 ignored 백업 실패로 수정 중단: ${err instanceof Error ? err.message : String(err)}`,
+          data: { projectId: project.id, round },
+        })
+        break
+      }
       try {
         await fixImplementer.send(buildVerifyFixPrompt(goal, failing), {
           fresh: true,
@@ -753,7 +749,22 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         })
         // 작업 경로와 동일하게 verify-fix diff 도 위험 분류·승인 게이트를 거친다.
         const diff = await opts.workspace.collectDiff(base)
-        const dr = classifyDiffRisk(diff)
+        const ignoredChanges = await opts.workspace.collectIgnoredChanges(vfBaseline)
+        if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
+          store.appendEvent({
+            type: 'workspace.ignored_changes',
+            data: {
+              round,
+              changes: ignoredChanges.changes.map((c) => ({
+                path: c.path,
+                change: c.change,
+                sensitive: c.sensitive,
+              })),
+              unrestorable: ignoredChanges.unrestorable.map((u) => u.path),
+            },
+          })
+        }
+        const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
           const decision = opts.gate
             ? await opts.gate.request({
@@ -764,10 +775,10 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
               })
             : 'rejected'
           if (decision !== 'approved') {
-            await opts.workspace.revert(base)
+            const note = await rollbackWithIgnored(opts.workspace, base, vfBaseline ?? null)
             emit({
               type: 'verify.fixing',
-              message: `수정 위험 변경 미승인: ${dr.reasons.join('; ')}`,
+              message: `수정 위험 변경 미승인: ${dr.reasons.join('; ')}${note}`,
               data: { projectId: project.id, round },
             })
             break
@@ -776,13 +787,15 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         await opts.workspace.keep(`[verify-fix r${round}]`)
       } catch (err) {
         // 부분 수정을 되돌린다. revert 실패는 무성흡수하지 않고 수정 실패 메시지에 덧붙여 표면화한다(#7).
-        const revertNote = await revertSafely(opts.workspace, base)
+        const revertNote = await rollbackWithIgnored(opts.workspace, base, vfBaseline ?? null)
         emit({
           type: 'verify.fixing',
           message: `수정 실패: ${err instanceof Error ? err.message : String(err)}${revertNote}`,
           data: { projectId: project.id, round },
         })
         break
+      } finally {
+        if (vfBaseline) disposeBaseline(vfBaseline)
       }
       verifications = await verifyOnce()
       emitVerify(verifications)
