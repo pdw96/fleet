@@ -49,7 +49,11 @@ export interface IgnoredBaseline {
 // 디렉터리(`!! dir/`)는 denylist 여부를 먼저 확인한다:
 //   - denylist 디렉터리 내부는 스캔하지 않음 — 그 안의 sensitive 파일(예: node_modules/.ssh) 커버는
 //     B 슬라이스(강한 격리/evasion)로 연기(#123 후속).
-//   - non-denylist 디렉터리는 walk. generalCount 가 maxFiles 에 도달하면 중단(over-cap 기록).
+//   - non-denylist 디렉터리는 walk. generalCount 가 maxFiles 에 도달하면:
+//     (1) capped=true 로 설정, (2) 단일 'scan-capped' over-cap escalation 기록,
+//     (3) walk 즉시 return — 이후 서브디렉터리 탐색 없음(unbounded traversal 방지).
+//     cap 이전에 push 된 sensitive 파일은 그대로 보존.
+//     cap 이후 sensitive 파일 누락은 over-cap escalation 으로 표면화(fail-closed).
 async function listIgnored(
   root: string,
   git: GitRunner,
@@ -63,13 +67,19 @@ async function listIgnored(
   const files: string[] = []
   const skipped: { path: string; reason: 'over-cap' }[] = []
   let generalCount = 0
+  // capped: generalCount >= maxFiles に達した後は true。walk は冒頭で確認し即 return する。
+  let capped = false
   // pushFile: sensitive → always push; non-sensitive AND denylisted → skip; non-sensitive AND not-denylisted → generalCount cap
+  // cap 도달 시 capped=true + 단일 escalation 기록 후 return(호출자가 capped 확인).
   const pushFile = (rel: string): void => {
     const key = rel.replace(/\\/g, '/')
     if (!policy.sensitiveRe.test(key) && policy.denylistRe.test(key)) return
     if (!policy.sensitiveRe.test(key)) {
       if (generalCount >= policy.maxFiles) {
-        skipped.push({ path: key, reason: 'over-cap' })
+        if (!capped) {
+          capped = true
+          skipped.push({ path: 'scan-capped', reason: 'over-cap' })
+        }
         return
       }
       generalCount++
@@ -77,6 +87,8 @@ async function listIgnored(
     files.push(key)
   }
   const walk = (relDir: string): void => {
+    // early-terminate: cap 도달 후 서브디렉터리 탐색을 중단(unbounded traversal 방지)
+    if (capped) return
     let names: string[]
     try {
       names = readdirSync(resolve(root, relDir))
@@ -84,6 +96,7 @@ async function listIgnored(
       return
     }
     for (const name of names) {
+      if (capped) return
       const rel = `${relDir}/${name}`
       let st
       try {
@@ -95,13 +108,12 @@ async function listIgnored(
       if (st.isDirectory()) {
         walk(rel)
       } else {
-        // pushFile 내부에서 generalCount >= maxFiles 이면 skipped 에 기록하고 return.
-        // 상한 초과 후에도 루프를 계속 돌며 나머지 파일을 모두 skipped 에 기록한다(over-cap 누락 방지).
         pushFile(rel)
       }
     }
   }
   for (const e of ignored) {
+    if (capped) break
     const rel = e.replace(/\\/g, '/')
     if (rel.endsWith('/')) {
       const dir = rel.replace(/\/+$/, '')

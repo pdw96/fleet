@@ -122,36 +122,54 @@ describe('captureIgnoredBaseline', () => {
     expect(base.skipped).toEqual([])
   })
 
-  // [P2-8] Walk 단순화(C): maxEntries 제거 → non-denylist maxFiles 초과 시 walk 중단
-  it('[P2-8] non-denylist 디렉터리가 maxFiles 초과 시 walk 중단하고 over-cap 을 기록한다', async () => {
-    mkdirSync(join(root, 'subdir'), { recursive: true })
-    writeFileSync(join(root, 'subdir', 'f1.txt'), '1')
-    writeFileSync(join(root, 'subdir', 'f2.txt'), '2')
-    writeFileSync(join(root, 'subdir', 'f3.txt'), '3')
-    const git2 = fakeGitIgnored(['subdir/'])
+  // [P2-8] Walk 단순화(C): maxEntries 제거 → non-denylist maxFiles 초과 시 walk 중단(early-terminate + fail-closed)
+  it('[P2-8] non-denylist 중첩 디렉터리가 maxFiles 초과 시 early-terminate하고 단일 over-cap escalation을 기록한다(fail-closed)', async () => {
+    // 구조: logs/ (top) → subA/(2파일) → subB/(2파일, deep)
+    // maxFiles=2 → subA의 2파일 캡처 후 cap 도달.
+    // early-terminate 구현: capped=true 설정 후 단일 'scan-capped' escalation 기록, 이후 walk 중단.
+    // 버그 구현(현재): walk 계속 돌며 subB 파일 각각 skipped 에 push → skipped.length > 1.
+    mkdirSync(join(root, 'logs', 'subA'), { recursive: true })
+    mkdirSync(join(root, 'logs', 'subB'), { recursive: true })
+    writeFileSync(join(root, 'logs', 'subA', 'a1.log'), 'a1')
+    writeFileSync(join(root, 'logs', 'subA', 'a2.log'), 'a2')
+    // deep 파일: cap 이후에 있으므로 entries 에 절대 잡혀서는 안 됨
+    writeFileSync(join(root, 'logs', 'subB', 'deep1.log'), 'deep1')
+    writeFileSync(join(root, 'logs', 'subB', 'deep2.log'), 'deep2')
+    const git2 = fakeGitIgnored(['logs/'])
     const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 2 }
     const base = await captureIgnoredBaseline(root, git2, policy)
-    // 2개는 캡처, 1개는 over-cap
-    const subEntries = [...base.entries.keys()].filter((k) => k.startsWith('subdir/'))
-    const subSkipped = base.skipped.filter(
-      (s) => s.path.startsWith('subdir/') && s.reason === 'over-cap',
-    )
-    expect(subEntries.length + subSkipped.length).toBe(3)
-    expect(subSkipped.length).toBeGreaterThanOrEqual(1)
+
+    // (1) 종료 증명: cap 이후 deep 파일은 entries 에 없어야 함
+    expect(base.entries.has('logs/subB/deep1.log')).toBe(false)
+    expect(base.entries.has('logs/subB/deep2.log')).toBe(false)
+
+    // (2) fail-closed 증명: over-cap escalation 이 skipped 에 기록되어야 함
+    const overCapSkipped = base.skipped.filter((s) => s.reason === 'over-cap')
+    expect(overCapSkipped.length).toBeGreaterThanOrEqual(1)
+
+    // (3) early-terminate 증명: 단일 escalation 만 기록(파일별 스팸 아님).
+    // 버그 구현은 subB 의 deep1.log + deep2.log 각각 push → skipped 에 2개 이상.
+    // early-terminate 구현은 cap 도달 시 단일 'scan-capped' marker 하나만 push.
+    expect(overCapSkipped.length).toBe(1)
   })
 
   // [:143] 부분 backup zeroize on capture abort
   it(':143 민감 파일 throw 전에 이미 캡처된 부분 backup Buffer가 zeroize된다', async () => {
-    // a.key(정상), .env(디렉터리→readFileSync EISDIR throw) 순서로 캡처 → partial backup zeroize
+    // 설계: a.key(정상 캡처) → .env(디렉터리 → readFileSync EISDIR throw)
+    // catch 블록이 entry.backup.fill(0) 으로 zeroize 하고 throw 재전파한다.
+    //
+    // Buffer 참조 확보 시도: vi.spyOn(fsModule, 'readFileSync') 는 ESM native module 에서
+    // "Cannot redefine property" 로 실패한다(vitest ESM 제약). vi.mock('node:fs') 로
+    // 파일 전체를 mock 하면 다른 18 개 테스트가 실 FS 를 사용하지 못해 전면 재작성 필요.
+    // → Buffer 직접 단언은 현재 테스트 환경에서 infeasible.
+    // throw 전파 단언(primary) + disposeBaseline 테스트의 fill(0) 검증(상호 보완)으로 대체.
     writeFileSync(join(root, 'a.key'), 'A_SECRET')
     mkdirSync(join(root, '.env'), { recursive: true })
     const git = fakeGitIgnored(['a.key', '.env'])
-    // throw가 전파되어야 함
+    // throw 재전파: [:143] catch 블록이 fill(0) 후 반드시 rethrow 해야 함
     await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
       /민감 ignored/,
     )
-    // .env가 throw됐으므로 이후 a.key 백업이 zeroize됐는지 간접 확인:
-    // baseline이 reject됐으므로 버퍼 참조 불가 → 구현 코드 리뷰로 보완(throw 전파 자체가 주요 단언)
   })
 })
 
@@ -201,21 +219,22 @@ describe('collectIgnoredChanges', () => {
   })
 
   // [P2-4] current-scan over-cap surfaced in collect
-  it('[P2-4] 현재 scan 의 over-cap 파일도 unrestorable 에 포함된다', async () => {
+  it('[P2-4] 현재 scan 의 over-cap 은 단일 scan-capped escalation 으로 unrestorable 에 포함된다', async () => {
     // empty baseline (no files at baseline time)
     const emptyGit = fakeGitIgnored([])
     const baseline = await captureIgnoredBaseline(root, emptyGit, DEFAULT_IGNORED_POLICY)
 
-    // now 3 general files exist, maxFiles=1 → 2 get over-cap during current scan
+    // now 3 general files exist, maxFiles=1 → cap 도달 시 단일 scan-capped escalation
     writeFileSync(join(root, 'a.txt'), 'aaa')
     writeFileSync(join(root, 'b.txt'), 'bbb')
     writeFileSync(join(root, 'c.txt'), 'ccc')
     const curGit = fakeGitIgnored(['a.txt', 'b.txt', 'c.txt'])
     const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
     const cs = await collectIgnoredChanges(root, curGit, baseline, policy)
-    // 2 files over-cap in current scan should appear in unrestorable
-    const overCapPaths = cs.unrestorable.filter((u) => u.reason === 'over-cap').map((u) => u.path)
-    expect(overCapPaths.length).toBe(2)
+    // early-terminate 구현: 단일 scan-capped 마커 하나만 unrestorable 에 기록(파일별 스팸 아님)
+    const overCapEntries = cs.unrestorable.filter((u) => u.reason === 'over-cap')
+    expect(overCapEntries.length).toBe(1)
+    expect(overCapEntries[0].path).toBe('scan-capped')
   })
 })
 
@@ -256,13 +275,13 @@ describe('restoreIgnoredBaseline', () => {
     expect(restoredMode).toBe(0o600)
   })
 
-  // [:229] restore drops over-cap — over-cap skipped 에이전트 생성 파일도 삭제
-  it(':229 restore 시 over-cap 으로 스킵된 에이전트 생성 파일도 삭제된다', async () => {
+  // [:229] restore drops files in scan range; cap 이후 파일은 early-terminate 로 발견 불가 → scan-capped escalation 으로 표면화
+  it(':229 restore 시 scan 범위 내 에이전트 생성 파일은 삭제되고, cap 이후 파일은 scan-capped escalation 으로 표면화된다', async () => {
     // baseline 캡처 시 파일 없음
     const baseGit = fakeGitIgnored([])
     const baseline = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
 
-    // 에이전트가 파일 2개 생성, maxFiles=1 → 2번째는 over-cap
+    // 에이전트가 파일 2개 생성, maxFiles=1 → a.txt 는 files 에 포함, b.txt 는 cap 이후 early-terminate
     writeFileSync(join(root, 'a.txt'), 'agent1')
     writeFileSync(join(root, 'b.txt'), 'agent2')
     const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
@@ -270,9 +289,11 @@ describe('restoreIgnoredBaseline', () => {
 
     await restoreIgnoredBaseline(root, curGit, baseline, policy)
 
-    // a.txt는 files에 포함 → 삭제됨, b.txt는 skipped(over-cap)이지만 baseline 없음 → 삭제되어야 함
+    // a.txt 는 files 에 포함(cap 이전) → 삭제됨
     expect(existsSync(join(root, 'a.txt'))).toBe(false)
-    expect(existsSync(join(root, 'b.txt'))).toBe(false)
+    // b.txt 는 early-terminate 로 restore scan 범위 밖 → 삭제 불가(scan-capped escalation 으로 표면화됨)
+    // collectIgnoredChanges 호출자가 unrestorable 의 scan-capped 를 보고 상위 처리 가능
+    expect(existsSync(join(root, 'b.txt'))).toBe(true)
   })
 
   // [P1-b] remove non-file path before restoring
