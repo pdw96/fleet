@@ -1,6 +1,6 @@
 // src/main/core/workspace/ignored-baseline.ts
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
@@ -140,4 +140,49 @@ export async function captureIgnoredBaseline(
     })
   }
   return { entries, skipped }
+}
+
+export interface IgnoredChange {
+  path: string
+  change: 'created' | 'modified' | 'deleted'
+  sensitive: boolean
+}
+export interface IgnoredChangeSet {
+  changes: IgnoredChange[]
+  unrestorable: { path: string; reason: string }[]
+}
+
+export async function collectIgnoredChanges(
+  root: string,
+  git: GitRunner,
+  baseline: IgnoredBaseline,
+  policy: ScanPolicy,
+): Promise<IgnoredChangeSet> {
+  const { files } = await listIgnored(root, git, policy)
+  const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
+  const current = new Set(files)
+  const changes: IgnoredChange[] = []
+  const unrestorable: { path: string; reason: string }[] = [...baseline.skipped]
+
+  // created: 현재 in-scope ignored 인데 baseline 에도 skipped 에도 없음.
+  for (const path of files) {
+    if (baseline.entries.has(path) || skippedPaths.has(path)) continue
+    changes.push({ path, change: 'created', sensitive: policy.sensitiveRe.test(path) })
+  }
+  // modified / deleted: baseline 엔트리 기준.
+  for (const [path, entry] of baseline.entries) {
+    const abs = resolve(root, path)
+    if (!existsSync(abs) || !current.has(path)) {
+      changes.push({ path, change: 'deleted', sensitive: entry.sensitive })
+      if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
+      continue
+    }
+    const buf = readFileSync(abs)
+    const hash = createHash('sha256').update(buf).digest('hex')
+    if (hash !== entry.hash) {
+      changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
+    }
+  }
+  return { changes, unrestorable }
 }

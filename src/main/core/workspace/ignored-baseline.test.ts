@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { GitRunner } from './git'
-import { captureIgnoredBaseline, DEFAULT_IGNORED_POLICY } from './ignored-baseline'
+import {
+  captureIgnoredBaseline,
+  collectIgnoredChanges,
+  DEFAULT_IGNORED_POLICY,
+} from './ignored-baseline'
 
 // `!! path\0` 레코드(porcelain v1 -z 의 ignored 표기)를 만들어 주는 fake git.
 function fakeGitIgnored(paths: string[]): GitRunner {
@@ -79,5 +83,33 @@ describe('captureIgnoredBaseline', () => {
     expect(generalEntries.length + generalSkipped.length).toBe(2)
     expect(generalEntries.length).toBe(1)
     expect(generalSkipped.length).toBe(1)
+  })
+})
+
+describe('collectIgnoredChanges', () => {
+  it('detects created / modified / deleted ignored changes', async () => {
+    writeFileSync(join(root, '.env'), 'A=1') // 기존(수정될 것)
+    writeFileSync(join(root, 'keep.key'), 'orig') // 기존(삭제될 것)
+    const baseGit = fakeGitIgnored(['.env', 'keep.key'])
+    const baseline = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+
+    writeFileSync(join(root, '.env'), 'A=2') // modify
+    rmSync(join(root, 'keep.key')) // delete
+    writeFileSync(join(root, 'new.pem'), 'NEW') // create
+    const curGit = fakeGitIgnored(['.env', 'new.pem']) // keep.key 사라짐, new.pem 등장
+    const cs = await collectIgnoredChanges(root, curGit, baseline, DEFAULT_IGNORED_POLICY)
+
+    const byPath = Object.fromEntries(cs.changes.map((c) => [c.path, c.change]))
+    expect(byPath).toEqual({ '.env': 'modified', 'keep.key': 'deleted', 'new.pem': 'created' })
+    expect(cs.changes.find((c) => c.path === 'new.pem')!.sensitive).toBe(true)
+  })
+
+  it('surfaces baseline.skipped as unrestorable', async () => {
+    writeFileSync(join(root, 'big.dat'), Buffer.alloc(16))
+    const git = fakeGitIgnored(['big.dat'])
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxFileBytes: 8 }
+    const baseline = await captureIgnoredBaseline(root, git, policy)
+    const cs = await collectIgnoredChanges(root, git, baseline, policy)
+    expect(cs.unrestorable).toContainEqual({ path: 'big.dat', reason: 'over-cap' })
   })
 })
