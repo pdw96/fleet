@@ -23,6 +23,15 @@ import {
 
 const ENDPOINT = 'https://api.openai.com/v1/chat/completions'
 const MODELS_ENDPOINT = 'https://api.openai.com/v1/models'
+/**
+ * reasoning 모델(o-series·gpt-5+)의 max_completion_tokens 하한. 추론 토큰은 이 예산에 *포함*되므로
+ * 저값(예: 4096·200)이면 추론만으로 한도를 쳐 가시 답변 0 = finish_reason:length 빈응답 +유료 추론토큰
+ * 낭비(unwrap throw). anthropic THINKING_*_MAX_TOKENS·Gemini thinkingBudget floor 와 동형의 cross-provider
+ * 비대칭 보강 — reasoning 모델서 sub-floor 명시값은 사실상 항상 빈응답이라 무효한 의도라 floor 로 상향한다
+ * (floor 이상은 무변경·cap down 없음 — 한도일 뿐 강제 생성량 아님). 값=OpenAI 권장 "reasoning+출력에 최소
+ * 25,000 토큰 확보"에 맞춰 25k(16k 는 high/xhigh effort 서 여전히 굶을 수 있어 Codex 적대리뷰 P2 반영).
+ */
+const REASONING_MIN_MAX_COMPLETION_TOKENS = 25_000
 // Chat Completions 로 호출 불가한 OpenAI 모델 계열(임베딩·음성·이미지·모더레이션·Responses 전용) —
 // 모델 피커 노이즈·오선택 400 방지. 안정적 제품 계열명만 denylist 한다(allowlist 가 아니라 #13 의 하드코딩
 // 표류를 최소화). chat 모델 누락보다 비-chat 노출이 덜 해롭도록 보수적으로 유지한다. 'audio' 토큰은 제외한다 —
@@ -338,10 +347,13 @@ export function createOpenAiProvider(
         messages: buildMessages(messages),
       }
       const maxTokens = opts.maxTokens ?? config.maxTokens
-      if (maxTokens !== undefined) {
-        // 추론 모델은 max_completion_tokens 만 받는다.
-        if (reasoning) body.max_completion_tokens = maxTokens
-        else body.max_tokens = maxTokens
+      if (reasoning) {
+        // 추론 모델은 max_completion_tokens 만 받는다. 명시값엔 floor 를 적용해 추론예산 굶주림(빈응답)을
+        // 막고(REASONING_MIN_MAX_COMPLETION_TOKENS), 미지정은 omit → 서버 기본(모델 출력 상한=안전) 유지.
+        if (maxTokens !== undefined)
+          body.max_completion_tokens = Math.max(maxTokens, REASONING_MIN_MAX_COMPLETION_TOKENS)
+      } else if (maxTokens !== undefined) {
+        body.max_tokens = maxTokens
       }
       // temperature 는 추론 모델에서 거부되므로 전송하지 않는다.
       const temperature = opts.temperature ?? config.temperature

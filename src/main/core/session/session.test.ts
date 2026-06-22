@@ -207,6 +207,44 @@ describe('createApiSession', () => {
     expect(await s.send('x')).toBe('부분 답변')
   })
 
+  it('빈 텍스트 + 매핑되지 않은 종료 사유(other: MALFORMED_FUNCTION_CALL 등)는 표면화한다(#7)', async () => {
+    // 도구를 동봉했으나 모델이 유효 functionCall 생성 실패 → Gemini 가 parts 없이 MALFORMED_FUNCTION_CALL 종료.
+    // text=''·toolCalls=[]·finishReason='other'(default 매핑) → 조용한 '' 흡수 대신 표면화(silent blank 누수).
+    const provider: ApiProvider = {
+      id: 'malformed',
+      provider: 'google',
+      model: 'm',
+      async chat() {
+        return {
+          text: '',
+          toolCalls: [],
+          finishReason: 'other',
+          rawFinishReason: 'MALFORMED_FUNCTION_CALL',
+        }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('도구 호출 요청')).rejects.toThrow(/빈 응답|MALFORMED/)
+  })
+
+  it('텍스트가 있는 other 응답은 그대로 반환한다(빈 응답만 표면화)', async () => {
+    const provider: ApiProvider = {
+      id: 'other-ok',
+      provider: 'google',
+      model: 'm',
+      async chat() {
+        return {
+          text: '정상 답변',
+          toolCalls: [],
+          finishReason: 'other',
+          rawFinishReason: 'UNSPECIFIED',
+        }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    expect(await s.send('x')).toBe('정상 답변')
+  })
+
   it('toolDeps 가 있으면 도구 루프로 처리해 최종 텍스트를 반환한다', async () => {
     let n = 0
     const provider: ApiProvider = {

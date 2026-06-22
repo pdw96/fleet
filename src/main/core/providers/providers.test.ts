@@ -1072,16 +1072,67 @@ describe('OpenAiProvider', () => {
           model,
           apiKey: 'k',
           temperature: 0.7,
-          maxTokens: 200,
+          maxTokens: 30000,
         },
         http,
       )
       await p.chat([{ role: 'user', content: 'x' }])
       const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
-      expect(body.max_completion_tokens).toBe(200)
+      expect(body.max_completion_tokens).toBe(30000)
       expect(body.max_tokens).toBeUndefined()
       expect(body.temperature).toBeUndefined()
     }
+  })
+
+  it('reasoning 모델은 max_completion_tokens 에 floor 를 적용해 추론예산 굶주림(빈응답)을 막는다', async () => {
+    // 추론 토큰이 max_completion_tokens 예산에 포함 → 저값이면 추론만으로 소진해 finish=length 빈응답 +
+    // 유료 추론토큰 낭비. anthropic THINKING_*_MAX_TOKENS · Gemini thinkingBudget floor 와 동형의 비대칭 보강.
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    for (const model of ['gpt-5.1', 'o3-mini']) {
+      const p = createOpenAiProvider(
+        { id: 'r', provider: 'openai', displayName: 'R', model, apiKey: 'k', maxTokens: 200 },
+        http,
+      )
+      await p.chat([{ role: 'user', content: 'x' }])
+      const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
+      expect(body.max_completion_tokens).toBe(25000) // floor 로 상향(OpenAI 권장 ≥25k)
+    }
+  })
+
+  it('reasoning 모델은 floor 이상의 명시 max_completion_tokens 는 그대로 존중한다(cap down 안 함)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      { id: 'r', provider: 'openai', displayName: 'R', model: 'o3', apiKey: 'k', maxTokens: 50000 },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'x' }])
+    const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
+    expect(body.max_completion_tokens).toBe(50000)
+  })
+
+  it('비-reasoning 모델은 max_tokens 를 floor 없이 그대로 전송한다(무회귀)', async () => {
+    const { http, calls } = mockHttp(() => ({
+      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
+    }))
+    const p = createOpenAiProvider(
+      {
+        id: 'o',
+        provider: 'openai',
+        displayName: 'O',
+        model: 'gpt-4o',
+        apiKey: 'k',
+        maxTokens: 200,
+      },
+      http,
+    )
+    await p.chat([{ role: 'user', content: 'x' }])
+    const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
+    expect(body.max_tokens).toBe(200)
+    expect(body.max_completion_tokens).toBeUndefined()
   })
 
   it('tool_use/tool_result 블록을 tool_calls + role:tool 메시지로 평탄화한다', async () => {
@@ -1761,6 +1812,54 @@ describe('GoogleProvider', () => {
     }
     expect(body.contents.map((c) => c.role)).toEqual(['user', 'model'])
     expect(body.systemInstruction).toBeDefined()
+  })
+
+  it('cachedContentTokenCount 를 cacheReadInputTokens 로 정규화하고 inputTokens 에서 분리한다(buffer)', async () => {
+    // Gemini 2.5+ 는 암묵 캐싱 기본 ON → promptTokenCount 는 캐시분 *포함*. openai mapUsage 와 동일 정규화로
+    // inputTokens=비캐시(prompt-cached), cacheRead=cached(서로소) → cross-provider 비용 누적 이중계산 회피(#62 parity).
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 20,
+          cachedContentTokenCount: 70,
+        },
+      }),
+    }))
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'x' }])
+    expect(out.usage).toEqual({ inputTokens: 30, outputTokens: 20, cacheReadInputTokens: 70 })
+  })
+
+  it('cachedContentTokenCount 정규화는 스트리밍 경로에도 적용된다', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":70}}\n\n',
+    ])
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })
+    expect(out.usage).toEqual({ inputTokens: 30, outputTokens: 20, cacheReadInputTokens: 70 })
+  })
+
+  it('cachedContentTokenCount 미보고 시 inputTokens=prompt 그대로·cacheRead 미설정(무회귀)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 10 },
+      }),
+    }))
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'x' }])
+    expect(out.usage).toEqual({ inputTokens: 50, outputTokens: 10 })
   })
 
   it('SAFETY finishReason maps to content_filter', async () => {
