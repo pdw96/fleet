@@ -264,6 +264,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         )
         diff = await ws.collectDiff(base)
         const ignoredChanges = await ws.collectIgnoredChanges(ignoredBaseline)
+        // [#128-m1] 현재(=루프 탈출 시 최종 채택) 라운드 기준 — 거부되어 롤백된 라운드의 ignored 변경은
+        // 이미 복원되므로 폐기 대상이 아니다(spec: 마지막 라운드 기준). 누적(sticky) 아님.
+        ignoredTouched = ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0
         store.updateTask(task.id, { status: 'review', changedFiles: diff.files })
         emit({
           type: 'task.implemented',
@@ -271,7 +274,6 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           data: { taskId: task.id, round },
         })
         if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
-          ignoredTouched = true
           // P2-5: data 에 projectId 를 명시한다 — listProjectEvents(projectId) 가 이 이벤트를
           // 포함하려면 data.projectId 가 필요하다(store 필터: e.data?.projectId === projectId).
           store.appendEvent({
