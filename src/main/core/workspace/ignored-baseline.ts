@@ -82,7 +82,7 @@ async function listIgnored(
       if (generalCount >= policy.maxFiles) {
         if (!capped) {
           capped = true
-          skipped.push({ path: 'scan-capped', reason: 'over-cap' })
+          skipped.push({ path: SCAN_CAPPED, reason: 'over-cap' })
         }
         return
       }
