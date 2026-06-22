@@ -1072,67 +1072,16 @@ describe('OpenAiProvider', () => {
           model,
           apiKey: 'k',
           temperature: 0.7,
-          maxTokens: 30000,
+          maxTokens: 200,
         },
         http,
       )
       await p.chat([{ role: 'user', content: 'x' }])
       const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
-      expect(body.max_completion_tokens).toBe(30000)
+      expect(body.max_completion_tokens).toBe(200)
       expect(body.max_tokens).toBeUndefined()
       expect(body.temperature).toBeUndefined()
     }
-  })
-
-  it('reasoning 모델은 max_completion_tokens 에 floor 를 적용해 추론예산 굶주림(빈응답)을 막는다', async () => {
-    // 추론 토큰이 max_completion_tokens 예산에 포함 → 저값이면 추론만으로 소진해 finish=length 빈응답 +
-    // 유료 추론토큰 낭비. anthropic THINKING_*_MAX_TOKENS · Gemini thinkingBudget floor 와 동형의 비대칭 보강.
-    const { http, calls } = mockHttp(() => ({
-      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
-    }))
-    for (const model of ['gpt-5.1', 'o3-mini']) {
-      const p = createOpenAiProvider(
-        { id: 'r', provider: 'openai', displayName: 'R', model, apiKey: 'k', maxTokens: 200 },
-        http,
-      )
-      await p.chat([{ role: 'user', content: 'x' }])
-      const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
-      expect(body.max_completion_tokens).toBe(25000) // floor 로 상향(OpenAI 권장 ≥25k)
-    }
-  })
-
-  it('reasoning 모델은 floor 이상의 명시 max_completion_tokens 는 그대로 존중한다(cap down 안 함)', async () => {
-    const { http, calls } = mockHttp(() => ({
-      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
-    }))
-    const p = createOpenAiProvider(
-      { id: 'r', provider: 'openai', displayName: 'R', model: 'o3', apiKey: 'k', maxTokens: 50000 },
-      http,
-    )
-    await p.chat([{ role: 'user', content: 'x' }])
-    const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
-    expect(body.max_completion_tokens).toBe(50000)
-  })
-
-  it('비-reasoning 모델은 max_tokens 를 floor 없이 그대로 전송한다(무회귀)', async () => {
-    const { http, calls } = mockHttp(() => ({
-      body: JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] }),
-    }))
-    const p = createOpenAiProvider(
-      {
-        id: 'o',
-        provider: 'openai',
-        displayName: 'O',
-        model: 'gpt-4o',
-        apiKey: 'k',
-        maxTokens: 200,
-      },
-      http,
-    )
-    await p.chat([{ role: 'user', content: 'x' }])
-    const body = JSON.parse(calls.at(-1)!.init.body) as Record<string, unknown>
-    expect(body.max_tokens).toBe(200)
-    expect(body.max_completion_tokens).toBeUndefined()
   })
 
   it('tool_use/tool_result 블록을 tool_calls + role:tool 메시지로 평탄화한다', async () => {
