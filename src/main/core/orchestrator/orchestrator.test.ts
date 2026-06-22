@@ -3694,4 +3694,64 @@ describe('runProject', () => {
     expect(vfTarget.length).toBeGreaterThan(0)
     expect(vfTarget).toContain('복원 불가')
   })
+
+  it('[#128-m1] 병렬 worktree 의 승인된 ignored 변경 폐기 시 workspace.ignored_discarded 를 기록한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const base = parallelFakeWorkspace()
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        const wt = await base.addWorktree(taskId, b)
+        return {
+          ...wt,
+          async collectIgnoredChanges(_bl: IgnoredBaseline) {
+            // worktree 에 ignored 변경 존재 → 승인 후 done 이지만 main 통합 안 됨(폐기)
+            return {
+              changes: [{ path: `.env-${taskId}`, change: 'modified' as const, sensitive: true }],
+              unrestorable: [],
+            }
+          },
+        }
+      },
+    }
+
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    const discarded = store
+      .listProjectEvents(result.projectId)
+      .filter((e) => e.type === 'workspace.ignored_discarded')
+    // 두 worktree 작업 모두 ignored 변경 보유 + done → 2건
+    expect(discarded.length).toBe(2)
+    // 경로·종류만 — 내용 비노출(이벤트 data 에 taskId/projectId 만)
+    expect(JSON.stringify(discarded)).not.toContain('.env-')
+  })
 })

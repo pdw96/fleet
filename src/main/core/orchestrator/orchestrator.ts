@@ -182,7 +182,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     ws: Workspace | undefined,
     implementer: import('../session/types').LlmSession | undefined,
     editRoot: string | undefined,
-  ): Promise<string | undefined> => {
+  ): Promise<{ keepHash?: string; ignoredTouched: boolean } | undefined> => {
     // implementer 세션 미존재 가드 — 기존 failed 처리와 동일
     if (!implementer) {
       store.updateTask(task.id, { status: 'failed', output: '구현 역할에 배정된 LLM 없음' })
@@ -247,6 +247,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       let approved = false
       let feedback = ''
       let diff = { files: [] as string[], patch: '', truncated: false }
+      let ignoredTouched = false
       for (let round = 0; round < maxRounds; round++) {
         await implementer.send(
           buildImplementPrompt(goal, task.title, task.description, feedback || undefined),
@@ -270,6 +271,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           data: { taskId: task.id, round },
         })
         if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
+          ignoredTouched = true
           // P2-5: data 에 projectId 를 명시한다 — listProjectEvents(projectId) 가 이 이벤트를
           // 포함하려면 data.projectId 가 필요하다(store 필터: e.data?.projectId === projectId).
           store.appendEvent({
@@ -392,7 +394,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { taskId: task.id },
       })
       done.add(task.id)
-      return keepHash
+      return { keepHash, ignoredTouched }
     } catch (err) {
       // LLM 호출(네트워크/CLI) 실패를 작업 단위로 격리한다 — 한 작업 실패가 전체 실행을 중단시키지 않는다.
       // 부분 편집을 되돌린다. revert/restore 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
@@ -428,8 +430,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // (task.role 은 표시용 라벨로만 보존된다).
   const seqImplementerId = resolveLlmForRole(assignments, 'implementer', 'implementer')
   const seqImplementer = seqImplementerId ? sessions.get(seqImplementerId) : undefined
-  const runTask = (task: Task): Promise<string | undefined> =>
-    // 순차 경로: 편집 cwd 는 메인 워크스페이스(opts.workspaceRoot) — 무회귀.
+  const runTask = (task: Task): ReturnType<typeof runTaskIn> =>
+    // 순차 경로: 편집 cwd 는 메인 워크스페이스(opts.workspaceRoot) — 무회귀. 반환값은 무시한다.
     runTaskIn(task, opts.workspace, seqImplementer, opts.workspaceRoot)
 
   // 위상 스케줄: 의존성이 모두 done 인 작업을 생성 순서대로 실행한다(결정론).
@@ -571,7 +573,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           if (idxR >= 0) pending.splice(idxR, 1)
           continue
         }
-        const keepHash = r.value
+        const value = r.value
+        const keepHash = value?.keepHash
+        const ignoredTouched = value?.ignoredTouched ?? false
         // (P1 #2) 변경 없는(원래-빈) worktree 는 통합을 스킵한다 — 구버전 git 에서 빈 cherry-pick 이
         //   `unknown option`/empty-stop 으로 깨지지 않도록 사전 방어. runTaskIn 이 store 에 기록한
         //   changedFiles 로 판정한다(변경 0 → 통합 불필요, 작업은 이미 done 으로 정직).
@@ -603,6 +607,15 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
               data: { taskId: task.id },
             })
           }
+        }
+        // [#128-m1] 병렬 worktree 의 ignored 변경은 keep(tracked만)→integrate 로 main 에 안 올라가고
+        // worktree 제거 시 폐기된다. task 가 최종 done 이고 ignored 변경이 있었으면 사용자 인지용으로 기록.
+        // (abort-skip·통합충돌은 위에서 done 을 철회하므로 done.has 가 false → 경고 안 남 — 정확.)
+        if (done.has(task.id) && ignoredTouched) {
+          store.appendEvent({
+            type: 'workspace.ignored_discarded',
+            data: { projectId, taskId: task.id },
+          })
         }
         // 정리(순차) — 충돌·취소·실패여도 worktree 잔존 0 보장. 정리 실패는 흡수(P2#3 parity).
         await ws.removeWorktree(task.id).catch(() => {})
