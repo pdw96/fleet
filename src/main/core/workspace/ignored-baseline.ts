@@ -46,7 +46,7 @@ export interface IgnoredEntry {
 }
 export interface IgnoredBaseline {
   entries: Map<string, IgnoredEntry>
-  skipped: { path: string; reason: 'over-cap' | 'read-failed' }[]
+  skipped: { path: string; reason: 'over-cap' | 'read-failed' | 'not-regular' }[]
 }
 
 // git status --ignored 로 in-scope ignored 파일을 열거한다.
@@ -150,7 +150,9 @@ export async function captureIgnoredBaseline(
 ): Promise<IgnoredBaseline> {
   const { files, skipped: enumSkipped } = await listIgnored(root, git, policy)
   const entries = new Map<string, IgnoredEntry>()
-  const skipped: { path: string; reason: 'over-cap' | 'read-failed' }[] = [...enumSkipped]
+  const skipped: { path: string; reason: 'over-cap' | 'read-failed' | 'not-regular' }[] = [
+    ...enumSkipped,
+  ]
   let totalBytes = 0
   try {
     for (const path of files) {
@@ -162,6 +164,12 @@ export async function captureIgnoredBaseline(
       } catch (err) {
         if (sensitive) throw new Error(`민감 ignored 파일 stat 실패: ${path}`, { cause: err })
         skipped.push({ path, reason: 'read-failed' })
+        continue
+      }
+      // [#128-A] non-regular(FIFO/socket/device/dir)면 readFileSync 가 hang/오류 → read 전 차단.
+      if (!st.isFile()) {
+        if (sensitive) throw new Error(`민감 ignored 파일이 일반 파일이 아님(백업 불가): ${path}`)
+        skipped.push({ path, reason: 'not-regular' })
         continue
       }
       if (st.size > policy.maxFileBytes || totalBytes + st.size > policy.maxTotalBytes) {

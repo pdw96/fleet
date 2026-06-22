@@ -98,6 +98,45 @@ describe('captureIgnoredBaseline', () => {
     expect(generalSkipped.length).toBe(1)
   })
 
+  it('[#128-A] non-regular(디렉터리) non-sensitive ignored 파일은 read 없이 not-regular 로 skip', async () => {
+    // git 은 'weird.dat'를 파일처럼 보고하지만 디스크엔 디렉터리 → !isFile()
+    mkdirSync(join(root, 'weird.dat'))
+    const git = fakeGitIgnored(['weird.dat'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    expect(base.entries.has('weird.dat')).toBe(false)
+    expect(base.skipped).toContainEqual({ path: 'weird.dat', reason: 'not-regular' })
+  })
+
+  it('[#128-A] non-regular sensitive ignored 파일은 throw(fail-closed)', async () => {
+    // .env 를 디렉터리로 → sensitive + non-regular → throw
+    mkdirSync(join(root, '.env'))
+    const git = fakeGitIgnored(['.env'])
+    await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+      /일반 파일이 아님/,
+    )
+  })
+
+  it('[#128-A] POSIX FIFO ignored 파일은 hang 없이 not-regular 로 skip', async () => {
+    if (process.platform === 'win32') return // mkfifo 불가
+    execFileSync('mkfifo', [join(root, 'pipe.dat')])
+    const git = fakeGitIgnored(['pipe.dat'])
+    // 가드가 없으면 readFileSync(FIFO) 가 hang — 5초 내 resolve 되어야 한다
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    expect(base.skipped).toContainEqual({ path: 'pipe.dat', reason: 'not-regular' })
+  })
+
+  it('[#128-m3] non-sensitive 일반 파일 read 실패는 read-failed 로 skip(POSIX)', async () => {
+    // 일반 파일(isFile=true)이지만 읽기 권한 0 → readFileSync EACCES → read-failed 분기.
+    if (process.platform === 'win32') return
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return // root 는 권한 무시
+    writeFileSync(join(root, 'noperm.dat'), 'data')
+    chmodSync(join(root, 'noperm.dat'), 0o000)
+    const git = fakeGitIgnored(['noperm.dat'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    expect(base.entries.has('noperm.dat')).toBe(false)
+    expect(base.skipped).toContainEqual({ path: 'noperm.dat', reason: 'read-failed' })
+  })
+
   // [P2-3] git status non-zero → hard failure
   it('[P2-3] git status 실패(non-zero)는 captureIgnoredBaseline 을 reject 시킨다', async () => {
     const failGit: GitRunner = {
