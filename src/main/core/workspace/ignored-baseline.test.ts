@@ -258,6 +258,19 @@ describe('collectIgnoredChanges', () => {
     expect(cs.unrestorable.some((u) => u.path === 'big.cfg')).toBe(true)
   })
 
+  it('[#128-A] baseline 파일이 non-regular(디렉터리)로 교체되면 read 없이 modified, backup 있으면 restorable', async () => {
+    writeFileSync(join(root, 'cfg.dat'), 'orig')
+    const git = fakeGitIgnored(['cfg.dat'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    // 에이전트가 파일을 디렉터리로 교체
+    rmSync(join(root, 'cfg.dat'))
+    mkdirSync(join(root, 'cfg.dat'))
+    const cs = await collectIgnoredChanges(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    expect(cs.changes).toContainEqual({ path: 'cfg.dat', change: 'modified', sensitive: false })
+    // backup 보유 → unrestorable 아님
+    expect(cs.unrestorable.some((u) => u.path === 'cfg.dat')).toBe(false)
+  })
+
   // [P2-4] current-scan over-cap surfaced in collect
   it('[P2-4] 현재 scan 의 over-cap 은 단일 scan-capped escalation 으로 unrestorable 에 포함된다', async () => {
     // empty baseline (no files at baseline time)

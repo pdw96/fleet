@@ -252,15 +252,23 @@ export async function collectIgnoredChanges(
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
     }
-    // [:213] size-guard: 현재 파일이 maxFileBytes 초과 시 read/hash 없이 modified+unrestorable
-    let currentSize: number
+    // [:213] size-guard + [#128-A] non-regular 가드: read 전 stat 으로 종류·크기 확인
+    let st
     try {
-      currentSize = statSync(abs).size
+      st = statSync(abs)
     } catch {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
       unrestorable.push({ path, reason: 'stat-failed' })
       continue
     }
+    if (!st.isFile()) {
+      // baseline 일반 파일이 non-regular 로 교체됨 = modified. read 없이(hang 방지).
+      // backup 있으면 restore 가 비-일반 leaf 제거 후 복원 → unrestorable 아님.
+      changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
+      continue
+    }
+    const currentSize = st.size
     if (currentSize > policy.maxFileBytes) {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
       unrestorable.push({ path, reason: 'over-cap-modified' })
