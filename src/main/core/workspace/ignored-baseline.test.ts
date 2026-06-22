@@ -349,6 +349,21 @@ describe('restoreIgnoredBaseline', () => {
     expect(existsSync(join(root, 'b.txt'))).toBe(true)
   })
 
+  it('[#128-B] 복원 대상 조상 경로가 파일이면 제거 후 디렉터리 체인을 재생성해 복원한다', async () => {
+    // baseline: a/b/c.txt
+    mkdirSync(join(root, 'a', 'b'), { recursive: true })
+    writeFileSync(join(root, 'a', 'b', 'c.txt'), 'ORIG')
+    const git = fakeGitIgnored(['a/b/c.txt'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    // 에이전트가 a/b/c.txt 와 디렉터리를 지우고 'a'를 파일로 만든다 → 조상 충돌
+    rmSync(join(root, 'a'), { recursive: true, force: true })
+    writeFileSync(join(root, 'a'), 'AGENT_FILE')
+    await restoreIgnoredBaseline(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    // a 파일은 제거되고 a/b/c.txt 가 원문으로 복원됨
+    expect(statSync(join(root, 'a')).isDirectory()).toBe(true)
+    expect(readFile(join(root, 'a', 'b', 'c.txt'), 'utf8')).toBe('ORIG')
+  })
+
   // [P1-b] remove non-file path before restoring
   it('[P1-b] 복원 대상 경로가 디렉터리일 경우 제거 후 파일로 복원한다', async () => {
     const envPath = join(root, '.env')

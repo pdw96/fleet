@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
 
@@ -291,6 +291,22 @@ export async function collectIgnoredChanges(
   return { changes, unrestorable }
 }
 
+// [#128-B] 복원 시 mkdirSync(dirname) 이 ENOTDIR 로 깨지지 않도록, root→dirname 사이 조상 중
+// "존재하지만 디렉터리 아님"(에이전트가 만든 파일 등)을 제거한다. 제거 후 하위 조상은 부재하므로
+// mkdirSync(recursive) 가 체인을 재생성한다. resolve(root, …) 기준이라 root 밖은 건드리지 않는다.
+function clearNonDirAncestors(root: string, abs: string): void {
+  const relDir = relative(root, dirname(abs))
+  if (!relDir || relDir.startsWith('..')) return // dirname===root 또는 root 밖 → no-op
+  let cur = root
+  for (const part of relDir.split(/[\\/]/).filter(Boolean)) {
+    cur = resolve(cur, part)
+    if (existsSync(cur) && !statSync(cur).isDirectory()) {
+      rmSync(cur, { recursive: true, force: true })
+      return
+    }
+  }
+}
+
 export async function restoreIgnoredBaseline(
   root: string,
   git: GitRunner,
@@ -315,6 +331,7 @@ export async function restoreIgnoredBaseline(
   for (const [path, entry] of baseline.entries) {
     if (entry.backup === null) continue // unrestorable — 복원 불가
     const abs = resolve(root, path)
+    clearNonDirAncestors(root, abs) // [#128-B] 조상-파일 충돌 정리
     mkdirSync(dirname(abs), { recursive: true })
     // [P1-b] if existing path is not a regular file (e.g. directory), remove it first
     if (existsSync(abs)) {
