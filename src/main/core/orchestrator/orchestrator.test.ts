@@ -3058,6 +3058,7 @@ describe('runProject', () => {
                 hash: 'abc',
                 sensitive: true,
                 backup: backupBuf,
+                mode: 0o644,
               },
             ],
           ])

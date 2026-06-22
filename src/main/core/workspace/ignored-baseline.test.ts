@@ -1,11 +1,13 @@
 // src/main/core/workspace/ignored-baseline.test.ts
 import { execFileSync } from 'node:child_process'
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync as readFile,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -94,6 +96,52 @@ describe('captureIgnoredBaseline', () => {
     expect(generalEntries.length).toBe(1)
     expect(generalSkipped.length).toBe(1)
   })
+
+  // [P2-3] git status non-zero → hard failure
+  it('[P2-3] git status 실패(non-zero)는 captureIgnoredBaseline 을 reject 시킨다', async () => {
+    const failGit: GitRunner = {
+      async run() {
+        return { code: 1, stdout: '', stderr: 'fatal: not a git repo' }
+      },
+    }
+    await expect(captureIgnoredBaseline(root, failGit, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+      'git status',
+    )
+  })
+
+  // [P2-6] sensitive file inside a denylisted dir IS captured
+  it('[P2-6] denylist 트리 내 민감 파일(node_modules/.ssh/id_rsa)은 캡처된다', async () => {
+    mkdirSync(join(root, 'node_modules', '.ssh'), { recursive: true })
+    writeFileSync(join(root, 'node_modules', '.ssh', 'id_rsa'), 'PRIVATE')
+    writeFileSync(join(root, 'node_modules', 'x.js'), 'big')
+    const git = fakeGitIgnored(['node_modules/'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    // id_rsa 는 SENSITIVE_FILE 패턴에 매칭 → entries 에 있어야 함
+    const key = 'node_modules/.ssh/id_rsa'
+    expect(base.entries.has(key)).toBe(true)
+    expect(base.entries.get(key)!.sensitive).toBe(true)
+    // x.js 는 non-sensitive AND denylisted → entries 에 없어야 함
+    expect(base.entries.has('node_modules/x.js')).toBe(false)
+  })
+
+  // [P2-8] maxEntries bounded walk
+  it('[P2-8] maxEntries 초과 시 walk 를 중단하고 over-cap 을 기록한다', async () => {
+    // 3개 파일 생성, maxEntries=2 → 3번째에서 cap
+    writeFileSync(join(root, 'a.txt'), 'aaa')
+    writeFileSync(join(root, 'b.txt'), 'bbb')
+    writeFileSync(join(root, 'c.txt'), 'ccc')
+    // 트리를 walk 하도록 dir 형태로 emit 하면 실제론 파일이므로 statSync isDir=false → pushFile
+    // 대신 subdirectory walk 를 유도하기 위해 real dir 구조를 씀
+    mkdirSync(join(root, 'subdir'), { recursive: true })
+    writeFileSync(join(root, 'subdir', 'f1.dat'), '1')
+    writeFileSync(join(root, 'subdir', 'f2.dat'), '2')
+    writeFileSync(join(root, 'subdir', 'f3.dat'), '3')
+    const git2 = fakeGitIgnored(['subdir/'])
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxEntries: 2 }
+    const base = await captureIgnoredBaseline(root, git2, policy)
+    // examined > maxEntries 에 걸려서 skipped 에 over-cap 항목이 있어야 함
+    expect(base.skipped.some((s) => s.reason === 'over-cap')).toBe(true)
+  })
 })
 
 describe('collectIgnoredChanges', () => {
@@ -122,6 +170,24 @@ describe('collectIgnoredChanges', () => {
     const cs = await collectIgnoredChanges(root, git, baseline, policy)
     expect(cs.unrestorable).toContainEqual({ path: 'big.dat', reason: 'over-cap' })
   })
+
+  // [P2-4] current-scan over-cap surfaced in collect
+  it('[P2-4] 현재 scan 의 over-cap 파일도 unrestorable 에 포함된다', async () => {
+    // empty baseline (no files at baseline time)
+    const emptyGit = fakeGitIgnored([])
+    const baseline = await captureIgnoredBaseline(root, emptyGit, DEFAULT_IGNORED_POLICY)
+
+    // now 3 general files exist, maxFiles=1 → 2 get over-cap during current scan
+    writeFileSync(join(root, 'a.txt'), 'aaa')
+    writeFileSync(join(root, 'b.txt'), 'bbb')
+    writeFileSync(join(root, 'c.txt'), 'ccc')
+    const curGit = fakeGitIgnored(['a.txt', 'b.txt', 'c.txt'])
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+    const cs = await collectIgnoredChanges(root, curGit, baseline, policy)
+    // 2 files over-cap in current scan should appear in unrestorable
+    const overCapPaths = cs.unrestorable.filter((u) => u.reason === 'over-cap').map((u) => u.path)
+    expect(overCapPaths.length).toBe(2)
+  })
 })
 
 describe('restoreIgnoredBaseline', () => {
@@ -140,6 +206,46 @@ describe('restoreIgnoredBaseline', () => {
     expect(readFile(join(root, '.env')).toString()).toBe('A=1') // 원복
     expect(readFile(join(root, 'keep.key')).toString()).toBe('orig') // 복구
     expect(existsSync(join(root, 'new.pem'))).toBe(false) // 제거
+  })
+
+  // [P1-a] file mode preservation
+  it('[P1-a] 복원 시 원본 파일 모드(0o600)가 보존된다', async () => {
+    if (process.platform === 'win32') return // chmod semantics differ on Windows
+    const envPath = join(root, '.env')
+    writeFileSync(envPath, 'SECRET=1')
+    chmodSync(envPath, 0o600)
+    const git = fakeGitIgnored(['.env'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+
+    // delete file
+    rmSync(envPath)
+    const curGit = fakeGitIgnored([])
+    await restoreIgnoredBaseline(root, curGit, baseline, DEFAULT_IGNORED_POLICY)
+
+    expect(existsSync(envPath)).toBe(true)
+    const restoredMode = statSync(envPath).mode & 0o777
+    expect(restoredMode).toBe(0o600)
+  })
+
+  // [P1-b] remove non-file path before restoring
+  it('[P1-b] 복원 대상 경로가 디렉터리일 경우 제거 후 파일로 복원한다', async () => {
+    const envPath = join(root, '.env')
+    writeFileSync(envPath, 'ORIGINAL')
+    const git = fakeGitIgnored(['.env'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+
+    // replace file with directory
+    rmSync(envPath)
+    mkdirSync(envPath)
+    writeFileSync(join(envPath, 'impostor.txt'), 'bad')
+
+    const curGit = fakeGitIgnored([])
+    await restoreIgnoredBaseline(root, curGit, baseline, DEFAULT_IGNORED_POLICY)
+
+    // .env must be a regular file with baseline content
+    const st = statSync(envPath)
+    expect(st.isFile()).toBe(true)
+    expect(readFile(envPath).toString()).toBe('ORIGINAL')
   })
 })
 

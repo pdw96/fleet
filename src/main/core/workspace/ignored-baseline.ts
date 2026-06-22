@@ -1,6 +1,7 @@
 // src/main/core/workspace/ignored-baseline.ts
 import { createHash } from 'node:crypto'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -19,6 +20,7 @@ export interface ScanPolicy {
   maxFiles: number
   maxTotalBytes: number
   maxFileBytes: number
+  maxEntries: number
 }
 
 export const DEFAULT_IGNORED_POLICY: ScanPolicy = {
@@ -28,6 +30,7 @@ export const DEFAULT_IGNORED_POLICY: ScanPolicy = {
   maxFiles: 1000,
   maxTotalBytes: 32 * 1024 * 1024,
   maxFileBytes: 4 * 1024 * 1024,
+  maxEntries: 50_000,
 }
 
 export interface IgnoredEntry {
@@ -37,6 +40,7 @@ export interface IgnoredEntry {
   hash: string
   sensitive: boolean
   backup: Buffer | null
+  mode: number
 }
 export interface IgnoredBaseline {
   entries: Map<string, IgnoredEntry>
@@ -44,23 +48,26 @@ export interface IgnoredBaseline {
 }
 
 // git status --ignored 로 in-scope ignored 파일을 열거한다.
-// 디렉터리(`!! dir/`)는 denylist 우선 검사 후 fs 재귀; sensitive 는 항상 포함, 그 외는 denylist·maxFiles 적용.
+// 디렉터리(`!! dir/`)는 denylist 를 walk INTO 하여 민감 파일을 찾는다; sensitive 는 항상 포함, 그 외는 denylist·maxFiles 적용.
 async function listIgnored(
   root: string,
   git: GitRunner,
   policy: ScanPolicy,
 ): Promise<{ files: string[]; skipped: { path: string; reason: 'over-cap' }[] }> {
   const r = await git.run(['status', '--ignored', '--porcelain=v1', '-z'], root)
-  const records = r.code === 0 ? r.stdout.split('\0').filter(Boolean) : []
+  // [P2-3] git status 실패는 hard-fail
+  if (r.code !== 0) throw new Error('git status --ignored 실패: ' + r.stderr.trim())
+  const records = r.stdout.split('\0').filter(Boolean)
   const ignored = records.filter((rec) => rec.startsWith('!! ')).map((rec) => rec.slice(3))
   const files: string[] = []
   const skipped: { path: string; reason: 'over-cap' }[] = []
   let generalCount = 0
-  const inScope = (rel: string): boolean =>
-    policy.sensitiveRe.test(rel) || !policy.denylistRe.test(rel)
+  let examined = 0
+  const maxEntries = policy.maxEntries
+  // [P2-6+P2-8] pushFile: sensitive → always push; non-sensitive AND denylisted → skip; non-sensitive AND not-denylisted → generalCount cap
   const pushFile = (rel: string): void => {
     const key = rel.replace(/\\/g, '/')
-    if (!inScope(key)) return
+    if (!policy.sensitiveRe.test(key) && policy.denylistRe.test(key)) return
     if (!policy.sensitiveRe.test(key)) {
       if (generalCount >= policy.maxFiles) {
         skipped.push({ path: key, reason: 'over-cap' })
@@ -70,7 +77,9 @@ async function listIgnored(
     }
     files.push(key)
   }
+  let capped = false
   const walk = (relDir: string): void => {
+    if (capped) return
     let names: string[]
     try {
       names = readdirSync(resolve(root, relDir))
@@ -78,8 +87,14 @@ async function listIgnored(
       return
     }
     for (const name of names) {
+      if (capped) return
+      examined++
+      if (examined > maxEntries) {
+        capped = true
+        skipped.push({ path: relDir, reason: 'over-cap' })
+        return
+      }
       const rel = `${relDir}/${name}`
-      if (!inScope(rel)) continue
       let st
       try {
         st = statSync(resolve(root, rel))
@@ -95,7 +110,7 @@ async function listIgnored(
     const rel = e.replace(/\\/g, '/')
     if (rel.endsWith('/')) {
       const dir = rel.replace(/\/+$/, '')
-      if (policy.denylistRe.test(`${dir}/`)) continue
+      // [P2-6] DO NOT skip denylisted dirs — walk them to find sensitive files inside
       walk(dir)
     } else {
       pushFile(rel)
@@ -145,6 +160,8 @@ export async function captureIgnoredBaseline(
       hash: createHash('sha256').update(buf).digest('hex'),
       sensitive,
       backup: buf,
+      // [P1-a] capture file mode for restoration
+      mode: st.mode,
     })
   }
   return { entries, skipped }
@@ -166,10 +183,19 @@ export async function collectIgnoredChanges(
   baseline: IgnoredBaseline,
   policy: ScanPolicy,
 ): Promise<IgnoredChangeSet> {
-  const { files } = await listIgnored(root, git, policy)
+  // [P2-4] capture current-scan skipped too
+  const { files, skipped: currentSkipped } = await listIgnored(root, git, policy)
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
   const changes: IgnoredChange[] = []
+  // [P2-4] merge baseline.skipped + currentSkipped, deduplicate by path
+  const seenUnrestorable = new Set(baseline.skipped.map((s) => s.path))
   const unrestorable: { path: string; reason: string }[] = [...baseline.skipped]
+  for (const s of currentSkipped) {
+    if (!seenUnrestorable.has(s.path)) {
+      seenUnrestorable.add(s.path)
+      unrestorable.push(s)
+    }
+  }
 
   // created: 현재 in-scope ignored 인데 baseline 에도 skipped 에도 없음.
   for (const path of files) {
@@ -179,10 +205,6 @@ export async function collectIgnoredChanges(
   // modified / deleted: baseline 엔트리 기준.
   for (const [path, entry] of baseline.entries) {
     const abs = resolve(root, path)
-    // deleted 판정은 fs 존재 여부만으로 한다(!existsSync 단독).
-    // restore が関心을 갖는 것은 파일의 내용/존재이지 git의 ignored 목록 포함 여부가 아니다.
-    // `|| !current.has(path)` 를 추가하면 디스크에 실재하지만 더 이상 ignored 가 아닌 파일을
-    // spurious 'deleted' 로 오보고하게 되므로 의도적으로 제외한다.
     if (!existsSync(abs)) {
       changes.push({ path, change: 'deleted', sensitive: entry.sensitive })
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
@@ -209,14 +231,23 @@ export async function restoreIgnoredBaseline(
   // 1) created(현재 in-scope, baseline·skipped 둘 다 없음) → 삭제.
   for (const path of files) {
     if (baseline.entries.has(path) || skippedPaths.has(path)) continue
-    rmSync(resolve(root, path), { force: true })
+    rmSync(resolve(root, path), { recursive: true, force: true })
   }
   // 2) backup 보유 엔트리 → 백업에서 복원(modified·deleted 모두 포함).
   for (const [path, entry] of baseline.entries) {
     if (entry.backup === null) continue // unrestorable — 복원 불가
     const abs = resolve(root, path)
     mkdirSync(dirname(abs), { recursive: true })
+    // [P1-b] if existing path is not a regular file (e.g. directory), remove it first
+    if (existsSync(abs)) {
+      const st = statSync(abs)
+      if (!st.isFile()) {
+        rmSync(abs, { recursive: true, force: true })
+      }
+    }
     writeFileSync(abs, entry.backup)
+    // [P1-a] restore original file mode
+    chmodSync(abs, entry.mode)
   }
 }
 
