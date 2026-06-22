@@ -10,8 +10,10 @@ import type { ApprovalGate } from '../safety/approval'
 import type { SessionManager } from '../session/manager'
 import type { Store } from '../store/types'
 import type { TaskWorktree, Workspace } from '../workspace/git'
+import { disposeBaseline, type IgnoredBaseline } from '../workspace/ignored-baseline'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
+import { rollbackWithIgnored } from './ignored-guard'
 import { planCorrectiveTasks, planTasks, type PlannedTask } from './plan'
 import {
   buildImplementPrompt,
@@ -237,6 +239,26 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
     const base = await ws.checkpoint()
     store.updateTask(task.id, { checkpoint: base })
+    // captureIgnoredBaseline 실패(민감 파일 백업 불가) = hard-stop. capture 성공 시 baseline 을 보유한다.
+    let ignoredBaseline: IgnoredBaseline | null
+    try {
+      ignoredBaseline = await ws.captureIgnoredBaseline()
+    } catch (err) {
+      // 민감 ignored 백업 실패 = hard-stop. tracked 변경 없음이므로 revert 만.
+      const note = await rollbackWithIgnored(ws, base, null)
+      store.updateTask(task.id, {
+        status: 'failed',
+        output: `민감 ignored 백업 실패: ${err instanceof Error ? err.message : String(err)}${note}`,
+      })
+      store.appendEvent({ type: 'task.failed', data: { taskId: task.id } })
+      emit({
+        type: 'task.failed',
+        message: `${task.title}: 민감 ignored 백업 실패`,
+        data: { taskId: task.id },
+      })
+      failed.add(task.id)
+      return undefined
+    }
     try {
       let approved = false
       let feedback = ''
@@ -256,15 +278,30 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           },
         )
         diff = await ws.collectDiff(base)
+        const ignoredChanges = await ws.collectIgnoredChanges(ignoredBaseline)
         store.updateTask(task.id, { status: 'review', changedFiles: diff.files })
         emit({
           type: 'task.implemented',
           message: `구현 완료 (라운드 ${round + 1}, 변경 ${diff.files.length}개)`,
           data: { taskId: task.id, round },
         })
+        if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
+          store.appendEvent({
+            type: 'workspace.ignored_changes',
+            data: {
+              taskId: task.id,
+              changes: ignoredChanges.changes.map((c) => ({
+                path: c.path,
+                change: c.change,
+                sensitive: c.sensitive,
+              })),
+              unrestorable: ignoredChanges.unrestorable.map((u) => u.path),
+            },
+          })
+        }
 
         // #5: 민감/위험 diff 는 리뷰어(외부 API 가능)에게 보내기 전에 승인 게이트를 거친다(비밀 유출 방지).
-        const dr = classifyDiffRisk(diff)
+        const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
           const decision = opts.gate
             ? await opts.gate.request({
@@ -275,10 +312,10 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
               })
             : 'rejected'
           if (decision !== 'approved') {
-            await ws.revert(base)
+            const note = await rollbackWithIgnored(ws, base, ignoredBaseline)
             store.updateTask(task.id, {
               status: 'failed',
-              output: `위험 변경 미승인: ${dr.reasons.join('; ')}`,
+              output: `위험 변경 미승인: ${dr.reasons.join('; ')}${note}`,
               changedFiles: [],
             })
             emit({
@@ -314,14 +351,14 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           break
         }
         feedback = verdict.feedback
-        await ws.revert(base) // 거절된 시도는 되돌리고 다음 라운드 재시도
+        await rollbackWithIgnored(ws, base, ignoredBaseline) // 거절된 시도는 되돌리고 다음 라운드 재시도
       }
 
       if (!approved) {
-        await ws.revert(base)
+        const note = await rollbackWithIgnored(ws, base, ignoredBaseline)
         store.updateTask(task.id, {
           status: 'failed',
-          output: '미승인(재검토 한도 초과)',
+          output: `미승인(재검토 한도 초과)${note}`,
           changedFiles: [],
         })
         emit({
@@ -349,8 +386,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       return keepHash
     } catch (err) {
       // LLM 호출(네트워크/CLI) 실패를 작업 단위로 격리한다 — 한 작업 실패가 전체 실행을 중단시키지 않는다.
-      // 부분 편집을 되돌린다. revert 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
-      const revertNote = await revertSafely(ws, base)
+      // 부분 편집을 되돌린다. revert/restore 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
+      const revertNote = await rollbackWithIgnored(ws, base, ignoredBaseline)
       // 취소(abort)로 인한 중단은 '실행 오류'가 아니다 — 취소(skipped)로 정확히 라벨한다
       // (pending 취소 경로의 '실행 취소됨'·task.skipped 와 동일 컨벤션). failed 집계에도 넣지 않는다.
       if (opts.signal?.aborted) {
@@ -371,6 +408,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       })
       failed.add(task.id)
       return undefined
+    } finally {
+      if (ignoredBaseline) disposeBaseline(ignoredBaseline)
     }
   }
 
