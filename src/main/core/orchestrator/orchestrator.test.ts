@@ -3186,6 +3186,285 @@ describe('runProject', () => {
     expect(store.listEvents().some((e) => e.type === 'workspace.ignored_changes')).toBe(true)
   })
 
+  // ── #123-A: Codex PR 리뷰 반영 (P2-1, P2-2, P2-5) ──
+
+  // P2-1: ignored-only destructive 에서 gate target 이 ignored 경로·종류를 포함한다
+  it('P2-1: ignored-only destructive → gate target 은 ignored 경로·종류 포함, 내용 미노출', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // diff.files 는 비어 있고, ignored 변경만 destructive 를 유발한다.
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace([{ files: [], patch: '', truncated: false }], { collectResult })
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return 'rejected'
+        },
+      },
+    })
+
+    expect(gateRequests.length).toBeGreaterThan(0)
+    const target = gateRequests[0].target ?? ''
+    // ignored 경로(.env)와 종류(modified)가 target 에 포함돼야 한다
+    expect(target).toContain('.env')
+    expect(target).toContain('modified')
+    // 파일 내용은 노출하지 않는다
+    expect(target).not.toContain('+secret')
+    expect(target).not.toContain('KEY=')
+  })
+
+  // P2-1: verify-fix 경로도 ignored-only destructive 시 gate target 에 ignored 정보 포함
+  it('P2-1(verify-fix): ignored-only destructive → verify-fix gate target 은 ignored 경로·종류 포함', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 작업 경로는 tracked 변경(안전), verify-fix 에서 ignored-only destructive
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: 'secrets/key.pem', change: 'created', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로 diff(안전)
+        { files: [], patch: '', truncated: false }, // verify-fix diff — ignored-only
+      ],
+      { collectResult },
+    )
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          // 첫 번째(작업 경로)는 승인, 두 번째(verify-fix)는 거부
+          return gateRequests.length === 1 ? 'approved' : 'rejected'
+        },
+      },
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // verify-fix gate 요청(두 번째)에 ignored 경로·종류 포함
+    expect(gateRequests.length).toBeGreaterThanOrEqual(2)
+    const vfTarget = gateRequests[1].target ?? ''
+    expect(vfTarget).toContain('key.pem')
+    expect(vfTarget).toContain('created')
+  })
+
+  // P2-2: reviewer 거절 후 rollback 실패 → 재시도 안 함, task failed, rollback note 표면화
+  it('P2-2: reviewer 거절 + rollback 실패 → task failed, implementer 재호출 없음', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    // 리뷰어는 항상 거절
+    sessions.add(fakeSession('rev', () => 'REVISE: 다시'))
+
+    // revert 가 throw 해 rollbackWithIgnored 가 non-empty note 를 반환하도록 한다
+    const ws: Workspace = {
+      async ensureRepo() {},
+      async checkpoint() {
+        return 'base'
+      },
+      async collectDiff(): Promise<DiffResult> {
+        return { files: ['src/a.ts'], patch: '+a', truncated: false }
+      },
+      async keep() {
+        return 'commit'
+      },
+      async revert() {
+        throw new Error('git reset hard 실패')
+      },
+      async addWorktree() {
+        throw new Error('addWorktree stub')
+      },
+      async integrate() {
+        return { ok: true }
+      },
+      async removeWorktree() {},
+      async captureIgnoredBaseline() {
+        return { entries: new Map(), skipped: [] }
+      },
+      async collectIgnoredChanges() {
+        return { changes: [], unrestorable: [] }
+      },
+      async restoreIgnoredBaseline() {},
+    }
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 3, // 재시도 여지를 주되, rollback 실패 시 즉시 중단해야 한다
+    })
+
+    // rollback 실패 → task 는 즉시 failed, 재시도 없음
+    expect(result.tasks[0].status).toBe('failed')
+    // rollback 실패 노트가 output 에 포함돼야 한다
+    expect(result.tasks[0].output).toContain('되돌리기 실패')
+    // implementer 가 1회 이상 호출됐지만, rollback 실패 후 재시도(2회 이상)는 하지 않는다
+    expect(implCalls).toBe(1)
+  })
+
+  // P2-5: workspace.ignored_changes 이벤트가 emit 을 통해 projectId 를 갖는다
+  it('P2-5: workspace.ignored_changes 이벤트는 listProjectEvents 에 포함된다(projectId 부착)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // non-empty ignored changes → workspace.ignored_changes 이벤트 방출
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    // diff.files 가 있어야 gate 승인 후 done 으로 진행
+    const ws = fakeWorkspace([{ files: ['src/a.ts'], patch: '+a', truncated: false }], {
+      collectResult,
+    })
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request() {
+          return 'approved' // destructive diff 승인
+        },
+      },
+    })
+
+    // listProjectEvents 는 data.projectId 로 필터링 → ignored_changes 이벤트가 포함돼야 한다
+    const projectEvents = store.listProjectEvents(result.projectId)
+    const ignoredEvt = projectEvents.find((e) => e.type === 'workspace.ignored_changes')
+    expect(ignoredEvt).toBeDefined()
+    expect(ignoredEvt?.data['projectId']).toBe(result.projectId)
+  })
+
+  // P2-5: verify-fix 경로의 workspace.ignored_changes 이벤트도 listProjectEvents 에 포함
+  it('P2-5(verify-fix): verify-fix ignored_changes 이벤트도 listProjectEvents 에 포함된다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로
+        { files: ['src/b.ts'], patch: '+b', truncated: false }, // verify-fix 경로
+      ],
+      { collectResult },
+    )
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    const projectEvents = store.listProjectEvents(result.projectId)
+    const ignoredEvts = projectEvents.filter((e) => e.type === 'workspace.ignored_changes')
+    // 작업 경로 + verify-fix 경로에서 각각 방출, 모두 projectId 부착
+    expect(ignoredEvts.length).toBeGreaterThanOrEqual(2)
+    expect(ignoredEvts.every((e) => e.data['projectId'] === result.projectId)).toBe(true)
+  })
+
   it('verify-fix capture-fail: captureIgnoredBaseline 실패 → break + verify.fixing 이벤트(민감 백업 실패)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

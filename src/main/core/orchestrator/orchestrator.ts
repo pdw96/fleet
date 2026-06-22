@@ -270,9 +270,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           data: { taskId: task.id, round },
         })
         if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
+          // P2-5: data 에 projectId 를 명시한다 — listProjectEvents(projectId) 가 이 이벤트를
+          // 포함하려면 data.projectId 가 필요하다(store 필터: e.data?.projectId === projectId).
           store.appendEvent({
             type: 'workspace.ignored_changes',
             data: {
+              projectId,
               taskId: task.id,
               changes: ignoredChanges.changes.map((c) => ({
                 path: c.path,
@@ -287,11 +290,20 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         // #5: 민감/위험 diff 는 리뷰어(외부 API 가능)에게 보내기 전에 승인 게이트를 거친다(비밀 유출 방지).
         const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
+          // P2-1: diff.files 가 비어 있으면(ignored-only destructive) target 이 공백이 된다.
+          // 승인자가 어떤 ignored 경로·종류를 승인하는지 알 수 있도록 sanitized reasons 를 포함한다
+          // (경로·변경종류만, 내용·hash 없음).
+          const trackedTarget = diff.files.join(', ')
+          const gateTarget =
+            trackedTarget.length > 0
+              ? trackedTarget
+              : dr.reasons.filter((r) => !r.startsWith('복원 불가')).join('; ') ||
+                dr.reasons.join('; ')
           const decision = opts.gate
             ? await opts.gate.request({
                 kind: 'apply-diff',
                 summary: `${task.title} 변경 적용`,
-                target: diff.files.join(', '),
+                target: gateTarget,
                 risk: 'destructive',
               })
             : 'rejected'
@@ -335,7 +347,23 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           break
         }
         feedback = verdict.feedback
-        await rollbackWithIgnored(ws, base, ignoredBaseline) // 거절된 시도는 되돌리고 다음 라운드 재시도
+        // P2-2: rollback 실패(dirty-tree) 시 재시도하면 오염된 트리에서 다음 라운드가 시작된다.
+        // non-empty note = rollback 실패 → 즉시 task failed + 루프 탈출(재시도 중단).
+        const rejectRollbackNote = await rollbackWithIgnored(ws, base, ignoredBaseline)
+        if (rejectRollbackNote) {
+          store.updateTask(task.id, {
+            status: 'failed',
+            output: `리뷰 거절 후 되돌리기 실패: ${rejectRollbackNote}`,
+            changedFiles: [],
+          })
+          emit({
+            type: 'task.failed',
+            message: `${task.title}: 리뷰 거절 후 되돌리기 실패`,
+            data: { taskId: task.id },
+          })
+          failed.add(task.id)
+          return undefined
+        }
       }
 
       if (!approved) {
@@ -751,9 +779,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         const diff = await opts.workspace.collectDiff(base)
         const ignoredChanges = await opts.workspace.collectIgnoredChanges(vfBaseline)
         if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
+          // P2-5: data 에 projectId 를 명시한다 — runTaskIn 경로와 동일하게 listProjectEvents 필터를 통과하도록.
           store.appendEvent({
             type: 'workspace.ignored_changes',
             data: {
+              projectId,
               round,
               changes: ignoredChanges.changes.map((c) => ({
                 path: c.path,
@@ -766,11 +796,19 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         }
         const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
+          // P2-1: ignored-only destructive 시 diff.files 가 비어 gate target 이 공백이 되지 않도록
+          // sanitized reasons 를 포함한다(경로·종류만, 내용 없음).
+          const trackedTarget = diff.files.join(', ')
+          const vfGateTarget =
+            trackedTarget.length > 0
+              ? trackedTarget
+              : dr.reasons.filter((r) => !r.startsWith('복원 불가')).join('; ') ||
+                dr.reasons.join('; ')
           const decision = opts.gate
             ? await opts.gate.request({
                 kind: 'apply-diff',
                 summary: `verify-fix r${round} 변경 적용`,
-                target: diff.files.join(', '),
+                target: vfGateTarget,
                 risk: 'destructive',
               })
             : 'rejected'
