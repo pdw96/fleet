@@ -47,14 +47,18 @@ async function listIgnored(
   const ignored = records.filter((rec) => rec.startsWith('!! ')).map((rec) => rec.slice(3))
   const files: string[] = []
   const skipped: { path: string; reason: 'over-cap' }[] = []
+  let generalCount = 0
   const inScope = (rel: string): boolean =>
     policy.sensitiveRe.test(rel) || !policy.denylistRe.test(rel)
   const pushFile = (rel: string): void => {
     const key = rel.replace(/\\/g, '/')
     if (!inScope(key)) return
-    if (!policy.sensitiveRe.test(key) && files.length >= policy.maxFiles) {
-      skipped.push({ path: key, reason: 'over-cap' })
-      return
+    if (!policy.sensitiveRe.test(key)) {
+      if (generalCount >= policy.maxFiles) {
+        skipped.push({ path: key, reason: 'over-cap' })
+        return
+      }
+      generalCount++
     }
     files.push(key)
   }
@@ -72,6 +76,7 @@ async function listIgnored(
       try {
         st = statSync(resolve(root, rel))
       } catch {
+        if (policy.sensitiveRe.test(rel)) pushFile(rel)
         continue
       }
       if (st.isDirectory()) walk(rel)
@@ -119,8 +124,8 @@ export async function captureIgnoredBaseline(
     let buf: Buffer
     try {
       buf = readFileSync(abs)
-    } catch {
-      if (sensitive) throw new Error(`민감 ignored 파일 백업 실패: ${path}`)
+    } catch (err) {
+      if (sensitive) throw new Error(`민감 ignored 파일 백업 실패: ${path}`, { cause: err })
       skipped.push({ path, reason: 'read-failed' })
       continue
     }

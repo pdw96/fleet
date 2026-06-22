@@ -60,4 +60,24 @@ describe('captureIgnoredBaseline', () => {
     expect(base.entries.has('big.dat')).toBe(false)
     expect(base.skipped).toContainEqual({ path: 'big.dat', reason: 'over-cap' })
   })
+
+  it('sensitive 파일은 maxFiles 일반 예산을 잠식하지 않는다', async () => {
+    // sensitive 1개(.env) + 일반 2개(a.txt, b.txt), maxFiles=1
+    // 기대: .env 는 항상 캡처, a.txt·b.txt 중 1개만 캡처·나머지는 skipped(over-cap)
+    writeFileSync(join(root, '.env'), 'SECRET=1')
+    writeFileSync(join(root, 'a.txt'), 'aaa')
+    writeFileSync(join(root, 'b.txt'), 'bbb')
+    const git = fakeGitIgnored(['.env', 'a.txt', 'b.txt'])
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+    const base = await captureIgnoredBaseline(root, git, policy)
+    // sensitive 는 항상 entries 에 존재
+    expect(base.entries.has('.env')).toBe(true)
+    expect(base.entries.get('.env')!.sensitive).toBe(true)
+    // 일반 파일 총합: entries 1개 + skipped(over-cap) 1개 = 2개
+    const generalEntries = [...base.entries.keys()].filter((k) => k !== '.env')
+    const generalSkipped = base.skipped.filter((s) => s.reason === 'over-cap')
+    expect(generalEntries.length + generalSkipped.length).toBe(2)
+    expect(generalEntries.length).toBe(1)
+    expect(generalSkipped.length).toBe(1)
+  })
 })
