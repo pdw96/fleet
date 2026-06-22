@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { IgnoredBaseline } from '../workspace/ignored-baseline'
 import { rollbackWithIgnored } from './ignored-guard'
 
 describe('rollbackWithIgnored', () => {
@@ -10,9 +11,13 @@ describe('rollbackWithIgnored', () => {
       }),
       restoreIgnoredBaseline: vi.fn(async () => {
         order.push('restore')
+        return { capped: false }
       }),
     }
-    const note = await rollbackWithIgnored(ws, 'base', { entries: new Map(), skipped: [] } as never)
+    const { note } = await rollbackWithIgnored(ws, 'base', {
+      entries: new Map(),
+      skipped: [],
+    } as never)
     expect(order).toEqual(['revert', 'restore'])
     expect(note).toBe('')
   })
@@ -25,16 +30,83 @@ describe('rollbackWithIgnored', () => {
         throw new Error('restore boom')
       }),
     }
-    const note = await rollbackWithIgnored(ws, 'base', { entries: new Map(), skipped: [] } as never)
+    const { note } = await rollbackWithIgnored(ws, 'base', {
+      entries: new Map(),
+      skipped: [],
+    } as never)
     expect(note).toContain('revert boom')
     expect(note).toContain('되돌리기 실패')
     expect(note).toContain('restore boom')
     expect(note).toContain('ignored 복원 실패')
   })
   it('skips ignored restore when baseline is null (still reverts tracked)', async () => {
-    const ws = { revert: vi.fn(async () => {}), restoreIgnoredBaseline: vi.fn(async () => {}) }
+    const ws = {
+      revert: vi.fn(async () => {}),
+      restoreIgnoredBaseline: vi.fn(async () => ({ capped: false })),
+    }
     await rollbackWithIgnored(ws, 'base', null)
     expect(ws.revert).toHaveBeenCalled()
     expect(ws.restoreIgnoredBaseline).not.toHaveBeenCalled()
+  })
+  it('[#128-m2] restore 가 capped 면 rollback 노트에 스캔 상한 경고를 누적한다', async () => {
+    const ws = {
+      async revert() {},
+      async restoreIgnoredBaseline() {
+        return { capped: true }
+      },
+    }
+    const baseline: IgnoredBaseline = { entries: new Map(), skipped: [] }
+    const { note } = await rollbackWithIgnored(ws, 'base', baseline)
+    expect(note).toContain('스캔 상한 도달')
+  })
+  it('[Codex-rerev] capped 만 발생하면 failed=false, note 에 상한 포함', async () => {
+    const ws = {
+      async revert() {},
+      async restoreIgnoredBaseline() {
+        return { capped: true }
+      },
+    }
+    const baseline: IgnoredBaseline = { entries: new Map(), skipped: [] }
+    const result = await rollbackWithIgnored(ws, 'base', baseline)
+    expect(result.failed).toBe(false)
+    expect(result.note).toContain('상한')
+  })
+  it('[Codex-rerev] restoreIgnoredBaseline 이 throw 하면 failed=true', async () => {
+    const ws = {
+      async revert() {},
+      async restoreIgnoredBaseline(): Promise<{ capped: boolean }> {
+        throw new Error('restore boom')
+      },
+    }
+    const baseline: IgnoredBaseline = { entries: new Map(), skipped: [] }
+    const result = await rollbackWithIgnored(ws, 'base', baseline)
+    expect(result.failed).toBe(true)
+    expect(result.note).toContain('복원 실패')
+  })
+  it('[Codex-rerev] revert 가 throw 하면 failed=true', async () => {
+    const ws = {
+      async revert(): Promise<void> {
+        throw new Error('revert boom')
+      },
+      async restoreIgnoredBaseline() {
+        return { capped: false }
+      },
+    }
+    const baseline: IgnoredBaseline = { entries: new Map(), skipped: [] }
+    const result = await rollbackWithIgnored(ws, 'base', baseline)
+    expect(result.failed).toBe(true)
+    expect(result.note).toContain('되돌리기 실패')
+  })
+  it('[Codex-rerev] 모두 성공이면 failed=false, note 빈 문자열', async () => {
+    const ws = {
+      async revert() {},
+      async restoreIgnoredBaseline() {
+        return { capped: false }
+      },
+    }
+    const baseline: IgnoredBaseline = { entries: new Map(), skipped: [] }
+    const result = await rollbackWithIgnored(ws, 'base', baseline)
+    expect(result.failed).toBe(false)
+    expect(result.note).toBe('')
   })
 })

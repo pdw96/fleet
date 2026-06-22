@@ -12,29 +12,38 @@ import type { IgnoredBaseline } from '../workspace/ignored-baseline'
  * 수정/삭제된 기존 ignored 파일을 백업에서 복원할 수 있다.
  * (따라서 두 단계의 순서를 바꾸거나 clean -x 로 변경하면 restore 가 무의미해진다.)
  *
- * @returns 실패 노트(없으면 ''), 호출자가 출력에 덧붙이는 용도.
+ * @returns `{ note, failed }` — `note` 는 호출자가 출력에 덧붙이는 용도(없으면 '').
+ *   `failed` = true 는 ws.revert 또는 ws.restoreIgnoredBaseline 이 실제로 throw 한 경우만
+ *   (dirty-tree 위험). capped 경고만 발생한 경우 failed = false (롤백 성공, 스캔 상한만 도달).
  */
 export async function rollbackWithIgnored(
   ws: Pick<Workspace, 'revert' | 'restoreIgnoredBaseline'>,
   base: string,
   baseline: IgnoredBaseline | null,
-): Promise<string> {
+): Promise<{ note: string; failed: boolean }> {
   const notes: string[] = []
+  let failed = false
   try {
     await ws.revert(base)
   } catch (err) {
+    failed = true
     notes.push(
       ` · 되돌리기 실패: ${err instanceof Error ? err.message : String(err)}(워크스페이스 부분 변경 잔존)`,
     )
   }
   if (baseline) {
     try {
-      await ws.restoreIgnoredBaseline(baseline)
+      const { capped } = await ws.restoreIgnoredBaseline(baseline)
+      if (capped) {
+        // 스캔 상한은 경고일 뿐 rollback 실패가 아니다(failed 로 올리지 않음 — 재시도 경로 오중단 방지).
+        notes.push(' · ignored 스캔 상한 도달(일부 ignored 파일이 rollback 에서 누락될 수 있음)')
+      }
     } catch (err) {
+      failed = true
       notes.push(
         ` · ignored 복원 실패: ${err instanceof Error ? err.message : String(err)}(ignored 파일 잔존)`,
       )
     }
   }
-  return notes.join('')
+  return { note: notes.join(''), failed }
 }

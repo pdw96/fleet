@@ -33,7 +33,7 @@ interface FakeIgnoredOpts {
   /** collectIgnoredChanges 의 반환값. */
   collectResult?: IgnoredChangeSet
   /** restoreIgnoredBaseline spy — vi.fn() 으로 자동 생성(호출 여부·인자 기록용). */
-  restoreSpy?: (baseline: IgnoredBaseline) => Promise<void>
+  restoreSpy?: (baseline: IgnoredBaseline) => Promise<{ capped: boolean }>
 }
 
 /** diff/커밋을 기록하는 가짜 워크스페이스. collectDiff 는 호출마다 diffByCall 을 소비한다. */
@@ -43,8 +43,8 @@ function fakeWorkspace(
 ): Workspace & { commits: string[]; reverts: number } {
   let i = 0
   const commits: string[] = []
-  const restoreSpy: (baseline: IgnoredBaseline) => Promise<void> =
-    ignoredOpts.restoreSpy ?? vi.fn(async (_baseline: IgnoredBaseline) => {})
+  const restoreSpy: (baseline: IgnoredBaseline) => Promise<{ capped: boolean }> =
+    ignoredOpts.restoreSpy ?? vi.fn(async (_baseline: IgnoredBaseline) => ({ capped: false }))
   const ws = {
     commits,
     reverts: 0,
@@ -162,7 +162,9 @@ function parallelFakeWorkspace(
         async collectIgnoredChanges() {
           return { changes: [], unrestorable: [] }
         },
-        async restoreIgnoredBaseline() {},
+        async restoreIgnoredBaseline() {
+          return { capped: false }
+        },
       }
       return wt
     },
@@ -184,7 +186,9 @@ function parallelFakeWorkspace(
     async collectIgnoredChanges() {
       return { changes: [], unrestorable: [] }
     },
-    async restoreIgnoredBaseline() {},
+    async restoreIgnoredBaseline() {
+      return { capped: false }
+    },
     onIntegrate: opts.onIntegrate,
   }
   return state
@@ -483,7 +487,9 @@ describe('runProject', () => {
       async collectIgnoredChanges() {
         return { changes: [], unrestorable: [] }
       },
-      async restoreIgnoredBaseline() {},
+      async restoreIgnoredBaseline() {
+        return { capped: false }
+      },
     }
     await expect(
       runProject('goal', {
@@ -1947,7 +1953,9 @@ describe('runProject', () => {
       async collectIgnoredChanges() {
         return { changes: [], unrestorable: [] }
       },
-      async restoreIgnoredBaseline() {},
+      async restoreIgnoredBaseline() {
+        return { capped: false }
+      },
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
@@ -2017,7 +2025,9 @@ describe('runProject', () => {
       async collectIgnoredChanges() {
         return { changes: [], unrestorable: [] }
       },
-      async restoreIgnoredBaseline() {},
+      async restoreIgnoredBaseline() {
+        return { capped: false }
+      },
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
@@ -2729,7 +2739,7 @@ describe('runProject', () => {
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
-    const restoreSpy = vi.fn(async () => {})
+    const restoreSpy = vi.fn(async () => ({ capped: false }))
     // ignoredChanges: 기존 .env 가 modified(sensitive)
     const collectResult: IgnoredChangeSet = {
       changes: [{ path: '.env', change: 'modified', sensitive: true }],
@@ -2783,7 +2793,7 @@ describe('runProject', () => {
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
-    const restoreSpy = vi.fn(async () => {})
+    const restoreSpy = vi.fn(async () => ({ capped: false }))
     const collectResult: IgnoredChangeSet = {
       changes: [{ path: '.env.secret', change: 'created', sensitive: true }],
       unrestorable: [],
@@ -2819,7 +2829,7 @@ describe('runProject', () => {
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
-    const restoreSpy = vi.fn(async () => {})
+    const restoreSpy = vi.fn(async () => ({ capped: false }))
     // tracked: .env 파일 변경(sensitive → destructive)
     // ignored: credentials.json modified(sensitive)
     const collectResult: IgnoredChangeSet = {
@@ -2934,7 +2944,7 @@ describe('runProject', () => {
     })
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
-    const restoreSpy = vi.fn(async () => {})
+    const restoreSpy = vi.fn(async () => ({ capped: false }))
     // ignored: deleted 파일이 있음(deleted → 복구 대상)
     const collectResult: IgnoredChangeSet = {
       changes: [{ path: '.env', change: 'deleted', sensitive: true }],
@@ -3003,7 +3013,7 @@ describe('runProject', () => {
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
-    const restoreSpy = vi.fn(async () => {})
+    const restoreSpy = vi.fn(async () => ({ capped: false }))
     // unrestorable ignored 변경 → classifyDiffRisk 가 '복원 불가' reason 을 포함한 destructive 로 분류해야 한다
     const collectResult: IgnoredChangeSet = {
       changes: [{ path: 'secrets/creds.json', change: 'modified', sensitive: true }],
@@ -3387,7 +3397,9 @@ describe('runProject', () => {
       async collectIgnoredChanges() {
         return { changes: [], unrestorable: [] }
       },
-      async restoreIgnoredBaseline() {},
+      async restoreIgnoredBaseline() {
+        return { capped: false }
+      },
     }
 
     const result = await runProject('goal', {
@@ -3681,5 +3693,125 @@ describe('runProject', () => {
     const vfTarget = gateRequests[1].target ?? ''
     expect(vfTarget.length).toBeGreaterThan(0)
     expect(vfTarget).toContain('복원 불가')
+  })
+
+  it('[#128-m1] 병렬 worktree 의 승인된 ignored 변경 폐기 시 workspace.ignored_discarded 를 기록한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const base = parallelFakeWorkspace()
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        const wt = await base.addWorktree(taskId, b)
+        return {
+          ...wt,
+          async collectIgnoredChanges(_bl: IgnoredBaseline) {
+            // worktree 에 ignored 변경 존재 → 승인 후 done 이지만 main 통합 안 됨(폐기)
+            return {
+              changes: [{ path: `.env-${taskId}`, change: 'modified' as const, sensitive: true }],
+              unrestorable: [],
+            }
+          },
+        }
+      },
+    }
+
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    const discarded = store
+      .listProjectEvents(result.projectId)
+      .filter((e) => e.type === 'workspace.ignored_discarded')
+    // 두 worktree 작업 모두 ignored 변경 보유 + done → 2건
+    expect(discarded.length).toBe(2)
+    // 각 이벤트에 비어있지 않은 message 가 있어야 한다(빈 행 방지)
+    expect(discarded.every((e) => typeof e.message === 'string' && e.message.length > 0)).toBe(true)
+    // 경로·종류만 — 내용 비노출(이벤트 data 에 taskId/projectId 만)
+    expect(JSON.stringify(discarded)).not.toContain('.env-')
+  })
+
+  it('[#128-m1] baseline.skipped(unrestorable) 만 있고 actual changes 없으면 workspace.ignored_discarded 를 기록하지 않는다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const base = parallelFakeWorkspace()
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        const wt = await base.addWorktree(taskId, b)
+        return {
+          ...wt,
+          async collectIgnoredChanges(_bl: IgnoredBaseline) {
+            // 에이전트가 ignored 파일에 실제 변경 없음, baseline.skipped 항목만 존재
+            return {
+              changes: [],
+              unrestorable: [{ path: 'pre.env', reason: 'over-cap' as const }],
+            } satisfies IgnoredChangeSet
+          },
+        }
+      },
+    }
+
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    const discarded = store
+      .listProjectEvents(result.projectId)
+      .filter((e) => e.type === 'workspace.ignored_discarded')
+    // 실제 changes 없음 → ignored_discarded 이벤트 0건
+    expect(discarded.length).toBe(0)
   })
 })

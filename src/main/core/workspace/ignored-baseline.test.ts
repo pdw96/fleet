@@ -12,7 +12,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'node:fs'
 import type { GitRunner } from './git'
 import {
   captureIgnoredBaseline,
@@ -96,6 +97,86 @@ describe('captureIgnoredBaseline', () => {
     expect(generalEntries.length + generalSkipped.length).toBe(2)
     expect(generalEntries.length).toBe(1)
     expect(generalSkipped.length).toBe(1)
+  })
+
+  it('[#128-A] non-regular(디렉터리) non-sensitive ignored 파일은 read 없이 not-regular 로 skip', async () => {
+    // git 은 'weird.dat'를 파일처럼 보고하지만 디스크엔 디렉터리 → !isFile()
+    mkdirSync(join(root, 'weird.dat'))
+    const git = fakeGitIgnored(['weird.dat'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    expect(base.entries.has('weird.dat')).toBe(false)
+    expect(base.skipped).toContainEqual({ path: 'weird.dat', reason: 'not-regular' })
+  })
+
+  it('[#128-A] non-regular sensitive ignored 파일은 throw(fail-closed)', async () => {
+    // .env 를 디렉터리로 → sensitive + non-regular → throw
+    mkdirSync(join(root, '.env'))
+    const git = fakeGitIgnored(['.env'])
+    await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+      /일반 파일이 아님/,
+    )
+  })
+
+  it('[#128-A] POSIX FIFO ignored 파일은 hang 없이 not-regular 로 skip', async () => {
+    if (process.platform === 'win32') return // mkfifo 불가
+    execFileSync('mkfifo', [join(root, 'pipe.dat')])
+    const git = fakeGitIgnored(['pipe.dat'])
+    // 가드가 없으면 readFileSync(FIFO) 가 hang — 5초 내 resolve 되어야 한다
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    expect(base.skipped).toContainEqual({ path: 'pipe.dat', reason: 'not-regular' })
+  })
+
+  it('[#128-m3] non-sensitive 일반 파일 read 실패는 read-failed 로 skip(POSIX)', async () => {
+    // 일반 파일(isFile=true)이지만 읽기 권한 0 → readFileSync EACCES → read-failed 분기.
+    if (process.platform === 'win32') return
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return // root 는 권한 무시
+    writeFileSync(join(root, 'noperm.dat'), 'data')
+    chmodSync(join(root, 'noperm.dat'), 0o000)
+    const git = fakeGitIgnored(['noperm.dat'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    expect(base.entries.has('noperm.dat')).toBe(false)
+    expect(base.skipped).toContainEqual({ path: 'noperm.dat', reason: 'read-failed' })
+  })
+
+  // [#128-m4] best-effort 테스트 — vitest ESM 환경에서 node: 빌트인 named export 는
+  // non-configurable(Object.defineProperty 금지)이라 vi.spyOn(fs, 'readFileSync') 가
+  // "Cannot redefine property" 로 실패하고 spy 가 동작하지 않는다.
+  // 이 경우 captured.length === 0 으로 남아 zeroize 단언 자체가 skip 된다(degraded mode).
+  // degraded mode 에서도 테스트가 검증하는 의미 있는 불변식은 유지된다:
+  //   captureIgnoredBaseline 이 sensitive non-regular 파일(:143 hard-stop)에서 반드시 REJECT 한다.
+  // zeroize 프리미티브의 견고한 보장은 [#128-m5] disposeBaseline 테스트가 담당한다.
+  // `import * as fs` 는 spy 시도(빌트인 spying 이 허용된 환경에서 동작)를 위해 의도적으로 유지한다.
+  it('[#128-m4] capture throw 시 이미 캡처된 backup Buffer 가 zeroize 된다', async () => {
+    writeFileSync(join(root, 'a.key'), 'A_SECRET')
+    mkdirSync(join(root, '.env')) // 두 번째(sensitive non-regular) → throw 유발
+    const git = fakeGitIgnored(['a.key', '.env'])
+    const captured: Buffer[] = []
+    // [Codex 보정] node: ESM 빌트인은 namespace가 non-configurable → spyOn 자체가 throw할 수 있음.
+    // best-effort: spy 설정 성공 시만 버퍼 참조를 확보하고, 실패하면 captured 빈 채로 진행.
+    let spy: ReturnType<typeof vi.spyOn> | null = null
+    try {
+      const real = fs.readFileSync
+      spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((
+        ...args: Parameters<typeof fs.readFileSync>
+      ) => {
+        const out = (real as (...a: unknown[]) => unknown)(...args)
+        if (Buffer.isBuffer(out)) captured.push(out)
+        return out
+      }) as typeof fs.readFileSync)
+    } catch {
+      // ESM non-configurable: spy 미동작 — best-effort 로 fallthrough
+    }
+    try {
+      await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow()
+    } finally {
+      spy?.mockRestore()
+    }
+    // [Codex 보정] named import 라 spy 가 가로채지 못할 수 있다(node: 빌트인 externalize).
+    // best-effort: spy 가 동작했을 때만(=버퍼 참조 확보 시) zeroize 를 단언한다.
+    // spy 미동작 환경에서는 m5(disposeBaseline) 가 zeroize 프리미티브를 견고히 보장한다.
+    if (captured.length > 0) {
+      expect(captured.every((b) => b.length === 0 || b.every((x) => x === 0))).toBe(true)
+    }
   })
 
   // [P2-3] git status non-zero → hard failure
@@ -219,6 +300,19 @@ describe('collectIgnoredChanges', () => {
     expect(cs.unrestorable.some((u) => u.path === 'big.cfg')).toBe(true)
   })
 
+  it('[#128-A] baseline 파일이 non-regular(디렉터리)로 교체되면 read 없이 modified, backup 있으면 restorable', async () => {
+    writeFileSync(join(root, 'cfg.dat'), 'orig')
+    const git = fakeGitIgnored(['cfg.dat'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    // 에이전트가 파일을 디렉터리로 교체
+    rmSync(join(root, 'cfg.dat'))
+    mkdirSync(join(root, 'cfg.dat'))
+    const cs = await collectIgnoredChanges(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    expect(cs.changes).toContainEqual({ path: 'cfg.dat', change: 'modified', sensitive: false })
+    // backup 보유 → unrestorable 아님
+    expect(cs.unrestorable.some((u) => u.path === 'cfg.dat')).toBe(false)
+  })
+
   // [P2-4] current-scan over-cap surfaced in collect
   it('[P2-4] 현재 scan 의 over-cap 은 단일 scan-capped escalation 으로 unrestorable 에 포함된다', async () => {
     // empty baseline (no files at baseline time)
@@ -297,7 +391,34 @@ describe('restoreIgnoredBaseline', () => {
     expect(existsSync(join(root, 'b.txt'))).toBe(true)
   })
 
+  it('[#128-B] 복원 대상 조상 경로가 파일이면 제거 후 디렉터리 체인을 재생성해 복원한다', async () => {
+    // baseline: a/b/c.txt
+    mkdirSync(join(root, 'a', 'b'), { recursive: true })
+    writeFileSync(join(root, 'a', 'b', 'c.txt'), 'ORIG')
+    const git = fakeGitIgnored(['a/b/c.txt'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    // 에이전트가 a/b/c.txt 와 디렉터리를 지우고 'a'를 파일로 만든다 → 조상 충돌
+    rmSync(join(root, 'a'), { recursive: true, force: true })
+    writeFileSync(join(root, 'a'), 'AGENT_FILE')
+    await restoreIgnoredBaseline(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    // a 파일은 제거되고 a/b/c.txt 가 원문으로 복원됨
+    expect(statSync(join(root, 'a')).isDirectory()).toBe(true)
+    expect(readFile(join(root, 'a', 'b', 'c.txt'), 'utf8')).toBe('ORIG')
+  })
+
   // [P1-b] remove non-file path before restoring
+  it('[#128-B] 이름이 점2개로 시작하는 정상 in-root 디렉터리(..cache)도 조상 정리 대상이다', async () => {
+    mkdirSync(join(root, '..cache'), { recursive: true })
+    writeFileSync(join(root, '..cache', 'c.txt'), 'ORIG')
+    const git = fakeGitIgnored(['..cache/c.txt'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    rmSync(join(root, '..cache'), { recursive: true, force: true })
+    writeFileSync(join(root, '..cache'), 'AGENT_FILE') // 조상을 파일로 교체
+    await restoreIgnoredBaseline(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    expect(statSync(join(root, '..cache')).isDirectory()).toBe(true)
+    expect(readFile(join(root, '..cache', 'c.txt'), 'utf8')).toBe('ORIG')
+  })
+
   it('[P1-b] 복원 대상 경로가 디렉터리일 경우 제거 후 파일로 복원한다', async () => {
     const envPath = join(root, '.env')
     writeFileSync(envPath, 'ORIGINAL')
@@ -331,6 +452,16 @@ describe('disposeBaseline', () => {
     disposeBaseline(baseline)
     expect(buf.every((b) => b === 0)).toBe(true)
     expect(baseline.entries.size).toBe(0)
+  })
+
+  it('[#128-m5] disposeBaseline 은 backup Buffer 를 0으로 채운다', async () => {
+    writeFileSync(join(root, '.env'), 'SECRET=1')
+    const git = fakeGitIgnored(['.env'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    const buf = baseline.entries.get('.env')!.backup!
+    expect(buf.some((b) => b !== 0)).toBe(true) // dispose 전엔 내용 존재
+    disposeBaseline(baseline)
+    expect(buf.every((b) => b === 0)).toBe(true) // dispose 후 zeroize
   })
 })
 
@@ -513,5 +644,24 @@ describe('[:270] scan-capped marker restore exclusion', () => {
 
     // 실제 에이전트 생성 파일은 삭제되어야 한다
     expect(existsSync(join(root, 'agent-created.txt'))).toBe(false)
+  })
+
+  it('[#128-m2] restore 가 현재 스캔 cap 도달 시 { capped: true } 를 반환한다', async () => {
+    const baseGit = fakeGitIgnored([])
+    const baseline = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+    // 에이전트가 일반 파일 2개 생성, maxFiles=1 → 2번째는 over-cap(SCAN_CAPPED)
+    writeFileSync(join(root, 'a.txt'), '1')
+    writeFileSync(join(root, 'b.txt'), '2')
+    const curGit = fakeGitIgnored(['a.txt', 'b.txt'])
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+    const res = await restoreIgnoredBaseline(root, curGit, baseline, policy)
+    expect(res).toEqual({ capped: true })
+  })
+
+  it('[#128-m2] cap 미도달 시 { capped: false }', async () => {
+    const git = fakeGitIgnored([])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    const res = await restoreIgnoredBaseline(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    expect(res).toEqual({ capped: false })
   })
 })

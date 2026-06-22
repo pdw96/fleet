@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
 
@@ -46,13 +46,13 @@ export interface IgnoredEntry {
 }
 export interface IgnoredBaseline {
   entries: Map<string, IgnoredEntry>
-  skipped: { path: string; reason: 'over-cap' | 'read-failed' }[]
+  skipped: { path: string; reason: 'over-cap' | 'read-failed' | 'not-regular' }[]
 }
 
 // git status --ignored 로 in-scope ignored 파일을 열거한다.
 // 디렉터리(`!! dir/`)는 denylist 여부를 먼저 확인한다:
 //   - denylist 디렉터리 내부는 스캔하지 않음 — 그 안의 sensitive 파일(예: node_modules/.ssh) 커버는
-//     B 슬라이스(강한 격리/evasion)로 연기(#123 후속).
+//     [#128-C] B1 확정 비목표 — evasion(숨긴 위치 쓰기) 방어는 경로검사가 아닌 B2 프로세스 격리로 이관(#128 잔여).
 //   - non-denylist 디렉터리는 walk. generalCount 가 maxFiles 에 도달하면:
 //     (1) capped=true 로 설정, (2) 단일 'scan-capped' over-cap escalation 기록,
 //     (3) walk 즉시 return — 이후 서브디렉터리 탐색 없음(unbounded traversal 방지).
@@ -118,7 +118,8 @@ async function listIgnored(
       }
       if (st.isDirectory()) {
         // [:109] 중첩 denylist 디렉터리는 top-level 과 동일하게 skip(내부 탐색 금지).
-        // 예: packages/x/node_modules/ — denylist 확인 없이 walk 하면 cap 낭비 + B-slice 오염.
+        // 예: packages/x/node_modules/ — denylist 확인 없이 walk 하면 cap 낭비.
+        // [#128-C] 내부 sensitive 커버는 B1 확정 비목표 — evasion 방어는 B2 프로세스 격리로 이관(#128 잔여).
         const relSlash = `${rel}/`
         if (policy.denylistRe.test(rel) || policy.denylistRe.test(relSlash)) continue
         walk(rel)
@@ -132,8 +133,8 @@ async function listIgnored(
     const rel = e.replace(/\\/g, '/')
     if (rel.endsWith('/')) {
       const dir = rel.replace(/\/+$/, '')
-      // denylist 디렉터리 내부는 스캔하지 않음 — 그 안의 sensitive 파일(예: node_modules/.ssh) 커버는
-      // B 슬라이스(강한 격리/evasion)로 연기(#123 후속).
+      // [#128-C] denylist 디렉터리 내부는 스캔하지 않음(비용 경계). 내부 sensitive 커버는 B1 확정 비목표 —
+      // evasion(숨긴 위치 쓰기) 방어는 경로검사가 아닌 B2 프로세스 격리로 이관(#128 잔여).
       if (policy.denylistRe.test(`${dir}/`)) continue
       walk(dir)
     } else {
@@ -150,7 +151,9 @@ export async function captureIgnoredBaseline(
 ): Promise<IgnoredBaseline> {
   const { files, skipped: enumSkipped } = await listIgnored(root, git, policy)
   const entries = new Map<string, IgnoredEntry>()
-  const skipped: { path: string; reason: 'over-cap' | 'read-failed' }[] = [...enumSkipped]
+  const skipped: { path: string; reason: 'over-cap' | 'read-failed' | 'not-regular' }[] = [
+    ...enumSkipped,
+  ]
   let totalBytes = 0
   try {
     for (const path of files) {
@@ -162,6 +165,12 @@ export async function captureIgnoredBaseline(
       } catch (err) {
         if (sensitive) throw new Error(`민감 ignored 파일 stat 실패: ${path}`, { cause: err })
         skipped.push({ path, reason: 'read-failed' })
+        continue
+      }
+      // [#128-A] non-regular(FIFO/socket/device/dir)면 readFileSync 가 hang/오류 → read 전 차단.
+      if (!st.isFile()) {
+        if (sensitive) throw new Error(`민감 ignored 파일이 일반 파일이 아님(백업 불가): ${path}`)
+        skipped.push({ path, reason: 'not-regular' })
         continue
       }
       if (st.size > policy.maxFileBytes || totalBytes + st.size > policy.maxTotalBytes) {
@@ -244,15 +253,23 @@ export async function collectIgnoredChanges(
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
     }
-    // [:213] size-guard: 현재 파일이 maxFileBytes 초과 시 read/hash 없이 modified+unrestorable
-    let currentSize: number
+    // [:213] size-guard + [#128-A] non-regular 가드: read 전 stat 으로 종류·크기 확인
+    let st
     try {
-      currentSize = statSync(abs).size
+      st = statSync(abs)
     } catch {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
       unrestorable.push({ path, reason: 'stat-failed' })
       continue
     }
+    if (!st.isFile()) {
+      // baseline 일반 파일이 non-regular 로 교체됨 = modified. read 없이(hang 방지).
+      // backup 있으면 restore 가 비-일반 leaf 제거 후 복원 → unrestorable 아님.
+      changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
+      continue
+    }
+    const currentSize = st.size
     if (currentSize > policy.maxFileBytes) {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
       unrestorable.push({ path, reason: 'over-cap-modified' })
@@ -275,13 +292,41 @@ export async function collectIgnoredChanges(
   return { changes, unrestorable }
 }
 
+// [#128-B] 복원 시 mkdirSync(dirname) 이 ENOTDIR 로 깨지지 않도록, root→dirname 사이 조상 중
+// "존재하지만 디렉터리 아님"(에이전트가 만든 파일 등)을 제거한다. 제거 후 하위 조상은 부재하므로
+// mkdirSync(recursive) 가 체인을 재생성한다. resolve(root, …) 기준이라 root 밖은 건드리지 않는다.
+function clearNonDirAncestors(root: string, abs: string): void {
+  const relDir = relative(root, dirname(abs))
+  // dirname===root('') → no-op. 진짜 부모 traversal 만 root 밖으로 본다: '..' 단독, '..'+구분자 시작,
+  // 또는 절대경로(Windows 타 드라이브). '..cache' 처럼 점2개로 시작하는 정상 in-root 디렉터리명은 제외 안 함.
+  if (
+    !relDir ||
+    relDir === '..' ||
+    relDir.startsWith(`..${sep}`) ||
+    relDir.startsWith('../') ||
+    isAbsolute(relDir)
+  )
+    return
+  let cur = root
+  for (const part of relDir.split(/[\\/]/).filter(Boolean)) {
+    cur = resolve(cur, part)
+    if (existsSync(cur) && !statSync(cur).isDirectory()) {
+      rmSync(cur, { recursive: true, force: true })
+      return
+    }
+  }
+}
+
 export async function restoreIgnoredBaseline(
   root: string,
   git: GitRunner,
   baseline: IgnoredBaseline,
   policy: ScanPolicy,
-): Promise<void> {
+): Promise<{ capped: boolean }> {
   const { files, skipped } = await listIgnored(root, git, policy)
+  // [#128-m2] 현재 restore 호출의 스캔이 cap 에 도달했는지(에이전트가 cap 뒤 숨긴 파일이
+  // 이번 삭제 패스에서 누락될 수 있음 → rollback 불완전 가능성 표면화).
+  const capped = skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
   // 1) created(현재 in-scope, baseline·skipped 둘 다 없음) → 삭제.
   for (const path of files) {
@@ -299,6 +344,7 @@ export async function restoreIgnoredBaseline(
   for (const [path, entry] of baseline.entries) {
     if (entry.backup === null) continue // unrestorable — 복원 불가
     const abs = resolve(root, path)
+    clearNonDirAncestors(root, abs) // [#128-B] 조상-파일 충돌 정리
     mkdirSync(dirname(abs), { recursive: true })
     // [P1-b] if existing path is not a regular file (e.g. directory), remove it first
     if (existsSync(abs)) {
@@ -311,11 +357,12 @@ export async function restoreIgnoredBaseline(
     // [P1-a] restore original file mode
     chmodSync(abs, entry.mode)
   }
+  return { capped }
 }
 
 export function disposeBaseline(baseline: IgnoredBaseline): void {
   for (const entry of baseline.entries.values()) {
-    if (entry.backup) entry.backup.fill(0) // best-effort zeroize (JS GC/복사본 → 완전삭제 보장 아님)
+    if (entry.backup && entry.backup.length > 0) entry.backup.fill(0) // .length > 0: 방어적 가드 — 빈 Buffer 의 fill(0) 은 no-op 이지만 의도를 명시한다. best-effort zeroize (JS GC/복사본 → 완전삭제 보장 아님)
   }
   baseline.entries.clear()
   baseline.skipped.length = 0
