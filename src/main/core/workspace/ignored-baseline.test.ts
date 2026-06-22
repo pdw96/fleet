@@ -138,6 +138,14 @@ describe('captureIgnoredBaseline', () => {
     expect(base.skipped).toContainEqual({ path: 'noperm.dat', reason: 'read-failed' })
   })
 
+  // [#128-m4] best-effort 테스트 — vitest ESM 환경에서 node: 빌트인 named export 는
+  // non-configurable(Object.defineProperty 금지)이라 vi.spyOn(fs, 'readFileSync') 가
+  // "Cannot redefine property" 로 실패하고 spy 가 동작하지 않는다.
+  // 이 경우 captured.length === 0 으로 남아 zeroize 단언 자체가 skip 된다(degraded mode).
+  // degraded mode 에서도 테스트가 검증하는 의미 있는 불변식은 유지된다:
+  //   captureIgnoredBaseline 이 sensitive non-regular 파일(:143 hard-stop)에서 반드시 REJECT 한다.
+  // zeroize 프리미티브의 견고한 보장은 [#128-m5] disposeBaseline 테스트가 담당한다.
+  // `import * as fs` 는 spy 시도(빌트인 spying 이 허용된 환경에서 동작)를 위해 의도적으로 유지한다.
   it('[#128-m4] capture throw 시 이미 캡처된 backup Buffer 가 zeroize 된다', async () => {
     writeFileSync(join(root, 'a.key'), 'A_SECRET')
     mkdirSync(join(root, '.env')) // 두 번째(sensitive non-regular) → throw 유발

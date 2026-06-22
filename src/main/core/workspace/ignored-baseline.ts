@@ -353,7 +353,7 @@ export async function restoreIgnoredBaseline(
 
 export function disposeBaseline(baseline: IgnoredBaseline): void {
   for (const entry of baseline.entries.values()) {
-    if (entry.backup && entry.backup.length > 0) entry.backup.fill(0) // best-effort zeroize (JS GC/복사본 → 완전삭제 보장 아님)
+    if (entry.backup && entry.backup.length > 0) entry.backup.fill(0) // .length > 0: 방어적 가드 — 빈 Buffer 의 fill(0) 은 no-op 이지만 의도를 명시한다. best-effort zeroize (JS GC/복사본 → 완전삭제 보장 아님)
   }
   baseline.entries.clear()
   baseline.skipped.length = 0
