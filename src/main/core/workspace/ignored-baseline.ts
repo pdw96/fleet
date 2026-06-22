@@ -1,7 +1,15 @@
 // src/main/core/workspace/ignored-baseline.ts
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { resolve } from 'node:path'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
 
@@ -160,7 +168,6 @@ export async function collectIgnoredChanges(
 ): Promise<IgnoredChangeSet> {
   const { files } = await listIgnored(root, git, policy)
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
-  const current = new Set(files)
   const changes: IgnoredChange[] = []
   const unrestorable: { path: string; reason: string }[] = [...baseline.skipped]
 
@@ -172,7 +179,7 @@ export async function collectIgnoredChanges(
   // modified / deleted: baseline 엔트리 기준.
   for (const [path, entry] of baseline.entries) {
     const abs = resolve(root, path)
-    if (!existsSync(abs) || !current.has(path)) {
+    if (!existsSync(abs)) {
       changes.push({ path, change: 'deleted', sensitive: entry.sensitive })
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
@@ -185,4 +192,34 @@ export async function collectIgnoredChanges(
     }
   }
   return { changes, unrestorable }
+}
+
+export async function restoreIgnoredBaseline(
+  root: string,
+  git: GitRunner,
+  baseline: IgnoredBaseline,
+  policy: ScanPolicy,
+): Promise<void> {
+  const { files } = await listIgnored(root, git, policy)
+  const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
+  // 1) created(현재 in-scope, baseline·skipped 둘 다 없음) → 삭제.
+  for (const path of files) {
+    if (baseline.entries.has(path) || skippedPaths.has(path)) continue
+    rmSync(resolve(root, path), { force: true })
+  }
+  // 2) backup 보유 엔트리 → 백업에서 복원(modified·deleted 모두 포함).
+  for (const [path, entry] of baseline.entries) {
+    if (entry.backup === null) continue // unrestorable — 복원 불가
+    const abs = resolve(root, path)
+    mkdirSync(dirname(abs), { recursive: true })
+    writeFileSync(abs, entry.backup)
+  }
+}
+
+export function disposeBaseline(baseline: IgnoredBaseline): void {
+  for (const entry of baseline.entries.values()) {
+    if (entry.backup) entry.backup.fill(0) // best-effort zeroize (JS GC/복사본 → 완전삭제 보장 아님)
+  }
+  baseline.entries.clear()
+  baseline.skipped.length = 0
 }

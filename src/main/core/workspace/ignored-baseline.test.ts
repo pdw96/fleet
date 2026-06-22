@@ -1,5 +1,12 @@
 // src/main/core/workspace/ignored-baseline.test.ts
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync as readFile,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -8,6 +15,8 @@ import {
   captureIgnoredBaseline,
   collectIgnoredChanges,
   DEFAULT_IGNORED_POLICY,
+  disposeBaseline,
+  restoreIgnoredBaseline,
 } from './ignored-baseline'
 
 // `!! path\0` 레코드(porcelain v1 -z 의 ignored 표기)를 만들어 주는 fake git.
@@ -111,5 +120,39 @@ describe('collectIgnoredChanges', () => {
     const baseline = await captureIgnoredBaseline(root, git, policy)
     const cs = await collectIgnoredChanges(root, git, baseline, policy)
     expect(cs.unrestorable).toContainEqual({ path: 'big.dat', reason: 'over-cap' })
+  })
+})
+
+describe('restoreIgnoredBaseline', () => {
+  it('deletes agent-created, restores modified and deleted ignored files', async () => {
+    writeFileSync(join(root, '.env'), 'A=1')
+    writeFileSync(join(root, 'keep.key'), 'orig')
+    const baseGit = fakeGitIgnored(['.env', 'keep.key'])
+    const baseline = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+
+    writeFileSync(join(root, '.env'), 'A=2') // modified
+    rmSync(join(root, 'keep.key')) // deleted
+    writeFileSync(join(root, 'new.pem'), 'NEW') // created
+    const curGit = fakeGitIgnored(['.env', 'new.pem'])
+    await restoreIgnoredBaseline(root, curGit, baseline, DEFAULT_IGNORED_POLICY)
+
+    expect(readFile(join(root, '.env')).toString()).toBe('A=1') // 원복
+    expect(readFile(join(root, 'keep.key')).toString()).toBe('orig') // 복구
+    expect(existsSync(join(root, 'new.pem'))).toBe(false) // 제거
+  })
+})
+
+describe('disposeBaseline', () => {
+  it('zeroizes in-memory backup buffers (best-effort)', async () => {
+    writeFileSync(join(root, '.env'), 'SECRET')
+    const baseline = await captureIgnoredBaseline(
+      root,
+      fakeGitIgnored(['.env']),
+      DEFAULT_IGNORED_POLICY,
+    )
+    const buf = baseline.entries.get('.env')!.backup!
+    disposeBaseline(baseline)
+    expect(buf.every((b) => b === 0)).toBe(true)
+    expect(baseline.entries.size).toBe(0)
   })
 })
