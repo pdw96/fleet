@@ -52,7 +52,7 @@ export interface IgnoredBaseline {
 // git status --ignored 로 in-scope ignored 파일을 열거한다.
 // 디렉터리(`!! dir/`)는 denylist 여부를 먼저 확인한다:
 //   - denylist 디렉터리 내부는 스캔하지 않음 — 그 안의 sensitive 파일(예: node_modules/.ssh) 커버는
-//     B 슬라이스(강한 격리/evasion)로 연기(#123 후속).
+//     [#128-C] B1 확정 비목표 — evasion(숨긴 위치 쓰기) 방어는 경로검사가 아닌 B2 프로세스 격리로 이관(#128 잔여).
 //   - non-denylist 디렉터리는 walk. generalCount 가 maxFiles 에 도달하면:
 //     (1) capped=true 로 설정, (2) 단일 'scan-capped' over-cap escalation 기록,
 //     (3) walk 즉시 return — 이후 서브디렉터리 탐색 없음(unbounded traversal 방지).
@@ -118,7 +118,8 @@ async function listIgnored(
       }
       if (st.isDirectory()) {
         // [:109] 중첩 denylist 디렉터리는 top-level 과 동일하게 skip(내부 탐색 금지).
-        // 예: packages/x/node_modules/ — denylist 확인 없이 walk 하면 cap 낭비 + B-slice 오염.
+        // 예: packages/x/node_modules/ — denylist 확인 없이 walk 하면 cap 낭비.
+        // [#128-C] 내부 sensitive 커버는 B1 확정 비목표 — evasion 방어는 B2 프로세스 격리로 이관(#128 잔여).
         const relSlash = `${rel}/`
         if (policy.denylistRe.test(rel) || policy.denylistRe.test(relSlash)) continue
         walk(rel)
@@ -132,8 +133,8 @@ async function listIgnored(
     const rel = e.replace(/\\/g, '/')
     if (rel.endsWith('/')) {
       const dir = rel.replace(/\/+$/, '')
-      // denylist 디렉터리 내부는 스캔하지 않음 — 그 안의 sensitive 파일(예: node_modules/.ssh) 커버는
-      // B 슬라이스(강한 격리/evasion)로 연기(#123 후속).
+      // [#128-C] denylist 디렉터리 내부는 스캔하지 않음(비용 경계). 내부 sensitive 커버는 B1 확정 비목표 —
+      // evasion(숨긴 위치 쓰기) 방어는 경로검사가 아닌 B2 프로세스 격리로 이관(#128 잔여).
       if (policy.denylistRe.test(`${dir}/`)) continue
       walk(dir)
     } else {
@@ -352,7 +353,7 @@ export async function restoreIgnoredBaseline(
 
 export function disposeBaseline(baseline: IgnoredBaseline): void {
   for (const entry of baseline.entries.values()) {
-    if (entry.backup) entry.backup.fill(0) // best-effort zeroize (JS GC/복사본 → 완전삭제 보장 아님)
+    if (entry.backup && entry.backup.length > 0) entry.backup.fill(0) // best-effort zeroize (JS GC/복사본 → 완전삭제 보장 아님)
   }
   baseline.entries.clear()
   baseline.skipped.length = 0

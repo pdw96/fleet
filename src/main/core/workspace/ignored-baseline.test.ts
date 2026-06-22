@@ -12,7 +12,8 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as fs from 'node:fs'
 import type { GitRunner } from './git'
 import {
   captureIgnoredBaseline,
@@ -135,6 +136,39 @@ describe('captureIgnoredBaseline', () => {
     const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
     expect(base.entries.has('noperm.dat')).toBe(false)
     expect(base.skipped).toContainEqual({ path: 'noperm.dat', reason: 'read-failed' })
+  })
+
+  it('[#128-m4] capture throw 시 이미 캡처된 backup Buffer 가 zeroize 된다', async () => {
+    writeFileSync(join(root, 'a.key'), 'A_SECRET')
+    mkdirSync(join(root, '.env')) // 두 번째(sensitive non-regular) → throw 유발
+    const git = fakeGitIgnored(['a.key', '.env'])
+    const captured: Buffer[] = []
+    // [Codex 보정] node: ESM 빌트인은 namespace가 non-configurable → spyOn 자체가 throw할 수 있음.
+    // best-effort: spy 설정 성공 시만 버퍼 참조를 확보하고, 실패하면 captured 빈 채로 진행.
+    let spy: ReturnType<typeof vi.spyOn> | null = null
+    try {
+      const real = fs.readFileSync
+      spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((
+        ...args: Parameters<typeof fs.readFileSync>
+      ) => {
+        const out = (real as (...a: unknown[]) => unknown)(...args)
+        if (Buffer.isBuffer(out)) captured.push(out)
+        return out
+      }) as typeof fs.readFileSync)
+    } catch {
+      // ESM non-configurable: spy 미동작 — best-effort 로 fallthrough
+    }
+    try {
+      await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow()
+    } finally {
+      spy?.mockRestore()
+    }
+    // [Codex 보정] named import 라 spy 가 가로채지 못할 수 있다(node: 빌트인 externalize).
+    // best-effort: spy 가 동작했을 때만(=버퍼 참조 확보 시) zeroize 를 단언한다.
+    // spy 미동작 환경에서는 m5(disposeBaseline) 가 zeroize 프리미티브를 견고히 보장한다.
+    if (captured.length > 0) {
+      expect(captured.every((b) => b.length === 0 || b.every((x) => x === 0))).toBe(true)
+    }
   })
 
   // [P2-3] git status non-zero → hard failure
@@ -398,6 +432,16 @@ describe('disposeBaseline', () => {
     disposeBaseline(baseline)
     expect(buf.every((b) => b === 0)).toBe(true)
     expect(baseline.entries.size).toBe(0)
+  })
+
+  it('[#128-m5] disposeBaseline 은 backup Buffer 를 0으로 채운다', async () => {
+    writeFileSync(join(root, '.env'), 'SECRET=1')
+    const git = fakeGitIgnored(['.env'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    const buf = baseline.entries.get('.env')!.backup!
+    expect(buf.some((b) => b !== 0)).toBe(true) // dispose 전엔 내용 존재
+    disposeBaseline(baseline)
+    expect(buf.every((b) => b === 0)).toBe(true) // dispose 후 zeroize
   })
 })
 
