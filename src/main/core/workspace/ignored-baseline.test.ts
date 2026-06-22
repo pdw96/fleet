@@ -20,6 +20,7 @@ import {
   DEFAULT_IGNORED_POLICY,
   disposeBaseline,
   restoreIgnoredBaseline,
+  SCAN_CAPPED,
 } from './ignored-baseline'
 
 // `!! path\0` 레코드(porcelain v1 -z 의 ignored 표기)를 만들어 주는 fake git.
@@ -406,5 +407,111 @@ describe('real-git: revert→restore seam (invariant verification)', () => {
     // 6) 단언: restore 가 정확히 복원
     expect(readFile(join(repoDir, 'app.env'), 'utf8')).toBe('ORIG') // 백업 복원
     expect(existsSync(join(repoDir, 'new.key'))).toBe(false) // 에이전트 생성분 제거
+  })
+})
+
+// ── Codex 3차 반영: [:96] [:109] [:244] [:270] ──
+
+describe('[:96] unreadable dir → fail-closed (walk readdirSync catch)', () => {
+  it('walk 에서 readdirSync 가 실패하면 SCAN_CAPPED over-cap escalation 이 기록된다(not silent drop)', async () => {
+    // 존재하지 않는 경로를 git status 로 반환 → walk 가 readdirSync 실패 → fail-closed
+    // (Windows: 권한변경이 제한적이므로 존재하지 않는 경로로 unreadable 시뮬레이션)
+    const git = fakeGitIgnored(['nonexistent-dir/'])
+    // nonexistent-dir/ 는 실제로 없으므로 readdirSync → ENOENT
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    // fail-closed: skipped 에 over-cap escalation 이 기록되어야 한다
+    const overCapSkipped = base.skipped.filter((s) => s.reason === 'over-cap')
+    expect(overCapSkipped.length).toBeGreaterThanOrEqual(1)
+    expect(overCapSkipped[0].path).toBe(SCAN_CAPPED)
+  })
+})
+
+describe('[:109] nested denylist prune (walk recursive check)', () => {
+  it('non-denylist top dir 아래 중첩 node_modules/ 의 파일은 capture 되지 않는다', async () => {
+    // 구조: packages/x/node_modules/secret.js — 중첩 denylist
+    mkdirSync(join(root, 'packages', 'x', 'node_modules'), { recursive: true })
+    writeFileSync(join(root, 'packages', 'x', 'node_modules', 'secret.js'), 'module=1')
+    writeFileSync(join(root, 'packages', 'x', 'legit.ts'), 'export {}')
+    const git = fakeGitIgnored(['packages/'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    // legit.ts 는 denylist 아님 → 캡처될 수 있음
+    expect(base.entries.has('packages/x/node_modules/secret.js')).toBe(false)
+    // skipped 에도 없어야 한다(denylist → 통째 skip, escalation 없음)
+    expect(base.skipped.some((s) => s.path.includes('node_modules'))).toBe(false)
+  })
+
+  it('non-denylist top dir 아래 중첩 .git/ 의 파일도 capture 되지 않는다', async () => {
+    mkdirSync(join(root, 'sub', '.git', 'refs'), { recursive: true })
+    writeFileSync(join(root, 'sub', '.git', 'refs', 'head'), 'abc123')
+    writeFileSync(join(root, 'sub', 'ok.txt'), 'data')
+    const git = fakeGitIgnored(['sub/'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    expect(base.entries.has('sub/.git/refs/head')).toBe(false)
+  })
+})
+
+describe('[:244] collect total byte cap (collectIgnoredChanges)', () => {
+  it('여러 파일의 누적 크기가 maxTotalBytes 를 초과하면 이후 파일은 read 없이 modified+unrestorable', async () => {
+    // 파일 3개, 각 10바이트, maxTotalBytes=15 → 첫 파일(10) OK, 두 번째(+10=20>15) over-cap
+    writeFileSync(join(root, 'a.cfg'), Buffer.alloc(10, 0x61)) // 10B
+    writeFileSync(join(root, 'b.cfg'), Buffer.alloc(10, 0x62)) // 10B
+    writeFileSync(join(root, 'c.cfg'), Buffer.alloc(10, 0x63)) // 10B
+    const git = fakeGitIgnored(['a.cfg', 'b.cfg', 'c.cfg'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+
+    // 모든 파일 내용을 변경해 hash mismatch 가 발생하도록
+    writeFileSync(join(root, 'a.cfg'), Buffer.alloc(10, 0xaa))
+    writeFileSync(join(root, 'b.cfg'), Buffer.alloc(10, 0xbb))
+    writeFileSync(join(root, 'c.cfg'), Buffer.alloc(10, 0xcc))
+
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxTotalBytes: 15 }
+    const cs = await collectIgnoredChanges(root, git, baseline, policy)
+
+    // 누적 cap 이후 파일은 unrestorable(over-cap-modified) 로 표기되어야 한다
+    const overCapPaths = cs.unrestorable
+      .filter((u) => u.reason === 'over-cap-modified')
+      .map((u) => u.path)
+    expect(overCapPaths.length).toBeGreaterThanOrEqual(1)
+    // cap 이후 파일은 반드시 modified 변경으로 탐지
+    for (const p of overCapPaths) {
+      expect(cs.changes.some((c) => c.path === p && c.change === 'modified')).toBe(true)
+    }
+  })
+})
+
+describe('[:270] scan-capped marker restore exclusion', () => {
+  it('baseline.skipped 에 SCAN_CAPPED 마커가 있어도 restore 가 그 경로를 rmSync 하지 않는다', async () => {
+    // baseline 시 파일 없음
+    const baseGit = fakeGitIgnored([])
+    const baseline = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+    // baseline.skipped 에 SCAN_CAPPED 합성 마커를 수동 주입
+    baseline.skipped.push({ path: SCAN_CAPPED, reason: 'over-cap' })
+
+    // 실제로 'scan-capped' 라는 이름의 파일을 만들어 restore 가 삭제하지 않는지 확인
+    const markerFile = join(root, SCAN_CAPPED)
+    writeFileSync(markerFile, 'real-file-named-scan-capped')
+
+    const curGit = fakeGitIgnored([SCAN_CAPPED])
+    await restoreIgnoredBaseline(root, curGit, baseline, DEFAULT_IGNORED_POLICY)
+
+    // restore 가 SCAN_CAPPED 경로를 실-파일로 취급해 삭제하면 안 된다
+    // (baseline.skipped 에 있으므로 skippedPaths 에 포함 → created 루프에서 skip)
+    // — 단, skipped 루프에서 SCAN_CAPPED === s.path 필터로 rmSync 를 건너뛰어야 한다
+    expect(existsSync(markerFile)).toBe(true)
+  })
+
+  it('SCAN_CAPPED 마커가 skipped 에 있어도 over-cap 으로 생성된 실제 파일은 여전히 삭제된다', async () => {
+    // baseline 시 파일 없음
+    const baseGit = fakeGitIgnored([])
+    const baseline = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+    baseline.skipped.push({ path: SCAN_CAPPED, reason: 'over-cap' })
+
+    // 에이전트가 생성한 실제 파일(scan-capped 아님)
+    writeFileSync(join(root, 'agent-created.txt'), 'new')
+    const curGit = fakeGitIgnored(['agent-created.txt'])
+    await restoreIgnoredBaseline(root, curGit, baseline, DEFAULT_IGNORED_POLICY)
+
+    // 실제 에이전트 생성 파일은 삭제되어야 한다
+    expect(existsSync(join(root, 'agent-created.txt'))).toBe(false)
   })
 })

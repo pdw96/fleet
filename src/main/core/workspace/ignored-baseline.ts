@@ -14,6 +14,10 @@ import { dirname, resolve } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
 
+/** [:270] walk의 unreadable-dir 및 listIgnored의 over-cap 합성 마커 경로 상수.
+ * restore/rmSync 등 실-경로로 취급하는 곳에서는 반드시 이 값을 걸러내야 한다. */
+export const SCAN_CAPPED = 'scan-capped'
+
 export interface ScanPolicy {
   sensitiveRe: RegExp
   denylistRe: RegExp
@@ -93,6 +97,13 @@ async function listIgnored(
     try {
       names = readdirSync(resolve(root, relDir))
     } catch {
+      // [:96] unreadable dir → fail-closed: 조용히 skip하지 않고 over-cap escalation 기록.
+      // permission error 등으로 내부를 읽지 못하면 sensitive 파일이 숨을 수 있으므로
+      // scan-capped 마커와 동일한 over-cap 이유를 붙여 skipped 에 push(fail-closed).
+      if (!capped) {
+        capped = true
+        skipped.push({ path: SCAN_CAPPED, reason: 'over-cap' })
+      }
       return
     }
     for (const name of names) {
@@ -106,6 +117,10 @@ async function listIgnored(
         continue
       }
       if (st.isDirectory()) {
+        // [:109] 중첩 denylist 디렉터리는 top-level 과 동일하게 skip(내부 탐색 금지).
+        // 예: packages/x/node_modules/ — denylist 확인 없이 walk 하면 cap 낭비 + B-slice 오염.
+        const relSlash = `${rel}/`
+        if (policy.denylistRe.test(rel) || policy.denylistRe.test(relSlash)) continue
         walk(rel)
       } else {
         pushFile(rel)
@@ -220,6 +235,8 @@ export async function collectIgnoredChanges(
     changes.push({ path, change: 'created', sensitive: policy.sensitiveRe.test(path) })
   }
   // modified / deleted: baseline 엔트리 기준.
+  // [:244] 현재 파일 해싱 시 누적 바이트 추적 — maxTotalBytes 초과 시 read 없이 modified+unrestorable
+  let collectTotalBytes = 0
   for (const [path, entry] of baseline.entries) {
     const abs = resolve(root, path)
     if (!existsSync(abs)) {
@@ -241,6 +258,13 @@ export async function collectIgnoredChanges(
       unrestorable.push({ path, reason: 'over-cap-modified' })
       continue
     }
+    // [:244] 누적 cap 초과 → read 없이 modified+unrestorable(over-cap)
+    if (collectTotalBytes + currentSize > policy.maxTotalBytes) {
+      changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      unrestorable.push({ path, reason: 'over-cap-modified' })
+      continue
+    }
+    collectTotalBytes += currentSize
     const buf = readFileSync(abs)
     const hash = createHash('sha256').update(buf).digest('hex')
     if (hash !== entry.hash) {
@@ -265,7 +289,9 @@ export async function restoreIgnoredBaseline(
     rmSync(resolve(root, path), { recursive: true, force: true })
   }
   // [:229] over-cap skipped 중 baseline 에 없는 것도 삭제(에이전트가 cap 초과로 만든 파일 rollback).
+  // [:270] SCAN_CAPPED 합성 마커는 실-경로가 아니므로 rmSync 대상에서 제외한다.
   for (const s of skipped) {
+    if (s.path === SCAN_CAPPED) continue
     if (baseline.entries.has(s.path) || skippedPaths.has(s.path)) continue
     rmSync(resolve(root, s.path), { recursive: true, force: true })
   }

@@ -290,12 +290,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         // #5: 민감/위험 diff 는 리뷰어(외부 API 가능)에게 보내기 전에 승인 게이트를 거친다(비밀 유출 방지).
         const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
-          // [:301] gate target 은 항상 tracked 파일 목록 + ignored reason 둘 다 포함한다.
-          // tracked 만, ignored 만, 혼합 모두 승인자가 전체 변경 범위를 볼 수 있어야 함(내용·hash 비노출).
+          // [:301] gate target 은 항상 tracked 파일 목록 + 모든 dr.reasons(ignored 변경 + unrestorable 포함).
+          // tracked 만, ignored 만, unrestorable 만, 혼합 모두 승인자가 전체 변경 범위를 볼 수 있어야 함(내용·hash 비노출).
+          // [:298] 이전 구현은 '복원 불가'로 시작하는 reason 을 필터링해 unrestorable-only 케이스에서 gateTarget 이 빔.
           const trackedPart = diff.files.join(', ')
-          const ignoredReasons = dr.reasons.filter((r) => !r.startsWith('복원 불가'))
           const gateTarget =
-            [trackedPart, ...ignoredReasons].filter(Boolean).join(' · ') || dr.reasons.join('; ')
+            [trackedPart, ...dr.reasons].filter(Boolean).join(' · ') || dr.reasons.join('; ')
           const decision = opts.gate
             ? await opts.gate.request({
                 kind: 'apply-diff',
@@ -793,12 +793,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         }
         const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
-          // [:301] verify-fix gate target 도 항상 tracked + ignored reason 둘 다 포함(내용·hash 비노출).
+          // [:301] verify-fix gate target 도 항상 tracked + 모든 dr.reasons(unrestorable 포함)(내용·hash 비노출).
+          // [:298] unrestorable-only 케이스에서 gateTarget 이 비지 않도록 필터 제거.
           const vfTrackedPart = diff.files.join(', ')
-          const vfIgnoredReasons = dr.reasons.filter((r) => !r.startsWith('복원 불가'))
           const vfGateTarget =
-            [vfTrackedPart, ...vfIgnoredReasons].filter(Boolean).join(' · ') ||
-            dr.reasons.join('; ')
+            [vfTrackedPart, ...dr.reasons].filter(Boolean).join(' · ') || dr.reasons.join('; ')
           const decision = opts.gate
             ? await opts.gate.request({
                 kind: 'apply-diff',

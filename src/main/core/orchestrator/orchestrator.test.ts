@@ -3573,4 +3573,113 @@ describe('runProject', () => {
     // project 는 검증 실패
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
+
+  // ── [:298] unrestorable-only gate target ──
+
+  it('[:298] unrestorable-only(diff.files 빈, changes 빈) → gate target 이 비지 않고 unrestorable 경로 포함', async () => {
+    // 목적: diff.files=[], ignoredChanges.changes=[], ignoredChanges.unrestorable=[...] 케이스
+    // 이전 구현은 ignoredReasons = dr.reasons.filter(r => !r.startsWith('복원 불가')) 로 unrestorable reason 을 제외해
+    // gateTarget 이 '' → 승인자가 왜 destructive 인지 알 수 없었다.
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // diff 빈 + ignored changes 빈 + unrestorable 만 있음(scan-capped over-cap)
+    const collectResult: IgnoredChangeSet = {
+      changes: [],
+      unrestorable: [{ path: 'scan-capped', reason: 'over-cap' }],
+    }
+    const ws = fakeWorkspace([{ files: [], patch: '', truncated: false }], { collectResult })
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return 'rejected'
+        },
+      },
+    })
+
+    // gate 가 호출됐는지(unrestorable → destructive)
+    expect(gateRequests.length).toBeGreaterThan(0)
+    expect(gateRequests[0].risk).toBe('destructive')
+    // [:298] target 이 비어 있으면 안 된다 — unrestorable 경로·이유가 포함되어야 한다
+    const target = gateRequests[0].target ?? ''
+    expect(target.length).toBeGreaterThan(0)
+    expect(target).toContain('복원 불가')
+  })
+
+  it('[:298] verify-fix 경로: unrestorable-only → gate target 비지 않음', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 작업 경로 safe, verify-fix 에서 unrestorable-only
+    const collectResult: IgnoredChangeSet = {
+      changes: [],
+      unrestorable: [{ path: 'big-secret.dat', reason: 'over-cap' }],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // task diff
+        { files: [], patch: '', truncated: false }, // verify-fix diff — 빈
+      ],
+      { collectResult },
+    )
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return gateRequests.length === 1 ? 'approved' : 'rejected'
+        },
+      },
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // verify-fix gate 요청(두 번째 이상)에서 target 이 비지 않아야 한다
+    expect(gateRequests.length).toBeGreaterThanOrEqual(2)
+    const vfTarget = gateRequests[1].target ?? ''
+    expect(vfTarget.length).toBeGreaterThan(0)
+    expect(vfTarget).toContain('복원 불가')
+  })
 })
