@@ -312,8 +312,11 @@ export async function restoreIgnoredBaseline(
   git: GitRunner,
   baseline: IgnoredBaseline,
   policy: ScanPolicy,
-): Promise<void> {
+): Promise<{ capped: boolean }> {
   const { files, skipped } = await listIgnored(root, git, policy)
+  // [#128-m2] 현재 restore 호출의 스캔이 cap 에 도달했는지(에이전트가 cap 뒤 숨긴 파일이
+  // 이번 삭제 패스에서 누락될 수 있음 → rollback 불완전 가능성 표면화).
+  const capped = skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
   // 1) created(현재 in-scope, baseline·skipped 둘 다 없음) → 삭제.
   for (const path of files) {
@@ -344,6 +347,7 @@ export async function restoreIgnoredBaseline(
     // [P1-a] restore original file mode
     chmodSync(abs, entry.mode)
   }
+  return { capped }
 }
 
 export function disposeBaseline(baseline: IgnoredBaseline): void {

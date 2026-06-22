@@ -581,4 +581,23 @@ describe('[:270] scan-capped marker restore exclusion', () => {
     // 실제 에이전트 생성 파일은 삭제되어야 한다
     expect(existsSync(join(root, 'agent-created.txt'))).toBe(false)
   })
+
+  it('[#128-m2] restore 가 현재 스캔 cap 도달 시 { capped: true } 를 반환한다', async () => {
+    const baseGit = fakeGitIgnored([])
+    const baseline = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+    // 에이전트가 일반 파일 2개 생성, maxFiles=1 → 2번째는 over-cap(SCAN_CAPPED)
+    writeFileSync(join(root, 'a.txt'), '1')
+    writeFileSync(join(root, 'b.txt'), '2')
+    const curGit = fakeGitIgnored(['a.txt', 'b.txt'])
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+    const res = await restoreIgnoredBaseline(root, curGit, baseline, policy)
+    expect(res).toEqual({ capped: true })
+  })
+
+  it('[#128-m2] cap 미도달 시 { capped: false }', async () => {
+    const git = fakeGitIgnored([])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    const res = await restoreIgnoredBaseline(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    expect(res).toEqual({ capped: false })
+  })
 })

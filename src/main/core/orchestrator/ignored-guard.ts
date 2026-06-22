@@ -29,7 +29,10 @@ export async function rollbackWithIgnored(
   }
   if (baseline) {
     try {
-      await ws.restoreIgnoredBaseline(baseline)
+      const { capped } = await ws.restoreIgnoredBaseline(baseline)
+      if (capped) {
+        notes.push(' · ignored 스캔 상한 도달(일부 ignored 파일이 rollback 에서 누락될 수 있음)')
+      }
     } catch (err) {
       notes.push(
         ` · ignored 복원 실패: ${err instanceof Error ? err.message : String(err)}(ignored 파일 잔존)`,

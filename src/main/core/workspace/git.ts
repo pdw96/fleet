@@ -53,7 +53,7 @@ export interface Workspace {
   removeWorktree(taskId: string): Promise<void>
   captureIgnoredBaseline(): Promise<IgnoredBaseline>
   collectIgnoredChanges(baseline: IgnoredBaseline): Promise<IgnoredChangeSet>
-  restoreIgnoredBaseline(baseline: IgnoredBaseline): Promise<void>
+  restoreIgnoredBaseline(baseline: IgnoredBaseline): Promise<{ capped: boolean }>
 }
 
 const GIT_TIMEOUT_MS = 120_000
