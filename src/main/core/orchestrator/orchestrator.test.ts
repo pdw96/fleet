@@ -3756,4 +3756,62 @@ describe('runProject', () => {
     // 경로·종류만 — 내용 비노출(이벤트 data 에 taskId/projectId 만)
     expect(JSON.stringify(discarded)).not.toContain('.env-')
   })
+
+  it('[#128-m1] baseline.skipped(unrestorable) 만 있고 actual changes 없으면 workspace.ignored_discarded 를 기록하지 않는다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const base = parallelFakeWorkspace()
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        const wt = await base.addWorktree(taskId, b)
+        return {
+          ...wt,
+          async collectIgnoredChanges(_bl: IgnoredBaseline) {
+            // 에이전트가 ignored 파일에 실제 변경 없음, baseline.skipped 항목만 존재
+            return {
+              changes: [],
+              unrestorable: [{ path: 'pre.env', reason: 'over-cap' as const }],
+            } satisfies IgnoredChangeSet
+          },
+        }
+      },
+    }
+
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    const discarded = store
+      .listProjectEvents(result.projectId)
+      .filter((e) => e.type === 'workspace.ignored_discarded')
+    // 실제 changes 없음 → ignored_discarded 이벤트 0건
+    expect(discarded.length).toBe(0)
+  })
 })

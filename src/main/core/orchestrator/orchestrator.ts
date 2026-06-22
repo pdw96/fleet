@@ -229,7 +229,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       ignoredBaseline = await ws.captureIgnoredBaseline()
     } catch (err) {
       // 민감 ignored 백업 실패 = hard-stop. tracked 변경 없음이므로 revert 만.
-      const note = await rollbackWithIgnored(ws, base, null)
+      const { note } = await rollbackWithIgnored(ws, base, null)
       store.updateTask(task.id, {
         status: 'failed',
         output: `민감 ignored 백업 실패: ${err instanceof Error ? err.message : String(err)}${note}`,
@@ -266,7 +266,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         const ignoredChanges = await ws.collectIgnoredChanges(ignoredBaseline)
         // [#128-m1] 현재(=루프 탈출 시 최종 채택) 라운드 기준 — 거부되어 롤백된 라운드의 ignored 변경은
         // 이미 복원되므로 폐기 대상이 아니다(spec: 마지막 라운드 기준). 누적(sticky) 아님.
-        ignoredTouched = ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0
+        // 실제 ignored 변경(created/modified/deleted)만 폐기 대상. unrestorable 은
+        // baseline.skipped(에이전트 미접촉)를 포함하므로 ignoredTouched 판정에서 제외한다.
+        ignoredTouched = ignoredChanges.changes.length > 0
         store.updateTask(task.id, { status: 'review', changedFiles: diff.files })
         emit({
           type: 'task.implemented',
@@ -309,7 +311,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
               })
             : 'rejected'
           if (decision !== 'approved') {
-            const note = await rollbackWithIgnored(ws, base, ignoredBaseline)
+            const { note } = await rollbackWithIgnored(ws, base, ignoredBaseline)
             store.updateTask(task.id, {
               status: 'failed',
               output: `위험 변경 미승인: ${dr.reasons.join('; ')}${note}`,
@@ -349,9 +351,14 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         }
         feedback = verdict.feedback
         // P2-2: rollback 실패(dirty-tree) 시 재시도하면 오염된 트리에서 다음 라운드가 시작된다.
-        // non-empty note = rollback 실패 → 즉시 task failed + 루프 탈출(재시도 중단).
-        const rejectRollbackNote = await rollbackWithIgnored(ws, base, ignoredBaseline)
-        if (rejectRollbackNote) {
+        // failed=true = 실제 revert/restore throw → 즉시 task failed + 루프 탈출(재시도 중단).
+        // capped 경고만 있는 경우(failed=false)는 rollback 성공이므로 재시도 루프를 계속한다.
+        const { note: rejectRollbackNote, failed: rejectFailed } = await rollbackWithIgnored(
+          ws,
+          base,
+          ignoredBaseline,
+        )
+        if (rejectFailed) {
           store.updateTask(task.id, {
             status: 'failed',
             output: `리뷰 거절 후 되돌리기 실패: ${rejectRollbackNote}`,
@@ -368,7 +375,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       }
 
       if (!approved) {
-        const note = await rollbackWithIgnored(ws, base, ignoredBaseline)
+        const { note } = await rollbackWithIgnored(ws, base, ignoredBaseline)
         store.updateTask(task.id, {
           status: 'failed',
           output: `미승인(재검토 한도 초과)${note}`,
@@ -400,7 +407,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     } catch (err) {
       // LLM 호출(네트워크/CLI) 실패를 작업 단위로 격리한다 — 한 작업 실패가 전체 실행을 중단시키지 않는다.
       // 부분 편집을 되돌린다. revert/restore 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
-      const revertNote = await rollbackWithIgnored(ws, base, ignoredBaseline)
+      const { note: revertNote } = await rollbackWithIgnored(ws, base, ignoredBaseline)
       // 취소(abort)로 인한 중단은 '실행 오류'가 아니다 — 취소(skipped)로 정확히 라벨한다
       // (pending 취소 경로의 '실행 취소됨'·task.skipped 와 동일 컨벤션). failed 집계에도 넣지 않는다.
       if (opts.signal?.aborted) {
@@ -823,7 +830,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
               })
             : 'rejected'
           if (decision !== 'approved') {
-            const note = await rollbackWithIgnored(opts.workspace, base, vfBaseline ?? null)
+            const { note } = await rollbackWithIgnored(opts.workspace, base, vfBaseline ?? null)
             emit({
               type: 'verify.fixing',
               message: `수정 위험 변경 미승인: ${dr.reasons.join('; ')}${note}`,
@@ -835,7 +842,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         await opts.workspace.keep(`[verify-fix r${round}]`)
       } catch (err) {
         // 부분 수정을 되돌린다. revert 실패는 무성흡수하지 않고 수정 실패 메시지에 덧붙여 표면화한다(#7).
-        const revertNote = await rollbackWithIgnored(opts.workspace, base, vfBaseline ?? null)
+        const { note: revertNote } = await rollbackWithIgnored(
+          opts.workspace,
+          base,
+          vfBaseline ?? null,
+        )
         emit({
           type: 'verify.fixing',
           message: `수정 실패: ${err instanceof Error ? err.message : String(err)}${revertNote}`,
