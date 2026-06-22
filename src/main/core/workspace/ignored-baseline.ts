@@ -179,6 +179,10 @@ export async function collectIgnoredChanges(
   // modified / deleted: baseline 엔트리 기준.
   for (const [path, entry] of baseline.entries) {
     const abs = resolve(root, path)
+    // deleted 판정은 fs 존재 여부만으로 한다(!existsSync 단독).
+    // restore が関心을 갖는 것은 파일의 내용/존재이지 git의 ignored 목록 포함 여부가 아니다.
+    // `|| !current.has(path)` 를 추가하면 디스크에 실재하지만 더 이상 ignored 가 아닌 파일을
+    // spurious 'deleted' 로 오보고하게 되므로 의도적으로 제외한다.
     if (!existsSync(abs)) {
       changes.push({ path, change: 'deleted', sensitive: entry.sensitive })
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })

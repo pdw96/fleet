@@ -1,4 +1,5 @@
 // src/main/core/workspace/ignored-baseline.test.ts
+import { execFileSync } from 'node:child_process'
 import {
   existsSync,
   mkdtempSync,
@@ -154,5 +155,81 @@ describe('disposeBaseline', () => {
     disposeBaseline(baseline)
     expect(buf.every((b) => b === 0)).toBe(true)
     expect(baseline.entries.size).toBe(0)
+  })
+})
+
+describe('real-git: revert→restore seam (invariant verification)', () => {
+  // 실제 git 저장소를 사용해 `git reset --hard` + `git clean -ffd` 가
+  // .gitignore 대상(ignored) 파일을 제거하지 않는다는 불변식을 증명한다.
+  // 이 불변식이 깨지면 rollbackWithIgnored 의 revert→restore 순서가 무의미해진다.
+
+  /** child_process 기반 실-git 주입 runner */
+  function makeRealGitRunner(): GitRunner {
+    return {
+      async run(args: string[], cwd: string) {
+        try {
+          const stdout = execFileSync('git', args, { cwd, encoding: 'utf8' })
+          return { code: 0, stdout, stderr: '' }
+        } catch (e: unknown) {
+          const err = e as { status?: number; stdout?: string; stderr?: string }
+          return {
+            code: err.status ?? 1,
+            stdout: err.stdout ?? '',
+            stderr: err.stderr ?? '',
+          }
+        }
+      },
+    }
+  }
+
+  /** 별도 temp 디렉터리에 실제 git 저장소를 초기화한다 */
+  function initRealRepo(): string {
+    const repoDir = mkdtempSync(join(tmpdir(), 'fleet-realgt-'))
+    const git = (args: string[]) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf8' })
+    git(['init'])
+    git(['config', 'user.name', 'Test'])
+    git(['config', 'user.email', 'test@test.com'])
+    // .gitignore: *.env, *.key 등록
+    writeFileSync(join(repoDir, '.gitignore'), '*.env\n*.key\n')
+    git(['add', '.gitignore'])
+    git(['commit', '-m', 'init'])
+    return repoDir
+  }
+
+  let repoDir: string
+  afterEach(() => {
+    if (repoDir) rmSync(repoDir, { recursive: true, force: true })
+  })
+
+  it('git clean -ffd 는 ignored 파일을 제거하지 않으므로 restore 가 정확히 복원한다', async () => {
+    repoDir = initRealRepo()
+    const gitRunner = makeRealGitRunner()
+
+    // 1) 기존 ignored 파일 생성(baseline 캡처 전)
+    writeFileSync(join(repoDir, 'app.env'), 'ORIG')
+
+    // 2) baseline 캡처
+    const baseline = await captureIgnoredBaseline(repoDir, gitRunner, DEFAULT_IGNORED_POLICY)
+    expect(baseline.entries.has('app.env')).toBe(true)
+
+    // 3) 에이전트가 파일을 변경/생성
+    writeFileSync(join(repoDir, 'app.env'), 'HACKED') // modify
+    writeFileSync(join(repoDir, 'new.key'), 'AGENT_SECRET') // create new ignored
+
+    // 4) revert 흉내: git reset --hard HEAD + git clean -ffd (ignored 는 건드리지 않음)
+    execFileSync('git', ['reset', '--hard', 'HEAD'], { cwd: repoDir })
+    execFileSync('git', ['clean', '-ffd'], { cwd: repoDir })
+
+    // 불변식 확인: ignored 파일이 revert 후에도 살아있어야 restore 가 의미 있다
+    expect(existsSync(join(repoDir, 'app.env'))).toBe(true) // 살아남아야 함
+    expect(existsSync(join(repoDir, 'new.key'))).toBe(true) // 살아남아야 함
+    expect(readFile(join(repoDir, 'app.env'), 'utf8')).toBe('HACKED') // revert 가 안 건드림
+
+    // 5) restoreIgnoredBaseline 호출
+    await restoreIgnoredBaseline(repoDir, gitRunner, baseline, DEFAULT_IGNORED_POLICY)
+
+    // 6) 단언: restore 가 정확히 복원
+    expect(readFile(join(repoDir, 'app.env'), 'utf8')).toBe('ORIG') // 백업 복원
+    expect(existsSync(join(repoDir, 'new.key'))).toBe(false) // 에이전트 생성분 제거
   })
 })

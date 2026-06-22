@@ -4,6 +4,14 @@ import type { IgnoredBaseline } from '../workspace/ignored-baseline'
 /**
  * 거부·실패·취소 경로의 rollback: tracked revert → ignored 선택 복원(순서 고정).
  * 어느 쪽이 실패해도 흡수하지 않고 노트로 누적해 호출자가 task output/event 에 표면화한다(#7).
+ *
+ * 순서 불변식: ws.revert(base) 는 내부적으로 `git reset --hard` + `git clean -ffd` 를 실행한다.
+ * `-ffd` 에는 `-x` 가 없으므로 .gitignore 대상(ignored) 파일은 제거되지 않는다.
+ * 이 git 불변식 덕분에 revert 후에도 ignored 파일이 디스크에 살아남고,
+ * 그 상태에서 restoreIgnoredBaseline 이 에이전트가 새로 만든 ignored 파일을 삭제하고
+ * 수정/삭제된 기존 ignored 파일을 백업에서 복원할 수 있다.
+ * (따라서 두 단계의 순서를 바꾸거나 clean -x 로 변경하면 restore 가 무의미해진다.)
+ *
  * @returns 실패 노트(없으면 ''), 호출자가 출력에 덧붙이는 용도.
  */
 export async function rollbackWithIgnored(
