@@ -1763,6 +1763,54 @@ describe('GoogleProvider', () => {
     expect(body.systemInstruction).toBeDefined()
   })
 
+  it('cachedContentTokenCount 를 cacheReadInputTokens 로 정규화하고 inputTokens 에서 분리한다(buffer)', async () => {
+    // Gemini 2.5+ 는 암묵 캐싱 기본 ON → promptTokenCount 는 캐시분 *포함*. openai mapUsage 와 동일 정규화로
+    // inputTokens=비캐시(prompt-cached), cacheRead=cached(서로소) → cross-provider 비용 누적 이중계산 회피(#62 parity).
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 20,
+          cachedContentTokenCount: 70,
+        },
+      }),
+    }))
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'x' }])
+    expect(out.usage).toEqual({ inputTokens: 30, outputTokens: 20, cacheReadInputTokens: 70 })
+  })
+
+  it('cachedContentTokenCount 정규화는 스트리밍 경로에도 적용된다', async () => {
+    const { http } = mockStreamHttp([
+      'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":70}}\n\n',
+    ])
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'x' }], { onToken: () => {} })
+    expect(out.usage).toEqual({ inputTokens: 30, outputTokens: 20, cacheReadInputTokens: 70 })
+  })
+
+  it('cachedContentTokenCount 미보고 시 inputTokens=prompt 그대로·cacheRead 미설정(무회귀)', async () => {
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 10 },
+      }),
+    }))
+    const p = createGoogleProvider(
+      { id: 'g', provider: 'google', displayName: 'G', model: 'gemini-2.5-flash', apiKey: 'k' },
+      http,
+    )
+    const out = await p.chat([{ role: 'user', content: 'x' }])
+    expect(out.usage).toEqual({ inputTokens: 50, outputTokens: 10 })
+  })
+
   it('SAFETY finishReason maps to content_filter', async () => {
     const { http } = mockHttp(() => ({
       body: JSON.stringify({ candidates: [{ content: { parts: [] }, finishReason: 'SAFETY' }] }),

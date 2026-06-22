@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 58 files · 143 import wires · 41 IPC channels · 생성 2026-06-21T11:48 UTC
+> 58 files · 143 import wires · 41 IPC channels · 생성 2026-06-22T05:36 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -72,7 +72,7 @@
 - **providers/anthropic** — 클로드(Anthropic) AI 와 대화하는 전용 창구 _클로드에게 질문을 보내고 답을 받아오며, 답이 한 글자씩 실시간으로 오게 하는 처리도 한다. 또 클로드의 '깊이 생각하기' 기능이 켜지면 답이 잘리지 않게 답변 분량을 더 넉넉히 잡아주고, 모델 종류에 맞춰 안 통하는 설정은 알아서 빼준다._
   - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 549줄
 - **providers/google** — 구글 제미니(Gemini) AI 와 대화하는 전용 창구 _제미니에게 질문을 보내고 답을 받아오며, 제미니 버전(2.5/3 등)마다 다른 '생각 깊이' 설정 방식을 알아서 맞춰 보낸다. 생각하기를 켜면 답이 굶지 않도록 답변 분량을 늘리고, 제미니가 답을 차단했는지도 가려낸다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 555줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 574줄
 - **providers/openai** — OpenAI(GPT) 및 같은 방식을 쓰는 호환 AI 와 대화하는 전용 창구 _GPT 에게 질문을 보내고 답을 받아오며, o1·GPT-5 같은 추론 모델이 거부하는 설정(온도·토큰 항목 등)을 모델에 맞게 알아서 바꿔 보낸다. 같은 방식을 쓰는 다른 회사 AI(openai-compatible)도 이 창구로 함께 처리한다._
   - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 478줄
 - **providers/sse** — 실시간으로 조각조각 도착하는 답변 데이터를 한 덩어리씩 깔끔히 잘라 주는 도구 _AI 가 답을 한 글자씩 흘려보낼 때 인터넷으로 들어오는 데이터 조각에서 실제 내용만 골라내고, 의미 없는 줄이나 종료 신호는 걸러낸다. 글자가 중간에 끊겨 깨지지 않도록 안전하게 이어 붙인다._
@@ -82,7 +82,7 @@
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
-  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git · ←피의존: engine · 843줄
+  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git · ←피의존: engine · 842줄
 - **orchestrator/plan** — 큰 목표를 실행 가능한 작은 작업 목록으로 쪼개 주는 계획 분해기 _기획 담당 AI에게 목표를 4~8개의 작업으로 나눠 달라고 요청하고, AI가 돌려준 응답이 형식이 조금 어긋나도 너그럽게 읽어내 작업 목록으로 정리합니다. 검증(테스트·빌드)이 실패하면 그 실패 내용을 다시 AI에게 알려 부족한 부분만 채울 '추가 보정 작업'도 뽑아냅니다._
   - →의존: orchestrator/assignment, orchestrator/review, session/types, shared/types · ←피의존: orchestrator/orchestrator · 159줄
 - **orchestrator/assignment** — 어떤 AI에게 어떤 역할(기획·구현·검토 등)을 맡길지 정하는 자리 배정표 _'계획짜기·설계·구현·검토·테스트' 같은 7가지 역할을 정해진 규칙(수동 지정·차례로 돌리기·잘하는 사람 우선)에 따라 AI들에게 나눠 줍니다. 같은 입력이면 늘 같은 결과가 나오고, '잘하는 사람 우선' 규칙에서도 한 AI에게 일이 몰리지 않도록 적게 쓴 AI를 먼저 골라 균형을 맞춥니다._
@@ -94,7 +94,7 @@
 
 ### session · core — 여러 AI(구독형 CLI와 API)를 똑같은 방식으로 다룰 수 있게 감싸서, 작업방이 AI의 종류를 신경 쓰지 않고 '말 걸고-답받기'만 하면 되도록 통일해 주는 모듈.
 - **session/api-session** — Anthropic·OpenAI·Google 같은 인터넷 API로 AI와 대화하며 이전 대화를 기억하게 해 주는 일꾼 _주고받은 대화를 차곡차곡 쌓아 여러 번 이어서 물을 수 있게 하고, 필요하면 AI가 도구를 쓰며 일을 처리하는 반복 과정도 돌린다. 빈 답이 조용히 넘어가지 않도록 (필터 차단·글자 한도 초과·생각만 하고 답 없음 같은 경우) 명확한 오류로 알려 주고, 사용한 토큰량을 따로 기록하며, 같은 세션의 동시 요청이 대화 기록을 뒤섞지 않게 순서를 보장한다._
-  - →의존: providers/types, session/abort, session/types, shared/types, tools/loop, tools/types · ←피의존: engine · 193줄
+  - →의존: providers/types, session/abort, session/types, shared/types, tools/loop, tools/types · ←피의존: engine · 204줄
 - **session/cli-session** — 클로드·코덱스·제미니 같은 설치형 AI 프로그램을 실제로 실행해 대화를 주고받는 일꾼 _프롬프트를 명령어 형태로 만들어 해당 AI 프로그램을 돌리고 결과 글을 받아 깔끔하게 정리해 돌려준다. 매번 새 프로그램을 띄우는 '독립 실행', AI 자체 기능으로 대화를 이어가는 '대화 유지', 지정한 폴더의 파일을 직접 고치는 '편집'의 세 가지 방식을 지원하며, 가능하면 답을 한 글자씩 실시간으로 흘려보내고 같은 세션의 동시 요청은 순서대로 줄 세운다._
   - →의존: cli/detect, cli/output, session/abort, session/types, shared/types · ←피의존: engine · 239줄
 - **session/manager** — 등록된 모든 AI 세션을 한곳에 모아 두고 종류 상관없이 꺼내 쓰게 해 주는 보관함 _AI 세션을 이름표(id)로 추가·조회·목록 확인·삭제할 수 있게 하고, 각 AI가 맡을 수 있는 역할 정보를 그 자리에서 바꿔 화면까지 반영되게 한다. 세션을 지우거나 전체를 닫을 때는 각 세션의 정리 작업을 호출해 깔끔히 마무리한다._
@@ -126,7 +126,7 @@
 - **tools/loop** — AI가 도구를 쓰겠다고 하면 실제로 실행해주고 그 결과를 다시 AI에게 돌려주길 반복하는 진행 관리자 _AI가 '이 도구를 써 달라'고 하면 승인을 받은 뒤 도구를 실행하고 결과를 다시 AI에게 전달하는 일을 도구 호출이 끝날 때까지 되풀이한다. 무한 반복을 막으려 최대 8번으로 제한하고, 그동안 쓴 비용(토큰)을 합산하며, 알 수 없는 도구나 승인 거부·실행 오류는 오류로 표시해 돌려준다._
   - →의존: providers/types, tools/context, tools/types · ←피의존: session/api-session · 225줄
 - **tools/workspace-tools** — 작업 폴더 안의 파일을 읽고 찾아보게 해주는 안전한 읽기 전용 도구 4종 세트 _파일 읽기·폴더 목록·내용 검색(grep)·파일 찾기(glob) 네 가지 도구를 만들며, 모두 지정한 작업 폴더 밖으로는 절대 나가지 못하게 막고 비밀번호 같은 민감 파일은 건너뛴다. 너무 큰 파일이나 많은 결과는 일부만 보여주고, 위험할 수 있는 검색 패턴은 미리 거부해 앱이 멈추지 않게 보호한다._
-  - →의존: safety/approval, tools/types · ←피의존: engine · 374줄
+  - →의존: safety/approval, tools/types · ←피의존: engine · 379줄
 - **tools/context** — 대화 기록이 너무 길어지지 않게 오래된 도구 결과를 짧은 표식으로 줄여주는 정리 담당 _AI에게 보내는 대화가 정해진 분량을 넘으면, 예전에 받았던 도구 실행 결과 내용을 '이전 도구 결과 정리됨'이라는 짧은 문구로 바꿔 자리를 비운다. 최근 결과 몇 개와 방금 막 만든 결과는 그대로 보존하고, 글자 수를 대략 세어(영어는 4글자에 한 토막, 한글·한자는 글자마다 한 토막으로 넉넉히) 한도 초과를 미리 막는다._
   - →의존: providers/types · ←피의존: tools/loop · 154줄
 - **tools/registry** — 여러 도구를 이름표로 정리해 이름만 대면 바로 찾아 쓰게 해주는 도구 명부 _넘겨받은 도구들을 이름표 순으로 정리해, 이름으로 도구를 찾거나 목록을 뽑아낼 수 있게 한다. 같은 이름의 도구가 두 번 들어오면 헷갈림을 막기 위해 충돌 오류를 낸다._

@@ -19,6 +19,7 @@ import {
   type ModelOption,
   type ProviderMeta,
   type ReasoningEffort,
+  type TokenUsage,
   type ToolUseBlock,
 } from './types'
 
@@ -134,7 +135,12 @@ interface GooglePart {
 }
 interface GoogleResponse {
   candidates?: Array<{ content?: { parts?: GooglePart[] }; finishReason?: string }>
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }
+  usageMetadata?: {
+    promptTokenCount?: number
+    candidatesTokenCount?: number
+    /** 암묵/명시 캐시에서 읽힌 입력 토큰. Gemini 2.5+ 는 암묵 캐싱 기본 ON → promptTokenCount 에 *포함*된다. */
+    cachedContentTokenCount?: number
+  }
   /** 프롬프트 자체가 차단되면 candidates 없이 여기에 사유가 온다. */
   promptFeedback?: { blockReason?: string }
   /** HTTP 200 스트림(alt=sse) 중에도 올 수 있는 error 페이로드. 부분 응답 위장 방지용으로 표면화한다. */
@@ -237,6 +243,25 @@ function mapMode(choice: ApiCallOptions['toolChoice']): string | undefined {
   return 'ANY' // 'required'
 }
 
+/**
+ * Gemini usageMetadata → Fleet TokenUsage. Gemini 2.5+ 는 암묵 캐싱 기본 ON 이라 promptTokenCount 가
+ * 캐시 적중분(cachedContentTokenCount)을 *포함*한다. Fleet TokenUsage 는 input 과 cacheRead 를 서로소로
+ * 보므로 openai mapUsage 와 동일 정규화: inputTokens=비캐시(prompt-cached), cacheReadInputTokens=cached.
+ * 덕분에 cross-provider 비용 누적(addUsage)에서 input+cacheRead 합산 시 이중계산이 없다(#62 parity).
+ * cached 미보고면 prompt 그대로·cacheRead 미설정 → 기존 동작 보존(무회귀).
+ */
+function mapGeminiUsage(meta: GoogleResponse['usageMetadata']): TokenUsage {
+  const cached = meta?.cachedContentTokenCount
+  const prompt = meta?.promptTokenCount
+  const usage: TokenUsage = {
+    inputTokens:
+      cached !== undefined && prompt !== undefined ? Math.max(0, prompt - cached) : prompt,
+    outputTokens: meta?.candidatesTokenCount,
+  }
+  if (cached !== undefined) usage.cacheReadInputTokens = cached
+  return usage
+}
+
 function mapFinish(reason: string | undefined): FinishReason {
   switch (reason) {
     case 'STOP':
@@ -271,7 +296,7 @@ async function readStream(
   let curText = '' // 서명 전 진행 중 가시 텍스트(미서명 세그먼트)
   let finish: string | undefined
   let blockReason: string | undefined // 프롬프트 차단(후보 없음) 사유
-  let usage: { inputTokens?: number; outputTokens?: number } | undefined
+  let usage: TokenUsage | undefined
   const metaOf = (sig: string | undefined): ProviderMeta | undefined =>
     sig !== undefined ? { google: { thoughtSignature: sig } } : undefined
   const flushText = (): void => {
@@ -342,10 +367,7 @@ async function readStream(
     if (cand?.finishReason) finish = cand.finishReason
     if (!cand && ev.promptFeedback?.blockReason) blockReason = ev.promptFeedback.blockReason
     if (ev.usageMetadata) {
-      usage = {
-        inputTokens: ev.usageMetadata.promptTokenCount,
-        outputTokens: ev.usageMetadata.candidatesTokenCount,
-      }
+      usage = mapGeminiUsage(ev.usageMetadata)
     }
   }
   // 서명 없이 끝난 잔여 thought/text 를 미서명 trailing 블록으로 마감한다(예: thought-only 응답).
@@ -544,10 +566,7 @@ export function createGoogleProvider(
         content,
         finishReason: finish.finishReason,
         rawFinishReason: finish.raw,
-        usage: {
-          inputTokens: parsed.usageMetadata?.promptTokenCount,
-          outputTokens: parsed.usageMetadata?.candidatesTokenCount,
-        },
+        usage: mapGeminiUsage(parsed.usageMetadata),
       }
     },
   }

@@ -51,6 +51,17 @@ function unwrap(provider: string, result: ChatResult): string {
         `[${provider}] 모델이 사고(thinking)만 하고 가시 답변을 생성하지 않았습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리거나 재시도하세요.`,
       )
     }
+    // 매핑되지 않은 종료 사유('other': Gemini MALFORMED_FUNCTION_CALL·UNEXPECTED_TOOL_CALL,
+    // anthropic model_context_window_exceeded 등)로 텍스트·도구호출 없이 끝난 빈 응답 — 조용한 '' 흡수
+    // 대신 표면화한다(#7, silent blank 방지). tool_use(toolCalls 있음)·정상 빈 stop 응답엔 해당 없음.
+    // ⚠️ 유일한 '정당한 빈 other' = anthropic `pause_turn`(server-side tool 의 장기 턴 일시정지·재개 가능)인데,
+    // Fleet 은 Anthropic server tools(web_search 등)를 전혀 전송 안 해(client-side input_schema tools 만) 현재
+    // 미도달이라 throw 가 안전(Codex 적대리뷰 P2). 향후 server tools 도입 시 pause_turn 의 resume 처리를 선행할 것.
+    if (result.finishReason === 'other') {
+      throw new Error(
+        `[${provider}] 모델이 빈 응답을 반환했습니다 (finish=${result.rawFinishReason ?? 'unknown'}). 재시도하거나 입력/도구 정의를 조정하세요.`,
+      )
+    }
   }
   return result.text
 }
