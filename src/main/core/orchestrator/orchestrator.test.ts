@@ -2868,7 +2868,7 @@ describe('runProject', () => {
 
   // ── Task 7: verify-fix ignored 가드 배선 회귀 ──
 
-  it('회귀3: verify-fix 중 ignored 파일 삭제 후 abort → rollbackWithIgnored(restoreIgnoredBaseline) 호출 + task skipped', async () => {
+  it('회귀3: verify-fix 중 abort → rollbackWithIgnored(restoreIgnoredBaseline) 호출 + task failed(gate 거절로 runTaskIn 에서 이미 failed, verify-fix catch 는 task 상태 불변)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
@@ -2940,6 +2940,9 @@ describe('runProject', () => {
 
     // abort 로 취소됐으므로 project 는 failed
     expect(store.getProject(result.projectId)?.status).toBe('failed')
+    // 작업은 runTaskIn 내 gate 거절(ignored 민감 변경 → destructive → no gate → rejected)로 'failed' 처리됐다.
+    // verify-fix 는 task 상태를 변경하지 않으므로 abort 후에도 'failed' 유지.
+    expect(result.tasks[0].status).toBe('failed')
     // verify-fix catch(abort) 에서 rollbackWithIgnored 가 호출됐는지 — restoreIgnoredBaseline spy 검증
     expect(restoreSpy).toHaveBeenCalled()
     // verify-fix 이벤트에 수정 실패 메시지가 있어야 한다
@@ -3030,21 +3033,11 @@ describe('runProject', () => {
     })
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
-    // baseline 에 entries 를 채워두어 disposeBaseline 후 비워지는 것을 관찰한다.
-    const baselineEntries = new Map<string, import('../workspace/ignored-baseline').IgnoredEntry>([
-      [
-        '.env',
-        {
-          path: '.env',
-          size: 4,
-          mtimeMs: 1000,
-          hash: 'abc',
-          sensitive: true,
-          backup: Buffer.from('KEY=1'),
-        },
-      ],
-    ])
+    // 각 captureIgnoredBaseline 호출마다 독립적인 Map 인스턴스와 Buffer 를 생성한다.
+    // 공유 Map 을 쓰면 runTaskIn finally 의 disposeBaseline 이 먼저 실행돼 verify-fix 경로의
+    // dispose 여부와 무관하게 entries.size === 0 이 돼 거짓 통과(false-pass) 가 발생한다.
     const capturedBaselines: IgnoredBaseline[] = []
+    const capturedBackups: Buffer[] = [] // entries 가 clear 된 후에도 Buffer 제로화 여부를 검증하기 위해 보관
     const ws = fakeWorkspace(
       [
         { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로
@@ -3052,7 +3045,23 @@ describe('runProject', () => {
       ],
       {
         captureResult: async () => {
-          const bl: IgnoredBaseline = { entries: baselineEntries, skipped: [] }
+          // 호출마다 새 Buffer · 새 Map — 공유 상태 없음
+          const backupBuf = Buffer.from('KEY=1')
+          capturedBackups.push(backupBuf)
+          const entries = new Map<string, import('../workspace/ignored-baseline').IgnoredEntry>([
+            [
+              '.env',
+              {
+                path: '.env',
+                size: 4,
+                mtimeMs: 1000,
+                hash: 'abc',
+                sensitive: true,
+                backup: backupBuf,
+              },
+            ],
+          ])
+          const bl: IgnoredBaseline = { entries, skipped: [] }
           capturedBaselines.push(bl)
           return bl
         },
@@ -3084,14 +3093,16 @@ describe('runProject', () => {
       ],
     })
 
-    // verify-fix 경로에서 captureIgnoredBaseline 이 호출됐어야 한다(implCalls >= 2 조건이 verify-fix 에서 실행됨)
-    // 예외 발생 후 finally disposeBaseline 이 호출됐으면 entries 가 비워진다.
-    // capturedBaselines 중 verify-fix 용 baseline 의 entries 가 비워졌는지 확인
-    // (runTaskIn 경로도 capture 하므로 두 번 이상 호출될 수 있다 — 마지막 하나를 검사)
+    // 각 경로(runTaskIn + verify-fix)에서 captureIgnoredBaseline 이 각각 호출됐어야 한다.
+    // 독립 Map 이므로 각 baseline 이 자신의 disposeBaseline 에 의해 비워진 것을 단독으로 증명한다.
     expect(capturedBaselines.length).toBeGreaterThanOrEqual(1)
-    // 모든 캡처된 baseline 의 entries 가 disposeBaseline 으로 비워졌는지
+    // 모든 캡처된 baseline 의 entries 가 각자의 disposeBaseline 으로 비워졌는지
     for (const bl of capturedBaselines) {
       expect(bl.entries.size).toBe(0) // disposeBaseline 이 호출됐으면 0
+    }
+    // 각 Buffer 도 disposeBaseline 이 제로화했는지(backup 비밀 내용이 메모리에 잔존하지 않는지)
+    for (const buf of capturedBackups) {
+      expect(buf.every((b) => b === 0)).toBe(true)
     }
   })
 
@@ -3113,22 +3124,27 @@ describe('runProject', () => {
 
     const base = parallelFakeWorkspace()
     // addWorktree 를 오버라이드해 spy 가 포함된 worktree 를 반환한다.
+    // collectIgnoredChanges 는 non-empty 변경을 반환해 workspace.ignored_changes 이벤트가
+    // store.appendEvent 로 기록되도록 한다(이벤트 방출 경로 검증).
     const ws: typeof base = {
       ...base,
       async addWorktree(taskId: string, b: string) {
         const wt = await base.addWorktree(taskId, b)
         // ignored 메서드에 spy 추가
         const origCapture = wt.captureIgnoredBaseline.bind(wt)
-        const origCollect = wt.collectIgnoredChanges.bind(wt)
         return {
           ...wt,
           async captureIgnoredBaseline() {
             wtCaptureCalls.push(taskId)
             return origCapture()
           },
-          async collectIgnoredChanges(bl: IgnoredBaseline) {
+          async collectIgnoredChanges(_bl: IgnoredBaseline) {
             wtCollectCalls.push(taskId)
-            return origCollect(bl)
+            // non-empty 반환 → orchestrator 가 workspace.ignored_changes 를 store 에 기록한다
+            return {
+              changes: [{ path: `.env-${taskId}`, change: 'modified' as const, sensitive: true }],
+              unrestorable: [],
+            }
           },
         }
       },
@@ -3149,6 +3165,12 @@ describe('runProject', () => {
       maxConcurrency: 2,
       makeEditSession: factory,
       onEvent: (e) => events.push(e),
+      // non-empty ignored changes → classifyDiffRisk 'destructive' → gate 필요. 승인해 task 를 done 으로 유도.
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
     })
 
     expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
@@ -3158,6 +3180,9 @@ describe('runProject', () => {
     expect(wtCollectCalls.length).toBe(2)
     // worktree 정리(removeWorktree) 완료 후 잔존 없음 — base 의 카운터를 참조(spread 는 값 복사)
     expect(base.worktreesRemoved).toBe(2)
+    // workspace.ignored_changes 이벤트가 store 에 기록됐는지
+    // (orchestrator 는 이 이벤트를 store.appendEvent 로 직접 영속화하므로 store.listEvents() 로 검증)
+    expect(store.listEvents().some((e) => e.type === 'workspace.ignored_changes')).toBe(true)
   })
 
   it('verify-fix capture-fail: captureIgnoredBaseline 실패 → break + verify.fixing 이벤트(민감 백업 실패)', async () => {
