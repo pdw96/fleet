@@ -290,15 +290,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         // #5: 민감/위험 diff 는 리뷰어(외부 API 가능)에게 보내기 전에 승인 게이트를 거친다(비밀 유출 방지).
         const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
-          // P2-1: diff.files 가 비어 있으면(ignored-only destructive) target 이 공백이 된다.
-          // 승인자가 어떤 ignored 경로·종류를 승인하는지 알 수 있도록 sanitized reasons 를 포함한다
-          // (경로·변경종류만, 내용·hash 없음).
-          const trackedTarget = diff.files.join(', ')
+          // [:301] gate target 은 항상 tracked 파일 목록 + ignored reason 둘 다 포함한다.
+          // tracked 만, ignored 만, 혼합 모두 승인자가 전체 변경 범위를 볼 수 있어야 함(내용·hash 비노출).
+          const trackedPart = diff.files.join(', ')
+          const ignoredReasons = dr.reasons.filter((r) => !r.startsWith('복원 불가'))
           const gateTarget =
-            trackedTarget.length > 0
-              ? trackedTarget
-              : dr.reasons.filter((r) => !r.startsWith('복원 불가')).join('; ') ||
-                dr.reasons.join('; ')
+            [trackedPart, ...ignoredReasons].filter(Boolean).join(' · ') || dr.reasons.join('; ')
           const decision = opts.gate
             ? await opts.gate.request({
                 kind: 'apply-diff',
@@ -796,14 +793,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         }
         const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
-          // P2-1: ignored-only destructive 시 diff.files 가 비어 gate target 이 공백이 되지 않도록
-          // sanitized reasons 를 포함한다(경로·종류만, 내용 없음).
-          const trackedTarget = diff.files.join(', ')
+          // [:301] verify-fix gate target 도 항상 tracked + ignored reason 둘 다 포함(내용·hash 비노출).
+          const vfTrackedPart = diff.files.join(', ')
+          const vfIgnoredReasons = dr.reasons.filter((r) => !r.startsWith('복원 불가'))
           const vfGateTarget =
-            trackedTarget.length > 0
-              ? trackedTarget
-              : dr.reasons.filter((r) => !r.startsWith('복원 불가')).join('; ') ||
-                dr.reasons.join('; ')
+            [vfTrackedPart, ...vfIgnoredReasons].filter(Boolean).join(' · ') ||
+            dr.reasons.join('; ')
           const decision = opts.gate
             ? await opts.gate.request({
                 kind: 'apply-diff',

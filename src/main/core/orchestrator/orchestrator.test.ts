@@ -849,6 +849,50 @@ describe('runProject', () => {
     expect(ws.commits).toHaveLength(1)
   })
 
+  it(':301 mixed(tracked+ignored) gate target에 tracked 파일과 ignored reason이 모두 포함된다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const gateRequests: { target: string }[] = []
+    // tracked 파일(src/a.ts) + ignored 변경(.secret modified) 동시 발생
+    const ws = fakeWorkspace([{ files: ['src/a.ts'], patch: '+a', truncated: false }], {
+      collectResult: {
+        changes: [{ path: '.secret', change: 'modified', sensitive: true }],
+        unrestorable: [],
+      },
+    })
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request(req) {
+          gateRequests.push({ target: req.target })
+          return 'approved'
+        },
+      },
+    })
+
+    expect(result.tasks[0].status).toBe('done')
+    expect(gateRequests).toHaveLength(1)
+    // target에 tracked 파일과 ignored reason이 모두 포함되어야 함
+    expect(gateRequests[0].target).toContain('src/a.ts')
+    expect(gateRequests[0].target).toContain('.secret')
+    // 내용 미노출 — 파일 내용·hash 값 자체는 포함되지 않아야 함(경로·종류만)
+    // 참고: 파일명 '.secret' 은 경로로서 포함되는 것은 정상(내용이 아님)
+    expect(gateRequests[0].target).not.toMatch(/=[A-Za-z0-9+/]{20,}|sha256:[0-9a-f]{64}/i)
+  })
+
   it('#1: routes a planner task labeled role:"reviewer" through the CLI implementer (runs to done, not skipped)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

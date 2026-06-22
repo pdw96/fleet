@@ -20,7 +20,6 @@ export interface ScanPolicy {
   maxFiles: number
   maxTotalBytes: number
   maxFileBytes: number
-  maxEntries: number
 }
 
 export const DEFAULT_IGNORED_POLICY: ScanPolicy = {
@@ -30,7 +29,6 @@ export const DEFAULT_IGNORED_POLICY: ScanPolicy = {
   maxFiles: 1000,
   maxTotalBytes: 32 * 1024 * 1024,
   maxFileBytes: 4 * 1024 * 1024,
-  maxEntries: 50_000,
 }
 
 export interface IgnoredEntry {
@@ -48,7 +46,10 @@ export interface IgnoredBaseline {
 }
 
 // git status --ignored 로 in-scope ignored 파일을 열거한다.
-// 디렉터리(`!! dir/`)는 denylist 를 walk INTO 하여 민감 파일을 찾는다; sensitive 는 항상 포함, 그 외는 denylist·maxFiles 적용.
+// 디렉터리(`!! dir/`)는 denylist 여부를 먼저 확인한다:
+//   - denylist 디렉터리 내부는 스캔하지 않음 — 그 안의 sensitive 파일(예: node_modules/.ssh) 커버는
+//     B 슬라이스(강한 격리/evasion)로 연기(#123 후속).
+//   - non-denylist 디렉터리는 walk. generalCount 가 maxFiles 에 도달하면 중단(over-cap 기록).
 async function listIgnored(
   root: string,
   git: GitRunner,
@@ -62,9 +63,7 @@ async function listIgnored(
   const files: string[] = []
   const skipped: { path: string; reason: 'over-cap' }[] = []
   let generalCount = 0
-  let examined = 0
-  const maxEntries = policy.maxEntries
-  // [P2-6+P2-8] pushFile: sensitive → always push; non-sensitive AND denylisted → skip; non-sensitive AND not-denylisted → generalCount cap
+  // pushFile: sensitive → always push; non-sensitive AND denylisted → skip; non-sensitive AND not-denylisted → generalCount cap
   const pushFile = (rel: string): void => {
     const key = rel.replace(/\\/g, '/')
     if (!policy.sensitiveRe.test(key) && policy.denylistRe.test(key)) return
@@ -77,9 +76,7 @@ async function listIgnored(
     }
     files.push(key)
   }
-  let capped = false
   const walk = (relDir: string): void => {
-    if (capped) return
     let names: string[]
     try {
       names = readdirSync(resolve(root, relDir))
@@ -87,13 +84,6 @@ async function listIgnored(
       return
     }
     for (const name of names) {
-      if (capped) return
-      examined++
-      if (examined > maxEntries) {
-        capped = true
-        skipped.push({ path: relDir, reason: 'over-cap' })
-        return
-      }
       const rel = `${relDir}/${name}`
       let st
       try {
@@ -102,15 +92,22 @@ async function listIgnored(
         if (policy.sensitiveRe.test(rel)) pushFile(rel)
         continue
       }
-      if (st.isDirectory()) walk(rel)
-      else pushFile(rel)
+      if (st.isDirectory()) {
+        walk(rel)
+      } else {
+        // pushFile 내부에서 generalCount >= maxFiles 이면 skipped 에 기록하고 return.
+        // 상한 초과 후에도 루프를 계속 돌며 나머지 파일을 모두 skipped 에 기록한다(over-cap 누락 방지).
+        pushFile(rel)
+      }
     }
   }
   for (const e of ignored) {
     const rel = e.replace(/\\/g, '/')
     if (rel.endsWith('/')) {
       const dir = rel.replace(/\/+$/, '')
-      // [P2-6] DO NOT skip denylisted dirs — walk them to find sensitive files inside
+      // denylist 디렉터리 내부는 스캔하지 않음 — 그 안의 sensitive 파일(예: node_modules/.ssh) 커버는
+      // B 슬라이스(강한 격리/evasion)로 연기(#123 후속).
+      if (policy.denylistRe.test(`${dir}/`)) continue
       walk(dir)
     } else {
       pushFile(rel)
@@ -128,41 +125,49 @@ export async function captureIgnoredBaseline(
   const entries = new Map<string, IgnoredEntry>()
   const skipped: { path: string; reason: 'over-cap' | 'read-failed' }[] = [...enumSkipped]
   let totalBytes = 0
-  for (const path of files) {
-    const sensitive = policy.sensitiveRe.test(path)
-    const abs = resolve(root, path)
-    let st
-    try {
-      st = statSync(abs)
-    } catch (err) {
-      if (sensitive) throw new Error(`민감 ignored 파일 stat 실패: ${path}`, { cause: err })
-      skipped.push({ path, reason: 'read-failed' })
-      continue
+  try {
+    for (const path of files) {
+      const sensitive = policy.sensitiveRe.test(path)
+      const abs = resolve(root, path)
+      let st
+      try {
+        st = statSync(abs)
+      } catch (err) {
+        if (sensitive) throw new Error(`민감 ignored 파일 stat 실패: ${path}`, { cause: err })
+        skipped.push({ path, reason: 'read-failed' })
+        continue
+      }
+      if (st.size > policy.maxFileBytes || totalBytes + st.size > policy.maxTotalBytes) {
+        if (sensitive) throw new Error(`민감 ignored 파일이 백업 상한 초과: ${path}`)
+        skipped.push({ path, reason: 'over-cap' })
+        continue
+      }
+      let buf: Buffer
+      try {
+        buf = readFileSync(abs)
+      } catch (err) {
+        if (sensitive) throw new Error(`민감 ignored 파일 백업 실패: ${path}`, { cause: err })
+        skipped.push({ path, reason: 'read-failed' })
+        continue
+      }
+      totalBytes += st.size
+      entries.set(path, {
+        path,
+        size: st.size,
+        mtimeMs: st.mtimeMs,
+        hash: createHash('sha256').update(buf).digest('hex'),
+        sensitive,
+        backup: buf,
+        // [P1-a] capture file mode for restoration
+        mode: st.mode,
+      })
     }
-    if (st.size > policy.maxFileBytes || totalBytes + st.size > policy.maxTotalBytes) {
-      if (sensitive) throw new Error(`민감 ignored 파일이 백업 상한 초과: ${path}`)
-      skipped.push({ path, reason: 'over-cap' })
-      continue
+  } catch (err) {
+    // [:143] 부분 캡처 중 throw: 이미 쌓인 backup Buffer 를 zeroize(비밀 위생)
+    for (const entry of entries.values()) {
+      if (entry.backup) entry.backup.fill(0)
     }
-    let buf: Buffer
-    try {
-      buf = readFileSync(abs)
-    } catch (err) {
-      if (sensitive) throw new Error(`민감 ignored 파일 백업 실패: ${path}`, { cause: err })
-      skipped.push({ path, reason: 'read-failed' })
-      continue
-    }
-    totalBytes += st.size
-    entries.set(path, {
-      path,
-      size: st.size,
-      mtimeMs: st.mtimeMs,
-      hash: createHash('sha256').update(buf).digest('hex'),
-      sensitive,
-      backup: buf,
-      // [P1-a] capture file mode for restoration
-      mode: st.mode,
-    })
+    throw err
   }
   return { entries, skipped }
 }
@@ -210,6 +215,20 @@ export async function collectIgnoredChanges(
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
     }
+    // [:213] size-guard: 현재 파일이 maxFileBytes 초과 시 read/hash 없이 modified+unrestorable
+    let currentSize: number
+    try {
+      currentSize = statSync(abs).size
+    } catch {
+      changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      unrestorable.push({ path, reason: 'stat-failed' })
+      continue
+    }
+    if (currentSize > policy.maxFileBytes) {
+      changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      unrestorable.push({ path, reason: 'over-cap-modified' })
+      continue
+    }
     const buf = readFileSync(abs)
     const hash = createHash('sha256').update(buf).digest('hex')
     if (hash !== entry.hash) {
@@ -226,12 +245,17 @@ export async function restoreIgnoredBaseline(
   baseline: IgnoredBaseline,
   policy: ScanPolicy,
 ): Promise<void> {
-  const { files } = await listIgnored(root, git, policy)
+  const { files, skipped } = await listIgnored(root, git, policy)
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
   // 1) created(현재 in-scope, baseline·skipped 둘 다 없음) → 삭제.
   for (const path of files) {
     if (baseline.entries.has(path) || skippedPaths.has(path)) continue
     rmSync(resolve(root, path), { recursive: true, force: true })
+  }
+  // [:229] over-cap skipped 중 baseline 에 없는 것도 삭제(에이전트가 cap 초과로 만든 파일 rollback).
+  for (const s of skipped) {
+    if (baseline.entries.has(s.path) || skippedPaths.has(s.path)) continue
+    rmSync(resolve(root, s.path), { recursive: true, force: true })
   }
   // 2) backup 보유 엔트리 → 백업에서 복원(modified·deleted 모두 포함).
   for (const [path, entry] of baseline.entries) {

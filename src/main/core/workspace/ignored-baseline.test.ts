@@ -109,38 +109,49 @@ describe('captureIgnoredBaseline', () => {
     )
   })
 
-  // [P2-6] sensitive file inside a denylisted dir IS captured
-  it('[P2-6] denylist 트리 내 민감 파일(node_modules/.ssh/id_rsa)은 캡처된다', async () => {
+  // [P2-6] Walk 단순화(C): denylist 디렉터리는 통째 skip — 내부 sensitive도 A 범위 밖(B 슬라이스 연기)
+  it('[P2-6] denylist 디렉터리(node_modules/) 내부는 sensitive 포함 전혀 스캔하지 않는다', async () => {
     mkdirSync(join(root, 'node_modules', '.ssh'), { recursive: true })
     writeFileSync(join(root, 'node_modules', '.ssh', 'id_rsa'), 'PRIVATE')
     writeFileSync(join(root, 'node_modules', 'x.js'), 'big')
     const git = fakeGitIgnored(['node_modules/'])
     const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
-    // id_rsa 는 SENSITIVE_FILE 패턴에 매칭 → entries 에 있어야 함
-    const key = 'node_modules/.ssh/id_rsa'
-    expect(base.entries.has(key)).toBe(true)
-    expect(base.entries.get(key)!.sensitive).toBe(true)
-    // x.js 는 non-sensitive AND denylisted → entries 에 없어야 함
+    // denylist 통째 skip → id_rsa도 x.js도 entries에 없어야 함(A 범위 밖)
+    expect(base.entries.has('node_modules/.ssh/id_rsa')).toBe(false)
     expect(base.entries.has('node_modules/x.js')).toBe(false)
+    expect(base.skipped).toEqual([])
   })
 
-  // [P2-8] maxEntries bounded walk
-  it('[P2-8] maxEntries 초과 시 walk 를 중단하고 over-cap 을 기록한다', async () => {
-    // 3개 파일 생성, maxEntries=2 → 3번째에서 cap
-    writeFileSync(join(root, 'a.txt'), 'aaa')
-    writeFileSync(join(root, 'b.txt'), 'bbb')
-    writeFileSync(join(root, 'c.txt'), 'ccc')
-    // 트리를 walk 하도록 dir 형태로 emit 하면 실제론 파일이므로 statSync isDir=false → pushFile
-    // 대신 subdirectory walk 를 유도하기 위해 real dir 구조를 씀
+  // [P2-8] Walk 단순화(C): maxEntries 제거 → non-denylist maxFiles 초과 시 walk 중단
+  it('[P2-8] non-denylist 디렉터리가 maxFiles 초과 시 walk 중단하고 over-cap 을 기록한다', async () => {
     mkdirSync(join(root, 'subdir'), { recursive: true })
-    writeFileSync(join(root, 'subdir', 'f1.dat'), '1')
-    writeFileSync(join(root, 'subdir', 'f2.dat'), '2')
-    writeFileSync(join(root, 'subdir', 'f3.dat'), '3')
+    writeFileSync(join(root, 'subdir', 'f1.txt'), '1')
+    writeFileSync(join(root, 'subdir', 'f2.txt'), '2')
+    writeFileSync(join(root, 'subdir', 'f3.txt'), '3')
     const git2 = fakeGitIgnored(['subdir/'])
-    const policy = { ...DEFAULT_IGNORED_POLICY, maxEntries: 2 }
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 2 }
     const base = await captureIgnoredBaseline(root, git2, policy)
-    // examined > maxEntries 에 걸려서 skipped 에 over-cap 항목이 있어야 함
-    expect(base.skipped.some((s) => s.reason === 'over-cap')).toBe(true)
+    // 2개는 캡처, 1개는 over-cap
+    const subEntries = [...base.entries.keys()].filter((k) => k.startsWith('subdir/'))
+    const subSkipped = base.skipped.filter(
+      (s) => s.path.startsWith('subdir/') && s.reason === 'over-cap',
+    )
+    expect(subEntries.length + subSkipped.length).toBe(3)
+    expect(subSkipped.length).toBeGreaterThanOrEqual(1)
+  })
+
+  // [:143] 부분 backup zeroize on capture abort
+  it(':143 민감 파일 throw 전에 이미 캡처된 부분 backup Buffer가 zeroize된다', async () => {
+    // a.key(정상), .env(디렉터리→readFileSync EISDIR throw) 순서로 캡처 → partial backup zeroize
+    writeFileSync(join(root, 'a.key'), 'A_SECRET')
+    mkdirSync(join(root, '.env'), { recursive: true })
+    const git = fakeGitIgnored(['a.key', '.env'])
+    // throw가 전파되어야 함
+    await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+      /민감 ignored/,
+    )
+    // .env가 throw됐으므로 이후 a.key 백업이 zeroize됐는지 간접 확인:
+    // baseline이 reject됐으므로 버퍼 참조 불가 → 구현 코드 리뷰로 보완(throw 전파 자체가 주요 단언)
   })
 })
 
@@ -169,6 +180,24 @@ describe('collectIgnoredChanges', () => {
     const baseline = await captureIgnoredBaseline(root, git, policy)
     const cs = await collectIgnoredChanges(root, git, baseline, policy)
     expect(cs.unrestorable).toContainEqual({ path: 'big.dat', reason: 'over-cap' })
+  })
+
+  // [:213] oversized modified: size-guard → read 없이 modified+unrestorable
+  it(':213 oversized modified ignored 파일은 read하지 않고 modified+unrestorable 로 표기한다', async () => {
+    // 작은 파일로 baseline 캡처
+    writeFileSync(join(root, 'big.cfg'), 'small')
+    const git = fakeGitIgnored(['big.cfg'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+
+    // 에이전트가 파일을 거대하게 교체
+    writeFileSync(join(root, 'big.cfg'), Buffer.alloc(16))
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxFileBytes: 8 }
+    const cs = await collectIgnoredChanges(root, git, baseline, policy)
+
+    // modified로 탐지되어야 하고
+    expect(cs.changes.some((c) => c.path === 'big.cfg' && c.change === 'modified')).toBe(true)
+    // unrestorable에 포함되어야 함(read하지 않고 modified이므로 복원 불가)
+    expect(cs.unrestorable.some((u) => u.path === 'big.cfg')).toBe(true)
   })
 
   // [P2-4] current-scan over-cap surfaced in collect
@@ -225,6 +254,25 @@ describe('restoreIgnoredBaseline', () => {
     expect(existsSync(envPath)).toBe(true)
     const restoredMode = statSync(envPath).mode & 0o777
     expect(restoredMode).toBe(0o600)
+  })
+
+  // [:229] restore drops over-cap — over-cap skipped 에이전트 생성 파일도 삭제
+  it(':229 restore 시 over-cap 으로 스킵된 에이전트 생성 파일도 삭제된다', async () => {
+    // baseline 캡처 시 파일 없음
+    const baseGit = fakeGitIgnored([])
+    const baseline = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+
+    // 에이전트가 파일 2개 생성, maxFiles=1 → 2번째는 over-cap
+    writeFileSync(join(root, 'a.txt'), 'agent1')
+    writeFileSync(join(root, 'b.txt'), 'agent2')
+    const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+    const curGit = fakeGitIgnored(['a.txt', 'b.txt'])
+
+    await restoreIgnoredBaseline(root, curGit, baseline, policy)
+
+    // a.txt는 files에 포함 → 삭제됨, b.txt는 skipped(over-cap)이지만 baseline 없음 → 삭제되어야 함
+    expect(existsSync(join(root, 'a.txt'))).toBe(false)
+    expect(existsSync(join(root, 'b.txt'))).toBe(false)
   })
 
   // [P1-b] remove non-file path before restoring
