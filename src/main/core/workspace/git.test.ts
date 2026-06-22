@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createWorkspace, type GitRunner, type GitResult } from './git'
 
@@ -395,5 +398,33 @@ describe('createWorkspace index.lock 경합 재시도', () => {
     const ws = createWorkspace('/ws', g.runner)
     await expect(ws.collectDiff('base')).rejects.toThrow('git add 실패')
     expect(addCalls).toBe(1) // 락이 아닌 에러는 즉시 실패(재시도 없음)
+  })
+})
+
+describe('createWorkspace ignored baseline methods', () => {
+  it('captures, detects, and restores ignored changes on a real temp workspace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fleet-ws-ign-'))
+    try {
+      writeFileSync(join(root, '.env'), 'A=1')
+      // fakeGit: status --ignored 만 캔드 응답, 그 외 0.
+      const g = fakeGit()
+      g.setReply((args) => {
+        if (args[0] === 'status' && args.includes('--ignored'))
+          return { code: 0, stdout: '!! .env\0', stderr: '' }
+        return { code: 0, stdout: '', stderr: '' }
+      })
+      const ws = createWorkspace(root, g.runner)
+      const baseline = await ws.captureIgnoredBaseline()
+      expect(baseline.entries.get('.env')?.sensitive).toBe(true)
+
+      writeFileSync(join(root, '.env'), 'A=2')
+      const cs = await ws.collectIgnoredChanges(baseline)
+      expect(cs.changes).toContainEqual({ path: '.env', change: 'modified', sensitive: true })
+
+      await ws.restoreIgnoredBaseline(baseline)
+      expect(readFileSync(join(root, '.env')).toString()).toBe('A=1')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

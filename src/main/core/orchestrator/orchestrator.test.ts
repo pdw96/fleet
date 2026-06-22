@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { LlmConnectionKind, OrchestratorEvent } from '../../../shared/types'
 import { createSessionManager } from '../session/manager'
 import type { LlmSession } from '../session/types'
 import { createMemoryStore } from '../store/memory'
 import type { DiffResult, TaskWorktree, Workspace } from '../workspace/git'
+import type { IgnoredBaseline, IgnoredChangeSet } from '../workspace/ignored-baseline'
 import { runProject } from './orchestrator'
 
 function fakeSession(
@@ -26,12 +27,24 @@ function deterministic() {
   return { idGen: () => `id-${++n}`, now: () => 1000 + n }
 }
 
+interface FakeIgnoredOpts {
+  /** captureIgnoredBaseline 의 반환값. throw 함수를 넣으면 throw 한다. */
+  captureResult?: IgnoredBaseline | (() => Promise<IgnoredBaseline>)
+  /** collectIgnoredChanges 의 반환값. */
+  collectResult?: IgnoredChangeSet
+  /** restoreIgnoredBaseline spy — vi.fn() 으로 자동 생성(호출 여부·인자 기록용). */
+  restoreSpy?: (baseline: IgnoredBaseline) => Promise<void>
+}
+
 /** diff/커밋을 기록하는 가짜 워크스페이스. collectDiff 는 호출마다 diffByCall 을 소비한다. */
 function fakeWorkspace(
   diffByCall: DiffResult[] = [],
+  ignoredOpts: FakeIgnoredOpts = {},
 ): Workspace & { commits: string[]; reverts: number } {
   let i = 0
   const commits: string[] = []
+  const restoreSpy: (baseline: IgnoredBaseline) => Promise<void> =
+    ignoredOpts.restoreSpy ?? vi.fn(async (_baseline: IgnoredBaseline) => {})
   const ws = {
     commits,
     reverts: 0,
@@ -57,6 +70,16 @@ function fakeWorkspace(
       return { ok: true }
     },
     async removeWorktree() {},
+    async captureIgnoredBaseline(): Promise<IgnoredBaseline> {
+      if (typeof ignoredOpts.captureResult === 'function') {
+        return ignoredOpts.captureResult()
+      }
+      return ignoredOpts.captureResult ?? { entries: new Map(), skipped: [] }
+    },
+    async collectIgnoredChanges(): Promise<IgnoredChangeSet> {
+      return ignoredOpts.collectResult ?? { changes: [], unrestorable: [] }
+    },
+    restoreIgnoredBaseline: restoreSpy,
   }
   return ws
 }
@@ -133,6 +156,13 @@ function parallelFakeWorkspace(
           return { ok: true }
         },
         async removeWorktree() {},
+        async captureIgnoredBaseline() {
+          return { entries: new Map(), skipped: [] }
+        },
+        async collectIgnoredChanges() {
+          return { changes: [], unrestorable: [] }
+        },
+        async restoreIgnoredBaseline() {},
       }
       return wt
     },
@@ -148,6 +178,13 @@ function parallelFakeWorkspace(
       state.worktreesRemoved++
       state.removed.push(taskId)
     },
+    async captureIgnoredBaseline() {
+      return { entries: new Map(), skipped: [] }
+    },
+    async collectIgnoredChanges() {
+      return { changes: [], unrestorable: [] }
+    },
+    async restoreIgnoredBaseline() {},
     onIntegrate: opts.onIntegrate,
   }
   return state
@@ -440,6 +477,13 @@ describe('runProject', () => {
         return { ok: true }
       },
       async removeWorktree() {},
+      async captureIgnoredBaseline() {
+        return { entries: new Map(), skipped: [] }
+      },
+      async collectIgnoredChanges() {
+        return { changes: [], unrestorable: [] }
+      },
+      async restoreIgnoredBaseline() {},
     }
     await expect(
       runProject('goal', {
@@ -803,6 +847,50 @@ describe('runProject', () => {
     })
     expect(result.tasks[0].status).toBe('done')
     expect(ws.commits).toHaveLength(1)
+  })
+
+  it(':301 mixed(tracked+ignored) gate target에 tracked 파일과 ignored reason이 모두 포함된다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const gateRequests: { target: string }[] = []
+    // tracked 파일(src/a.ts) + ignored 변경(.secret modified) 동시 발생
+    const ws = fakeWorkspace([{ files: ['src/a.ts'], patch: '+a', truncated: false }], {
+      collectResult: {
+        changes: [{ path: '.secret', change: 'modified', sensitive: true }],
+        unrestorable: [],
+      },
+    })
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request(req) {
+          gateRequests.push({ target: req.target })
+          return 'approved'
+        },
+      },
+    })
+
+    expect(result.tasks[0].status).toBe('done')
+    expect(gateRequests).toHaveLength(1)
+    // target에 tracked 파일과 ignored reason이 모두 포함되어야 함
+    expect(gateRequests[0].target).toContain('src/a.ts')
+    expect(gateRequests[0].target).toContain('.secret')
+    // 내용 미노출 — 파일 내용·hash 값 자체는 포함되지 않아야 함(경로·종류만)
+    // 참고: 파일명 '.secret' 은 경로로서 포함되는 것은 정상(내용이 아님)
+    expect(gateRequests[0].target).not.toMatch(/=[A-Za-z0-9+/]{20,}|sha256:[0-9a-f]{64}/i)
   })
 
   it('#1: routes a planner task labeled role:"reviewer" through the CLI implementer (runs to done, not skipped)', async () => {
@@ -1853,6 +1941,13 @@ describe('runProject', () => {
         return { ok: true }
       },
       async removeWorktree() {},
+      async captureIgnoredBaseline() {
+        return { entries: new Map(), skipped: [] }
+      },
+      async collectIgnoredChanges() {
+        return { changes: [], unrestorable: [] }
+      },
+      async restoreIgnoredBaseline() {},
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
@@ -1916,6 +2011,13 @@ describe('runProject', () => {
         return { ok: true }
       },
       async removeWorktree() {},
+      async captureIgnoredBaseline() {
+        return { entries: new Map(), skipped: [] }
+      },
+      async collectIgnoredChanges() {
+        return { changes: [], unrestorable: [] }
+      },
+      async restoreIgnoredBaseline() {},
     }
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
@@ -2616,5 +2718,968 @@ describe('runProject', () => {
     expect(events.some((e) => e.type === 'task.failed')).toBe(true)
     // 그래도 worktree 는 정리된다(잔존 0).
     expect(ws.worktreesRemoved).toBe(ws.worktreesCreated)
+  })
+
+  // ── Task 6: ignored baseline/risk/rollback 배선 회귀 ──
+
+  it('회귀1: 기존 .env(sensitive) modified → gate 가 destructive 로 호출되고 거부 시 restoreIgnoredBaseline 호출됨 + reason 에 .env·modified 포함(내용 미포함)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const restoreSpy = vi.fn(async () => {})
+    // ignoredChanges: 기존 .env 가 modified(sensitive)
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    // diff 는 tracked 변경 없음(ignored 변경만 destructive 트리거)
+    const ws = fakeWorkspace([{ files: [], patch: '', truncated: false }], {
+      collectResult,
+      restoreSpy,
+    })
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return 'rejected' // 승인 거부
+        },
+      },
+    })
+
+    // gate 가 destructive 로 호출됐는지
+    expect(gateRequests.length).toBeGreaterThan(0)
+    expect(gateRequests[0].risk).toBe('destructive')
+    // classifyDiffRisk reasons 는 store output 에도 들어간다 — .env·modified 포함, 내용 미포함
+    const taskOutput = result.tasks[0].output ?? ''
+    expect(taskOutput).toContain('.env')
+    expect(taskOutput).toContain('modified')
+    expect(taskOutput).not.toContain('+secret') // 내용 미노출
+    // 거부 후 restoreIgnoredBaseline spy 호출됨
+    expect(restoreSpy).toHaveBeenCalled()
+    // task failed
+    expect(result.tasks[0].status).toBe('failed')
+  })
+
+  it('회귀2: 새 ignored secret(created, sensitive) → 미승인 시 restoreIgnoredBaseline spy 호출됨', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const restoreSpy = vi.fn(async () => {})
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env.secret', change: 'created', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace([{ files: [], patch: '', truncated: false }], {
+      collectResult,
+      restoreSpy,
+    })
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      // gate 미지정 → 거부(안전 기본값)
+    })
+
+    // 미승인으로 실패
+    expect(result.tasks[0].status).toBe('failed')
+    // restoreIgnoredBaseline spy 호출됨(created 삭제 로직이 실행됐음을 검증)
+    expect(restoreSpy).toHaveBeenCalled()
+  })
+
+  it('회귀4: tracked 변경 + ignored 변경 혼합 → gate reason 에 양쪽(tracked 위험 + ignored 위험) 포함, destructive', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const restoreSpy = vi.fn(async () => {})
+    // tracked: .env 파일 변경(sensitive → destructive)
+    // ignored: credentials.json modified(sensitive)
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: 'credentials.json', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+tracked', truncated: false }], {
+      collectResult,
+      restoreSpy,
+    })
+
+    let capturedReasons: string[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request(req) {
+          // task output 에 reasons 가 들어가는 경로를 통해 검증하기 위해 요청 요약에서 추출
+          capturedReasons = [req.summary, req.target ?? '']
+          return 'rejected'
+        },
+      },
+    })
+
+    expect(result.tasks[0].status).toBe('failed')
+    // task output 에 tracked 위험(.env) + ignored 위험(credentials.json) 양쪽 포함
+    const taskOutput = result.tasks[0].output ?? ''
+    expect(taskOutput).toContain('.env') // tracked 위험
+    expect(taskOutput).toContain('credentials.json') // ignored 위험
+    expect(taskOutput).toContain('modified') // change 종류
+    // gate 가 destructive 로 호출됐는지
+    expect(capturedReasons.length).toBeGreaterThan(0)
+    // restoreIgnoredBaseline 호출됨
+    expect(restoreSpy).toHaveBeenCalled()
+  })
+
+  it('capture-fail: captureIgnoredBaseline 이 throw 하면 task 가 hard-fail 되고 implement 루프 진입 안 함', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const ws = fakeWorkspace([], {
+      captureResult: async () => {
+        throw new Error('민감 파일 stat 실패')
+      },
+    })
+
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
+    })
+
+    // 작업은 failed
+    expect(result.tasks[0].status).toBe('failed')
+    expect(result.tasks[0].output).toContain('민감 ignored 백업 실패')
+    expect(result.tasks[0].output).toContain('민감 파일 stat 실패')
+    // implement 루프 진입 안 함 — implementer.send 호출 0
+    expect(implCalls).toBe(0)
+    // task.failed 이벤트 방출됨
+    expect(events.some((e) => e.type === 'task.failed')).toBe(true)
+  })
+
+  // ── Task 7: verify-fix ignored 가드 배선 회귀 ──
+
+  it('회귀3: verify-fix 중 abort → rollbackWithIgnored(restoreIgnoredBaseline) 호출 + task failed(gate 거절로 runTaskIn 에서 이미 failed, verify-fix catch 는 task 상태 불변)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const controller = new AbortController()
+    let implCalls = 0
+    sessions.add({
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        implCalls++
+        if (implCalls >= 2) {
+          // verify-fix 수정 호출 시 abort + throw
+          controller.abort()
+          throw new Error('aborted mid-fix')
+        }
+        return '구현'
+      },
+      async dispose() {},
+    })
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const restoreSpy = vi.fn(async () => {})
+    // ignored: deleted 파일이 있음(deleted → 복구 대상)
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'deleted', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로 diff
+        { files: ['src/b.ts'], patch: '+b', truncated: false }, // verify-fix diff
+      ],
+      { collectResult, restoreSpy },
+    )
+
+    const events: OrchestratorEvent[] = []
+    // verifyCalls 카운터로 첫 검증은 실패(수정 진입), 수정 중 abort
+    let verifyCalls = 0
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+      maxVerifyFixRounds: 1,
+      onEvent: (e) => events.push(e),
+      verify: async () => {
+        verifyCalls++
+        // 첫 번째 검증은 실패(verify-fix 진입), 이후는 abort 로 도달 불가
+        const passed = verifyCalls > 1
+        return [
+          {
+            kind: 'test',
+            command: 'npm test',
+            passed,
+            exitCode: passed ? 0 : 1,
+            stdout: '',
+            stderr: passed ? '' : 'boom',
+            durationMs: 1,
+          },
+        ]
+      },
+    })
+
+    // abort 로 취소됐으므로 project 는 failed
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+    // 작업은 runTaskIn 내 gate 거절(ignored 민감 변경 → destructive → no gate → rejected)로 'failed' 처리됐다.
+    // verify-fix 는 task 상태를 변경하지 않으므로 abort 후에도 'failed' 유지.
+    expect(result.tasks[0].status).toBe('failed')
+    // verify-fix catch(abort) 에서 rollbackWithIgnored 가 호출됐는지 — restoreIgnoredBaseline spy 검증
+    expect(restoreSpy).toHaveBeenCalled()
+    // verify-fix 이벤트에 수정 실패 메시지가 있어야 한다
+    const fixEvent = events.find(
+      (e) => e.type === 'verify.fixing' && e.message.includes('수정 실패'),
+    )
+    expect(fixEvent).toBeDefined()
+  })
+
+  it('회귀5: verify-fix 에서 unrestorable ignored → classifyDiffRisk destructive → gate 호출(escalate), 거부 시 rollback', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const restoreSpy = vi.fn(async () => {})
+    // unrestorable ignored 변경 → classifyDiffRisk 가 '복원 불가' reason 을 포함한 destructive 로 분류해야 한다
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: 'secrets/creds.json', change: 'modified', sensitive: true }],
+      unrestorable: [{ path: 'secrets/creds.json', reason: 'over-cap' }],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로 diff(안전)
+        { files: ['src/b.ts'], patch: '+b', truncated: false }, // verify-fix diff
+      ],
+      { collectResult, restoreSpy },
+    )
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return 'rejected' // 거부 → rollback
+        },
+      },
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // gate 가 destructive 로 호출됐는지(verify-fix 경로에서 escalate)
+    expect(gateRequests.length).toBeGreaterThan(0)
+    expect(gateRequests[0].risk).toBe('destructive')
+    // rollbackWithIgnored 가 호출됐는지 — restoreIgnoredBaseline spy
+    expect(restoreSpy).toHaveBeenCalled()
+    // project 는 검증 실패(수정 미승인)
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  it('회귀6: verify-fix 에서 baseline 보유 후 예외 발생 → finally 에서 disposeBaseline 호출(entries 비워짐)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // taskSendDone: 첫 send(작업 구현)가 완료되면 true 로 전환 — 이후 send 는 verify-fix 수정이므로 예외
+    let taskSendDone = false
+    sessions.add({
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        if (taskSendDone) throw new Error('수정 호출 실패') // verify-fix 에서 예외
+        taskSendDone = true
+        return '구현'
+      },
+      async dispose() {},
+    })
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 각 captureIgnoredBaseline 호출마다 독립적인 Map 인스턴스와 Buffer 를 생성한다.
+    // 공유 Map 을 쓰면 runTaskIn finally 의 disposeBaseline 이 먼저 실행돼 verify-fix 경로의
+    // dispose 여부와 무관하게 entries.size === 0 이 돼 거짓 통과(false-pass) 가 발생한다.
+    const capturedBaselines: IgnoredBaseline[] = []
+    const capturedBackups: Buffer[] = [] // entries 가 clear 된 후에도 Buffer 제로화 여부를 검증하기 위해 보관
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로
+        { files: [], patch: '', truncated: false }, // verify-fix diff
+      ],
+      {
+        captureResult: async () => {
+          // 호출마다 새 Buffer · 새 Map — 공유 상태 없음
+          const backupBuf = Buffer.from('KEY=1')
+          capturedBackups.push(backupBuf)
+          const entries = new Map<string, import('../workspace/ignored-baseline').IgnoredEntry>([
+            [
+              '.env',
+              {
+                path: '.env',
+                size: 4,
+                mtimeMs: 1000,
+                hash: 'abc',
+                sensitive: true,
+                backup: backupBuf,
+                mode: 0o644,
+              },
+            ],
+          ])
+          const bl: IgnoredBaseline = { entries, skipped: [] }
+          capturedBaselines.push(bl)
+          return bl
+        },
+        collectResult: { changes: [], unrestorable: [] },
+      },
+    )
+
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // 각 경로(runTaskIn + verify-fix)에서 captureIgnoredBaseline 이 각각 호출됐어야 한다.
+    // 독립 Map 이므로 각 baseline 이 자신의 disposeBaseline 에 의해 비워진 것을 단독으로 증명한다.
+    expect(capturedBaselines.length).toBeGreaterThanOrEqual(1)
+    // 모든 캡처된 baseline 의 entries 가 각자의 disposeBaseline 으로 비워졌는지
+    for (const bl of capturedBaselines) {
+      expect(bl.entries.size).toBe(0) // disposeBaseline 이 호출됐으면 0
+    }
+    // 각 Buffer 도 disposeBaseline 이 제로화했는지(backup 비밀 내용이 메모리에 잔존하지 않는지)
+    for (const buf of capturedBackups) {
+      expect(buf.every((b) => b === 0)).toBe(true)
+    }
+  })
+
+  it('회귀7: 병렬 worktree 경로에서 worktree ws 의 ignored 메서드가 호출되고 ignored_changes 이벤트 방출됨', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // worktree 별 ignored 메서드 호출을 추적하는 parallelFakeWorkspace 확장
+    const wtCaptureCalls: string[] = [] // taskId 별 captureIgnoredBaseline 호출 기록
+    const wtCollectCalls: string[] = [] // taskId 별 collectIgnoredChanges 호출 기록
+
+    const base = parallelFakeWorkspace()
+    // addWorktree 를 오버라이드해 spy 가 포함된 worktree 를 반환한다.
+    // collectIgnoredChanges 는 non-empty 변경을 반환해 workspace.ignored_changes 이벤트가
+    // store.appendEvent 로 기록되도록 한다(이벤트 방출 경로 검증).
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        const wt = await base.addWorktree(taskId, b)
+        // ignored 메서드에 spy 추가
+        const origCapture = wt.captureIgnoredBaseline.bind(wt)
+        return {
+          ...wt,
+          async captureIgnoredBaseline() {
+            wtCaptureCalls.push(taskId)
+            return origCapture()
+          },
+          async collectIgnoredChanges(_bl: IgnoredBaseline) {
+            wtCollectCalls.push(taskId)
+            // non-empty 반환 → orchestrator 가 workspace.ignored_changes 를 store 에 기록한다
+            return {
+              changes: [{ path: `.env-${taskId}`, change: 'modified' as const, sensitive: true }],
+              unrestorable: [],
+            }
+          },
+        }
+      },
+    }
+
+    const events: OrchestratorEvent[] = []
+    const { factory } = makeBarrierEditFactory(2)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+      onEvent: (e) => events.push(e),
+      // non-empty ignored changes → classifyDiffRisk 'destructive' → gate 필요. 승인해 task 를 done 으로 유도.
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    // 병렬 worktree 각각의 captureIgnoredBaseline 이 호출됐는지
+    expect(wtCaptureCalls.length).toBe(2)
+    // 각 worktree 의 collectIgnoredChanges 도 호출됐는지
+    expect(wtCollectCalls.length).toBe(2)
+    // worktree 정리(removeWorktree) 완료 후 잔존 없음 — base 의 카운터를 참조(spread 는 값 복사)
+    expect(base.worktreesRemoved).toBe(2)
+    // workspace.ignored_changes 이벤트가 store 에 기록됐는지
+    // (orchestrator 는 이 이벤트를 store.appendEvent 로 직접 영속화하므로 store.listEvents() 로 검증)
+    expect(store.listEvents().some((e) => e.type === 'workspace.ignored_changes')).toBe(true)
+  })
+
+  // ── #123-A: Codex PR 리뷰 반영 (P2-1, P2-2, P2-5) ──
+
+  // P2-1: ignored-only destructive 에서 gate target 이 ignored 경로·종류를 포함한다
+  it('P2-1: ignored-only destructive → gate target 은 ignored 경로·종류 포함, 내용 미노출', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // diff.files 는 비어 있고, ignored 변경만 destructive 를 유발한다.
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace([{ files: [], patch: '', truncated: false }], { collectResult })
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return 'rejected'
+        },
+      },
+    })
+
+    expect(gateRequests.length).toBeGreaterThan(0)
+    const target = gateRequests[0].target ?? ''
+    // ignored 경로(.env)와 종류(modified)가 target 에 포함돼야 한다
+    expect(target).toContain('.env')
+    expect(target).toContain('modified')
+    // 파일 내용은 노출하지 않는다
+    expect(target).not.toContain('+secret')
+    expect(target).not.toContain('KEY=')
+  })
+
+  // P2-1: verify-fix 경로도 ignored-only destructive 시 gate target 에 ignored 정보 포함
+  it('P2-1(verify-fix): ignored-only destructive → verify-fix gate target 은 ignored 경로·종류 포함', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 작업 경로는 tracked 변경(안전), verify-fix 에서 ignored-only destructive
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: 'secrets/key.pem', change: 'created', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로 diff(안전)
+        { files: [], patch: '', truncated: false }, // verify-fix diff — ignored-only
+      ],
+      { collectResult },
+    )
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          // 첫 번째(작업 경로)는 승인, 두 번째(verify-fix)는 거부
+          return gateRequests.length === 1 ? 'approved' : 'rejected'
+        },
+      },
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // verify-fix gate 요청(두 번째)에 ignored 경로·종류 포함
+    expect(gateRequests.length).toBeGreaterThanOrEqual(2)
+    const vfTarget = gateRequests[1].target ?? ''
+    expect(vfTarget).toContain('key.pem')
+    expect(vfTarget).toContain('created')
+  })
+
+  // P2-2: reviewer 거절 후 rollback 실패 → 재시도 안 함, task failed, rollback note 표면화
+  it('P2-2: reviewer 거절 + rollback 실패 → task failed, implementer 재호출 없음', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    // 리뷰어는 항상 거절
+    sessions.add(fakeSession('rev', () => 'REVISE: 다시'))
+
+    // revert 가 throw 해 rollbackWithIgnored 가 non-empty note 를 반환하도록 한다
+    const ws: Workspace = {
+      async ensureRepo() {},
+      async checkpoint() {
+        return 'base'
+      },
+      async collectDiff(): Promise<DiffResult> {
+        return { files: ['src/a.ts'], patch: '+a', truncated: false }
+      },
+      async keep() {
+        return 'commit'
+      },
+      async revert() {
+        throw new Error('git reset hard 실패')
+      },
+      async addWorktree() {
+        throw new Error('addWorktree stub')
+      },
+      async integrate() {
+        return { ok: true }
+      },
+      async removeWorktree() {},
+      async captureIgnoredBaseline() {
+        return { entries: new Map(), skipped: [] }
+      },
+      async collectIgnoredChanges() {
+        return { changes: [], unrestorable: [] }
+      },
+      async restoreIgnoredBaseline() {},
+    }
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 3, // 재시도 여지를 주되, rollback 실패 시 즉시 중단해야 한다
+    })
+
+    // rollback 실패 → task 는 즉시 failed, 재시도 없음
+    expect(result.tasks[0].status).toBe('failed')
+    // rollback 실패 노트가 output 에 포함돼야 한다
+    expect(result.tasks[0].output).toContain('되돌리기 실패')
+    // implementer 가 1회 이상 호출됐지만, rollback 실패 후 재시도(2회 이상)는 하지 않는다
+    expect(implCalls).toBe(1)
+  })
+
+  // P2-5: workspace.ignored_changes 이벤트가 emit 을 통해 projectId 를 갖는다
+  it('P2-5: workspace.ignored_changes 이벤트는 listProjectEvents 에 포함된다(projectId 부착)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // non-empty ignored changes → workspace.ignored_changes 이벤트 방출
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    // diff.files 가 있어야 gate 승인 후 done 으로 진행
+    const ws = fakeWorkspace([{ files: ['src/a.ts'], patch: '+a', truncated: false }], {
+      collectResult,
+    })
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request() {
+          return 'approved' // destructive diff 승인
+        },
+      },
+    })
+
+    // listProjectEvents 는 data.projectId 로 필터링 → ignored_changes 이벤트가 포함돼야 한다
+    const projectEvents = store.listProjectEvents(result.projectId)
+    const ignoredEvt = projectEvents.find((e) => e.type === 'workspace.ignored_changes')
+    expect(ignoredEvt).toBeDefined()
+    expect(ignoredEvt?.data['projectId']).toBe(result.projectId)
+  })
+
+  // P2-5: verify-fix 경로의 workspace.ignored_changes 이벤트도 listProjectEvents 에 포함
+  it('P2-5(verify-fix): verify-fix ignored_changes 이벤트도 listProjectEvents 에 포함된다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // 작업 경로
+        { files: ['src/b.ts'], patch: '+b', truncated: false }, // verify-fix 경로
+      ],
+      { collectResult },
+    )
+
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    const projectEvents = store.listProjectEvents(result.projectId)
+    const ignoredEvts = projectEvents.filter((e) => e.type === 'workspace.ignored_changes')
+    // 작업 경로 + verify-fix 경로에서 각각 방출, 모두 projectId 부착
+    expect(ignoredEvts.length).toBeGreaterThanOrEqual(2)
+    expect(ignoredEvts.every((e) => e.data['projectId'] === result.projectId)).toBe(true)
+  })
+
+  it('verify-fix capture-fail: captureIgnoredBaseline 실패 → break + verify.fixing 이벤트(민감 백업 실패)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    let implCalls = 0
+    sessions.add(
+      fakeSession(
+        'impl',
+        () => {
+          implCalls++
+          return '구현'
+        },
+        'cli',
+      ),
+    )
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 첫 captureIgnoredBaseline 호출(작업 경로)은 성공, 두 번째(verify-fix)는 실패
+    let captureCalls = 0
+    const ws = fakeWorkspace([{ files: ['src/a.ts'], patch: '+a', truncated: false }], {
+      captureResult: async () => {
+        captureCalls++
+        if (captureCalls >= 2) throw new Error('민감 파일 백업 용량 초과')
+        return { entries: new Map(), skipped: [] }
+      },
+    })
+
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 2,
+      onEvent: (e) => events.push(e),
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // verify-fix 루프에서 capture 실패 → break → 수정 미실행
+    expect(implCalls).toBe(1) // 작업 구현 1회만, verify-fix 수정 호출 0
+    // verify.fixing 이벤트에 민감 백업 실패 메시지
+    const captureFailEvent = events.find(
+      (e) => e.type === 'verify.fixing' && e.message.includes('민감 ignored 백업 실패'),
+    )
+    expect(captureFailEvent).toBeDefined()
+    expect(captureFailEvent?.message).toContain('민감 파일 백업 용량 초과')
+    // project 는 검증 실패
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
+  })
+
+  // ── [:298] unrestorable-only gate target ──
+
+  it('[:298] unrestorable-only(diff.files 빈, changes 빈) → gate target 이 비지 않고 unrestorable 경로 포함', async () => {
+    // 목적: diff.files=[], ignoredChanges.changes=[], ignoredChanges.unrestorable=[...] 케이스
+    // 이전 구현은 ignoredReasons = dr.reasons.filter(r => !r.startsWith('복원 불가')) 로 unrestorable reason 을 제외해
+    // gateTarget 이 '' → 승인자가 왜 destructive 인지 알 수 없었다.
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // diff 빈 + ignored changes 빈 + unrestorable 만 있음(scan-capped over-cap)
+    const collectResult: IgnoredChangeSet = {
+      changes: [],
+      unrestorable: [{ path: 'scan-capped', reason: 'over-cap' }],
+    }
+    const ws = fakeWorkspace([{ files: [], patch: '', truncated: false }], { collectResult })
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return 'rejected'
+        },
+      },
+    })
+
+    // gate 가 호출됐는지(unrestorable → destructive)
+    expect(gateRequests.length).toBeGreaterThan(0)
+    expect(gateRequests[0].risk).toBe('destructive')
+    // [:298] target 이 비어 있으면 안 된다 — unrestorable 경로·이유가 포함되어야 한다
+    const target = gateRequests[0].target ?? ''
+    expect(target.length).toBeGreaterThan(0)
+    expect(target).toContain('복원 불가')
+  })
+
+  it('[:298] verify-fix 경로: unrestorable-only → gate target 비지 않음', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    // 작업 경로 safe, verify-fix 에서 unrestorable-only
+    const collectResult: IgnoredChangeSet = {
+      changes: [],
+      unrestorable: [{ path: 'big-secret.dat', reason: 'over-cap' }],
+    }
+    const ws = fakeWorkspace(
+      [
+        { files: ['src/a.ts'], patch: '+a', truncated: false }, // task diff
+        { files: [], patch: '', truncated: false }, // verify-fix diff — 빈
+      ],
+      { collectResult },
+    )
+
+    const gateRequests: Parameters<
+      NonNullable<Parameters<typeof runProject>[1]['gate']>['request']
+    >[0][] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate: {
+        async request(req) {
+          gateRequests.push(req)
+          return gateRequests.length === 1 ? 'approved' : 'rejected'
+        },
+      },
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+
+    // verify-fix gate 요청(두 번째 이상)에서 target 이 비지 않아야 한다
+    expect(gateRequests.length).toBeGreaterThanOrEqual(2)
+    const vfTarget = gateRequests[1].target ?? ''
+    expect(vfTarget.length).toBeGreaterThan(0)
+    expect(vfTarget).toContain('복원 불가')
   })
 })

@@ -1,6 +1,14 @@
 import { existsSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { defaultRunner } from '../cli/detect'
+import {
+  captureIgnoredBaseline as captureIgnored,
+  collectIgnoredChanges as collectIgnored,
+  restoreIgnoredBaseline as restoreIgnored,
+  DEFAULT_IGNORED_POLICY,
+  type IgnoredBaseline,
+  type IgnoredChangeSet,
+} from './ignored-baseline'
 
 /**
  * 두 경로가 같은 위치를 가리키는지 비교한다.
@@ -43,6 +51,9 @@ export interface Workspace {
   addWorktree(taskId: string, base: string): Promise<TaskWorktree>
   integrate(keepCommit: string): Promise<{ ok: boolean; conflict?: string }>
   removeWorktree(taskId: string): Promise<void>
+  captureIgnoredBaseline(): Promise<IgnoredBaseline>
+  collectIgnoredChanges(baseline: IgnoredBaseline): Promise<IgnoredChangeSet>
+  restoreIgnoredBaseline(baseline: IgnoredBaseline): Promise<void>
 }
 
 const GIT_TIMEOUT_MS = 120_000
@@ -213,6 +224,15 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
     },
     async removeWorktree(taskId) {
       await ok(['worktree', 'remove', '--force', worktreeDir(root, taskId)])
+    },
+    async captureIgnoredBaseline() {
+      return captureIgnored(root, git, DEFAULT_IGNORED_POLICY)
+    },
+    async collectIgnoredChanges(baseline) {
+      return collectIgnored(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    },
+    async restoreIgnoredBaseline(baseline) {
+      return restoreIgnored(root, git, baseline, DEFAULT_IGNORED_POLICY)
     },
   }
 }

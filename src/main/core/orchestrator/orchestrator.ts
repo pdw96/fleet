@@ -10,8 +10,10 @@ import type { ApprovalGate } from '../safety/approval'
 import type { SessionManager } from '../session/manager'
 import type { Store } from '../store/types'
 import type { TaskWorktree, Workspace } from '../workspace/git'
+import { disposeBaseline, type IgnoredBaseline } from '../workspace/ignored-baseline'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
+import { rollbackWithIgnored } from './ignored-guard'
 import { planCorrectiveTasks, planTasks, type PlannedTask } from './plan'
 import {
   buildImplementPrompt,
@@ -23,22 +25,6 @@ import {
 } from './review'
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
-
-/**
- * 워크스페이스를 되돌리되, revert 실패를 무성흡수(`.catch(()=>{})`)하지 않고 사람이 읽는 주석으로 표면화한다(#7).
- * 격리 경로(작업 오류·verify-fix catch)에서 호출하므로 revert 예외가 상위 실행을 중단시키지 않게 흡수하되,
- * 워크스페이스에 부분 변경이 잔존한다는 사실은 호출자가 메시지에 덧붙여 알릴 수 있게 한다.
- * @returns 성공 시 빈 문자열, 실패 시 ` · 되돌리기 실패: <원문>(워크스페이스 부분 변경 잔존)`
- */
-async function revertSafely(ws: Pick<Workspace, 'revert'>, base: string): Promise<string> {
-  try {
-    await ws.revert(base)
-    return ''
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return ` · 되돌리기 실패: ${message}(워크스페이스 부분 변경 잔존)`
-  }
-}
 
 export interface RunOptions {
   store: Store
@@ -237,6 +223,26 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
     const base = await ws.checkpoint()
     store.updateTask(task.id, { checkpoint: base })
+    // captureIgnoredBaseline 실패(민감 파일 백업 불가) = hard-stop. capture 성공 시 baseline 을 보유한다.
+    let ignoredBaseline: IgnoredBaseline | null
+    try {
+      ignoredBaseline = await ws.captureIgnoredBaseline()
+    } catch (err) {
+      // 민감 ignored 백업 실패 = hard-stop. tracked 변경 없음이므로 revert 만.
+      const note = await rollbackWithIgnored(ws, base, null)
+      store.updateTask(task.id, {
+        status: 'failed',
+        output: `민감 ignored 백업 실패: ${err instanceof Error ? err.message : String(err)}${note}`,
+      })
+      store.appendEvent({ type: 'task.failed', data: { taskId: task.id } })
+      emit({
+        type: 'task.failed',
+        message: `${task.title}: 민감 ignored 백업 실패`,
+        data: { taskId: task.id },
+      })
+      failed.add(task.id)
+      return undefined
+    }
     try {
       let approved = false
       let feedback = ''
@@ -256,29 +262,53 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           },
         )
         diff = await ws.collectDiff(base)
+        const ignoredChanges = await ws.collectIgnoredChanges(ignoredBaseline)
         store.updateTask(task.id, { status: 'review', changedFiles: diff.files })
         emit({
           type: 'task.implemented',
           message: `구현 완료 (라운드 ${round + 1}, 변경 ${diff.files.length}개)`,
           data: { taskId: task.id, round },
         })
+        if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
+          // P2-5: data 에 projectId 를 명시한다 — listProjectEvents(projectId) 가 이 이벤트를
+          // 포함하려면 data.projectId 가 필요하다(store 필터: e.data?.projectId === projectId).
+          store.appendEvent({
+            type: 'workspace.ignored_changes',
+            data: {
+              projectId,
+              taskId: task.id,
+              changes: ignoredChanges.changes.map((c) => ({
+                path: c.path,
+                change: c.change,
+                sensitive: c.sensitive,
+              })),
+              unrestorable: ignoredChanges.unrestorable.map((u) => u.path),
+            },
+          })
+        }
 
         // #5: 민감/위험 diff 는 리뷰어(외부 API 가능)에게 보내기 전에 승인 게이트를 거친다(비밀 유출 방지).
-        const dr = classifyDiffRisk(diff)
+        const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
+          // [:301] gate target 은 항상 tracked 파일 목록 + 모든 dr.reasons(ignored 변경 + unrestorable 포함).
+          // tracked 만, ignored 만, unrestorable 만, 혼합 모두 승인자가 전체 변경 범위를 볼 수 있어야 함(내용·hash 비노출).
+          // [:298] 이전 구현은 '복원 불가'로 시작하는 reason 을 필터링해 unrestorable-only 케이스에서 gateTarget 이 빔.
+          const trackedPart = diff.files.join(', ')
+          const gateTarget =
+            [trackedPart, ...dr.reasons].filter(Boolean).join(' · ') || dr.reasons.join('; ')
           const decision = opts.gate
             ? await opts.gate.request({
                 kind: 'apply-diff',
                 summary: `${task.title} 변경 적용`,
-                target: diff.files.join(', '),
+                target: gateTarget,
                 risk: 'destructive',
               })
             : 'rejected'
           if (decision !== 'approved') {
-            await ws.revert(base)
+            const note = await rollbackWithIgnored(ws, base, ignoredBaseline)
             store.updateTask(task.id, {
               status: 'failed',
-              output: `위험 변경 미승인: ${dr.reasons.join('; ')}`,
+              output: `위험 변경 미승인: ${dr.reasons.join('; ')}${note}`,
               changedFiles: [],
             })
             emit({
@@ -314,14 +344,30 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           break
         }
         feedback = verdict.feedback
-        await ws.revert(base) // 거절된 시도는 되돌리고 다음 라운드 재시도
+        // P2-2: rollback 실패(dirty-tree) 시 재시도하면 오염된 트리에서 다음 라운드가 시작된다.
+        // non-empty note = rollback 실패 → 즉시 task failed + 루프 탈출(재시도 중단).
+        const rejectRollbackNote = await rollbackWithIgnored(ws, base, ignoredBaseline)
+        if (rejectRollbackNote) {
+          store.updateTask(task.id, {
+            status: 'failed',
+            output: `리뷰 거절 후 되돌리기 실패: ${rejectRollbackNote}`,
+            changedFiles: [],
+          })
+          emit({
+            type: 'task.failed',
+            message: `${task.title}: 리뷰 거절 후 되돌리기 실패`,
+            data: { taskId: task.id },
+          })
+          failed.add(task.id)
+          return undefined
+        }
       }
 
       if (!approved) {
-        await ws.revert(base)
+        const note = await rollbackWithIgnored(ws, base, ignoredBaseline)
         store.updateTask(task.id, {
           status: 'failed',
-          output: '미승인(재검토 한도 초과)',
+          output: `미승인(재검토 한도 초과)${note}`,
           changedFiles: [],
         })
         emit({
@@ -349,8 +395,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       return keepHash
     } catch (err) {
       // LLM 호출(네트워크/CLI) 실패를 작업 단위로 격리한다 — 한 작업 실패가 전체 실행을 중단시키지 않는다.
-      // 부분 편집을 되돌린다. revert 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
-      const revertNote = await revertSafely(ws, base)
+      // 부분 편집을 되돌린다. revert/restore 실패는 잔존 변경을 남기므로 무성흡수하지 않고 표면화한다(#7).
+      const revertNote = await rollbackWithIgnored(ws, base, ignoredBaseline)
       // 취소(abort)로 인한 중단은 '실행 오류'가 아니다 — 취소(skipped)로 정확히 라벨한다
       // (pending 취소 경로의 '실행 취소됨'·task.skipped 와 동일 컨벤션). failed 집계에도 넣지 않는다.
       if (opts.signal?.aborted) {
@@ -371,6 +417,8 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       })
       failed.add(task.id)
       return undefined
+    } finally {
+      if (ignoredBaseline) disposeBaseline(ignoredBaseline)
     }
   }
 
@@ -705,6 +753,18 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         data: { projectId: project.id, round },
       })
       const base = await opts.workspace.checkpoint()
+      // captureIgnoredBaseline 실패(민감 파일 백업 불가) = 이번 라운드 중단.
+      let vfBaseline: IgnoredBaseline | undefined
+      try {
+        vfBaseline = await opts.workspace.captureIgnoredBaseline()
+      } catch (err) {
+        emit({
+          type: 'verify.fixing',
+          message: `민감 ignored 백업 실패로 수정 중단: ${err instanceof Error ? err.message : String(err)}`,
+          data: { projectId: project.id, round },
+        })
+        break
+      }
       try {
         await fixImplementer.send(buildVerifyFixPrompt(goal, failing), {
           fresh: true,
@@ -714,21 +774,43 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         })
         // 작업 경로와 동일하게 verify-fix diff 도 위험 분류·승인 게이트를 거친다.
         const diff = await opts.workspace.collectDiff(base)
-        const dr = classifyDiffRisk(diff)
+        const ignoredChanges = await opts.workspace.collectIgnoredChanges(vfBaseline)
+        if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
+          // P2-5: data 에 projectId 를 명시한다 — runTaskIn 경로와 동일하게 listProjectEvents 필터를 통과하도록.
+          store.appendEvent({
+            type: 'workspace.ignored_changes',
+            data: {
+              projectId,
+              round,
+              changes: ignoredChanges.changes.map((c) => ({
+                path: c.path,
+                change: c.change,
+                sensitive: c.sensitive,
+              })),
+              unrestorable: ignoredChanges.unrestorable.map((u) => u.path),
+            },
+          })
+        }
+        const dr = classifyDiffRisk(diff, ignoredChanges)
         if (dr.risk === 'destructive') {
+          // [:301] verify-fix gate target 도 항상 tracked + 모든 dr.reasons(unrestorable 포함)(내용·hash 비노출).
+          // [:298] unrestorable-only 케이스에서 gateTarget 이 비지 않도록 필터 제거.
+          const vfTrackedPart = diff.files.join(', ')
+          const vfGateTarget =
+            [vfTrackedPart, ...dr.reasons].filter(Boolean).join(' · ') || dr.reasons.join('; ')
           const decision = opts.gate
             ? await opts.gate.request({
                 kind: 'apply-diff',
                 summary: `verify-fix r${round} 변경 적용`,
-                target: diff.files.join(', '),
+                target: vfGateTarget,
                 risk: 'destructive',
               })
             : 'rejected'
           if (decision !== 'approved') {
-            await opts.workspace.revert(base)
+            const note = await rollbackWithIgnored(opts.workspace, base, vfBaseline ?? null)
             emit({
               type: 'verify.fixing',
-              message: `수정 위험 변경 미승인: ${dr.reasons.join('; ')}`,
+              message: `수정 위험 변경 미승인: ${dr.reasons.join('; ')}${note}`,
               data: { projectId: project.id, round },
             })
             break
@@ -737,13 +819,15 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         await opts.workspace.keep(`[verify-fix r${round}]`)
       } catch (err) {
         // 부분 수정을 되돌린다. revert 실패는 무성흡수하지 않고 수정 실패 메시지에 덧붙여 표면화한다(#7).
-        const revertNote = await revertSafely(opts.workspace, base)
+        const revertNote = await rollbackWithIgnored(opts.workspace, base, vfBaseline ?? null)
         emit({
           type: 'verify.fixing',
           message: `수정 실패: ${err instanceof Error ? err.message : String(err)}${revertNote}`,
           data: { projectId: project.id, round },
         })
         break
+      } finally {
+        if (vfBaseline) disposeBaseline(vfBaseline)
       }
       verifications = await verifyOnce()
       emitVerify(verifications)
