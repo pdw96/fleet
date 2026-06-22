@@ -3751,6 +3751,8 @@ describe('runProject', () => {
       .filter((e) => e.type === 'workspace.ignored_discarded')
     // 두 worktree 작업 모두 ignored 변경 보유 + done → 2건
     expect(discarded.length).toBe(2)
+    // 각 이벤트에 비어있지 않은 message 가 있어야 한다(빈 행 방지)
+    expect(discarded.every((e) => typeof e.message === 'string' && e.message.length > 0)).toBe(true)
     // 경로·종류만 — 내용 비노출(이벤트 data 에 taskId/projectId 만)
     expect(JSON.stringify(discarded)).not.toContain('.env-')
   })

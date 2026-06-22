@@ -407,6 +407,18 @@ describe('restoreIgnoredBaseline', () => {
   })
 
   // [P1-b] remove non-file path before restoring
+  it('[#128-B] 이름이 점2개로 시작하는 정상 in-root 디렉터리(..cache)도 조상 정리 대상이다', async () => {
+    mkdirSync(join(root, '..cache'), { recursive: true })
+    writeFileSync(join(root, '..cache', 'c.txt'), 'ORIG')
+    const git = fakeGitIgnored(['..cache/c.txt'])
+    const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    rmSync(join(root, '..cache'), { recursive: true, force: true })
+    writeFileSync(join(root, '..cache'), 'AGENT_FILE') // 조상을 파일로 교체
+    await restoreIgnoredBaseline(root, git, baseline, DEFAULT_IGNORED_POLICY)
+    expect(statSync(join(root, '..cache')).isDirectory()).toBe(true)
+    expect(readFile(join(root, '..cache', 'c.txt'), 'utf8')).toBe('ORIG')
+  })
+
   it('[P1-b] 복원 대상 경로가 디렉터리일 경우 제거 후 파일로 복원한다', async () => {
     const envPath = join(root, '.env')
     writeFileSync(envPath, 'ORIGINAL')

@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
 
@@ -297,7 +297,16 @@ export async function collectIgnoredChanges(
 // mkdirSync(recursive) 가 체인을 재생성한다. resolve(root, …) 기준이라 root 밖은 건드리지 않는다.
 function clearNonDirAncestors(root: string, abs: string): void {
   const relDir = relative(root, dirname(abs))
-  if (!relDir || relDir.startsWith('..')) return // dirname===root 또는 root 밖 → no-op
+  // dirname===root('') → no-op. 진짜 부모 traversal 만 root 밖으로 본다: '..' 단독, '..'+구분자 시작,
+  // 또는 절대경로(Windows 타 드라이브). '..cache' 처럼 점2개로 시작하는 정상 in-root 디렉터리명은 제외 안 함.
+  if (
+    !relDir ||
+    relDir === '..' ||
+    relDir.startsWith(`..${sep}`) ||
+    relDir.startsWith('../') ||
+    isAbsolute(relDir)
+  )
+    return
   let cur = root
   for (const part of relDir.split(/[\\/]/).filter(Boolean)) {
     cur = resolve(cur, part)

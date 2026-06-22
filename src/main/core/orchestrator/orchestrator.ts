@@ -616,6 +616,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         if (done.has(task.id) && ignoredTouched) {
           store.appendEvent({
             type: 'workspace.ignored_discarded',
+            message: `${task.title}: 승인된 ignored 변경이 worktree 통합에서 제외되어 폐기됨(main 미반영)`,
             data: { projectId, taskId: task.id },
           })
         }
