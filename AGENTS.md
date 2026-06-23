@@ -85,11 +85,14 @@ Codex 의 몫이 아니다 — **CI·타입이 못 잡는** 아키텍처/계약/
   차단 **required status check** 로 강제하려면 Automatic reviews 가 아니라 별도 GitHub Actions
   워크플로에 `openai/codex-action@v1` job 을 만들고, `master protection` ruleset 에 그 **job 표시명**
   (잡 id 아님 — skip 시 영구 pending 함정)을 required check 로 등록한다. **단 공식 `openai/codex-action@v1`
-  경로는 OpenAI/provider API 키 기반**이며, ChatGPT 구독 인증만으로 required check 를 제공하는 공식
-  경로는 (액션 issue #92 기준) **확인되지 않는다** — 클라우드 리뷰 봇은 commit status/check run 을 안
-  내고(코멘트+👍만), 구독 유지하며 게이트화하려면 서드파티 wrapper(비공식)뿐이며, `codex exec`+`auth.json`
-  자체배선은 trusted private runner 한정 advanced 패턴이다. 솔로 pre-1.0 엔 ROI·중복·비결정성 리스크로
-  **현재 보류**(2026-06-23 Codex↔Claude 1차출처 토론 합의 · #98). 협업자 합류/1.0 근처 재검토.
+  경로는 OpenAI/provider API 키 기반**이며 GitHub integration(ChatGPT) 인증을 직접 받지 못한다(액션
+  issue #92 = 그 기능 요청). ChatGPT 인증으로 CI 를 돌리는 **공식 경로 자체는 있으나 제약적**이다 —
+  `CODEX_ACCESS_TOKEN`+`codex exec` 는 **Business/Enterprise 전용**, ChatGPT-managed `auth.json` 유지는
+  **trusted private runner 한정 advanced**(직렬화 필수·GitHub-hosted 러너 부적합)이며 OpenAI 가
+  *"automation 인증은 API 키가 정답"*이라 명시한다. 또 클라우드 리뷰 봇은 commit status/check run 을 안
+  낸다(코멘트+👍만). 즉 솔로 Plus-플랜+hosted 러너엔 깔끔한 구독-only 게이트 경로가 없어, 자체 `codex exec`
+  job(API 키 권장) 또는 서드파티 wrapper 뿐이다. ROI·중복·비결정성 리스크로 **현재 보류**(2026-06-23
+  Codex↔Claude 1차출처 토론 합의 · #98). 협업자 합류/1.0 근처 재검토.
 - **CodeRabbit 병행은 실측 후.** CodeRabbit 류 풍부한 코멘트·incremental review·required gate 는
   중복 코멘트·리뷰 피로 위험이 있어 지금은 도입하지 않는다. contributor 증가·minor/refactor 수요가
   커지면 false-positive 율·실제 수정 반영률을 측정해 보조 리뷰어로 실험한다(#98).
