@@ -274,13 +274,20 @@ export async function collectIgnoredChanges(
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
     }
-    // [:213] size-guard + [#128-A] non-regular 가드: read 전 stat 으로 종류·크기 확인
+    // [:213] size-guard + [#128-A] non-regular 가드 + [#128-B2] 링크 비추종: read 전 lstat 으로 종류·크기 확인
     let st
     try {
-      st = statSync(abs)
+      st = lstatSync(abs) // [#128-B2] 링크 비추종
     } catch {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
       unrestorable.push({ path, reason: 'stat-failed' })
+      continue
+    }
+    if (st.isSymbolicLink()) {
+      // [#128-B2] baseline 일반파일이 링크로 교체됨 = modified. read 안 함(밖 유출 차단).
+      // backup 있으면 restore 가 링크 제거 후 복원 → unrestorable 아님.
+      changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
     }
     if (!st.isFile()) {

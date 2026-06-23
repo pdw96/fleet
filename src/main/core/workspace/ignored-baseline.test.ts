@@ -702,6 +702,27 @@ describe('[:270] scan-capped marker restore exclusion', () => {
   })
 })
 
+describe.skipIf(process.platform === 'win32')('[#128-B2] collect 링크 교체 (POSIX)', () => {
+  // 깨끗한 distinguisher: symlink target 내용을 baseline 과 *동일*하게 둔다.
+  //   - old(statSync 추종): target('orig')을 읽어 hash 가 baseline 과 일치 → '변경 없음' 오판(보안 구멍).
+  //   - new(lstat 비추종): isSymbolicLink → modified. (단순히 다른 내용을 쓰면 old 도 modified 라 거짓-green.)
+  it('baseline 파일이 같은 내용 가리키는 symlink 로 교체돼도 modified 로 잡는다(링크 비추종)', async () => {
+    writeFileSync(join(root, 'f.dat'), 'orig')
+    const git = fakeGitIgnored(['f.dat'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'same'), 'orig') // target 내용 == baseline
+      rmSync(join(root, 'f.dat'))
+      symlinkSync(join(outside, 'same'), join(root, 'f.dat'))
+      const cs = await collectIgnoredChanges(root, git, base, DEFAULT_IGNORED_POLICY)
+      expect(cs.changes).toContainEqual({ path: 'f.dat', change: 'modified', sensitive: false })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
 describe.skipIf(process.platform === 'win32')('[#128-B2] capture 링크 leaf (POSIX)', () => {
   it('비-sensitive symlink ignored 파일은 read 없이 symlink 로 skip', async () => {
     const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
