@@ -175,7 +175,7 @@ export async function captureIgnoredBaseline(
       const abs = resolve(root, path)
       let st
       try {
-        st = lstatSync(abs) // [#128-B2] 링크 비추종 — 링크면 isFile()=false 로 아래 분기 적중
+        st = lstatSync(abs) // [#128-B2] 링크 비추종 — symlink 은 아래 isSymbolicLink() 분기에서 먼저 차단
       } catch (err) {
         if (sensitive) throw new Error(`민감 ignored 파일 stat 실패: ${path}`, { cause: err })
         skipped.push({ path, reason: 'read-failed' })

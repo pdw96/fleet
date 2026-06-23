@@ -744,7 +744,7 @@ describe.skipIf(process.platform === 'win32')('[#128-B2] capture 링크 leaf (PO
       symlinkSync(join(outside, 'k'), join(root, '.env'))
       const git = fakeGitIgnored(['.env'])
       await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
-        /링크|일반 파일이 아님/,
+        /링크/,
       )
     } finally {
       rmSync(outside, { recursive: true, force: true })
@@ -783,6 +783,7 @@ describe.skipIf(process.platform === 'win32')(
         await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
         expect(existsSync(join(root, 'esc'))).toBe(false) // 링크 제거됨
         expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP') // 밖 내용 보존
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig') // baseline 복원
       } finally {
         rmSync(outside, { recursive: true, force: true })
       }
@@ -800,6 +801,7 @@ describe.skipIf(process.platform === 'win32')(
         await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
         expect(existsSync(join(root, 'newlink'))).toBe(false)
         expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP')
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig') // baseline 복원
       } finally {
         rmSync(outside, { recursive: true, force: true })
       }
@@ -824,8 +826,31 @@ describe.skipIf(process.platform !== 'win32')(
         await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
         expect(existsSync(join(root, 'esc'))).toBe(false) // junction 제거됨
         expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP') // 밖 내용 보존
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig') // baseline 복원
       } finally {
         rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('junction leaf 교체 → junction 제거 후 root 안 실파일로 복원(밖 내용 미오염)', async () => {
+      // win32 보안 회귀: baseline 일반파일 f.dat 가 junction 으로 교체됐을 때
+      // restore 가 junction 을 unlink 하고 backup('orig')으로 실파일 복원하는지 검증.
+      // lstatSync→rmSync→writeFileSync 경로(leaf restore)의 win32 커버.
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const git = fakeGitIgnored(['f.dat'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-jleaf-'))
+      try {
+        writeFileSync(join(outsideDir, 'keep'), 'KEEP')
+        rmSync(join(root, 'f.dat'))
+        symlinkSync(outsideDir, join(root, 'f.dat'), 'junction')
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        // leaf が junction から実ファイルとして復元される
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig')
+        // 밖 내용은 오염되지 않아야 함
+        expect(readFile(join(outsideDir, 'keep')).toString()).toBe('KEEP')
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
       }
     })
 
