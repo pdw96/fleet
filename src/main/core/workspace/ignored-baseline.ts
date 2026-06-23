@@ -13,7 +13,6 @@ import {
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
-import { isLinkSync } from './path-guard'
 
 /** [:270] walk의 unreadable-dir 및 listIgnored의 over-cap 합성 마커 경로 상수.
  * restore/rmSync 등 실-경로로 취급하는 곳에서는 반드시 이 값을 걸러내야 한다. */
@@ -138,16 +137,29 @@ async function listIgnored(
       // evasion(숨긴 위치 쓰기) 방어는 경로검사가 아닌 B2 프로세스 격리로 이관(#128 잔여).
       if (policy.denylistRe.test(`${dir}/`)) continue
       // [#128-B2] git 이 디렉터리로 보고해도 실제 junction/symlink 면 재귀 금지.
-      // 'suspicious'/'missing' 은 이 분기에 걸리지 않아 pushFile/missing 경로로 떨어지며,
-      // capture 의 lstat 이 non-regular 로 표면화한다(Task 4 동작 — 여기선 의도적 미처리).
-      if (isLinkSync(resolve(root, dir)) === 'link') {
+      let dirSt
+      try {
+        dirSt = lstatSync(resolve(root, dir))
+      } catch {
+        // 존재하지 않거나 접근 불가 → walk 로 넘겨 fail-closed 처리
+        walk(dir)
+        continue
+      }
+      if (dirSt.isSymbolicLink()) {
         skipped.push({ path: dir, reason: 'symlink' })
         continue
       }
       walk(dir)
     } else {
       // [#128-B2] 파일로 보고된 엔트리가 실제 링크면 수집 안 함(capture 의 lstat 가 이중 방어).
-      if (isLinkSync(resolve(root, rel)) === 'link') {
+      let fileSt
+      try {
+        fileSt = lstatSync(resolve(root, rel))
+      } catch {
+        pushFile(rel)
+        continue
+      }
+      if (fileSt.isSymbolicLink()) {
         skipped.push({ path: rel, reason: 'symlink' })
         continue
       }
@@ -163,6 +175,13 @@ export async function captureIgnoredBaseline(
   policy: ScanPolicy,
 ): Promise<IgnoredBaseline> {
   const { files, skipped: enumSkipped } = await listIgnored(root, git, policy)
+  // [#128-B2 P1] listIgnored 가 링크를 skipped{symlink} 로 우회시키므로 민감-명 링크가 아래
+  // sensitive→throw 분기에 도달하지 못한다. 여기서 fail-closed(민감 경로 백업 불가 → hard-stop).
+  for (const s of enumSkipped) {
+    if (s.reason === 'symlink' && policy.sensitiveRe.test(s.path)) {
+      throw new Error(`민감 ignored 파일이 링크임(백업 불가): ${s.path}`)
+    }
+  }
   const entries = new Map<string, IgnoredEntry>()
   const skipped: {
     path: string
@@ -337,14 +356,13 @@ function clearNonDirAncestors(root: string, abs: string): void {
   let cur = root
   for (const part of relDir.split(/[\\/]/).filter(Boolean)) {
     cur = resolve(cur, part)
-    if (!existsSync(cur)) continue
     let ls
     try {
-      ls = lstatSync(cur) // [#128-B2] existsSync→lstat race 는 fail-safe(advisory)
-    } catch {
-      continue
+      ls = lstatSync(cur) // [#128-B2 P1] existsSync 는 symlink 추종→dangling 조상 놓침. lstat 직접.
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue // 진짜 부재
+      continue // 기타(race 등) fail-safe(advisory)
     }
-    // [#128-B2] 비-dir 또는 링크(junction 포함) 조상은 제거 → mkdirSync(recursive) 가 root 안 체인 재생성.
     if (!ls.isDirectory() || ls.isSymbolicLink()) {
       rmSync(cur, { recursive: true, force: true })
       return
@@ -370,8 +388,14 @@ export async function restoreIgnoredBaseline(
     // git-상대 경로는 보통 root 아래지만, 이상한 절대/상위 경로 방어.
     const r = relative(root, abs)
     if (r === '..' || r.startsWith(`..${sep}`) || isAbsolute(r)) return
-    // 링크면 recursive 금지 — 링크 자체만 unlink(밖 내용 보존). isLinkSync=lstat(비추종).
-    rmSync(abs, isLinkSync(abs) === 'link' ? { force: true } : { recursive: true, force: true })
+    // 링크면 recursive 금지 — 링크 자체만 unlink(밖 내용 보존). lstatSync(비추종).
+    let st
+    try {
+      st = lstatSync(abs)
+    } catch {
+      return
+    }
+    rmSync(abs, st.isSymbolicLink() ? { force: true } : { recursive: true, force: true })
   }
   // 1) created(현재 in-scope, baseline·skipped 둘 다 없음) → 삭제.
   for (const path of files) {
@@ -391,12 +415,14 @@ export async function restoreIgnoredBaseline(
     const abs = resolve(root, path)
     clearNonDirAncestors(root, abs) // [#128-B] 조상-파일 충돌 정리
     mkdirSync(dirname(abs), { recursive: true })
-    // [P1-b] if existing path is not a regular file (e.g. directory), remove it first
-    if (existsSync(abs)) {
-      const st = lstatSync(abs) // [#128-B2] 비추종 — symlink leaf 는 isFile()=false 로 제거 대상
-      if (!st.isFile()) {
-        rmSync(abs, { recursive: true, force: true }) // 링크/디렉터리 제거 후 실파일로 복원
-      }
+    let leafSt: import('node:fs').Stats | undefined
+    try {
+      leafSt = lstatSync(abs) // [#128-B2 P1] existsSync 는 symlink 추종→dangling link 를 놓침. lstat 직접.
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e // 진짜 부재만 무시, 그 외 fail-closed
+    }
+    if (leafSt && !leafSt.isFile()) {
+      rmSync(abs, { recursive: true, force: true }) // 디렉터리/(dangling 포함)링크 leaf 제거 후 실파일 복원
     }
     writeFileSync(abs, entry.backup)
     // [P1-a] restore original file mode
