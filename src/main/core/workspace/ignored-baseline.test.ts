@@ -8,6 +8,7 @@ import {
   readFileSync as readFile,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -541,19 +542,54 @@ describe('real-git: revert→restore seam (invariant verification)', () => {
   })
 })
 
+describe.skipIf(process.platform === 'win32')('[#128-B2] symlink 비추종 (POSIX)', () => {
+  it('git-보고 ignored 가 symlink-to-dir 면 재귀 안 하고 밖을 수집 안 한다', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'SECRET')
+      symlinkSync(outside, join(root, 'link'), 'dir')
+      const git = fakeGitIgnored(['link/']) // git 이 디렉터리처럼 보고
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      // 밖의 secret.txt 가 절대 entries 에 들어오면 안 됨
+      expect([...base.entries.keys()].some((k) => k.includes('secret'))).toBe(false)
+      // 보안 메커니즘 단언: 링크가 실제로 symlink 이유로 skipped 에 기록되어야 함
+      expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('[#128-B2] junction 비추종 (Windows)', () => {
+  it('git-보고 ignored 가 junction 이면 재귀 안 하고 밖을 수집 안 한다', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'SECRET')
+      symlinkSync(outside, join(root, 'link'), 'junction')
+      const git = fakeGitIgnored(['link/'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      expect([...base.entries.keys()].some((k) => k.includes('secret'))).toBe(false)
+      // 보안 메커니즘 단언: junction 이 실제로 symlink 이유로 skipped 에 기록되어야 함
+      expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
 // ── Codex 3차 반영: [:96] [:109] [:244] [:270] ──
 
-describe('[:96] unreadable dir → fail-closed (walk readdirSync catch)', () => {
-  it('walk 에서 readdirSync 가 실패하면 SCAN_CAPPED over-cap escalation 이 기록된다(not silent drop)', async () => {
-    // 존재하지 않는 경로를 git status 로 반환 → walk 가 readdirSync 실패 → fail-closed
-    // (Windows: 권한변경이 제한적이므로 존재하지 않는 경로로 unreadable 시뮬레이션)
+describe('[:96] unreadable dir → fail-closed (lstat catch in top-level loop)', () => {
+  it('[Fix-B] lstat 실패 디렉터리는 walk 하지 않고 skipped{unclassified} 로 fail-closed 기록된다', async () => {
+    // 존재하지 않는 경로를 git status 로 반환 → lstat ENOENT → fail-closed(walk 안 함)
+    // [Codex round5 Fix-3] lstat 실패는 symlink 확정 아님 → 'unclassified' 로 기록.
+    // 이전에는 'symlink' 로 기록했으나, 이 경우 restore sweep 이 실제 디렉터리를 파괴하는 오동작이 발생.
     const git = fakeGitIgnored(['nonexistent-dir/'])
-    // nonexistent-dir/ 는 실제로 없으므로 readdirSync → ENOENT
     const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
-    // fail-closed: skipped 에 over-cap escalation 이 기록되어야 한다
-    const overCapSkipped = base.skipped.filter((s) => s.reason === 'over-cap')
-    expect(overCapSkipped.length).toBeGreaterThanOrEqual(1)
-    expect(overCapSkipped[0].path).toBe(SCAN_CAPPED)
+    // fail-closed: skipped 에 'nonexistent-dir' 가 unclassified 이유로 기록되어야 한다
+    expect(base.skipped).toContainEqual({ path: 'nonexistent-dir', reason: 'unclassified' })
+    // walk 하지 않았으므로 entries 는 비어 있어야 한다
+    expect(base.entries.size).toBe(0)
   })
 })
 
@@ -663,5 +699,726 @@ describe('[:270] scan-capped marker restore exclusion', () => {
     const baseline = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
     const res = await restoreIgnoredBaseline(root, git, baseline, DEFAULT_IGNORED_POLICY)
     expect(res).toEqual({ capped: false })
+  })
+})
+
+// [Codex P1 Fix-D] baseline symlink → 일반파일 교체 rollback 검증 (POSIX)
+describe.skipIf(process.platform === 'win32')(
+  '[Fix-D] baseline symlink 경로를 일반파일로 교체 시 rollback (POSIX)',
+  () => {
+    it('[Fix-D collect] baseline symlink 를 일반파일로 교체 시 collectIgnoredChanges 가 created 로 보고', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-fixd-'))
+      try {
+        // baseline: link.dat 는 symlink → capture 가 skipped{symlink} 로 기록
+        symlinkSync(join(outside, 'target'), join(root, 'link.dat'))
+        const git = fakeGitIgnored(['link.dat'])
+        const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link.dat', reason: 'symlink' })
+        // 에이전트가 symlink 를 제거하고 일반파일로 교체
+        rmSync(join(root, 'link.dat'))
+        writeFileSync(join(root, 'link.dat'), 'agent-content')
+        const curGit = fakeGitIgnored(['link.dat'])
+        const cs = await collectIgnoredChanges(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        // symlink 경로가 화이트리스트에서 제외되어 created 로 표면화되어야 한다
+        expect(cs.changes).toContainEqual({ path: 'link.dat', change: 'created', sensitive: false })
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('[Fix-D restore] baseline symlink 를 일반파일로 교체 시 restoreIgnoredBaseline 이 삭제한다', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-fixd-'))
+      try {
+        // baseline: link.dat 는 symlink → capture 가 skipped{symlink} 로 기록
+        symlinkSync(join(outside, 'target'), join(root, 'link.dat'))
+        const git = fakeGitIgnored(['link.dat'])
+        const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link.dat', reason: 'symlink' })
+        // 에이전트가 symlink 를 제거하고 일반파일로 교체
+        rmSync(join(root, 'link.dat'))
+        writeFileSync(join(root, 'link.dat'), 'agent-content')
+        const curGit = fakeGitIgnored(['link.dat'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        // 에이전트가 만든 일반파일이 rollback 으로 삭제되어야 한다
+        expect(existsSync(join(root, 'link.dat'))).toBe(false)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+describe.skipIf(process.platform === 'win32')('[#128-B2] collect 링크 교체 (POSIX)', () => {
+  // 깨끗한 distinguisher: symlink target 내용을 baseline 과 *동일*하게 둔다.
+  //   - old(statSync 추종): target('orig')을 읽어 hash 가 baseline 과 일치 → '변경 없음' 오판(보안 구멍).
+  //   - new(lstat 비추종): isSymbolicLink → modified. (단순히 다른 내용을 쓰면 old 도 modified 라 거짓-green.)
+  it('baseline 파일이 같은 내용 가리키는 symlink 로 교체돼도 modified 로 잡는다(링크 비추종)', async () => {
+    writeFileSync(join(root, 'f.dat'), 'orig')
+    const git = fakeGitIgnored(['f.dat'])
+    const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'same'), 'orig') // target 내용 == baseline
+      rmSync(join(root, 'f.dat'))
+      symlinkSync(join(outside, 'same'), join(root, 'f.dat'))
+      const cs = await collectIgnoredChanges(root, git, base, DEFAULT_IGNORED_POLICY)
+      expect(cs.changes).toContainEqual({ path: 'f.dat', change: 'modified', sensitive: false })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('[#128-B2] capture 링크 leaf (POSIX)', () => {
+  it('비-sensitive symlink ignored 파일은 read 없이 symlink 로 skip', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'SECRET')
+      symlinkSync(join(outside, 'secret.txt'), join(root, 'link.dat'))
+      const git = fakeGitIgnored(['link.dat'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      expect(base.entries.has('link.dat')).toBe(false)
+      expect(base.skipped).toContainEqual({ path: 'link.dat', reason: 'symlink' })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+  it('sensitive-명 symlink 는 throw(fail-closed)', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'k'), 'KEY')
+      symlinkSync(join(outside, 'k'), join(root, '.env'))
+      const git = fakeGitIgnored(['.env'])
+      await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+        /링크/,
+      )
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(process.platform === 'win32')(
+  '[#128-B2] restore 쓰기 측 link-guard (POSIX)',
+  () => {
+    it('symlink leaf 는 링크를 제거하고 root 안 실파일로 복원(밖 target 미오염)', async () => {
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const git = fakeGitIgnored(['f.dat'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'victim'), 'DO-NOT-OVERWRITE')
+        rmSync(join(root, 'f.dat'))
+        symlinkSync(join(outside, 'victim'), join(root, 'f.dat'))
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        // 밖 victim 은 그대로, root/f.dat 은 backup('orig')으로 복원
+        expect(readFile(join(outside, 'victim')).toString()).toBe('DO-NOT-OVERWRITE')
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig')
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+    it('dangling symlink leaf → 실파일 복원, outside write-through 없음 [P1-2]', async () => {
+      // baseline: f.dat='orig'
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const git = fakeGitIgnored(['f.dat'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        // f.dat 을 dangling symlink 로 교체 (outsideDir/ghost 는 존재하지 않음)
+        rmSync(join(root, 'f.dat'))
+        symlinkSync(join(outsideDir, 'ghost'), join(root, 'f.dat'))
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        // root/f.dat 은 실파일('orig')로 복원되어야 함
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig')
+        // fleet 이 dangling link 를 통해 outside 에 파일을 쓰지 않아야 함
+        expect(existsSync(join(outsideDir, 'ghost'))).toBe(false)
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    it('dangling symlink 조상 → 실디렉터리 재건, outside write-through 없음 [P1-3]', async () => {
+      // baseline: a/b/c.dat='deep'
+      mkdirSync(join(root, 'a', 'b'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'c.dat'), 'deep')
+      const git = fakeGitIgnored(['a/b/c.dat'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        // a/ 를 제거하고 dangling symlink 로 교체 (outsideDir/ghostdir 는 존재하지 않음)
+        rmSync(join(root, 'a'), { recursive: true, force: true })
+        symlinkSync(join(outsideDir, 'ghostdir'), join(root, 'a'))
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        // a/b/c.dat 이 root 안에 실파일로 복원되어야 함
+        expect(readFile(join(root, 'a', 'b', 'c.dat')).toString()).toBe('deep')
+        // fleet 이 dangling link 를 통해 outside 에 디렉터리를 만들지 않아야 함
+        expect(existsSync(join(outsideDir, 'ghostdir'))).toBe(false)
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    it('민감 symlink → captureIgnoredBaseline throws [P1-1]', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        symlinkSync(join(outsideDir, 'whatever'), join(root, '.env'))
+        const git = fakeGitIgnored(['.env'])
+        await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+          /링크/,
+        )
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    // [Codex 재리뷰 P1] 민감 디렉터리 SYMLINK(.ssh) → fail-closed
+    // listIgnored 는 '.ssh/' → '.ssh'(trailing slash 제거) 로 skipped 에 push.
+    // SENSITIVE_FILE 의 .ssh 절은 trailing slash 필수이므로 s.path='.ssh' 만 테스트하면 false(fail-open).
+    // 수정: `${s.path}/` 형도 함께 테스트 → '.ssh/' 가 정규식과 매칭 → throw(fail-closed).
+    it('[Codex P1] 민감 DIRECTORY symlink(.ssh) → captureIgnoredBaseline throws [P1-1-dir POSIX]', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-ssh-'))
+      try {
+        symlinkSync(outsideDir, join(root, '.ssh'), 'dir')
+        // git 은 디렉터리 심볼릭 링크를 '.ssh/'(trailing slash 포함)로 보고한다
+        const git = fakeGitIgnored(['.ssh/'])
+        await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+          /링크/,
+        )
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    it('created symlink-to-dir 는 링크만 unlink(밖 디렉터리 내용 보존)', async () => {
+      // P2-4: baseline 에 esc 없음(분리 fixture) — capture 시 esc 미보고
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const baseGit = fakeGitIgnored(['f.dat']) // esc NOT reported at capture
+      const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'keep'), 'KEEP')
+        symlinkSync(outside, join(root, 'esc'), 'dir') // 실행 중 생성된 링크
+        const curGit = fakeGitIgnored(['f.dat', 'esc']) // esc reported at restore
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        expect(existsSync(join(root, 'esc'))).toBe(false) // 링크 제거됨
+        expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP') // 밖 내용 보존
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig') // baseline 복원
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('실행 중 새로 생긴 escaping symlink 는 rollback 에서 unlink(밖 내용 보존)', async () => {
+      // P2-4: baseline 에 newlink 없음(분리 fixture)
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const baseGit = fakeGitIgnored(['f.dat']) // newlink NOT reported at capture
+      const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'keep'), 'KEEP')
+        symlinkSync(outside, join(root, 'newlink'), 'dir') // 에이전트가 새로 만든 링크
+        const curGit = fakeGitIgnored(['f.dat', 'newlink']) // restore 시점 git 보고
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        expect(existsSync(join(root, 'newlink'))).toBe(false)
+        expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP')
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig') // baseline 복원
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+// [#128-B2 P2-1] baseline symlink-to-dir → agent 가 실제 dir 로 치환 → restore 가 dir 제거 (POSIX)
+// RED on pre-fix: git 은 'link/child.txt' 만 보고 → created 루프가 'link' 자체를 못 지움 → dir 잔존.
+describe.skipIf(process.platform === 'win32')(
+  '[P2-1] baseline symlink-to-dir 을 실제 디렉터리로 치환하면 restore 가 그 디렉터리를 제거한다 (POSIX)',
+  () => {
+    it('baseline symlink-to-dir → real dir 치환 → restore removes dir', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-p21-'))
+      try {
+        // baseline: link 는 symlink → dir → capture 가 skipped{symlink}
+        symlinkSync(outside, join(root, 'link'), 'dir')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 symlink 를 제거하고 실제 디렉터리(+자식 파일)로 치환
+        rmSync(join(root, 'link'), { force: true })
+        mkdirSync(join(root, 'link'))
+        writeFileSync(join(root, 'link', 'child.txt'), 'agent-child')
+
+        // restore 시 git 은 'link/child.txt' 만 보고(link 자체는 dir 라 보고 안 함)
+        const curGit = fakeGitIgnored(['link/child.txt'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // [P2-1] baseline symlink sweep 이 link 가 더 이상 symlink 아님을 감지 → removeCreated
+        expect(existsSync(join(root, 'link'))).toBe(false)
+        // outside 는 보존
+        expect(existsSync(outside)).toBe(true)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+// [#128-B2 P2-4] walk 내 non-sensitive symlink skip 도 스캔 예산에 포함
+// RED on pre-fix: skipped 가 maxFiles 무관하게 무한 증가하고 SCAN_CAPPED 가 안 찍힘.
+// Windows: 'file' symlink 는 관리자 권한 필요 → 'junction'(디렉터리 링크) 으로 대체.
+describe('[P2-4] walk 내 symlink skip 이 스캔 cap 예산에 포함된다', () => {
+  it('non-sensitive symlink 다수가 maxFiles 초과 시 skipped 가 bounded 되고 SCAN_CAPPED 가 찍힌다', async () => {
+    // 구조: links/ 디렉터리 아래 비민감 symlink 3개, maxFiles=1
+    // pre-fix: 모든 링크가 skipped 에 push → skipped.length=3, SCAN_CAPPED 없음
+    // post-fix: generalCount 소진 후 SCAN_CAPPED 기록, 이후 링크 skip 생략
+    mkdirSync(join(root, 'links'))
+    const out1 = mkdtempSync(join(tmpdir(), 'fleet-p24a-'))
+    const out2 = mkdtempSync(join(tmpdir(), 'fleet-p24b-'))
+    const out3 = mkdtempSync(join(tmpdir(), 'fleet-p24c-'))
+    try {
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+      symlinkSync(out1, join(root, 'links', 'lnk1'), linkType)
+      symlinkSync(out2, join(root, 'links', 'lnk2'), linkType)
+      symlinkSync(out3, join(root, 'links', 'lnk3'), linkType)
+      const git = fakeGitIgnored(['links/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      const base = await captureIgnoredBaseline(root, git, policy)
+
+      // SCAN_CAPPED が skipped に記録されていること(cap 到達の証拠)
+      expect(base.skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')).toBe(true)
+
+      // cap 이후 비민감 링크는 기록 생략 → skipped 총 건수(non-SCAN_CAPPED symlink) ≤ maxFiles
+      const symlinkSkips = base.skipped.filter((s) => s.reason === 'symlink')
+      expect(symlinkSkips.length).toBeLessThanOrEqual(policy.maxFiles)
+    } finally {
+      rmSync(out1, { recursive: true, force: true })
+      rmSync(out2, { recursive: true, force: true })
+      rmSync(out3, { recursive: true, force: true })
+    }
+  })
+
+  it('sensitive symlink 은 cap 초과 후에도 반드시 기록된다(fail-closed)', async () => {
+    // 비민감 symlink 1개(cap 소진) → 이후 민감 symlink(.ssh → dir) 도 기록되어야 함
+    // .env 는 file symlink(win32 에서 권한 필요) → .ssh(dir symlink)로 대체
+    mkdirSync(join(root, 'links'))
+    const outNonSens = mkdtempSync(join(tmpdir(), 'fleet-p24ns-'))
+    const outSens = mkdtempSync(join(tmpdir(), 'fleet-p24s-'))
+    try {
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+      // non-sensitive dir-symlink → cap 소진
+      symlinkSync(outNonSens, join(root, 'links', 'lnk1'), linkType)
+      // sensitive dir-symlink(.ssh) → cap 후에도 항상 기록
+      symlinkSync(outSens, join(root, '.ssh'), linkType)
+      // git 은 links/ 를 먼저 보고해 walk 에서 lnk1 처리, 그 다음 .ssh/
+      const git = fakeGitIgnored(['links/', '.ssh/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      // .ssh 는 sensitive → captureIgnoredBaseline 이 throw(fail-closed)
+      await expect(captureIgnoredBaseline(root, git, policy)).rejects.toThrow(/링크/)
+    } finally {
+      rmSync(outNonSens, { recursive: true, force: true })
+      rmSync(outSens, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')(
+  '[#128-B2] restore 쓰기 측 junction-guard (Windows)',
+  () => {
+    it('created JUNCTION-to-dir 는 junction 만 unlink(밖 디렉터리 내용 보존)', async () => {
+      // capture 시점에 esc 는 없음 — baseline 에 미등재
+      const baseGit = fakeGitIgnored(['f.dat'])
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'keep'), 'KEEP')
+        symlinkSync(outside, join(root, 'esc'), 'junction') // 에이전트가 실행 중 만든 junction
+        // restore 시점 git 은 esc 를 보고(실행 중 생성된 junction)
+        const curGit = fakeGitIgnored(['f.dat', 'esc'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        expect(existsSync(join(root, 'esc'))).toBe(false) // junction 제거됨
+        expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP') // 밖 내용 보존
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig') // baseline 복원
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('junction leaf 교체 → junction 제거 후 root 안 실파일로 복원(밖 내용 미오염)', async () => {
+      // win32 보안 회귀: baseline 일반파일 f.dat 가 junction 으로 교체됐을 때
+      // restore 가 junction 을 unlink 하고 backup('orig')으로 실파일 복원하는지 검증.
+      // lstatSync→rmSync→writeFileSync 경로(leaf restore)의 win32 커버.
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const git = fakeGitIgnored(['f.dat'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-jleaf-'))
+      try {
+        writeFileSync(join(outsideDir, 'keep'), 'KEEP')
+        rmSync(join(root, 'f.dat'))
+        symlinkSync(outsideDir, join(root, 'f.dat'), 'junction')
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        // leaf が junction から実ファイルとして復元される
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig')
+        // 밖 내용은 오염되지 않아야 함
+        expect(readFile(join(outsideDir, 'keep')).toString()).toBe('KEEP')
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    it('junction 조상 → clearNonDirAncestors 제거 후 실파일 in-root 복원(밖 내용 보존)', async () => {
+      // baseline: a/b/c.txt
+      mkdirSync(join(root, 'a', 'b'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'c.txt'), 'ORIG')
+      const git = fakeGitIgnored(['a/b/c.txt'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'victim'), 'OUTSIDE')
+        // 에이전트가 a/ 디렉터리 전체를 지우고 'a'를 outside 에 대한 junction 으로 교체
+        rmSync(join(root, 'a'), { recursive: true, force: true })
+        symlinkSync(outside, join(root, 'a'), 'junction')
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        // junction 이 제거되고 a/b/c.txt 가 in-root 에 복원됨
+        expect(statSync(join(root, 'a')).isDirectory()).toBe(true)
+        expect(readFile(join(root, 'a', 'b', 'c.txt')).toString()).toBe('ORIG')
+        // 밖 victim 미오염
+        expect(readFile(join(outside, 'victim')).toString()).toBe('OUTSIDE')
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('민감 junction(.env) → captureIgnoredBaseline throws [P1-1 win32]', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        symlinkSync(outsideDir, join(root, '.env'), 'junction')
+        const git = fakeGitIgnored(['.env'])
+        await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+          /링크/,
+        )
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    // [Codex 재리뷰 P1] 민감 디렉터리 JUNCTION(.ssh) → fail-closed
+    // listIgnored 는 '.ssh/' → '.ssh'(trailing slash 제거) 로 skipped 에 push.
+    // SENSITIVE_FILE 의 .ssh 절은 trailing slash 필수이므로 s.path='.ssh' 만 테스트하면 false(fail-open).
+    // 수정: `${s.path}/` 형도 함께 테스트 → '.ssh/' 가 정규식과 매칭 → throw(fail-closed).
+    it('[Codex P1] 민감 DIRECTORY junction(.ssh) → captureIgnoredBaseline throws [P1-1-dir win32]', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-ssh-'))
+      try {
+        symlinkSync(outsideDir, join(root, '.ssh'), 'junction')
+        // git 은 디렉터리 심볼릭 링크를 '.ssh/'(trailing slash 포함)로 보고한다
+        const git = fakeGitIgnored(['.ssh/'])
+        await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+          /링크/,
+        )
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    // [Codex P1 Fix-D] baseline JUNCTION → 일반파일 교체 → rollback 삭제 검증 (win32)
+    it('[Fix-D win32] baseline JUNCTION 을 일반파일로 교체하면 restore 가 삭제한다', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-fixd-'))
+      try {
+        // baseline: link/ 는 junction → capture 가 skipped{symlink} 로 기록
+        symlinkSync(outsideDir, join(root, 'link'), 'junction')
+        const git = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+        // 에이전트가 junction 을 제거하고 일반파일로 교체
+        rmSync(join(root, 'link'), { recursive: true, force: true })
+        writeFileSync(join(root, 'link'), 'agent-content')
+        // restore 시 git 은 'link' 를 파일로 보고
+        const curGit = fakeGitIgnored(['link'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        // 에이전트가 만든 일반파일이 rollback 으로 삭제되어야 한다
+        expect(existsSync(join(root, 'link'))).toBe(false)
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    // [#128-B2 P2-1] baseline JUNCTION-to-dir → agent 가 실제 dir 로 치환 → restore 가 dir 제거
+    // RED on pre-fix: git 은 child 만 보고하므로 'link' 자체가 created 루프에서 누락 → dir 잔존.
+    it('[P2-1 win32] baseline JUNCTION 을 실제 디렉터리로 치환하면 restore 가 그 디렉터리를 제거한다', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-p21-'))
+      try {
+        // baseline: link 는 junction(디렉터리 가리킴) → skipped{symlink}
+        symlinkSync(outsideDir, join(root, 'link'), 'junction')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 junction 을 제거하고 실제 디렉터리(+자식 파일)로 치환
+        rmSync(join(root, 'link'), { recursive: true, force: true })
+        mkdirSync(join(root, 'link'))
+        writeFileSync(join(root, 'link', 'child.txt'), 'agent-child')
+
+        // restore 시 git 은 'link/child.txt' 만 보고(link 자체는 디렉터리라 보고 안 함)
+        const curGit = fakeGitIgnored(['link/child.txt'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // [P2-1] baseline symlink sweep 이 link 가 더 이상 symlink 아님을 감지 → removeCreated
+        expect(existsSync(join(root, 'link'))).toBe(false)
+        // outside 는 보존
+        expect(existsSync(outsideDir)).toBe(true)
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+// ── Codex round5 P2 픽스 검증 ──
+
+// [Codex round5 Fix-1] top-level symlink skip 도 스캔 cap 예산에 포함
+// RED on pre-fix: top-level loop 가 pushSkipSymlink 를 거치지 않고 직접 skipped.push → cap 우회.
+// 주의: 이 테스트는 top-level(git-status 에서 직접 보고된 항목)의 symlink skip cap 을 검증한다.
+// walk 내부(P2-4 테스트)와 별개이다.
+describe('[round5 Fix-1] top-level symlink/unclassified skip 도 스캔 cap 에 포함된다', () => {
+  it('top-level 비민감 dir-symlink 다수가 maxFiles 초과 시 SCAN_CAPPED 기록 + skipped bounded', async () => {
+    // git 이 link1/, link2/, link3/ 를 top-level 에 직접 보고 → lstatSync → isSymbolicLink true
+    // maxFiles=1 이면 link1 하나만 소진 후 SCAN_CAPPED 기록, link2/link3 생략
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+    const out1 = mkdtempSync(join(tmpdir(), 'fleet-r5f1a-'))
+    const out2 = mkdtempSync(join(tmpdir(), 'fleet-r5f1b-'))
+    const out3 = mkdtempSync(join(tmpdir(), 'fleet-r5f1c-'))
+    try {
+      symlinkSync(out1, join(root, 'link1'), linkType)
+      symlinkSync(out2, join(root, 'link2'), linkType)
+      symlinkSync(out3, join(root, 'link3'), linkType)
+      // git 이 dir-symlink 를 trailing slash 포함 보고
+      const git = fakeGitIgnored(['link1/', 'link2/', 'link3/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      const base = await captureIgnoredBaseline(root, git, policy)
+
+      // SCAN_CAPPED 기록 확인(cap 도달 증거)
+      expect(base.skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')).toBe(true)
+
+      // cap 이후 비민감 top-level symlink 는 생략 → symlink skips ≤ maxFiles
+      const symlinkSkips = base.skipped.filter((s) => s.reason === 'symlink')
+      expect(symlinkSkips.length).toBeLessThanOrEqual(policy.maxFiles)
+    } finally {
+      rmSync(out1, { recursive: true, force: true })
+      rmSync(out2, { recursive: true, force: true })
+      rmSync(out3, { recursive: true, force: true })
+    }
+  })
+
+  it('top-level cap 초과 후에도 민감 symlink 는 반드시 기록된다(fail-closed)', async () => {
+    // 비민감 link1 이 cap 소진 → 이후 민감 .ssh symlink 도 기록되어야 함
+    // → captureIgnoredBaseline 이 throw(fail-closed)
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+    const outNonSens = mkdtempSync(join(tmpdir(), 'fleet-r5f1ns-'))
+    const outSens = mkdtempSync(join(tmpdir(), 'fleet-r5f1s-'))
+    try {
+      symlinkSync(outNonSens, join(root, 'link1'), linkType)
+      symlinkSync(outSens, join(root, '.ssh'), linkType)
+      const git = fakeGitIgnored(['link1/', '.ssh/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      await expect(captureIgnoredBaseline(root, git, policy)).rejects.toThrow(/링크/)
+    } finally {
+      rmSync(outNonSens, { recursive: true, force: true })
+      rmSync(outSens, { recursive: true, force: true })
+    }
+  })
+})
+
+// [Codex round5 Fix-4] baseline symlink-to-dir 이 EMPTY 실디렉터리로 치환 → collect 탐지
+// RED on pre-fix: git 은 자식 없는 빈 디렉터리를 보고하지 않아 files 루프에서 탐지 불가.
+describe.skipIf(process.platform === 'win32')(
+  '[round5 Fix-4] baseline symlink-to-dir 을 빈 실디렉터리로 치환하면 collect 가 created 로 탐지 (POSIX)',
+  () => {
+    it('baseline symlink → empty real dir 치환 → collectIgnoredChanges reports created', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-r5f4-'))
+      try {
+        // baseline: link 는 symlink-to-dir → skipped{symlink}
+        symlinkSync(outside, join(root, 'link'), 'dir')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 symlink 를 제거하고 빈 실디렉터리로 치환
+        rmSync(join(root, 'link'), { force: true })
+        mkdirSync(join(root, 'link'))
+        // 빈 디렉터리 → git 은 아무 자식도 보고 안 함
+        const curGit = fakeGitIgnored([])
+        const cs = await collectIgnoredChanges(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // baselineSymlinkPaths sweep 이 link 를 탐지해 created 로 보고해야 한다
+        expect(cs.changes.some((c) => c.path === 'link' && c.change === 'created')).toBe(true)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+describe.skipIf(process.platform !== 'win32')(
+  '[round5 Fix-4] baseline JUNCTION-to-dir 을 빈 실디렉터리로 치환하면 collect 가 created 로 탐지 (win32)',
+  () => {
+    it('baseline junction → empty real dir 치환 → collectIgnoredChanges reports created', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-r5f4w-'))
+      try {
+        // baseline: link 는 junction → skipped{symlink}
+        symlinkSync(outside, join(root, 'link'), 'junction')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 junction 을 제거하고 빈 실디렉터리로 치환
+        rmSync(join(root, 'link'), { recursive: true, force: true })
+        mkdirSync(join(root, 'link'))
+        // 빈 디렉터리 → git 은 아무 자식도 보고 안 함
+        const curGit = fakeGitIgnored([])
+        const cs = await collectIgnoredChanges(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // baselineSymlinkPaths sweep 이 link 를 탐지해 created 로 보고해야 한다
+        expect(cs.changes.some((c) => c.path === 'link' && c.change === 'created')).toBe(true)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+// [Codex round5 Fix-3] baseline skipped{unclassified} 는 restore sweep 에서 건드리지 않는다
+// RED on pre-fix: lstat-fail 이 'symlink' 로 기록됐을 때 restore sweep(baselineSymlinkPaths)이
+// 해당 경로를 "치환됨"으로 판단해 removeCreated → 실제 디렉터리 파괴.
+// post-fix: 'unclassified' 는 baselineSymlinkPaths 에서 제외 → sweep 건너뜀 → 디렉터리 보존.
+describe('[round5 Fix-3] baseline skipped{unclassified} 는 restore sweep 에서 삭제하지 않는다', () => {
+  it('unclassified 엔트리가 있는 경로가 실제 디렉터리로 존재해도 restore sweep 이 삭제하지 않는다', async () => {
+    // 실 lstat-fail 은 portable 하게 재현 불가(exotic reparse 등) → 수동 baseline 주입으로 검증.
+    // "lstat 실패였던" 경로가 실제로는 디렉터리인 경우를 시뮬레이션.
+    // RED 조건: 이전에 'symlink' 로 기록되면 sweep 이 lstatSync → !isSymbolicLink → removeCreated
+    //   → 디렉터리 삭제. post-fix 는 'unclassified' 이므로 baselineSymlinkPaths 에 없음 → sweep 제외.
+    const baseGit = fakeGitIgnored([])
+    const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+
+    // 수동으로 unclassified 엔트리 주입(실 lstat-fail 시뮬레이션)
+    base.skipped.push({ path: 'real-dir', reason: 'unclassified' })
+
+    // 실제 디렉터리 생성
+    mkdirSync(join(root, 'real-dir'))
+
+    // restore 시 git 은 real-dir/ 를 디렉터리로 보고 — 내용이 없으므로 아무 파일도 보고 안 함.
+    // real-dir 자체는 skippedPaths 에 있으므로 files 루프에서도 제외됨.
+    // 핵심 검증: baselineSymlinkPaths sweep 이 real-dir 을 삭제하지 않아야 한다.
+    const curGit = fakeGitIgnored([])
+    await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+    // unclassified → baselineSymlinkPaths 에 없음 → sweep 건너뜀 → 디렉터리 보존
+    expect(existsSync(join(root, 'real-dir'))).toBe(true)
+  })
+})
+
+// ── Codex round6 Fix-1: baseline symlink 삭제 → deleted 표면화 ──
+// RED on pre-fix: baselineSymlinkPaths sweep ENOENT 분기가 `continue` → deleted 보고 없음.
+// post-fix: ENOENT 시 `changes.push({change:'deleted',...})` → 표면화됨.
+describe.skipIf(process.platform === 'win32')(
+  '[round6 Fix-1] baseline symlink-dir DELETED → collectIgnoredChanges reports deleted (POSIX)',
+  () => {
+    it('baseline symlink(POSIX dir) 이 삭제되면 collectIgnoredChanges 가 deleted 로 보고한다', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-r6f1-'))
+      try {
+        // baseline: link → symlink-to-dir → capture 가 skipped{symlink}
+        symlinkSync(outside, join(root, 'link'), 'dir')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 symlink 를 삭제 — 아무것도 남기지 않음
+        rmSync(join(root, 'link'), { force: true })
+
+        // collect: git 은 아무것도 보고 안 함(symlink 도 대체물도 없음)
+        const curGit = fakeGitIgnored([])
+        const cs = await collectIgnoredChanges(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // RED: pre-fix 는 ENOENT → continue → changes 에 아무것도 없음.
+        // GREEN: post-fix 는 deleted 를 push.
+        expect(cs.changes.some((c) => c.path === 'link' && c.change === 'deleted')).toBe(true)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+describe.skipIf(process.platform !== 'win32')(
+  '[round6 Fix-1] baseline junction DELETED → collectIgnoredChanges reports deleted (win32)',
+  () => {
+    it('baseline junction 이 삭제되면 collectIgnoredChanges 가 deleted 로 보고한다', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-r6f1w-'))
+      try {
+        // baseline: link → junction → capture 가 skipped{symlink}
+        symlinkSync(outside, join(root, 'link'), 'junction')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 junction 을 삭제
+        rmSync(join(root, 'link'), { recursive: true, force: true })
+
+        // collect: git 은 아무것도 보고 안 함
+        const curGit = fakeGitIgnored([])
+        const cs = await collectIgnoredChanges(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // RED: pre-fix 는 ENOENT → continue → changes 에 아무것도 없음.
+        // GREEN: post-fix 는 deleted 를 push.
+        expect(cs.changes.some((c) => c.path === 'link' && c.change === 'deleted')).toBe(true)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+// ── Codex round6 Fix-2: cap 후 sensitive symlink 가 fail-closed 에 도달하는지 검증 ──
+// RED on pre-fix: top-level `if (capped) break` 가 비민감 링크로 cap 트립 후 break →
+//   후속 .ssh/ 레코드가 captureIgnoredBaseline 의 sensitive 검사에 도달하지 못함(fail-OPEN).
+// post-fix: break 제거 → .ssh/ 가 루프를 통과 → pushSkip(sensitive) → throw(fail-CLOSED).
+describe('[round6 Fix-2] cap 후 sensitive symlink 가 top-level loop 를 통과해 fail-closed 에 도달한다', () => {
+  it('POSIX: non-sensitive link cap 후 .ssh symlink → captureIgnoredBaseline throws', async () => {
+    if (process.platform === 'win32') return // junction variant below
+    const outNonSens = mkdtempSync(join(tmpdir(), 'fleet-r6f2a-'))
+    const outSens = mkdtempSync(join(tmpdir(), 'fleet-r6f2b-'))
+    try {
+      // link1, link2 = non-sensitive dir-symlinks (maxFiles=1 → link1 이 cap 소진)
+      symlinkSync(outNonSens, join(root, 'link1'), 'dir')
+      symlinkSync(outNonSens, join(root, 'link2'), 'dir')
+      // .ssh = sensitive dir-symlink — cap 이후 레코ードとして続く
+      symlinkSync(outSens, join(root, '.ssh'), 'dir')
+      // git 은 link1/ → link2/ → .ssh/ 순서로 보고
+      const git = fakeGitIgnored(['link1/', 'link2/', '.ssh/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      // RED: pre-fix は break により .ssh/ に到達せず → resolve(no throw).
+      // GREEN: post-fix は break なし → .ssh/ が pushSkip(sensitive) → captureIgnoredBaseline が throw.
+      await expect(captureIgnoredBaseline(root, git, policy)).rejects.toThrow(/링크/)
+    } finally {
+      rmSync(outNonSens, { recursive: true, force: true })
+      rmSync(outSens, { recursive: true, force: true })
+    }
+  })
+
+  it('win32: non-sensitive junction cap 후 .ssh junction → captureIgnoredBaseline throws', async () => {
+    if (process.platform !== 'win32') return
+    const outNonSens = mkdtempSync(join(tmpdir(), 'fleet-r6f2c-'))
+    const outSens = mkdtempSync(join(tmpdir(), 'fleet-r6f2d-'))
+    try {
+      symlinkSync(outNonSens, join(root, 'link1'), 'junction')
+      symlinkSync(outNonSens, join(root, 'link2'), 'junction')
+      symlinkSync(outSens, join(root, '.ssh'), 'junction')
+      const git = fakeGitIgnored(['link1/', 'link2/', '.ssh/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      await expect(captureIgnoredBaseline(root, git, policy)).rejects.toThrow(/링크/)
+    } finally {
+      rmSync(outNonSens, { recursive: true, force: true })
+      rmSync(outSens, { recursive: true, force: true })
+    }
   })
 })
