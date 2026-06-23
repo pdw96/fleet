@@ -71,6 +71,35 @@ required status check 로 걸어, 통과 전 머지를 플랫폼 차원에서 �
   관련 지적은 에이전트 학습 컷오프 지식에만 의존하지 말고 **context7 MCP 로 현행 문서를 받아
   교차검증**한 뒤 수용/반박한다(컷오프 이후 변경 가능 — 착수 전 model-capability 검증 규율의 연장).
 
+## Codex 리뷰 운영 기준
+
+Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회귀를 잡는 senior reviewer** 로
+운용한다. CI 4게이트(`typecheck·lint·test·build`)와 본 가이드가 이미 막는 영역(포맷·자명한 타입)은
+Codex 의 몫이 아니다 — **CI·타입이 못 잡는** 아키텍처/계약/안전 회귀에 집중시킨다.
+
+- **운영 모드.** Codex GitHub integration 의 *Code review + Automatic reviews* 를 기본으로 켜
+  PR open/ready 시 `@codex review` 없이 자동 리뷰를 받는다. 수동 `@codex review` 코멘트는
+  **자동 리뷰 지연·무응답 시 fallback** 으로만 유지(cadence·👍 clean 감지는 아래 「백로그 착수 절차」
+  4단계 「Codex 봇 운영」 참조).
+- **required check 화(현재 미도입).** Automatic reviews 자체는 머지 게이트가 아니다. Codex 를 머지
+  차단 **required status check** 로 강제하려면 Automatic reviews 가 아니라 별도 GitHub Actions
+  워크플로에 `openai/codex-action@v1` job 을 만들고, `master protection` ruleset 에 그 **job 표시명**
+  (잡 id 아님 — skip 시 영구 pending 함정)을 required check 로 등록한다. 실측 후 결정(#98).
+- **CodeRabbit 병행은 실측 후.** CodeRabbit 류 풍부한 코멘트·incremental review·required gate 는
+  중복 코멘트·리뷰 피로 위험이 있어 지금은 도입하지 않는다. contributor 증가·minor/refactor 수요가
+  커지면 false-positive 율·실제 수정 반영률을 측정해 보조 리뷰어로 실험한다(#98).
+
+**Fleet 특화 P1 신호** — Codex 가 우선 잡아야 할 고위험 회귀(CI 가 통과시켜도 P1 로 본다). 각 항목은
+위 「아키텍처 규칙」·「함정」의 계약을 런타임/타입이 못 잡는 지점에서 보강한다:
+
+- **코어 Electron/DOM 의존성 유입** — `src/main/core/*` 에 `electron`/DOM import(순수 TS 계약 위반).
+- **`ApprovalGate` 우회** — 파일 쓰기/삭제/shell 이 게이트를 거치지 않는 경로(`core/safety/`).
+- **IPC / `FleetBridge` drift** — `preload/index.ts` ↔ `shared/types.ts` 의 브리지·타입 불일치.
+- **provider / session 계약 위반** — `ApiProvider.chat()` 의 `ChatResult` 구조·`LlmSession` 하위호환 깨짐.
+- **`FLEET_E2E` 가드 완화** — E2E 픽스처·페이크 러너가 프로덕션 경로로 새는 변경.
+- **engine / lockfile drift** — `engines.node` floor ↔ 의존성 실제 바닥 불일치(EBADENGINE)·lockfile 루트 드리프트.
+- **release / update 안전장치 약화** — 서명·attestation·`latest.yml` sha512 무결성·updater 채널 가드 후퇴.
+
 ## 백로그 착수 절차 (이슈 #27 기반)
 
 "이슈 #27 확인하고 작업 진행" 류 지시를 받으면 아래 루프를 따른다. 백로그는 4중으로 조직돼 있다:
