@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -175,10 +176,16 @@ export async function captureIgnoredBaseline(
       const abs = resolve(root, path)
       let st
       try {
-        st = statSync(abs)
+        st = lstatSync(abs) // [#128-B2] 링크 비추종 — 링크면 isFile()=false 로 아래 분기 적중
       } catch (err) {
         if (sensitive) throw new Error(`민감 ignored 파일 stat 실패: ${path}`, { cause: err })
         skipped.push({ path, reason: 'read-failed' })
+        continue
+      }
+      // [#128-B2] symlink/junction → read 금지(밖 target 유출 차단). sensitive 면 fail-closed.
+      if (st.isSymbolicLink()) {
+        if (sensitive) throw new Error(`민감 ignored 파일이 링크임(백업 불가): ${path}`)
+        skipped.push({ path, reason: 'symlink' })
         continue
       }
       // [#128-A] non-regular(FIFO/socket/device/dir)면 readFileSync 가 hang/오류 → read 전 차단.

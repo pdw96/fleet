@@ -701,3 +701,32 @@ describe('[:270] scan-capped marker restore exclusion', () => {
     expect(res).toEqual({ capped: false })
   })
 })
+
+describe.skipIf(process.platform === 'win32')('[#128-B2] capture 링크 leaf (POSIX)', () => {
+  it('비-sensitive symlink ignored 파일은 read 없이 symlink 로 skip', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'SECRET')
+      symlinkSync(join(outside, 'secret.txt'), join(root, 'link.dat'))
+      const git = fakeGitIgnored(['link.dat'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      expect(base.entries.has('link.dat')).toBe(false)
+      expect(base.skipped).toContainEqual({ path: 'link.dat', reason: 'symlink' })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+  it('sensitive-명 symlink 는 throw(fail-closed)', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'k'), 'KEY')
+      symlinkSync(join(outside, 'k'), join(root, '.env'))
+      const git = fakeGitIgnored(['.env'])
+      await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+        /링크|일반 파일이 아님/,
+      )
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
