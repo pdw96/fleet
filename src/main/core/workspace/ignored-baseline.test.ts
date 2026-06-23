@@ -930,6 +930,98 @@ describe.skipIf(process.platform === 'win32')(
   },
 )
 
+// [#128-B2 P2-1] baseline symlink-to-dir → agent 가 실제 dir 로 치환 → restore 가 dir 제거 (POSIX)
+// RED on pre-fix: git 은 'link/child.txt' 만 보고 → created 루프가 'link' 자체를 못 지움 → dir 잔존.
+describe.skipIf(process.platform === 'win32')(
+  '[P2-1] baseline symlink-to-dir 을 실제 디렉터리로 치환하면 restore 가 그 디렉터리를 제거한다 (POSIX)',
+  () => {
+    it('baseline symlink-to-dir → real dir 치환 → restore removes dir', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-p21-'))
+      try {
+        // baseline: link 는 symlink → dir → capture 가 skipped{symlink}
+        symlinkSync(outside, join(root, 'link'), 'dir')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 symlink 를 제거하고 실제 디렉터리(+자식 파일)로 치환
+        rmSync(join(root, 'link'), { force: true })
+        mkdirSync(join(root, 'link'))
+        writeFileSync(join(root, 'link', 'child.txt'), 'agent-child')
+
+        // restore 시 git 은 'link/child.txt' 만 보고(link 자체는 dir 라 보고 안 함)
+        const curGit = fakeGitIgnored(['link/child.txt'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // [P2-1] baseline symlink sweep 이 link 가 더 이상 symlink 아님을 감지 → removeCreated
+        expect(existsSync(join(root, 'link'))).toBe(false)
+        // outside 는 보존
+        expect(existsSync(outside)).toBe(true)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+// [#128-B2 P2-4] walk 내 non-sensitive symlink skip 도 스캔 예산에 포함
+// RED on pre-fix: skipped 가 maxFiles 무관하게 무한 증가하고 SCAN_CAPPED 가 안 찍힘.
+// Windows: 'file' symlink 는 관리자 권한 필요 → 'junction'(디렉터리 링크) 으로 대체.
+describe('[P2-4] walk 내 symlink skip 이 스캔 cap 예산에 포함된다', () => {
+  it('non-sensitive symlink 다수가 maxFiles 초과 시 skipped 가 bounded 되고 SCAN_CAPPED 가 찍힌다', async () => {
+    // 구조: links/ 디렉터리 아래 비민감 symlink 3개, maxFiles=1
+    // pre-fix: 모든 링크가 skipped 에 push → skipped.length=3, SCAN_CAPPED 없음
+    // post-fix: generalCount 소진 후 SCAN_CAPPED 기록, 이후 링크 skip 생략
+    mkdirSync(join(root, 'links'))
+    const out1 = mkdtempSync(join(tmpdir(), 'fleet-p24a-'))
+    const out2 = mkdtempSync(join(tmpdir(), 'fleet-p24b-'))
+    const out3 = mkdtempSync(join(tmpdir(), 'fleet-p24c-'))
+    try {
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+      symlinkSync(out1, join(root, 'links', 'lnk1'), linkType)
+      symlinkSync(out2, join(root, 'links', 'lnk2'), linkType)
+      symlinkSync(out3, join(root, 'links', 'lnk3'), linkType)
+      const git = fakeGitIgnored(['links/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      const base = await captureIgnoredBaseline(root, git, policy)
+
+      // SCAN_CAPPED が skipped に記録されていること(cap 到達の証拠)
+      expect(base.skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')).toBe(true)
+
+      // cap 이후 비민감 링크는 기록 생략 → skipped 총 건수(non-SCAN_CAPPED symlink) ≤ maxFiles
+      const symlinkSkips = base.skipped.filter((s) => s.reason === 'symlink')
+      expect(symlinkSkips.length).toBeLessThanOrEqual(policy.maxFiles)
+    } finally {
+      rmSync(out1, { recursive: true, force: true })
+      rmSync(out2, { recursive: true, force: true })
+      rmSync(out3, { recursive: true, force: true })
+    }
+  })
+
+  it('sensitive symlink 은 cap 초과 후에도 반드시 기록된다(fail-closed)', async () => {
+    // 비민감 symlink 1개(cap 소진) → 이후 민감 symlink(.ssh → dir) 도 기록되어야 함
+    // .env 는 file symlink(win32 에서 권한 필요) → .ssh(dir symlink)로 대체
+    mkdirSync(join(root, 'links'))
+    const outNonSens = mkdtempSync(join(tmpdir(), 'fleet-p24ns-'))
+    const outSens = mkdtempSync(join(tmpdir(), 'fleet-p24s-'))
+    try {
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+      // non-sensitive dir-symlink → cap 소진
+      symlinkSync(outNonSens, join(root, 'links', 'lnk1'), linkType)
+      // sensitive dir-symlink(.ssh) → cap 후에도 항상 기록
+      symlinkSync(outSens, join(root, '.ssh'), linkType)
+      // git 은 links/ 를 먼저 보고해 walk 에서 lnk1 처리, 그 다음 .ssh/
+      const git = fakeGitIgnored(['links/', '.ssh/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      // .ssh 는 sensitive → captureIgnoredBaseline 이 throw(fail-closed)
+      await expect(captureIgnoredBaseline(root, git, policy)).rejects.toThrow(/링크/)
+    } finally {
+      rmSync(outNonSens, { recursive: true, force: true })
+      rmSync(outSens, { recursive: true, force: true })
+    }
+  })
+})
+
 describe.skipIf(process.platform !== 'win32')(
   '[#128-B2] restore 쓰기 측 junction-guard (Windows)',
   () => {
@@ -1046,6 +1138,35 @@ describe.skipIf(process.platform !== 'win32')(
         await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
         // 에이전트가 만든 일반파일이 rollback 으로 삭제되어야 한다
         expect(existsSync(join(root, 'link'))).toBe(false)
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    // [#128-B2 P2-1] baseline JUNCTION-to-dir → agent 가 실제 dir 로 치환 → restore 가 dir 제거
+    // RED on pre-fix: git 은 child 만 보고하므로 'link' 자체가 created 루프에서 누락 → dir 잔존.
+    it('[P2-1 win32] baseline JUNCTION 을 실제 디렉터리로 치환하면 restore 가 그 디렉터리를 제거한다', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-p21-'))
+      try {
+        // baseline: link 는 junction(디렉터리 가리킴) → skipped{symlink}
+        symlinkSync(outsideDir, join(root, 'link'), 'junction')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 junction 을 제거하고 실제 디렉터리(+자식 파일)로 치환
+        rmSync(join(root, 'link'), { recursive: true, force: true })
+        mkdirSync(join(root, 'link'))
+        writeFileSync(join(root, 'link', 'child.txt'), 'agent-child')
+
+        // restore 시 git 은 'link/child.txt' 만 보고(link 자체는 디렉터리라 보고 안 함)
+        const curGit = fakeGitIgnored(['link/child.txt'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // [P2-1] baseline symlink sweep 이 link 가 더 이상 symlink 아님을 감지 → removeCreated
+        expect(existsSync(join(root, 'link'))).toBe(false)
+        // outside 는 보존
+        expect(existsSync(outsideDir)).toBe(true)
       } finally {
         rmSync(outsideDir, { recursive: true, force: true })
       }

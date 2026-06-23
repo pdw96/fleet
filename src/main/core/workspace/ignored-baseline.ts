@@ -90,6 +90,23 @@ async function listIgnored(
     }
     files.push(key)
   }
+  // [#128-B2 P2-4] 링크 skip 도 스캔 예산에 포함(대량 링크 트리 unbounded 방지).
+  // 단 민감 경로는 항상 기록(fail-closed — capture 의 sensitive 검사가 s.path 를 본다).
+  const pushSkipSymlink = (rel: string): void => {
+    const key = rel.replace(/\\/g, '/')
+    const sensitive = policy.sensitiveRe.test(key) || policy.sensitiveRe.test(`${key}/`)
+    if (!sensitive) {
+      if (generalCount >= policy.maxFiles) {
+        if (!capped) {
+          capped = true
+          skipped.push({ path: SCAN_CAPPED, reason: 'over-cap' })
+        }
+        return // 비민감 링크는 cap 초과 시 기록 생략(SCAN_CAPPED 가 불완전 신호)
+      }
+      generalCount++
+    }
+    skipped.push({ path: key, reason: 'symlink' })
+  }
   const walk = (relDir: string): void => {
     // early-terminate: cap 도달 후 서브디렉터리 탐색을 중단(unbounded traversal 방지)
     if (capped) return
@@ -109,9 +126,33 @@ async function listIgnored(
     for (const ent of entries) {
       if (capped) return
       const rel = `${relDir}/${ent.name}`
+      // [#128-B2 P2-2] DT_UNKNOWN(network/FUSE) — dirent 종류 미상 → lstat 로 확정.
+      if (!ent.isSymbolicLink() && !ent.isDirectory() && !ent.isFile()) {
+        let est
+        try {
+          est = lstatSync(resolve(root, rel))
+        } catch {
+          // lstat 실패(분류 불가) → fail-closed skip(symlink 동일 취급)
+          pushSkipSymlink(rel)
+          continue
+        }
+        if (est.isSymbolicLink()) {
+          pushSkipSymlink(rel)
+          continue
+        }
+        if (est.isDirectory()) {
+          const relSlash = `${rel}/`
+          if (policy.denylistRe.test(rel) || policy.denylistRe.test(relSlash)) continue
+          walk(rel)
+          continue
+        }
+        // 그 외(file/비정형) → pushFile(capture 의 lstat 가 regular/not-regular 처리)
+        pushFile(rel)
+        continue
+      }
       if (ent.isSymbolicLink()) {
         // [#128-B2] symlink/junction 은 따라가지 않는다 — 밖을 가리켜 읽거나 재귀하지 않음.
-        skipped.push({ path: rel.replace(/\\/g, '/'), reason: 'symlink' })
+        pushSkipSymlink(rel)
         continue
       }
       if (ent.isDirectory()) {
@@ -411,8 +452,9 @@ export async function restoreIgnoredBaseline(
     let st
     try {
       st = lstatSync(abs)
-    } catch {
-      return
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return // 이미 없음 — 삭제할 것 없음
+      throw e // [#128-B2 P2-3] 분류 불가 created 경로 → fail-closed(restore 가 success 로 잔존 은폐 방지)
     }
     rmSync(abs, st.isSymbolicLink() ? { force: true } : { recursive: true, force: true })
   }
@@ -430,6 +472,20 @@ export async function restoreIgnoredBaseline(
     if (s.path === SCAN_CAPPED) continue
     if (baseline.entries.has(s.path) || skippedPaths.has(s.path)) continue
     removeCreated(s.path)
+  }
+  // [#128-B2 P2-1] baseline symlink 이 디렉터리를 가리켰고 agent 가 실제 dir/file 로 치환하면
+  // git 은 child 만 보고하므로 위 created 루프가 'link' 자체를 못 지운다.
+  // 치환된(=더 이상 symlink 아닌) 것만 제거. 여전히 symlink 면 baseline 상태=그대로 둠.
+  for (const p of baselineSymlinkPaths) {
+    const abs = resolve(root, p)
+    let st
+    try {
+      st = lstatSync(abs)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw e
+    }
+    if (!st.isSymbolicLink()) removeCreated(p) // 여전히 symlink 면 baseline 상태=그대로 둠
   }
   // 2) backup 보유 엔트리 → 백업에서 복원(modified·deleted 모두 포함).
   for (const [path, entry] of baseline.entries) {
