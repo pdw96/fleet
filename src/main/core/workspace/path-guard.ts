@@ -1,5 +1,8 @@
-// namespace import — 테스트가 vi.spyOn(fs,'lstatSync')로 가로챌 수 있게 한다(ESM named-import
-// 바인딩은 스파이가 가로채지 못함 — B1 m4 교훈).
+// namespace import — spy 가로채기가 환경에서 허용될 때 vi.spyOn(fs,'lstatSync')가 동작하도록
+// 한다(ESM named-import 바인딩은 스파이가 가로채지 못함 — B1 m4 교훈).
+// Windows ESM 환경에서는 Node 빌트인 프로퍼티가 non-configurable이라 spy가 "Cannot redefine
+// property"로 실패한다 — 따라서 EINVAL spy 테스트는 best-effort 이다.
+// 'suspicious' 분기의 실 커버리지는 POSIX 환경에서 FIFO를 생성하는 테스트가 담당한다.
 import * as fs from 'node:fs'
 
 /** 경로의 종류를 lstat(링크 비추종)으로 판정한다.

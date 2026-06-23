@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -32,7 +33,7 @@ describe('isLinkSync', () => {
   // spy 성공 환경에서는 완전히 검증되고, 실패 환경에서는 skip.
   it('lstat EINVAL/UNKNOWN(exotic reparse) → suspicious(fail-closed)', () => {
     const err = Object.assign(new Error('einval'), { code: 'EINVAL' })
-    let spy: ReturnType<typeof vi.spyOn>
+    let spy: ReturnType<typeof vi.spyOn> | undefined
     try {
       spy = vi.spyOn(fs, 'lstatSync').mockImplementation(() => {
         throw err
@@ -44,8 +45,14 @@ describe('isLinkSync', () => {
     try {
       expect(isLinkSync(join(root, 'whatever'))).toBe('suspicious')
     } finally {
-      spy.mockRestore()
+      spy?.mockRestore()
     }
+  })
+  it('FIFO 등 비정형(non-regular)은 suspicious', () => {
+    if (process.platform === 'win32') return // mkfifo 불가
+    const p = join(root, 'pipe.dat')
+    execFileSync('mkfifo', [p])
+    expect(isLinkSync(p)).toBe('suspicious')
   })
 })
 
