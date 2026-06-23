@@ -100,3 +100,20 @@ export function escapesRoot(root: string, abs: string): boolean
 ## 영향 파일
 
 `src/main/core/workspace/path-guard.ts`(신규+test) · `ignored-baseline.ts`(+test) · `workspace-tools.ts`(+test) · (필요 시 `git.ts` `samePath`를 helper로 흡수 검토). 신규 win32/POSIX 분기 테스트.
+
+---
+
+## 한계 및 보수적 설계 결정 (Codex round6 Fix-3 추가)
+
+### unclassified(lstat-fail) baseline 경로 — whitelist 유지 근거
+
+`baseline.skipped` 의 `reason === 'unclassified'` 경로는 baseline 수집 시점에 `lstatSync` 가 실패해 **실제 타입(symlink인지 dir인지 file인지)을 확정할 수 없는** 경로다.
+
+이 경로를 `baselineSymlinkPaths`(collect/restore sweep 대상)에 포함시키지 않는 이유:
+
+- lstat 실패는 exotic reparse point(OneDrive, AppExecLink 등)·권한 오류·ENOENT 등 여러 원인으로 발생한다.
+- **만약 그 자리에 pre-existing 파일/디렉터리가 있었을 경우**, sweep 이 "치환됨"으로 판단해 `removeCreated` → 강제 삭제하면 **baseline 이전부터 존재하던 데이터를 파괴**한다.
+- 이는 Codex round5 에서 실제로 발생한 파괴적 버그(lstat-fail 경로를 `symlink` 로 잘못 분류 → sweep 이 실 디렉터리를 삭제)와 **동일한 클래스의 위험**이다.
+- 따라서 `'unclassified'` 는 `'read-failed'`·`'over-cap'` 과 동일하게 **보수적 whitelist** 로 취급: rollback 강제 삭제 대상에서 제외하고, `unrestorable` 로 표면화해 호출자(오케스트레이터)가 수동 판단할 수 있게 한다.
+
+결론: `baselineSymlinkPaths` 는 `reason === 'symlink'` 로 **확정된** 경로만 포함한다. 이것이 안전하게 "치환 감지 후 삭제"를 수행할 수 있다고 증명된 유일한 케이스다.

@@ -183,8 +183,14 @@ async function listIgnored(
       pushFile(rel)
     }
   }
+  // [Codex round6 Fix-2] top-level `if (capped) break` を削除。
+  // git が報告するレコードリストは有限なので短絡は不要だが、安全上危険:
+  // 非民感リンクが cap をトリップした後に SENSITIVE レコード(.ssh/ など)が続く場合、
+  // break すると sensitive skip が captureIgnoredBaseline の fail-closed 検査に到達しない
+  // (fail-OPEN になる)。
+  // walk 内部の `if (capped) return` ガードはそのまま残す — unbounded traversal 防止のため必須。
+  // cap 後に dir レコードが来ても walk(dir) は冒頭で即 return(bounded)なので余分な作業は発生しない。
   for (const e of ignored) {
-    if (capped) break
     const rel = e.replace(/\\/g, '/')
     if (rel.endsWith('/')) {
       const dir = rel.replace(/\/+$/, '')
@@ -340,6 +346,12 @@ export async function collectIgnoredChanges(
   // [Codex round5 Fix-3] baselineSymlinkPaths = reason==='symlink' 만 — 'unclassified' 제외.
   // 'unclassified' 는 lstat-fail 로 실제 타입 불명. restore sweep 에서 확정 non-symlink 인지
   // 알 수 없으므로 삭제 대상에서 제외해야 한다(파괴적 오동작 방지).
+  // [Codex round6 Fix-3 — DOCUMENT] 'unclassified' を created-whitelist から外さない理由:
+  //   lstat が失敗した経路は「空のディレクトリだったのか、pre-existing なファイルだったのか」判定不能。
+  //   agent が後でそこにファイルを作った場合、強制削除すると pre-existing データを破壊する可能性がある。
+  //   これは round5 で起きた破壊的バグ(sweep が実ディレクトリを削除)と同クラスのリスク。
+  //   よって 'unclassified' は 'read-failed'/'over-cap' と同様に保守的 whitelist(強制 rollback しない)扱いとし、
+  //   unrestorable として表面化する(collect 側)。
   const baselineSymlinkPaths = new Set(
     baseline.skipped.filter((s) => s.reason === 'symlink').map((s) => s.path),
   )
@@ -437,7 +449,20 @@ export async function collectIgnoredChanges(
       st = lstatSync(abs)
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') continue // 사라짐 — 위 entries 루프가 다룸(entries 에 없으면 변경 없음)
+      if (code === 'ENOENT') {
+        // [Codex round6 Fix-1] baseline symlink 이 삭제됨 → deleted 변경으로 표면화.
+        // 이전 코드는 `continue` 했는데, baseline.entries 에 없는 symlink 경로는
+        // 위 entries 루프가 처리하지 않으므로 deleted 가 영원히 보고되지 않는다(누락 버그).
+        // restore 는 symlink 를 재생성할 수 없으므로(backup 없음) restore 변경은 없음.
+        // de-dup: changedPaths 에 없는 경우만 push.
+        if (!changedPaths.has(path))
+          changes.push({
+            path,
+            change: 'deleted',
+            sensitive: policy.sensitiveRe.test(path) || policy.sensitiveRe.test(`${path}/`),
+          })
+        continue
+      }
       // lstat 실패 → stat 불가(unrestorable)
       unrestorable.push({ path, reason: 'stat-failed' })
       continue
@@ -501,6 +526,11 @@ export async function restoreIgnoredBaseline(
   // restore sweep 은 "symlink 였는데 지금 non-symlink = 치환됨"을 판정한다.
   // 'unclassified' 는 baseline 시점 타입 불명이므로 sweep 대상에서 제외해야 한다.
   // 'unclassified' 경로를 sweep 에 포함하면 실제 디렉터리를 파괴하는 오동작이 발생한다.
+  // [Codex round6 Fix-3 — DOCUMENT] 'unclassified' を whitelist から外して強制 rollback しない理由:
+  //   lstat-fail の経路は baseline 時点でのタイプ(symlink/dir/file)が確定できない。
+  //   強制削除すると pre-existing なファイル/ディレクトリを破壊するリスクがある(round5 破壊的バグと同クラス)。
+  //   'read-failed'/'over-cap' と同様に保守的 whitelist とし、unrestorable として表面化する。
+  //   確定した symlink('symlink' reason)のみが sweep 対象になる — これが安全に削除できると証明された唯一のケース。
   const baselineSymlinkPaths = new Set(
     baseline.skipped.filter((s) => s.reason === 'symlink').map((s) => s.path),
   )
