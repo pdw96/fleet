@@ -8,7 +8,6 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
@@ -338,7 +337,15 @@ function clearNonDirAncestors(root: string, abs: string): void {
   let cur = root
   for (const part of relDir.split(/[\\/]/).filter(Boolean)) {
     cur = resolve(cur, part)
-    if (existsSync(cur) && !statSync(cur).isDirectory()) {
+    if (!existsSync(cur)) continue
+    let ls
+    try {
+      ls = lstatSync(cur) // [#128-B2] existsSync→lstat race 는 fail-safe(advisory)
+    } catch {
+      continue
+    }
+    // [#128-B2] 비-dir 또는 링크(junction 포함) 조상은 제거 → mkdirSync(recursive) 가 root 안 체인 재생성.
+    if (!ls.isDirectory() || ls.isSymbolicLink()) {
       rmSync(cur, { recursive: true, force: true })
       return
     }
@@ -356,17 +363,27 @@ export async function restoreIgnoredBaseline(
   // 이번 삭제 패스에서 누락될 수 있음 → rollback 불완전 가능성 표면화).
   const capped = skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
+  // [#128-B2] 링크-aware created 삭제 헬퍼.
+  // lexical containment(realpath 아님 — 탈출 링크도 unlink 해야 하므로 realpath 추종 금지).
+  const removeCreated = (rel: string): void => {
+    const abs = resolve(root, rel)
+    // git-상대 경로는 보통 root 아래지만, 이상한 절대/상위 경로 방어.
+    const r = relative(root, abs)
+    if (r === '..' || r.startsWith(`..${sep}`) || isAbsolute(r)) return
+    // 링크면 recursive 금지 — 링크 자체만 unlink(밖 내용 보존). isLinkSync=lstat(비추종).
+    rmSync(abs, isLinkSync(abs) === 'link' ? { force: true } : { recursive: true, force: true })
+  }
   // 1) created(현재 in-scope, baseline·skipped 둘 다 없음) → 삭제.
   for (const path of files) {
     if (baseline.entries.has(path) || skippedPaths.has(path)) continue
-    rmSync(resolve(root, path), { recursive: true, force: true })
+    removeCreated(path)
   }
   // [:229] over-cap skipped 중 baseline 에 없는 것도 삭제(에이전트가 cap 초과로 만든 파일 rollback).
   // [:270] SCAN_CAPPED 합성 마커는 실-경로가 아니므로 rmSync 대상에서 제외한다.
   for (const s of skipped) {
     if (s.path === SCAN_CAPPED) continue
     if (baseline.entries.has(s.path) || skippedPaths.has(s.path)) continue
-    rmSync(resolve(root, s.path), { recursive: true, force: true })
+    removeCreated(s.path)
   }
   // 2) backup 보유 엔트리 → 백업에서 복원(modified·deleted 모두 포함).
   for (const [path, entry] of baseline.entries) {
@@ -376,9 +393,9 @@ export async function restoreIgnoredBaseline(
     mkdirSync(dirname(abs), { recursive: true })
     // [P1-b] if existing path is not a regular file (e.g. directory), remove it first
     if (existsSync(abs)) {
-      const st = statSync(abs)
+      const st = lstatSync(abs) // [#128-B2] 비추종 — symlink leaf 는 isFile()=false 로 제거 대상
       if (!st.isFile()) {
-        rmSync(abs, { recursive: true, force: true })
+        rmSync(abs, { recursive: true, force: true }) // 링크/디렉터리 제거 후 실파일로 복원
       }
     }
     writeFileSync(abs, entry.backup)

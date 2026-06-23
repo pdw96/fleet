@@ -751,3 +751,106 @@ describe.skipIf(process.platform === 'win32')('[#128-B2] capture 링크 leaf (PO
     }
   })
 })
+
+describe.skipIf(process.platform === 'win32')(
+  '[#128-B2] restore 쓰기 측 link-guard (POSIX)',
+  () => {
+    it('symlink leaf 는 링크를 제거하고 root 안 실파일로 복원(밖 target 미오염)', async () => {
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const git = fakeGitIgnored(['f.dat'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'victim'), 'DO-NOT-OVERWRITE')
+        rmSync(join(root, 'f.dat'))
+        symlinkSync(join(outside, 'victim'), join(root, 'f.dat'))
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        // 밖 victim 은 그대로, root/f.dat 은 backup('orig')으로 복원
+        expect(readFile(join(outside, 'victim')).toString()).toBe('DO-NOT-OVERWRITE')
+        expect(readFile(join(root, 'f.dat')).toString()).toBe('orig')
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+    it('created symlink-to-dir 는 링크만 unlink(밖 디렉터리 내용 보존)', async () => {
+      const git = fakeGitIgnored(['f.dat', 'esc']) // f.dat=baseline, esc=created link
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'keep'), 'KEEP')
+        symlinkSync(outside, join(root, 'esc'), 'dir') // 실행 중 생성된 링크
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        expect(existsSync(join(root, 'esc'))).toBe(false) // 링크 제거됨
+        expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP') // 밖 내용 보존
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('실행 중 새로 생긴 escaping symlink 는 rollback 에서 unlink(밖 내용 보존)', async () => {
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const baseGit = fakeGitIgnored(['f.dat'])
+      const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'keep'), 'KEEP')
+        symlinkSync(outside, join(root, 'newlink'), 'dir') // 에이전트가 새로 만든 링크
+        const git = fakeGitIgnored(['f.dat', 'newlink']) // restore 시점 git 보고
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        expect(existsSync(join(root, 'newlink'))).toBe(false)
+        expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP')
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+describe.skipIf(process.platform !== 'win32')(
+  '[#128-B2] restore 쓰기 측 junction-guard (Windows)',
+  () => {
+    it('created JUNCTION-to-dir 는 junction 만 unlink(밖 디렉터리 내용 보존)', async () => {
+      // capture 시점에 esc 는 없음 — baseline 에 미등재
+      const baseGit = fakeGitIgnored(['f.dat'])
+      writeFileSync(join(root, 'f.dat'), 'orig')
+      const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'keep'), 'KEEP')
+        symlinkSync(outside, join(root, 'esc'), 'junction') // 에이전트가 실행 중 만든 junction
+        // restore 시점 git 은 esc 를 보고(실행 중 생성된 junction)
+        const curGit = fakeGitIgnored(['f.dat', 'esc'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        expect(existsSync(join(root, 'esc'))).toBe(false) // junction 제거됨
+        expect(readFile(join(outside, 'keep')).toString()).toBe('KEEP') // 밖 내용 보존
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('junction 조상 → clearNonDirAncestors 제거 후 실파일 in-root 복원(밖 내용 보존)', async () => {
+      // baseline: a/b/c.txt
+      mkdirSync(join(root, 'a', 'b'), { recursive: true })
+      writeFileSync(join(root, 'a', 'b', 'c.txt'), 'ORIG')
+      const git = fakeGitIgnored(['a/b/c.txt'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+      try {
+        writeFileSync(join(outside, 'victim'), 'OUTSIDE')
+        // 에이전트가 a/ 디렉터리 전체를 지우고 'a'를 outside 에 대한 junction 으로 교체
+        rmSync(join(root, 'a'), { recursive: true, force: true })
+        symlinkSync(outside, join(root, 'a'), 'junction')
+        await restoreIgnoredBaseline(root, git, base, DEFAULT_IGNORED_POLICY)
+        // junction 이 제거되고 a/b/c.txt 가 in-root 에 복원됨
+        const { statSync: st } = await import('node:fs')
+        expect(st(join(root, 'a')).isDirectory()).toBe(true)
+        expect(readFile(join(root, 'a', 'b', 'c.txt')).toString()).toBe('ORIG')
+        // 밖 victim 미오염
+        expect(readFile(join(outside, 'victim')).toString()).toBe('OUTSIDE')
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
