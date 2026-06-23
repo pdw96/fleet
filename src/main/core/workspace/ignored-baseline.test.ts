@@ -826,6 +826,24 @@ describe.skipIf(process.platform === 'win32')(
       }
     })
 
+    // [Codex 재리뷰 P1] 민감 디렉터리 SYMLINK(.ssh) → fail-closed
+    // listIgnored 는 '.ssh/' → '.ssh'(trailing slash 제거) 로 skipped 에 push.
+    // SENSITIVE_FILE 의 .ssh 절은 trailing slash 필수이므로 s.path='.ssh' 만 테스트하면 false(fail-open).
+    // 수정: `${s.path}/` 형도 함께 테스트 → '.ssh/' 가 정규식과 매칭 → throw(fail-closed).
+    it('[Codex P1] 민감 DIRECTORY symlink(.ssh) → captureIgnoredBaseline throws [P1-1-dir POSIX]', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-ssh-'))
+      try {
+        symlinkSync(outsideDir, join(root, '.ssh'), 'dir')
+        // git 은 디렉터리 심볼릭 링크를 '.ssh/'(trailing slash 포함)로 보고한다
+        const git = fakeGitIgnored(['.ssh/'])
+        await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+          /링크/,
+        )
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
     it('created symlink-to-dir 는 링크만 unlink(밖 디렉터리 내용 보존)', async () => {
       // P2-4: baseline 에 esc 없음(분리 fixture) — capture 시 esc 미보고
       writeFileSync(join(root, 'f.dat'), 'orig')
@@ -939,6 +957,24 @@ describe.skipIf(process.platform !== 'win32')(
       try {
         symlinkSync(outsideDir, join(root, '.env'), 'junction')
         const git = fakeGitIgnored(['.env'])
+        await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
+          /링크/,
+        )
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    // [Codex 재리뷰 P1] 민감 디렉터리 JUNCTION(.ssh) → fail-closed
+    // listIgnored 는 '.ssh/' → '.ssh'(trailing slash 제거) 로 skipped 에 push.
+    // SENSITIVE_FILE 의 .ssh 절은 trailing slash 필수이므로 s.path='.ssh' 만 테스트하면 false(fail-open).
+    // 수정: `${s.path}/` 형도 함께 테스트 → '.ssh/' 가 정규식과 매칭 → throw(fail-closed).
+    it('[Codex P1] 민감 DIRECTORY junction(.ssh) → captureIgnoredBaseline throws [P1-1-dir win32]', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-ssh-'))
+      try {
+        symlinkSync(outsideDir, join(root, '.ssh'), 'junction')
+        // git 은 디렉터리 심볼릭 링크를 '.ssh/'(trailing slash 포함)로 보고한다
+        const git = fakeGitIgnored(['.ssh/'])
         await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
           /링크/,
         )

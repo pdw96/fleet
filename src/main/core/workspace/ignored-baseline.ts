@@ -177,8 +177,17 @@ export async function captureIgnoredBaseline(
   const { files, skipped: enumSkipped } = await listIgnored(root, git, policy)
   // [#128-B2 P1] listIgnored 가 링크를 skipped{symlink} 로 우회시키므로 민감-명 링크가 아래
   // sensitive→throw 분기에 도달하지 못한다. 여기서 fail-closed(민감 경로 백업 불가 → hard-stop).
+  // [Codex 재리뷰 P1] listIgnored top-level 루프: `dir = rel.replace(/\/+$/, '')` 로
+  // 디렉터리 심볼릭 링크의 trailing slash 가 제거됨(예: '.ssh/' → '.ssh').
+  // SENSITIVE_FILE 의 .ssh 절은 `(^|[/\\])\.ssh[/\\]` — trailing slash 필수.
+  // 따라서 s.path='.ssh' 는 test false → fail-open 위험.
+  // 두 형태 모두 검사: s.path(파일형) AND `${s.path}/`(디렉터리형, slash 복원)로
+  // 슬래시가 제거된 디렉터리 심볼릭 링크도 확실히 차단한다.
   for (const s of enumSkipped) {
-    if (s.reason === 'symlink' && policy.sensitiveRe.test(s.path)) {
+    if (
+      s.reason === 'symlink' &&
+      (policy.sensitiveRe.test(s.path) || policy.sensitiveRe.test(`${s.path}/`))
+    ) {
       throw new Error(`민감 ignored 파일이 링크임(백업 불가): ${s.path}`)
     }
   }
