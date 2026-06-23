@@ -81,10 +81,15 @@ Codex 의 몫이 아니다 — **CI·타입이 못 잡는** 아키텍처/계약/
   PR open/ready 시 `@codex review` 없이 자동 리뷰를 받는다. 수동 `@codex review` 코멘트는
   **자동 리뷰 지연·무응답 시 fallback** 으로만 유지(cadence·👍 clean 감지는 아래 「백로그 착수 절차」
   4단계 「Codex 봇 운영」 참조).
-- **required check 화(현재 미도입).** Automatic reviews 자체는 머지 게이트가 아니다. Codex 를 머지
+- **required check 화(현재 미도입·보류).** Automatic reviews 자체는 머지 게이트가 아니다. Codex 를 머지
   차단 **required status check** 로 강제하려면 Automatic reviews 가 아니라 별도 GitHub Actions
   워크플로에 `openai/codex-action@v1` job 을 만들고, `master protection` ruleset 에 그 **job 표시명**
-  (잡 id 아님 — skip 시 영구 pending 함정)을 required check 로 등록한다. 실측 후 결정(#98).
+  (잡 id 아님 — skip 시 영구 pending 함정)을 required check 로 등록한다. **단 공식 `openai/codex-action@v1`
+  경로는 OpenAI/provider API 키 기반**이며, ChatGPT 구독 인증만으로 required check 를 제공하는 공식
+  경로는 (액션 issue #92 기준) **확인되지 않는다** — 클라우드 리뷰 봇은 commit status/check run 을 안
+  내고(코멘트+👍만), 구독 유지하며 게이트화하려면 서드파티 wrapper(비공식)뿐이며, `codex exec`+`auth.json`
+  자체배선은 trusted private runner 한정 advanced 패턴이다. 솔로 pre-1.0 엔 ROI·중복·비결정성 리스크로
+  **현재 보류**(2026-06-23 Codex↔Claude 1차출처 토론 합의 · #98). 협업자 합류/1.0 근처 재검토.
 - **CodeRabbit 병행은 실측 후.** CodeRabbit 류 풍부한 코멘트·incremental review·required gate 는
   중복 코멘트·리뷰 피로 위험이 있어 지금은 도입하지 않는다. contributor 증가·minor/refactor 수요가
   커지면 false-positive 율·실제 수정 반영률을 측정해 보조 리뷰어로 실험한다(#98).
