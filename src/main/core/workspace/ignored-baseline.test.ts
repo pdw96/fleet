@@ -579,17 +579,17 @@ describe.skipIf(process.platform !== 'win32')('[#128-B2] junction 비추종 (Win
 
 // ── Codex 3차 반영: [:96] [:109] [:244] [:270] ──
 
-describe('[:96] unreadable dir → fail-closed (walk readdirSync catch)', () => {
-  it('walk 에서 readdirSync 가 실패하면 SCAN_CAPPED over-cap escalation 이 기록된다(not silent drop)', async () => {
-    // 존재하지 않는 경로를 git status 로 반환 → walk 가 readdirSync 실패 → fail-closed
-    // (Windows: 권한변경이 제한적이므로 존재하지 않는 경로로 unreadable 시뮬레이션)
+describe('[:96] unreadable dir → fail-closed (lstat catch in top-level loop)', () => {
+  it('[Fix-B] lstat 실패 디렉터리는 walk 하지 않고 skipped{symlink} 로 fail-closed 기록된다', async () => {
+    // 존재하지 않는 경로를 git status 로 반환 → lstat ENOENT → fail-closed(walk 안 함)
+    // Fix-B: lstat catch 시 skipped{path:dir, reason:'symlink'} 로 push, walk 금지.
+    // (ENOENT 포함 모든 lstat 실패를 동일하게 처리 — exotic reparse 방어 포함)
     const git = fakeGitIgnored(['nonexistent-dir/'])
-    // nonexistent-dir/ 는 실제로 없으므로 readdirSync → ENOENT
     const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
-    // fail-closed: skipped 에 over-cap escalation 이 기록되어야 한다
-    const overCapSkipped = base.skipped.filter((s) => s.reason === 'over-cap')
-    expect(overCapSkipped.length).toBeGreaterThanOrEqual(1)
-    expect(overCapSkipped[0].path).toBe(SCAN_CAPPED)
+    // fail-closed: skipped 에 'nonexistent-dir' 가 symlink 이유로 기록되어야 한다
+    expect(base.skipped).toContainEqual({ path: 'nonexistent-dir', reason: 'symlink' })
+    // walk 하지 않았으므로 entries 는 비어 있어야 한다
+    expect(base.entries.size).toBe(0)
   })
 })
 
@@ -701,6 +701,52 @@ describe('[:270] scan-capped marker restore exclusion', () => {
     expect(res).toEqual({ capped: false })
   })
 })
+
+// [Codex P1 Fix-D] baseline symlink → 일반파일 교체 rollback 검증 (POSIX)
+describe.skipIf(process.platform === 'win32')(
+  '[Fix-D] baseline symlink 경로를 일반파일로 교체 시 rollback (POSIX)',
+  () => {
+    it('[Fix-D collect] baseline symlink 를 일반파일로 교체 시 collectIgnoredChanges 가 created 로 보고', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-fixd-'))
+      try {
+        // baseline: link.dat 는 symlink → capture 가 skipped{symlink} 로 기록
+        symlinkSync(join(outside, 'target'), join(root, 'link.dat'))
+        const git = fakeGitIgnored(['link.dat'])
+        const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link.dat', reason: 'symlink' })
+        // 에이전트가 symlink 를 제거하고 일반파일로 교체
+        rmSync(join(root, 'link.dat'))
+        writeFileSync(join(root, 'link.dat'), 'agent-content')
+        const curGit = fakeGitIgnored(['link.dat'])
+        const cs = await collectIgnoredChanges(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        // symlink 경로가 화이트리스트에서 제외되어 created 로 표면화되어야 한다
+        expect(cs.changes).toContainEqual({ path: 'link.dat', change: 'created', sensitive: false })
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+
+    it('[Fix-D restore] baseline symlink 를 일반파일로 교체 시 restoreIgnoredBaseline 이 삭제한다', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-fixd-'))
+      try {
+        // baseline: link.dat 는 symlink → capture 가 skipped{symlink} 로 기록
+        symlinkSync(join(outside, 'target'), join(root, 'link.dat'))
+        const git = fakeGitIgnored(['link.dat'])
+        const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link.dat', reason: 'symlink' })
+        // 에이전트가 symlink 를 제거하고 일반파일로 교체
+        rmSync(join(root, 'link.dat'))
+        writeFileSync(join(root, 'link.dat'), 'agent-content')
+        const curGit = fakeGitIgnored(['link.dat'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        // 에이전트가 만든 일반파일이 rollback 으로 삭제되어야 한다
+        expect(existsSync(join(root, 'link.dat'))).toBe(false)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
 
 describe.skipIf(process.platform === 'win32')('[#128-B2] collect 링크 교체 (POSIX)', () => {
   // 깨끗한 distinguisher: symlink target 내용을 baseline 과 *동일*하게 둔다.
@@ -978,6 +1024,28 @@ describe.skipIf(process.platform !== 'win32')(
         await expect(captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)).rejects.toThrow(
           /링크/,
         )
+      } finally {
+        rmSync(outsideDir, { recursive: true, force: true })
+      }
+    })
+
+    // [Codex P1 Fix-D] baseline JUNCTION → 일반파일 교체 → rollback 삭제 검증 (win32)
+    it('[Fix-D win32] baseline JUNCTION 을 일반파일로 교체하면 restore 가 삭제한다', async () => {
+      const outsideDir = mkdtempSync(join(tmpdir(), 'fleet-fixd-'))
+      try {
+        // baseline: link/ 는 junction → capture 가 skipped{symlink} 로 기록
+        symlinkSync(outsideDir, join(root, 'link'), 'junction')
+        const git = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+        // 에이전트가 junction 을 제거하고 일반파일로 교체
+        rmSync(join(root, 'link'), { recursive: true, force: true })
+        writeFileSync(join(root, 'link'), 'agent-content')
+        // restore 시 git 은 'link' 를 파일로 보고
+        const curGit = fakeGitIgnored(['link'])
+        await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+        // 에이전트가 만든 일반파일이 rollback 으로 삭제되어야 한다
+        expect(existsSync(join(root, 'link'))).toBe(false)
       } finally {
         rmSync(outsideDir, { recursive: true, force: true })
       }

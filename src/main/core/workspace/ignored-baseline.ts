@@ -141,8 +141,9 @@ async function listIgnored(
       try {
         dirSt = lstatSync(resolve(root, dir))
       } catch {
-        // 존재하지 않거나 접근 불가 → walk 로 넘겨 fail-closed 처리
-        walk(dir)
+        // [Codex P1 Fix-B] lstat 분류 실패(exotic reparse 등) → walk 하면 readdirSync 가 target 을 열거해 밖 탈출.
+        // fail-closed: skip(표면화), walk 안 함. (ENOENT 면 어차피 수집할 것 없음.)
+        skipped.push({ path: dir, reason: 'symlink' })
         continue
       }
       if (dirSt.isSymbolicLink()) {
@@ -184,11 +185,11 @@ export async function captureIgnoredBaseline(
   // 두 형태 모두 검사: s.path(파일형) AND `${s.path}/`(디렉터리형, slash 복원)로
   // 슬래시가 제거된 디렉터리 심볼릭 링크도 확실히 차단한다.
   for (const s of enumSkipped) {
-    if (
-      s.reason === 'symlink' &&
-      (policy.sensitiveRe.test(s.path) || policy.sensitiveRe.test(`${s.path}/`))
-    ) {
-      throw new Error(`민감 ignored 파일이 링크임(백업 불가): ${s.path}`)
+    if (s.path === SCAN_CAPPED) continue // 합성 over-cap 마커는 실경로 아님
+    // listIgnored 가 분류 못 한(링크/분류불가) 경로는 capture 가 안전 백업 불가 → 민감하면 fail-closed.
+    // listIgnored top-level 이 디렉터리 링크의 trailing slash 를 떼므로(.ssh/ → .ssh) 두 형태 모두 검사.
+    if (policy.sensitiveRe.test(s.path) || policy.sensitiveRe.test(`${s.path}/`)) {
+      throw new Error(`민감 ignored 경로를 안전하게 백업할 수 없음(링크/분류불가): ${s.path}`)
     }
   }
   const entries = new Map<string, IgnoredEntry>()
@@ -275,6 +276,9 @@ export async function collectIgnoredChanges(
   // [P2-4] capture current-scan skipped too
   const { files, skipped: currentSkipped } = await listIgnored(root, git, policy)
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
+  const baselineSymlinkPaths = new Set(
+    baseline.skipped.filter((s) => s.reason === 'symlink').map((s) => s.path),
+  )
   const changes: IgnoredChange[] = []
   // [P2-4] merge baseline.skipped + currentSkipped, deduplicate by path
   const seenUnrestorable = new Set(baseline.skipped.map((s) => s.path))
@@ -287,8 +291,11 @@ export async function collectIgnoredChanges(
   }
 
   // created: 현재 in-scope ignored 인데 baseline 에도 skipped 에도 없음.
+  // [Codex P1 Fix-D] baseline symlink 경로는 화이트리스트에서 제외 — agent 가 symlink 를 일반파일로
+  // 교체한 경우 created 로 표면화되어야 한다(over-cap/read-failed 는 계속 whitelist).
   for (const path of files) {
-    if (baseline.entries.has(path) || skippedPaths.has(path)) continue
+    if (baseline.entries.has(path) || (skippedPaths.has(path) && !baselineSymlinkPaths.has(path)))
+      continue
     changes.push({ path, change: 'created', sensitive: policy.sensitiveRe.test(path) })
   }
   // modified / deleted: baseline 엔트리 기준.
@@ -369,8 +376,8 @@ function clearNonDirAncestors(root: string, abs: string): void {
     try {
       ls = lstatSync(cur) // [#128-B2 P1] existsSync 는 symlink 추종→dangling 조상 놓침. lstat 직접.
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue // 진짜 부재
-      continue // 기타(race 등) fail-safe(advisory)
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue // 진짜 부재 → 다음 조상
+      throw e // [Codex P1] 분류 불가 조상(exotic reparse 등) → fail-closed. continue 하면 mkdir/write 가 밖으로 통과.
     }
     if (!ls.isDirectory() || ls.isSymbolicLink()) {
       rmSync(cur, { recursive: true, force: true })
@@ -390,6 +397,9 @@ export async function restoreIgnoredBaseline(
   // 이번 삭제 패스에서 누락될 수 있음 → rollback 불완전 가능성 표면화).
   const capped = skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
+  const baselineSymlinkPaths = new Set(
+    baseline.skipped.filter((s) => s.reason === 'symlink').map((s) => s.path),
+  )
   // [#128-B2] 링크-aware created 삭제 헬퍼.
   // lexical containment(realpath 아님 — 탈출 링크도 unlink 해야 하므로 realpath 추종 금지).
   const removeCreated = (rel: string): void => {
@@ -407,8 +417,11 @@ export async function restoreIgnoredBaseline(
     rmSync(abs, st.isSymbolicLink() ? { force: true } : { recursive: true, force: true })
   }
   // 1) created(현재 in-scope, baseline·skipped 둘 다 없음) → 삭제.
+  // [Codex P1 Fix-D] baseline symlink 경로는 화이트리스트에서 제외 — agent 가 symlink 를 일반파일로
+  // 교체한 경우 created 로 표면화되어 rollback 삭제 대상이 되어야 한다.
   for (const path of files) {
-    if (baseline.entries.has(path) || skippedPaths.has(path)) continue
+    if (baseline.entries.has(path) || (skippedPaths.has(path) && !baselineSymlinkPaths.has(path)))
+      continue
     removeCreated(path)
   }
   // [:229] over-cap skipped 중 baseline 에 없는 것도 삭제(에이전트가 cap 초과로 만든 파일 rollback).
