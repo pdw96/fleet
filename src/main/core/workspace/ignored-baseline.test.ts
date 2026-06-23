@@ -8,6 +8,7 @@ import {
   readFileSync as readFile,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -538,6 +539,37 @@ describe('real-git: revert→restore seam (invariant verification)', () => {
     // 6) 단언: restore 가 정확히 복원
     expect(readFile(join(repoDir, 'app.env'), 'utf8')).toBe('ORIG') // 백업 복원
     expect(existsSync(join(repoDir, 'new.key'))).toBe(false) // 에이전트 생성분 제거
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('[#128-B2] symlink 비추종 (POSIX)', () => {
+  it('git-보고 ignored 가 symlink-to-dir 면 재귀 안 하고 밖을 수집 안 한다', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'SECRET')
+      symlinkSync(outside, join(root, 'link'), 'dir')
+      const git = fakeGitIgnored(['link/']) // git 이 디렉터리처럼 보고
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      // 밖의 secret.txt 가 절대 entries 에 들어오면 안 됨
+      expect([...base.entries.keys()].some((k) => k.includes('secret'))).toBe(false)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('[#128-B2] junction 비추종 (Windows)', () => {
+  it('git-보고 ignored 가 junction 이면 재귀 안 하고 밖을 수집 안 한다', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'SECRET')
+      symlinkSync(outside, join(root, 'link'), 'junction')
+      const git = fakeGitIgnored(['link/'])
+      const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
+      expect([...base.entries.keys()].some((k) => k.includes('secret'))).toBe(false)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })
 

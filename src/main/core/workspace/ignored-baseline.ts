@@ -13,6 +13,7 @@ import {
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
+import { isLinkSync } from './path-guard'
 
 /** [:270] walk의 unreadable-dir 및 listIgnored의 over-cap 합성 마커 경로 상수.
  * restore/rmSync 등 실-경로로 취급하는 곳에서는 반드시 이 값을 걸러내야 한다. */
@@ -46,7 +47,7 @@ export interface IgnoredEntry {
 }
 export interface IgnoredBaseline {
   entries: Map<string, IgnoredEntry>
-  skipped: { path: string; reason: 'over-cap' | 'read-failed' | 'not-regular' }[]
+  skipped: { path: string; reason: 'over-cap' | 'read-failed' | 'not-regular' | 'symlink' }[]
 }
 
 // git status --ignored 로 in-scope ignored 파일을 열거한다.
@@ -62,14 +63,14 @@ async function listIgnored(
   root: string,
   git: GitRunner,
   policy: ScanPolicy,
-): Promise<{ files: string[]; skipped: { path: string; reason: 'over-cap' }[] }> {
+): Promise<{ files: string[]; skipped: { path: string; reason: 'over-cap' | 'symlink' }[] }> {
   const r = await git.run(['status', '--ignored', '--porcelain=v1', '-z'], root)
   // [P2-3] git status 실패는 hard-fail
   if (r.code !== 0) throw new Error('git status --ignored 실패: ' + r.stderr.trim())
   const records = r.stdout.split('\0').filter(Boolean)
   const ignored = records.filter((rec) => rec.startsWith('!! ')).map((rec) => rec.slice(3))
   const files: string[] = []
-  const skipped: { path: string; reason: 'over-cap' }[] = []
+  const skipped: { path: string; reason: 'over-cap' | 'symlink' }[] = []
   let generalCount = 0
   // capped: generalCount >= maxFiles に達した後は true。walk は冒頭で確認し即 return する。
   let capped = false
@@ -93,9 +94,9 @@ async function listIgnored(
   const walk = (relDir: string): void => {
     // early-terminate: cap 도달 후 서브디렉터리 탐색을 중단(unbounded traversal 방지)
     if (capped) return
-    let names: string[]
+    let entries: import('node:fs').Dirent[]
     try {
-      names = readdirSync(resolve(root, relDir))
+      entries = readdirSync(resolve(root, relDir), { withFileTypes: true })
     } catch {
       // [:96] unreadable dir → fail-closed: 조용히 skip하지 않고 over-cap escalation 기록.
       // permission error 등으로 내부를 읽지 못하면 sensitive 파일이 숨을 수 있으므로
@@ -106,26 +107,26 @@ async function listIgnored(
       }
       return
     }
-    for (const name of names) {
+    for (const ent of entries) {
       if (capped) return
-      const rel = `${relDir}/${name}`
-      let st
-      try {
-        st = statSync(resolve(root, rel))
-      } catch {
-        if (policy.sensitiveRe.test(rel)) pushFile(rel)
+      const rel = `${relDir}/${ent.name}`
+      if (ent.isSymbolicLink()) {
+        // [#128-B2] symlink/junction 은 따라가지 않는다 — 밖을 가리켜 읽거나 재귀하지 않음.
+        skipped.push({ path: rel.replace(/\\/g, '/'), reason: 'symlink' })
         continue
       }
-      if (st.isDirectory()) {
+      if (ent.isDirectory()) {
         // [:109] 중첩 denylist 디렉터리는 top-level 과 동일하게 skip(내부 탐색 금지).
         // 예: packages/x/node_modules/ — denylist 확인 없이 walk 하면 cap 낭비.
         // [#128-C] 내부 sensitive 커버는 B1 확정 비목표 — evasion 방어는 B2 프로세스 격리로 이관(#128 잔여).
         const relSlash = `${rel}/`
         if (policy.denylistRe.test(rel) || policy.denylistRe.test(relSlash)) continue
         walk(rel)
-      } else {
-        pushFile(rel)
+        continue
       }
+      // [#128-B2] 파일 + 비정형(FIFO/socket/device) → pushFile. capture/collect 의 lstat 가
+      // regular 면 백업, 아니면 'not-regular' 로 표면화한다(B1 동작 보존 — silent drop 금지).
+      pushFile(rel)
     }
   }
   for (const e of ignored) {
@@ -136,8 +137,18 @@ async function listIgnored(
       // [#128-C] denylist 디렉터리 내부는 스캔하지 않음(비용 경계). 내부 sensitive 커버는 B1 확정 비목표 —
       // evasion(숨긴 위치 쓰기) 방어는 경로검사가 아닌 B2 프로세스 격리로 이관(#128 잔여).
       if (policy.denylistRe.test(`${dir}/`)) continue
+      // [#128-B2] git 이 디렉터리로 보고해도 실제 junction/symlink 면 재귀 금지.
+      if (isLinkSync(resolve(root, dir)) === 'link') {
+        skipped.push({ path: dir, reason: 'symlink' })
+        continue
+      }
       walk(dir)
     } else {
+      // [#128-B2] 파일로 보고된 엔트리가 실제 링크면 수집 안 함(capture 의 lstat 가 이중 방어).
+      if (isLinkSync(resolve(root, rel)) === 'link') {
+        skipped.push({ path: rel, reason: 'symlink' })
+        continue
+      }
       pushFile(rel)
     }
   }
@@ -151,9 +162,10 @@ export async function captureIgnoredBaseline(
 ): Promise<IgnoredBaseline> {
   const { files, skipped: enumSkipped } = await listIgnored(root, git, policy)
   const entries = new Map<string, IgnoredEntry>()
-  const skipped: { path: string; reason: 'over-cap' | 'read-failed' | 'not-regular' }[] = [
-    ...enumSkipped,
-  ]
+  const skipped: {
+    path: string
+    reason: 'over-cap' | 'read-failed' | 'not-regular' | 'symlink'
+  }[] = [...enumSkipped]
   let totalBytes = 0
   try {
     for (const path of files) {
