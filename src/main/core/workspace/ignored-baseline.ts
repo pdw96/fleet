@@ -138,6 +138,8 @@ async function listIgnored(
       // evasion(숨긴 위치 쓰기) 방어는 경로검사가 아닌 B2 프로세스 격리로 이관(#128 잔여).
       if (policy.denylistRe.test(`${dir}/`)) continue
       // [#128-B2] git 이 디렉터리로 보고해도 실제 junction/symlink 면 재귀 금지.
+      // 'suspicious'/'missing' 은 이 분기에 걸리지 않아 pushFile/missing 경로로 떨어지며,
+      // capture 의 lstat 이 non-regular 로 표면화한다(Task 4 동작 — 여기선 의도적 미처리).
       if (isLinkSync(resolve(root, dir)) === 'link') {
         skipped.push({ path: dir, reason: 'symlink' })
         continue

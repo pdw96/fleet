@@ -552,6 +552,8 @@ describe.skipIf(process.platform === 'win32')('[#128-B2] symlink 비추종 (POSI
       const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
       // 밖의 secret.txt 가 절대 entries 에 들어오면 안 됨
       expect([...base.entries.keys()].some((k) => k.includes('secret'))).toBe(false)
+      // 보안 메커니즘 단언: 링크가 실제로 symlink 이유로 skipped 에 기록되어야 함
+      expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
@@ -567,6 +569,8 @@ describe.skipIf(process.platform !== 'win32')('[#128-B2] junction 비추종 (Win
       const git = fakeGitIgnored(['link/'])
       const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
       expect([...base.entries.keys()].some((k) => k.includes('secret'))).toBe(false)
+      // 보안 메커니즘 단언: junction 이 실제로 symlink 이유로 skipped 에 기록되어야 함
+      expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
