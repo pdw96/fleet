@@ -580,14 +580,14 @@ describe.skipIf(process.platform !== 'win32')('[#128-B2] junction 비추종 (Win
 // ── Codex 3차 반영: [:96] [:109] [:244] [:270] ──
 
 describe('[:96] unreadable dir → fail-closed (lstat catch in top-level loop)', () => {
-  it('[Fix-B] lstat 실패 디렉터리는 walk 하지 않고 skipped{symlink} 로 fail-closed 기록된다', async () => {
+  it('[Fix-B] lstat 실패 디렉터리는 walk 하지 않고 skipped{unclassified} 로 fail-closed 기록된다', async () => {
     // 존재하지 않는 경로를 git status 로 반환 → lstat ENOENT → fail-closed(walk 안 함)
-    // Fix-B: lstat catch 시 skipped{path:dir, reason:'symlink'} 로 push, walk 금지.
-    // (ENOENT 포함 모든 lstat 실패를 동일하게 처리 — exotic reparse 방어 포함)
+    // [Codex round5 Fix-3] lstat 실패는 symlink 확정 아님 → 'unclassified' 로 기록.
+    // 이전에는 'symlink' 로 기록했으나, 이 경우 restore sweep 이 실제 디렉터리를 파괴하는 오동작이 발생.
     const git = fakeGitIgnored(['nonexistent-dir/'])
     const base = await captureIgnoredBaseline(root, git, DEFAULT_IGNORED_POLICY)
-    // fail-closed: skipped 에 'nonexistent-dir' 가 symlink 이유로 기록되어야 한다
-    expect(base.skipped).toContainEqual({ path: 'nonexistent-dir', reason: 'symlink' })
+    // fail-closed: skipped 에 'nonexistent-dir' 가 unclassified 이유로 기록되어야 한다
+    expect(base.skipped).toContainEqual({ path: 'nonexistent-dir', reason: 'unclassified' })
     // walk 하지 않았으므로 entries 는 비어 있어야 한다
     expect(base.entries.size).toBe(0)
   })
@@ -1173,3 +1173,146 @@ describe.skipIf(process.platform !== 'win32')(
     })
   },
 )
+
+// ── Codex round5 P2 픽스 검증 ──
+
+// [Codex round5 Fix-1] top-level symlink skip 도 스캔 cap 예산에 포함
+// RED on pre-fix: top-level loop 가 pushSkipSymlink 를 거치지 않고 직접 skipped.push → cap 우회.
+// 주의: 이 테스트는 top-level(git-status 에서 직접 보고된 항목)의 symlink skip cap 을 검증한다.
+// walk 내부(P2-4 테스트)와 별개이다.
+describe('[round5 Fix-1] top-level symlink/unclassified skip 도 스캔 cap 에 포함된다', () => {
+  it('top-level 비민감 dir-symlink 다수가 maxFiles 초과 시 SCAN_CAPPED 기록 + skipped bounded', async () => {
+    // git 이 link1/, link2/, link3/ 를 top-level 에 직접 보고 → lstatSync → isSymbolicLink true
+    // maxFiles=1 이면 link1 하나만 소진 후 SCAN_CAPPED 기록, link2/link3 생략
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+    const out1 = mkdtempSync(join(tmpdir(), 'fleet-r5f1a-'))
+    const out2 = mkdtempSync(join(tmpdir(), 'fleet-r5f1b-'))
+    const out3 = mkdtempSync(join(tmpdir(), 'fleet-r5f1c-'))
+    try {
+      symlinkSync(out1, join(root, 'link1'), linkType)
+      symlinkSync(out2, join(root, 'link2'), linkType)
+      symlinkSync(out3, join(root, 'link3'), linkType)
+      // git 이 dir-symlink 를 trailing slash 포함 보고
+      const git = fakeGitIgnored(['link1/', 'link2/', 'link3/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      const base = await captureIgnoredBaseline(root, git, policy)
+
+      // SCAN_CAPPED 기록 확인(cap 도달 증거)
+      expect(base.skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')).toBe(true)
+
+      // cap 이후 비민감 top-level symlink 는 생략 → symlink skips ≤ maxFiles
+      const symlinkSkips = base.skipped.filter((s) => s.reason === 'symlink')
+      expect(symlinkSkips.length).toBeLessThanOrEqual(policy.maxFiles)
+    } finally {
+      rmSync(out1, { recursive: true, force: true })
+      rmSync(out2, { recursive: true, force: true })
+      rmSync(out3, { recursive: true, force: true })
+    }
+  })
+
+  it('top-level cap 초과 후에도 민감 symlink 는 반드시 기록된다(fail-closed)', async () => {
+    // 비민감 link1 이 cap 소진 → 이후 민감 .ssh symlink 도 기록되어야 함
+    // → captureIgnoredBaseline 이 throw(fail-closed)
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+    const outNonSens = mkdtempSync(join(tmpdir(), 'fleet-r5f1ns-'))
+    const outSens = mkdtempSync(join(tmpdir(), 'fleet-r5f1s-'))
+    try {
+      symlinkSync(outNonSens, join(root, 'link1'), linkType)
+      symlinkSync(outSens, join(root, '.ssh'), linkType)
+      const git = fakeGitIgnored(['link1/', '.ssh/'])
+      const policy = { ...DEFAULT_IGNORED_POLICY, maxFiles: 1 }
+      await expect(captureIgnoredBaseline(root, git, policy)).rejects.toThrow(/링크/)
+    } finally {
+      rmSync(outNonSens, { recursive: true, force: true })
+      rmSync(outSens, { recursive: true, force: true })
+    }
+  })
+})
+
+// [Codex round5 Fix-4] baseline symlink-to-dir 이 EMPTY 실디렉터리로 치환 → collect 탐지
+// RED on pre-fix: git 은 자식 없는 빈 디렉터리를 보고하지 않아 files 루프에서 탐지 불가.
+describe.skipIf(process.platform === 'win32')(
+  '[round5 Fix-4] baseline symlink-to-dir 을 빈 실디렉터리로 치환하면 collect 가 created 로 탐지 (POSIX)',
+  () => {
+    it('baseline symlink → empty real dir 치환 → collectIgnoredChanges reports created', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-r5f4-'))
+      try {
+        // baseline: link 는 symlink-to-dir → skipped{symlink}
+        symlinkSync(outside, join(root, 'link'), 'dir')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 symlink 를 제거하고 빈 실디렉터리로 치환
+        rmSync(join(root, 'link'), { force: true })
+        mkdirSync(join(root, 'link'))
+        // 빈 디렉터리 → git 은 아무 자식도 보고 안 함
+        const curGit = fakeGitIgnored([])
+        const cs = await collectIgnoredChanges(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // baselineSymlinkPaths sweep 이 link 를 탐지해 created 로 보고해야 한다
+        expect(cs.changes.some((c) => c.path === 'link' && c.change === 'created')).toBe(true)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+describe.skipIf(process.platform !== 'win32')(
+  '[round5 Fix-4] baseline JUNCTION-to-dir 을 빈 실디렉터리로 치환하면 collect 가 created 로 탐지 (win32)',
+  () => {
+    it('baseline junction → empty real dir 치환 → collectIgnoredChanges reports created', async () => {
+      const outside = mkdtempSync(join(tmpdir(), 'fleet-r5f4w-'))
+      try {
+        // baseline: link 는 junction → skipped{symlink}
+        symlinkSync(outside, join(root, 'link'), 'junction')
+        const baseGit = fakeGitIgnored(['link/'])
+        const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+        expect(base.skipped).toContainEqual({ path: 'link', reason: 'symlink' })
+
+        // 에이전트가 junction 을 제거하고 빈 실디렉터리로 치환
+        rmSync(join(root, 'link'), { recursive: true, force: true })
+        mkdirSync(join(root, 'link'))
+        // 빈 디렉터리 → git 은 아무 자식도 보고 안 함
+        const curGit = fakeGitIgnored([])
+        const cs = await collectIgnoredChanges(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+        // baselineSymlinkPaths sweep 이 link 를 탐지해 created 로 보고해야 한다
+        expect(cs.changes.some((c) => c.path === 'link' && c.change === 'created')).toBe(true)
+      } finally {
+        rmSync(outside, { recursive: true, force: true })
+      }
+    })
+  },
+)
+
+// [Codex round5 Fix-3] baseline skipped{unclassified} 는 restore sweep 에서 건드리지 않는다
+// RED on pre-fix: lstat-fail 이 'symlink' 로 기록됐을 때 restore sweep(baselineSymlinkPaths)이
+// 해당 경로를 "치환됨"으로 판단해 removeCreated → 실제 디렉터리 파괴.
+// post-fix: 'unclassified' 는 baselineSymlinkPaths 에서 제외 → sweep 건너뜀 → 디렉터리 보존.
+describe('[round5 Fix-3] baseline skipped{unclassified} 는 restore sweep 에서 삭제하지 않는다', () => {
+  it('unclassified 엔트리가 있는 경로가 실제 디렉터리로 존재해도 restore sweep 이 삭제하지 않는다', async () => {
+    // 실 lstat-fail 은 portable 하게 재현 불가(exotic reparse 등) → 수동 baseline 주입으로 검증.
+    // "lstat 실패였던" 경로가 실제로는 디렉터리인 경우를 시뮬레이션.
+    // RED 조건: 이전에 'symlink' 로 기록되면 sweep 이 lstatSync → !isSymbolicLink → removeCreated
+    //   → 디렉터리 삭제. post-fix 는 'unclassified' 이므로 baselineSymlinkPaths 에 없음 → sweep 제외.
+    const baseGit = fakeGitIgnored([])
+    const base = await captureIgnoredBaseline(root, baseGit, DEFAULT_IGNORED_POLICY)
+
+    // 수동으로 unclassified 엔트리 주입(실 lstat-fail 시뮬레이션)
+    base.skipped.push({ path: 'real-dir', reason: 'unclassified' })
+
+    // 실제 디렉터리 생성
+    mkdirSync(join(root, 'real-dir'))
+
+    // restore 시 git 은 real-dir/ 를 디렉터리로 보고 — 내용이 없으므로 아무 파일도 보고 안 함.
+    // real-dir 자체는 skippedPaths 에 있으므로 files 루프에서도 제외됨.
+    // 핵심 검증: baselineSymlinkPaths sweep 이 real-dir 을 삭제하지 않아야 한다.
+    const curGit = fakeGitIgnored([])
+    await restoreIgnoredBaseline(root, curGit, base, DEFAULT_IGNORED_POLICY)
+
+    // unclassified → baselineSymlinkPaths 에 없음 → sweep 건너뜀 → 디렉터리 보존
+    expect(existsSync(join(root, 'real-dir'))).toBe(true)
+  })
+})

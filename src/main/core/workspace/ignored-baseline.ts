@@ -46,7 +46,14 @@ export interface IgnoredEntry {
 }
 export interface IgnoredBaseline {
   entries: Map<string, IgnoredEntry>
-  skipped: { path: string; reason: 'over-cap' | 'read-failed' | 'not-regular' | 'symlink' }[]
+  skipped: {
+    path: string
+    // [Codex round5 Fix-3] 'unclassified': lstat 자체가 실패해 symlink 여부를 확정할 수 없는 경우.
+    // 'symlink': lstatSync().isSymbolicLink() === true 로 확정된 경우에만 사용.
+    // 이 구분이 없으면 restore sweep 이 lstat-fail 경로(실제 디렉터리일 수 있음)를 삭제해
+    // 실제 디렉터리를 파괴하는 파괴적 오동작이 발생한다.
+    reason: 'over-cap' | 'read-failed' | 'not-regular' | 'symlink' | 'unclassified'
+  }[]
 }
 
 // git status --ignored 로 in-scope ignored 파일을 열거한다.
@@ -62,14 +69,17 @@ async function listIgnored(
   root: string,
   git: GitRunner,
   policy: ScanPolicy,
-): Promise<{ files: string[]; skipped: { path: string; reason: 'over-cap' | 'symlink' }[] }> {
+): Promise<{
+  files: string[]
+  skipped: { path: string; reason: 'over-cap' | 'symlink' | 'unclassified' }[]
+}> {
   const r = await git.run(['status', '--ignored', '--porcelain=v1', '-z'], root)
   // [P2-3] git status 실패는 hard-fail
   if (r.code !== 0) throw new Error('git status --ignored 실패: ' + r.stderr.trim())
   const records = r.stdout.split('\0').filter(Boolean)
   const ignored = records.filter((rec) => rec.startsWith('!! ')).map((rec) => rec.slice(3))
   const files: string[] = []
-  const skipped: { path: string; reason: 'over-cap' | 'symlink' }[] = []
+  const skipped: { path: string; reason: 'over-cap' | 'symlink' | 'unclassified' }[] = []
   let generalCount = 0
   // capped: generalCount >= maxFiles に達した後は true。walk は冒頭で確認し即 return する。
   let capped = false
@@ -90,9 +100,11 @@ async function listIgnored(
     }
     files.push(key)
   }
-  // [#128-B2 P2-4] 링크 skip 도 스캔 예산에 포함(대량 링크 트리 unbounded 방지).
+  // [#128-B2 P2-4 + Codex round5 Fix-1] 링크/분류불가 skip 도 스캔 예산에 포함.
+  // walk 내부 AND top-level 루프 양쪽에서 모든 symlink/unclassified skip 을 이 helper 로 경유시켜
+  // top-level 에서 cap 을 우회하는 문제를 차단한다.
   // 단 민감 경로는 항상 기록(fail-closed — capture 의 sensitive 검사가 s.path 를 본다).
-  const pushSkipSymlink = (rel: string): void => {
+  const pushSkip = (rel: string, reason: 'symlink' | 'unclassified'): void => {
     const key = rel.replace(/\\/g, '/')
     const sensitive = policy.sensitiveRe.test(key) || policy.sensitiveRe.test(`${key}/`)
     if (!sensitive) {
@@ -101,11 +113,11 @@ async function listIgnored(
           capped = true
           skipped.push({ path: SCAN_CAPPED, reason: 'over-cap' })
         }
-        return // 비민감 링크는 cap 초과 시 기록 생략(SCAN_CAPPED 가 불완전 신호)
+        return // 비민감 링크/미분류는 cap 초과 시 생략(SCAN_CAPPED 가 불완전 신호)
       }
       generalCount++
     }
-    skipped.push({ path: key, reason: 'symlink' })
+    skipped.push({ path: key, reason })
   }
   const walk = (relDir: string): void => {
     // early-terminate: cap 도달 후 서브디렉터리 탐색을 중단(unbounded traversal 방지)
@@ -132,12 +144,14 @@ async function listIgnored(
         try {
           est = lstatSync(resolve(root, rel))
         } catch {
-          // lstat 실패(분류 불가) → fail-closed skip(symlink 동일 취급)
-          pushSkipSymlink(rel)
+          // [Codex round5 Fix-3] lstat 실패 = 분류 불가(exotic reparse 등) → 'unclassified' 로 기록.
+          // 'symlink' 가 아니므로 restore sweep 의 baselineSymlinkPaths 에 포함되지 않아
+          // 실제 디렉터리가 있는 경우 파괴적 삭제를 방지한다(fail-closed skip).
+          pushSkip(rel, 'unclassified')
           continue
         }
         if (est.isSymbolicLink()) {
-          pushSkipSymlink(rel)
+          pushSkip(rel, 'symlink')
           continue
         }
         if (est.isDirectory()) {
@@ -152,7 +166,7 @@ async function listIgnored(
       }
       if (ent.isSymbolicLink()) {
         // [#128-B2] symlink/junction 은 따라가지 않는다 — 밖을 가리켜 읽거나 재귀하지 않음.
-        pushSkipSymlink(rel)
+        pushSkip(rel, 'symlink')
         continue
       }
       if (ent.isDirectory()) {
@@ -182,13 +196,16 @@ async function listIgnored(
       try {
         dirSt = lstatSync(resolve(root, dir))
       } catch {
-        // [Codex P1 Fix-B] lstat 분류 실패(exotic reparse 등) → walk 하면 readdirSync 가 target 을 열거해 밖 탈출.
+        // [Codex P1 Fix-B + round5 Fix-3] lstat 분류 실패(exotic reparse 등) → walk 하면 readdirSync 가 target 을 열거해 밖 탈출.
         // fail-closed: skip(표면화), walk 안 함. (ENOENT 면 어차피 수집할 것 없음.)
-        skipped.push({ path: dir, reason: 'symlink' })
+        // [Codex round5 Fix-1] top-level lstat-fail 도 pushSkip 경유해 cap 카운트에 포함.
+        // [Codex round5 Fix-3] lstat 실패는 symlink 확정 아님 → 'unclassified' 로 기록.
+        pushSkip(dir, 'unclassified')
         continue
       }
       if (dirSt.isSymbolicLink()) {
-        skipped.push({ path: dir, reason: 'symlink' })
+        // [Codex round5 Fix-1] top-level confirmed-symlink 도 pushSkip 경유해 cap 카운트에 포함.
+        pushSkip(dir, 'symlink')
         continue
       }
       walk(dir)
@@ -202,7 +219,8 @@ async function listIgnored(
         continue
       }
       if (fileSt.isSymbolicLink()) {
-        skipped.push({ path: rel, reason: 'symlink' })
+        // [Codex round5 Fix-1] top-level file-symlink 도 pushSkip 경유해 cap 카운트에 포함.
+        pushSkip(rel, 'symlink')
         continue
       }
       pushFile(rel)
@@ -225,6 +243,8 @@ export async function captureIgnoredBaseline(
   // 따라서 s.path='.ssh' 는 test false → fail-open 위험.
   // 두 형태 모두 검사: s.path(파일형) AND `${s.path}/`(디렉터리형, slash 복원)로
   // 슬래시가 제거된 디렉터리 심볼릭 링크도 확실히 차단한다.
+  // [Codex round5 Fix-3] reason 필터 없음 — symlink AND unclassified 경로 모두 검사.
+  // 분류 불가(unclassified) 경로도 민감하면 fail-closed(안전상 처리 불가).
   for (const s of enumSkipped) {
     if (s.path === SCAN_CAPPED) continue // 합성 over-cap 마커는 실경로 아님
     // listIgnored 가 분류 못 한(링크/분류불가) 경로는 capture 가 안전 백업 불가 → 민감하면 fail-closed.
@@ -236,7 +256,7 @@ export async function captureIgnoredBaseline(
   const entries = new Map<string, IgnoredEntry>()
   const skipped: {
     path: string
-    reason: 'over-cap' | 'read-failed' | 'not-regular' | 'symlink'
+    reason: 'over-cap' | 'read-failed' | 'not-regular' | 'symlink' | 'unclassified'
   }[] = [...enumSkipped]
   let totalBytes = 0
   try {
@@ -317,10 +337,14 @@ export async function collectIgnoredChanges(
   // [P2-4] capture current-scan skipped too
   const { files, skipped: currentSkipped } = await listIgnored(root, git, policy)
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
+  // [Codex round5 Fix-3] baselineSymlinkPaths = reason==='symlink' 만 — 'unclassified' 제외.
+  // 'unclassified' 는 lstat-fail 로 실제 타입 불명. restore sweep 에서 확정 non-symlink 인지
+  // 알 수 없으므로 삭제 대상에서 제외해야 한다(파괴적 오동작 방지).
   const baselineSymlinkPaths = new Set(
     baseline.skipped.filter((s) => s.reason === 'symlink').map((s) => s.path),
   )
   const changes: IgnoredChange[] = []
+  const changedPaths = new Set<string>()
   // [P2-4] merge baseline.skipped + currentSkipped, deduplicate by path
   const seenUnrestorable = new Set(baseline.skipped.map((s) => s.path))
   const unrestorable: { path: string; reason: string }[] = [...baseline.skipped]
@@ -338,6 +362,7 @@ export async function collectIgnoredChanges(
     if (baseline.entries.has(path) || (skippedPaths.has(path) && !baselineSymlinkPaths.has(path)))
       continue
     changes.push({ path, change: 'created', sensitive: policy.sensitiveRe.test(path) })
+    changedPaths.add(path)
   }
   // modified / deleted: baseline 엔트리 기준.
   // [:244] 현재 파일 해싱 시 누적 바이트 추적 — maxTotalBytes 초과 시 read 없이 modified+unrestorable
@@ -346,6 +371,7 @@ export async function collectIgnoredChanges(
     const abs = resolve(root, path)
     if (!existsSync(abs)) {
       changes.push({ path, change: 'deleted', sensitive: entry.sensitive })
+      changedPaths.add(path)
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
     }
@@ -355,6 +381,7 @@ export async function collectIgnoredChanges(
       st = lstatSync(abs) // [#128-B2] 링크 비추종
     } catch {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      changedPaths.add(path)
       unrestorable.push({ path, reason: 'stat-failed' })
       continue
     }
@@ -362,6 +389,7 @@ export async function collectIgnoredChanges(
       // [#128-B2] baseline 일반파일이 링크로 교체됨 = modified. read 안 함(밖 유출 차단).
       // backup 있으면 restore 가 링크 제거 후 복원 → unrestorable 아님.
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      changedPaths.add(path)
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
     }
@@ -369,18 +397,21 @@ export async function collectIgnoredChanges(
       // baseline 일반 파일이 non-regular 로 교체됨 = modified. read 없이(hang 방지).
       // backup 있으면 restore 가 비-일반 leaf 제거 후 복원 → unrestorable 아님.
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      changedPaths.add(path)
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
       continue
     }
     const currentSize = st.size
     if (currentSize > policy.maxFileBytes) {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      changedPaths.add(path)
       unrestorable.push({ path, reason: 'over-cap-modified' })
       continue
     }
     // [:244] 누적 cap 초과 → read 없이 modified+unrestorable(over-cap)
     if (collectTotalBytes + currentSize > policy.maxTotalBytes) {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      changedPaths.add(path)
       unrestorable.push({ path, reason: 'over-cap-modified' })
       continue
     }
@@ -389,8 +420,36 @@ export async function collectIgnoredChanges(
     const hash = createHash('sha256').update(buf).digest('hex')
     if (hash !== entry.hash) {
       changes.push({ path, change: 'modified', sensitive: entry.sensitive })
+      changedPaths.add(path)
       if (entry.backup === null) unrestorable.push({ path, reason: 'no-backup' })
     }
+  }
+  // [Codex round5 Fix-4] baseline symlink-to-dir 이 EMPTY 실디렉터리로 치환된 경우
+  // git 은 자식 파일이 없으면 dir 자체만 보고하지 않아 위 files 루프에서 탐지 불가.
+  // baselineSymlinkPaths 를 직접 순회해 추가 감지한다.
+  // 주의: symlink→symlink 치환은 target 을 읽지 않고는 구분 불가(no-follow/leak-zero 불변식)
+  //   → advisory 비목표. 그런 경우 rollback 이 agent 교체 symlink 를 남길 수 있음.
+  for (const path of baselineSymlinkPaths) {
+    if (changedPaths.has(path)) continue // 이미 위 루프에서 탐지됨
+    const abs = resolve(root, path)
+    let st
+    try {
+      st = lstatSync(abs)
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') continue // 사라짐 — 위 entries 루프가 다룸(entries 에 없으면 변경 없음)
+      // lstat 실패 → stat 불가(unrestorable)
+      unrestorable.push({ path, reason: 'stat-failed' })
+      continue
+    }
+    if (st.isSymbolicLink()) continue // 여전히 symlink → baseline 상태 유지, 변경 없음
+    // 더 이상 symlink 가 아님 = 에이전트가 실디렉터리(또는 파일)로 치환 → created 로 표면화
+    changes.push({
+      path,
+      change: 'created',
+      sensitive: policy.sensitiveRe.test(path) || policy.sensitiveRe.test(`${path}/`),
+    })
+    changedPaths.add(path)
   }
   return { changes, unrestorable }
 }
@@ -438,6 +497,10 @@ export async function restoreIgnoredBaseline(
   // 이번 삭제 패스에서 누락될 수 있음 → rollback 불완전 가능성 표면화).
   const capped = skipped.some((s) => s.path === SCAN_CAPPED && s.reason === 'over-cap')
   const skippedPaths = new Set(baseline.skipped.map((s) => s.path))
+  // [Codex round5 Fix-3] baselineSymlinkPaths = reason==='symlink' 만 — 'unclassified' 제외.
+  // restore sweep 은 "symlink 였는데 지금 non-symlink = 치환됨"을 판정한다.
+  // 'unclassified' 는 baseline 시점 타입 불명이므로 sweep 대상에서 제외해야 한다.
+  // 'unclassified' 경로를 sweep 에 포함하면 실제 디렉터리를 파괴하는 오동작이 발생한다.
   const baselineSymlinkPaths = new Set(
     baseline.skipped.filter((s) => s.reason === 'symlink').map((s) => s.path),
   )
@@ -476,6 +539,11 @@ export async function restoreIgnoredBaseline(
   // [#128-B2 P2-1] baseline symlink 이 디렉터리를 가리켰고 agent 가 실제 dir/file 로 치환하면
   // git 은 child 만 보고하므로 위 created 루프가 'link' 자체를 못 지운다.
   // 치환된(=더 이상 symlink 아닌) 것만 제거. 여전히 symlink 면 baseline 상태=그대로 둠.
+  // [Codex round5 Fix-3] baselineSymlinkPaths 에는 'symlink' reason 만 포함(위 선언 참조).
+  // 'unclassified' 는 baseline 시점 타입 불명 → sweep 제외(실 디렉터리 파괴 방지).
+  // [Codex round5 Fix-2] Advisory 비목표: symlink→symlink 치환은 target 을 읽지 않고는
+  // 구분 불가(no-follow/leak-zero 불변식 충돌). 그런 경우 rollback 이 agent 교체 symlink 를
+  // 남길 수 있음. 강한 격리는 OS/CLI 샌드박스(향후 B-tier) 로 이관.
   for (const p of baselineSymlinkPaths) {
     const abs = resolve(root, p)
     let st

@@ -95,6 +95,7 @@ export function escapesRoot(root: string, abs: string): boolean
 - TOCTOU 완전차단(순수 Node 불가·문서화).
 - 적대자 결정적 보장 · 순차→worktree 전환.
 - **finding5(`workspace.ignored_discarded` live emit)** — Codex #5 권장대로 **별도 PR로 분리**(B2는 보안 link-guard 핵심; live emit은 UX 표면화·`OrchestratorEventType` union 확장 별건).
+- **symlink→symlink 치환 구분** — baseline symlink 가 다른 symlink 로 교체된 경우, target 을 읽지 않고는 구분 불가(no-follow/leak-zero 불변식 충돌). `readlink` 없이는 "원래 symlink 그대로" 인지 "에이전트 교체 symlink" 인지 알 수 없다. 따라서 그런 경우 rollback 이 에이전트 교체 symlink 를 남길 수 있음(advisory 비목표). 강한 격리는 OS/CLI 샌드박스(향후 B-tier) 로 이관.
 
 ## 영향 파일
 
