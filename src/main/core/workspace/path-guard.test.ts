@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'node:fs'
-import { isLinkSync } from './path-guard'
+import { isLinkSync, resolveWithin } from './path-guard'
 
 let root: string
 beforeEach(() => {
@@ -69,5 +69,50 @@ describe.skipIf(process.platform !== 'win32')('isLinkSync (Windows junction)', (
     mkdirSync(join(root, 'realdir'))
     symlinkSync(join(root, 'realdir'), join(root, 'jdir'), 'junction')
     expect(isLinkSync(join(root, 'jdir'))).toBe('link')
+  })
+})
+
+describe('resolveWithin', () => {
+  it('root 내부 파일 허용 + 정준 경로 반환', () => {
+    writeFileSync(join(root, 'a.txt'), 'x')
+    const out = resolveWithin(root, 'a.txt')
+    expect(out.toLowerCase()).toContain('a.txt')
+  })
+  it("'..foo' 같은 정상 in-root 이름을 오거부하지 않는다", () => {
+    writeFileSync(join(root, '..foo'), 'x')
+    expect(() => resolveWithin(root, '..foo')).not.toThrow()
+  })
+  it("'../x' 상위 탈출은 거부", () => {
+    expect(() => resolveWithin(root, join('..', 'x'))).toThrow(/워크스페이스 밖/)
+  })
+  it('미존재 leaf 도 컨테인먼트만 검사(허용)', () => {
+    expect(() => resolveWithin(root, 'sub/new.txt')).not.toThrow()
+  })
+  it('root 자체(빈 상대) 허용', () => {
+    expect(() => resolveWithin(root, '.')).not.toThrow()
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('resolveWithin (POSIX symlink ancestor)', () => {
+  it('존재하는 symlink 조상 아래 미존재 tail 은 밖이면 거부', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      symlinkSync(outside, join(root, 'esc'), 'dir')
+      expect(() => resolveWithin(root, 'esc/whatever.txt')).toThrow(/워크스페이스 밖/)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('resolveWithin (Windows junction ancestor)', () => {
+  it('junction 조상 아래 미존재 tail 은 밖이면 거부', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-out-'))
+    try {
+      symlinkSync(outside, join(root, 'esc'), 'junction')
+      expect(() => resolveWithin(root, 'esc/whatever.txt')).toThrow(/워크스페이스 밖/)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })
