@@ -1,4 +1,5 @@
-import { promises as fs } from 'node:fs'
+import { promises as fs, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -150,6 +151,15 @@ describe('createWorkspaceReadTools', () => {
     expect(pick(createWorkspaceReadTools(root), 'read_file').classify({ path: 'config.txt' })).toBe(
       'destructive',
     )
+  })
+
+  it('[#128-B2] resolveWithin 통일 — "..foo" 정상 파일 읽기 가능(오거부 회귀 방지)', async () => {
+    // root 는 기존 테스트 헬퍼가 만든 임시 워크스페이스 사용
+    writeFileSync(join(root, '..foo'), 'hello')
+    const tools = createWorkspaceReadTools(root)
+    const readFileTool = tools.find((t) => t.definition.name === 'read_file')!
+    const out = await readFileTool.execute({ path: '..foo' }, { signal: undefined } as never)
+    expect(out).toBe('hello')
   })
 
   it('read_file 은 대형 파일을 전체 적재 없이 앞부분만 반환한다', async () => {

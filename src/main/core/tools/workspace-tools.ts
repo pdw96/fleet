@@ -1,7 +1,8 @@
-import { promises as fs, realpathSync } from 'node:fs'
+import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import safe from 'safe-regex'
 import { SENSITIVE_FILE } from '../safety/approval'
+import { resolveWithin } from '../workspace/path-guard'
 import type { FleetTool } from './types'
 
 const MAX_FILE_BYTES = 256 * 1024
@@ -22,21 +23,6 @@ export interface WorkspaceToolLimits {
   maxDirEntries?: number
 }
 type ResolvedLimits = Required<WorkspaceToolLimits>
-
-/** 입력 경로를 root 내부로 격리한다. realpath 로 심볼릭 링크 탈출까지 차단. 밖이면 throw. */
-async function resolveWithin(root: string, p: string): Promise<string> {
-  const rootReal = await fs.realpath(root)
-  const abs = path.resolve(rootReal, p)
-  let real: string
-  try {
-    real = await fs.realpath(abs) // 존재하면 심볼릭 해소
-  } catch {
-    real = abs // 미존재(곧 ENOENT) — 정규화 경로로 컨테인먼트만 검사
-  }
-  const rel = path.relative(rootReal, real)
-  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return real
-  throw new Error(`경로가 워크스페이스 밖입니다: ${p}`)
-}
 
 /**
  * root 하위 파일을 재귀 순회(스킵 디렉터리 제외).
@@ -77,16 +63,17 @@ function readFileTool(root: string, lim: ResolvedLimits): FleetTool {
       // 심볼릭 링크가 민감 파일을 가리키면(원 인자는 무해해 보여도) 실제 대상 기준으로 destructive 로 승격한다.
       // (자동승인 우회 방지 — execute 의 realpath 해소와 위험도 분류를 일치시킨다.)
       try {
-        if (SENSITIVE_FILE.test(realpathSync(path.resolve(root, p)))) return 'destructive'
+        // resolveWithin 은 밖이면 throw → 분류 단계에선 무시(execute 가 처리). 안이면 정준 경로로 민감도 판정.
+        if (SENSITIVE_FILE.test(resolveWithin(root, p))) return 'destructive'
       } catch {
-        // 미존재 등은 무시 — execute 의 resolveWithin/stat 가 처리한다.
+        /* 미존재/밖 — execute 의 resolveWithin/stat 가 처리 */
       }
       return 'safe'
     },
     async execute(input) {
       const p = asStr((input as { path?: unknown })?.path)
       if (!p) throw new Error('read_file: path 인자가 필요합니다.')
-      const abs = await resolveWithin(root, p)
+      const abs = resolveWithin(root, p)
       const stat = await fs.stat(abs)
       if (!stat.isFile()) throw new Error(`read_file: 파일이 아닙니다: ${p}`)
       if (stat.size > lim.maxFileBytes) {
@@ -125,7 +112,7 @@ function listDirectoryTool(root: string, lim: ResolvedLimits): FleetTool {
     classify: () => 'safe',
     async execute(input) {
       const p = asStr((input as { path?: unknown })?.path) ?? '.'
-      const abs = await resolveWithin(root, p)
+      const abs = resolveWithin(root, p)
       const entries = await fs.readdir(abs, { withFileTypes: true })
       const lines = entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).sort()
       if (lines.length === 0) return '(빈 디렉터리)'
@@ -178,7 +165,7 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
         )
       }
       const rootReal = await fs.realpath(root)
-      const start = await resolveWithin(root, asStr((input as { path?: unknown })?.path) ?? '.')
+      const start = resolveWithin(root, asStr((input as { path?: unknown })?.path) ?? '.')
       const out: string[] = []
       let scanned = 0
       let truncated = false
