@@ -1379,9 +1379,9 @@ describe.skipIf(process.platform !== 'win32')(
 )
 
 // ── Codex round6 Fix-2: cap 후 sensitive symlink 가 fail-closed 에 도달하는지 검증 ──
-// RED on pre-fix: top-level `if (capped) break` が非民感リンクで cap をトリップ後に break →
-//   後続の .ssh/ レコードが captureIgnoredBaseline の sensitive 検査に到達しない(fail-OPEN).
-// post-fix: break 削除 → .ssh/ がループを通過 → pushSkip(sensitive) → throw(fail-CLOSED).
+// RED on pre-fix: top-level `if (capped) break` 가 비민감 링크로 cap 트립 후 break →
+//   후속 .ssh/ 레코드가 captureIgnoredBaseline 의 sensitive 검사에 도달하지 못함(fail-OPEN).
+// post-fix: break 제거 → .ssh/ 가 루프를 통과 → pushSkip(sensitive) → throw(fail-CLOSED).
 describe('[round6 Fix-2] cap 후 sensitive symlink 가 top-level loop 를 통과해 fail-closed 에 도달한다', () => {
   it('POSIX: non-sensitive link cap 후 .ssh symlink → captureIgnoredBaseline throws', async () => {
     if (process.platform === 'win32') return // junction variant below
