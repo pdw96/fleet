@@ -1,3 +1,8 @@
+// "경로검사 ≠ 격리"(advisory). 이 모듈은 *Fleet 자체 FS 연산*이 symlink/junction 을 따라가
+// 워크스페이스 밖을 읽거나 쓰는 것을 줄이는 advisory guard다. 스폰된 CLI 의 직접 쓰기는 막지 못하며,
+// lstat→open/write 사이 TOCTOU 창이 남는다(순수 Node 는 openat2/O_NOFOLLOW 크로스플랫폼 부재 —
+// Windows 엔 O_NOFOLLOW 자체 없음). 강한 격리는 OS/CLI 샌드박스 층(#128 향후·문서 참조).
+//
 // namespace import — spy 가로채기가 환경에서 허용될 때 vi.spyOn(fs,'lstatSync')가 동작하도록
 // 한다(ESM named-import 바인딩은 스파이가 가로채지 못함 — B1 m4 교훈).
 // Windows ESM 환경에서는 Node 빌트인 프로퍼티가 non-configurable이라 spy가 "Cannot redefine

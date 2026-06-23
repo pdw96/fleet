@@ -109,7 +109,9 @@ Expected: FAIL — `Failed to resolve import "./path-guard"`.
 
 ```ts
 // src/main/core/workspace/path-guard.ts
-import { lstatSync } from 'node:fs'
+// namespace import — 테스트가 vi.spyOn(fs,'lstatSync')로 가로챌 수 있게 한다(ESM named-import
+// 바인딩은 스파이가 가로채지 못함 — B1 m4 교훈).
+import * as fs from 'node:fs'
 
 /** 경로의 종류를 lstat(링크 비추종)으로 판정한다.
  * 'link'  = POSIX symlink 또는 Windows junction(둘 다 lstat.isSymbolicLink()=true, 실증).
@@ -120,7 +122,7 @@ export type LinkKind = 'regular' | 'dir' | 'link' | 'suspicious' | 'missing'
 
 export function isLinkSync(abs: string): LinkKind {
   try {
-    const st = lstatSync(abs)
+    const st = fs.lstatSync(abs)
     if (st.isSymbolicLink()) return 'link'
     if (st.isDirectory()) return 'dir'
     if (st.isFile()) return 'regular'
@@ -214,7 +216,7 @@ Expected: FAIL — `resolveWithin is not a function` / import 실패.
 - [ ] **Step 3: 최소 구현** (`path-guard.ts`에 추가)
 
 ```ts
-import { lstatSync, realpathSync, existsSync } from 'node:fs'
+// (fs 는 Task 1 의 `import * as fs from 'node:fs'` 를 그대로 사용 — 추가 import 없음)
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 // win32 비교는 case-insensitive(NTFS) — 양변 case-fold.
@@ -227,7 +229,7 @@ const fold = (p: string): string => (process.platform === 'win32' ? p.toLowerCas
 export function resolveWithin(root: string, p: string): string {
   let realRoot: string
   try {
-    realRoot = realpathSync.native(root)
+    realRoot = fs.realpathSync.native(root)
   } catch (err) {
     throw new Error(`워크스페이스 realpath 해소 불가(운영 에러): ${root}`, { cause: err })
   }
@@ -235,7 +237,7 @@ export function resolveWithin(root: string, p: string): string {
   // 최근접 존재 조상까지 올라가 그 조상의 realpath 를 구하고 미존재 tail 을 재부착한다.
   let existingAbs = abs
   const tail: string[] = []
-  while (!existsSync(existingAbs)) {
+  while (!fs.existsSync(existingAbs)) {
     tail.unshift(basename(existingAbs))
     const parent = dirname(existingAbs)
     if (parent === existingAbs) break
@@ -243,7 +245,7 @@ export function resolveWithin(root: string, p: string): string {
   }
   let realCandidate: string
   try {
-    const realExisting = realpathSync.native(existingAbs)
+    const realExisting = fs.realpathSync.native(existingAbs)
     realCandidate = tail.length ? resolve(realExisting, ...tail) : realExisting
   } catch (err) {
     throw new Error(`경로 realpath 해소 실패(안전상 거부): ${p}`, { cause: err })
@@ -809,10 +811,17 @@ git commit -m "refactor(#128-B2): workspace-tools containment를 path-guard help
 Run: `npm run brain`
 Expected: `brain.md`가 신규 `path-guard.ts`/변경 반영하여 갱신됨(diff 발생).
 
-- [ ] **Step 3: 5게이트 전체 실행**
+- [ ] **Step 3: 5게이트 실행**
 
-Run: `npm run typecheck && npm run lint && npm run format:check && npm test && npm run build`
-Expected: 전부 통과. (`format:check` 실패 시 `npm run format` 후 재실행·재커밋.)
+Run: `npm run typecheck && npm test && npm run build`
+Expected: 전부 통과.
+
+**환경 함정(B1 교훈):** `npm run lint`(`eslint .`)·`npm run format:check`(`prettier --check .`)를 레포 전체로 돌리면 **스테일 `.claude/worktrees`·untracked `.dogfood`로 우리 변경과 무관하게 실패**한다. 따라서 변경 파일만 검증한다:
+```
+npx eslint src/main/core/workspace/path-guard.ts src/main/core/workspace/path-guard.test.ts src/main/core/workspace/ignored-baseline.ts src/main/core/workspace/ignored-baseline.test.ts src/main/core/tools/workspace-tools.ts src/main/core/tools/workspace-tools.test.ts
+npx prettier --check src/main/core/workspace/path-guard.ts src/main/core/workspace/ignored-baseline.ts src/main/core/tools/workspace-tools.ts
+```
+Expected: EXIT 0(변경 파일). prettier 실패 시 `npx prettier --write <files>` 후 재커밋. 머지 게이트는 CI required check(`typecheck·lint·test·build·win32 보안 회귀`)가 클린 환경에서 강제.
 
 - [ ] **Step 4: 커밋**
 
