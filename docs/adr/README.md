@@ -11,3 +11,4 @@
 | [0001](0001-codex-required-게이트-보류.md) | Accepted | Codex 를 required CI 머지 게이트로 만들지 않는다 |
 | [0002](0002-issue27-백로그-본문-다이어트.md) | Accepted | 메타 백로그 #27 본문에 완료 이력을 누적하지 않는다 |
 | [0003](0003-solo-pre-1.0-과설계-roi-경계.md) | Accepted | 솔로 pre-1.0 단계에선 가치가 입증된 것만 등재한다 |
+| [0004](0004-adr-시스템-경량-시작.md) | Accepted | ADR 시스템을 경량으로 시작하고 구조 정합 lint 는 보류한다 |
