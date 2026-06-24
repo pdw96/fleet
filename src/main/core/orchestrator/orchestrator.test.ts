@@ -3814,4 +3814,121 @@ describe('runProject', () => {
     // 실제 changes 없음 → ignored_discarded 이벤트 0건
     expect(discarded.length).toBe(0)
   })
+
+  // [#128-finding5] ignored 감사 이벤트의 라이브(onEvent) 표면화 + 스토어 1회(이중계상 없음)
+  it('[#128-finding5] workspace.ignored_changes 는 라이브(onEvent)로 방출되고 eventId 부착 + 스토어 1회만(이중계상 없음)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const collectResult: IgnoredChangeSet = {
+      changes: [{ path: '.env', change: 'modified', sensitive: true }],
+      unrestorable: [],
+    }
+    const ws = fakeWorkspace([{ files: ['src/a.ts'], patch: '+a', truncated: false }], {
+      collectResult,
+    })
+
+    const live: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      onEvent: (e) => live.push(e),
+      gate: {
+        async request() {
+          return 'approved' // destructive diff 승인
+        },
+      },
+    })
+
+    // 라이브 방출 — 과거 append-only 였으면 onEvent 가 이 타입을 못 받아 0건(RED).
+    const liveIgnored = live.filter((e) => e.type === 'workspace.ignored_changes')
+    expect(liveIgnored.length).toBe(1)
+    // 비어있지 않은 message(과거엔 message 없음 → 로그에 빈 행). 경로는 message 에 싣지 않는다(요약만).
+    expect(typeof liveIgnored[0].message).toBe('string')
+    expect(liveIgnored[0].message.length).toBeGreaterThan(0)
+    expect(liveIgnored[0].message).not.toContain('.env')
+    // eventId 부착 — 렌더러가 스냅샷과 dedup 하는 키.
+    const eventId = liveIgnored[0].data?.['eventId']
+    expect(typeof eventId).toBe('string')
+    // 스토어엔 정확히 1건 — emit 이 appendEvent 를 1회만 호출(이중계상 없음).
+    const stored = store
+      .listProjectEvents(result.projectId)
+      .filter((e) => e.type === 'workspace.ignored_changes')
+    expect(stored.length).toBe(1)
+    // 라이브 eventId === 영속 id → 스냅샷 재조회 시 중복 표시 안 됨.
+    expect(eventId).toBe(stored[0].id)
+  })
+
+  it('[#128-finding5] workspace.ignored_discarded 도 라이브(onEvent)로 방출되고 eventId 부착', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b"}]',
+      ),
+    )
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+
+    const base = parallelFakeWorkspace()
+    const ws: typeof base = {
+      ...base,
+      async addWorktree(taskId: string, b: string) {
+        const wt = await base.addWorktree(taskId, b)
+        return {
+          ...wt,
+          async collectIgnoredChanges(_bl: IgnoredBaseline) {
+            return {
+              changes: [{ path: `.env-${taskId}`, change: 'modified' as const, sensitive: true }],
+              unrestorable: [],
+            }
+          },
+        }
+      },
+    }
+
+    const { factory } = makeBarrierEditFactory(2)
+    const live: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxConcurrency: 2,
+      makeEditSession: factory,
+      onEvent: (e) => live.push(e),
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+    })
+
+    expect(result.tasks.every((t) => t.status === 'done')).toBe(true)
+    // 두 worktree 작업 모두 done + ignored 변경 → 라이브 2건(append-only 였으면 0건).
+    const liveDiscarded = live.filter((e) => e.type === 'workspace.ignored_discarded')
+    expect(liveDiscarded.length).toBe(2)
+    expect(liveDiscarded.every((e) => typeof e.data?.['eventId'] === 'string')).toBe(true)
+    expect(liveDiscarded.every((e) => typeof e.message === 'string' && e.message.length > 0)).toBe(
+      true,
+    )
+    // 폐기 이벤트 message·data 에 경로(.env-) 비노출.
+    expect(JSON.stringify(liveDiscarded)).not.toContain('.env-')
+  })
 })
