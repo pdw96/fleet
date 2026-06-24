@@ -83,5 +83,5 @@ SHA 핀 bump 는 github-actions ecosystem 의 문서화된 동작(주석도 재�
 
 - 실제 semgrep CI 실행(대안 A) — 채택 안 함.
 - `docker://` 다이제스트 핀 강제 — 레포에 미사용, 룰 스코프 밖.
-- release.yml `persist-credentials` 변경.
+- release.yml `setup-node` 의 `cache: npm` 제거(캐시 포이즌 하드닝) — 보류(§4 참조: `npm ci` 무결성 완화·핀 스코프 밖, 사용자 결정으로 유지). ※ `persist-credentials: false` 는 §4 대로 release 포함으로 전환됨.
 - `# vN` 주석 형식의 하드 강제.
