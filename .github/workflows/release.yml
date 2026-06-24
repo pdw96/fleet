@@ -11,8 +11,8 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: '.nvmrc'
           cache: npm
@@ -62,8 +62,8 @@ jobs:
     env:
       HUSKY: 0
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version-file: '.nvmrc'
           cache: npm
@@ -92,7 +92,7 @@ jobs:
       # 매트릭스 레그별로 자기 OS 산출물만 가리킨다(win=*.exe / linux=*.AppImage) — 0-match 면 액션 실패라
       # OS 조건부 subject-path 필수. *.exe 는 .exe.blockmap·latest.yml 을 매치하지 않아 레그당 정확히 1개.
       - name: Generate build provenance attestation
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
         with:
           subject-path: ${{ matrix.os == 'windows-latest' && 'dist/*.exe' || 'dist/*.AppImage' }}
 

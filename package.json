@@ -81,7 +81,7 @@
     ".claude/workflows/**/*.js": [
       "node scripts/skills-lint.mjs"
     ],
-    ".github/workflows/*.yml": [
+    ".github/workflows/*.{yml,yaml}": [
       "node scripts/skills-lint.mjs"
     ]
   },

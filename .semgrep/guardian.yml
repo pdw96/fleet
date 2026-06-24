@@ -1,0 +1,35 @@
+# .semgrep/guardian.yml
+# Fleet "guardian" 보안 룰셋 — GitHub Actions 공급망 하드닝 정책의 **선언적 미러**.
+#
+# ⚠️ 권위적 강제(authoritative enforcement)는 이 파일이 아니라 `scripts/skills-lint.mjs`
+#    의 `scanWorkflowPins()` 다 — CI 의 `skills:lint` 게이트(.github/workflows/ci.yml)가
+#    돌려 `.github/workflows/*.yml` 의 미핀 `uses:` 를 머지 전 차단한다(zero-dep, vitest 검증).
+#    이 semgrep 룰은 동일 정책을 표준 도구로 표현해 로컬/Semgrep Cloud 에서도 확인 가능하게 한다.
+#    (이슈 #137 — 관례→강제. Node/Electron CI 에 Python semgrep 툴체인을 더하지 않으려고
+#     enforcement 는 기존 zero-dep 린터로, 정책 선언은 이 파일로 분리했다.)
+#
+# 실행(선택): semgrep --config .semgrep/guardian.yml .github/workflows/
+#
+# 정책: 모든 `uses:` 는 40자 커밋 SHA 로 핀하고 `# vN` 주석을 단다. 가변 ref(태그·브랜치·
+# 짧은 SHA)는 작성자/계정 탈취 시 악성 커밋으로 이동 가능(2025-03 tj-actions/changed-files
+# 공급망 공격). 로컬 액션(./ ../)·docker:// 는 핀 대상이 아니다.
+
+rules:
+  - id: gha-pin-actions-to-sha
+    languages: [yaml]
+    severity: ERROR
+    message: >-
+      GitHub Action `uses: $REF` 가 40자 커밋 SHA 로 핀되지 않았습니다(가변 ref = 공급망 공격면, #137).
+      가변 태그/브랜치 ref 를 커밋 SHA 로 바꾸고 `# vN` 주석을 다세요.
+      권위적 강제는 scripts/skills-lint.mjs(ci.yml skills:lint 게이트) — 이 룰은 그 정책의 미러입니다.
+    patterns:
+      - pattern: 'uses: $REF'
+      # 이미 40-hex 커밋 SHA 로 핀됨 → 제외(RE2-safe, lookahead 미사용).
+      - pattern-not-regex: '@[0-9a-f]{40}(\s|$|["#])'
+      # 로컬 액션(./ 또는 ../) → 핀 불요, 제외.
+      - pattern-not-regex: 'uses:\s*["'']?\.\.?/'
+      # docker:// 참조 → 이 정책 스코프 밖, 제외.
+      - pattern-not-regex: 'uses:\s*["'']?docker://'
+    paths:
+      include:
+        - '.github/workflows/'

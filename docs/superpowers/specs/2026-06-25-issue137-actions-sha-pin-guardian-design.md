@@ -22,7 +22,7 @@
 | `actions/setup-node` | `48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e` | `# v6` |
 | `actions/upload-artifact` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | `# v7` |
 | `actions/attest-build-provenance` | `a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32` | `# v4` |
-| `actions/dependency-review-action` | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | `# v5` (=v5.0.0; 브랜치ref였음) |
+| `actions/dependency-review-action` | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | `# v5.0.0` (부동 v5 태그 부재 → 정확한 태그 표기; 종전 `@v5`는 브랜치ref였음) |
 
 이미 핀된 참조(레퍼런스): `checkout@9c091bb… # v7`, `anthropics/claude-code-action@80b3… # v1` (backlog-rerank.yml·cutoff-gap-audit.yml).
 
