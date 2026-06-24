@@ -12,7 +12,7 @@ jobs:
   rerank:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with: { fetch-depth: 1 }
       - uses: anthropics/claude-code-action@80b31826338489861333dc17217865dfe8085cdc # v1
         with:
