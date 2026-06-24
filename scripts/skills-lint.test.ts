@@ -95,6 +95,18 @@ describe('scanWorkflowPins — GitHub Actions SHA 핀 강제', () => {
     expect(scanWorkflowPins('    steps:\r\n      - uses: actions/checkout@v7\r\n').length).toBe(1)
     expect(scanWorkflowPins(`      - uses: actions/checkout@${SHA} # v7\r\n`)).toEqual([])
   })
+
+  it('플로우-스타일 스텝(uses 가 첫 키)도 검사한다', () => {
+    expect(scanWorkflowPins('      - {uses: actions/checkout@v7}').length).toBe(1)
+    expect(scanWorkflowPins('      - { uses: actions/checkout@v7 }').length).toBe(1)
+    expect(scanWorkflowPins('      - {uses: actions/checkout@v7, name: co}').length).toBe(1)
+    expect(scanWorkflowPins(`      - {uses: actions/checkout@${SHA}}`)).toEqual([])
+    expect(scanWorkflowPins(`      - { uses: actions/checkout@${SHA}, name: co }`)).toEqual([])
+  })
+
+  it('run 본문 속 {uses:} 문자열은 여전히 무시한다(오탐 방지)', () => {
+    expect(scanWorkflowPins('      run: echo "- {uses: actions/x@v1}"')).toEqual([])
+  })
 })
 
 describe('validateFrontmatter — SKILL.md', () => {

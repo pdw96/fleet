@@ -33,19 +33,22 @@ export function scanText(text) {
  * 가변 ref(태그·브랜치·짧은 SHA·ref 누락)는 작성자/계정 탈취 시 악성 커밋으로 이동 가능 —
  * 공급망 공격면(2025-03 tj-actions). 핀 SHA 만 허용. 로컬 액션(./ ../)·docker:// 는 핀 대상 아님.
  * 권위적 강제는 이 함수(ci.yml skills:lint 게이트). `.semgrep/guardian.yml` 은 동일 정책의 선언적 미러.
- * 한계: YAML 플로우-스타일 스텝(`- {uses: x@v1}`)은 미지원 — 레포의 전 워크플로가 블록 스타일이고
- * guardian.yml 의 구조 매칭(`pattern: uses: $REF`)이 그 형태를 보강한다. CRLF 도 정규화(\r?\n).
+ * 블록 스타일(`- uses:`/잡-레벨 `uses:`)과 uses 가 첫 키인 플로우 스타일(`- {uses: x@v1}`)을 모두 본다.
+ * 잔여 한계(미지원): uses 가 첫 키가 아닌 플로우 맵(`- {name: a, uses: x}`)·인라인 steps 배열 —
+ * 레포 전 워크플로가 블록 스타일이라 미발현이고 guardian.yml 구조 매칭이 그 형태를 보강한다. CRLF 정규화.
  * @returns {{line:number, ref:string}[]} 위반 줄(ref = 미핀 `owner/repo@ref` 값)
  */
 export function scanWorkflowPins(text) {
   const hits = []
   text.split(/\r?\n/).forEach((content, i) => {
-    // YAML 키로서의 uses: 만(스텝 `- uses:` / 잡-레벨 `uses:`). 주석(#…)·run 본문은 ^ 앵커로 제외.
-    const m = content.match(/^\s*(?:-\s+)?uses:\s*(\S.*)$/)
+    // YAML 키로서의 uses: 만(스텝 `- uses:` / 잡-레벨 `uses:` / 플로우 `- {uses:`). 주석·run 본문은 ^ 앵커로 제외.
+    const m = content.match(/^\s*(?:-\s+)?\{?\s*uses:\s*(\S.*)$/)
     if (!m) return
-    // 인라인 주석(' #…')·감싼 따옴표 제거해 순수 ref 값 추출.
+    // 인라인 주석(' #…')·플로우 맵 트레일러(`, …`·`}`)·감싼 따옴표 제거해 순수 ref 값 추출.
     const value = m[1]
       .replace(/\s+#.*$/, '')
+      .split(',')[0]
+      .replace(/\}\s*$/, '')
       .trim()
       .replace(/^['"]|['"]$/g, '')
     if (value.startsWith('./') || value.startsWith('../') || value.startsWith('docker://')) return

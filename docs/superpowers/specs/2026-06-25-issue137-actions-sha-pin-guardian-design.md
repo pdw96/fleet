@@ -58,12 +58,16 @@
   - 로컬 액션(`./…`, `../…`) → 허용(핀 불요).
   - 게이트는 **완전 SHA 존재만** 강제. `# vN` 주석 부재는 실패 아님(Dependabot 이 주석 재작성 → over-enforcement·false positive 회피).
 - `lintFile`: 경로가 `.github/workflows/` 아래 `.yml`/`.yaml` 이면 `scanWorkflowPins` 실행, 위반을 메시지 배열에 추가.
-- `scripts/skills-lint.test.ts`: RED→GREEN 단위테스트(미핀 태그 적발, 핀 SHA 통과, 로컬액션 통과, 주석유무 무관).
-- **CI 배선 불요** — `ci.yml` 의 `skills:lint` 스텝이 이미 `.github/workflows/*.yml` 글롭을 넘긴다. 신규 액션도 이 게이트가 자동 검사.
+- `scripts/skills-lint.test.ts`: RED→GREEN 단위테스트(미핀 태그 적발, 핀 SHA 통과, 로컬액션 통과, 주석유무 무관, CRLF·플로우-스타일 포함).
+- **CI 글롭에 `.yaml` 포함** — `ci.yml` 의 `skills:lint` 스텝과 `package.json` lint-staged 글롭을 `.github/workflows/*.{yml,yaml}` 로 확장한다(GitHub Actions 는 `.yaml` 워크플로도 실행하므로 `.yml` 만 스캔하면 우회 가능 — 적대/CodeRabbit 리뷰 반영). 신규 액션도 이 게이트가 자동 검사.
 
 ### 4. `persist-credentials: false` (이슈 선택항목)
 
-push 불요·안전한 checkout 에만 적용: `ci.yml`(×2)·`e2e.yml`(×1)·`dependency-review.yml`(×1). **`release.yml` 제외** — 서명/publish 흐름 민감, 이 보안 PR 스코프 최소화(release publish 는 `GH_TOKEN` env 사용이라 git 자격증명과 무관하나 회귀 리스크 회피). 이미 핀된 AI 워크플로 2개는 기존에 `persist-credentials: false` 보유.
+push 불요 checkout 전반에 적용: `ci.yml`(×2)·`e2e.yml`(×1)·`dependency-review.yml`(×1)·**`release.yml`(×2)**. 이미 핀된 AI 워크플로 2개는 기존에 `persist-credentials: false` 보유.
+
+> **CodeRabbit 리뷰 반영(2026-06-25)**: 당초 `release.yml` 을 제외했으나, 권한 높은 publish 잡일수록 토큰을 `.git/config` 에 남기지 않는 게 더 중요하다는 지적(+사용자 승인)으로 release 도 포함. 재검증: release publish 는 `gh release`·`electron-builder --publish`(둘 다 `GH_TOKEN` env)·attestation(OIDC `id-token`)을 쓰고 **git push 가 없어** persist 자격증명에 의존하지 않음 → 안전.
+>
+> **Deferred(스코프 밖)**: CodeRabbit 은 release `setup-node` 의 `cache: npm` 도 캐시-포이즌 우려로 제거 권고했으나, `npm ci` 가 `package-lock.json` 무결성 해시로 모든 패키지를 재검증해 실효 위험이 낮고(setup-node 캐시 = content-addressed npm 다운로드 캐시) #137 의 핀-강제 스코프 밖이라 별도 후속으로 보류(사용자 결정: 유지).
 
 ### 5. Dependabot 검증
 
