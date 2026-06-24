@@ -28,6 +28,38 @@ export function scanText(text) {
   return hits
 }
 
+/**
+ * GitHub Actions 워크플로의 블록-스타일 `uses:` 가 40자 커밋 SHA 로 핀됐는지 검사(#137).
+ * 가변 ref(태그·브랜치·짧은 SHA·ref 누락)는 작성자/계정 탈취 시 악성 커밋으로 이동 가능 —
+ * 공급망 공격면(2025-03 tj-actions). 핀 SHA 만 허용. 로컬 액션(./ ../)·docker:// 는 핀 대상 아님.
+ * 권위적 강제는 이 함수(ci.yml skills:lint 게이트). `.semgrep/guardian.yml` 은 동일 정책의 선언적 미러.
+ * 블록 스타일(`- uses:`/잡-레벨 `uses:`)과 uses 가 첫 키인 플로우 스타일(`- {uses: x@v1}`)을 모두 본다.
+ * 잔여 한계(미지원): uses 가 첫 키가 아닌 플로우 맵(`- {name: a, uses: x}`)·인라인 steps 배열 —
+ * 레포 전 워크플로가 블록 스타일이라 미발현이고 guardian.yml 구조 매칭이 그 형태를 보강한다. CRLF 정규화.
+ * @returns {{line:number, ref:string}[]} 위반 줄(ref = 미핀 `owner/repo@ref` 값)
+ */
+export function scanWorkflowPins(text) {
+  const hits = []
+  text.split(/\r?\n/).forEach((content, i) => {
+    // YAML 키로서의 uses: 만(스텝 `- uses:` / 잡-레벨 `uses:` / 플로우 `- {uses:`). 주석·run 본문은 ^ 앵커로 제외.
+    const m = content.match(/^\s*(?:-\s+)?\{?\s*uses:\s*(\S.*)$/)
+    if (!m) return
+    // 인라인 주석(' #…')·플로우 맵 트레일러(`, …`·`}`)·감싼 따옴표 제거해 순수 ref 값 추출.
+    const value = m[1]
+      .replace(/\s+#.*$/, '')
+      .split(',')[0]
+      .replace(/\}\s*$/, '')
+      .trim()
+      .replace(/^['"]|['"]$/g, '')
+    if (value.startsWith('./') || value.startsWith('../') || value.startsWith('docker://')) return
+    const at = value.lastIndexOf('@')
+    const ref = at === -1 ? '' : value.slice(at + 1)
+    if (/^[0-9a-f]{40}$/.test(ref)) return // 완전 SHA 핀 = 통과(주석 유무 무관)
+    hits.push({ line: i + 1, ref: value })
+  })
+  return hits
+}
+
 /** SKILL.md frontmatter에 name·description이 있는지 검증 */
 export function validateFrontmatter(text) {
   const errors = []
@@ -48,6 +80,11 @@ export function lintFile(path) {
   const msgs = []
   const text = readFileSync(path, 'utf8')
   for (const h of scanText(text)) msgs.push(`${path}:${h.line} 차단패턴[${h.pattern}]`)
+  // .github/workflows/*.yml 은 액션 SHA 핀 강제(#137).
+  if (/\.github[\\/]+workflows[\\/]/.test(path) && /\.ya?ml$/i.test(path)) {
+    for (const h of scanWorkflowPins(text))
+      msgs.push(`${path}:${h.line} 미핀 액션 uses:[${h.ref}] — 40자 커밋 SHA 핀 필요(#137)`)
+  }
   if (path.endsWith('SKILL.md')) {
     const r = validateFrontmatter(text)
     if (!r.ok) for (const e of r.errors) msgs.push(`${path} frontmatter: ${e}`)
