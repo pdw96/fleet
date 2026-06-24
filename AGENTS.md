@@ -115,6 +115,9 @@ Codex 의 몫이 아니다 — **CI·타입이 못 잡는** 아키텍처/계약/
 (`area:*`/`tier:*`/`type:*`) · **Projects 보드**(«Fleet 백로그» = `https://github.com/users/pdw96/projects/1`,
 project number `1`, owner `pdw96`).
 
+> 이 절차·재랭킹·갭감사·리뷰는 `.claude/skills/`(fleet-backlog-induction·fleet-backlog-rerank·
+> fleet-cutoff-gap-audit·fleet-pr-review)에 재사용 스킬로도 정착돼 있다(이슈 #135). 산문은 이 절이 권위, 스킬은 실행 래퍼.
+
 1. **선정** — `gh issue view 27 --repo pdw96/fleet` 로 본문 «🎯 착수 sub-issues» 트래커를 확인하고
    `tier:next` 최상위를 집는다(나열 순서 = 권장 착수순; 후보가 비었거나 모호하면 사용자에게 확인).
    `gh issue list --repo pdw96/fleet --label tier:next` 로도 필터 가능.
