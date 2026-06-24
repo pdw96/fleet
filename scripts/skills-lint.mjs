@@ -31,7 +31,7 @@ export function scanText(text) {
 /** SKILL.md frontmatter에 name·description이 있는지 검증 */
 export function validateFrontmatter(text) {
   const errors = []
-  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  const m = text.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/)
   if (!m) return { ok: false, errors: ['frontmatter(--- 블록) 없음'] }
   const fm = m[1]
   if (!/^name:[ \t]*\S+/m.test(fm)) errors.push('name 누락')
@@ -58,6 +58,10 @@ export function lintFile(path) {
 // 이 파일이 직접 실행될 때만 CLI 동작 (import 시엔 동작 안 함)
 if (import.meta.url === `file://${argv[1]}` || argv[1]?.endsWith('skills-lint.mjs')) {
   const files = argv.slice(2).filter(existsSync)
+  if (files.length === 0) {
+    console.error('✗ skills:lint 입력 파일이 없습니다. 인자/글롭 설정을 확인하세요.')
+    exit(2)
+  }
   const all = files.flatMap(lintFile)
   if (all.length) {
     console.error('✗ skills:lint 위반:\n' + all.map((m) => '  ' + m).join('\n'))

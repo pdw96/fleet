@@ -50,4 +50,7 @@ describe('validateFrontmatter — SKILL.md', () => {
   it('name 값이 없으면(빈 name) 실패', () => {
     expect(validateFrontmatter('---\nname:\ndescription: y\n---\n본문').ok).toBe(false)
   })
+  it('종료 --- 뒤에 extra가 있으면 실패', () => {
+    expect(validateFrontmatter('---\nname: x\ndescription: y\n---extra\n본문').ok).toBe(false)
+  })
 })
