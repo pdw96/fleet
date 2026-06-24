@@ -1,14 +1,16 @@
 # 워크플로 동기화 Phase 2 — 결정·감사 로그(ADR) 설계
 
-> 상태: 설계(브레인스토밍 산출). 작성 2026-06-25. 트랙: #140(메타) ← #135 Phase 2(C).
+> 상태: 설계(브레인스토밍 + 멀티에이전트 적대 리뷰 1회 반영). 작성 2026-06-25. 트랙: #140(메타) ← #135 Phase 2(C).
 > 후속: 이 스펙 승인 → `writing-plans` 로 구현 계획.
 > 범위 결정(2026-06-25 사용자): **Phase 2 (ADR) 만**. Phase 3(추가 자동화)는 tier:later 유지.
+> §13 = 적대 리뷰(run `wf_3e7940c7-21c`, 31건 중 확정 24건) 반영 변경 이력.
 
 ## 0. 한 줄 요약
 
 운영 **지속·교차 결정**(현재 #27 코멘트·전역 메모리·세션에만 흩어진)을 레포 안 **git-tracked ADR**
-로 정착시켜 감사·재현 가능하게 한다. **load-bearing 한 자리에 "관례" 0**: 결정 내용=git 파일,
-트리거=스킬 체크리스트(프로세스 강제), 부기=`adr:lint` 정합 체크(lint-staged/CI 강제).
+로 정착시켜 감사·재현 가능하게 한다. **정직한 강제 모델**: 결정 내용=git 파일(영속), 부기 시크릿/경로
+스캔=기존 `skills:lint` 재사용(강제), **트리거(이 결정이 ADR감인가 + 실제로 쓰기)=환원 불가한 판단 →
+프로세스로 최소화하되 관례 잔존(제거 불가)**. 구조 정합 자동화는 규모 도달 시까지 보류(그 보류 자체를 ADR로 기록).
 
 ## 1. 배경 & 문제
 
@@ -22,60 +24,59 @@
 결과: "왜 이렇게 결정했나"가 클론 가능한 레포에 없어 감사·재현 불가. Phase 1(#136)이 *프로세스 실행*을
 레포로 정착시켰다면, Phase 2 는 *프로세스가 내린 결정의 근거*를 정착시킨다.
 
-## 2. 설계 결정 (브레인스토밍 확정, 2026-06-25)
+## 2. 설계 결정 (브레인스토밍 + 리뷰 확정, 2026-06-25)
 
 | # | 결정 | 값 |
 |---|---|---|
 | D1 | 범위 | **Phase 2 (ADR) 만**. Phase 3 자동화는 별도 tier:later. |
-| D2 | 입도 | **지속·교차 결정만**. 루틴 재랭킹 verdict 은 #27 에 유지(ADR 중복 금지). |
-| D3 | 백필 | **소규모 시드(4건) + 이후 전진**. 휘발성에만 있는 seminal 결정만. |
-| D4 | 배선/강제 | **스킬 체크리스트(트리거) + `adr:lint` 정합 체크(부기)**. 결정에 CI 게이트는 없음. |
-| D5 | 포맷 | **경량 하이브리드** — Nygard(맥락/결정/결과) + 명시적 「고려한 대안·기각」 절(refute 문화). 한국어. |
+| D2 | 입도 | **지속·교차 결정만** (고려한 대안이 있던 갈림길 결정). 루틴 재랭킹 verdict 은 #27 에 유지(ADR 중복 금지). |
+| D3 | 백필 | **소규모 시드(3건) + 이후 전진**. 어떤 git-tracked 레코드에도 없고 휘발성 저장소(메모리·이슈 코멘트·세션)에만 있는 결정만. |
+| D4 | 강제 모델 | **최소 v1** — 부기 시크릿/경로 스캔만 기존 `skills:lint` 재사용. 구조 정합 검사(인덱스·번호·frontmatter)는 **규모 도달 시까지 보류**. 트리거=스킬+AGENTS.md 배선(관례 최소화). |
+| D5 | 포맷 | **경량 하이브리드** — Nygard(맥락/결정/결과) + 명시적 「고려한 대안·기각」 절(refute 문화의 핵심 가치). 한국어. frontmatter 최소화(§4). |
 
-### 2.1 "관례" 제거 모델 (이 설계의 핵심 — 자기모순 회피)
+### 2.1 "관례" 위치 모델 (정직한 한정 — 자기모순 회피)
 
-관례를 강제화하려는 시스템이 스스로 관례에 의존하면 같은 실패 모드(휘발·망각)를 재생산한다. 따라서
-세 자리를 분리하고 load-bearing 한 곳엔 관례를 두지 않는다:
+관례를 강제화하려는 시스템이 스스로 관례에 의존하면 같은 실패 모드(휘발·망각)를 재생산한다. 그러나
+**모든 자리를 기계화할 수는 없다** — 솔직하게 한정한다:
 
-| 자리 | 기계화 | 처리 |
-|---|---|---|
-| **결정 내용** (ADR 파일) | — | git-tracked = 영구·감사 기록. 어떻게 트리거됐든 산출물은 영속. |
-| **트리거** (이 결정이 ADR감인가?) | ❌ 환원 불가(판단) | `fleet-*` 스킬의 **체크리스트 단계**에 박음 → 프로세스 따르면 강제됨(떠다니는 메모 아님). |
-| **부기** (인덱스↔파일↔frontmatter 정합) | ✅ 결정적 | `adr:lint` zero-dep 체크 → lint-staged/CI 강제. `skills:lint` 와 **동급 무결성 검사**(결정 게이트 아님). |
+| 자리 | 기계화 | 처리 | 관례 잔존? |
+|---|---|---|---|
+| **결정 내용** (ADR 파일) | — | git-tracked = 영구·감사 기록. 트리거가 어떻든 *일단 쓰이면* 영속. | 없음 |
+| **트리거** (이 결정이 ADR감인가 + 실제로 쓰기) | ❌ 환원 불가(판단) | 스킬+AGENTS.md 체크리스트로 *환기*. **강제 아님 — 프로세스 발동·이행 자체가 디시플린**. | **잔존(불가피)** |
+| **부기: 시크릿/경로 누출** | ✅ 결정적 | 기존 `skills:lint` 의 `scanText` 를 `docs/adr/**` 에 재사용(lint-staged/CI 강제). | 없음 |
+| **부기: 구조 정합** (인덱스·번호·frontmatter) | ✅ 가능하나 | **보류** — 4건 규모엔 사람 눈이 검증. 규모 도달 시 도입(ADR로 보류 기록). | 보류(규모 전엔 사람 눈) |
+
+> **정직한 결론(리뷰 P2 반영):** 원 실패 모드는 *제거*가 아니라 **"저장 단계 → 인지·작성 단계"로 한 칸
+> 이동**한다. 산출물의 영속성(결정-내용 행)이 산출 트리거의 비관례성을 함의하지 않는다. Phase 2 가 보장하는
+> 것은 "결정이 *일단 ADR로 쓰이면* 휘발하지 않는다"이지 "모든 결정이 빠짐없이 포착된다"가 아니다.
 
 ## 3. 레이아웃
 
 ```
 docs/adr/
-  README.md                 # 인덱스 — ADR당 1줄: `[ADR-NNNN] 상태 · 제목` → 링크
-  TEMPLATE.md               # 새 ADR 시작 템플릿
-  0001-claude-전용-운영-범위.md
-  0002-codex-required-게이트-보류.md
-  0003-issue27-백로그-본문-다이어트.md
-  0004-solo-pre-1.0-과설계-roi-경계.md
-scripts/
-  adr-lint.mjs              # zero-dep 정합 체크 (skills-lint.mjs 미러)
-  adr-lint.test.ts          # vitest (TDD)
+  README.md       # 인덱스 — 사람 가독(MEMORY.md 형태 동형). 구조 lint 비강제(D4).
+  TEMPLATE.md     # 새 ADR 템플릿
+  0001-codex-required-게이트-보류.md
+  0002-issue27-백로그-본문-다이어트.md
+  0003-solo-pre-1.0-과설계-roi-경계.md
+  0004-adr-시스템-경량-시작-구조lint-보류.md   # 이번 결정(전진 ADR 1호 — 도그푸드)
 ```
 
-- 파일명: `NNNN-kebab.md`, 4자리 순차(0001…). 위치 `docs/adr/`(표준·발견성).
-- 인덱스 패턴: 전역 메모리 `MEMORY.md`(한 줄/항목)와 동형이되, **여기선 관례가 아니라 `adr:lint` 가 강제**.
+- **신규 스크립트 0** — `adr-lint.mjs` 만들지 않는다(리뷰 P2: #137 선례 = 별도 파일 아닌 `skills-lint.mjs`
+  확장·"새 CI 의존성 0"). v1 은 구조 검사가 없으므로 확장조차 불요 — 기존 `scanText` 를 glob 으로 재사용만.
+- 파일명: `NNNN-kebab.md`, 4자리 순차. 위치 `docs/adr/`(표준·발견성).
+- 인덱스 `README.md` = 사람 가독 목록(권위는 ADR 파일 자체). MEMORY.md 와 **형태만 동형** — 권위 분리:
+  ADR README=레포 canonical 인덱스, MEMORY.md=세션 리콜용 별개 뷰(레포 밖·비권위).
 
-## 4. ADR 포맷 (D5)
+## 4. ADR 포맷 (D5 — 최소 frontmatter)
 
 ```markdown
 ---
-adr: 2
+adr: 1
 title: Codex 를 required CI 게이트로 만들지 않는다
-status: Accepted          # Accepted | Proposed | Superseded | Deprecated
+status: Accepted          # Accepted | Superseded (그 외 값은 첫 사례 발생 시 도입)
 date: 2026-06-23          # 원 결정 날짜(백필은 당시 날짜)
-deciders: [Dowon Park]
-related:
-  issues: [98]
-  prs: []
-  memory: [codex-ci-gate-auth]   # 가리키는 전역 메모리 슬러그(있으면)
-supersedes: []            # 대체하는 ADR 번호
-superseded_by: null       # 대체된 경우 ADR 번호
+related: "#98, memory:codex-ci-gate-auth"   # 자유형 인라인(출처추적용·비강제·비검증)
 ---
 
 ## 맥락
@@ -87,105 +88,127 @@ superseded_by: null       # 대체된 경우 ADR 번호
 ## 고려한 대안 / 기각 사유
 - **대안 A**: … → 기각 이유.
 - **대안 B**: … → 기각 이유.
+(이 절이 이 ADR 시스템의 핵심 가치 — refute 근거 보존. 대안이 없던 자명한 결정은 ADR 감이 아니다.)
 
 ## 결과 (Consequences)
 좋은 점 / 감수하는 비용 / 후속·재검토 트리거.
 ```
 
-- `adr` 프론트매터 값(정수)은 파일명 `NNNN` 과 일치해야 함(`adr:lint` 강제).
+- **frontmatter 최소화(리뷰 P3)**: `adr·title·status·date·related` 5필드만. 제거: `deciders`(솔로 레포—
+  항상 동일·자명), `supersedes`/`superseded_by`(0/4 사용·투기 — 첫 supersession 발생 시 그 ADR 「맥락」에
+  산문으로 쓰고 필요하면 그때 필드 도입), 구조화 `related{issues,prs,memory}`(검증 안 하므로 자유형 1줄로).
+- `status` 는 시드 전부 `Accepted`. 허용값은 산문 관례(v1 은 lint 강제 없음 — D4).
 - 포맷 대안(기각): 순수 Nygard(대안 절 없음 — refute 근거 유실), 풀 MADR(pros/cons 표 — solo 과중).
 
-## 5. 시드 4건 (D3 — 휘발성에만 있는 교차 결정)
+## 5. 시드 3건 (D3 — 휘발성 저장소에만 있는 교차 결정)
 
 | ADR | 결정 | 현 위치(휘발성) | status/date |
 |---|---|---|---|
-| 0001 | Claude 전용 운영 범위 — 멀티-CLI 포터빌리티 기계장치 제거 | #135 스펙 §0·§13 | Accepted / 2026-06-24 |
-| 0002 | Codex 를 required CI 게이트로 만들지 않음 | 메모리 `codex-ci-gate-auth` | Accepted / 2026-06-23 |
-| 0003 | #27 백로그 본문 다이어트 — 완료 이력 누적 금지(코멘트/sub-issue/PR 위임) | 메모리 · #98 | Accepted / 2026-06-21 |
-| 0004 | solo pre-1.0 과설계 ROI 경계 — 투기적 기능 다운그레이드 | #98 · 메모리 · 12차 재랭킹 | Accepted / 2026-06-22 |
+| 0001 | Codex 를 required CI 게이트로 만들지 않음 | 메모리 `codex-ci-gate-auth` | Accepted / 2026-06-23 |
+| 0002 | #27 백로그 본문 다이어트 — 완료 이력 누적 금지(코멘트/sub-issue/PR 위임) | 메모리 · #98 | Accepted / 2026-06-21 |
+| 0003 | solo pre-1.0 과설계 ROI 경계 — 투기적 기능 다운그레이드 | #98 · 메모리 · 12차 재랭킹 | Accepted / 2026-06-22 |
 
-- **제외**: Actions SHA-핀 정책(#137)은 이미 `.semgrep/guardian.yml` 선언정책으로 **레포에 정착됨** →
-  중복이라 시드 제외(입도 원칙 D2 적용 — 이미 비휘발성).
-- 각 시드 내용은 구현 단계에서 원 출처 대조 후 작성하고 **적대 리뷰**로 사실·맥락 정확성 검증.
+**+ 0004 (전진 ADR 1호, 도그푸드):** "ADR 시스템 경량 시작 — 구조 정합 lint 보류". 이번 브레인스토밍+리뷰가
+내린 결정을 ADR로 즉시 기록(Accepted / 2026-06-25). 「결과」에 **재도입 트리거** 명시: ADR 이 ~12건을
+넘거나 인덱스를 사람이 따라가기 어려워지면 구조 정합 검사를 `skills-lint.mjs` 확장으로 도입.
 
-## 6. 부기 강제 — `adr:lint` (D4)
+**시드 선정 기준(리뷰 P2 반영):** 결정 *근거*가 어떤 git-tracked 레코드(스펙·ADR·선언정책)에도 없고
+§1 휘발성 저장소(#27 코멘트·전역 메모리·세션)에만 있는 것만.
 
-`scripts/skills-lint.mjs` 구조(순수 함수 export + CLI 가드 + vitest + lint-staged + CI)를 미러링.
+- **제외 — Claude 전용 운영 범위(구 0001 후보)**: 근거가 이미 git-tracked `#135 스펙 §0·§13` 에 정착 →
+  휘발성 아님. SHA-핀(#137)을 같은 기준으로 뺀 것과 일관(둘 다 이미 비휘발성). 향후 분산 산문이 불충분하면 백필.
+- **제외 — Actions SHA-핀(#137)**: 근거가 `.semgrep/guardian.yml` 선언정책 + `#137 스펙` 에 정착됨.
+- 각 시드 내용은 구현 단계에서 원 출처 대조 후 작성하고 **적대 리뷰**로 사실·맥락 정확성 검증. 본문에
+  개인 절대경로·사용자명 인용 시 일반화(예: 실 경로 → `<repo-root>`) — §6 시크릿 스캔 통과 위함.
 
-**검사 항목 (전부 결정적):**
+## 6. 부기 강제 — 기존 `skills:lint` 재사용 (D4, 최소 v1)
 
-1. **frontmatter 규약** — `adr`(정수, 파일명 `NNNN` 과 일치)·`title`·`status`(허용 집합)·`date` 존재.
-2. **번호 유일성** — 중복 `NNNN` 금지.
-3. **인덱스 정합** — `README.md` 에 모든 ADR 파일이 1줄로 존재(orphan 0), 인덱스의 모든 링크가 실존
-   파일을 가리킴(dead link 0).
-4. **경로·시크릿 스캔** — `skills-lint.mjs` 의 `scanText` 를 **import 재사용**(DRY)해 ADR md 에 개인
-   절대경로·자격증명 차단(committed 콘텐츠 보호).
+신규 스크립트·신규 게이트 **없음**. 기존 `scripts/skills-lint.mjs` 의 `scanText`(개인 절대경로·사용자명·
+자격증명 차단, fail-on-match)를 `docs/adr/**/*.md` 에 적용:
 
-**실행 모델:**
+- `package.json` lint-staged 에 glob 1줄 추가: `"docs/adr/**/*.md": ["node scripts/skills-lint.mjs"]`.
+- `.github/workflows/ci.yml` 의 기존 `skills:lint` step 인자 목록에 `docs/adr/**/*.md` glob 추가(새 step 불요).
+- `skills-lint.mjs` 의 `lintFile`(검증함)은 `endsWith('SKILL.md')`·`.github/workflows/` 에서만 분기하므로
+  ADR `.md` 는 **`scanText` 만** 받는다(frontmatter·SHA-핀 검사 미발동 → 오탐 없음). 코드 변경 0.
 
-- `scripts/adr-lint.mjs` 는 인자와 무관하게 **`docs/adr/` 디렉터리 전체**를 스캔(인덱스 정합은 cross-file
-  이라 단일 파일 모델 부적합). lint-staged 는 *트리거*(`docs/adr/**` 변경 시 호출)만 담당.
-- export 순수 함수: `parseFrontmatter`·`validateAdrFrontmatter(text, filename)`·`checkNumbering(files)`·
-  `checkIndex(indexText, files)`. CLI 가드는 `import.meta.url` 패턴(skills-lint 동일).
-- 배선: `package.json` scripts `"adr:lint": "node scripts/adr-lint.mjs"` + lint-staged glob
-  `"docs/adr/**/*.md": ["node scripts/adr-lint.mjs"]` + `ci.yml` 에 `npm run adr:lint` step
-  (`skills:lint` 옆).
+> **구조 정합 검사(인덱스 orphan/dead-link·번호 유일성·frontmatter↔파일명·supersede 그래프)는 v1 비범위**
+> (D4·ADR-0004). 4건 규모에선 사람 눈이 검증. 도입 시 `skills-lint.mjs` 확장(#137 선례)으로 — 그때
+> 리뷰가 짚은 구현 함정(정수↔zero-pad 비교·무인자 exit·TEMPLATE 제외·lint-staged untracked·Windows
+> CLI 폴백·디렉터리 전수 모드)을 구현 계획서에서 처리.
 
-> **결정 게이트 아님 (#98 경계 존중):** `adr:lint` 는 "결정을 내렸으면 ADR 을 써라"를 강제하지 **않는다**
-> (그건 정의 불가). 오직 *존재하는 ADR 시스템의 내부 무결성*만 강제 = `skills:lint` 와 동급. ADR 강제·
-> 자동 생성은 Phase 3 ROI 게이트 영역.
+## 7. 트리거 배선 — 스킬 + AGENTS.md (D4, 정직한 한정)
 
-## 7. 트리거 배선 — 스킬 체크리스트 (D4)
+트리거는 환원 불가한 판단(§2.1)이라 **강제가 아니라 환기**다. 단일 권위 지점으로 수렴시켜 망각면을 줄인다:
 
-- **AGENTS.md** 「운영 프로세스」: 짧은 절 추가 — "지속·교차 결정은 `docs/adr/` 에 ADR 로 기록(루틴
-  verdict 은 #27). 새 ADR → `docs/adr/README.md` 인덱스 1줄 + `adr:lint` 통과."
-- **`fleet-backlog-rerank` SKILL.md**: 티어 정책 변경·refute 확정 시 "결정 지점 — ADR 작성/갱신" 한
-  단계 추가(참조, AGENTS.md 중복 금지).
-- **`fleet-backlog-induction` SKILL.md**: 설계 선택(스펙 승인) 시 동일 단계 추가.
-- **메모리 관계**: ADR = 레포 canonical 감사 기록 / 메모리 = 세션 리콜 인덱스(용도 다름, 삭제 안 함).
-  백필된 결정의 메모리 파일은 `[[adr-NNNN]]` 류로 ADR 을 가리키게 갱신(레포 밖 변경 — PR diff 아님).
+- **AGENTS.md 「백로그 착수 절차」**(정확한 섹션명 — 「운영 프로세스」 절은 없음): 짧은 절 추가 —
+  "지속·교차 결정(대안이 있던 갈림길)은 `docs/adr/` 에 ADR 기록(루틴 verdict 은 #27). 자명한 결정은 제외."
+  이 절을 **ADR 트리거의 단일 권위 출처**로 두고(AGENTS.md=산문 권위·스킬=래퍼 패턴과 정합), 스킬은 참조만.
+- **`fleet-backlog-rerank`·`fleet-backlog-induction` SKILL.md**: "결정 지점 — ADR 작성/갱신(AGENTS.md 참조)"
+  단계 추가. **커버리지 한계 명시**: 시드 결정 다수가 이 두 워크플로 *밖* ad-hoc 판단에서 나왔으므로
+  (그래서 AGENTS.md 가 단일 권위), 두 스킬 체크리스트는 닿는 경로만 환기한다(잔존 관례 — §2.1).
+- **메모리 관계(단방향)**: ADR = 레포 canonical 감사 기록 / 메모리 = 세션 리콜 인덱스(용도 다름, 삭제 안 함).
+  링크는 **단방향 ADR→메모리**(`related` 자유형 슬러그)만. 메모리 파일에 `[[adr-NNNN]]` 역참조를 **의무화
+  하지 않음**(레포 밖이라 어떤 게이트도 검증 불가·supersede/리네임 시 조용히 끊김 — best-effort 위생).
 
 ## 8. 테스트 / 검증
 
-- **TDD 대상 = `adr-lint.mjs`** (RED→GREEN, `skills-lint.test.ts` 미러). 케이스: 정상 통과 / frontmatter
-  누락·잘못된 status / adr↔파일명 불일치 / 중복 번호 / orphan 파일(인덱스 누락) / dead link(인덱스만
-  존재) / ADR 내 차단패턴.
-- **문서·프로세스 변경**(ADR md·AGENTS.md·SKILL.md)은 실행 코드 아님 → 그 부분 TDD N/A. ADR **내용**
-  은 적대 리뷰로 검증.
-- **품질 게이트 4종**(typecheck/lint/test/build) green. 신규 `adr-lint.mjs`·`.test.ts` 가 test 게이트
-  포함되는지 확인(vitest 설정 glob).
-- **eslint 사각 주의**: `docs/adr/**` 는 코드 아님(검사 불필요). `scripts/adr-lint.mjs` 는 `scripts/` 라
-  eslint 대상(skills-lint 와 동일하게 통과 필요).
+- **신규 실행 코드 0** → TDD(RED→GREEN) **대상 없음**. 변경은 ADR md(문서)·AGENTS.md·SKILL.md(문서) +
+  `package.json`/`ci.yml`(설정 glob 2줄)뿐.
+- **품질 게이트 4종**(typecheck/lint/test/build) green. 특히 `skills:lint` 가 신규 `docs/adr/**` 포함해
+  green(시드 ADR 본문에 개인경로·시크릿 0 — §5 일반화 규칙).
+- **ADR 내용 검증** = 시드 3건 + 0004 를 `fleet-pr-review` 렌즈(사실·맥락·출처대조·범위)로 적대 리뷰 →
+  확정 P1 0(측정가능 합격선).
 
 ## 9. 완료 기준 (측정가능)
 
-1. `docs/adr/` 에 `README.md`·`TEMPLATE.md`·시드 4건 존재, frontmatter 규약 통과.
-2. `npm run adr:lint` green(정합 0 위반). 의도적 위반 주입 시 fail(exit 1) 실증.
-3. `package.json`(adr:lint + lint-staged glob)·`ci.yml`(step) 배선.
-4. AGENTS.md 1절 + 스킬 2개(rerank·induction) 체크리스트 단계 배선.
+1. `docs/adr/` 에 `README.md`·`TEMPLATE.md`·시드 3건(0001~0003)·전진 ADR 0004 **6개 파일 존재**.
+2. `npm run skills:lint` 가 `docs/adr/**` 포함해 green(시크릿/경로 0 위반). 의도적 위반(임시 개인경로 주입)
+   시 fail(exit 1) 실증.
+3. `package.json`(lint-staged glob)·`ci.yml`(skills:lint 인자 glob) 배선.
+4. AGENTS.md 「백로그 착수 절차」 1절 + 스킬 2개(rerank·induction)에 리터럴 단계명 "ADR 작성/갱신" 존재
+   (`grep` 으로 각 1+ 매치 — 측정가능 마커).
 5. 품질 게이트 4종 green.
-6. 시드 4건 ADR 내용 적대 리뷰 통과(사실·맥락 정확성).
+6. 시드 3건 + 0004 ADR 내용 적대 리뷰 통과(확정 P1 findings 0).
 
 ## 10. 비범위 (명시)
 
-- Phase 3 추가 자동화 · ADR 작성을 강제하는 결정 게이트 · ADR 자동 생성.
-- 모든 과거 결정 전면 백필 · 루틴 재랭킹 verdict 의 ADR 화 · 전역 메모리 레포 이관.
-- `.claude/settings.json` 등 Phase 1 비범위 항목.
+- Phase 3 추가 자동화.
+- **구조 정합 lint**(인덱스·번호·frontmatter·supersede 무결성) — v1 보류, ADR-0004 가 재도입 트리거 기록.
+- ADR 작성을 강제하는 결정 게이트 · ADR 자동 생성 · supersede/deprecate 라이프사이클 절차·검사
+  (첫 사례 발생 시 도입).
+- 모든 과거 결정 전면 백필 · 루틴 재랭킹 verdict 의 ADR 화 · 전역 메모리 레포 이관 · 메모리 측
+  `[[adr-NNNN]]` 역참조 의무화.
 
 ## 11. 위험 & 완화
 
 | 위험 | 완화 |
 |---|---|
-| ADR 시스템이 다시 관례로 썩음(원 문제 재발) | §2.1 — 부기는 `adr:lint` 강제, 트리거는 스킬 체크리스트. load-bearing 관례 0. |
-| 입도 크립(루틴 verdict 까지 ADR 화 → 노이즈·#27 중복) | D2 — 지속·교차만. AGENTS.md 절에 "루틴 verdict 은 #27" 명시. |
-| 시드 ADR 사실/맥락 부정확(백필 왜곡) | §5·§8 — 원 출처 대조 + 적대 리뷰. |
-| `adr:lint` 가 #98 "솔로 과설계" 경계 침범 | §6 주석 — 결정 게이트 아님, `skills:lint` 동급 무결성만. Phase 3 와 선 그음. |
-| cross-file 인덱스 검사와 lint-staged 단일파일 모델 충돌 | §6 — CLI 가 `docs/adr/` 전체 스캔, lint-staged 는 트리거만. |
-| 롤백 | 단일 PR(docs/adr/·adr-lint·package.json·ci.yml·AGENTS.md·skill 2개) → 한 묶음 revert. |
+| **트리거 미발화 → 결정이 ADR 로 안 써짐**(원 문제 한 칸 위로 재유입) | **미완화·잔존 위험(정직)**. 스킬+AGENTS.md 로 마찰만 낮춤. 강제 게이트는 정의 불가(§2.1). 모니터링: 시드 후 장기 무신규 ADR = 트리거 관례 실패 신호. |
+| 부기(시크릿/경로) 누출 | `skills:lint` `scanText` 재사용 강제(lint-staged/CI). |
+| 인덱스/번호 stale(구조 정합) | v1 = 사람 눈(4건). 규모 도달 시 ADR-0004 트리거로 `skills-lint.mjs` 확장 도입. |
+| 입도 크립(루틴 verdict 까지 ADR 화) | D2 — 대안 있던 갈림길만. AGENTS.md 절에 "루틴 verdict 은 #27·자명한 결정 제외" 명시. |
+| 시드 ADR 사실/맥락 부정확(백필 왜곡) + 출처 경로/사용자명 인용 시 시크릿 스캔 차단 | §5 — 원 출처 대조 + 적대 리뷰 + 경로/사용자명 일반화. |
+| ADR vs 메모리 내용 중복·드리프트 | §7 단방향(ADR=canonical) + (선택) 백필 시 메모리 본문을 'ADR-NNNN 참조' 포인터로 환원. |
+| 롤백 | 단일 PR(docs/adr/·package.json·ci.yml·AGENTS.md·skill 2개) → 한 묶음 revert. |
 
 ## 12. 오픈 결정 (구현 계획서에서 확정)
 
-- `adr:lint` 의 `status` 허용 집합 정확값(`Accepted|Proposed|Superseded|Deprecated` 잠정).
-- 인덱스 `README.md` 의 정확한 줄 포맷(파싱 가능해야 — 링크·번호·상태 추출 정규식 결정).
-- 번호 검사를 "유일성"만 할지 "연속성(gap 금지)"까지 할지(잠정: 유일성만 — gap 은 정당할 수 있음).
-- 시드 ADR 4건의 원 출처 정확 인용 위치(구현 시 대조).
+- 인덱스 `README.md` 줄 포맷(사람 가독 — 구조 lint 없으므로 정규식 파싱 불요, 표시 일관성만).
+- 시드 ADR 3건 + 0004 의 원 출처 정확 인용 위치(구현 시 대조) + 메모리 본문 포인터 환원 여부(§11).
+- AGENTS.md 절 정확 문구.
+
+## 13. 변경 이력 (2026-06-25 — 적대 리뷰 반영)
+
+멀티에이전트 적대 리뷰(5렌즈 find→refute-verify, run `wf_3e7940c7-21c`, 31건 중 확정 24건) 반영:
+
+1. **"관례 0" 과장 정정(P2)** — 트리거는 환원 불가 판단=관례 잔존. §0/§2.1/§11 을 정직하게 한정(원 실패
+   모드는 제거가 아니라 한 칸 이동).
+2. **최소 v1 로 축소(P3 다수 + #98 경계)** — 구조 정합 검사(인덱스·번호·frontmatter·supersede) 보류,
+   부기는 기존 `skills:lint` 시크릿 스캔 재사용만. 신규 `adr-lint.mjs` 폐기(#137 선례 = 별도 파일 금지).
+   이로써 구현 함정 다발(zero-pad·exit-2·TEMPLATE·untracked·Windows 폴백·중첩 파싱) 전부 무효화.
+3. **frontmatter 7→5 필드(P3)** — deciders·supersedes·superseded_by·구조화 related 제거(dead weight).
+4. **시드 4→3 + 전진 0004(P2)** — 0001(Claude 전용)은 이미 git-tracked #135 스펙에 정착 → 선정 기준
+   위반이라 드롭. 보류 결정을 전진 ADR-0004 로 도그푸드 기록.
+5. **트리거 배선 정직화(P3)** — §7 섹션명 정정(「운영 프로세스」→「백로그 착수 절차」), 커버리지 한계 명시,
+   AGENTS.md 단일 권위, 메모리 단방향.
+6. **유지(반증/옹호)** — 하이브리드 「대안/기각」 절(핵심 가치), `scanText` 재사용 방향. 완료기준 측정가능화(§9).
