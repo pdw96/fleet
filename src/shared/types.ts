@@ -357,6 +357,9 @@ export type OrchestratorEventType =
   | 'replan'
   | 'summary'
   | 'project.done'
+  // 워크스페이스 무결성 감사(#123-A/#128) — store 영속 + 라이브 표면화. 경로·종류만, 내용·hash 비노출.
+  | 'workspace.ignored_changes'
+  | 'workspace.ignored_discarded'
 
 export interface OrchestratorEvent {
   type: OrchestratorEventType

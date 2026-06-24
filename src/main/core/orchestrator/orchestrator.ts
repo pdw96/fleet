@@ -10,7 +10,11 @@ import type { ApprovalGate } from '../safety/approval'
 import type { SessionManager } from '../session/manager'
 import type { Store } from '../store/types'
 import type { TaskWorktree, Workspace } from '../workspace/git'
-import { disposeBaseline, type IgnoredBaseline } from '../workspace/ignored-baseline'
+import {
+  disposeBaseline,
+  type IgnoredBaseline,
+  type IgnoredChangeSet,
+} from '../workspace/ignored-baseline'
 import { resolveLlmForRole } from './assignment'
 import { classifyDiffRisk } from './diff-risk'
 import { rollbackWithIgnored } from './ignored-guard'
@@ -25,6 +29,18 @@ import {
 } from './review'
 
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
+
+/**
+ * [#128-finding5] workspace.ignored_changes 라이브 이벤트의 사용자 표면화 message.
+ * 경로·파일명·내용 없이 카운트 요약만 — 비밀 비노출 계약 유지(경로·종류는 data.changes 에 별도 보존).
+ * emit 호출부가 (changes>0 || unrestorable>0) 로 게이트하므로 parts 는 비지 않는다.
+ */
+function ignoredChangesSummary(c: IgnoredChangeSet): string {
+  const parts: string[] = []
+  if (c.changes.length > 0) parts.push(`변경 ${c.changes.length}건`)
+  if (c.unrestorable.length > 0) parts.push(`복원불가 ${c.unrestorable.length}건`)
+  return `ignored 파일 ${parts.join(' · ')}`
+}
 
 export interface RunOptions {
   store: Store
@@ -276,12 +292,13 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           data: { taskId: task.id, round },
         })
         if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
-          // P2-5: data 에 projectId 를 명시한다 — listProjectEvents(projectId) 가 이 이벤트를
-          // 포함하려면 data.projectId 가 필요하다(store 필터: e.data?.projectId === projectId).
-          store.appendEvent({
+          // [#128-finding5] emit() 으로 보내 store 영속(1회) + 라이브(onEvent) 동시 표면화한다.
+          // emit 이 data 에 projectId·eventId 를 부착하므로 P2-5(listProjectEvents 필터)·렌더러 dedup 모두 충족.
+          // message 는 경로 없는 카운트 요약만(경로·종류는 data.changes 에, 내용·hash 는 비노출).
+          emit({
             type: 'workspace.ignored_changes',
+            message: ignoredChangesSummary(ignoredChanges),
             data: {
-              projectId,
               taskId: task.id,
               changes: ignoredChanges.changes.map((c) => ({
                 path: c.path,
@@ -621,10 +638,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         // worktree 제거 시 폐기된다. task 가 최종 done 이고 ignored 변경이 있었으면 사용자 인지용으로 기록.
         // (abort-skip·통합충돌은 위에서 done 을 철회하므로 done.has 가 false → 경고 안 남 — 정확.)
         if (done.has(task.id) && ignoredTouched) {
-          store.appendEvent({
+          // [#128-finding5] emit() 으로 store 영속 + 라이브 표면화(projectId·eventId 부착). 경로 비노출(taskId/projectId 만).
+          emit({
             type: 'workspace.ignored_discarded',
             message: `${task.title}: 승인된 ignored 변경이 worktree 통합에서 제외되어 폐기됨(main 미반영)`,
-            data: { projectId, taskId: task.id },
+            data: { taskId: task.id },
           })
         }
         // 정리(순차) — 충돌·취소·실패여도 worktree 잔존 0 보장. 정리 실패는 흡수(P2#3 parity).
@@ -799,11 +817,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         const diff = await opts.workspace.collectDiff(base)
         const ignoredChanges = await opts.workspace.collectIgnoredChanges(vfBaseline)
         if (ignoredChanges.changes.length > 0 || ignoredChanges.unrestorable.length > 0) {
-          // P2-5: data 에 projectId 를 명시한다 — runTaskIn 경로와 동일하게 listProjectEvents 필터를 통과하도록.
-          store.appendEvent({
+          // [#128-finding5] verify-fix 경로도 emit() 으로 store 영속 + 라이브 표면화(projectId·eventId 부착).
+          emit({
             type: 'workspace.ignored_changes',
+            message: ignoredChangesSummary(ignoredChanges),
             data: {
-              projectId,
               round,
               changes: ignoredChanges.changes.map((c) => ({
                 path: c.path,
