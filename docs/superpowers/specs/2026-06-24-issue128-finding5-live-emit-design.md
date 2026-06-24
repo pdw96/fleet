@@ -6,7 +6,7 @@
 
 ## 배경 / 스코프
 
-#123-A·B1 이 도입한 워크스페이스 무결성 감사 이벤트 두 종이 **store 영속만 되고 라이브 표면화가 안 됐다**:
+`#123-A`·B1 이 도입한 워크스페이스 무결성 감사 이벤트 두 종이 **store 영속만 되고 라이브 표면화가 안 됐다**:
 
 - `workspace.ignored_changes` — 작업/verify-fix 중 ignored 파일 변경 감지(경로·종류).
 - `workspace.ignored_discarded` — 병렬 worktree 의 승인된 ignored 변경이 통합에서 제외돼 폐기됨(main 미반영).
@@ -24,7 +24,7 @@ finding5 = 이 둘을 `emit()` 으로 보내 **store 영속(1회) + 라이브(on
 
 `emit()`(orchestrator.ts)은 이미 **통합 경로**다: non-`task.progress` 이벤트에 대해
 
-```
+```text
 store.appendEvent(...) 1회   +   opts.onEvent?.({ ...enriched, data.eventId = persisted.id }) 1회
 ```
 

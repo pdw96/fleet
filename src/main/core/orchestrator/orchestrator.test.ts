@@ -3928,6 +3928,15 @@ describe('runProject', () => {
     expect(liveDiscarded.every((e) => typeof e.message === 'string' && e.message.length > 0)).toBe(
       true,
     )
+    // 영속도 정확히 2건(이중계상 없음) + 라이브 eventId === 영속 id — append+emit 이중쓰기 회귀 가드.
+    // (라이브 경로만 보면 standalone appendEvent 추가가 store 를 부풀려도 못 잡는다.)
+    const storedDiscarded = store
+      .listProjectEvents(result.projectId)
+      .filter((e) => e.type === 'workspace.ignored_discarded')
+    expect(storedDiscarded.length).toBe(2)
+    expect(storedDiscarded.map((e) => e.id).sort()).toEqual(
+      liveDiscarded.map((e) => String(e.data?.['eventId'])).sort(),
+    )
     // 폐기 이벤트 message·data 에 경로(.env-) 비노출.
     expect(JSON.stringify(liveDiscarded)).not.toContain('.env-')
   })
