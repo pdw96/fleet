@@ -4,10 +4,8 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import eslintConfigPrettier from 'eslint-config-prettier/flat'
 
 export default tseslint.config(
-  // .claude/** = Claude Code 세션/툴링 상태(gitignore 됨). 특히 워크플로 isolation:worktree 가
-  // .claude/worktrees/agent-* 에 레포 복사본(각자 tsconfig·eslint config 보유)을 남기면 typed-lint 의
-  // tsconfigRootDir 자동탐지가 "multiple candidate roots" 로 전 파일 파싱에러를 낸다. CI 는 클린
-  // 체크아웃이라 무영향이나 로컬 `npm run lint` 가 막힌다 → 린트 대상에서 제외(eslint 는 .gitignore 비적용).
+  // .claude/** 는 eslint 대상에서 제외(워크플로 worktree·Workflow DSL 글로벌 때문).
+  // 단 .claude/skills·workflows 일부는 git 추적되며 보안/규약은 `npm run skills:lint`(lint-staged·CI)가 담당.
   {
     ignores: [
       'out/**',
@@ -15,6 +13,7 @@ export default tseslint.config(
       'build/**',
       'node_modules/**',
       '.claude/**',
+      '.dogfood/**',
       '*.config.*',
       '*.config.mjs',
     ],

@@ -33,6 +33,7 @@
     "test:e2e": "electron-vite build && playwright test",
     "brain": "node scripts/brain/build.mjs",
     "brain:watch": "node scripts/brain/watch.mjs",
+    "skills:lint": "node scripts/skills-lint.mjs",
     "prepare": "husky || true"
   },
   "devDependencies": {
@@ -70,6 +71,18 @@
     ],
     "*.{json,css,yml,yaml,html}": [
       "prettier --write"
+    ],
+    ".claude/*.md": [
+      "node scripts/skills-lint.mjs"
+    ],
+    ".claude/skills/**/*.md": [
+      "node scripts/skills-lint.mjs"
+    ],
+    ".claude/workflows/**/*.js": [
+      "node scripts/skills-lint.mjs"
+    ],
+    ".github/workflows/*.yml": [
+      "node scripts/skills-lint.mjs"
     ]
   },
   "overrides": {
