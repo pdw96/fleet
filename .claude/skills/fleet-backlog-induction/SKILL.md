@@ -17,7 +17,8 @@ AGENTS.md 「백로그 착수 절차」의 실행가능 래퍼. **사람-게이�
 1. **선정** — `gh issue view 27` 의 sub-issue 트래커에서 `tier:next` 최상위(모호하면 사용자 확인).
 2. **브랜치** — master 직접 금지(ruleset). `feat/<slug>` 생성.
 3. **사이클** — 비자명하면 brainstorm → spec(`docs/superpowers/specs/`) → plan(`docs/superpowers/plans/`).
-   TDD(RED→GREEN). 품질 게이트 4종 green. 적대 리뷰.
+   TDD(RED→GREEN). 품질 게이트 4종 green. 적대 리뷰. **설계 선택이 지속·교차 결정이면 ADR 작성/갱신**
+   (AGENTS.md 「백로그 착수 절차」 §결정 기록 참조).
 4. **PR** — 본문 `Closes #<N>`. Codex 봇 자동리뷰 대기·반영(스레드 resolve). 사용자 확인 후 squash.
 5. **머지 후** — 이슈 닫힘·#27 진행률 자동. 보드 Done(자동). #27 본문 트래커 보정(수동).
 

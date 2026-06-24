@@ -151,3 +151,10 @@ project number `1`, owner `pdw96`).
 prose 「<M> 선행」 주석 대신 플랫폼 관계로 인코딩(트랙 진행 시 막힌 이슈가 보드/이슈에서 가시화).
 보드 추가는 **Auto-add 워크플로가 `tier:` 라벨 매칭 시 자동**(수동 fallback: `gh project item-add 1 --owner pdw96 --url …`). 기능
 이슈는 `enhancement` 유지. 차기 작업 공급원 = #27 말미 🔬 컷오프 갭 / Hermes 후보 또는 재랭킹.
+
+### 결정 기록 (ADR)
+
+지속·교차 운영 결정(설계 선택·정책·refute — **대안이 있던 갈림길**)은 `docs/adr/` 에서 **ADR 작성/갱신**
+한다(`docs/adr/TEMPLATE.md` 복사·`README.md` 인덱스 1줄 추가). 루틴 재랭킹 verdict 과 자명한(대안 없던)
+결정은 제외 — 전자는 #27, 후자는 ADR 감이 아니다. 이 절이 ADR 트리거의 단일 권위(스킬은 참조만).
+부기 시크릿/경로 스캔은 `skills:lint` 강제, 구조 정합은 사람 눈(ADR-0004 가 자동화 보류 기록 — 트랙 #140).
