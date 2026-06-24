@@ -19,6 +19,8 @@ jobs:
       - uses: anthropics/claude-code-action@80b31826338489861333dc17217865dfe8085cdc # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # GitHub App(OIDC) 대신 워크플로 GITHUB_TOKEN 사용 — id-token 권한·App 설치 불요
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             fleet-backlog-rerank 스킬의 절차를 따라 #27 백로그를 재랭킹하라.
             트리거 사유: ${{ github.event.inputs.note }}
