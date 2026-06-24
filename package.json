@@ -72,6 +72,9 @@
     "*.{json,css,yml,yaml,html}": [
       "prettier --write"
     ],
+    ".claude/*.md": [
+      "node scripts/skills-lint.mjs"
+    ],
     ".claude/skills/**/*.md": [
       "node scripts/skills-lint.mjs"
     ],

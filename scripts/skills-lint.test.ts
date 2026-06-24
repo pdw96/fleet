@@ -21,6 +21,9 @@ describe('scanText — 차단 패턴', () => {
   it('깨끗한 내용은 통과(빈 배열)', () => {
     expect(scanText('const repo = process.cwd(); // 상대경로만')).toEqual([])
   })
+  it('forward-slash Windows 경로를 잡는다', () => {
+    expect(scanText('path C:/Users/someone/bar').length).toBeGreaterThan(0)
+  })
   it('매치에 라인 번호를 단다', () => {
     const hits = scanText('line1\nC:\\\\Users\\\\x\nline3')
     expect(hits[0].line).toBe(2)
@@ -43,5 +46,8 @@ describe('validateFrontmatter — SKILL.md', () => {
     const r = validateFrontmatter('---\nname: fleet-x\n---\n본문')
     expect(r.ok).toBe(false)
     expect(r.errors.join()).toMatch(/description/)
+  })
+  it('name 값이 없으면(빈 name) 실패', () => {
+    expect(validateFrontmatter('---\nname:\ndescription: y\n---\n본문').ok).toBe(false)
   })
 })

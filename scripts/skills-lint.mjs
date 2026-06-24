@@ -4,7 +4,7 @@
 
 /** 차단 패턴 셋 — 개인 절대경로·세션경로·사용자명·자격증명 (스펙 §8) */
 export const BANNED_PATTERNS = [
-  { re: /C:\\+Users\\+/i, name: 'Windows 사용자 절대경로' },
+  { re: /[A-Za-z]:[\\/]+Users[\\/]+/i, name: 'Windows 사용자 절대경로' },
   { re: /\/c\/Users\//i, name: 'Git Bash 사용자 절대경로' },
   { re: /AppData[\\/]Local[\\/]Temp/i, name: 'AppData Temp 경로' },
   { re: /projects[\\/]C--Users/i, name: '세션 디렉터리 경로' },
@@ -34,8 +34,8 @@ export function validateFrontmatter(text) {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
   if (!m) return { ok: false, errors: ['frontmatter(--- 블록) 없음'] }
   const fm = m[1]
-  if (!/^name:\s*\S+/m.test(fm)) errors.push('name 누락')
-  if (!/^description:\s*\S+/m.test(fm)) errors.push('description 누락')
+  if (!/^name:[ \t]*\S+/m.test(fm)) errors.push('name 누락')
+  if (!/^description:[ \t]*\S+/m.test(fm)) errors.push('description 누락')
   return { ok: errors.length === 0, errors }
 }
 
