@@ -38,7 +38,7 @@ jobs:
       - name: skills:lint (경로·시크릿 게이트)
         run: |
           shopt -s globstar
-          node scripts/skills-lint.mjs .claude/*.md .claude/skills/**/*.md .claude/workflows/**/*.js .github/workflows/*.yml .github/workflows/*.yaml
+          node scripts/skills-lint.mjs .claude/*.md .claude/skills/**/*.md .claude/workflows/**/*.js .github/workflows/*.yml .github/workflows/*.yaml docs/adr/**/*.md
         shell: bash
 
       - name: Format check (prettier)
