@@ -8,3 +8,4 @@
 
 | ADR | 상태 | 결정 |
 |---|---|---|
+| [0001](0001-codex-required-게이트-보류.md) | Accepted | Codex 를 required CI 머지 게이트로 만들지 않는다 |
