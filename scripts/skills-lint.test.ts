@@ -15,6 +15,8 @@ describe('scanText — 차단 패턴', () => {
     expect(scanText('AppData/Local/Temp/claude').length).toBeGreaterThan(0)
     expect(scanText('hello qkreh world').length).toBeGreaterThan(0)
     expect(scanText('token=ghp_' + 'a'.repeat(36)).length).toBeGreaterThan(0)
+    expect(scanText('token sk-' + 'x'.repeat(25)).length).toBeGreaterThan(0)
+    expect(scanText('AKIA' + 'A'.repeat(16)).length).toBeGreaterThan(0)
   })
   it('깨끗한 내용은 통과(빈 배열)', () => {
     expect(scanText('const repo = process.cwd(); // 상대경로만')).toEqual([])
@@ -28,6 +30,10 @@ describe('scanText — 차단 패턴', () => {
 describe('validateFrontmatter — SKILL.md', () => {
   it('name·description 있으면 ok', () => {
     const md = '---\nname: fleet-x\ndescription: 한 줄 설명\n---\n본문'
+    expect(validateFrontmatter(md).ok).toBe(true)
+  })
+  it('CRLF(\\r\\n) frontmatter도 인식한다', () => {
+    const md = '---\r\nname: x\r\ndescription: y\r\n---\r\n본문'
     expect(validateFrontmatter(md).ok).toBe(true)
   })
   it('frontmatter 없으면 실패', () => {

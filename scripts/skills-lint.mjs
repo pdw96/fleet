@@ -19,6 +19,8 @@ export function scanText(text) {
   const hits = []
   const lines = text.split('\n')
   lines.forEach((content, i) => {
+    // 한 줄에 서로 다른 패턴이 여러 개 매치되면 각각 보고한다(의도된 동작) — 한 줄이
+    // 경로+사용자명을 동시에 담으면 둘 다 실제 결함이므로 중복 보고가 아니라 정확한 적발이다.
     for (const { re, name } of BANNED_PATTERNS) {
       if (re.test(content)) hits.push({ line: i + 1, pattern: name })
     }
@@ -29,7 +31,7 @@ export function scanText(text) {
 /** SKILL.md frontmatter에 name·description이 있는지 검증 */
 export function validateFrontmatter(text) {
   const errors = []
-  const m = text.match(/^---\n([\s\S]*?)\n---/)
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)
   if (!m) return { ok: false, errors: ['frontmatter(--- 블록) 없음'] }
   const fm = m[1]
   if (!/^name:\s*\S+/m.test(fm)) errors.push('name 누락')
