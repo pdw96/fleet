@@ -1,0 +1,25 @@
+name: Backlog Rerank
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: '재랭킹 트리거 사유(신규 입력 등)'
+        required: false
+permissions:
+  contents: read
+  issues: write
+jobs:
+  rerank:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 1 }
+      - uses: anthropics/claude-code-action@80b31826338489861333dc17217865dfe8085cdc # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            fleet-backlog-rerank 스킬의 절차를 따라 #27 백로그를 재랭킹하라.
+            트리거 사유: ${{ github.event.inputs.note }}
+            결과 표(후보·verdict·근거)를 이슈 #135 에 코멘트로 게시하라.
+          claude_args: |
+            --allowedTools "Read,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh issue list:*)"

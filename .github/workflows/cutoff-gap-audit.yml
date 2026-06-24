@@ -1,0 +1,25 @@
+name: Cutoff Gap Audit
+on:
+  workflow_dispatch:
+    inputs:
+      area:
+        description: '감사 영역(anthropic/openai/google/mcp/all)'
+        required: false
+        default: 'all'
+permissions:
+  contents: read
+  issues: write
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 1 }
+      - uses: anthropics/claude-code-action@80b31826338489861333dc17217865dfe8085cdc # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            fleet-cutoff-gap-audit 스킬의 절차를 따라 영역 "${{ github.event.inputs.area }}" 의
+            컷오프 갭을 감사하라. net-new + 정정 표를 이슈 #135 에 코멘트로 게시하라.
+          claude_args: |
+            --allowedTools "Read,Bash(gh issue comment:*),Bash(gh issue view:*)"
