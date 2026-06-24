@@ -9,3 +9,4 @@
 | ADR | 상태 | 결정 |
 |---|---|---|
 | [0001](0001-codex-required-게이트-보류.md) | Accepted | Codex 를 required CI 머지 게이트로 만들지 않는다 |
+| [0002](0002-issue27-백로그-본문-다이어트.md) | Accepted | 메타 백로그 #27 본문에 완료 이력을 누적하지 않는다 |
