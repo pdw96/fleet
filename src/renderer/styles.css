@@ -530,6 +530,23 @@ select.field {
   color: var(--live);
   border-color: rgba(79, 224, 192, 0.42);
 }
+/* badge — .chip 의 인라인 변형. badge-unverified: 미검증 상태 경고(CLI 세션). */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.badge-unverified {
+  color: var(--warn);
+  border-color: rgba(255, 194, 75, 0.42);
+}
 .dot {
   width: 8px;
   height: 8px;

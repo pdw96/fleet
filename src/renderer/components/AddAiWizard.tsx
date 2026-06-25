@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import type {
   ApiProviderConfig,
   CacheTtl,
@@ -45,9 +45,15 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   const [effort, setEffort] = useState<'' | ReasoningEffort>('')
   const [cacheTtl, setCacheTtl] = useState<'' | CacheTtl>('')
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
   // 모델 조회 요청 시퀀스 — provider/key/baseUrl 이 바뀌면 증가시켜, 이전 입력으로 보낸 in-flight 응답이
   // 늦게 도착해 stale 한 제안으로 datalist 를 덮어쓰는 레이스를 막는다(SessionsPanel 레이스 가드 동형).
   const modelReqSeq = useRef(0)
+
+  // 구독 단계 — CLI 세션 옵션(SessionsPanel 동형)
+  const [cliStateful, setCliStateful] = useState(false)
+  const [cliModel, setCliModel] = useState('')
+  const [cliMcp, setCliMcp] = useState('')
 
   function enterSubscription() {
     setStep('subscription')
@@ -62,38 +68,41 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   function switchProvider(p: Provider) {
     setProvider(p)
     setModel('')
+    invalidateModelLookup()
+  }
+
+  // provider/key/baseUrl 변경 시 stale 제안·in-flight·로딩 상태를 즉시 정리한다(SessionsPanel 동형).
+  // 느린/불통 엔드포인트의 in-flight 요청이 settle 될 때까지 버튼이 잠기던 stuck 제거.
+  function invalidateModelLookup() {
     setModelOptions([])
+    setLoadingModels(false)
     modelReqSeq.current++
   }
 
-  // 키/baseUrl 변경 시 모델 라이브 조회 (SessionsPanel의 loadModels + modelReqSeq 레이스 가드 동형)
-  useEffect(() => {
+  // 명시적 버튼으로만 호출 — 키스트로크마다 실 엔드포인트를 두드리지 않는다(SessionsPanel 동형).
+  async function loadModels() {
     if (!apiKey.trim()) return
     if (provider === 'openai-compatible' && !baseUrl.trim()) return
-    // step 이 apikey 가 아닐 때는 실행하지 않음
-    if (step !== 'apikey') return
-
-    const seq = ++modelReqSeq.current // 이 요청의 토큰
-    void (async () => {
-      try {
-        const probe: ApiProviderConfig = {
-          id: `probe-${provider}`,
-          provider,
-          displayName: provider,
-          model: model.trim() || PROVIDER_DEFAULTS[provider],
-          apiKey: apiKey.trim(),
-          ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
-        }
-        const options = await window.fleet.listModels(probe)
-        if (seq === modelReqSeq.current) setModelOptions(options) // stale 응답(입력 변경됨)은 폐기
-      } catch {
-        // 실패 시 modelOptions=[] 유지 — 자유입력 폴백
-        if (seq === modelReqSeq.current) setModelOptions([])
+    const seq = ++modelReqSeq.current
+    setLoadingModels(true)
+    setErr(null)
+    try {
+      const probe: ApiProviderConfig = {
+        id: `probe-${provider}`,
+        provider,
+        displayName: provider,
+        model: model.trim() || PROVIDER_DEFAULTS[provider],
+        apiKey: apiKey.trim(),
+        ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
       }
-    })()
-    // model 은 probe 에 사용하지만 트리거로 쓰지 않음 — 키/provider/baseUrl 변경 시만 재조회
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey, baseUrl, provider, step])
+      const options = await window.fleet.listModels(probe)
+      if (seq === modelReqSeq.current) setModelOptions(options)
+    } catch (e) {
+      if (seq === modelReqSeq.current) setErr(`모델 조회 실패: ${String(e)}`)
+    } finally {
+      if (seq === modelReqSeq.current) setLoadingModels(false)
+    }
+  }
 
   // thinkingSupported: SessionsPanel 동형 — anthropic·openai·google·openai-compatible 전체
   const thinkingSupported =
@@ -175,12 +184,46 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
             >
               명령 복사
             </button>
+            <label>
+              <input
+                type="checkbox"
+                aria-label="stateful (세션 재개)"
+                checked={cliStateful}
+                onChange={(e) => setCliStateful(e.target.checked)}
+              />
+              stateful (세션 재개)
+            </label>
+            <label>
+              CLI 모델 오버라이드 (선택)
+              <input
+                aria-label="CLI 모델"
+                value={cliModel}
+                placeholder="기본 모델 사용"
+                onChange={(e) => setCliModel(e.target.value)}
+              />
+            </label>
+            <label>
+              MCP 설정 (선택)
+              <input
+                aria-label="MCP 설정"
+                value={cliMcp}
+                placeholder="경로 또는 인라인 JSON"
+                onChange={(e) => setCliMcp(e.target.value)}
+              />
+            </label>
             <button
               type="button"
               onClick={() => {
                 setErr(null)
+                const opts: { stateful: boolean; model?: string; mcpConfig?: string } = {
+                  stateful: cliStateful,
+                }
+                const m = cliModel.trim()
+                const mc = cliMcp.trim()
+                if (m) opts.model = m
+                if (mc) opts.mcpConfig = mc
                 void window.fleet
-                  .registerCliSession(adapterId, { stateful: false })
+                  .registerCliSession(adapterId, opts)
                   .then(() => onRegistered())
                   .catch((e: unknown) => setErr(`등록 실패: ${String(e)}`))
               }}
@@ -220,6 +263,9 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
     }
   }
 
+  const canLoadModels =
+    !!apiKey.trim() && !(provider === 'openai-compatible' && !baseUrl.trim()) && !loadingModels
+
   return (
     <div>
       <h3>API 키</h3>
@@ -230,8 +276,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
           value={apiKey}
           onChange={(e) => {
             setApiKey(e.target.value)
-            modelReqSeq.current++ // 키 변경 → in-flight stale 응답 즉시 폐기(SessionsPanel 동형)
-            setModelOptions([])
+            invalidateModelLookup() // 키 변경 → stale 제안·in-flight·로딩 정리
           }}
         />
       </label>
@@ -253,6 +298,15 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
           </option>
         ))}
       </datalist>
+      <button
+        type="button"
+        disabled={!canLoadModels}
+        onClick={() => {
+          void loadModels()
+        }}
+      >
+        {loadingModels ? '불러오는 중…' : '모델 불러오기'}
+      </button>
       {provider === 'openai-compatible' && (
         <label>
           Base URL
@@ -261,8 +315,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
             value={baseUrl}
             onChange={(e) => {
               setBaseUrl(e.target.value)
-              modelReqSeq.current++ // baseUrl 변경 → in-flight stale 응답 즉시 폐기(SessionsPanel 동형)
-              setModelOptions([])
+              invalidateModelLookup() // baseUrl 변경 → stale 제안·in-flight·로딩 정리
             }}
           />
         </label>

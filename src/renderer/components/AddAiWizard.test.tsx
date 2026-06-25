@@ -96,6 +96,23 @@ describe('AddAiWizard', () => {
     expect(await screen.findByText(/npm i -g @anthropic-ai\/claude-code/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /검증 없이 등록/ })).toBeNull()
   })
+  it('구독: stateful 체크 + CLI 모델 입력 → registerCliSession 에 반영', async () => {
+    const reg = vi.fn().mockResolvedValue(undefined)
+    const onRegistered = vi.fn()
+    mockFleet({ registerCliSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={onRegistered} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await screen.findByRole('button', { name: /검증 없이 등록/ })
+    // stateful 체크
+    fireEvent.click(screen.getByLabelText(/stateful/i))
+    // CLI 모델 오버라이드 입력
+    fireEvent.change(screen.getByLabelText(/CLI 모델/i), { target: { value: 'claude-opus-4-8' } })
+    fireEvent.click(screen.getByRole('button', { name: /검증 없이 등록/ }))
+    await act(async () => {})
+    expect(reg).toHaveBeenCalledWith('claude', { stateful: true, model: 'claude-opus-4-8' })
+    expect(onRegistered).toHaveBeenCalled()
+  })
 
   it('API: anthropic 키+모델 → registerApiSession (effort 선택 시 thinking 반영)', async () => {
     const reg = vi.fn().mockResolvedValue(undefined)
@@ -136,6 +153,8 @@ describe('AddAiWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
     fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
     fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'k' } })
+    // 버튼 게이트 — 명시적 클릭 후에만 조회
+    fireEvent.click(screen.getByRole('button', { name: /모델 불러오기/ }))
     await waitFor(() => expect(screen.getByText('claude-opus-4-8', { exact: false })).toBeTruthy())
   })
   it('API: listModels 실패 시 자유 입력 폴백 (모델 input 직접 입력 가능)', async () => {
@@ -144,6 +163,7 @@ describe('AddAiWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
     fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
     fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'k' } })
+    fireEvent.click(screen.getByRole('button', { name: /모델 불러오기/ }))
     await act(async () => {})
     fireEvent.change(screen.getByLabelText(/모델/), { target: { value: 'claude-custom' } })
     expect((screen.getByLabelText(/모델/) as HTMLInputElement).value).toBe('claude-custom')
@@ -223,8 +243,9 @@ describe('AddAiWizard', () => {
     await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
     fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
-    // 첫 키 입력 → 모델 옵션 표시 대기
+    // 첫 키 입력 후 버튼 클릭 → 모델 옵션 표시 대기
     fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-first' } })
+    fireEvent.click(screen.getByRole('button', { name: /모델 불러오기/ }))
     await waitFor(() => expect(screen.getByText('claude-opus-4-8', { exact: false })).toBeTruthy())
     // 키 변경 → 모델 옵션 즉시 초기화(새 listModels 응답 도착 전)
     fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-second' } })
