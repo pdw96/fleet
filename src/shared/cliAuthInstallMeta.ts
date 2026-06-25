@@ -8,7 +8,7 @@ export interface CliAuthInstallMeta {
 
 export const CLI_AUTH_INSTALL_META: Record<'claude' | 'codex' | 'gemini', CliAuthInstallMeta> = {
   claude: {
-    loginCommand: 'claude login',
+    loginCommand: 'claude auth login',
     installHint: 'npm i -g @anthropic-ai/claude-code',
     docsUrl: 'https://docs.anthropic.com/en/docs/claude-code',
   },

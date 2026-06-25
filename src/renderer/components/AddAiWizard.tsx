@@ -58,6 +58,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   function enterSubscription() {
     setStep('subscription')
     setErr(null)
+    setClis([])
     void window.fleet
       .detectClis()
       .then(setClis)
@@ -170,7 +171,15 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
             >
               명령 복사
             </button>
-            <button type="button" onClick={() => void window.fleet.detectClis().then(setClis)}>
+            <button
+              type="button"
+              onClick={() =>
+                void window.fleet
+                  .detectClis()
+                  .then(setClis)
+                  .catch((e: unknown) => setErr(String(e)))
+              }
+            >
               재확인 (설치 확인)
             </button>
           </div>
@@ -241,22 +250,46 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   // step === 'apikey'
   async function submit() {
     setErr(null)
-    if (provider === 'openai-compatible' && !baseUrl.trim()) {
-      setErr('openai-compatible 은 baseUrl 이 필요합니다.')
+    if (!apiKey.trim()) {
+      setErr('API 키를 입력하세요.')
       return
     }
+    if (provider === 'openai-compatible') {
+      if (!baseUrl.trim()) {
+        setErr('openai-compatible 은 baseUrl 이 필요합니다.')
+        return
+      }
+      try {
+        const parsed = new URL(baseUrl.trim())
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          setErr('baseUrl 은 http:// 또는 https:// 여야 합니다.')
+          return
+        }
+      } catch {
+        setErr('baseUrl 이 올바른 URL 형식이 아닙니다.')
+        return
+      }
+    }
+    const resolvedModel = model.trim() || PROVIDER_DEFAULTS[provider]
+    if (provider === 'openai-compatible' && !resolvedModel) {
+      setErr('openai-compatible 은 모델을 입력하세요.')
+      return
+    }
+    const thinkingOn = effort !== ''
+    const cacheOn = provider === 'anthropic' && cacheTtl === '1h'
     const config: ApiProviderConfig = {
       id: `${provider}-${Date.now()}`,
       provider,
-      displayName: provider,
-      model: model.trim() || PROVIDER_DEFAULTS[provider],
-      apiKey: apiKey.trim() || undefined,
+      displayName: `${provider} (${resolvedModel}${thinkingOn ? `, thinking:${effort}` : ''}${cacheOn ? ', cache:1h' : ''})`,
+      model: resolvedModel,
+      apiKey: apiKey.trim(),
       ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
-      ...(effort ? { thinking: { effort } } : {}),
-      ...(provider === 'anthropic' && cacheTtl ? { cacheTtl } : {}),
+      ...(thinkingOn ? { thinking: { effort } } : {}),
+      ...(cacheOn ? { cacheTtl: '1h' } : {}),
     }
     try {
       await window.fleet.registerApiSession(config)
+      setApiKey('')
       onRegistered()
     } catch (e) {
       setErr(`등록 실패: ${String(e)}`)
@@ -273,6 +306,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
         API 키
         <input
           aria-label="API 키"
+          type="password"
           value={apiKey}
           onChange={(e) => {
             setApiKey(e.target.value)

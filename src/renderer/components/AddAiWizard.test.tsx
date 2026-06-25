@@ -234,6 +234,67 @@ describe('AddAiWizard', () => {
     expect(cfg.provider).toBe('openai')
     expect(cfg.cacheTtl).toBeUndefined()
   })
+  it('API: API 키 input 은 type="password" 로 마스킹된다', async () => {
+    mockFleet()
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    expect(screen.getByLabelText(/API 키/).getAttribute('type')).toBe('password')
+  })
+  it('API: 빈 API 키 → 등록 막힘 + 오류 표시', async () => {
+    const reg = vi.fn()
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    // 키 미입력 상태로 등록 시도
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    expect(reg).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toMatch(/API 키/)
+  })
+  it('API: openai-compatible 빈 모델 → 등록 막힘', async () => {
+    const reg = vi.fn()
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 호환/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-test' } })
+    fireEvent.change(screen.getByLabelText(/Base URL/i), {
+      target: { value: 'https://api.example.com' },
+    })
+    // 모델 미입력 (PROVIDER_DEFAULTS['openai-compatible'] === '')
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    expect(reg).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toMatch(/모델/)
+  })
+  it('API: displayName 에 모델 문자열 포함', async () => {
+    const reg = vi.fn().mockResolvedValue(undefined)
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-test' } })
+    fireEvent.change(screen.getByLabelText(/모델/), { target: { value: 'claude-opus-4-8' } })
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    const cfg = reg.mock.calls[0][0]
+    expect(cfg.displayName).toContain('claude-opus-4-8')
+  })
+  it('API: 등록 성공 후 apiKey 상태 초기화', async () => {
+    const reg = vi.fn().mockResolvedValue(undefined)
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    expect(reg).toHaveBeenCalled()
+    // 등록 후 input 값이 비워져야 함
+    expect((screen.getByLabelText(/API 키/) as HTMLInputElement).value).toBe('')
+  })
   it('API: apiKey 변경 시 datalist 모델 옵션 즉시 초기화', async () => {
     mockFleet({
       listModels: vi

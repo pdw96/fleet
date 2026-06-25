@@ -42,7 +42,7 @@
 
 ## 4. UX 흐름
 
-```
+```text
 [+ AI 추가]
  └─ ① 프로바이더: Claude / Codex(OpenAI) / Gemini(Google) / OpenAI-호환
        └─ ② 인증 방식 (해당 프로바이더 지원분만 노출)
