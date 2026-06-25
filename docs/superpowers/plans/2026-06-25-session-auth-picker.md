@@ -103,8 +103,13 @@ export const CLI_AUTH_INSTALL_META: Record<'claude' | 'codex' | 'gemini', CliAut
   gemini: { loginCommand: 'gemini', installHint: 'npm i -g @google/gemini-cli', docsUrl: 'https://google-gemini.github.io/gemini-cli/' },
 }
 
-// §6a 클릭형 외부열기(가드된 후속) allowlist 의 기준 호스트. v1 copy-only 라 열지 않지만, docsUrl 검증·후속 공유.
-export const DOCS_HOST_ALLOWLIST = ['docs.anthropic.com', 'developers.openai.com', 'google-gemini.github.io']
+// §6a 클릭형 외부열기(가드된 후속) host allowlist. v1 copy-only 라 열지 않지만 docsUrl 검증·후속 공유.
+// 스펙 §6a 9-host 와 동일 집합(현 docsUrl 호스트는 이 중 3개 부분집합 — 테스트가 ⊆ 강제).
+export const DOCS_HOST_ALLOWLIST = [
+  'docs.anthropic.com', 'support.anthropic.com', 'claude.ai',
+  'developers.openai.com', 'help.openai.com', 'openai.com',
+  'ai.google.dev', 'cloud.google.com', 'google-gemini.github.io',
+]
 ```
 > ⚠️ 구현자 메모: login/install 명령·docsUrl·allowlist 호스트는 *현행 추정*. 착수 시 각 CLI 공식 문서로 명령·도메인 재확인(claude 는 `/login` 대화형 변형 가능). 값 수정 시 shared 1곳만 고치면 registry·wizard 동시 반영.
 
@@ -468,7 +473,11 @@ const ADAPTER_ID: Partial<Record<Provider, 'claude' | 'codex' | 'gemini'>> = {
     void window.fleet.detectClis().then(setClis).catch((e) => setErr(String(e)))
   }
 ```
-(method 단계 구독 버튼 onClick → `enterSubscription`.)
+**method 단계 구독 버튼을 반드시 수정**(Task 4 의 `setStep('subscription')` → `enterSubscription` — 안 바꾸면 `clis=[]` 라 설치됨 테스트가 조용히 실패):
+```tsx
+// Task 4 의 method 단계: setStep('subscription') 을 enterSubscription 으로 교체
+{subscriptionSupported(provider) && <button onClick={enterSubscription}>구독 (공식 CLI)</button>}
+```
 구독 단계 렌더 (**`<a>` 금지 — 텍스트 + 복사 버튼만**):
 ```tsx
   if (step === 'subscription') {
@@ -573,6 +582,16 @@ it('API: listModels 성공 시 모델 옵션 datalist 표시', async () => {
   fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
   fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'k' } })
   await waitFor(() => expect(screen.getByText('claude-opus-4-8', { exact: false })).toBeTruthy())
+})
+it('API: listModels 실패 시 자유 입력 폴백 (모델 input 직접 입력 가능)', async () => {
+  mockFleet({ listModels: vi.fn().mockRejectedValue(new Error('no key')) })
+  await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+  fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+  fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+  fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'k' } })
+  await act(async () => {})
+  fireEvent.change(screen.getByLabelText(/모델/), { target: { value: 'claude-custom' } })
+  expect((screen.getByLabelText(/모델/) as HTMLInputElement).value).toBe('claude-custom')
 })
 it('API: openai-compatible 은 baseUrl 누락 시 등록 막고 오류 표시', async () => {
   const reg = vi.fn(); mockFleet({ registerApiSession: reg })
@@ -683,7 +702,7 @@ git commit -m "feat(picker): API 키 분기 — 기존 폼 parity 이전(listMod
 [ ] registerApiSession payload shape → API 분기 테스트(Task6)
 [ ] anthropic effort 반영 → Task6
 [ ] anthropic cacheTtl 반영 → Task6
-[ ] listModels 성공(옵션 표시)/실패(자유입력 폴백) → Task6 (실패 폴백 케이스 추가)
+[ ] listModels 성공(옵션 표시)/실패(자유입력 폴백) → Task6 (둘 다 테스트 존재)
 [ ] openai-compatible baseUrl 누락 차단 → Task6
 ```
 누락분은 `AddAiWizard.test.tsx` 에 추가한 뒤에만 SessionsPanel 폼 테스트 삭제.

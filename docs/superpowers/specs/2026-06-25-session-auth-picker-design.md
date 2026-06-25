@@ -51,7 +51,7 @@
             │    └─ CLI 감지(detectClis):
             │         · 미설치  → 설치 안내(install.hint 복사 + install.docsUrl 표시) · "재확인"(재감지=설치만 확인)
             │         · 설치됨  → 로그인 안내(auth.loginCommand **복사 전용** + auth.docsUrl 표시) · 터미널 자동실행 안 함(Codex P1: command-injection·ApprovalGate 우회 회피)
-            │                     · "검증 없이 등록"(authStatus:unverified 명시) → registerCliSession(adapterId, {stateful?, model?, mcpConfig?})
+            │                     · "검증 없이 등록"(presentational 미검증 배지·저장필드 없음, §7a) → registerCliSession(adapterId, {stateful?, model?, mcpConfig?})
             └─ API 키
                  └─ 키 입력 + 모델(라이브 조회 폴백 자유입력) + (anthropic) cacheTtl/effort
                      → registerApiSession(ApiProviderConfig)
@@ -65,7 +65,7 @@
 |---|---|---|---|
 | Claude | ✅ `claude login` | ✅ | clean (정보성) — "공식 Claude Code CLI 인증을 그대로 사용. Fleet은 Claude 자격증명을 저장/읽지 않음" |
 | Codex (OpenAI) | ⚠️ `codex login` | ✅ | caution — "Codex CLI 기존 로그인 사용. Fleet은 자격증명을 읽지 않음. 조직/상업/공유 환경은 OpenAI 약관·계정 정책 확인. 정책/플랜별 허용 범위가 달라질 수 있음 — API 키가 더 명시적" |
-| Gemini (Google) | ⚠️ 위험 | ✅ | warning — "Gemini CLI의 Google 계정/OAuth 사용은 Google 정책·Gemini CLI 약관 적용. **제3자 소프트웨어의 OAuth 기반 자동화/우회 통합은 제한·탐지 대상이 될 수 있음**(2026-02 정책·03-25 탐지). 계정 리스크 회피 위해 **API 키 권장**. Fleet은 Google 자격증명을 저장/읽지 않음" + sub-issue 링크 |
+| Gemini (Google) | ⚠️ 위험 | ✅ | warning — "Gemini CLI의 Google 계정/OAuth 사용은 Google 정책·Gemini CLI 약관 적용. **제3자 소프트웨어의 OAuth 기반 자동화/우회 통합은 제한·탐지 대상이 될 수 있음**(2026-02 정책·03-25 탐지). 계정 리스크 회피 위해 **API 키 권장**. Fleet은 Google 자격증명을 저장/읽지 않음" |
 | OpenAI-호환 | — (구독 분기 없음) | ✅ (+ baseUrl 필수) | — |
 
 배너 데이터 = 프로바이더 → `{ level: 'clean'|'caution'|'warning', message, recommendApi: boolean, docsUrl? }` 정적 맵. 사용자는 배너 표시 중에도 강행 가능(선택권 유지).
@@ -144,7 +144,7 @@ Fleet은 renderer가 직접 내부 기능에 접근하지 못하게 preload→ma
 
 Codex 클라우드 독립 리뷰(구현 없음·설계만, 판정 **"Request changes on spec only"**)의 P1 4건 전량 반영:
 
-1. **인증 상태 계약**(§7a) — `authStatus:'unverified'`·"검증 없이 등록"·"미검증" 배지·"재감지=설치 확인"·첫 사용 auth 실패 전용 라우팅.
+1. **인증 상태 계약**(§7a) — presentational 미검증 배지(kind 기반·저장필드 없음)·"검증 없이 등록"·"재감지=설치 확인". (첫 사용 auth 실패 전용 라우팅은 §10 후속 — 배지가 v1 정직성.)
 2. **외부 링크 보안**(§6a) — v1 copy-only·클릭 외부열기는 main IPC+https-only+host allowlist 가드 후속·정적 docsUrl·PATH shadowing 고지.
 3. **배너 문구 정밀화**(§5) — 법률 단정 제거, 정책 리스크 안내로. Gemini "확정 위반" → "제한·탐지 대상 가능".
 4. **D3 copy-only**(§2·§4) — 터미널 자동실행 비목표(command-injection·ApprovalGate 우회 회피).
