@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 61 files · 152 import wires · 41 IPC channels · 생성 2026-06-24T05:18 UTC
+> 61 files · 152 import wires · 41 IPC channels · 생성 2026-06-25T05:11 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -136,9 +136,9 @@
 
 ### store · core — 앱이 다루는 모든 데이터(프로젝트, 할 일, 채팅방, 대화, 기록, AI 연결 정보)를 한곳에 모아 보관하고, 컴퓨터를 껐다 켜도 그대로 남도록 파일에 저장하는 '데이터 창고'다.
 - **store/types** — 창고에 담기는 데이터들의 모양과 규칙을 미리 적어 둔 설계도 부품 _프로젝트·할 일·채팅방·저장된 AI 세션 등이 각각 어떤 항목들로 이뤄지는지 형태를 정의한 명세서다. 특히 AI 연결 정보는 구독형 CLI(클로드·코덱스 등)와 API 두 종류로 나뉘며, API 키 같은 비밀번호는 절대 그대로 적지 않고 암호로 바꾼 형태만 저장하도록 규칙을 못 박아 둔다._
-  - →의존: shared/types · ←피의존: chat/room, engine, main/index, orchestrator/orchestrator, store/json-file, store/memory · 151줄
+  - →의존: shared/types · ←피의존: chat/room, engine, main/index, orchestrator/orchestrator, store/json-file, store/memory · 155줄
 - **store/memory** — 데이터를 메모리에서 직접 넣고 빼고 고치는 실제 일꾼 부품 _프로젝트·할 일·채팅방·메시지·기록 등을 만들고(create), 찾고(get), 목록을 보고(list), 수정하는(update) 모든 기능이 여기에 들어 있다. 데이터를 바꿀 때마다 사본을 따로 떠서 넘겨주어 원본이 바깥에서 함부로 바뀌지 않게 보호하고, 변경이 생기면 위의 파일 저장 담당에게 알려 디스크에 기록하게 한다._
-  - →의존: shared/types, store/types · ←피의존: engine, store/json-file · 225줄
+  - →의존: shared/types, store/types · ←피의존: engine, store/json-file · 243줄
 - **store/json-file** — 데이터를 컴퓨터 안 파일에 안전하게 저장해 두는 보관 담당 부품 _앱이 다루는 모든 정보를 'fleet-store.json'이라는 파일에 적어두고, 다음에 앱을 켜면 다시 불러온다. 저장할 때는 임시 파일에 먼저 쓴 뒤 이름만 바꿔치기해서 도중에 멈춰도 원본이 안 깨지게 하고, 파일이 읽다가 망가져 있으면 '.corrupt' 라는 이름으로 따로 백업해 둔 뒤 빈 상태로 시작한다._
   - →의존: store/memory, store/types · ←피의존: main/index · 60줄
 
