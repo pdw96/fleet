@@ -226,6 +226,18 @@ describe('memory store — events rotation cap (#126)', () => {
     const store = createMemoryStore({ ...deterministic(), eventCap: 1, initial })
     expect(store.snapshot().droppedEventCount).toBe(8) // 7 + 1
   })
+
+  it('cap 후에도 listProjectEvents 가 projectId 필터·task.progress 제외를 유지한다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 3 })
+    store.appendEvent({ type: 'project.created', data: { projectId: 'p1' } }) // 폐기 대상
+    store.appendEvent({ type: 'task.progress', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.done', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.done', message: '최신', data: { projectId: 'p1' } })
+    // cap=3 → 가장 오래된 project.created 폐기. 남은 3건 중 task.progress 제외 → task.done 2건
+    const events = store.listProjectEvents('p1')
+    expect(events.map((e) => e.type)).toEqual(['task.done', 'task.done'])
+  })
 })
 
 describe('memory store — updater channel (#98)', () => {
@@ -373,6 +385,20 @@ describe('json-file store', () => {
     const s = createJsonFileStore(dir)
     expect(() => s.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })).not.toThrow()
     expect(s.listSessions()).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude' }])
+  })
+
+  it('eventCap 을 적용하고 droppedEventCount 를 디스크 왕복 후에도 보존한다(#126)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const a = createJsonFileStore(dir, { ...deterministic(), eventCap: 2 })
+    for (let i = 0; i < 5; i++) a.appendEvent({ type: `e${i}` })
+    expect(a.listEvents()).toHaveLength(2)
+    expect(a.snapshot().droppedEventCount).toBe(3)
+
+    // 새 인스턴스로 reload — 디스크에 cap·카운터가 영속됐는지
+    const b = createJsonFileStore(dir, { eventCap: 2 })
+    expect(b.listEvents()).toHaveLength(2)
+    expect(b.snapshot().droppedEventCount).toBe(3)
+    warn.mockRestore()
   })
 })
 
