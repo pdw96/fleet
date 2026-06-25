@@ -538,6 +538,14 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
                   STATEFUL
                 </span>
               )}
+              {s.kind === 'cli' && (
+                <span
+                  className="badge badge-unverified"
+                  title="설치만 확인됨 — 로그인/권한은 첫 사용 시 검증됩니다"
+                >
+                  로그인 미검증 · 첫 메시지에서 인증 확인
+                </span>
+              )}
               <span className="name">{s.displayName}</span>
               <code className="id">{s.id}</code>
               <button

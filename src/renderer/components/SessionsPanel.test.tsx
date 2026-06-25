@@ -566,6 +566,27 @@ describe('SessionsPanel', () => {
     await waitFor(() => expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2))
   })
 
+  it('CLI 세션 카드에 presentational 미검증 배지를 표시한다 (§7a)', async () => {
+    mockFleet()
+    await renderSettled(
+      <SessionsPanel
+        sessions={[{ id: 's1', kind: 'cli' as const, displayName: 'Claude Code', ref: 'claude' }]}
+        onRefresh={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/로그인 미검증/)).toBeTruthy()
+  })
+  it('API 세션 카드에는 미검증 배지를 표시하지 않는다', async () => {
+    mockFleet()
+    await renderSettled(
+      <SessionsPanel
+        sessions={[{ id: 's2', kind: 'api' as const, displayName: 'Claude API', ref: 'cfg1' }]}
+        onRefresh={vi.fn()}
+      />,
+    )
+    expect(screen.queryByText(/로그인 미검증/)).toBeNull()
+  })
+
   it('재조회가 실패(IPC reject)해도 기존 표시를 유지하고 크래시하지 않는다', async () => {
     const fleet = mockFleet({
       getMcpStatus: vi
