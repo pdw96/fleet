@@ -54,6 +54,8 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   const [cliStateful, setCliStateful] = useState(false)
   const [cliModel, setCliModel] = useState('')
   const [cliMcp, setCliMcp] = useState('')
+  // 등록 진행 중 이중 제출 방지(SessionsPanel busy 동형)
+  const [submitting, setSubmitting] = useState(false)
 
   function enterSubscription() {
     setStep('subscription')
@@ -222,7 +224,9 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
             </label>
             <button
               type="button"
+              disabled={submitting}
               onClick={() => {
+                if (submitting) return
                 setErr(null)
                 const opts: { stateful: boolean; model?: string; mcpConfig?: string } = {
                   stateful: cliStateful,
@@ -231,10 +235,12 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
                 const mc = cliMcp.trim()
                 if (m) opts.model = m
                 if (mc) opts.mcpConfig = mc
+                setSubmitting(true)
                 void window.fleet
                   .registerCliSession(adapterId, opts)
                   .then(() => onRegistered())
                   .catch((e: unknown) => setErr(`등록 실패: ${String(e)}`))
+                  .finally(() => setSubmitting(false))
               }}
             >
               검증 없이 등록
@@ -249,6 +255,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
 
   // step === 'apikey'
   async function submit() {
+    if (submitting) return
     setErr(null)
     if (!apiKey.trim()) {
       setErr('API 키를 입력하세요.')
@@ -287,12 +294,15 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
       ...(thinkingOn ? { thinking: { effort } } : {}),
       ...(cacheOn ? { cacheTtl: '1h' } : {}),
     }
+    setSubmitting(true)
     try {
       await window.fleet.registerApiSession(config)
       setApiKey('')
       onRegistered()
     } catch (e) {
       setErr(`등록 실패: ${String(e)}`)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -384,7 +394,9 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
           </select>
         </label>
       )}
-      <button onClick={() => void submit()}>등록</button>
+      <button disabled={submitting} onClick={() => void submit()}>
+        {submitting ? '등록 중…' : '등록'}
+      </button>
       {err && <p role="alert">{err}</p>}
       <button onClick={() => setStep('method')}>뒤로</button>
     </div>

@@ -295,6 +295,27 @@ describe('AddAiWizard', () => {
     // 등록 후 input 값이 비워져야 함
     expect((screen.getByLabelText(/API 키/) as HTMLInputElement).value).toBe('')
   })
+  it('API: registerApiSession 진행 중 이중 클릭 → 1회만 호출', async () => {
+    let resolve!: () => void
+    const deferred = new Promise<void>((res) => {
+      resolve = res
+    })
+    const reg = vi.fn().mockReturnValue(deferred)
+    const onRegistered = vi.fn()
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={onRegistered} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-test' } })
+    // 1차 클릭 — promise는 아직 resolve 전(in-flight)
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    // 2차 클릭 — 버튼이 disabled 되어 있어야 하므로 무시됨
+    fireEvent.click(screen.getByRole('button', { name: /등록 중/ }))
+    // promise 해소
+    resolve()
+    await act(async () => {})
+    expect(reg).toHaveBeenCalledTimes(1)
+  })
   it('API: apiKey 변경 시 datalist 모델 옵션 즉시 초기화', async () => {
     mockFleet({
       listModels: vi
