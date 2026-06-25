@@ -59,6 +59,8 @@ export interface StoreState {
   lastActiveProjectId?: string
   /** 자동 업데이트 채널 선호(#98). 미설정(구버전 파일·신규)이면 stable 로 해석. */
   updaterChannel?: UpdaterChannel
+  /** events rotation cap(#126) 으로 폐기된 이벤트 누적 수. 미설정=0. 폐기 발생 시에만 기록(emptyState 엔 미포함). */
+  droppedEventCount?: number
 }
 
 export interface StoreOptions {
@@ -70,6 +72,8 @@ export interface StoreOptions {
   initial?: StoreState
   /** 변경 후 호출되는 영속화 훅 */
   persist?: (state: StoreState) => void
+  /** events 상한(#126). 초과 시 가장 오래된 것부터 폐기. 미지정 기본 5000(테스트는 소형 값 주입). */
+  eventCap?: number
 }
 
 /** 상태 + 대화 로그 + 감사 이벤트 저장소 (요구사항 6,7). */

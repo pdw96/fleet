@@ -138,6 +138,58 @@ describe('memory store — chat & events', () => {
   })
 })
 
+describe('memory store — events rotation cap (#126)', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('cap 초과 시 events 가 상한을 넘지 않고 가장 오래된 것부터 폐기한다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 3 })
+    for (let i = 0; i < 5; i++) store.appendEvent({ type: `e${i}` })
+    const events = store.listEvents()
+    expect(events).toHaveLength(3)
+    // 최근 3건(e2·e3·e4)만 보존, e0·e1 폐기
+    expect(events.map((e) => e.type)).toEqual(['e2', 'e3', 'e4'])
+  })
+
+  it('폐기량을 droppedEventCount 에 누적한다(snapshot 노출)', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 2 })
+    for (let i = 0; i < 5; i++) store.appendEvent({ type: `e${i}` })
+    // 5건 중 2건 유지 → 3건 폐기
+    expect(store.snapshot().droppedEventCount).toBe(3)
+  })
+
+  it('첫 폐기 시에만 console.warn 1회(이후 폐기엔 미호출)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 2 })
+    store.appendEvent({ type: 'e0' }) // 1건 — 미폐기
+    store.appendEvent({ type: 'e1' }) // 2건 — 미폐기
+    expect(warn).not.toHaveBeenCalled()
+    store.appendEvent({ type: 'e2' }) // 3건째 → 첫 폐기 → 경고 1회
+    store.appendEvent({ type: 'e3' }) // 추가 폐기 → 경고 미호출
+    expect(warn).toHaveBeenCalledTimes(1)
+    // 경고 메시지엔 cap·카운트만, 이벤트 내용 비노출
+    const msg = warn.mock.calls[0]?.[0] as string
+    expect(msg).toContain('2')
+    expect(msg).not.toContain('e0')
+  })
+
+  it('cap 미만이면 폐기 0·droppedEventCount 미설정(기존 동작 무회귀)', () => {
+    const store = createMemoryStore({ ...deterministic(), eventCap: 10 })
+    store.appendEvent({ type: 'e0' })
+    store.appendEvent({ type: 'e1' })
+    expect(store.listEvents()).toHaveLength(2)
+    expect(store.snapshot().droppedEventCount).toBeUndefined()
+  })
+
+  it('기본 cap 은 5000(미지정 시)', () => {
+    const store = createMemoryStore(deterministic())
+    for (let i = 0; i < 10; i++) store.appendEvent({ type: 'e' })
+    expect(store.listEvents()).toHaveLength(10) // 5000 미만 → 전부 보존
+    expect(store.snapshot().droppedEventCount).toBeUndefined()
+  })
+})
+
 describe('memory store — updater channel (#98)', () => {
   it('기본 채널은 stable (미설정 시 snapshot 엔 부재)', () => {
     const store = createMemoryStore(deterministic())

@@ -24,10 +24,26 @@ function deriveTitle(goal: string): string {
 export function createMemoryStore(opts: StoreOptions = {}): Store {
   const idGen = opts.idGen ?? (() => randomUUID())
   const now = opts.now ?? (() => Date.now())
+  const cap = opts.eventCap ?? 5000
   const state: StoreState = opts.initial ? structuredClone(opts.initial) : emptyState()
   // 손상 store 파일이 비배열 sessions(유효 JSON → .corrupt 미발동)를 실으면 putSession/deleteSession 의
   // findIndex 가 throw 한다. 로드 시 1회 정규화해 모든 소비처(CRUD·listSessions·엔진 복원 루프)를 보호한다.
   if (!Array.isArray(state.sessions)) state.sessions = []
+
+  // events rotation cap(#126): 상한 초과 시 가장 오래된 것부터 폐기 + 누적 카운터. 매 append 마다 전체 state 를
+  // 동기 재직렬화하므로(json-file.ts) cap 이 없으면 events 길이 N 에서 누적 O(N²). cap 으로 per-append O(cap) bounded.
+  const enforceEventCap = (): void => {
+    const overflow = state.events.length - cap
+    if (overflow <= 0) return
+    const firstDrop = (state.droppedEventCount ?? 0) === 0
+    state.events.splice(0, overflow) // 앞(가장 오래된)부터 제거 — 삽입 순서 = 시간순
+    state.droppedEventCount = (state.droppedEventCount ?? 0) + overflow
+    if (firstDrop) {
+      console.warn(
+        `[fleet] 이벤트 로그 상한(${cap}) 도달 — 가장 오래된 이벤트부터 폐기(누적 ${state.droppedEventCount}건).`,
+      )
+    }
+  }
 
   const save = (): void => {
     if (opts.persist) opts.persist(structuredClone(state))
@@ -154,6 +170,7 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
         ts: now(),
       }
       state.events.push(event)
+      enforceEventCap()
       save()
       return structuredClone(event)
     },
