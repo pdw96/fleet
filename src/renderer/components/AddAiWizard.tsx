@@ -210,7 +210,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
       apiKey: apiKey.trim() || undefined,
       ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
       ...(effort ? { thinking: { effort } } : {}),
-      ...(cacheTtl ? { cacheTtl } : {}),
+      ...(provider === 'anthropic' && cacheTtl ? { cacheTtl } : {}),
     }
     try {
       await window.fleet.registerApiSession(config)

@@ -176,4 +176,59 @@ describe('AddAiWizard', () => {
     expect(reg).not.toHaveBeenCalled()
     expect(screen.getByRole('alert').textContent).toMatch(/base ?url/i)
   })
+  it('API: google effort=high → thinking.effort 반영 (parity)', async () => {
+    const reg = vi.fn().mockResolvedValue(undefined)
+    const onRegistered = vi.fn()
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={onRegistered} />)
+    fireEvent.click(screen.getByRole('button', { name: /Gemini/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-google' } })
+    fireEvent.change(screen.getByLabelText(/thinking|effort/i), { target: { value: 'high' } })
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    const cfg = reg.mock.calls[0][0]
+    expect(cfg.provider).toBe('google')
+    expect(cfg.thinking?.effort).toBe('high')
+    expect(onRegistered).toHaveBeenCalled()
+  })
+  it('API: anthropic→openai 전환 시 cacheTtl 누출 없음', async () => {
+    const reg = vi.fn().mockResolvedValue(undefined)
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    // 1) anthropic 선택 → API 키 단계 → cacheTtl=1h 설정
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-a' } })
+    fireEvent.change(screen.getByLabelText(/cache/i), { target: { value: '1h' } })
+    // 2) 뒤로 → provider 선택 → openai 선택
+    fireEvent.click(screen.getByRole('button', { name: /뒤로/ }))
+    fireEvent.click(screen.getByRole('button', { name: /뒤로/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Codex/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-b' } })
+    // 3) 등록 → cacheTtl 이 config 에 없어야 함
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    const cfg = reg.mock.calls[0][0]
+    expect(cfg.provider).toBe('openai')
+    expect(cfg.cacheTtl).toBeUndefined()
+  })
+  it('API: apiKey 변경 시 datalist 모델 옵션 즉시 초기화', async () => {
+    mockFleet({
+      listModels: vi
+        .fn()
+        .mockResolvedValue([{ id: 'claude-opus-4-8', label: 'Opus' }] as ModelOption[]),
+    })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    // 첫 키 입력 → 모델 옵션 표시 대기
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-first' } })
+    await waitFor(() => expect(screen.getByText('claude-opus-4-8', { exact: false })).toBeTruthy())
+    // 키 변경 → 모델 옵션 즉시 초기화(새 listModels 응답 도착 전)
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-second' } })
+    // onChange 핸들러에서 동기적으로 setModelOptions([]) → 즉시 사라져야 함
+    expect(screen.queryByText('claude-opus-4-8', { exact: false })).toBeNull()
+  })
 })
