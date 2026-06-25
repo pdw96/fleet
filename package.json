@@ -83,6 +83,9 @@
     ],
     ".github/workflows/*.{yml,yaml}": [
       "node scripts/skills-lint.mjs"
+    ],
+    "docs/adr/**/*.md": [
+      "node scripts/skills-lint.mjs"
     ]
   },
   "overrides": {
