@@ -188,6 +188,44 @@ describe('memory store — events rotation cap (#126)', () => {
     expect(store.listEvents()).toHaveLength(10) // 5000 미만 → 전부 보존
     expect(store.snapshot().droppedEventCount).toBeUndefined()
   })
+
+  it('로드 시 initial.events 가 cap 초과면 store 생성 시 정규화한다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const initial: StoreState = {
+      projects: [],
+      tasks: [],
+      rooms: [],
+      messages: [],
+      events: [
+        { id: 'a', type: 'old0', data: {}, ts: 1 },
+        { id: 'b', type: 'old1', data: {}, ts: 2 },
+        { id: 'c', type: 'keep0', data: {}, ts: 3 },
+        { id: 'd', type: 'keep1', data: {}, ts: 4 },
+      ],
+      sessions: [],
+    }
+    const store = createMemoryStore({ ...deterministic(), eventCap: 2, initial })
+    expect(store.listEvents().map((e) => e.type)).toEqual(['keep0', 'keep1'])
+    expect(store.snapshot().droppedEventCount).toBe(2)
+  })
+
+  it('로드 정규화는 기존 droppedEventCount 에 누적한다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const initial: StoreState = {
+      projects: [],
+      tasks: [],
+      rooms: [],
+      messages: [],
+      events: [
+        { id: 'a', type: 'old', data: {}, ts: 1 },
+        { id: 'b', type: 'keep', data: {}, ts: 2 },
+      ],
+      sessions: [],
+      droppedEventCount: 7,
+    }
+    const store = createMemoryStore({ ...deterministic(), eventCap: 1, initial })
+    expect(store.snapshot().droppedEventCount).toBe(8) // 7 + 1
+  })
 })
 
 describe('memory store — updater channel (#98)', () => {

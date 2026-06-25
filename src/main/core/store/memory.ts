@@ -44,6 +44,7 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
       )
     }
   }
+  enforceEventCap() // 로드 시 1회 정규화 — 이미 비대해진 fleet-store.json 을 메모리에서 즉시 cap(다음 save 시 디스크 반영)
 
   const save = (): void => {
     if (opts.persist) opts.persist(structuredClone(state))
