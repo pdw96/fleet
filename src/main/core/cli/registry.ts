@@ -1,4 +1,5 @@
 import type { CliAdapter } from '../../../shared/types'
+import { CLI_AUTH_INSTALL_META as META } from '../../../shared/cliAuthInstallMeta'
 
 /**
  * 기본 CLI 어댑터 (요구사항 2A). 구독제/TUI 기반 LLM CLI.
@@ -32,6 +33,8 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     },
     // 워크스페이스 직접 편집(실측: v2.1.163). -p 헤드리스 + --permission-mode acceptEdits 로 편집 도구만 자동 승인(전체 우회 아님). cwd=workspace 는 세션이 설정.
     edit: { args: ['-p', '--permission-mode', 'acceptEdits'], parse: 'text' },
+    auth: { loginCommand: META.claude.loginCommand, docsUrl: META.claude.docsUrl },
+    install: { hint: META.claude.installHint, docsUrl: META.claude.docsUrl },
   },
   {
     id: 'codex',
@@ -57,6 +60,8 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
       args: ['exec', '--json', '-C', '{workspace}', '-s', 'workspace-write'],
       parse: 'codex-jsonl',
     },
+    auth: { loginCommand: META.codex.loginCommand, docsUrl: META.codex.docsUrl },
+    install: { hint: META.codex.installHint, docsUrl: META.codex.docsUrl },
   },
   {
     id: 'gemini',
@@ -79,6 +84,8 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     streaming: { args: ['--output-format', 'stream-json'], parse: 'gemini-stream' },
     // 워크스페이스 직접 편집(실측: gemini 0.45.0). -p 헤드리스 + --approval-mode auto_edit 로 편집 도구만 자동 승인(yolo 전체 우회 아님). cwd=workspace 는 세션이 설정.
     edit: { args: ['-p', '', '--approval-mode', 'auto_edit'], parse: 'text' },
+    auth: { loginCommand: META.gemini.loginCommand, docsUrl: META.gemini.docsUrl },
+    install: { hint: META.gemini.installHint, docsUrl: META.gemini.docsUrl },
   },
 ]
 
