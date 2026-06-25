@@ -110,11 +110,10 @@ Fleet은 renderer가 직접 내부 기능에 접근하지 못하게 preload→ma
 
 재감지가 *설치*만 확인하므로 "등록됨 = 로그인됨"으로 **오인되면 안 된다**(설치됨·미로그인 / 만료 / 플랜권한 없음 / 첫 호출 interactive-prompt 실패 / auth-storage 손상 등이 전부 "등록됨"으로 뭉개질 위험). 따라서:
 
-- CLI 세션 등록 결과에 **`authStatus: 'unverified'`** 상태를 둔다(로그인 성공으로 표현 금지).
+- **v1 정직성 = presentational 배지**: CLI 세션 카드는 `kind==='cli'` 기반으로 **상시** "로그인 상태 미검증 · 첫 메시지에서 인증 확인" 배지를 표시한다. **별도 저장 필드(`authStatus`)를 두지 않는다** — descriptor/store 확장 없이 표시 전용(Codex 계획리뷰 P1: 명명-구현 일치). 향후 실제 검증 상태를 저장하려면 그때 descriptor 확장.
 - 등록 버튼 문구 = **"검증 없이 등록"**(또는 "첫 사용 시 확인") — "등록"만으로 로그인 완료 암시 금지.
-- 세션 카드에 배지: **"로그인 상태 미검증 · 첫 메시지에서 인증 확인"**.
 - **"재감지" 버튼은 *설치* 재확인 의미로 라벨링**(로그인 확인 아님).
-- **첫 사용 auth 실패는 일반 CLI 실패가 아니라 auth 전용 오류로 라우팅**: "CLI는 설치돼 있으나 로그인/권한 확인 실패 — 터미널에서 `<provider login>` 후 재시도." (기존 CLI 실행 계층의 timeout/kill-tree 보호를 auth-실패·interactive-hang 케이스에도 유지.)
+- **첫 사용 auth 실패 전용 라우팅 = 후속(§10)** — v1 정직성은 위 배지 + "검증 없이 등록" 문구가 담당한다(사용자 사전 고지). 실패 시 provider login recovery hint(일반 CLI 실패 대신 auth 안내)는 chat/run 에러 경로를 건드리는 별도 서브시스템이라 **picker v1 범위 밖**(Codex 권장은 최소 hint 포함이었으나, run 에러 경로 분리·solo pre-1.0 스코프 규율로 후속 결정). 기존 CLI 실행 계층의 timeout/kill-tree 보호는 유지.
 - (선택, 비-v1) "연결 테스트" secondary action: 짧은 timeout·비용 고지·실패해도 등록 비차단. 테스트 없으면 "미검증"을 UI에서 숨기지 않는다.
 
 ## 8. 에러 / 엣지
