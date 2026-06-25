@@ -138,6 +138,116 @@ describe('memory store — chat & events', () => {
   })
 })
 
+describe('memory store — events rotation cap (#126)', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('cap 초과 시 events 가 상한을 넘지 않고 가장 오래된 것부터 폐기한다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 3 })
+    for (let i = 0; i < 5; i++) store.appendEvent({ type: `e${i}` })
+    const events = store.listEvents()
+    expect(events).toHaveLength(3)
+    // 최근 3건(e2·e3·e4)만 보존, e0·e1 폐기
+    expect(events.map((e) => e.type)).toEqual(['e2', 'e3', 'e4'])
+  })
+
+  it('폐기량을 droppedEventCount 에 누적한다(snapshot 노출)', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 2 })
+    for (let i = 0; i < 5; i++) store.appendEvent({ type: `e${i}` })
+    // 5건 중 2건 유지 → 3건 폐기
+    expect(store.snapshot().droppedEventCount).toBe(3)
+  })
+
+  it('첫 폐기 시에만 console.warn 1회(이후 폐기엔 미호출)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 2 })
+    store.appendEvent({ type: 'e0' }) // 1건 — 미폐기
+    store.appendEvent({ type: 'e1' }) // 2건 — 미폐기
+    expect(warn).not.toHaveBeenCalled()
+    store.appendEvent({ type: 'e2' }) // 3건째 → 첫 폐기 → 경고 1회
+    store.appendEvent({ type: 'e3' }) // 추가 폐기 → 경고 미호출
+    expect(warn).toHaveBeenCalledTimes(1)
+    // 경고 메시지엔 cap·카운트만, 이벤트 내용 비노출
+    const msg = warn.mock.calls[0]?.[0] as string
+    expect(msg).toContain('2')
+    expect(msg).not.toContain('e0')
+  })
+
+  it('cap 미만이면 폐기 0·droppedEventCount 미설정(기존 동작 무회귀)', () => {
+    const store = createMemoryStore({ ...deterministic(), eventCap: 10 })
+    store.appendEvent({ type: 'e0' })
+    store.appendEvent({ type: 'e1' })
+    expect(store.listEvents()).toHaveLength(2)
+    expect(store.snapshot().droppedEventCount).toBeUndefined()
+  })
+
+  it('기본 cap 은 5000(미지정 시)', () => {
+    const store = createMemoryStore(deterministic())
+    for (let i = 0; i < 10; i++) store.appendEvent({ type: 'e' })
+    expect(store.listEvents()).toHaveLength(10) // 5000 미만 → 전부 보존
+    expect(store.snapshot().droppedEventCount).toBeUndefined()
+  })
+
+  it('로드 시 initial.events 가 cap 초과면 store 생성 시 정규화한다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const initial: StoreState = {
+      projects: [],
+      tasks: [],
+      rooms: [],
+      messages: [],
+      events: [
+        { id: 'a', type: 'old0', data: {}, ts: 1 },
+        { id: 'b', type: 'old1', data: {}, ts: 2 },
+        { id: 'c', type: 'keep0', data: {}, ts: 3 },
+        { id: 'd', type: 'keep1', data: {}, ts: 4 },
+      ],
+      sessions: [],
+    }
+    const store = createMemoryStore({ ...deterministic(), eventCap: 2, initial })
+    expect(store.listEvents().map((e) => e.type)).toEqual(['keep0', 'keep1'])
+    expect(store.snapshot().droppedEventCount).toBe(2)
+  })
+
+  it('로드 정규화는 기존 droppedEventCount 에 누적한다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const initial: StoreState = {
+      projects: [],
+      tasks: [],
+      rooms: [],
+      messages: [],
+      events: [
+        { id: 'a', type: 'old', data: {}, ts: 1 },
+        { id: 'b', type: 'keep', data: {}, ts: 2 },
+      ],
+      sessions: [],
+      droppedEventCount: 7,
+    }
+    const store = createMemoryStore({ ...deterministic(), eventCap: 1, initial })
+    expect(store.snapshot().droppedEventCount).toBe(8) // 7 + 1
+  })
+
+  it('cap 후에도 listProjectEvents 가 projectId 필터·task.progress 제외를 유지한다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 3 })
+    store.appendEvent({ type: 'project.created', data: { projectId: 'p1' } }) // 폐기 대상
+    store.appendEvent({ type: 'task.progress', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.done', data: { projectId: 'p1' } })
+    store.appendEvent({ type: 'task.done', message: '최신', data: { projectId: 'p1' } })
+    // cap=3 → 가장 오래된 project.created 폐기. 남은 3건 중 task.progress 제외 → task.done 2건
+    const events = store.listProjectEvents('p1')
+    expect(events.map((e) => e.type)).toEqual(['task.done', 'task.done'])
+  })
+
+  it('eventCap 0/음수는 안전 기본값(5000)으로 폴백한다(조용한 손실 방지)', () => {
+    // cap<=0 이면 enforceEventCap 이 매 append 마다 전부 폐기 → 로그가 조용히 빈다. 유효치 아님 → 기본값.
+    const store = createMemoryStore({ ...deterministic(), eventCap: 0 })
+    for (let i = 0; i < 10; i++) store.appendEvent({ type: `e${i}` })
+    expect(store.listEvents()).toHaveLength(10)
+    expect(store.snapshot().droppedEventCount).toBeUndefined()
+  })
+})
+
 describe('memory store — updater channel (#98)', () => {
   it('기본 채널은 stable (미설정 시 snapshot 엔 부재)', () => {
     const store = createMemoryStore(deterministic())
@@ -283,6 +393,29 @@ describe('json-file store', () => {
     const s = createJsonFileStore(dir)
     expect(() => s.putSession({ kind: 'cli', id: 'cli:claude', adapterId: 'claude' })).not.toThrow()
     expect(s.listSessions()).toEqual([{ kind: 'cli', id: 'cli:claude', adapterId: 'claude' }])
+  })
+
+  it('eventCap 을 적용하고 droppedEventCount 를 디스크 왕복 후에도 보존한다(#126)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const a = createJsonFileStore(dir, { ...deterministic(), eventCap: 2 })
+    for (let i = 0; i < 5; i++) a.appendEvent({ type: `e${i}` })
+    expect(a.listEvents()).toHaveLength(2)
+    expect(a.snapshot().droppedEventCount).toBe(3)
+
+    // 새 인스턴스로 reload — 디스크에 cap·카운터가 영속됐는지
+    const b = createJsonFileStore(dir, { eventCap: 2 })
+    expect(b.listEvents()).toHaveLength(2)
+    expect(b.snapshot().droppedEventCount).toBe(3)
+    warn.mockRestore()
+  })
+
+  it('비배열 events(손상 파일) 로드 시 throw 없이 정규화한다(#126)', () => {
+    // 유효 JSON 이지만 events 가 비배열(sessions 와 동일 손상 클래스). 로드 시 enforceEventCap 의
+    // length/splice 가 throw 하면 UI 열기 전 부팅 크래시 → Array.isArray 정규화로 방어.
+    writeFileSync(join(dir, 'fleet-store.json'), JSON.stringify({ events: 42 }), 'utf8')
+    const s = createJsonFileStore(dir)
+    expect(s.listEvents()).toEqual([])
+    expect(() => s.appendEvent({ type: 'e' })).not.toThrow()
   })
 })
 

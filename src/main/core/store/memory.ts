@@ -24,10 +24,30 @@ function deriveTitle(goal: string): string {
 export function createMemoryStore(opts: StoreOptions = {}): Store {
   const idGen = opts.idGen ?? (() => randomUUID())
   const now = opts.now ?? (() => Date.now())
+  const cap = opts.eventCap && opts.eventCap > 0 ? opts.eventCap : 5000 // 0/음수는 전부 폐기(조용한 손실) → 기본값 폴백
   const state: StoreState = opts.initial ? structuredClone(opts.initial) : emptyState()
   // 손상 store 파일이 비배열 sessions(유효 JSON → .corrupt 미발동)를 실으면 putSession/deleteSession 의
   // findIndex 가 throw 한다. 로드 시 1회 정규화해 모든 소비처(CRUD·listSessions·엔진 복원 루프)를 보호한다.
   if (!Array.isArray(state.sessions)) state.sessions = []
+  // 손상 파일이 비배열 events(유효 JSON → .corrupt 미발동)를 실으면 아래 로드 정규화의 length/splice 가
+  // throw → UI 열기 전 부팅 크래시. sessions 와 동일 손상 클래스 — 로드 시 1회 정규화로 방어(#126 Codex 리뷰).
+  if (!Array.isArray(state.events)) state.events = []
+
+  // events rotation cap(#126): 상한 초과 시 가장 오래된 것부터 폐기 + 누적 카운터. 매 append 마다 전체 state 를
+  // 동기 재직렬화하므로(json-file.ts) cap 이 없으면 events 길이 N 에서 누적 O(N²). cap 으로 per-append O(cap) bounded.
+  const enforceEventCap = (): void => {
+    const overflow = state.events.length - cap
+    if (overflow <= 0) return
+    const firstDrop = (state.droppedEventCount ?? 0) === 0
+    state.events.splice(0, overflow) // 앞(가장 오래된)부터 제거 — 삽입 순서 = 시간순
+    state.droppedEventCount = (state.droppedEventCount ?? 0) + overflow
+    if (firstDrop) {
+      console.warn(
+        `[fleet] 이벤트 로그 상한(${cap}) 도달 — 가장 오래된 이벤트부터 폐기(누적 ${state.droppedEventCount}건).`,
+      )
+    }
+  }
+  enforceEventCap() // 로드 시 1회 정규화 — 이미 비대해진 fleet-store.json 을 메모리에서 즉시 cap(다음 save 시 디스크 반영)
 
   const save = (): void => {
     if (opts.persist) opts.persist(structuredClone(state))
@@ -154,6 +174,7 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
         ts: now(),
       }
       state.events.push(event)
+      enforceEventCap()
       save()
       return structuredClone(event)
     },
