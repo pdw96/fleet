@@ -238,6 +238,14 @@ describe('memory store — events rotation cap (#126)', () => {
     const events = store.listProjectEvents('p1')
     expect(events.map((e) => e.type)).toEqual(['task.done', 'task.done'])
   })
+
+  it('eventCap 0/음수는 안전 기본값(5000)으로 폴백한다(조용한 손실 방지)', () => {
+    // cap<=0 이면 enforceEventCap 이 매 append 마다 전부 폐기 → 로그가 조용히 빈다. 유효치 아님 → 기본값.
+    const store = createMemoryStore({ ...deterministic(), eventCap: 0 })
+    for (let i = 0; i < 10; i++) store.appendEvent({ type: `e${i}` })
+    expect(store.listEvents()).toHaveLength(10)
+    expect(store.snapshot().droppedEventCount).toBeUndefined()
+  })
 })
 
 describe('memory store — updater channel (#98)', () => {
@@ -399,6 +407,15 @@ describe('json-file store', () => {
     expect(b.listEvents()).toHaveLength(2)
     expect(b.snapshot().droppedEventCount).toBe(3)
     warn.mockRestore()
+  })
+
+  it('비배열 events(손상 파일) 로드 시 throw 없이 정규화한다(#126)', () => {
+    // 유효 JSON 이지만 events 가 비배열(sessions 와 동일 손상 클래스). 로드 시 enforceEventCap 의
+    // length/splice 가 throw 하면 UI 열기 전 부팅 크래시 → Array.isArray 정규화로 방어.
+    writeFileSync(join(dir, 'fleet-store.json'), JSON.stringify({ events: 42 }), 'utf8')
+    const s = createJsonFileStore(dir)
+    expect(s.listEvents()).toEqual([])
+    expect(() => s.appendEvent({ type: 'e' })).not.toThrow()
   })
 })
 
