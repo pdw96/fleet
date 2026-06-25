@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ModelOption } from '../../shared/types'
 import { AddAiWizard } from './AddAiWizard'
 
 function mockFleet(overrides: Record<string, unknown> = {}) {
@@ -81,5 +82,69 @@ describe('AddAiWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: /구독/ }))
     expect(await screen.findByText(/npm i -g @anthropic-ai\/claude-code/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /검증 없이 등록/ })).toBeNull()
+  })
+
+  it('API: anthropic 키+모델 → registerApiSession (effort 선택 시 thinking 반영)', async () => {
+    const reg = vi.fn().mockResolvedValue(undefined)
+    const onRegistered = vi.fn()
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={onRegistered} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-test' } })
+    fireEvent.change(screen.getByLabelText(/thinking|effort/i), { target: { value: 'high' } })
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    const cfg = reg.mock.calls[0][0]
+    expect(cfg.provider).toBe('anthropic')
+    expect(cfg.apiKey).toBe('sk-test')
+    expect(cfg.thinking?.effort).toBe('high')
+    expect(onRegistered).toHaveBeenCalled()
+  })
+  it('API: anthropic cacheTtl=1h 선택 시 config 에 반영', async () => {
+    const reg = vi.fn().mockResolvedValue(undefined)
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'k' } })
+    fireEvent.change(screen.getByLabelText(/cache/i), { target: { value: '1h' } })
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    expect(reg.mock.calls[0][0].cacheTtl).toBe('1h')
+  })
+  it('API: listModels 성공 시 모델 옵션 datalist 표시', async () => {
+    mockFleet({
+      listModels: vi
+        .fn()
+        .mockResolvedValue([{ id: 'claude-opus-4-8', label: 'Opus' }] as ModelOption[]),
+    })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'k' } })
+    await waitFor(() => expect(screen.getByText('claude-opus-4-8', { exact: false })).toBeTruthy())
+  })
+  it('API: listModels 실패 시 자유 입력 폴백 (모델 input 직접 입력 가능)', async () => {
+    mockFleet({ listModels: vi.fn().mockRejectedValue(new Error('no key')) })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'k' } })
+    await act(async () => {})
+    fireEvent.change(screen.getByLabelText(/모델/), { target: { value: 'claude-custom' } })
+    expect((screen.getByLabelText(/모델/) as HTMLInputElement).value).toBe('claude-custom')
+  })
+  it('API: openai-compatible 은 baseUrl 누락 시 등록 막고 오류 표시', async () => {
+    const reg = vi.fn()
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 호환/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'k' } })
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    expect(reg).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toMatch(/base ?url/i)
   })
 })

@@ -1,5 +1,11 @@
-import { useState } from 'react'
-import type { ApiProviderConfig, CliDetectionResult } from '../../shared/types'
+import { useEffect, useRef, useState } from 'react'
+import type {
+  ApiProviderConfig,
+  CacheTtl,
+  CliDetectionResult,
+  ModelOption,
+  ReasoningEffort,
+} from '../../shared/types'
 import { CLI_AUTH_INSTALL_META } from '../../shared/cliAuthInstallMeta'
 import { SUBSCRIPTION_BANNERS, subscriptionSupported } from './authBanners'
 
@@ -19,11 +25,29 @@ const ADAPTER_ID: Partial<Record<Provider, 'claude' | 'codex' | 'gemini'>> = {
   google: 'gemini',
 }
 
+const PROVIDER_DEFAULTS: Record<Provider, string> = {
+  anthropic: 'claude-sonnet-4-6',
+  openai: 'gpt-5.5',
+  google: 'gemini-3.5-flash',
+  'openai-compatible': '',
+}
+
 export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   const [step, setStep] = useState<Step>('provider')
   const [provider, setProvider] = useState<Provider>('anthropic')
   const [clis, setClis] = useState<CliDetectionResult[]>([])
   const [err, setErr] = useState<string | null>(null)
+
+  // API 키 단계 상태
+  const [apiKey, setApiKey] = useState('')
+  const [model, setModel] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [effort, setEffort] = useState<'' | ReasoningEffort>('')
+  const [cacheTtl, setCacheTtl] = useState<'' | CacheTtl>('')
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  // 모델 조회 요청 시퀀스 — provider/key/baseUrl 이 바뀌면 증가시켜, 이전 입력으로 보낸 in-flight 응답이
+  // 늦게 도착해 stale 한 제안으로 datalist 를 덮어쓰는 레이스를 막는다(SessionsPanel 레이스 가드 동형).
+  const modelReqSeq = useRef(0)
 
   function enterSubscription() {
     setStep('subscription')
@@ -34,6 +58,43 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
       .catch((e) => setErr(String(e)))
   }
 
+  // provider 전환 시 모델 관련 상태 초기화 — stale 제안·in-flight 레이스 방지
+  function switchProvider(p: Provider) {
+    setProvider(p)
+    setModel('')
+    setModelOptions([])
+    modelReqSeq.current++
+  }
+
+  // 키/baseUrl 변경 시 모델 라이브 조회 (SessionsPanel의 loadModels + modelReqSeq 레이스 가드 동형)
+  useEffect(() => {
+    if (!apiKey.trim()) return
+    if (provider === 'openai-compatible' && !baseUrl.trim()) return
+    // step 이 apikey 가 아닐 때는 실행하지 않음
+    if (step !== 'apikey') return
+
+    const seq = ++modelReqSeq.current // 이 요청의 토큰
+    void (async () => {
+      try {
+        const probe: ApiProviderConfig = {
+          id: `probe-${provider}`,
+          provider,
+          displayName: provider,
+          model: model.trim() || PROVIDER_DEFAULTS[provider],
+          apiKey: apiKey.trim(),
+          ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
+        }
+        const options = await window.fleet.listModels(probe)
+        if (seq === modelReqSeq.current) setModelOptions(options) // stale 응답(입력 변경됨)은 폐기
+      } catch {
+        // 실패 시 modelOptions=[] 유지 — 자유입력 폴백
+        if (seq === modelReqSeq.current) setModelOptions([])
+      }
+    })()
+    // model 은 probe 에 사용하지만 트리거로 쓰지 않음 — 키/provider/baseUrl 변경 시만 재조회
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKey, baseUrl, provider, step])
+
   if (step === 'provider') {
     return (
       <div>
@@ -42,7 +103,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
           <button
             key={p.id}
             onClick={() => {
-              setProvider(p.id)
+              switchProvider(p.id)
               setStep('method')
             }}
           >
@@ -126,9 +187,100 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
       </div>
     )
   }
+
+  // step === 'apikey'
+  async function submit() {
+    setErr(null)
+    if (provider === 'openai-compatible' && !baseUrl.trim()) {
+      setErr('openai-compatible 은 baseUrl 이 필요합니다.')
+      return
+    }
+    const config: ApiProviderConfig = {
+      id: `${provider}-${Date.now()}`,
+      provider,
+      displayName: provider,
+      model: model.trim() || PROVIDER_DEFAULTS[provider],
+      apiKey: apiKey.trim() || undefined,
+      ...(provider === 'openai-compatible' ? { baseUrl: baseUrl.trim() } : {}),
+      ...(effort ? { thinking: { effort } } : {}),
+      ...(cacheTtl ? { cacheTtl } : {}),
+    }
+    try {
+      await window.fleet.registerApiSession(config)
+      onRegistered()
+    } catch (e) {
+      setErr(`등록 실패: ${String(e)}`)
+    }
+  }
+
   return (
-    <div data-provider={provider} data-step={step}>
-      {/* Task 6 */}
+    <div>
+      <h3>API 키</h3>
+      <label>
+        API 키
+        <input aria-label="API 키" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+      </label>
+      <label>
+        모델
+        <input
+          aria-label="모델"
+          list="wizard-models"
+          value={model}
+          placeholder={PROVIDER_DEFAULTS[provider]}
+          onChange={(e) => setModel(e.target.value)}
+        />
+      </label>
+      <datalist id="wizard-models">
+        {modelOptions.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.id}
+            {m.label ? ` — ${m.label}` : ''}
+          </option>
+        ))}
+      </datalist>
+      {provider === 'openai-compatible' && (
+        <label>
+          Base URL
+          <input
+            aria-label="Base URL"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+          />
+        </label>
+      )}
+      {provider === 'anthropic' && (
+        <>
+          <label>
+            thinking effort
+            <select
+              aria-label="thinking effort"
+              value={effort}
+              onChange={(e) => setEffort(e.target.value as '' | ReasoningEffort)}
+            >
+              <option value="">off</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </label>
+          <label>
+            cache TTL
+            <select
+              aria-label="cache TTL"
+              value={cacheTtl}
+              onChange={(e) => setCacheTtl(e.target.value as '' | CacheTtl)}
+            >
+              <option value="">5m</option>
+              <option value="1h">1h</option>
+            </select>
+          </label>
+        </>
+      )}
+      <button onClick={() => void submit()}>등록</button>
+      {err && <p role="alert">{err}</p>}
+      <button onClick={() => setStep('method')}>뒤로</button>
     </div>
   )
 }
