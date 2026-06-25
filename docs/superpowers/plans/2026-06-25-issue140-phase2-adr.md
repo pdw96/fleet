@@ -455,7 +455,7 @@ ADR 작성 트리거를 단일 권위(AGENTS.md)로 수렴시키고 스킬 2개�
 
 **Interfaces:**
 - Consumes: Task 1~5 의 `docs/adr/` 시스템.
-- Produces: 리터럴 마커 "ADR 작성/갱신" 이 AGENTS.md + 두 SKILL.md 에 존재(§9.4 측정가능 마커).
+- Produces: 리터럴 마커 "ADR 작성/갱신" 이 AGENTS.md + 두 SKILL.md 에 존재(§9 item 4 측정가능 마커).
 
 - [ ] **Step 1: AGENTS.md 「백로그 착수 절차」에 결정 기록 절 추가**
 
@@ -555,7 +555,7 @@ Run:
 ls docs/adr/   # README.md TEMPLATE.md 0001..0004 = 6개
 grep -l "ADR 작성/갱신" AGENTS.md .claude/skills/fleet-backlog-rerank/SKILL.md .claude/skills/fleet-backlog-induction/SKILL.md   # 3개
 ```
-Expected: 6개 파일 + 3개 마커 매치. (§9.1·§9.4 충족.)
+Expected: 6개 파일 + 3개 마커 매치. (§9 item 1·4 충족.)
 
 - [ ] **Step 5: finish — PR 생성**
 

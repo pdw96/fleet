@@ -59,7 +59,7 @@ docs/adr/
   0001-codex-required-게이트-보류.md
   0002-issue27-백로그-본문-다이어트.md
   0003-solo-pre-1.0-과설계-roi-경계.md
-  0004-adr-시스템-경량-시작-구조lint-보류.md   # 이번 결정(전진 ADR 1호 — 도그푸드)
+  0004-adr-시스템-경량-시작.md   # 이번 결정(전진 ADR 1호 — 도그푸드)
 ```
 
 - **신규 스크립트 0** — `adr-lint.mjs` 만들지 않는다(리뷰 P2: #137 선례 = 별도 파일 아닌 `skills-lint.mjs`
