@@ -95,6 +95,13 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey, baseUrl, provider, step])
 
+  // thinkingSupported: SessionsPanel 동형 — anthropic·openai·google·openai-compatible 전체
+  const thinkingSupported =
+    provider === 'anthropic' ||
+    provider === 'openai' ||
+    provider === 'google' ||
+    provider === 'openai-compatible'
+
   if (step === 'provider') {
     return (
       <div>
@@ -218,7 +225,15 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
       <h3>API 키</h3>
       <label>
         API 키
-        <input aria-label="API 키" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+        <input
+          aria-label="API 키"
+          value={apiKey}
+          onChange={(e) => {
+            setApiKey(e.target.value)
+            modelReqSeq.current++ // 키 변경 → in-flight stale 응답 즉시 폐기(SessionsPanel 동형)
+            setModelOptions([])
+          }}
+        />
       </label>
       <label>
         모델
@@ -244,39 +259,43 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
           <input
             aria-label="Base URL"
             value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
+            onChange={(e) => {
+              setBaseUrl(e.target.value)
+              modelReqSeq.current++ // baseUrl 변경 → in-flight stale 응답 즉시 폐기(SessionsPanel 동형)
+              setModelOptions([])
+            }}
           />
         </label>
       )}
+      {thinkingSupported && (
+        <label>
+          thinking effort
+          <select
+            aria-label="thinking effort"
+            value={effort}
+            onChange={(e) => setEffort(e.target.value as '' | ReasoningEffort)}
+          >
+            <option value="">off</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+          </select>
+        </label>
+      )}
       {provider === 'anthropic' && (
-        <>
-          <label>
-            thinking effort
-            <select
-              aria-label="thinking effort"
-              value={effort}
-              onChange={(e) => setEffort(e.target.value as '' | ReasoningEffort)}
-            >
-              <option value="">off</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-              <option value="max">max</option>
-            </select>
-          </label>
-          <label>
-            cache TTL
-            <select
-              aria-label="cache TTL"
-              value={cacheTtl}
-              onChange={(e) => setCacheTtl(e.target.value as '' | CacheTtl)}
-            >
-              <option value="">5m</option>
-              <option value="1h">1h</option>
-            </select>
-          </label>
-        </>
+        <label>
+          cache TTL
+          <select
+            aria-label="cache TTL"
+            value={cacheTtl}
+            onChange={(e) => setCacheTtl(e.target.value as '' | CacheTtl)}
+          >
+            <option value="">5m</option>
+            <option value="1h">1h</option>
+          </select>
+        </label>
       )}
       <button onClick={() => void submit()}>등록</button>
       {err && <p role="alert">{err}</p>}

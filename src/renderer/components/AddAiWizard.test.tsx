@@ -135,6 +135,22 @@ describe('AddAiWizard', () => {
     fireEvent.change(screen.getByLabelText(/모델/), { target: { value: 'claude-custom' } })
     expect((screen.getByLabelText(/모델/) as HTMLInputElement).value).toBe('claude-custom')
   })
+  it('API: openai effort 선택 시 thinking 반영 (thinkingSupported parity)', async () => {
+    const reg = vi.fn().mockResolvedValue(undefined)
+    const onRegistered = vi.fn()
+    mockFleet({ registerApiSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={onRegistered} />)
+    fireEvent.click(screen.getByRole('button', { name: /Codex/ }))
+    fireEvent.click(screen.getByRole('button', { name: /API 키/ }))
+    fireEvent.change(screen.getByLabelText(/API 키/), { target: { value: 'sk-openai' } })
+    fireEvent.change(screen.getByLabelText(/thinking|effort/i), { target: { value: 'medium' } })
+    fireEvent.click(screen.getByRole('button', { name: '등록' }))
+    await act(async () => {})
+    const cfg = reg.mock.calls[0][0]
+    expect(cfg.provider).toBe('openai')
+    expect(cfg.thinking?.effort).toBe('medium')
+    expect(onRegistered).toHaveBeenCalled()
+  })
   it('API: openai-compatible 은 baseUrl 누락 시 등록 막고 오류 표시', async () => {
     const reg = vi.fn()
     mockFleet({ registerApiSession: reg })
