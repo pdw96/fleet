@@ -108,6 +108,10 @@ export interface CliAdapter {
    * 워크스페이스 파일을 직접 편집한다. 미지정 어댑터는 implementer 역할에 쓸 수 없다.
    */
   edit?: { args: string[]; parse?: CliOutputFormat }
+  /** 구독 로그인 안내용 정적 데이터(표시·복사 전용 — Fleet 이 실행하지 않음). shared 단일출처 주입. */
+  auth?: { loginCommand: string; docsUrl: string }
+  /** 미설치 시 설치 안내용 정적 데이터(표시·복사 전용). shared 단일출처 주입. */
+  install?: { hint: string; docsUrl: string }
 }
 
 /** CLI 감지 결과 — IPC 로 renderer 에 전달. */

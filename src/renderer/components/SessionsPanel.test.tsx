@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { CliDetectionResult, ModelOption } from '../../shared/types'
+import type { CliDetectionResult } from '../../shared/types'
 import { SessionsPanel } from './SessionsPanel'
 
 const installedCli: CliDetectionResult = {
@@ -23,6 +23,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     getMcpStatus: vi.fn().mockResolvedValue([]), // 마운트 시 하이드레이트 호출
     getUpdaterChannel: vi.fn().mockResolvedValue('stable'), // #98 마운트 시 채널 조회
     setUpdaterChannel: vi.fn().mockResolvedValue(undefined),
+    listModels: vi.fn().mockResolvedValue([]),
     ...overrides,
   }
   ;(window as unknown as { fleet: unknown }).fleet = fleet
@@ -46,295 +47,10 @@ afterEach(() => {
 })
 
 describe('SessionsPanel', () => {
-  it('surfaces an error and does not refresh when CLI registration fails', async () => {
-    mockFleet({ registerCliSession: vi.fn().mockRejectedValue(new Error('등록 실패함')) })
-    const onRefresh = vi.fn()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={onRefresh} />)
-
-    fireEvent.click(await screen.findByRole('button', { name: '세션 등록' }))
-
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('세션 등록 실패')
-    expect(alert.textContent).toContain('등록 실패함')
-    expect(onRefresh).not.toHaveBeenCalled()
-  })
-
-  it('refreshes after a successful CLI registration', async () => {
-    const fleet = mockFleet()
-    const onRefresh = vi.fn()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={onRefresh} />)
-
-    fireEvent.click(await screen.findByRole('button', { name: '세션 등록' }))
-
-    await waitFor(() => expect(onRefresh).toHaveBeenCalled())
-    expect(fleet.registerCliSession).toHaveBeenCalledWith('claude', { stateful: false })
-  })
-
-  it('Anthropic thinking effort 를 선택하면 registerApiSession config 에 thinking 이 실린다 (#11-thinking 활성화)', async () => {
-    const fleet = mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'xhigh' } })
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
-
-    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
-      string,
-      unknown
-    >
-    expect(cfg.provider).toBe('anthropic')
-    expect(cfg.thinking).toEqual({ effort: 'xhigh' })
-    // 세션 설정은 비영속·불가시라 displayName 에 노출해 어느 세션이 thinking 인지 확인 가능하게 한다.
-    expect(String(cfg.displayName)).toContain('thinking:xhigh')
-  })
-
-  it('thinking 기본(끄기)이면 config 에 thinking 키 자체를 넣지 않는다', async () => {
-    const fleet = mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
-
-    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
-      string,
-      unknown
-    >
-    expect('thinking' in cfg).toBe(false)
-    expect(String(cfg.displayName)).not.toContain('thinking')
-  })
-
-  it('OpenAI thinking effort 를 선택하면 config 에 thinking 이 실린다 (reasoning_effort 패리티)', async () => {
-    const fleet = mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
-    fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'high' } })
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
-
-    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
-      string,
-      unknown
-    >
-    expect(cfg.provider).toBe('openai')
-    expect(cfg.thinking).toEqual({ effort: 'high' })
-    expect(String(cfg.displayName)).toContain('thinking:high')
-  })
-
-  it('Google thinking effort 를 선택하면 config 에 thinking 이 실린다 (gemini-thinkingconfig UI 활성화 2단계)', async () => {
-    const fleet = mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
-    fireEvent.change(screen.getByLabelText(/Thinking effort/i), { target: { value: 'high' } })
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
-
-    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
-      string,
-      unknown
-    >
-    expect(cfg.provider).toBe('google')
-    expect(cfg.thinking).toEqual({ effort: 'high' })
-    expect(String(cfg.displayName)).toContain('thinking:high')
-  })
-
-  it('openai-compatible 선택 시 Base URL 입력칸과 effort 셀렉트가 노출된다', async () => {
+  it('AddAiWizard 를 렌더한다 (등록 진입점)', async () => {
     mockFleet()
     await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
-    expect(screen.getByLabelText(/Base URL/i)).toBeTruthy()
-    expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
-  })
-
-  it('openai-compatible 등록 config 에 baseUrl·provider 가 실린다', async () => {
-    const fleet = mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
-    fireEvent.change(screen.getByLabelText(/Base URL/i), {
-      target: { value: 'https://openrouter.ai/api/v1' },
-    })
-    fireEvent.change(screen.getByLabelText('모델'), { target: { value: 'qwen/qwen3-32b' } })
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
-    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
-      string,
-      unknown
-    >
-    expect(cfg.provider).toBe('openai-compatible')
-    expect(cfg.baseUrl).toBe('https://openrouter.ai/api/v1')
-    expect(cfg.model).toBe('qwen/qwen3-32b')
-  })
-
-  it('anthropic·openai·google 모두 thinking effort 셀렉트를 노출한다(3사 thinking 패리티)', async () => {
-    mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    // anthropic(기본) 노출
-    expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
-    // openai 노출(reasoning_effort 패리티)
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
-    expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
-    // google 노출(thinkingConfig 패리티 — gemini-thinkingconfig)
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
-    expect(screen.getByLabelText(/Thinking effort/i)).toBeTruthy()
-  })
-
-  it('anthropic 에서 캐시 TTL 1h 선택 → registerApiSession config 에 cacheTtl 가 실린다 (#72)', async () => {
-    const fleet = mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByLabelText(/캐시 TTL/i), { target: { value: '1h' } })
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
-
-    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
-      string,
-      unknown
-    >
-    expect(cfg.provider).toBe('anthropic')
-    expect(cfg.cacheTtl).toBe('1h')
-    expect(String(cfg.displayName)).toContain('cache:1h')
-  })
-
-  it('비-anthropic provider 에는 캐시 TTL 컨트롤이 노출되지 않는다 (#72 anthropic 한정)', async () => {
-    mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-    // anthropic(기본)에는 노출
-    expect(screen.getByLabelText(/캐시 TTL/i)).toBeTruthy()
-    // openai 로 전환하면 비노출
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
-    expect(screen.queryByLabelText(/캐시 TTL/i)).toBeNull()
-  })
-
-  it('anthropic→1h 선택 후 openai 로 전환하면 stale cacheTtl 가 config 에 누출되지 않는다 (#72 provider 게이트)', async () => {
-    const fleet = mockFleet()
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    // anthropic 에서 1h 선택 → provider 전환(셀렉트 onChange 는 cacheTtl state 를 리셋하지 않아 '1h' 잔존)
-    fireEvent.change(screen.getByLabelText(/캐시 TTL/i), { target: { value: '1h' } })
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } })
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: 'API 세션 등록' }))
-
-    await waitFor(() => expect(fleet.registerApiSession).toHaveBeenCalled())
-    const cfg = (fleet.registerApiSession as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
-      string,
-      unknown
-    >
-    // provider 게이트(provider==='anthropic' &&)만이 stale '1h' 의 누출을 막는다 — 게이트 제거 뮤테이션 차단.
-    expect(cfg.provider).toBe('openai')
-    expect('cacheTtl' in cfg).toBe(false)
-    expect(String(cfg.displayName)).not.toContain('cache:1h')
-  })
-
-  it('모델 불러오기 클릭 → listModels 결과를 datalist 옵션으로 노출한다 (#13)', async () => {
-    const fleet = mockFleet({
-      listModels: vi.fn().mockResolvedValue([
-        { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-        { id: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
-      ]),
-    })
-    const result = await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
-
-    await waitFor(() => expect(fleet.listModels).toHaveBeenCalled())
-    const cfg = (fleet.listModels as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<
-      string,
-      unknown
-    >
-    expect(cfg.provider).toBe('anthropic')
-    expect(cfg.apiKey).toBe('key-1')
-
-    await waitFor(() => {
-      const opts = [...result.container.querySelectorAll('datalist option')].map(
-        (o) => (o as HTMLOptionElement).value,
-      )
-      expect(opts).toEqual(['claude-sonnet-4-6', 'claude-opus-4-8'])
-    })
-  })
-
-  it('listModels 실패 시 에러를 표시하고 모델 입력 자유입력 폴백을 유지한다 (#13)', async () => {
-    mockFleet({ listModels: vi.fn().mockRejectedValue(new Error('조회 실패함')) })
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
-
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('조회 실패함')
-    // 입력란은 하드코딩 기본값(PROVIDER_DEFAULTS.anthropic)을 유지한다 — 자유입력 폴백.
-    expect((screen.getByLabelText('모델') as HTMLInputElement).value).toBe('claude-sonnet-4-6')
-  })
-
-  it('조회 중 provider 를 바꾸면 늦게 온 stale 응답이 datalist 를 덮어쓰지 않는다 (#13 레이스 가드)', async () => {
-    let resolveList!: (v: ModelOption[]) => void
-    const listModels = vi.fn(
-      () =>
-        new Promise<ModelOption[]>((r) => {
-          resolveList = r
-        }),
-    )
-    mockFleet({ listModels })
-    const result = await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
-    await waitFor(() => expect(listModels).toHaveBeenCalled())
-
-    // 응답 도착 전에 provider 변경 → in-flight 요청 무효화
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
-    // 늦게 도착한 이전(anthropic) 결과
-    await act(async () => {
-      resolveList([{ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' }])
-    })
-
-    const opts = [...result.container.querySelectorAll('datalist option')].map(
-      (o) => (o as HTMLOptionElement).value,
-    )
-    expect(opts).toEqual([]) // stale 결과 미반영(provider 변경으로 비워진 상태 유지)
-    // 로딩 상태는 풀려야 한다(스피너 '불러오는 중…' 영구 고정 방지 — Codex P2). 버튼 라벨이 복귀했는지로 검증.
-    expect(screen.getByRole('button', { name: '모델 불러오기' })).toBeTruthy()
-  })
-
-  it('조회가 settle 되기 전에 입력을 바꾸면 응답을 기다리지 않고 즉시 로딩이 풀려 재시도 가능하다 (#13 Codex P2)', async () => {
-    // listModels 를 영원히 pending 으로 둬 in-flight 상태를 고정(느린/불통 엔드포인트 모사).
-    const listModels = vi.fn(() => new Promise<never>(() => {}))
-    mockFleet({ listModels })
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-    fireEvent.click(screen.getByRole('button', { name: '모델 불러오기' }))
-    await waitFor(() => expect(listModels).toHaveBeenCalled())
-    // 로딩 중 — 버튼 라벨이 '불러오는 중…' 으로 바뀌어 '모델 불러오기' 는 사라진다.
-    expect(screen.queryByRole('button', { name: '모델 불러오기' })).toBeNull()
-
-    // 요청이 settle 되기 전에 provider 변경 → 즉시 로딩 해제(응답 대기 없이 재시도 가능)
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'google' } })
-    expect(screen.getByRole('button', { name: '모델 불러오기' })).toBeTruthy()
-  })
-
-  it('openai-compatible 에서 baseUrl 미입력이면 모델 불러오기 버튼이 비활성이다 (#13 UX dead-end 방지)', async () => {
-    mockFleet({ listModels: vi.fn() })
-    await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai-compatible' } })
-    fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'key-1' } })
-
-    const btn = screen.getByRole('button', { name: '모델 불러오기' }) as HTMLButtonElement
-    expect(btn.disabled).toBe(true) // baseUrl 비어 있음 → 비활성(침묵 무반응 방지)
-
-    fireEvent.change(screen.getByLabelText(/Base URL/i), {
-      target: { value: 'https://openrouter.ai/api/v1' },
-    })
-    expect(btn.disabled).toBe(false) // baseUrl 채우면 활성
+    expect(screen.getByText(/AI 추가/)).toBeTruthy()
   })
 
   it('MCP 서버 JSON 을 적용하고 상태를 표시한다', async () => {
@@ -564,6 +280,27 @@ describe('SessionsPanel', () => {
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
     fireEvent(document, new Event('visibilitychange'))
     await waitFor(() => expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2))
+  })
+
+  it('CLI 세션 카드에 presentational 미검증 배지를 표시한다 (§7a)', async () => {
+    mockFleet()
+    await renderSettled(
+      <SessionsPanel
+        sessions={[{ id: 's1', kind: 'cli' as const, displayName: 'Claude Code', ref: 'claude' }]}
+        onRefresh={vi.fn()}
+      />,
+    )
+    expect(screen.getByText(/로그인 미검증/)).toBeTruthy()
+  })
+  it('API 세션 카드에는 미검증 배지를 표시하지 않는다', async () => {
+    mockFleet()
+    await renderSettled(
+      <SessionsPanel
+        sessions={[{ id: 's2', kind: 'api' as const, displayName: 'Claude API', ref: 'cfg1' }]}
+        onRefresh={vi.fn()}
+      />,
+    )
+    expect(screen.queryByText(/로그인 미검증/)).toBeNull()
   })
 
   it('재조회가 실패(IPC reject)해도 기존 표시를 유지하고 크래시하지 않는다', async () => {
