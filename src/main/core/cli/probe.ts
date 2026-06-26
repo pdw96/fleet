@@ -13,9 +13,15 @@ const DETAIL_MAX = 500
 // renderer 인라인 표시 안정화 + 민감 토막(색코드 섞인 출력) 노출 최소화 + "제어뿐인 stderr"가
 // strip 후 빈 값이 되어 stdout 폴백/auth 분류를 가리지 않게 한다(Codex 리뷰).
 /* eslint-disable no-control-regex -- escape/제어문자 strip 목적 */
-// OSC(ESC ] … BEL|ST) · CSI(ESC [ , 파라미터 0x30-3f · 중간바이트 0x20-2f · 종결 0x40-7e) ·
-// 그 외 단일바이트 ESC 시퀀스(ESC + 0x40-7e, 예: RIS `ESC c`). 남는 bare ESC 는 C0_CTRL 이 제거.
-const ANSI_ESC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[\x30-\x3f]*[\x20-\x2f]*[@-~]|\x1b[@-~]/g
+// ANSI/VT escape 전 범위 포괄(제어뿐인 stderr 가 strip 후 빈 값이 되어 stdout 폴백/auth 분류를 가리지
+// 않도록). 순서=구체적인 것부터:
+//  1) string control(OSC ESC] · DCS ESC P · SOS ESC X · PM ESC ^ · APC ESC _) … BEL|ST(ESC \)
+//  2) CSI(ESC [ , 파라미터 0x30-3f · 중간 0x20-2f · 종결 0x40-7e)
+//  3) nF escape(ESC + 중간바이트 0x20-2f+ + 종결 0x30-7e, 예: 문자셋지정 `ESC ( B`)
+//  4) 단일바이트 Fe/Fs(ESC + 0x40-7e, 예: RIS `ESC c`)
+// 남는 bare ESC 는 C0_CTRL 이 제거.
+const ANSI_ESC =
+  /\x1b[P\]X^_][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[\x30-\x3f]*[\x20-\x2f]*[@-~]|\x1b[\x20-\x2f]+[\x30-\x7e]|\x1b[@-~]/g
 const C0_CTRL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
 /* eslint-enable no-control-regex */
 
