@@ -129,6 +129,16 @@ export interface CliDetectionResult {
   error?: string
 }
 
+// CLI 세션 "연결 테스트" probe 결과(#150). transient — 저장하지 않는다.
+export type ProbeStatus = 'ok' | 'auth' | 'error' | 'timeout'
+export interface ProbeResult {
+  status: ProbeStatus
+  /** status==='auth' — classifyCliAuthHint 결과(advisory). */
+  hint?: string
+  /** status==='error' — sanitize 된 stderr/stdout(또는 spawnError). */
+  detail?: string
+}
+
 // ── MCP 호스트 (Track 2) ────────────────────────────────────────────────────
 /** 등록할 MCP 서버 사양(stdio JSON-RPC). 도구 이름은 mcp__<name>__<tool> 로 프리픽스된다. */
 export interface McpServerSpec {
