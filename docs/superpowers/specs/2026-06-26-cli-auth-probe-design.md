@@ -74,9 +74,9 @@ export interface ProbeResult {
 - preload(`src/preload/index.ts`): `probeCli: (adapterId) => ipcRenderer.invoke('fleet:cli:probe', adapterId)`.
 - shared(`FleetBridge`): `probeCli(adapterId: CliAdapterId): Promise<ProbeResult>`.
 
-### 4.5 렌더러 — `src/renderer/components/SessionsPanel.tsx` 구독 분기
+### 4.5 렌더러 — `src/renderer/components/AddAiWizard.tsx` 구독(subscription) step
 
-"검증 없이 등록" 옆 **"연결 테스트"** secondary 버튼. 클릭 → 스피너 → `window.fleet.probeCli(adapterId)` → transient 인라인 결과:
+(picker 마법사 = `AddAiWizard`, `SessionsPanel` 이 `<AddAiWizard>` 로 렌더. probe 버튼은 `installed` 분기의 "검증 없이 등록" 옆.) **"연결 테스트"** secondary 버튼. 클릭 → 스피너 → `window.fleet.probeCli(adapterId)` → transient 인라인 결과:
 - `ok` → `✓ 방금 연결 테스트 성공 — 이 결과는 저장되지 않습니다`
 - `auth` → `⚠ {hint}`
 - `error` → `⚠ 연결 테스트 실패 — 그래도 등록할 수 있습니다 ({detail})`
