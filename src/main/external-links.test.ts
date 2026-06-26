@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isAllowedDocsUrl } from './external-links'
+import { isAllowedDocsUrl, openVerifiedCliDocs } from './external-links'
 import { CLI_AUTH_INSTALL_META, DOCS_HOST_ALLOWLIST } from '../shared/cliAuthInstallMeta'
 
 describe('isAllowedDocsUrl — 적대 가드', () => {
@@ -42,5 +42,23 @@ describe('isAllowedDocsUrl — 적대 가드', () => {
   it('파싱 불가 입력 거부', () => {
     expect(isAllowedDocsUrl('not a url')).toBe(false)
     expect(isAllowedDocsUrl('')).toBe(false)
+  })
+})
+
+describe('openVerifiedCliDocs — adapter 가드 + 위임', () => {
+  function fakeShell() {
+    const calls: string[] = []
+    return { calls, openExternal: async (u: string) => void calls.push(u) }
+  }
+  it('유효 adapter → 도출한 docsUrl로 openExternal 호출', async () => {
+    const shell = fakeShell()
+    await openVerifiedCliDocs('claude', shell)
+    expect(shell.calls).toEqual([CLI_AUTH_INSTALL_META.claude.docsUrl])
+  })
+  it('스푸핑 adapterId → 호출 없이 reject', async () => {
+    const shell = fakeShell()
+    await expect(openVerifiedCliDocs('__proto__' as never, shell)).rejects.toThrow()
+    await expect(openVerifiedCliDocs('evil' as never, shell)).rejects.toThrow()
+    expect(shell.calls).toEqual([])
   })
 })
