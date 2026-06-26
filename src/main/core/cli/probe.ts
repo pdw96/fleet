@@ -17,8 +17,10 @@ const C0_CTRL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
 /* eslint-enable no-control-regex */
 
 function sanitizeDetail(primary: string, fallback: string): string {
-  const raw = (primary.trim() || fallback.trim()).replace(ANSI_CSI, '').replace(C0_CTRL, '').trim()
-  return raw.slice(0, DETAIL_MAX)
+  // 후보를 각각 strip 한 뒤 폴백을 고른다 — primary 가 ANSI/제어문자뿐이면 strip 후 빈 값이 되어
+  // 유의미한 fallback(stdout)으로 떨어진다(strip 전 선택하면 빈 primary 가 fallback 을 가려버린다).
+  const clean = (s: string) => s.replace(ANSI_CSI, '').replace(C0_CTRL, '').trim()
+  return (clean(primary) || clean(fallback)).slice(0, DETAIL_MAX)
 }
 
 /**

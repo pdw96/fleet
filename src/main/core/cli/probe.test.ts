@@ -116,6 +116,15 @@ describe('probeCliAuth', () => {
     expect((r.detail ?? '').length).toBeLessThanOrEqual(500)
   })
 
+  it('detail: stderr 가 ANSI/제어뿐이면 strip 후 stdout 으로 폴백', async () => {
+    const { runner } = mockRunner(
+      ok({ code: 1, stdout: 'real failure detail', stderr: '\x1b[2J\x1b[0m' }),
+    )
+    const r = await probeCliAuth(claude, runner)
+    expect(r.status).toBe('error')
+    expect(r.detail).toBe('real failure detail')
+  })
+
   it('spawnError detail 도 sanitize/truncation 적용', async () => {
     const msg = '\x1b[31m' + 'z'.repeat(600)
     const { runner } = mockRunner({ code: null, stdout: '', stderr: '', spawnError: msg })
