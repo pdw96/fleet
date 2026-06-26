@@ -5,6 +5,7 @@ import type {
   CliAdapterId,
   CliDetectionResult,
   ModelOption,
+  ProbeResult,
   ReasoningEffort,
 } from '../../shared/types'
 import { CLI_AUTH_INSTALL_META } from '../../shared/cliAuthInstallMeta'
@@ -12,6 +13,21 @@ import { SUBSCRIPTION_BANNERS, subscriptionSupported } from './authBanners'
 
 type Provider = ApiProviderConfig['provider']
 type Step = 'provider' | 'method' | 'subscription' | 'apikey'
+
+/** probe 결과를 사용자용 transient 문구로 변환(저장 상태 아님 — 일회성 결과임을 명시). */
+function probeResultText(r: ProbeResult): string {
+  switch (r.status) {
+    case 'ok':
+      return '✓ 방금 연결 테스트 성공 — 이 결과는 저장되지 않습니다.'
+    case 'auth':
+      // hint(classifyCliAuthHint)는 이미 💡 로 시작하는 자기완결 advisory → ⚠ 접두 생략(이중 이모지 방지).
+      return `${r.hint ?? '⚠ 인증 문제일 수 있습니다.'} — 그래도 등록할 수 있습니다.`
+    case 'timeout':
+      return '⏱ 시간 초과 — 그래도 등록할 수 있습니다.'
+    default:
+      return `⚠ 연결 테스트 실패 — 그래도 등록할 수 있습니다.${r.detail ? ` (${r.detail})` : ''}`
+  }
+}
 
 const PROVIDERS: { id: Provider; label: string }[] = [
   { id: 'anthropic', label: 'Claude (Anthropic)' },
@@ -57,11 +73,22 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   const [cliMcp, setCliMcp] = useState('')
   // 등록 진행 중 이중 제출 방지(SessionsPanel busy 동형)
   const [submitting, setSubmitting] = useState(false)
+  // 연결 테스트(probe) — transient 결과(저장 안 함, #150). probing 은 등록(submitting)과 분리(비차단).
+  const [probing, setProbing] = useState(false)
+  const [probeMsg, setProbeMsg] = useState<string | null>(null)
+  // probe 요청 시퀀스 — 어댑터/스텝 전환 시 in-flight probe(최대 20s)가 늦게 resolve 해 다른 어댑터에
+  // stale 결과를 적용하는 레이스를 막는다(modelReqSeq 동형). 증가시키면 이전 probe 의 콜백이 무시된다.
+  const probeReqSeq = useRef(0)
 
   function enterSubscription() {
     setStep('subscription')
     setErr(null)
     setClis([])
+    // 직전 어댑터의 transient probe 결과를 폐기 + in-flight probe 무효화(seq 증가 → 늦은 결과 무시).
+    // probing 은 끄지 않는다 — 백엔드 probe(취소 미지원)가 도는 중 버튼을 재활성하면 이중 실호출이
+    // 가능해진다. in-flight 호출의 finally 가 settle 시 풀어준다(이중 과금 방지, Codex 리뷰 P2).
+    probeReqSeq.current++
+    setProbeMsg(null)
     void window.fleet
       .detectClis()
       .then(setClis)
@@ -257,6 +284,37 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
             >
               검증 없이 등록
             </button>
+            <button
+              type="button"
+              disabled={probing}
+              title="선택한 CLI로 짧은 실제 모델 호출을 1회 실행합니다. 구독/쿼터/요금이 사용될 수 있습니다."
+              onClick={() => {
+                // 이 probe 의 시퀀스를 잡고, 늦게 도착한 이전 어댑터의 결과는 무시(stale 귀속 방지).
+                const seq = ++probeReqSeq.current
+                setProbeMsg(null)
+                setProbing(true)
+                void window.fleet
+                  .probeCli(adapterId)
+                  .then((r) => {
+                    if (seq === probeReqSeq.current) setProbeMsg(probeResultText(r))
+                  })
+                  .catch(() => {
+                    if (seq === probeReqSeq.current)
+                      setProbeMsg(
+                        '⚠ 연결 테스트를 실행하지 못했습니다 — 그래도 등록할 수 있습니다.',
+                      )
+                  })
+                  // settle 시 항상 busy 해제 — in-flight 는 항상 1개(disabled 가 두 번째 클릭 차단)라
+                  // seq 무관하게 풀어도 안전하고, 재진입으로 seq 가 바뀌어도 버튼이 영구 고정되지 않는다.
+                  .finally(() => setProbing(false))
+              }}
+            >
+              {probing ? '연결 테스트 중…' : '연결 테스트'}
+            </button>
+            <p className="meta">
+              연결 테스트는 짧은 실제 모델 호출을 1회 실행합니다(구독/쿼터/요금 사용 가능).
+            </p>
+            {probeMsg && <p role="status">{probeMsg}</p>}
           </div>
         )}
         {err && <p role="alert">{err}</p>}

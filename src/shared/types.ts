@@ -129,6 +129,16 @@ export interface CliDetectionResult {
   error?: string
 }
 
+// CLI 세션 "연결 테스트" probe 결과(#150). transient — 저장하지 않는다.
+export type ProbeStatus = 'ok' | 'auth' | 'error' | 'timeout'
+export interface ProbeResult {
+  status: ProbeStatus
+  /** status==='auth' — classifyCliAuthHint 결과(advisory). */
+  hint?: string
+  /** status==='error' — sanitize 된 stderr/stdout(또는 spawnError). */
+  detail?: string
+}
+
 // ── MCP 호스트 (Track 2) ────────────────────────────────────────────────────
 /** 등록할 MCP 서버 사양(stdio JSON-RPC). 도구 이름은 mcp__<name>__<tool> 로 프리픽스된다. */
 export interface McpServerSpec {
@@ -520,6 +530,8 @@ export interface FleetBridge {
   listModels(config: ApiProviderConfig): Promise<ModelOption[]>
   /** picker 문서 링크 외부열기 — adapterId만 전달, main이 정적 docsUrl 도출·검증 후 shell.openExternal */
   openCliDocs(adapterId: CliAdapterId): Promise<void>
+  /** CLI 세션 "연결 테스트"(#150) — adapterId만 전달, main이 probe 수행. 결과는 transient(비저장). */
+  probeCli(adapterId: CliAdapterId): Promise<ProbeResult>
 
   // 프로젝트 / 오케스트레이션
   listProjects(): Promise<Project[]>

@@ -23,6 +23,7 @@ const api: FleetBridge = {
     ipcRenderer.invoke('fleet:session:capabilities', id, roles),
   listModels: (config) => ipcRenderer.invoke('fleet:session:listModels', config),
   openCliDocs: (adapterId) => ipcRenderer.invoke('fleet:external:openDocs', adapterId),
+  probeCli: (adapterId) => ipcRenderer.invoke('fleet:cli:probe', adapterId),
 
   // 프로젝트 / 오케스트레이션
   listProjects: () => ipcRenderer.invoke('fleet:project:list'),

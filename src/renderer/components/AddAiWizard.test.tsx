@@ -20,6 +20,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     registerApiSession: vi.fn().mockResolvedValue(undefined),
     listModels: vi.fn().mockResolvedValue([]),
     openCliDocs: vi.fn().mockResolvedValue(undefined),
+    probeCli: vi.fn().mockResolvedValue({ status: 'ok' }),
     ...overrides,
   }
 }
@@ -122,6 +123,89 @@ describe('AddAiWizard', () => {
     await act(async () => {})
     expect(reg).toHaveBeenCalledWith('claude', { stateful: true, model: 'claude-opus-4-8' })
     expect(onRegistered).toHaveBeenCalled()
+  })
+  it('구독: "연결 테스트" 성공 → transient 성공 문구·등록 비호출(비저장)', async () => {
+    const probeCli = vi.fn().mockResolvedValue({ status: 'ok' })
+    const reg = vi.fn().mockResolvedValue(undefined)
+    mockFleet({ probeCli, registerCliSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    await screen.findByText(/방금 연결 테스트 성공/)
+    expect(probeCli).toHaveBeenCalledWith('claude')
+    expect(reg).not.toHaveBeenCalled() // probe 는 등록과 무관(비저장)
+  })
+  it('구독: "연결 테스트" 실패(auth) → hint 표시·등록 버튼 비차단', async () => {
+    const probeCli = vi
+      .fn()
+      .mockResolvedValue({ status: 'auth', hint: '💡 인증 문제일 수 있습니다 — claude /login' })
+    mockFleet({ probeCli })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    await screen.findByText(/인증 문제일 수 있습니다/)
+    expect(
+      (screen.getByRole('button', { name: /검증 없이 등록/ }) as HTMLButtonElement).disabled,
+    ).toBe(false)
+  })
+  it('구독: probe 결과는 구독 step 재진입 시 폐기된다(stale 귀속 방지)', async () => {
+    mockFleet({ probeCli: vi.fn().mockResolvedValue({ status: 'ok' }) })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    await screen.findByText(/방금 연결 테스트 성공/)
+    // 뒤로 → 다시 구독 진입 시 transient 결과가 폐기되어야 함
+    fireEvent.click(screen.getByRole('button', { name: /뒤로/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    expect(screen.queryByText(/방금 연결 테스트 성공/)).toBeNull()
+  })
+  it('구독: in-flight probe 가 재진입 후 늦게 resolve 해도 미적용(레이스 가드)', async () => {
+    let resolveProbe!: (r: { status: string }) => void
+    const deferred = new Promise<{ status: string }>((res) => {
+      resolveProbe = res
+    })
+    mockFleet({ probeCli: vi.fn().mockReturnValue(deferred) })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    // 아직 resolve 전 — 뒤로 → 다시 구독 진입(probeReqSeq 증가 → 이전 probe 무효화)
+    fireEvent.click(screen.getByRole('button', { name: /뒤로/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    // 늦게 resolve — stale 결과는 무시되어야 함
+    resolveProbe({ status: 'ok' })
+    await act(async () => {})
+    expect(screen.queryByText(/방금 연결 테스트 성공/)).toBeNull()
+  })
+  it('구독: in-flight probe 중 재진입해도 버튼 disabled 유지 → 이중 실호출 차단', async () => {
+    let resolveProbe!: (r: { status: string }) => void
+    const deferred = new Promise<{ status: string }>((res) => {
+      resolveProbe = res
+    })
+    const probeCli = vi.fn().mockReturnValue(deferred)
+    mockFleet({ probeCli })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    // 아직 settle 전 — 뒤로 → 재진입(probing 유지, 버튼 disabled)
+    fireEvent.click(screen.getByRole('button', { name: /뒤로/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    const btn = await screen.findByRole('button', { name: /연결 테스트/ })
+    expect((btn as HTMLButtonElement).disabled).toBe(true) // in-flight 라 비활성 → 두 번째 호출 불가
+    expect(probeCli).toHaveBeenCalledTimes(1)
+    // settle 후 재활성
+    resolveProbe({ status: 'ok' })
+    await act(async () => {})
+    expect(
+      (screen.getByRole('button', { name: /연결 테스트/ }) as HTMLButtonElement).disabled,
+    ).toBe(false)
   })
 
   it('API: anthropic 키+모델 → registerApiSession (effort 선택 시 thinking 반영)', async () => {

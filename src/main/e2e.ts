@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CommandResult, CommandRunner } from './core/cli/detect'
+import { PROBE_PROMPT } from './core/cli/probe'
 import type { FleetEngine } from './core/engine'
 
 /**
@@ -13,12 +14,16 @@ import type { FleetEngine } from './core/engine'
 /**
  * 페이크 명령 실행기:
  *  - `--version`(감지): 즉시 설치됨으로 응답해 세션 등록이 가능하게 한다.
+ *  - 연결 테스트(probe): stdin 이 PROBE_PROMPT 인 헤드리스 호출은 결정론적 성공으로 응답한다
+ *    (없으면 아래 never-settle 분기로 빠져 picker 의 "연결 테스트" 버튼이 probing 에 영구 고정된다).
  *  - 채팅 발언: claude-stream 토큰 1개를 흘린 뒤 영원히 in-flight 로 둔다. 진행(busy)·라이브 말풍선이
  *    관찰 가능한 상태로 멈춰, 탭 언마운트/리마운트 후 복원을 검증할 수 있다(앱 종료가 정리).
  */
-export const e2eRunner: CommandRunner = (_command, args, _opts, onStdout) => {
+export const e2eRunner: CommandRunner = (_command, args, opts, onStdout) => {
   if (args.includes('--version'))
     return Promise.resolve({ code: 0, stdout: 'fleet-e2e 9.9.9', stderr: '' })
+  if (opts.stdinInput === PROBE_PROMPT)
+    return Promise.resolve({ code: 0, stdout: 'ok', stderr: '' })
   onStdout?.(
     '{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"진행 중 응답"}}}\n',
   )
