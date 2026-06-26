@@ -5,6 +5,7 @@ import type {
   CliAdapterId,
   CliDetectionResult,
   ModelOption,
+  ProbeResult,
   ReasoningEffort,
 } from '../../shared/types'
 import { CLI_AUTH_INSTALL_META } from '../../shared/cliAuthInstallMeta'
@@ -12,6 +13,20 @@ import { SUBSCRIPTION_BANNERS, subscriptionSupported } from './authBanners'
 
 type Provider = ApiProviderConfig['provider']
 type Step = 'provider' | 'method' | 'subscription' | 'apikey'
+
+/** probe 결과를 사용자용 transient 문구로 변환(저장 상태 아님 — 일회성 결과임을 명시). */
+function probeResultText(r: ProbeResult): string {
+  switch (r.status) {
+    case 'ok':
+      return '✓ 방금 연결 테스트 성공 — 이 결과는 저장되지 않습니다.'
+    case 'auth':
+      return `⚠ ${r.hint ?? '인증 문제일 수 있습니다.'} — 그래도 등록할 수 있습니다.`
+    case 'timeout':
+      return '⏱ 시간 초과 — 그래도 등록할 수 있습니다.'
+    default:
+      return `⚠ 연결 테스트 실패 — 그래도 등록할 수 있습니다.${r.detail ? ` (${r.detail})` : ''}`
+  }
+}
 
 const PROVIDERS: { id: Provider; label: string }[] = [
   { id: 'anthropic', label: 'Claude (Anthropic)' },
@@ -57,6 +72,9 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   const [cliMcp, setCliMcp] = useState('')
   // 등록 진행 중 이중 제출 방지(SessionsPanel busy 동형)
   const [submitting, setSubmitting] = useState(false)
+  // 연결 테스트(probe) — transient 결과(저장 안 함, #150). probing 은 등록(submitting)과 분리(비차단).
+  const [probing, setProbing] = useState(false)
+  const [probeMsg, setProbeMsg] = useState<string | null>(null)
 
   function enterSubscription() {
     setStep('subscription')
@@ -257,6 +275,28 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
             >
               검증 없이 등록
             </button>
+            <button
+              type="button"
+              disabled={probing}
+              title="선택한 CLI로 짧은 실제 모델 호출을 1회 실행합니다. 구독/쿼터/요금이 사용될 수 있습니다."
+              onClick={() => {
+                setProbeMsg(null)
+                setProbing(true)
+                void window.fleet
+                  .probeCli(adapterId)
+                  .then((r) => setProbeMsg(probeResultText(r)))
+                  .catch(() =>
+                    setProbeMsg('⚠ 연결 테스트를 실행하지 못했습니다 — 그래도 등록할 수 있습니다.'),
+                  )
+                  .finally(() => setProbing(false))
+              }}
+            >
+              {probing ? '연결 테스트 중…' : '연결 테스트'}
+            </button>
+            <p className="meta">
+              연결 테스트는 짧은 실제 모델 호출을 1회 실행합니다(구독/쿼터/요금 사용 가능).
+            </p>
+            {probeMsg && <p role="status">{probeMsg}</p>}
           </div>
         )}
         {err && <p role="alert">{err}</p>}

@@ -20,6 +20,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     registerApiSession: vi.fn().mockResolvedValue(undefined),
     listModels: vi.fn().mockResolvedValue([]),
     openCliDocs: vi.fn().mockResolvedValue(undefined),
+    probeCli: vi.fn().mockResolvedValue({ status: 'ok' }),
     ...overrides,
   }
 }
@@ -122,6 +123,32 @@ describe('AddAiWizard', () => {
     await act(async () => {})
     expect(reg).toHaveBeenCalledWith('claude', { stateful: true, model: 'claude-opus-4-8' })
     expect(onRegistered).toHaveBeenCalled()
+  })
+  it('구독: "연결 테스트" 성공 → transient 성공 문구·등록 비호출(비저장)', async () => {
+    const probeCli = vi.fn().mockResolvedValue({ status: 'ok' })
+    const reg = vi.fn().mockResolvedValue(undefined)
+    mockFleet({ probeCli, registerCliSession: reg })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    await screen.findByText(/방금 연결 테스트 성공/)
+    expect(probeCli).toHaveBeenCalledWith('claude')
+    expect(reg).not.toHaveBeenCalled() // probe 는 등록과 무관(비저장)
+  })
+  it('구독: "연결 테스트" 실패(auth) → hint 표시·등록 버튼 비차단', async () => {
+    const probeCli = vi
+      .fn()
+      .mockResolvedValue({ status: 'auth', hint: '💡 인증 문제일 수 있습니다 — claude /login' })
+    mockFleet({ probeCli })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    await screen.findByText(/인증 문제일 수 있습니다/)
+    expect(
+      (screen.getByRole('button', { name: /검증 없이 등록/ }) as HTMLButtonElement).disabled,
+    ).toBe(false)
   })
 
   it('API: anthropic 키+모델 → registerApiSession (effort 선택 시 thinking 반영)', async () => {
