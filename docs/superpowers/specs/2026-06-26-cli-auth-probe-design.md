@@ -49,7 +49,7 @@ probeCliAuth(adapter: CliAdapter, runner: CommandRunner = defaultRunner)
 | `res.code !== 0` & 미매치 | `{ status: 'error', detail }` |
 
 - **never-throws 계약**(등록 비차단) — 테스트로 고정.
-- `detail` = **stderr 우선 + 길이 truncation**(예: 500자) — 계정/경로/토큰 일부·codex JSONL stdout 노출 방지(Codex 보정).
+- `detail` = **stderr 우선(비면 stdout 폴백) → ANSI/제어시퀀스 제거 → 길이 truncation(500자)**. 작은 `stripControlSeq` 유틸(과설계 금지·기존 `cleanCliOutput`엔 ANSI 제거 없음 확인). 계정/경로/토큰 일부·codex JSONL stdout 노출·색코드 깨짐 방지(Codex 설계+스펙 리뷰 보정).
 
 ### 4.2 타입 `ProbeResult` — `src/shared/types.ts`
 
@@ -106,8 +106,10 @@ export interface ProbeResult {
 - `probe.test.ts`(신규):
   - `ok`(exit 0) · `auth`(exit≠0 + stderr "not logged in" → hint 포함) · `error`(exit≠0 비-auth) · `timeout`(spawnError `ETIMEDOUT`/`ABORTED`) · **`ENOBUFS`→`error`**(timeout 아님) 단언.
   - argv = `buildHeadlessArgs(adapter, PROBE_PROMPT)` · `promptVia==='stdin'`이면 stdinInput=PROBE_PROMPT, 아니면 undefined · `timeoutMs===PROBE_TIMEOUT_MS` 단언.
+  - **`promptVia:'arg'` + `headless.args:['run','{prompt}']` 어댑터** → stdinInput=undefined·argv에 PROBE_PROMPT 치환(미래 어댑터 계약 고정 — Codex 스펙 리뷰 near-mandatory).
+  - **headless 없는 어댑터** → `buildHeadlessArgs` fallback `['{prompt}']`→`[PROBE_PROMPT]`.
   - **never-throws** 단언(모든 분기).
-  - `detail` truncation 단언(긴 stderr 잘림).
+  - `detail` = stderr 우선·stdout 폴백 시에도 truncation 적용·**ANSI/제어시퀀스 제거** 단언(긴 stderr 잘림 + `\x1b[31m...\x1b[0m` 제거).
 - `engine.test.ts` 보강: `probeCli` adapterId→adapter 라우팅 · unknown id → `{status:'error'}`.
 - 렌더러(vitest): "연결 테스트" 버튼 렌더(구독 분기) · 클릭→스피너→상태별 결과 표시 · **실패가 등록 버튼/플로우 비차단** · **성공 시 descriptor/session 저장값 불변**.
 - IPC 가드: unknown adapterId 거부/일관 처리.
@@ -115,10 +117,14 @@ export interface ProbeResult {
 
 ## 9. Codex 독립 리뷰 반영 (2026-06-26, #150)
 
-판정 **조건부 승인** — P1×2 + 보정 전량 코드 검증 후 수용(반박 0):
+**1차 — 설계 리뷰 판정 「조건부 승인」** — P1×2 + 보정 전량 코드 검증 후 수용(반박 0):
 1. P1-1: `buildHeadlessArgs` 재사용(`{prompt}`·`promptVia` 계약 흡수) — §4.1.
 2. P1-2: transient 성공 문구 분리 — §4.5.
 3. 보정: `ProbeResult`→shared(§4.2) · IPC parity 3곳(§4.4) · `detail` truncation+stderr 우선(§4.1·§7) · `ENOBUFS`→error 테스트(§8) · never-throws 고정(§4.1·§8) · `PROBE_TIMEOUT_MS` 상수+mock-only 테스트(§4.1·§8) · 비용 고지 강화(§4.5) · 절대 표현 하향(§6·§7) · 렌더러 비저장/비차단 테스트(§8).
+
+**2차 — 스펙 리뷰 판정 「승인(P0/P1 블로커 없음)」** — 분류표 순서·`PROBE_PROMPT`·shared 타입·runner 주입·unknown-id non-throwing 정합 확인. 잔여 P2 2건 수용:
+4. `detail` sanitize 에 **ANSI/제어시퀀스 제거** 추가(작은 유틸·과설계 금지) — §4.1·§8.
+5. **`promptVia:'arg'` + headless-fallback 테스트**(buildHeadlessArgs 재사용 계약 고정) — §8.
 
 ## 10. 참고
 
