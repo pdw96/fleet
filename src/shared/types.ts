@@ -2,7 +2,6 @@
  * 단일 진실 원천 타입 — main / preload / renderer 가 공유한다.
  * 런타임/DOM/Node 의존이 없는 순수 타입 선언만 둔다.
  */
-import type { CliAdapterId } from './cliAuthInstallMeta'
 
 // ── 앱 메타 ────────────────────────────────────────────────────────────────
 export interface AppInfo {
@@ -14,6 +13,8 @@ export interface AppInfo {
 }
 
 // ── LLM 연결 ────────────────────────────────────────────────────────────────
+/** 구독(CLI) 어댑터 식별자 — picker·외부열기 IPC·registry 공용 단일 출처. */
+export type CliAdapterId = 'claude' | 'codex' | 'gemini'
 export type LlmConnectionKind = 'cli' | 'api'
 
 /**

@@ -9,8 +9,8 @@ describe('isAllowedDocsUrl — 적대 가드', () => {
     }
   })
   it('각 adapter의 실제 docsUrl을 허용 (meta↔가드 동기화 회귀)', () => {
-    for (const id of ['claude', 'codex', 'gemini'] as const) {
-      expect(isAllowedDocsUrl(CLI_AUTH_INSTALL_META[id].docsUrl)).toBe(true)
+    for (const { docsUrl } of Object.values(CLI_AUTH_INSTALL_META)) {
+      expect(isAllowedDocsUrl(docsUrl)).toBe(true)
     }
   })
   it('https 외 스킴 거부', () => {

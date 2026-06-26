@@ -2,11 +2,8 @@
 // 보증: 핸드오프하는 최초 URL이 컴파일타임 정적 allowlist docs URL임만 보증한다.
 // browser-side redirect(핸드오프 이후)는 Fleet 앱 네비가 아니므로 보증 범위 밖이다.
 // window-guards(renderer 전면차단)는 불변 — 이 경로는 그 가드를 우회/완화하지 않는다.
-import {
-  CLI_AUTH_INSTALL_META,
-  DOCS_HOST_ALLOWLIST,
-  type CliAdapterId,
-} from '../shared/cliAuthInstallMeta'
+import { CLI_AUTH_INSTALL_META, DOCS_HOST_ALLOWLIST } from '../shared/cliAuthInstallMeta'
+import type { CliAdapterId } from '../shared/types'
 
 /**
  * https + userinfo 금지 + port 금지 + exact hostname allowlist.

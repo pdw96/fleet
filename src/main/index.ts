@@ -12,8 +12,8 @@ import type {
   RunProjectRequest,
   UpdateEvent,
   UpdaterChannel,
+  CliAdapterId,
 } from '../shared/types'
-import type { CliAdapterId } from '../shared/cliAuthInstallMeta'
 import { installAutoUpdate } from './auto-update'
 import { createFleetEngine, type FleetEngine } from './core/engine'
 import { createIpcApprover, type IpcApprover } from './core/safety/approval-bridge'

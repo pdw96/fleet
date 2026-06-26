@@ -2,11 +2,12 @@ import { useRef, useState } from 'react'
 import type {
   ApiProviderConfig,
   CacheTtl,
+  CliAdapterId,
   CliDetectionResult,
   ModelOption,
   ReasoningEffort,
 } from '../../shared/types'
-import { CLI_AUTH_INSTALL_META, type CliAdapterId } from '../../shared/cliAuthInstallMeta'
+import { CLI_AUTH_INSTALL_META } from '../../shared/cliAuthInstallMeta'
 import { SUBSCRIPTION_BANNERS, subscriptionSupported } from './authBanners'
 
 type Provider = ApiProviderConfig['provider']
@@ -163,7 +164,15 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
         <button type="button" onClick={() => void navigator.clipboard?.writeText(meta.docsUrl)}>
           URL 복사
         </button>
-        <button type="button" onClick={() => void window.fleet.openCliDocs(adapterId)}>
+        <button
+          type="button"
+          onClick={() => {
+            setErr(null)
+            void window.fleet
+              .openCliDocs(adapterId)
+              .catch(() => setErr('문서 열기에 실패했습니다.'))
+          }}
+        >
           문서 열기
         </button>
         {!installed ? (

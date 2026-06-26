@@ -16,7 +16,7 @@
 - `loginCommand`/`installHint`는 copy-only 유지(외부열기 대상 아님).
 - IPC 채널은 **리터럴 문자열**로만 쓴다(ipc-parity.test 전제). 채널명 = `fleet:external:openDocs`.
 - 실패 에러는 path-free·raw URL 미노출.
-- 커밋 트레일러: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` + `Claude-Session: https://claude.ai/code/session_01ATAm6fQgqgDtAPT4skrsaj`.
+- 커밋 트레일러: 하네스가 요구하는 `Co-Authored-By` + `Claude-Session` 트레일러를 커밋 메시지에 부기(구체 세션 값은 세션별이라 문서에 박지 않음).
 
 ---
 
