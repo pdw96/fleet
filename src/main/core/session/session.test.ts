@@ -35,6 +35,23 @@ const claudeAdapter: CliAdapter = {
   versionArgs: ['--version'],
   headless: { args: ['-p', '{prompt}'] },
 }
+// auth 메타가 붙은 어댑터 — #148 인증 실패 recovery hint 경로 검증용(claudeAdapter 는 auth 없음).
+const claudeAuthAdapter: CliAdapter = {
+  ...claudeAdapter,
+  auth: {
+    loginCommand: 'claude auth login',
+    docsUrl: 'https://docs.anthropic.com/en/docs/claude-code',
+  },
+}
+
+// 거부 시 에러 메시지를 반환(테스트 단언용). resolve 되면 명시적 실패.
+const rejectionMessage = (p: Promise<unknown>): Promise<string> =>
+  p.then(
+    () => {
+      throw new Error('기대한 거부가 발생하지 않았습니다(resolve)')
+    },
+    (e: unknown) => (e as Error).message,
+  )
 
 function fakeProvider(): { provider: ApiProvider; seen: ChatTurn[][] } {
   const seen: ChatTurn[][] = []
@@ -717,6 +734,38 @@ describe('createCliSession', () => {
     })
     const s = createCliSession(cliDesc, claudeAdapter, runner)
     await expect(s.send('x')).rejects.toThrow('ENOENT')
+  })
+
+  it('auth-형 실패(code≠0 + auth stderr)면 종료코드 메시지에 recovery hint 를 덧붙인다 (#148)', async () => {
+    const runner: CommandRunner = async () => ({
+      code: 1,
+      stdout: '',
+      stderr: 'Error: not logged in',
+    })
+    const s = createCliSession(cliDesc, claudeAuthAdapter, runner)
+    const msg = await rejectionMessage(s.send('x'))
+    expect(msg).toContain('종료코드 1') // 기존 base 보존
+    expect(msg).toContain('claude auth login') // + advisory hint
+  })
+
+  it('spawnError 면 auth-형 stderr 여도 hint 없이 기존 실행 실패 메시지 (무회귀)', async () => {
+    const runner: CommandRunner = async () => ({
+      code: null,
+      stdout: '',
+      stderr: 'authentication required',
+      spawnError: 'ETIMEDOUT',
+    })
+    const s = createCliSession(cliDesc, claudeAuthAdapter, runner)
+    const msg = await rejectionMessage(s.send('x'))
+    expect(msg).toContain('실행 실패: ETIMEDOUT')
+    expect(msg).not.toContain('claude auth login')
+  })
+
+  it('비-auth 실패(code≠0)는 기존 종료코드 메시지를 그대로 유지한다 (무회귀)', async () => {
+    const runner: CommandRunner = async () => ({ code: 1, stdout: '', stderr: 'boom' })
+    const s = createCliSession(cliDesc, claudeAuthAdapter, runner)
+    const msg = await rejectionMessage(s.send('x'))
+    expect(msg).toBe('claude 종료코드 1: boom')
   })
 
   it('throws when adapter has no headless support', async () => {

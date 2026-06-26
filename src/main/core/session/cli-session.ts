@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { CliAdapter, CliSessionSpec, LlmDescriptor } from '../../../shared/types'
+import { classifyCliAuthHint } from '../cli/authHint'
 import { defaultRunner, type CommandResult, type CommandRunner } from '../cli/detect'
 import { cleanCliOutput, extractCodexThreadId, parseStreamLine } from '../cli/output'
 import { settleOrAbort } from './abort'
@@ -17,10 +18,18 @@ export function buildHeadlessArgs(adapter: CliAdapter, prompt: string): string[]
 const buildEditArgs = (edit: { args: string[] }, prompt: string, workspace: string): string[] =>
   edit.args.map((a) => a.replaceAll('{workspace}', workspace).replaceAll('{prompt}', prompt))
 
-/** spawn 실패/비정상 종료를 통일된 에러로 변환. */
-function assertRunOk(command: string, res: CommandResult): void {
-  if (res.spawnError) throw new Error(`${command} 실행 실패: ${res.spawnError}`)
-  if (res.code !== 0) throw new Error(`${command} 종료코드 ${res.code}: ${res.stderr.trim()}`)
+/**
+ * spawn 실패/비정상 종료를 통일된 에러로 변환.
+ * 비정상 종료가 인증 문제로 보이면 advisory recovery hint 를 base 뒤에 덧붙인다(#148, classifyCliAuthHint).
+ * spawnError 분기는 hint 분류 전 즉시 throw(설치·실행·취소 실패는 auth 아님).
+ */
+function assertRunOk(adapter: CliAdapter, res: CommandResult): void {
+  if (res.spawnError) throw new Error(`${adapter.command} 실행 실패: ${res.spawnError}`)
+  if (res.code !== 0) {
+    const base = `${adapter.command} 종료코드 ${res.code}: ${res.stderr.trim()}`
+    const hint = classifyCliAuthHint(adapter, res)
+    throw new Error(hint ? `${base}\n\n${hint}` : base)
+  }
 }
 
 /**
@@ -120,7 +129,7 @@ export function createCliSession(
         onStdout,
       )
       emitLine(buf) // 마지막 개행 없는 잔여 라인
-      assertRunOk(adapter.command, res)
+      assertRunOk(adapter, res)
       // 파서 드리프트 관측(#11): exit-0 인데 스트림 파서가 델타를 0개 뽑았고 원시 출력은 있으면
       // CLI 출력 이벤트 스키마가 바뀌었을 가능성이 높다 — 버퍼 정제 폴백 전에 경고를 남긴다.
       if (full === '' && res.stdout.trim() !== '') {
@@ -138,7 +147,7 @@ export function createCliSession(
       signal: sendOpts.signal,
       stdinInput,
     })
-    assertRunOk(adapter.command, res)
+    assertRunOk(adapter, res)
     const text = cleanCliOutput(parseFmt, res.stdout)
     sendOpts.onChunk?.(text)
     return { res, text }

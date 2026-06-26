@@ -150,7 +150,9 @@ const FORBIDDEN_AUTH_CONTEXT_PATTERN =
 - **stderr `syntax error` + stdout `unauthenticated`**(code 1) → null — "stdout 폴백 = stderr 비었을 때만" 고정(Codex 스펙리뷰).
 - **stderr `rate limit exceeded` + stdout `not logged in`**(code 1) → null — stderr-primary + exclude-first 우선순위 고정(Codex 스펙리뷰).
 
-### 8.2 `cli-session.test.ts` 보강(통합)
+### 8.2 `session.test.ts`(`createCliSession` describe) 보강(통합)
+
+> 기존 CLI 세션 테스트가 `session.test.ts` 에 있어 신규 파일 대신 그 describe 에 보강(테스트 분산 회피).
 
 - `spawnError:'ABORTED'` + stderr `not logged in` → throw 메시지에 hint 없음(우선순위 명시).
 - `spawnError:'ETIMEDOUT'` + stderr `authentication required` → hint 없음.
@@ -160,7 +162,7 @@ const FORBIDDEN_AUTH_CONTEXT_PATTERN =
 ## 9. 파일 변경 범위
 
 - **신규**: `src/main/core/cli/authHint.ts` · `src/main/core/cli/authHint.test.ts`.
-- **수정**: `src/main/core/session/cli-session.ts`(`assertRunOk` 시그니처 + 호출부 2곳) · `src/main/core/session/cli-session.test.ts`(보강).
+- **수정**: `src/main/core/session/cli-session.ts`(`assertRunOk` 시그니처 + 호출부 2곳) · `src/main/core/session/session.test.ts`(`createCliSession` describe 보강).
 - **ADR 불필요**: 국소 구현 결정 — 환원불가한 교차 관례 아님.
 
 ## 10. 품질 게이트
