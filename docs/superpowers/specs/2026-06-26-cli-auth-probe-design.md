@@ -35,7 +35,7 @@ probeCliAuth(adapter: CliAdapter, runner: CommandRunner = defaultRunner)
 동작:
 - argv = **`buildHeadlessArgs(adapter, PROBE_PROMPT)`** 재사용(Codex P1-1 — `{prompt}` 치환·미래 어댑터 흡수). `src/main/core/session/cli-session.ts:12` 의 기존 export.
 - stdin = 기존 `stdinFor` 로직과 동형: `adapter.promptVia === 'stdin' ? PROBE_PROMPT : undefined`.
-- 실행: `runner(adapter.command, argv, { timeoutMs: PROBE_TIMEOUT_MS, stdinInput })`. (v1 취소 UI 없음 → AbortSignal 미도입; bounding 은 runner 내부 timeout+kill-tree 가 담당 — YAGNI.)
+- 실행: `runner(adapter.command, argv, { timeoutMs: PROBE_TIMEOUT_MS, stdinInput, signal })`. 취소 **UI** 는 v1 비목표지만, **AbortSignal 은 engine 이 주입**해 (a) 동일 adapter 동시 호출 dedupe (b) `dispose()` 종료 abort 에 쓴다(아래 §4.3). bounding 은 runner 내부 timeout+kill-tree 도 병행.
 - `PROBE_PROMPT` = 최소 프롬프트(예: `Reply with: ok`) — 토큰 최소화. **모델 출력 비검사**(exit + stderr 만).
 - `PROBE_TIMEOUT_MS = 20_000` — 모델 왕복 여유 + kill-tree 보호(상수·테스트로 고정).
 
@@ -67,7 +67,11 @@ export interface ProbeResult {
 
 ### 4.3 엔진 `engine.probeCli(adapterId)` — `src/main/core/engine.ts`
 
-`cliRegistry.get(adapterId)` 조회 → 없으면 `{ status: 'error', detail: 'unknown adapter' }`(non-throwing 일관) → 있으면 `probeCliAuth(adapter, runner)`. `detectClis` 와 동일 `runner` 사용.
+`cliRegistry.get(adapterId)` 조회 → 없으면 `{ status: 'error', detail: 'unknown adapter' }`(non-throwing 일관) → 있으면 `probeCliAuth(adapter, runner, signal)`. `detectClis` 와 동일 `runner` 사용.
+
+**in-flight 추적(activeProbes: adapterId → {promise, controller})** — `activeRuns`/`activeChatRuns` 와 대칭:
+- **dedupe**: 동일 adapter 가 in-flight 면 그 promise 를 공유 → 렌더러 언마운트(탭 전환)/재클릭에도 실 모델 호출 1회(이중 과금 방지). 렌더러측 `probing` 가드의 빈틈(언마운트 시 state 소실) 보강.
+- **dispose abort**: `dispose()` 가 in-flight probe 의 `controller.abort()` → 앱 종료 직전 시작된 probe 의 spawn 자식 orphan 방지(20s 타이머는 종료 후 안 fire).
 
 ### 4.4 IPC — parity 3곳
 
@@ -134,6 +138,8 @@ export interface ProbeResult {
 **4차 — PR 봇 리뷰(Codex·CodeRabbit) 반영**
 8. probe 레이스 가드(`probeReqSeq`, modelReqSeq 동형) — in-flight probe 가 어댑터 재진입 후 늦게 resolve 해 stale 결과를 타 CLI 에 적용하던 레이스 차단(Codex P2·CodeRabbit).
 9. PR 재리뷰 P3: spawnError detail sanitize · `e2eRunner` probe 결정론 분기(FLEET_E2E hang 회피) · brain.md 재생성 · **escape 제거기를 OSC/Fe 까지 확장**(CSI 만으론 OSC 잔여가 stdout 폴백을 가림) · **분류(classifyCliAuthHint)도 정제된 stderr→stdout 선택**(제어뿐 stderr 시 stdout 의 auth 실패 인식). → §4.1 의 `detail` 은 `stripEsc`(escape+제어 strip) 후 stderr→stdout 폴백.
+10. PR 재리뷰 P2/P3(이중호출·escape long-tail): in-flight 중 재진입 이중호출 차단(렌더러 `probing` 유지) · escape strip 을 **ANSI 택소노미 전 범위**로 포괄(string-control OSC/DCS/SOS/PM/APC payload·private CSI·nF·단일 Fe/Fs·**8-bit C1 0x80-9f**) → 제어-only stderr 가 strip 후 빈 값(불변식 완결).
+11. PR 재리뷰 P2×2(probe 생명주기): **engine `activeProbes` 추적** 도입(§4.3) — 동일 adapter dedupe(탭 언마운트 이중 과금 방지)·`dispose()` abort(종료 orphan 방지). **반박 1건**: raw 8-bit C1(0x9b) 은 runner 의 UTF-8 디코드서 U+FFFD 로 깨져 문자열-레벨 strip 불가 — 올바른 fix 위치는 공유 runner 의 바이트 경계라 #150 범위 밖(시나리오도 비현실: claude/codex/gemini 가 raw C1 stderr 미방출).
 
 ## 10. 참고
 

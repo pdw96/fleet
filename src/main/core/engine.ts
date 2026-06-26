@@ -246,6 +246,14 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
    */
   const activeChatRuns = new Map<string, AbortController>()
 
+  // 진행 중 probe(#150): adapterId → {promise, controller}. 동일 adapter 동시 호출은 promise 를 공유해
+  // 이중 실호출/과금을 막고(렌더러 언마운트/재클릭에도 견고), dispose 가 controller 를 abort 해 종료 시
+  // orphan CLI 자식을 막는다(activeRuns/activeChatRuns 와 대칭).
+  const activeProbes = new Map<
+    string,
+    { promise: Promise<ProbeResult>; controller: AbortController }
+  >()
+
   const enterOp = (roomId: string): void => {
     const n = (activeOps.get(roomId) ?? 0) + 1
     activeOps.set(roomId, n)
@@ -474,7 +482,15 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     probeCli(adapterId) {
       const adapter = cliRegistry.get(adapterId)
       if (!adapter) return Promise.resolve({ status: 'error', detail: 'unknown adapter' })
-      return probeCliAuth(adapter, runner)
+      // 동일 adapter in-flight 면 그 호출을 공유 — 렌더러 언마운트(탭 전환)/재클릭에도 실 모델 호출은 1회.
+      const existing = activeProbes.get(adapterId)
+      if (existing) return existing.promise
+      const controller = new AbortController()
+      const promise = probeCliAuth(adapter, runner, controller.signal).finally(() => {
+        activeProbes.delete(adapterId)
+      })
+      activeProbes.set(adapterId, { promise, controller })
+      return promise
     },
 
     listAdapters() {
@@ -823,6 +839,9 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // (CLI 자식 미킬·API HTTP 미중단) 컨트롤러 abort 만이 orphan 자식/미정착 send 를 막는다(activeRuns 와 대칭).
       for (const c of activeChatRuns.values()) c.abort()
       activeChatRuns.clear()
+      // 진행 중 probe(#150) 도 abort — 종료 직전 시작된 probe 의 spawn 자식이 orphan 으로 남지 않게.
+      for (const { controller } of activeProbes.values()) controller.abort()
+      activeProbes.clear()
       // 한쪽 정리 실패가 다른 쪽(특히 MCP 자식 프로세스) 정리를 막지 않도록 격리한다 — 좀비 방지가 목적.
       await Promise.allSettled([sessions.disposeAll(), mcpHost.dispose()])
     },

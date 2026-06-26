@@ -38,13 +38,14 @@ function stripEsc(s: string): string {
 export async function probeCliAuth(
   adapter: CliAdapter,
   runner: CommandRunner = defaultRunner,
+  signal?: AbortSignal,
 ): Promise<ProbeResult> {
   const args = buildHeadlessArgs(adapter, PROBE_PROMPT)
   const stdinInput = adapter.promptVia === 'stdin' ? PROBE_PROMPT : undefined
 
   let res: CommandResult
   try {
-    res = await runner(adapter.command, args, { timeoutMs: PROBE_TIMEOUT_MS, stdinInput })
+    res = await runner(adapter.command, args, { timeoutMs: PROBE_TIMEOUT_MS, stdinInput, signal })
   } catch (e) {
     // never-throws: runner 가 reject 해도(주입 runner·미래 구현) error 로 정규화한다.
     return { status: 'error', detail: stripEsc(String(e)).slice(0, DETAIL_MAX) }

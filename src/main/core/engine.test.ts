@@ -153,6 +153,37 @@ describe('FleetEngine', () => {
     expect(r.status).toBe('error')
   })
 
+  it('probeCli: 동일 adapter 동시 호출은 dedupe(실 호출 1회) — 언마운트/재클릭 이중과금 방지', async () => {
+    let calls = 0
+    let resolveRun!: (r: { code: number; stdout: string; stderr: string }) => void
+    const runner: CommandRunner = () => {
+      calls++
+      return new Promise((res) => {
+        resolveRun = res
+      })
+    }
+    const engine = createFleetEngine({ runner })
+    const p1 = engine.probeCli('claude')
+    const p2 = engine.probeCli('claude')
+    resolveRun({ code: 0, stdout: 'ok', stderr: '' })
+    expect(await p1).toEqual({ status: 'ok' })
+    expect(await p2).toEqual({ status: 'ok' })
+    expect(calls).toBe(1)
+  })
+
+  it('dispose: in-flight probe 의 signal 을 abort 한다(종료 시 orphan 방지)', async () => {
+    let captured: AbortSignal | undefined
+    const runner: CommandRunner = (_c, _a, opts) => {
+      captured = opts.signal
+      return new Promise(() => {}) // 종료 전까지 미정착
+    }
+    const engine = createFleetEngine({ runner })
+    void engine.probeCli('claude')
+    expect(captured?.aborted).toBe(false)
+    await engine.dispose()
+    expect(captured?.aborted).toBe(true)
+  })
+
   it('runs a full project flow through registered CLI sessions', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-flow-'))
     try {
