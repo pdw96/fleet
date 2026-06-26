@@ -182,6 +182,31 @@ describe('AddAiWizard', () => {
     await act(async () => {})
     expect(screen.queryByText(/방금 연결 테스트 성공/)).toBeNull()
   })
+  it('구독: in-flight probe 중 재진입해도 버튼 disabled 유지 → 이중 실호출 차단', async () => {
+    let resolveProbe!: (r: { status: string }) => void
+    const deferred = new Promise<{ status: string }>((res) => {
+      resolveProbe = res
+    })
+    const probeCli = vi.fn().mockReturnValue(deferred)
+    mockFleet({ probeCli })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    // 아직 settle 전 — 뒤로 → 재진입(probing 유지, 버튼 disabled)
+    fireEvent.click(screen.getByRole('button', { name: /뒤로/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    const btn = await screen.findByRole('button', { name: /연결 테스트/ })
+    expect((btn as HTMLButtonElement).disabled).toBe(true) // in-flight 라 비활성 → 두 번째 호출 불가
+    expect(probeCli).toHaveBeenCalledTimes(1)
+    // settle 후 재활성
+    resolveProbe({ status: 'ok' })
+    await act(async () => {})
+    expect(
+      (screen.getByRole('button', { name: /연결 테스트/ }) as HTMLButtonElement).disabled,
+    ).toBe(false)
+  })
 
   it('API: anthropic 키+모델 → registerApiSession (effort 선택 시 thinking 반영)', async () => {
     const reg = vi.fn().mockResolvedValue(undefined)

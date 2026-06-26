@@ -84,10 +84,11 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
     setStep('subscription')
     setErr(null)
     setClis([])
-    // 직전 어댑터의 transient probe 결과를 폐기 + in-flight probe 무효화(seq 증가 → 늦은 콜백 무시).
+    // 직전 어댑터의 transient probe 결과를 폐기 + in-flight probe 무효화(seq 증가 → 늦은 결과 무시).
+    // probing 은 끄지 않는다 — 백엔드 probe(취소 미지원)가 도는 중 버튼을 재활성하면 이중 실호출이
+    // 가능해진다. in-flight 호출의 finally 가 settle 시 풀어준다(이중 과금 방지, Codex 리뷰 P2).
     probeReqSeq.current++
     setProbeMsg(null)
-    setProbing(false)
     void window.fleet
       .detectClis()
       .then(setClis)
@@ -303,9 +304,9 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
                         '⚠ 연결 테스트를 실행하지 못했습니다 — 그래도 등록할 수 있습니다.',
                       )
                   })
-                  .finally(() => {
-                    if (seq === probeReqSeq.current) setProbing(false)
-                  })
+                  // settle 시 항상 busy 해제 — in-flight 는 항상 1개(disabled 가 두 번째 클릭 차단)라
+                  // seq 무관하게 풀어도 안전하고, 재진입으로 seq 가 바뀌어도 버튼이 영구 고정되지 않는다.
+                  .finally(() => setProbing(false))
               }}
             >
               {probing ? '연결 테스트 중…' : '연결 테스트'}

@@ -143,6 +143,13 @@ describe('probeCliAuth', () => {
     expect(r.hint).toContain('claude /login')
   })
 
+  it('detail: private CSI(\\x1b[>4;2m)·standalone ESC(\\x1bc) 제거 후 stdout 폴백', async () => {
+    const { runner } = mockRunner(ok({ code: 1, stdout: 'real err', stderr: '\x1b[>4;2m\x1bc' }))
+    const r = await probeCliAuth(claude, runner)
+    expect(r.status).toBe('error')
+    expect(r.detail).toBe('real err')
+  })
+
   it('spawnError detail 도 sanitize/truncation 적용', async () => {
     const msg = '\x1b[31m' + 'z'.repeat(600)
     const { runner } = mockRunner({ code: null, stdout: '', stderr: '', spawnError: msg })
