@@ -48,7 +48,7 @@ probeCliAuth(adapter: CliAdapter, runner: CommandRunner = defaultRunner)
 | `res.code !== 0` & `classifyCliAuthHint` 매치 | `{ status: 'auth', hint }` |
 | `res.code !== 0` & 미매치 | `{ status: 'error', detail }` |
 
-- **never-throws 계약**(등록 비차단) — 테스트로 고정.
+- **never-throws 계약**(등록 비차단) — `runner` 호출을 try/catch 로 감싸 reject 까지 `{status:'error'}` 로 정규화(주입 runner·미래 구현 방어, Codex 계획 리뷰 P1). 테스트로 고정.
 - `detail` = **stderr 우선(비면 stdout 폴백) → ANSI/제어시퀀스 제거 → 길이 truncation(500자)**. 작은 `stripControlSeq` 유틸(과설계 금지·기존 `cleanCliOutput`엔 ANSI 제거 없음 확인). 계정/경로/토큰 일부·codex JSONL stdout 노출·색코드 깨짐 방지(Codex 설계+스펙 리뷰 보정).
 
 ### 4.2 타입 `ProbeResult` — `src/shared/types.ts`
@@ -108,7 +108,7 @@ export interface ProbeResult {
   - argv = `buildHeadlessArgs(adapter, PROBE_PROMPT)` · `promptVia==='stdin'`이면 stdinInput=PROBE_PROMPT, 아니면 undefined · `timeoutMs===PROBE_TIMEOUT_MS` 단언.
   - **`promptVia:'arg'` + `headless.args:['run','{prompt}']` 어댑터** → stdinInput=undefined·argv에 PROBE_PROMPT 치환(미래 어댑터 계약 고정 — Codex 스펙 리뷰 near-mandatory).
   - **headless 없는 어댑터** → `buildHeadlessArgs` fallback `['{prompt}']`→`[PROBE_PROMPT]`.
-  - **never-throws** 단언(모든 분기).
+  - **never-throws** 단언(모든 분기) + **runner reject → `{status:'error'}` 정규화**(Codex 계획 리뷰 P1).
   - `detail` = stderr 우선·stdout 폴백 시에도 truncation 적용·**ANSI/제어시퀀스 제거** 단언(긴 stderr 잘림 + `\x1b[31m...\x1b[0m` 제거).
 - `engine.test.ts` 보강: `probeCli` adapterId→adapter 라우팅 · unknown id → `{status:'error'}`.
 - 렌더러(vitest): "연결 테스트" 버튼 렌더(구독 분기) · 클릭→스피너→상태별 결과 표시 · **실패가 등록 버튼/플로우 비차단** · **성공 시 descriptor/session 저장값 불변**.
@@ -125,6 +125,10 @@ export interface ProbeResult {
 **2차 — 스펙 리뷰 판정 「승인(P0/P1 블로커 없음)」** — 분류표 순서·`PROBE_PROMPT`·shared 타입·runner 주입·unknown-id non-throwing 정합 확인. 잔여 P2 2건 수용:
 4. `detail` sanitize 에 **ANSI/제어시퀀스 제거** 추가(작은 유틸·과설계 금지) — §4.1·§8.
 5. **`promptVia:'arg'` + headless-fallback 테스트**(buildHeadlessArgs 재사용 계약 고정) — §8.
+
+**3차 — 계획 리뷰 판정 「조건부 승인」** — Task 분해·순서·IPC parity·재사용 타당 확인. P1 1건 + P2 수용(계획 문서 `docs/superpowers/plans/2026-06-26-cli-auth-probe.md`):
+6. **P1: runner reject 까지 try/catch → `{status:'error'}` 정규화**(never-throws 완전화) + reject 테스트 — §4.1·§8.
+7. P2: 렌더러 테스트는 기존 `fireEvent`+`mockFleet` 관용구 사용 · `DETAIL_MAX` 로컬 유지 · ANSI OSC 제거는 YAGNI 스킵.
 
 ## 10. 참고
 

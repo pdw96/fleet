@@ -188,6 +188,11 @@ describe('probeCliAuth', () => {
       await expect(probeCliAuth(claude, runner)).resolves.toBeDefined()
     }
   })
+
+  it('runner reject 도 throw 없이 error 로 정규화한다', async () => {
+    const runner: CommandRunner = () => Promise.reject(new Error('boom'))
+    await expect(probeCliAuth(claude, runner)).resolves.toMatchObject({ status: 'error' })
+  })
 })
 ```
 
@@ -204,7 +209,7 @@ Expected: FAIL — `probe.ts` 미존재("Cannot find module './probe'").
 import type { CliAdapter, ProbeResult } from '../../../shared/types'
 import { buildHeadlessArgs } from '../session/cli-session'
 import { classifyCliAuthHint } from './authHint'
-import { type CommandRunner, defaultRunner } from './detect'
+import { type CommandResult, type CommandRunner, defaultRunner } from './detect'
 
 /** probe 최소 프롬프트 — 토큰 최소화. 모델 출력은 검사하지 않는다(exit+stderr만). */
 export const PROBE_PROMPT = 'Reply with: ok'
@@ -237,7 +242,14 @@ export async function probeCliAuth(
 ): Promise<ProbeResult> {
   const args = buildHeadlessArgs(adapter, PROBE_PROMPT)
   const stdinInput = adapter.promptVia === 'stdin' ? PROBE_PROMPT : undefined
-  const res = await runner(adapter.command, args, { timeoutMs: PROBE_TIMEOUT_MS, stdinInput })
+
+  let res: CommandResult
+  try {
+    res = await runner(adapter.command, args, { timeoutMs: PROBE_TIMEOUT_MS, stdinInput })
+  } catch (e) {
+    // never-throws: runner 가 reject 해도(주입 runner·미래 구현) error 로 정규화한다.
+    return { status: 'error', detail: sanitizeDetail(String(e), '') }
+  }
 
   if (res.spawnError) {
     return res.spawnError === 'ETIMEDOUT' || res.spawnError === 'ABORTED'
@@ -255,7 +267,7 @@ export async function probeCliAuth(
 - [ ] **Step 5: 테스트 통과 확인**
 
 Run: `npx vitest run src/main/core/cli/probe.test.ts`
-Expected: PASS (12 tests).
+Expected: PASS (13 tests).
 
 - [ ] **Step 6: 게이트 + 커밋**
 
@@ -430,30 +442,33 @@ Claude-Session: https://claude.ai/code/session_01ATAm6fQgqgDtAPT4skrsaj"
 
 - [ ] **Step 1: 실패 테스트 작성 (AddAiWizard.test.tsx)**
 
-기존 테스트의 `window.fleet` mock 패턴을 따라(파일 상단 mock 정의 확인), 구독 step 까지 진입하는 헬퍼를 재사용해 추가:
+**기존 파일 관용구를 따른다**(Codex 계획리뷰 P2): `@testing-library/user-event` 의 `user.click` 이 아니라 **`fireEvent.click`**, 그리고 이미 있는 **`mockFleet(overrides)`** 헬퍼에 `probeCli` 만 override 로 주입(기본 mock 은 `detectClis`/`registerCliSession`/`registerApiSession`/`listModels`/`openCliDocs` 제공). subscription→installed 진입은 기존 "검증 없이 등록" 테스트와 동일 절차.
 
 ```tsx
 it('연결 테스트 성공 → transient 성공 문구(저장 안 됨) · 등록 비호출', async () => {
   const probeCli = vi.fn().mockResolvedValue({ status: 'ok' })
   const registerCliSession = vi.fn()
-  // window.fleet mock 에 probeCli/registerCliSession/detectClis(claude installed) 주입
-  // ... (기존 헬퍼로 subscription step + installed 상태 진입)
-  await user.click(screen.getByRole('button', { name: '연결 테스트' }))
+  mockFleet({ probeCli, registerCliSession }) // detectClis 는 claude installed 로 (기존 헬퍼 기본/override)
+  // ... (기존 "검증 없이 등록" 테스트와 동일하게 구독→installed 분기 진입)
+  fireEvent.click(screen.getByRole('button', { name: '연결 테스트' }))
+  await screen.findByText(/방금 연결 테스트 성공/)
   expect(probeCli).toHaveBeenCalledWith('claude')
-  expect(await screen.findByText(/방금 연결 테스트 성공/)).toBeInTheDocument()
   expect(registerCliSession).not.toHaveBeenCalled() // probe 는 등록과 무관(비저장)
 })
 
 it('연결 테스트 실패(auth) → hint 표시 · 등록 버튼 여전히 동작(비차단)', async () => {
-  const probeCli = vi.fn().mockResolvedValue({ status: 'auth', hint: '💡 인증 문제일 수 있습니다 — claude /login' })
+  const probeCli = vi
+    .fn()
+    .mockResolvedValue({ status: 'auth', hint: '💡 인증 문제일 수 있습니다 — claude /login' })
+  mockFleet({ probeCli })
   // ... 진입
-  await user.click(screen.getByRole('button', { name: '연결 테스트' }))
-  expect(await screen.findByText(/인증 문제일 수 있습니다/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '연결 테스트' }))
+  await screen.findByText(/인증 문제일 수 있습니다/)
   expect(screen.getByRole('button', { name: '검증 없이 등록' })).toBeEnabled()
 })
 ```
 
-> mock/진입 헬퍼의 정확한 형태는 기존 `AddAiWizard.test.tsx` 상단(detectClis·installed 분기 진입 테스트)에서 복사한다. 새 mock 메서드는 `probeCli` 뿐.
+> mock/진입 헬퍼의 정확한 형태는 기존 `AddAiWizard.test.tsx`(상단 `mockFleet` 정의 + "검증 없이 등록" 진입 테스트)에서 복사한다. 새 mock 메서드는 `probeCli` 뿐.
 
 - [ ] **Step 2: 테스트 실패 확인**
 
