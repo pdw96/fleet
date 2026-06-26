@@ -13,21 +13,22 @@ const DETAIL_MAX = 500
 // renderer 인라인 표시 안정화 + 민감 토막(색코드 섞인 출력) 노출 최소화 + "제어뿐인 stderr"가
 // strip 후 빈 값이 되어 stdout 폴백/auth 분류를 가리지 않게 한다(Codex 리뷰).
 /* eslint-disable no-control-regex -- escape/제어문자 strip 목적 */
-// ANSI/VT escape 전 범위 포괄(제어뿐인 stderr 가 strip 후 빈 값이 되어 stdout 폴백/auth 분류를 가리지
-// 않도록). 순서=구체적인 것부터:
-//  1) string control(OSC ESC] · DCS ESC P · SOS ESC X · PM ESC ^ · APC ESC _) … BEL|ST(ESC \)
-//  2) CSI(ESC [ , 파라미터 0x30-3f · 중간 0x20-2f · 종결 0x40-7e)
+// ANSI/VT escape 전 범위 포괄(7-bit ESC-prefixed + 8-bit C1) — 제어뿐인 stderr 가 strip 후 빈 값이 되어
+// stdout 폴백/auth 분류를 가리지 않도록. 순서=구체적인 시퀀스부터:
+//  1) string control(OSC·DCS·SOS·PM·APC; 7-bit ESC]/P/X/^/_ 또는 8-bit 0x90/0x9d/0x9e/0x9f/0x98) … BEL|ST
+//  2) CSI(7-bit ESC[ 또는 8-bit 0x9b; 파라미터 0x30-3f · 중간 0x20-2f · 종결 0x40-7e)
 //  3) nF escape(ESC + 중간바이트 0x20-2f+ + 종결 0x30-7e, 예: 문자셋지정 `ESC ( B`)
 //  4) 단일바이트 Fe/Fs(ESC + 0x40-7e, 예: RIS `ESC c`)
-// 남는 bare ESC 는 C0_CTRL 이 제거.
+// 남는 lone 제어바이트(C0·DEL·C1 0x80-9f)는 CTRL 이 제거. (입력은 UTF-8 디코딩된 문자열이라
+// 0x80-9f 코드포인트는 C1 컨트롤이며 일반 텍스트엔 없음 — 한글 등은 U+AC00+ 이라 안전.)
 const ANSI_ESC =
-  /\x1b[P\]X^_][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[\x30-\x3f]*[\x20-\x2f]*[@-~]|\x1b[\x20-\x2f]+[\x30-\x7e]|\x1b[@-~]/g
-const C0_CTRL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
+  /(?:\x1b[P\]X^_]|[\x90\x98\x9d\x9e\x9f])[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?|(?:\x1b\[|\x9b)[\x30-\x3f]*[\x20-\x2f]*[@-~]|\x1b[\x20-\x2f]+[\x30-\x7e]|\x1b[@-~]/g
+const CTRL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/g
 /* eslint-enable no-control-regex */
 
 /** escape 시퀀스·제어문자 제거 + 트림(절단은 호출부에서). */
 function stripEsc(s: string): string {
-  return s.replace(ANSI_ESC, '').replace(C0_CTRL, '').trim()
+  return s.replace(ANSI_ESC, '').replace(CTRL, '').trim()
 }
 
 /**

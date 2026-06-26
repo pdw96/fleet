@@ -159,6 +159,28 @@ describe('probeCliAuth', () => {
     expect(r.detail).toBe('real err')
   })
 
+  it('detail: 8-bit C1 컨트롤(CSI \\x9b2K · DCS \\x90…\\x9c) 제거 후 stdout 폴백', async () => {
+    const { runner } = mockRunner(
+      ok({ code: 1, stdout: 'real err', stderr: '\x9b2K\x90payload\x9c\x85' }),
+    )
+    const r = await probeCliAuth(claude, runner)
+    expect(r.status).toBe('error')
+    expect(r.detail).toBe('real err')
+  })
+
+  it('C1 제어뿐 stderr + stdout auth → auth + hint(분류도 폴백)', async () => {
+    const { runner } = mockRunner(ok({ code: 1, stdout: 'not logged in', stderr: '\x9b2K' }))
+    const r = await probeCliAuth(claude, runner)
+    expect(r.status).toBe('auth')
+    expect(r.hint).toContain('claude /login')
+  })
+
+  it('UTF-8 멀티바이트(한글)는 보존된다(C1 strip 오제거 없음)', async () => {
+    const { runner } = mockRunner(ok({ code: 1, stdout: '', stderr: '오류: 로그인 안 됨 안녕' }))
+    const r = await probeCliAuth(claude, runner)
+    expect(r.detail).toContain('안녕')
+  })
+
   it('spawnError detail 도 sanitize/truncation 적용', async () => {
     const msg = '\x1b[31m' + 'z'.repeat(600)
     const { runner } = mockRunner({ code: null, stdout: '', stderr: '', spawnError: msg })
