@@ -20,7 +20,8 @@ function probeResultText(r: ProbeResult): string {
     case 'ok':
       return '✓ 방금 연결 테스트 성공 — 이 결과는 저장되지 않습니다.'
     case 'auth':
-      return `⚠ ${r.hint ?? '인증 문제일 수 있습니다.'} — 그래도 등록할 수 있습니다.`
+      // hint(classifyCliAuthHint)는 이미 💡 로 시작하는 자기완결 advisory → ⚠ 접두 생략(이중 이모지 방지).
+      return `${r.hint ?? '⚠ 인증 문제일 수 있습니다.'} — 그래도 등록할 수 있습니다.`
     case 'timeout':
       return '⏱ 시간 초과 — 그래도 등록할 수 있습니다.'
     default:
@@ -80,6 +81,9 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
     setStep('subscription')
     setErr(null)
     setClis([])
+    // 직전 어댑터의 transient probe 결과를 폐기(어댑터 전환 시 stale 성공/실패가 다른 CLI 에 귀속되는 것 방지).
+    setProbeMsg(null)
+    setProbing(false)
     void window.fleet
       .detectClis()
       .then(setClis)

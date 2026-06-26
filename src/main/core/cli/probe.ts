@@ -43,7 +43,7 @@ export async function probeCliAuth(
   if (res.spawnError) {
     return res.spawnError === 'ETIMEDOUT' || res.spawnError === 'ABORTED'
       ? { status: 'timeout' }
-      : { status: 'error', detail: res.spawnError }
+      : { status: 'error', detail: sanitizeDetail(res.spawnError, '') }
   }
   if (res.code === 0) return { status: 'ok' }
 

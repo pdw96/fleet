@@ -106,6 +106,25 @@ describe('probeCliAuth', () => {
     expect((r.detail ?? '').length).toBeLessThanOrEqual(500)
   })
 
+  it('detail: stderr 비면 stdout 폴백에도 sanitize/truncation 적용', async () => {
+    const noisy = '\x1b[33m' + 'y'.repeat(600)
+    const { runner } = mockRunner(ok({ code: 1, stdout: noisy, stderr: '' }))
+    const r = await probeCliAuth(claude, runner)
+    expect(r.status).toBe('error')
+    expect(r.detail).toContain('y')
+    expect(r.detail).not.toContain('\x1b')
+    expect((r.detail ?? '').length).toBeLessThanOrEqual(500)
+  })
+
+  it('spawnError detail 도 sanitize/truncation 적용', async () => {
+    const msg = '\x1b[31m' + 'z'.repeat(600)
+    const { runner } = mockRunner({ code: null, stdout: '', stderr: '', spawnError: msg })
+    const r = await probeCliAuth(claude, runner)
+    expect(r.status).toBe('error')
+    expect(r.detail).not.toContain('\x1b')
+    expect((r.detail ?? '').length).toBeLessThanOrEqual(500)
+  })
+
   it('어떤 결과에서도 throw 하지 않는다(never-throws)', async () => {
     const cases: CommandResult[] = [
       ok(),

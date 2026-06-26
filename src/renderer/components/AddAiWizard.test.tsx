@@ -150,6 +150,19 @@ describe('AddAiWizard', () => {
       (screen.getByRole('button', { name: /검증 없이 등록/ }) as HTMLButtonElement).disabled,
     ).toBe(false)
   })
+  it('구독: probe 결과는 구독 step 재진입 시 폐기된다(stale 귀속 방지)', async () => {
+    mockFleet({ probeCli: vi.fn().mockResolvedValue({ status: 'ok' }) })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    await screen.findByText(/방금 연결 테스트 성공/)
+    // 뒤로 → 다시 구독 진입 시 transient 결과가 폐기되어야 함
+    fireEvent.click(screen.getByRole('button', { name: /뒤로/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    expect(screen.queryByText(/방금 연결 테스트 성공/)).toBeNull()
+  })
 
   it('API: anthropic 키+모델 → registerApiSession (effort 선택 시 thinking 반영)', async () => {
     const reg = vi.fn().mockResolvedValue(undefined)
