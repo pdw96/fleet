@@ -170,19 +170,20 @@ describe('probeCliAuth', () => {
   })
 
   it('detail: ANSI/제어시퀀스 제거 + 500자 truncation', async () => {
-    const noisy = `[31mnot a hint[0m ` + 'x'.repeat(600)
+    const noisy = '\x1b[31mnot a hint\x1b[0m ' + 'x'.repeat(600)
     const { runner } = mockRunner(ok({ code: 1, stdout: '', stderr: noisy }))
     const r = await probeCliAuth(claude, runner)
-    expect(r.detail).not.toContain('')
+    expect(r.detail).not.toContain('\x1b')
     expect((r.detail ?? '').length).toBeLessThanOrEqual(500)
   })
 
   it('어떤 결과에서도 throw 하지 않는다(never-throws)', async () => {
-    for (const res of [
+    const cases: CommandResult[] = [
       ok(),
       ok({ code: 1, stderr: 'not logged in' }),
-      { code: null, stdout: '', stderr: '', spawnError: 'ENOENT' } as CommandResult,
-    ]) {
+      { code: null, stdout: '', stderr: '', spawnError: 'ENOENT' },
+    ]
+    for (const res of cases) {
       const { runner } = mockRunner(res)
       await expect(probeCliAuth(claude, runner)).resolves.toBeDefined()
     }
@@ -211,13 +212,18 @@ export const PROBE_PROMPT = 'Reply with: ok'
 export const PROBE_TIMEOUT_MS = 20_000
 const DETAIL_MAX = 500
 
-// CSI(ANSI) escape sequence + C0 제어문자(탭/개행/CR 제외) 제거 → renderer 인라인 표시 안정화·민감 토막 노출 최소화.
-const ANSI_CSI = /\[[0-9;:?]*[ -/]*[@-~]/g
-// eslint-disable-next-line no-control-regex
-const C0_CTRL = /[ --]/g
+// detail 에서 ANSI CSI escape(\x1b[ … 종결문자) + C0 제어문자(탭 09·개행 0a·CR 0d 제외)를 제거한다.
+// renderer 인라인 표시 안정화 + 민감 토막(색코드 섞인 출력) 노출 최소화.
+/* eslint-disable no-control-regex -- detail sanitize: ANSI/제어문자 strip 목적 */
+const ANSI_CSI = /\x1b\[[0-9;:?]*[ -/]*[@-~]/g
+const C0_CTRL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
+/* eslint-enable no-control-regex */
 
 function sanitizeDetail(primary: string, fallback: string): string {
-  const raw = (primary.trim() || fallback.trim()).replace(ANSI_CSI, '').replace(C0_CTRL, '').trim()
+  const raw = (primary.trim() || fallback.trim())
+    .replace(ANSI_CSI, '')
+    .replace(C0_CTRL, '')
+    .trim()
   return raw.slice(0, DETAIL_MAX)
 }
 
@@ -319,7 +325,7 @@ Expected: FAIL — `engine.probeCli is not a function`.
   probeCli(adapterId: string): Promise<ProbeResult>
 ```
 
-상단 import 에 `probeCliAuth` 추가 + `ProbeResult` 타입 import:
+상단 import 에 `probeCliAuth` 추가:
 
 ```ts
 import { probeCliAuth } from './cli/probe'
