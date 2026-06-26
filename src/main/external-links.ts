@@ -2,7 +2,11 @@
 // 보증: 핸드오프하는 최초 URL이 컴파일타임 정적 allowlist docs URL임만 보증한다.
 // browser-side redirect(핸드오프 이후)는 Fleet 앱 네비가 아니므로 보증 범위 밖이다.
 // window-guards(renderer 전면차단)는 불변 — 이 경로는 그 가드를 우회/완화하지 않는다.
-import { CLI_AUTH_INSTALL_META, DOCS_HOST_ALLOWLIST } from '../shared/cliAuthInstallMeta'
+import {
+  CLI_AUTH_INSTALL_META,
+  DOCS_HOST_ALLOWLIST,
+  type CliAdapterId,
+} from '../shared/cliAuthInstallMeta'
 
 /**
  * https + userinfo 금지 + port 금지 + exact hostname allowlist.
@@ -32,13 +36,14 @@ export function isAllowedDocsUrl(raw: string): boolean {
  * (정적 맵 미래 오염 대비 심층방어). `deps.openExternal` 주입으로 단위 테스트 가능.
  */
 export async function openVerifiedCliDocs(
-  adapterId: string,
+  adapterId: CliAdapterId,
   deps: { openExternal: (url: string) => Promise<void> },
 ): Promise<void> {
+  // 타입은 CliAdapterId 지만 IPC 경계 런타임 값은 신뢰 불가 → Object.hasOwn 으로 재확인.
   if (!Object.hasOwn(CLI_AUTH_INSTALL_META, adapterId)) {
     throw new Error('unknown adapter')
   }
-  const url = CLI_AUTH_INSTALL_META[adapterId as keyof typeof CLI_AUTH_INSTALL_META].docsUrl
+  const url = CLI_AUTH_INSTALL_META[adapterId].docsUrl
   if (!isAllowedDocsUrl(url)) {
     // 정적 맵이라 정상 경로는 항상 통과 — 도달 시 맵 오염 신호. path-free 로 거부.
     throw new Error('docs url failed allowlist')

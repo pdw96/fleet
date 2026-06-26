@@ -6,7 +6,10 @@ export interface CliAuthInstallMeta {
   docsUrl: string
 }
 
-export const CLI_AUTH_INSTALL_META: Record<'claude' | 'codex' | 'gemini', CliAuthInstallMeta> = {
+/** 구독(CLI) 어댑터 식별자 단일 출처 — picker·외부열기 IPC·registry 공용. */
+export type CliAdapterId = 'claude' | 'codex' | 'gemini'
+
+export const CLI_AUTH_INSTALL_META: Record<CliAdapterId, CliAuthInstallMeta> = {
   claude: {
     loginCommand: 'claude auth login',
     installHint: 'npm i -g @anthropic-ai/claude-code',

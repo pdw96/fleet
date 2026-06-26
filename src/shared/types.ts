@@ -2,6 +2,7 @@
  * 단일 진실 원천 타입 — main / preload / renderer 가 공유한다.
  * 런타임/DOM/Node 의존이 없는 순수 타입 선언만 둔다.
  */
+import type { CliAdapterId } from './cliAuthInstallMeta'
 
 // ── 앱 메타 ────────────────────────────────────────────────────────────────
 export interface AppInfo {
@@ -516,6 +517,8 @@ export interface FleetBridge {
   setSessionCapabilities(id: string, roles: AgentRole[]): Promise<LlmDescriptor>
   /** provider API 로 모델 목록을 라이브 조회한다. 미지원 provider 는 빈 배열, HTTP/인증 실패는 reject(렌더러가 사유 표시·입력은 하드코딩 폴백). #13 */
   listModels(config: ApiProviderConfig): Promise<ModelOption[]>
+  /** picker 문서 링크 외부열기 — adapterId만 전달, main이 정적 docsUrl 도출·검증 후 shell.openExternal */
+  openCliDocs(adapterId: CliAdapterId): Promise<void>
 
   // 프로젝트 / 오케스트레이션
   listProjects(): Promise<Project[]>
