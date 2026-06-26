@@ -163,6 +163,9 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
         <button type="button" onClick={() => void navigator.clipboard?.writeText(meta.docsUrl)}>
           URL 복사
         </button>
+        <button type="button" onClick={() => void window.fleet.openCliDocs(adapterId)}>
+          문서 열기
+        </button>
         {!installed ? (
           <div>
             <p>CLI 미설치 — 설치 후 &quot;재확인&quot;:</p>
