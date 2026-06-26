@@ -106,7 +106,7 @@ const NON_AUTH_PATTERN =
 
 // 2) auth 문맥이 충분히 강한 어구 (stderr·stdout 공통)
 const STRONG_AUTH_PATTERN =
-  /\b(not logged in|unauthori[sz]ed|unauthenticated|authentication (?:failed|required|error)|requires authentication|login required|log in to continue|please .{0,40}(?:log ?in|sign in|authenticate)|sign in|session expired|token (?:expired|invalid)|invalid token|expired credentials|invalid (?:api key|credential)|no credentials found|missing credentials|api key required|401)\b/i
+  /\b(not logged in|unauthori[sz]ed|not authori[sz]ed|unauthenticated|authentication (?:failed|required|error)|requires authentication|login required|log in to continue|please .{0,40}(?:log ?in|sign in|authenticate)|sign in|session expired|token (?:expired|invalid)|invalid token|expired credentials|invalid (?:api key|credentials?)|no credentials found|missing credentials|api key required|401)\b/i
 
 // 3) 403/forbidden은 auth 문맥과 근접(±80자)할 때만 (stderr 경로 한정)
 const FORBIDDEN_AUTH_CONTEXT_PATTERN =
@@ -135,6 +135,8 @@ const FORBIDDEN_AUTH_CONTEXT_PATTERN =
 - codex `Error: unauthorized` → hint, `codex login` 포함.
 - gemini `authentication required` → hint.
 - `401` / `session expired` / `invalid api key` / `please log in` 변형.
+- `invalid credentials`(복수) → hint — `credentials?` 커버 확인.
+- `not authorized` → hint — `not authori[sz]ed` 커버 확인.
 - `403 forbidden: invalid token` → hint(forbidden-context).
 - stderr 비고 stdout에 `unauthenticated` → hint(stdout 폴백).
 
@@ -145,6 +147,8 @@ const FORBIDDEN_AUTH_CONTEXT_PATTERN =
 - `syntax error` / `file not found` / `ENOENT` 류 텍스트 → null.
 - 빈 stderr+stdout / `code:0` / auth 메타 없는 어댑터 → null.
 - stdout에 `forbidden`(strong 아님) → null(stdout은 strong-only).
+- **stderr `syntax error` + stdout `unauthenticated`**(code 1) → null — "stdout 폴백 = stderr 비었을 때만" 고정(Codex 스펙리뷰).
+- **stderr `rate limit exceeded` + stdout `not logged in`**(code 1) → null — stderr-primary + exclude-first 우선순위 고정(Codex 스펙리뷰).
 
 ### 8.2 `cli-session.test.ts` 보강(통합)
 
