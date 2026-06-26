@@ -129,7 +129,11 @@ export interface ProbeResult {
 
 **3차 — 계획 리뷰 판정 「조건부 승인」** — Task 분해·순서·IPC parity·재사용 타당 확인. P1 1건 + P2 수용(계획 문서 `docs/superpowers/plans/2026-06-26-cli-auth-probe.md`):
 6. **P1: runner reject 까지 try/catch → `{status:'error'}` 정규화**(never-throws 완전화) + reject 테스트 — §4.1·§8.
-7. P2: 렌더러 테스트는 기존 `fireEvent`+`mockFleet` 관용구 사용 · `DETAIL_MAX` 로컬 유지 · ANSI OSC 제거는 YAGNI 스킵.
+7. P2: 렌더러 테스트는 기존 `fireEvent`+`mockFleet` 관용구 사용 · `DETAIL_MAX` 로컬 유지.
+
+**4차 — PR 봇 리뷰(Codex·CodeRabbit) 반영**
+8. probe 레이스 가드(`probeReqSeq`, modelReqSeq 동형) — in-flight probe 가 어댑터 재진입 후 늦게 resolve 해 stale 결과를 타 CLI 에 적용하던 레이스 차단(Codex P2·CodeRabbit).
+9. PR 재리뷰 P3: spawnError detail sanitize · `e2eRunner` probe 결정론 분기(FLEET_E2E hang 회피) · brain.md 재생성 · **escape 제거기를 OSC/Fe 까지 확장**(CSI 만으론 OSC 잔여가 stdout 폴백을 가림) · **분류(classifyCliAuthHint)도 정제된 stderr→stdout 선택**(제어뿐 stderr 시 stdout 의 auth 실패 인식). → §4.1 의 `detail` 은 `stripEsc`(escape+제어 strip) 후 stderr→stdout 폴백.
 
 ## 10. 참고
 

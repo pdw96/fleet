@@ -125,6 +125,24 @@ describe('probeCliAuth', () => {
     expect(r.detail).toBe('real failure detail')
   })
 
+  it('detail: stderr 가 OSC escape 뿐이어도 stdout 으로 폴백(non-CSI)', async () => {
+    const { runner } = mockRunner(
+      ok({ code: 1, stdout: 'real failure detail', stderr: '\x1b]8;;https://x\x07\x1b]8;;\x07' }),
+    )
+    const r = await probeCliAuth(claude, runner)
+    expect(r.status).toBe('error')
+    expect(r.detail).toBe('real failure detail')
+  })
+
+  it('stderr 가 제어뿐이고 stdout 에 auth 실패 → auth + hint(분류도 폴백)', async () => {
+    const { runner } = mockRunner(
+      ok({ code: 1, stdout: 'Error: not logged in', stderr: '\x1b[2K\x1b[1G' }),
+    )
+    const r = await probeCliAuth(claude, runner)
+    expect(r.status).toBe('auth')
+    expect(r.hint).toContain('claude /login')
+  })
+
   it('spawnError detail 도 sanitize/truncation 적용', async () => {
     const msg = '\x1b[31m' + 'z'.repeat(600)
     const { runner } = mockRunner({ code: null, stdout: '', stderr: '', spawnError: msg })

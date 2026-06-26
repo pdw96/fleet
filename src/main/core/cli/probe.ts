@@ -9,18 +9,18 @@ export const PROBE_PROMPT = 'Reply with: ok'
 export const PROBE_TIMEOUT_MS = 20_000
 const DETAIL_MAX = 500
 
-// detail 에서 ANSI CSI escape(\x1b[ … 종결문자) + C0 제어문자(탭 09·개행 0a·CR 0d 제외)를 제거한다.
-// renderer 인라인 표시 안정화 + 민감 토막(색코드 섞인 출력) 노출 최소화.
-/* eslint-disable no-control-regex -- detail sanitize: ANSI/제어문자 strip 목적 */
-const ANSI_CSI = /\x1b\[[0-9;:?]*[ -/]*[@-~]/g
+// ESC 로 시작하는 시퀀스 + C0 제어문자(탭 09·개행 0a·CR 0d 제외)를 제거한다.
+// renderer 인라인 표시 안정화 + 민감 토막(색코드 섞인 출력) 노출 최소화 + "제어뿐인 stderr"가
+// strip 후 빈 값이 되어 stdout 폴백/auth 분류를 가리지 않게 한다(Codex 리뷰).
+/* eslint-disable no-control-regex -- escape/제어문자 strip 목적 */
+// OSC(ESC ] … BEL|ST) · CSI(ESC [ … 종결) · 기타 Fe escape(ESC @-_). 남는 bare ESC 는 C0_CTRL 이 제거.
+const ANSI_ESC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b\[[0-9;:?]*[ -/]*[@-~]|\x1b[@-_]/g
 const C0_CTRL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
 /* eslint-enable no-control-regex */
 
-function sanitizeDetail(primary: string, fallback: string): string {
-  // 후보를 각각 strip 한 뒤 폴백을 고른다 — primary 가 ANSI/제어문자뿐이면 strip 후 빈 값이 되어
-  // 유의미한 fallback(stdout)으로 떨어진다(strip 전 선택하면 빈 primary 가 fallback 을 가려버린다).
-  const clean = (s: string) => s.replace(ANSI_CSI, '').replace(C0_CTRL, '').trim()
-  return (clean(primary) || clean(fallback)).slice(0, DETAIL_MAX)
+/** escape 시퀀스·제어문자 제거 + 트림(절단은 호출부에서). */
+function stripEsc(s: string): string {
+  return s.replace(ANSI_ESC, '').replace(C0_CTRL, '').trim()
 }
 
 /**
@@ -39,17 +39,21 @@ export async function probeCliAuth(
     res = await runner(adapter.command, args, { timeoutMs: PROBE_TIMEOUT_MS, stdinInput })
   } catch (e) {
     // never-throws: runner 가 reject 해도(주입 runner·미래 구현) error 로 정규화한다.
-    return { status: 'error', detail: sanitizeDetail(String(e), '') }
+    return { status: 'error', detail: stripEsc(String(e)).slice(0, DETAIL_MAX) }
   }
 
   if (res.spawnError) {
     return res.spawnError === 'ETIMEDOUT' || res.spawnError === 'ABORTED'
       ? { status: 'timeout' }
-      : { status: 'error', detail: sanitizeDetail(res.spawnError, '') }
+      : { status: 'error', detail: stripEsc(res.spawnError).slice(0, DETAIL_MAX) }
   }
   if (res.code === 0) return { status: 'ok' }
 
-  const hint = classifyCliAuthHint(adapter, res)
+  // escape/제어 제거 후 stderr→stdout 선택. 제어문자뿐인 stderr 가 stdout 의 실제 auth/오류를 가리지
+  // 않도록, 분류(classifyCliAuthHint)와 detail 모두 정제된 값을 쓴다(Codex 리뷰 P3-A/B).
+  const stderr = stripEsc(res.stderr)
+  const stdout = stripEsc(res.stdout)
+  const hint = classifyCliAuthHint(adapter, { ...res, stderr, stdout })
   if (hint) return { status: 'auth', hint }
-  return { status: 'error', detail: sanitizeDetail(res.stderr, res.stdout) }
+  return { status: 'error', detail: (stderr || stdout).slice(0, DETAIL_MAX) }
 }
