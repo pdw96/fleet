@@ -530,6 +530,8 @@ export interface FleetBridge {
   listModels(config: ApiProviderConfig): Promise<ModelOption[]>
   /** picker 문서 링크 외부열기 — adapterId만 전달, main이 정적 docsUrl 도출·검증 후 shell.openExternal */
   openCliDocs(adapterId: CliAdapterId): Promise<void>
+  /** CLI 세션 "연결 테스트"(#150) — adapterId만 전달, main이 probe 수행. 결과는 transient(비저장). */
+  probeCli(adapterId: CliAdapterId): Promise<ProbeResult>
 
   // 프로젝트 / 오케스트레이션
   listProjects(): Promise<Project[]>

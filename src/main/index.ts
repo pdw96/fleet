@@ -93,6 +93,8 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   ipcMain.handle('fleet:external:openDocs', (_e, adapterId: CliAdapterId) =>
     openVerifiedCliDocs(adapterId, { openExternal: (url) => shell.openExternal(url) }),
   )
+  // 연결 테스트(#150): renderer 는 adapterId 만, main/core 가 registry lookup 으로 검증·probe 수행.
+  ipcMain.handle('fleet:cli:probe', (_e, adapterId: CliAdapterId) => engine.probeCli(adapterId))
   ipcMain.handle(
     'fleet:session:registerCli',
     (_e, adapterId: string, opts?: { stateful?: boolean; model?: string; mcpConfig?: string }) =>
