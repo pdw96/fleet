@@ -19,6 +19,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     registerCliSession: vi.fn().mockResolvedValue(undefined),
     registerApiSession: vi.fn().mockResolvedValue(undefined),
     listModels: vi.fn().mockResolvedValue([]),
+    openCliDocs: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
 }
@@ -54,7 +55,7 @@ describe('AddAiWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: /구독/ }))
     expect(screen.getByText(/제한·탐지 대상/)).toBeTruthy()
   })
-  it('구독: copy-only — 클릭 가능한 link role 이 없다 (§6a)', async () => {
+  it('구독: renderer 에 클릭형 navigation primitive(link) 없음 — 외부열기는 IPC 경유, URL 텍스트는 표시(§6a)', async () => {
     mockFleet()
     await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
@@ -62,6 +63,15 @@ describe('AddAiWizard', () => {
     await act(async () => {})
     expect(screen.queryByRole('link')).toBeNull()
     expect(screen.getByText('https://docs.anthropic.com/en/docs/claude-code')).toBeTruthy()
+  })
+  it('구독: "문서 열기" 버튼이 openCliDocs(adapterId) 호출 (가드된 IPC)', async () => {
+    const openCliDocs = vi.fn().mockResolvedValue(undefined)
+    mockFleet({ openCliDocs })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /문서 열기/ }))
+    expect(openCliDocs).toHaveBeenCalledWith('claude')
   })
   it('구독: 설치됨 → "검증 없이 등록" → registerCliSession + onRegistered', async () => {
     const reg = vi.fn().mockResolvedValue(undefined)

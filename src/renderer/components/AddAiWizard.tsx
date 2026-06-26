@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import type {
   ApiProviderConfig,
   CacheTtl,
+  CliAdapterId,
   CliDetectionResult,
   ModelOption,
   ReasoningEffort,
@@ -19,7 +20,7 @@ const PROVIDERS: { id: Provider; label: string }[] = [
   { id: 'openai-compatible', label: 'OpenAI 호환' },
 ]
 
-const ADAPTER_ID: Partial<Record<Provider, 'claude' | 'codex' | 'gemini'>> = {
+const ADAPTER_ID: Partial<Record<Provider, CliAdapterId>> = {
   anthropic: 'claude',
   openai: 'codex',
   google: 'gemini',
@@ -162,6 +163,17 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
         <code>{meta.docsUrl}</code>
         <button type="button" onClick={() => void navigator.clipboard?.writeText(meta.docsUrl)}>
           URL 복사
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setErr(null)
+            void window.fleet
+              .openCliDocs(adapterId)
+              .catch(() => setErr('문서 열기에 실패했습니다.'))
+          }}
+        >
+          문서 열기
         </button>
         {!installed ? (
           <div>

@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type {
   AgentRole,
@@ -12,6 +12,7 @@ import type {
   RunProjectRequest,
   UpdateEvent,
   UpdaterChannel,
+  CliAdapterId,
 } from '../shared/types'
 import { installAutoUpdate } from './auto-update'
 import { createFleetEngine, type FleetEngine } from './core/engine'
@@ -19,6 +20,7 @@ import { createIpcApprover, type IpcApprover } from './core/safety/approval-brid
 import { createJsonFileStore } from './core/store/json-file'
 import type { Store } from './core/store/types'
 import { e2eRunner, seedE2eFixtures } from './e2e'
+import { openVerifiedCliDocs } from './external-links'
 import { installNavigationGuards } from './window-guards'
 import { installPermissionGuards } from './permission-guards'
 import { installChildProcessObserver, installCrashRecovery } from './crash-recovery'
@@ -87,6 +89,10 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   // 세션 / CLI
   ipcMain.handle('fleet:cli:detect', () => engine.detectClis())
   ipcMain.handle('fleet:cli:adapters', () => engine.listAdapters())
+  // 외부열기: renderer 는 adapterId 만, main 이 정적 docsUrl 도출·검증 후 OS 브라우저로 핸드오프(§6a).
+  ipcMain.handle('fleet:external:openDocs', (_e, adapterId: CliAdapterId) =>
+    openVerifiedCliDocs(adapterId, { openExternal: (url) => shell.openExternal(url) }),
+  )
   ipcMain.handle(
     'fleet:session:registerCli',
     (_e, adapterId: string, opts?: { stateful?: boolean; model?: string; mcpConfig?: string }) =>

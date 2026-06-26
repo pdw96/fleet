@@ -1,12 +1,14 @@
 // CLI 구독 로그인/설치 안내 정적 데이터. main(registry)·renderer(wizard) 공용 단일 출처.
 // Electron·main 비의존 순수 데이터(렌더러가 main/core import 회피). docsUrl 은 §6a allowlist 호스트만.
+import type { CliAdapterId } from './types'
+
 export interface CliAuthInstallMeta {
   loginCommand: string
   installHint: string
   docsUrl: string
 }
 
-export const CLI_AUTH_INSTALL_META: Record<'claude' | 'codex' | 'gemini', CliAuthInstallMeta> = {
+export const CLI_AUTH_INSTALL_META: Record<CliAdapterId, CliAuthInstallMeta> = {
   claude: {
     loginCommand: 'claude auth login',
     installHint: 'npm i -g @anthropic-ai/claude-code',

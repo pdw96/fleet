@@ -13,6 +13,8 @@ export interface AppInfo {
 }
 
 // ── LLM 연결 ────────────────────────────────────────────────────────────────
+/** 구독(CLI) 어댑터 식별자 — picker·외부열기 IPC·registry 공용 단일 출처. */
+export type CliAdapterId = 'claude' | 'codex' | 'gemini'
 export type LlmConnectionKind = 'cli' | 'api'
 
 /**
@@ -516,6 +518,8 @@ export interface FleetBridge {
   setSessionCapabilities(id: string, roles: AgentRole[]): Promise<LlmDescriptor>
   /** provider API 로 모델 목록을 라이브 조회한다. 미지원 provider 는 빈 배열, HTTP/인증 실패는 reject(렌더러가 사유 표시·입력은 하드코딩 폴백). #13 */
   listModels(config: ApiProviderConfig): Promise<ModelOption[]>
+  /** picker 문서 링크 외부열기 — adapterId만 전달, main이 정적 docsUrl 도출·검증 후 shell.openExternal */
+  openCliDocs(adapterId: CliAdapterId): Promise<void>
 
   // 프로젝트 / 오케스트레이션
   listProjects(): Promise<Project[]>
