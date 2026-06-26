@@ -76,12 +76,16 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
   // 연결 테스트(probe) — transient 결과(저장 안 함, #150). probing 은 등록(submitting)과 분리(비차단).
   const [probing, setProbing] = useState(false)
   const [probeMsg, setProbeMsg] = useState<string | null>(null)
+  // probe 요청 시퀀스 — 어댑터/스텝 전환 시 in-flight probe(최대 20s)가 늦게 resolve 해 다른 어댑터에
+  // stale 결과를 적용하는 레이스를 막는다(modelReqSeq 동형). 증가시키면 이전 probe 의 콜백이 무시된다.
+  const probeReqSeq = useRef(0)
 
   function enterSubscription() {
     setStep('subscription')
     setErr(null)
     setClis([])
-    // 직전 어댑터의 transient probe 결과를 폐기(어댑터 전환 시 stale 성공/실패가 다른 CLI 에 귀속되는 것 방지).
+    // 직전 어댑터의 transient probe 결과를 폐기 + in-flight probe 무효화(seq 증가 → 늦은 콜백 무시).
+    probeReqSeq.current++
     setProbeMsg(null)
     setProbing(false)
     void window.fleet
@@ -284,15 +288,24 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
               disabled={probing}
               title="선택한 CLI로 짧은 실제 모델 호출을 1회 실행합니다. 구독/쿼터/요금이 사용될 수 있습니다."
               onClick={() => {
+                // 이 probe 의 시퀀스를 잡고, 늦게 도착한 이전 어댑터의 결과는 무시(stale 귀속 방지).
+                const seq = ++probeReqSeq.current
                 setProbeMsg(null)
                 setProbing(true)
                 void window.fleet
                   .probeCli(adapterId)
-                  .then((r) => setProbeMsg(probeResultText(r)))
-                  .catch(() =>
-                    setProbeMsg('⚠ 연결 테스트를 실행하지 못했습니다 — 그래도 등록할 수 있습니다.'),
-                  )
-                  .finally(() => setProbing(false))
+                  .then((r) => {
+                    if (seq === probeReqSeq.current) setProbeMsg(probeResultText(r))
+                  })
+                  .catch(() => {
+                    if (seq === probeReqSeq.current)
+                      setProbeMsg(
+                        '⚠ 연결 테스트를 실행하지 못했습니다 — 그래도 등록할 수 있습니다.',
+                      )
+                  })
+                  .finally(() => {
+                    if (seq === probeReqSeq.current) setProbing(false)
+                  })
               }}
             >
               {probing ? '연결 테스트 중…' : '연결 테스트'}

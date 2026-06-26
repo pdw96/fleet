@@ -27,7 +27,7 @@ CLI 세션(claude/codex/gemini)은 v1에서 인증을 **첫 실제 사용 시 la
 
 ### 4.1 순수 함수 `probeCliAuth` — `src/main/core/cli/probe.ts` (신규)
 
-```
+```text
 probeCliAuth(adapter: CliAdapter, runner: CommandRunner = defaultRunner)
   → Promise<ProbeResult>
 ```
@@ -40,6 +40,7 @@ probeCliAuth(adapter: CliAdapter, runner: CommandRunner = defaultRunner)
 - `PROBE_TIMEOUT_MS = 20_000` — 모델 왕복 여유 + kill-tree 보호(상수·테스트로 고정).
 
 분류(우선순위 순):
+
 | 조건 | 결과 |
 |---|---|
 | `res.spawnError === 'ETIMEDOUT' \|\| 'ABORTED'` | `{ status: 'timeout' }` |

@@ -163,6 +163,25 @@ describe('AddAiWizard', () => {
     await act(async () => {})
     expect(screen.queryByText(/방금 연결 테스트 성공/)).toBeNull()
   })
+  it('구독: in-flight probe 가 재진입 후 늦게 resolve 해도 미적용(레이스 가드)', async () => {
+    let resolveProbe!: (r: { status: string }) => void
+    const deferred = new Promise<{ status: string }>((res) => {
+      resolveProbe = res
+    })
+    mockFleet({ probeCli: vi.fn().mockReturnValue(deferred) })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /연결 테스트/ }))
+    // 아직 resolve 전 — 뒤로 → 다시 구독 진입(probeReqSeq 증가 → 이전 probe 무효화)
+    fireEvent.click(screen.getByRole('button', { name: /뒤로/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    // 늦게 resolve — stale 결과는 무시되어야 함
+    resolveProbe({ status: 'ok' })
+    await act(async () => {})
+    expect(screen.queryByText(/방금 연결 테스트 성공/)).toBeNull()
+  })
 
   it('API: anthropic 키+모델 → registerApiSession (effort 선택 시 thinking 반영)', async () => {
     const reg = vi.fn().mockResolvedValue(undefined)
