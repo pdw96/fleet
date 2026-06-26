@@ -6,7 +6,7 @@ import type {
   ModelOption,
   ReasoningEffort,
 } from '../../shared/types'
-import { CLI_AUTH_INSTALL_META } from '../../shared/cliAuthInstallMeta'
+import { CLI_AUTH_INSTALL_META, type CliAdapterId } from '../../shared/cliAuthInstallMeta'
 import { SUBSCRIPTION_BANNERS, subscriptionSupported } from './authBanners'
 
 type Provider = ApiProviderConfig['provider']
@@ -19,7 +19,7 @@ const PROVIDERS: { id: Provider; label: string }[] = [
   { id: 'openai-compatible', label: 'OpenAI 호환' },
 ]
 
-const ADAPTER_ID: Partial<Record<Provider, 'claude' | 'codex' | 'gemini'>> = {
+const ADAPTER_ID: Partial<Record<Provider, CliAdapterId>> = {
   anthropic: 'claude',
   openai: 'codex',
   google: 'gemini',
