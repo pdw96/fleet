@@ -14,6 +14,7 @@ import type {
   McpServerSpec,
   McpServerStatus,
   ModelOption,
+  ProbeResult,
   Project,
   RunActivity,
   RunProjectRequest,
@@ -23,6 +24,7 @@ import type {
 import { ASSIGNABLE_ROLES, MAX_REPLAN_ROUNDS, MAX_CONCURRENCY } from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
+import { probeCliAuth } from './cli/probe'
 import { createCliRegistry, type CliRegistry } from './cli/registry'
 import { assignRoles, resolveLlmForRole } from './orchestrator/assignment'
 import { runProject, type OrchestratorEvent, type RunResult } from './orchestrator/orchestrator'
@@ -111,6 +113,8 @@ export interface FleetEngineOptions {
 export interface FleetEngine {
   // ── CLI / 세션 ──
   detectClis(): Promise<CliDetectionResult[]>
+  /** CLI 세션 "연결 테스트"(#150) — headless 1회 호출로 로그인 여부 확인. unknown id → {status:'error'}. */
+  probeCli(adapterId: string): Promise<ProbeResult>
   listAdapters(): CliAdapter[]
   registerCliSession(
     adapterId: string,
@@ -465,6 +469,12 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   return {
     detectClis() {
       return detectAll(cliRegistry.list(), runner)
+    },
+
+    probeCli(adapterId) {
+      const adapter = cliRegistry.get(adapterId)
+      if (!adapter) return Promise.resolve({ status: 'error', detail: 'unknown adapter' })
+      return probeCliAuth(adapter, runner)
     },
 
     listAdapters() {

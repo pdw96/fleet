@@ -138,6 +138,21 @@ describe('FleetEngine', () => {
     expect(results.find((r) => r.id === 'claude')?.installed).toBe(true)
   })
 
+  it('probeCli: 알려진 adapter 는 probeCliAuth 결과를 반환한다', async () => {
+    const engine = createFleetEngine({
+      runner: async () => ({ code: 0, stdout: 'ok', stderr: '' }),
+    })
+    expect(await engine.probeCli('claude')).toEqual({ status: 'ok' })
+  })
+
+  it('probeCli: unknown adapterId → throw 없이 {status:error}', async () => {
+    const engine = createFleetEngine({
+      runner: async () => ({ code: 0, stdout: '', stderr: '' }),
+    })
+    const r = await engine.probeCli('nope')
+    expect(r.status).toBe('error')
+  })
+
   it('runs a full project flow through registered CLI sessions', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-flow-'))
     try {
