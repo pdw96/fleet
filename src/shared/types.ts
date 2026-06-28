@@ -127,7 +127,7 @@ export interface CliDetectionResult {
   /** 원본 --version 출력 */
   raw?: string
   error?: string
-  /** which 해석된 실제 실행 경로(절대경로). 미설치/미해석 시 undefined. 표시 전용. */
+  /** which 해석된 실제 실행 경로(보통 절대; 상대 PATH 해석 시 비절대 — pathShadowRisk 참조). 미설치/미해석 시 undefined. 표시 전용. */
   resolvedPath?: string
   /** resolvedPath 가 비절대(상대/CWD PATH 엔트리)로 해석된 경우 true — 상대 PATH shadow 위험(main 에서 path.isAbsolute 판정). */
   pathShadowRisk?: boolean

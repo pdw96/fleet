@@ -232,8 +232,8 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
             </p>
             {cli?.pathShadowRisk && (
               <p role="alert">
-                ⚠ 상대 PATH 항목에서 해석되었습니다. 현재 작업 디렉터리에 따라 다른 실행 파일이
-                선택될 수 있습니다.
+                ⚠ 현재 작업 디렉터리(cwd) 또는 상대 PATH 항목에서 해석되었습니다 — 의도하지 않은
+                실행 파일로 바꿔치기될 수 있습니다(PATH shadowing).
               </p>
             )}
             <p>의도한 공식 CLI 설치 경로인지 확인하세요.</p>

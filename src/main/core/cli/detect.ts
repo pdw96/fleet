@@ -192,19 +192,43 @@ export const defaultResolver: PathResolver = async (command) => {
   }
 }
 
+// 표시용 경로 해석 상한. which 의 PATH 순회(파일 stat)는 보통 즉시지만, 병든 PATH(스테일 네트워크
+// 마운트 등)에서 멈출 수 있다. 표시용 부가정보가 detectCli 를 영영 매달지 않게 race 로 상한을 건다.
+const RESOLVE_TIMEOUT_MS = 2000
+
 /**
- * 명령이 PATH 에서 해석되는 실제 경로와 상대-PATH shadow 위험을 판정한다.
- * - not-found(null) 또는 해석 예외 → 빈 객체(탐지 본 기능을 깨지 않는다).
- * - 비절대(상대/CWD PATH 엔트리)로 해석되면 pathShadowRisk: true.
+ * 해석된 경로가 PATH shadow 위험인지 판정.
+ * - 비절대(상대/CWD PATH 엔트리)면 위험.
+ * - 절대라도 **cwd 내부**면 위험: which@2 는 Windows(및 cygwin/msys)에서 PATH 보다 cwd 를 먼저
+ *   검색해 cwd shadow 를 절대경로로 반환하므로(which.js 'windows always checks the cwd first'),
+ *   path.isAbsolute 만으로는 cwd shadow 를 놓친다. dirname 이 cwd 면 위험으로 본다(전 플랫폼).
+ */
+function isShadowRisk(resolved: string): boolean {
+  if (!path.isAbsolute(resolved)) return true
+  const dir = path.resolve(path.dirname(resolved))
+  const cwd = path.resolve(process.cwd())
+  return process.platform === 'win32' ? dir.toLowerCase() === cwd.toLowerCase() : dir === cwd
+}
+
+/**
+ * 명령이 PATH 에서 해석되는 실제 경로와 shadow 위험을 판정한다.
+ * - not-found(null)·해석 예외·타임아웃 → 빈 객체(탐지 본 기능을 깨거나 매달지 않는다).
+ * - 상대 PATH 또는 cwd 내부로 해석되면 pathShadowRisk: true.
  */
 export async function resolveCommandPath(
   command: string,
   resolver: PathResolver = defaultResolver,
+  timeoutMs = RESOLVE_TIMEOUT_MS,
 ): Promise<{ resolvedPath?: string; pathShadowRisk?: boolean }> {
   try {
-    const p = await resolver(command)
+    const p = await Promise.race([
+      resolver(command),
+      new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), timeoutMs).unref?.()
+      }),
+    ])
     if (!p) return {}
-    return path.isAbsolute(p) ? { resolvedPath: p } : { resolvedPath: p, pathShadowRisk: true }
+    return isShadowRisk(p) ? { resolvedPath: p, pathShadowRisk: true } : { resolvedPath: p }
   } catch {
     return {}
   }

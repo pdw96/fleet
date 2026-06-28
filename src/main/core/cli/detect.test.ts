@@ -62,6 +62,17 @@ describe('resolveCommandPath', () => {
     })
     expect(r).toEqual({})
   })
+  it('resolver 가 멈춰도 타임아웃으로 빈 객체 (표시용 해석이 탐지를 막지 않음)', async () => {
+    const r = await resolveCommandPath('claude', () => new Promise<string | null>(() => {}), 20)
+    expect(r).toEqual({})
+  })
+  it('cwd 히트(절대경로지만 cwd 내부) → pathShadowRisk true (Windows which cwd-first 방어)', async () => {
+    // which@2 는 Windows 에서 PATH 보다 cwd 를 먼저 검색해 cwd shadow 를 절대경로로 반환한다 →
+    // path.isAbsolute 만으로는 못 잡으므로 cwd 히트도 위험으로 플래그해야 한다.
+    const inCwd = join(process.cwd(), 'claude')
+    const r = await resolveCommandPath('claude', async () => inCwd)
+    expect(r).toEqual({ resolvedPath: inCwd, pathShadowRisk: true })
+  })
 })
 
 describe('detectCli', () => {
