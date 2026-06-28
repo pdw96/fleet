@@ -75,16 +75,13 @@ function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover; store: 
 }
 
 function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
-  ipcMain.handle(
-    'fleet:app:info',
-    (): AppInfo => ({
-      name: 'Fleet',
-      version: app.getVersion(),
-      electron: process.versions.electron,
-      node: process.versions.node,
-      chrome: process.versions.chrome,
-    }),
-  )
+  ipcMain.handle('fleet:app:info', (): AppInfo => ({
+    name: 'Fleet',
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    node: process.versions.node,
+    chrome: process.versions.chrome,
+  }))
 
   // 세션 / CLI
   ipcMain.handle('fleet:cli:detect', () => engine.detectClis())
