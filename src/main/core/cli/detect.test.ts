@@ -436,6 +436,18 @@ describe('resolvePathOnly (#158)', () => {
     const abs = join(tmpdir(), 'shadow.cmd')
     expect(await resolvePathOnly('shadow', async () => ['rel/shadow.cmd', abs])).toBe(abs)
   })
+  it('excludeDir(워크스페이스) 서브트리 매치는 거부한다 (PATH 에 워크스페이스가 있어도)', async () => {
+    const ws = join(tmpdir(), 'ws158x')
+    const underWs = join(ws, 'shadow.cmd')
+    const underWsSub = join(ws, 'sub', 'deep', 'shadow.cmd')
+    expect(await resolvePathOnly('shadow', async () => [underWs], undefined, ws)).toBeNull()
+    expect(await resolvePathOnly('shadow', async () => [underWsSub], undefined, ws)).toBeNull()
+  })
+  it('excludeDir 밖 절대 매치는 고른다', async () => {
+    const ws = join(tmpdir(), 'ws158x')
+    const outside = join(tmpdir(), 'bin158x', 'shadow.cmd')
+    expect(await resolvePathOnly('shadow', async () => [outside], undefined, ws)).toBe(outside)
+  })
 })
 
 describe.skipIf(process.platform !== 'win32')('defaultRunner cwd shadow 하드닝 (#158)', () => {
@@ -499,5 +511,36 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner cwd shadow 하드�
     })
     expect(res.spawnError).toBeUndefined()
     expect(res.stdout).toContain('ABS-MARKER')
+  }, 15_000)
+
+  it('워크스페이스가 PATH 에 있어도 워크스페이스 셰도를 거부한다 (ENOENT)', async () => {
+    const wsDir = join(root, 'ws')
+    mkdirSync(wsDir)
+    writeFileSync(join(wsDir, 'shadow158.cmd'), '@echo off\r\necho CWD-MARKER\r\n')
+    // 이례적이지만 워크스페이스가 PATH 에 있으면 which 가 PATH 경유로 셰도를 찾는다 → excludeDir 로 거부돼야.
+    process.env.PATH = `${wsDir}${delimiter}${prevPath ?? ''}`
+
+    const res = await defaultRunner('shadow158', [], { timeoutMs: 10_000, cwd: wsDir })
+    expect(res.spawnError).toBe('ENOENT')
+    expect(res.stdout).not.toContain('CWD-MARKER')
+  }, 15_000)
+
+  it('취소된 signal 이면 spawn 없이 ABORTED 로 거부한다', async () => {
+    const binDir = join(root, 'bin')
+    const wsDir = join(root, 'ws')
+    mkdirSync(binDir)
+    mkdirSync(wsDir)
+    writeFileSync(join(binDir, 'shadow158.cmd'), '@echo off\r\necho PATH-MARKER\r\n')
+    process.env.PATH = `${binDir}${delimiter}${prevPath ?? ''}`
+    const ac = new AbortController()
+    ac.abort()
+
+    const res = await defaultRunner('shadow158', [], {
+      timeoutMs: 10_000,
+      cwd: wsDir,
+      signal: ac.signal,
+    })
+    expect(res.spawnError).toBe('ABORTED')
+    expect(res.stdout).not.toContain('PATH-MARKER')
   }, 15_000)
 })

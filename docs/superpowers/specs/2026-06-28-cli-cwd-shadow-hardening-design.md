@@ -188,3 +188,19 @@ export const defaultRunner: CommandRunner = async (command, args, opts, onStdout
 - 성능: 워크스페이스 send 당 `which` PATH 워크 1회(stat 수회, 보통 sub-ms) — 뒤따르는 CLI 실행 대비 무시 가능.
   병든 PATH 는 2s race 로 상한.
 - 의존성 변화 0(`which` 는 #157 에서 이미 직접 의존 승격).
+
+## 8. PR #159 봇 리뷰 반영 (Codex P2 · CodeRabbit Major ×2)
+
+- **D8 — 워크스페이스 서브트리 제외(CodeRabbit 보안).** `resolvePathOnly` 가 앱 cwd 만 필터해서, **워크스페이스
+  디렉터리가 PATH 에 있으면**(이례적이나 가능) which 가 PATH 경유로 워크스페이스 셰도를 절대경로로 반환→실행될
+  여지가 있었다. `excludeDir`(=`opts.cwd`) 파라미터를 추가해 그 **서브트리(자신+하위) 매치를 전면 거부**한다
+  (`isWithinDir`, win32 대소문자 무시). 앱 cwd 는 기존대로 정확-디렉터리 제외(node_modules/.bin-under-cwd 정상
+  워크플로 무회귀), 워크스페이스는 서브트리 제외(셰도 전면 차단).
+- **D9 — 해석 단계 취소/타임아웃(Codex P2).** `send` 가 runner 호출 **전** `started=true` 로 두어
+  `settleOrAbort` 가 해석 중 취소를 가로채지 않으므로(abort.ts §7), 느린 `which` 중 취소 시 edit CLI 가 잠깐
+  실행될 수 있었다. defaultRunner 가드가 **해석 전·후로 `opts.signal?.aborted` 를 직접 확인해 `ABORTED` 로 거부**
+  (spawn 안 함)하고, 해석 상한을 **`min(opts.timeoutMs, RESOLVE_TIMEOUT_MS)`** 로 캡해 호출자 예산을 넘지 않게 한다.
+  (해석 타임아웃의 null→ENOENT 매핑은 유지 — "PATH 에서 해석 불가"의 정직한 표현. 워크스페이스 가드 경로 호출자는
+  긴 timeoutMs 를 써 실질 영향 희소.)
+- 적대 자가리뷰가 D9(취소)를 거짓양성으로 **오기각**했던 점도 기록: refuter 가 `started` 가 runner 호출 전
+  설정되는 흐름을 놓쳤다 → 외부 봇(Codex)이 교차 포착. find/verify 자기검증의 한계 사례.

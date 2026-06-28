@@ -62,7 +62,17 @@ export const defaultRunner: CommandRunner = async (command, args, opts, onStdout
   // 가드 미적용 경로(POSIX·cwd 없음·이미 절대경로)는 await 없이 즉시 Promise 진입 → 기존 동기 spawn 타이밍 보존.
   let resolved = command
   if (isWindowsLike && opts.cwd != null && !path.isAbsolute(command)) {
-    const abs = await resolvePathOnly(command)
+    // 해석은 abort/timeout 핸들러 설치 전에 일어나므로 여기서 직접 취소를 본다(Codex P2 — started=true 인
+    // send 는 settleOrAbort 가 가로채지 않아, 해석 중 취소 시 edit CLI 가 잠깐 실행되는 걸 막는다).
+    if (opts.signal?.aborted) return { code: null, stdout: '', stderr: '', spawnError: 'ABORTED' }
+    // 해석 상한을 호출자 timeoutMs 로 캡(병든 PATH 가 호출자 예산을 초과하지 않게). 워크스페이스 서브트리 제외.
+    const abs = await resolvePathOnly(
+      command,
+      undefined,
+      Math.min(opts.timeoutMs, RESOLVE_TIMEOUT_MS),
+      opts.cwd,
+    )
+    if (opts.signal?.aborted) return { code: null, stdout: '', stderr: '', spawnError: 'ABORTED' }
     if (abs == null) return { code: null, stdout: '', stderr: '', spawnError: 'ENOENT' }
     resolved = abs
   }
@@ -229,21 +239,33 @@ export const isWindowsLike =
 export type AllResolver = (command: string) => Promise<string[]>
 const defaultAllResolver: AllResolver = (command) => which(command, { all: true })
 
+/** childDir 이 baseDir(자신 포함)의 서브트리 안인지. win32 는 대소문자 무시. */
+function isWithinDir(childDir: string, baseDir: string): boolean {
+  const norm = (p: string): string =>
+    isWindowsLike ? path.resolve(p).toLowerCase() : path.resolve(p)
+  const rel = path.relative(norm(baseDir), norm(childDir))
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
+}
+
 /**
  * 명령을 **PATH-only 절대경로**로 해석한다(#158, 워크스페이스 cwd-셰도 차단용).
  * which 는 win32 에서 cwd 를 무조건 prepend 하므로 {all} 로 [cwd?, …PATH] 전체 매치를 받아
  * **현재 process cwd 내부 매치를 제외**한 첫 PATH 매치를 고른다(앱 컨텍스트 호출 → 워크스페이스는 후보에 없음).
  * 그 절대경로를 spawn 에 넘기면 cross-spawn 이 cmd.exe 에 절대경로를 줘 cwd 검색을 우회한다.
  * - 이미 절대경로면 그대로(호출자 해석 완료).
- * - not-found(전부 cwd 내부거나 0매치)·예외·타임아웃 → null(호출자가 보안 거부).
+ * - 비절대 매치(상대 PATH 엔트리)는 spawn 시 cwd 재해석 여지가 있어 거부(절대경로만 cwd-독립 보장).
+ * - `excludeDir`(워크스페이스)가 PATH 에 있어 그 서브트리로 해석된 매치도 거부(CodeRabbit — 워크스페이스 셰도 전면 차단).
+ * - not-found(전부 제외됐거나 0매치)·예외·타임아웃 → null(호출자가 보안 거부).
  */
 export async function resolvePathOnly(
   command: string,
   resolver: AllResolver = defaultAllResolver,
   timeoutMs = RESOLVE_TIMEOUT_MS,
+  excludeDir?: string,
 ): Promise<string | null> {
   if (path.isAbsolute(command)) return command
   const cwd = path.resolve(process.cwd()) // which cwd 스냅샷과 일치시키려 await 전 캡처
+  const exclude = excludeDir != null ? path.resolve(excludeDir) : null
   let matches: string[] | null
   try {
     matches = await Promise.race([
@@ -256,14 +278,15 @@ export async function resolvePathOnly(
     return null
   }
   if (!matches) return null // 타임아웃
-  const outsideCwd = matches.find((m) => {
-    // 계약 = PATH-only **절대**경로. 상대 매치(상대 PATH 엔트리 해석)는 spawn 시 cwd 기준 재해석 여지가
-    // 있어 거부한다(심층방어 — 절대경로만 cwd-독립 실행 보장. §6 불변식①).
-    if (!path.isAbsolute(m)) return false
+  const safe = matches.find((m) => {
+    if (!path.isAbsolute(m)) return false // §6 불변식① — 절대경로만
     const dir = path.resolve(path.dirname(m))
-    return isWindowsLike ? dir.toLowerCase() !== cwd.toLowerCase() : dir !== cwd
+    const inCwd = isWindowsLike ? dir.toLowerCase() === cwd.toLowerCase() : dir === cwd
+    if (inCwd) return false // 앱 cwd 셰도 제외
+    if (exclude && isWithinDir(dir, exclude)) return false // 워크스페이스 서브트리 제외
+    return true
   })
-  return outsideCwd ?? null
+  return safe ?? null
 }
 
 /**
