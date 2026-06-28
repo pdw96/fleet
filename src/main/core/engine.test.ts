@@ -193,6 +193,8 @@ describe('FleetEngine', () => {
         runner: roleRunner,
         workspaceDir: dir,
         gitRunner: fakeGit(),
+        // verify 는 mock — 실제 npm spawn 회피(이 테스트는 플로우 구조 검증; 실 verify 동작은 verify/run.test.ts 담당).
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
       })
       engine.registerCliSession('claude')
 
@@ -250,6 +252,8 @@ describe('FleetEngine', () => {
         runner: roleRunner,
         workspaceDir: dir,
         gitRunner: fakeGit(),
+        // verify 는 mock — 실제 npm spawn 회피(이 테스트는 재배정 로직 검증; 실 verify 동작은 verify/run.test.ts 담당).
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
       })
       engine.registerCliSession('claude') // cli:claude — 유일한 CLI
       engine.registerApiSession({
@@ -834,6 +838,8 @@ describe('FleetEngine', () => {
         runner: roleRunner,
         workspaceDir: dir,
         gitRunner: fakeGit(),
+        // verify 는 mock — 실제 npm spawn 회피(이 테스트는 capability-scored 배정 검증; 실 verify 동작은 verify/run.test.ts 담당).
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
       })
       engine.registerCliSession('claude') // cli:claude
       engine.registerCliSession('codex') // cli:codex

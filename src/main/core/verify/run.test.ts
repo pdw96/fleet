@@ -86,6 +86,20 @@ describe('defaultVerifyRunner', () => {
     expect(res.spawnError).toBe('ABORTED')
     expect(res.code).toBeNull()
   }, 10_000)
+
+  // win32 회귀(#158 형제 결함): npm 은 Windows 에서 npm.cmd(배치 셰임)라 raw execFile('npm') 은
+  // ENOENT 로 실패한다(셰임 미해석). verify 는 워크스페이스(custom cwd)에서 npm 스크립트를 돌리므로
+  // cross-spawn 기반 실행기(PATHEXT 셰임 해석 + cmd.exe 인자 이스케이프 + PATH-only cwd-셰도 차단)를
+  // 거쳐야 한다. cwd 를 줘 win32 PATH-only 해석 경로를 실제로 태운다.
+  it('runs npm (a Windows .cmd shim) in a workspace cwd without ENOENT', async () => {
+    const res = await defaultVerifyRunner(
+      { kind: 'test', command: 'npm', args: ['--version'], cwd: process.cwd() },
+      30_000,
+    )
+    expect(res.spawnError).toBeUndefined()
+    expect(res.code).toBe(0)
+    expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/)
+  }, 35_000)
 })
 
 describe('runAllVerifications / allPassed', () => {

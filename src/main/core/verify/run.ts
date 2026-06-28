@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process'
 import type { VerificationResult, VerifyKind } from '../../../shared/types'
+import { defaultRunner } from '../cli/detect'
 
 export interface VerifyCommand {
   kind: VerifyKind
@@ -21,46 +21,17 @@ export type VerifyRunner = (
   signal?: AbortSignal,
 ) => Promise<VerifyExecResult>
 
-const MAX_BUFFER = 10 * 1024 * 1024
-
-/** 기본 실행기: child_process.execFile. signal abort 시 자식 프로세스를 종료한다(취소 전파). */
+/**
+ * 기본 실행기: CLI 탐지·편집과 동일한 cross-spawn 기반 `defaultRunner`(`cli/detect`)에 위임한다.
+ * raw `child_process.execFile('npm', …)` 은 Windows 에서 npm/eslint 가 `.cmd` 배치 셰임이라
+ * ENOENT(셰임 미해석)·Node 20+ 의 `.cmd` 직접 spawn 차단(EINVAL)으로 깨졌다(win32 에서 verify
+ * 가 항상 실패). `defaultRunner` 는 (a) PATHEXT 로 셰임을 해석하고 cmd.exe 경유 시 인자를 안전
+ * 이스케이프하며, (b) 워크스페이스(custom cwd)에서 PATH-only 절대경로로 실행해 cwd-셰도(악성
+ * `npm.cmd`)를 차단하고(#158), (c) timeout/abort/overflow 종료(트리 킬)를 단일 구현으로 공유한다.
+ * `CommandResult` 는 `VerifyExecResult` 와 구조가 동일하다(code·stdout·stderr·spawnError).
+ */
 export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs, signal) =>
-  new Promise<VerifyExecResult>((resolve) => {
-    execFile(
-      cmd.command,
-      cmd.args,
-      { cwd: cmd.cwd, timeout: timeoutMs, windowsHide: true, maxBuffer: MAX_BUFFER, signal },
-      (err, stdout, stderr) => {
-        const e = err as
-          | (NodeJS.ErrnoException & {
-              code?: number | string
-              killed?: boolean
-              signal?: NodeJS.Signals | null
-            })
-          | null
-        // 취소(AbortSignal) 로 죽은 자식은 정상 실패가 아니라 ABORTED 로 보고한다(timeout 검사보다 먼저).
-        if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) {
-          resolve({ code: null, stdout: '', stderr: '', spawnError: 'ABORTED' })
-          return
-        }
-        if (e && e.code === 'ENOENT') {
-          resolve({ code: null, stdout: '', stderr: '', spawnError: 'ENOENT' })
-          return
-        }
-        if (e && (e.killed || e.signal === 'SIGTERM')) {
-          resolve({
-            code: null,
-            stdout: stdout?.toString() ?? '',
-            stderr: stderr?.toString() ?? '',
-            spawnError: 'ETIMEDOUT',
-          })
-          return
-        }
-        const code = e ? (typeof e.code === 'number' ? e.code : 1) : 0
-        resolve({ code, stdout: stdout?.toString() ?? '', stderr: stderr?.toString() ?? '' })
-      },
-    )
-  })
+  defaultRunner(cmd.command, cmd.args, { timeoutMs, cwd: cmd.cwd, signal })
 
 /** 실패 출력에서 대표 에러 라인 추출 (간단 분석, 요구사항 5). */
 export function summarizeFailure(stdout: string, stderr: string): string {
