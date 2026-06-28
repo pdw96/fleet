@@ -204,6 +204,7 @@ export async function detectCli(
   adapter: CliAdapter,
   runner: CommandRunner = defaultRunner,
   timeoutMs = 5000,
+  resolver: PathResolver = defaultResolver,
 ): Promise<CliDetectionResult> {
   const base = {
     id: adapter.id,
@@ -211,16 +212,20 @@ export async function detectCli(
     command: adapter.command,
     kind: 'cli' as const,
   }
-  const res = await runner(adapter.command, adapter.versionArgs, { timeoutMs })
+  // 버전 spawn 과 경로 해석을 동시 실행(추가 지연 0). 경로 해석 실패는 탐지 본 기능을 깨지 않는다.
+  const [res, pathInfo] = await Promise.all([
+    runner(adapter.command, adapter.versionArgs, { timeoutMs }),
+    resolveCommandPath(adapter.command, resolver),
+  ])
 
   if (res.spawnError) {
-    return { ...base, installed: false, error: res.spawnError }
+    return { ...base, installed: false, error: res.spawnError, ...pathInfo }
   }
   const raw = (res.stdout || res.stderr).trim()
   if (res.code === 0) {
-    return { ...base, installed: true, version: parseVersion(raw), raw }
+    return { ...base, installed: true, version: parseVersion(raw), raw, ...pathInfo }
   }
-  return { ...base, installed: false, raw, error: `exit ${res.code}` }
+  return { ...base, installed: false, raw, error: `exit ${res.code}`, ...pathInfo }
 }
 
 /** 모든 어댑터 병렬 감지. */
@@ -228,6 +233,7 @@ export async function detectAll(
   adapters: readonly CliAdapter[],
   runner: CommandRunner = defaultRunner,
   timeoutMs = 5000,
+  resolver: PathResolver = defaultResolver,
 ): Promise<CliDetectionResult[]> {
-  return Promise.all(adapters.map((a) => detectCli(a, runner, timeoutMs)))
+  return Promise.all(adapters.map((a) => detectCli(a, runner, timeoutMs, resolver)))
 }

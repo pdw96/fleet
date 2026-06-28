@@ -56,6 +56,27 @@ describe('resolveCommandPath', () => {
 })
 
 describe('detectCli', () => {
+  it('resolvedPath 병합(절대경로 → 위험 없음)', async () => {
+    const runner: CommandRunner = async () => ({ code: 0, stdout: 'claude 1.2.3', stderr: '' })
+    const r = await detectCli(claude, runner, 5000, async () => '/usr/local/bin/claude')
+    expect(r.installed).toBe(true)
+    expect(r.resolvedPath).toBe('/usr/local/bin/claude')
+    expect(r.pathShadowRisk).toBeUndefined()
+  })
+  it('상대경로 해석 → pathShadowRisk true', async () => {
+    const runner: CommandRunner = async () => ({ code: 0, stdout: 'claude 1.2.3', stderr: '' })
+    const r = await detectCli(claude, runner, 5000, async () => './claude')
+    expect(r.pathShadowRisk).toBe(true)
+  })
+  it('resolver 예외가 --version 감지를 깨지 않음', async () => {
+    const runner: CommandRunner = async () => ({ code: 0, stdout: 'claude 1.2.3', stderr: '' })
+    const r = await detectCli(claude, runner, 5000, async () => {
+      throw new Error('boom')
+    })
+    expect(r.installed).toBe(true)
+    expect(r.version).toBe('1.2.3')
+    expect(r.resolvedPath).toBeUndefined()
+  })
   it('marks installed and parses version on exit 0', async () => {
     const runner: CommandRunner = async () => ({ code: 0, stdout: 'claude 1.2.3\n', stderr: '' })
     const r = await detectCli(claude, runner)
