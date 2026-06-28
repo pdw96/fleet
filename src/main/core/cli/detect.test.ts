@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, delimiter } from 'node:path'
 import {
   defaultResolver,
   defaultRunner,
@@ -9,6 +9,7 @@ import {
   detectCli,
   parseVersion,
   resolveCommandPath,
+  resolvePathOnly,
   type CommandRunner,
   type RunOpts,
 } from './detect'
@@ -391,4 +392,155 @@ describe('createCliRegistry', () => {
       expect(promptTemplates(a)).not.toContain('{prompt}')
     }
   })
+})
+
+describe('resolvePathOnly (#158)', () => {
+  it('cwd 내부 매치를 걸러 첫 PATH 매치를 고른다', async () => {
+    const cwdHit = join(process.cwd(), 'shadow.cmd')
+    const pathHit = join(tmpdir(), 'shadow.cmd') // tmpdir() ≠ cwd
+    const r = await resolvePathOnly('shadow', async () => [cwdHit, pathHit])
+    expect(r).toBe(pathHit)
+  })
+  it('cwd 매치만 있으면 null', async () => {
+    const cwdHit = join(process.cwd(), 'shadow.cmd')
+    expect(await resolvePathOnly('shadow', async () => [cwdHit])).toBeNull()
+  })
+  it('매치 0개면 null', async () => {
+    expect(await resolvePathOnly('shadow', async () => [])).toBeNull()
+  })
+  it('resolver reject 면 null (not-found 정규화)', async () => {
+    expect(
+      await resolvePathOnly('shadow', async () => {
+        throw Object.assign(new Error('nf'), { code: 'ENOENT' })
+      }),
+    ).toBeNull()
+  })
+  it('절대경로 입력은 해석 없이 그대로 반환', async () => {
+    const abs = join(tmpdir(), 'x.cmd')
+    let called = false
+    const r = await resolvePathOnly(abs, async () => {
+      called = true
+      return []
+    })
+    expect(r).toBe(abs)
+    expect(called).toBe(false)
+  })
+  it('타임아웃이면 null', async () => {
+    const r = await resolvePathOnly('shadow', () => new Promise<string[]>(() => {}), 20)
+    expect(r).toBeNull()
+  })
+  it('비절대(상대 PATH 엔트리) 매치는 거부한다 (계약: PATH-only 절대)', async () => {
+    expect(await resolvePathOnly('shadow', async () => ['subdir/shadow.cmd'])).toBeNull()
+  })
+  it('상대 매치를 거르고 절대 PATH 매치를 고른다', async () => {
+    const abs = join(tmpdir(), 'shadow.cmd')
+    expect(await resolvePathOnly('shadow', async () => ['rel/shadow.cmd', abs])).toBe(abs)
+  })
+  it('excludeDir(워크스페이스) 서브트리 매치는 거부한다 (PATH 에 워크스페이스가 있어도)', async () => {
+    const ws = join(tmpdir(), 'ws158x')
+    const underWs = join(ws, 'shadow.cmd')
+    const underWsSub = join(ws, 'sub', 'deep', 'shadow.cmd')
+    expect(await resolvePathOnly('shadow', async () => [underWs], undefined, ws)).toBeNull()
+    expect(await resolvePathOnly('shadow', async () => [underWsSub], undefined, ws)).toBeNull()
+  })
+  it('excludeDir 밖 절대 매치는 고른다', async () => {
+    const ws = join(tmpdir(), 'ws158x')
+    const outside = join(tmpdir(), 'bin158x', 'shadow.cmd')
+    expect(await resolvePathOnly('shadow', async () => [outside], undefined, ws)).toBe(outside)
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('defaultRunner cwd shadow 하드닝 (#158)', () => {
+  const NODEF = 'NoDefaultCurrentDirectoryInExePath'
+  let root: string
+  let prevPath: string | undefined
+  let prevNoDef: string | undefined
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'shadow158-'))
+    prevPath = process.env.PATH
+    prevNoDef = process.env[NODEF]
+    // 취약 환경 재현: cmd.exe 가 cwd 를 검색하도록 하드닝 변수 제거(대소문자 변형 포함).
+    for (const k of Object.keys(process.env)) {
+      if (/^nodefaultcurrentdirectoryinexepath$/i.test(k)) delete process.env[k]
+    }
+  })
+  afterEach(() => {
+    process.env.PATH = prevPath
+    if (prevNoDef !== undefined) process.env[NODEF] = prevNoDef
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('PATH 의 CLI 를 실행하고 워크스페이스 cwd 셰도를 무시한다', async () => {
+    const binDir = join(root, 'bin')
+    const wsDir = join(root, 'ws')
+    mkdirSync(binDir)
+    mkdirSync(wsDir)
+    writeFileSync(join(binDir, 'shadow158.cmd'), '@echo off\r\necho PATH-MARKER\r\n')
+    writeFileSync(join(wsDir, 'shadow158.cmd'), '@echo off\r\necho CWD-MARKER\r\n')
+    process.env.PATH = `${binDir}${delimiter}${prevPath ?? ''}`
+
+    const res = await defaultRunner('shadow158', [], { timeoutMs: 10_000, cwd: wsDir })
+    expect(res.spawnError).toBeUndefined()
+    expect(res.code).toBe(0)
+    expect(res.stdout).toContain('PATH-MARKER')
+    expect(res.stdout).not.toContain('CWD-MARKER')
+  }, 15_000)
+
+  it('PATH 에 없고 워크스페이스에만 있으면 실행을 거부한다 (ENOENT)', async () => {
+    const wsDir = join(root, 'ws')
+    mkdirSync(wsDir)
+    writeFileSync(join(wsDir, 'shadow158.cmd'), '@echo off\r\necho CWD-MARKER\r\n')
+    // PATH 에 binDir 미추가 → shadow158 은 PATH 에 없음.
+
+    const res = await defaultRunner('shadow158', [], { timeoutMs: 10_000, cwd: wsDir })
+    expect(res.spawnError).toBe('ENOENT')
+    expect(res.stdout).not.toContain('CWD-MARKER')
+  }, 15_000)
+
+  it('절대 .cmd 경로 + cwd 는 해석 없이 그대로 실행한다(short-circuit)', async () => {
+    const binDir = join(root, 'bin')
+    const wsDir = join(root, 'ws')
+    mkdirSync(binDir)
+    mkdirSync(wsDir)
+    writeFileSync(join(binDir, 'shadow158.cmd'), '@echo off\r\necho ABS-MARKER\r\n')
+
+    const res = await defaultRunner(join(binDir, 'shadow158.cmd'), [], {
+      timeoutMs: 10_000,
+      cwd: wsDir,
+    })
+    expect(res.spawnError).toBeUndefined()
+    expect(res.stdout).toContain('ABS-MARKER')
+  }, 15_000)
+
+  it('워크스페이스가 PATH 에 있어도 워크스페이스 셰도를 거부한다 (ENOENT)', async () => {
+    const wsDir = join(root, 'ws')
+    mkdirSync(wsDir)
+    writeFileSync(join(wsDir, 'shadow158.cmd'), '@echo off\r\necho CWD-MARKER\r\n')
+    // 이례적이지만 워크스페이스가 PATH 에 있으면 which 가 PATH 경유로 셰도를 찾는다 → excludeDir 로 거부돼야.
+    process.env.PATH = `${wsDir}${delimiter}${prevPath ?? ''}`
+
+    const res = await defaultRunner('shadow158', [], { timeoutMs: 10_000, cwd: wsDir })
+    expect(res.spawnError).toBe('ENOENT')
+    expect(res.stdout).not.toContain('CWD-MARKER')
+  }, 15_000)
+
+  it('취소된 signal 이면 spawn 없이 ABORTED 로 거부한다', async () => {
+    const binDir = join(root, 'bin')
+    const wsDir = join(root, 'ws')
+    mkdirSync(binDir)
+    mkdirSync(wsDir)
+    writeFileSync(join(binDir, 'shadow158.cmd'), '@echo off\r\necho PATH-MARKER\r\n')
+    process.env.PATH = `${binDir}${delimiter}${prevPath ?? ''}`
+    const ac = new AbortController()
+    ac.abort()
+
+    const res = await defaultRunner('shadow158', [], {
+      timeoutMs: 10_000,
+      cwd: wsDir,
+      signal: ac.signal,
+    })
+    expect(res.spawnError).toBe('ABORTED')
+    expect(res.stdout).not.toContain('PATH-MARKER')
+  }, 15_000)
 })

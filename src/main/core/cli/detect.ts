@@ -55,8 +55,28 @@ const KILL_GRACE_MS = 2000
  * cross-spawn 은 PATHEXT 로 셰임을 찾고, cmd.exe 경유 시 인자를 안전하게
  * 이스케이프(주입 방지)해 실행한다. POSIX 에서는 일반 spawn 과 동일하게 동작.
  */
-export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
-  new Promise<CommandResult>((resolve) => {
+export const defaultRunner: CommandRunner = async (command, args, opts, onStdout) => {
+  // 워크스페이스(custom cwd) Windows spawn 은 cross-spawn 이 bare 를 cmd.exe 로 넘기고 cmd.exe 가 cwd 를
+  // PATH 보다 먼저 검색하므로, bare command 를 PATH-only 절대경로로 미리 해석해 cwd-셰도(워크스페이스 내
+  // 악성 claude.cmd) 실행을 차단한다(#158). PATH 미발견이면 cwd 를 고의로 미조회한 보안 거부(ENOENT).
+  // 가드 미적용 경로(POSIX·cwd 없음·이미 절대경로)는 await 없이 즉시 Promise 진입 → 기존 동기 spawn 타이밍 보존.
+  let resolved = command
+  if (isWindowsLike && opts.cwd != null && !path.isAbsolute(command)) {
+    // 해석은 abort/timeout 핸들러 설치 전에 일어나므로 여기서 직접 취소를 본다(Codex P2 — started=true 인
+    // send 는 settleOrAbort 가 가로채지 않아, 해석 중 취소 시 edit CLI 가 잠깐 실행되는 걸 막는다).
+    if (opts.signal?.aborted) return { code: null, stdout: '', stderr: '', spawnError: 'ABORTED' }
+    // 해석 상한을 호출자 timeoutMs 로 캡(병든 PATH 가 호출자 예산을 초과하지 않게). 워크스페이스 서브트리 제외.
+    const abs = await resolvePathOnly(
+      command,
+      undefined,
+      Math.min(opts.timeoutMs, RESOLVE_TIMEOUT_MS),
+      opts.cwd,
+    )
+    if (opts.signal?.aborted) return { code: null, stdout: '', stderr: '', spawnError: 'ABORTED' }
+    if (abs == null) return { code: null, stdout: '', stderr: '', spawnError: 'ENOENT' }
+    resolved = abs
+  }
+  return new Promise<CommandResult>((resolve) => {
     const { timeoutMs, cwd, signal, stdinInput } = opts
     const outChunks: Buffer[] = []
     const errChunks: Buffer[] = []
@@ -88,7 +108,7 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
       resolve({ ...extra, stdout, stderr })
     }
 
-    const child = spawn(command, args, { windowsHide: true, cwd })
+    const child = spawn(resolved, args, { windowsHide: true, cwd })
 
     // 종료가 트리거됐을 때(취소/타임아웃/overflow) 트리 킬 확인과 stdout close 를 둘 다 본 뒤 종결한다.
     const finishWhenTerminated = () => {
@@ -166,6 +186,7 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
     if (stdinInput != null) child.stdin?.end(stdinInput)
     else child.stdin?.end()
   })
+}
 
 const SEMVER = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/
 
@@ -208,6 +229,64 @@ function isShadowRisk(resolved: string): boolean {
   const dir = path.resolve(path.dirname(resolved))
   const cwd = path.resolve(process.cwd())
   return process.platform === 'win32' ? dir.toLowerCase() === cwd.toLowerCase() : dir === cwd
+}
+
+/** which 의 isWindows 정의와 일치 — cmd.exe 가 cwd 를 PATH 보다 먼저 검색하는(= cwd-셰도 벡터가 성립하는) 플랫폼. */
+export const isWindowsLike =
+  process.platform === 'win32' || process.env.OSTYPE === 'cygwin' || process.env.OSTYPE === 'msys'
+
+/** PATH 전체 매치 해석기(테스트 주입 가능). 기본은 which({all}) — cross-spawn 과 동일 계열. */
+export type AllResolver = (command: string) => Promise<string[]>
+const defaultAllResolver: AllResolver = (command) => which(command, { all: true })
+
+/** childDir 이 baseDir(자신 포함)의 서브트리 안인지. win32 는 대소문자 무시. */
+function isWithinDir(childDir: string, baseDir: string): boolean {
+  const norm = (p: string): string =>
+    isWindowsLike ? path.resolve(p).toLowerCase() : path.resolve(p)
+  const rel = path.relative(norm(baseDir), norm(childDir))
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
+}
+
+/**
+ * 명령을 **PATH-only 절대경로**로 해석한다(#158, 워크스페이스 cwd-셰도 차단용).
+ * which 는 win32 에서 cwd 를 무조건 prepend 하므로 {all} 로 [cwd?, …PATH] 전체 매치를 받아
+ * **현재 process cwd 내부 매치를 제외**한 첫 PATH 매치를 고른다(앱 컨텍스트 호출 → 워크스페이스는 후보에 없음).
+ * 그 절대경로를 spawn 에 넘기면 cross-spawn 이 cmd.exe 에 절대경로를 줘 cwd 검색을 우회한다.
+ * - 이미 절대경로면 그대로(호출자 해석 완료).
+ * - 비절대 매치(상대 PATH 엔트리)는 spawn 시 cwd 재해석 여지가 있어 거부(절대경로만 cwd-독립 보장).
+ * - `excludeDir`(워크스페이스)가 PATH 에 있어 그 서브트리로 해석된 매치도 거부(CodeRabbit — 워크스페이스 셰도 전면 차단).
+ * - not-found(전부 제외됐거나 0매치)·예외·타임아웃 → null(호출자가 보안 거부).
+ */
+export async function resolvePathOnly(
+  command: string,
+  resolver: AllResolver = defaultAllResolver,
+  timeoutMs = RESOLVE_TIMEOUT_MS,
+  excludeDir?: string,
+): Promise<string | null> {
+  if (path.isAbsolute(command)) return command
+  const cwd = path.resolve(process.cwd()) // which cwd 스냅샷과 일치시키려 await 전 캡처
+  const exclude = excludeDir != null ? path.resolve(excludeDir) : null
+  let matches: string[] | null
+  try {
+    matches = await Promise.race([
+      resolver(command).catch(() => [] as string[]), // 비동기 which 는 not-found 시 reject → [] 정규화
+      new Promise<null>((r) => {
+        setTimeout(() => r(null), timeoutMs).unref?.()
+      }),
+    ])
+  } catch {
+    return null
+  }
+  if (!matches) return null // 타임아웃
+  const safe = matches.find((m) => {
+    if (!path.isAbsolute(m)) return false // §6 불변식① — 절대경로만
+    const dir = path.resolve(path.dirname(m))
+    const inCwd = isWindowsLike ? dir.toLowerCase() === cwd.toLowerCase() : dir === cwd
+    if (inCwd) return false // 앱 cwd 셰도 제외
+    if (exclude && isWithinDir(dir, exclude)) return false // 워크스페이스 서브트리 제외
+    return true
+  })
+  return safe ?? null
 }
 
 /**
