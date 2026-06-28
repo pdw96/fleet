@@ -35,6 +35,92 @@ afterEach(() => {
 })
 
 describe('AddAiWizard', () => {
+  it('구독: 설치된 CLI 의 실행 경로 + 보조문구 표시, 위험 없으면 alert 없음', async () => {
+    mockFleet({
+      detectClis: vi.fn().mockResolvedValue([
+        {
+          id: 'claude',
+          displayName: 'Claude Code',
+          command: 'claude',
+          kind: 'cli',
+          installed: true,
+          version: '1.0.0',
+          resolvedPath: '/usr/local/bin/claude',
+        },
+      ]),
+    })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    expect(screen.getByText('/usr/local/bin/claude')).toBeTruthy()
+    expect(screen.getByText(/공식 CLI 설치 경로인지 확인/)).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+  it('구독: pathShadowRisk → 상대 PATH 경고 alert', async () => {
+    mockFleet({
+      detectClis: vi.fn().mockResolvedValue([
+        {
+          id: 'claude',
+          displayName: 'Claude Code',
+          command: 'claude',
+          kind: 'cli',
+          installed: true,
+          version: '1.0.0',
+          resolvedPath: './claude',
+          pathShadowRisk: true,
+        },
+      ]),
+    })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    expect(screen.getByRole('alert')).toBeTruthy()
+    expect(screen.getByText(/상대 PATH/)).toBeTruthy()
+  })
+  it('구독: pathShadowRisk 여도 등록 버튼 비차단 (advisory not gate, 스펙 §9)', async () => {
+    mockFleet({
+      detectClis: vi.fn().mockResolvedValue([
+        {
+          id: 'claude',
+          displayName: 'Claude Code',
+          command: 'claude',
+          kind: 'cli',
+          installed: true,
+          version: '1.0.0',
+          resolvedPath: './claude',
+          pathShadowRisk: true,
+        },
+      ]),
+    })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    expect(
+      (screen.getByRole('button', { name: /검증 없이 등록/ }) as HTMLButtonElement).disabled,
+    ).toBe(false)
+  })
+  it('구독: 설치됐으나 경로 미해석 → "확인할 수 없음"', async () => {
+    mockFleet({
+      detectClis: vi.fn().mockResolvedValue([
+        {
+          id: 'claude',
+          displayName: 'Claude Code',
+          command: 'claude',
+          kind: 'cli',
+          installed: true,
+          version: '1.0.0',
+        },
+      ]),
+    })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    expect(screen.getByText(/확인할 수 없음/)).toBeTruthy()
+  })
   it('provider 선택 → method 단계 전이', async () => {
     mockFleet()
     await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)

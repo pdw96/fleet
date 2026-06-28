@@ -3,10 +3,12 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  defaultResolver,
   defaultRunner,
   detectAll,
   detectCli,
   parseVersion,
+  resolveCommandPath,
   type CommandRunner,
   type RunOpts,
 } from './detect'
@@ -33,7 +35,68 @@ describe('parseVersion', () => {
   })
 })
 
+describe('defaultResolver', () => {
+  // 비동기 which 는 {nothrow} 를 무시하고 not-found 시 reject 한다 → defaultResolver 가
+  // PathResolver 계약(null = not-found)을 지키도록 null 로 정규화함을 실측 단언.
+  it('not-found 명령은 throw 하지 않고 null 로 정규화', async () => {
+    await expect(defaultResolver('fleet-no-such-binary-zzz123')).resolves.toBeNull()
+  })
+})
+
+describe('resolveCommandPath', () => {
+  it('절대경로 → resolvedPath 설정, pathShadowRisk 없음', async () => {
+    const r = await resolveCommandPath('claude', async () => '/usr/local/bin/claude')
+    expect(r).toEqual({ resolvedPath: '/usr/local/bin/claude' })
+  })
+  it('상대경로 → pathShadowRisk true', async () => {
+    const r = await resolveCommandPath('claude', async () => './claude')
+    expect(r).toEqual({ resolvedPath: './claude', pathShadowRisk: true })
+  })
+  it('null(미해석) → 빈 객체', async () => {
+    const r = await resolveCommandPath('claude', async () => null)
+    expect(r).toEqual({})
+  })
+  it('resolver 예외 → 삼킴(빈 객체)', async () => {
+    const r = await resolveCommandPath('claude', async () => {
+      throw new Error('boom')
+    })
+    expect(r).toEqual({})
+  })
+  it('resolver 가 멈춰도 타임아웃으로 빈 객체 (표시용 해석이 탐지를 막지 않음)', async () => {
+    const r = await resolveCommandPath('claude', () => new Promise<string | null>(() => {}), 20)
+    expect(r).toEqual({})
+  })
+  it('cwd 히트(절대경로지만 cwd 내부) → pathShadowRisk true (Windows which cwd-first 방어)', async () => {
+    // which@2 는 Windows 에서 PATH 보다 cwd 를 먼저 검색해 cwd shadow 를 절대경로로 반환한다 →
+    // path.isAbsolute 만으로는 못 잡으므로 cwd 히트도 위험으로 플래그해야 한다.
+    const inCwd = join(process.cwd(), 'claude')
+    const r = await resolveCommandPath('claude', async () => inCwd)
+    expect(r).toEqual({ resolvedPath: inCwd, pathShadowRisk: true })
+  })
+})
+
 describe('detectCli', () => {
+  it('resolvedPath 병합(절대경로 → 위험 없음)', async () => {
+    const runner: CommandRunner = async () => ({ code: 0, stdout: 'claude 1.2.3', stderr: '' })
+    const r = await detectCli(claude, runner, 5000, async () => '/usr/local/bin/claude')
+    expect(r.installed).toBe(true)
+    expect(r.resolvedPath).toBe('/usr/local/bin/claude')
+    expect(r.pathShadowRisk).toBeUndefined()
+  })
+  it('상대경로 해석 → pathShadowRisk true', async () => {
+    const runner: CommandRunner = async () => ({ code: 0, stdout: 'claude 1.2.3', stderr: '' })
+    const r = await detectCli(claude, runner, 5000, async () => './claude')
+    expect(r.pathShadowRisk).toBe(true)
+  })
+  it('resolver 예외가 --version 감지를 깨지 않음', async () => {
+    const runner: CommandRunner = async () => ({ code: 0, stdout: 'claude 1.2.3', stderr: '' })
+    const r = await detectCli(claude, runner, 5000, async () => {
+      throw new Error('boom')
+    })
+    expect(r.installed).toBe(true)
+    expect(r.version).toBe('1.2.3')
+    expect(r.resolvedPath).toBeUndefined()
+  })
   it('marks installed and parses version on exit 0', async () => {
     const runner: CommandRunner = async () => ({ code: 0, stdout: 'claude 1.2.3\n', stderr: '' })
     const r = await detectCli(claude, runner)

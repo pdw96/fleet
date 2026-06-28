@@ -176,7 +176,8 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
     const adapterId = ADAPTER_ID[provider]!
     const meta = CLI_AUTH_INSTALL_META[adapterId]
     const banner = SUBSCRIPTION_BANNERS[provider]
-    const installed = !!clis.find((c) => c.id === adapterId)?.installed
+    const cli = clis.find((c) => c.id === adapterId)
+    const installed = !!cli?.installed
     return (
       <div>
         <h3>구독 (공식 CLI 위임)</h3>
@@ -226,6 +227,20 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
           </div>
         ) : (
           <div>
+            <p>
+              실행 경로: <code>{cli?.resolvedPath ?? '확인할 수 없음'}</code>
+            </p>
+            {cli?.pathShadowRisk && (
+              <p role="alert">
+                ⚠ 현재 작업 디렉터리(cwd) 또는 상대 PATH 항목에서 해석되었습니다 — 의도하지 않은
+                실행 파일로 바꿔치기될 수 있습니다(PATH shadowing).
+              </p>
+            )}
+            <p>
+              의도한 공식 CLI 설치 경로인지 확인하세요. 이 경로는 PATH 기준 해석이며,
+              워크스페이스에서 실행 시(특히 Windows)에는 워크스페이스 내 동명 실행파일이 우선될 수
+              있습니다.
+            </p>
             <p>로그인이 안 돼 있다면 터미널에서 실행(복사):</p>
             <code>{meta.loginCommand}</code>
             <button

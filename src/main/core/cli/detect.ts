@@ -1,5 +1,7 @@
+import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import spawn from 'cross-spawn'
+import which from 'which'
 import type { CliAdapter, CliDetectionResult } from '../../../shared/types'
 import { killTree } from '../process/kill-tree'
 
@@ -173,11 +175,71 @@ export function parseVersion(output: string): string | undefined {
   return m ? m[0] : undefined
 }
 
+/** PATH 에서 명령 → 실행 경로 해석기(테스트 주입 가능). null = not-found(예외 비전파). */
+export type PathResolver = (command: string) => Promise<string | null>
+
+/**
+ * 기본 경로 해석기: cross-spawn 이 쓰는 which@2 재사용 — 표시 경로 = 실제 실행 경로.
+ * ⚠ which 의 *비동기* API 는 `{nothrow}` 옵션을 무시하고 not-found 시 ENOENT 로 reject 한다
+ * (nothrow 는 whichSync 전용). 따라서 여기서 명시적으로 catch→null 정규화해 PathResolver
+ * 계약(null = not-found)을 지킨다. resolveCommandPath 의 try/catch 는 커스텀 resolver 용 심층방어.
+ */
+export const defaultResolver: PathResolver = async (command) => {
+  try {
+    return await which(command)
+  } catch {
+    return null
+  }
+}
+
+// 표시용 경로 해석 상한. which 의 PATH 순회(파일 stat)는 보통 즉시지만, 병든 PATH(스테일 네트워크
+// 마운트 등)에서 멈출 수 있다. 표시용 부가정보가 detectCli 를 영영 매달지 않게 race 로 상한을 건다.
+const RESOLVE_TIMEOUT_MS = 2000
+
+/**
+ * 해석된 경로가 PATH shadow 위험인지 판정.
+ * - 비절대(상대/CWD PATH 엔트리)면 위험.
+ * - 절대라도 **cwd 내부**면 위험: which@2 는 Windows(및 cygwin/msys)에서 PATH 보다 cwd 를 먼저
+ *   검색해 cwd shadow 를 절대경로로 반환하므로(which.js 'windows always checks the cwd first'),
+ *   path.isAbsolute 만으로는 cwd shadow 를 놓친다. dirname 이 cwd 면 위험으로 본다(전 플랫폼).
+ */
+function isShadowRisk(resolved: string): boolean {
+  if (!path.isAbsolute(resolved)) return true
+  const dir = path.resolve(path.dirname(resolved))
+  const cwd = path.resolve(process.cwd())
+  return process.platform === 'win32' ? dir.toLowerCase() === cwd.toLowerCase() : dir === cwd
+}
+
+/**
+ * 명령이 PATH 에서 해석되는 실제 경로와 shadow 위험을 판정한다.
+ * - not-found(null)·해석 예외·타임아웃 → 빈 객체(탐지 본 기능을 깨거나 매달지 않는다).
+ * - 상대 PATH 또는 cwd 내부로 해석되면 pathShadowRisk: true.
+ */
+export async function resolveCommandPath(
+  command: string,
+  resolver: PathResolver = defaultResolver,
+  timeoutMs = RESOLVE_TIMEOUT_MS,
+): Promise<{ resolvedPath?: string; pathShadowRisk?: boolean }> {
+  try {
+    const p = await Promise.race([
+      resolver(command),
+      new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), timeoutMs).unref?.()
+      }),
+    ])
+    if (!p) return {}
+    return isShadowRisk(p) ? { resolvedPath: p, pathShadowRisk: true } : { resolvedPath: p }
+  } catch {
+    return {}
+  }
+}
+
 /** 단일 CLI 감지. */
 export async function detectCli(
   adapter: CliAdapter,
   runner: CommandRunner = defaultRunner,
   timeoutMs = 5000,
+  resolver: PathResolver = defaultResolver,
 ): Promise<CliDetectionResult> {
   const base = {
     id: adapter.id,
@@ -185,16 +247,20 @@ export async function detectCli(
     command: adapter.command,
     kind: 'cli' as const,
   }
-  const res = await runner(adapter.command, adapter.versionArgs, { timeoutMs })
+  // 버전 spawn 과 경로 해석을 동시 실행(추가 지연 0). 경로 해석 실패는 탐지 본 기능을 깨지 않는다.
+  const [res, pathInfo] = await Promise.all([
+    runner(adapter.command, adapter.versionArgs, { timeoutMs }),
+    resolveCommandPath(adapter.command, resolver),
+  ])
 
   if (res.spawnError) {
-    return { ...base, installed: false, error: res.spawnError }
+    return { ...base, installed: false, error: res.spawnError, ...pathInfo }
   }
   const raw = (res.stdout || res.stderr).trim()
   if (res.code === 0) {
-    return { ...base, installed: true, version: parseVersion(raw), raw }
+    return { ...base, installed: true, version: parseVersion(raw), raw, ...pathInfo }
   }
-  return { ...base, installed: false, raw, error: `exit ${res.code}` }
+  return { ...base, installed: false, raw, error: `exit ${res.code}`, ...pathInfo }
 }
 
 /** 모든 어댑터 병렬 감지. */
@@ -202,6 +268,7 @@ export async function detectAll(
   adapters: readonly CliAdapter[],
   runner: CommandRunner = defaultRunner,
   timeoutMs = 5000,
+  resolver: PathResolver = defaultResolver,
 ): Promise<CliDetectionResult[]> {
-  return Promise.all(adapters.map((a) => detectCli(a, runner, timeoutMs)))
+  return Promise.all(adapters.map((a) => detectCli(a, runner, timeoutMs, resolver)))
 }
