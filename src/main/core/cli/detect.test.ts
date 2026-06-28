@@ -429,6 +429,13 @@ describe('resolvePathOnly (#158)', () => {
     const r = await resolvePathOnly('shadow', () => new Promise<string[]>(() => {}), 20)
     expect(r).toBeNull()
   })
+  it('비절대(상대 PATH 엔트리) 매치는 거부한다 (계약: PATH-only 절대)', async () => {
+    expect(await resolvePathOnly('shadow', async () => ['subdir/shadow.cmd'])).toBeNull()
+  })
+  it('상대 매치를 거르고 절대 PATH 매치를 고른다', async () => {
+    const abs = join(tmpdir(), 'shadow.cmd')
+    expect(await resolvePathOnly('shadow', async () => ['rel/shadow.cmd', abs])).toBe(abs)
+  })
 })
 
 describe.skipIf(process.platform !== 'win32')('defaultRunner cwd shadow 하드닝 (#158)', () => {

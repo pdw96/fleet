@@ -257,6 +257,9 @@ export async function resolvePathOnly(
   }
   if (!matches) return null // 타임아웃
   const outsideCwd = matches.find((m) => {
+    // 계약 = PATH-only **절대**경로. 상대 매치(상대 PATH 엔트리 해석)는 spawn 시 cwd 기준 재해석 여지가
+    // 있어 거부한다(심층방어 — 절대경로만 cwd-독립 실행 보장. §6 불변식①).
+    if (!path.isAbsolute(m)) return false
     const dir = path.resolve(path.dirname(m))
     return isWindowsLike ? dir.toLowerCase() !== cwd.toLowerCase() : dir !== cwd
   })
