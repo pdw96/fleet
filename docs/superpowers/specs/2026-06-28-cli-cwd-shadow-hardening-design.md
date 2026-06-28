@@ -10,31 +10,35 @@
 한 지점에서 수행하며 **bare `adapter.command`**(`claude`/`codex`/`gemini`)를 `runner(command, …, { cwd: sendOpts.workspace })`
 로 실행한다(L120-130 스트리밍 분기·L144-149 비스트리밍 분기).
 
-실행기 `defaultRunner`(`detect.ts`)는 `cross-spawn` 으로 spawn 한다. cross-spawn 의 `resolveCommand`
-(`node_modules/cross-spawn/lib/util/resolveCommand.js`)는:
+실행기 `defaultRunner`(`detect.ts`)는 `cross-spawn` 으로 spawn 한다. **실측(repo `node_modules` 의 which/cross-spawn
+으로 검증)으로 정확한 실행 메커니즘을 확정했다** — 처음 가정과 달리 최종 cwd-vs-PATH 해석은 `which` 가 아니라
+**`cmd.exe` 가** 한다:
 
-```js
-if (hasCustomCwd) process.chdir(parsed.options.cwd)   // ① 워크스페이스로 chdir
-resolved = which.sync(parsed.command, { path: env.PATH })  // ② which 가 cwd 우선 검색
-process.chdir(cwd)                                     // ③ 복귀
-```
+1. cross-spawn `parse.js`(L12-25·L49-58): bare command 를 `resolveCommand`(내부 `process.chdir(cwd)` + `which.sync`)
+   로 해석하지만 그 **resolved 경로(`parsed.file`)는 `needsShell` 판정·shebang 감지에만** 쓴다. `.cmd` 는 실행
+   확장자(.com/.exe)가 아니라 `needsShell=true` → cmd.exe 경유 실행으로 분기.
+2. 이때 `parsed.command` 은 **여전히 bare** 다(`detectShebang` 은 `parsed.file` 만 set·`parsed.command` 미변경).
+   따라서 cross-spawn 은 `cmd.exe /d /s /c "<bare command>"` 를 **cwd=워크스페이스** 로 spawn 한다.
+3. **그 bare 를 해석하는 것은 cmd.exe** 다. cmd.exe 는 기본적으로 **현재 디렉터리(=워크스페이스)를 PATH 보다 먼저**
+   검색한다 → 워크스페이스 내 `claude.cmd`/`codex.cmd`/`gemini.cmd` 가 우선 실행된다.
 
-`which@2`(`node_modules/which/which.js` L17-25)는 **명령에 슬래시가 없으면** Windows(+cygwin/msys)에서
-`pathEnv = [process.cwd(), …PATH]` 로 **cwd 를 PATH 보다 먼저** 검색한다(`// windows always checks the cwd first`).
+→ 사용자가 **신뢰할 수 없는 레포를 워크스페이스로 열고** 거기에 동명 `*.cmd`(npm 셰임과 동형)를 두면 edit/project
+send 시 **워크스페이스 내 악성 바이너리가 실제 실행**된다. Fleet 의 핵심 용도(워크스페이스 에이전트 실행)에서 실재하는
+코드실행 벡터이고, 출하 런타임 = Windows([[fleet-runtime-node-version]]). 실제 CLI 는 npm `.cmd` 셰임이라 이 cmd.exe 경로가 항상 탄다.
 
-→ ②에서 `process.cwd()` 는 이미 ①로 **워크스페이스**다. 따라서 사용자가 **신뢰할 수 없는 레포를 워크스페이스로
-열고** 거기에 `claude.cmd`/`codex.cmd`/`gemini.cmd` 가 있으면, edit/project send 시 **워크스페이스 내 악성
-바이너리가 실제 실행**된다. Fleet 의 핵심 용도(워크스페이스 에이전트 실행)에서 실재하는 코드실행 벡터이고,
-출하 런타임 = Windows([[fleet-runtime-node-version]]).
-
-**핵심 관측(설치 소스 실측):**
-- `which` 가 cwd 를 prepend 하는 것은 `isWindows`(`win32` || `OSTYPE=cygwin` || `OSTYPE=msys`)일 때 **만**.
-  **POSIX 는 안전** — `which.sync('claude',{path})` 가 PATH-only 절대경로를 반환하고 cross-spawn 의
-  `path.resolve(cwd, '/abs/claude')` 는 절대경로를 그대로 둔다(cwd 무시).
-- 명령이 **이미 절대경로**면 `which` 의 `pathEnv = ['']`(L17) → cwd/PATH 미검색, 파일 자체만 검사.
-  즉 **절대경로를 spawn 에 넘기면 cwd-셰도가 원천 무력화**된다.
+**핵심 관측(실측 확정):**
+- **벡터는 `NoDefaultCurrentDirectoryInExePath` 환경변수로 게이팅**된다. 이 변수가 set 이면 cmd.exe 가 cwd 를
+  검색하지 않아 셰도가 무력화된다. 그러나 이 변수는 **Windows 기본값이 아니다**(User/Machine 레지스트리 비어 있고
+  일부 셸/하니스만 Process 스코프로 주입). **일반 사용자가 탐색기/시작메뉴로 Electron 앱을 띄우면 미설정 → 취약.**
+  (⚠️ **CI/개발 하니스엔 이 변수가 상속돼 있어 셰도가 마스킹**된다 — §5 테스트는 이를 제거해 취약 환경을 재현해야 한다.)
+- **POSIX 는 안전** — cross-spawn 이 비-Windows 에선 cmd.exe 로 감싸지 않고(`parseNonShell` 의 `if(!isWin) return`),
+  Node spawn 의 bare 해석은 `execvp`(PATH 기준, cwd 미검색)다. cwd 옵션은 자식 작업디렉터리만 바꾼다.
+- **이미 절대경로면 무력화**: 절대경로를 spawn 에 넘기면 cross-spawn 이 `parsed.command` 을 그 절대경로로 두어
+  `cmd.exe /c "<abs>.cmd"` 를 띄우므로 cmd.exe 가 cwd 를 거치지 않고 그 파일을 실행한다(실측: PATH 바이너리 실행 확인).
 
 → 벡터 성립 조건 = **`isWindows` ∧ custom `cwd` 지정 ∧ bare(비절대) command**. 이 교집합만 차단하면 된다.
+
+> 실측 근거 전문: [#158 issuecomment-4826455004](https://github.com/pdw96/fleet/issues/158#issuecomment-4826455004).
 
 ## 2. 목표 / 비목표
 
@@ -77,6 +81,12 @@ process.chdir(cwd)                                     // ③ 복귀
   으로 무변경 보장. 절대 `.cmd` 의 cross-spawn 실행(PATHEXT·cmd.exe 라우팅·인자 이스케이프)은 기존 검증된 경로 그대로.
 - **D6 — ADR 불요.** 국소 실행계층 보안 결정·#157 §6a/§10 보안 계약이 영역 지배·신규 신뢰경계/IPC/저장포맷 변경 없음.
   보안 불변식은 본 스펙 §6 에 명시.
+- **D7 — Fix A(절대경로 해석) 채택 vs Fix B(env 변수 주입).** 실측이 연 분기: 변수 게이팅을 역이용해 자식 env 에
+  `NoDefaultCurrentDirectoryInExePath=1` 을 주입하는 Fix B 가 ~2줄로 `.cmd` 위협을 막는다. **Codex 코딩-전 리뷰는
+  Fix B 를 독립 추천**([issuecomment-4826477…] 계열, "inherited empty value override" 디테일 포함). **사용자는
+  defense-in-depth 를 우선해 Fix A 선택**(명시적 실행경로 고정·`.cmd`+`.exe` 공통·"표시=실행" 불변식·OS 변수 의존
+  제거). Fix B 는 cmd.exe 셰임 한정·암묵적 OS 변수 의존이 단점. (참고: Codex 가 코멘트로 알린 `1837a43` 커밋·후속
+  PR 은 **샌드박스 유령** — GitHub 미랜딩·자체 테스트 BLOCKED 확인, 폐기. [[codex-cloud-phantom-commits]].)
 
 ## 4. 구현 (`src/main/core/cli/detect.ts`)
 
@@ -128,8 +138,8 @@ export async function resolvePathOnly(
 
 ```ts
 export const defaultRunner: CommandRunner = async (command, args, opts, onStdout) => {
-  // 워크스페이스(custom cwd) Windows spawn 은 cross-spawn 이 cwd 를 PATH 보다 먼저 해석(which@2)하므로
-  // bare command 를 PATH-only 절대경로로 미리 해석해 cwd-셰도(워크스페이스 내 악성 claude.cmd) 실행을 차단(#158).
+  // 워크스페이스(custom cwd) Windows spawn 은 cross-spawn 이 bare 를 cmd.exe 로 넘기고 cmd.exe 가 cwd 를 PATH 보다
+  // 먼저 검색하므로, bare command 를 PATH-only 절대경로로 미리 해석해 cwd-셰도(워크스페이스 내 악성 claude.cmd) 실행을 차단(#158).
   let resolved = command
   if (isWindowsLike && opts.cwd != null && !path.isAbsolute(command)) {
     const abs = await resolvePathOnly(command)
@@ -147,12 +157,16 @@ export const defaultRunner: CommandRunner = async (command, args, opts, onStdout
 
 ## 5. 테스트 (TDD)
 
+- **⚠️ 테스트 전제 — 취약 환경 재현(필수)**: CI/하니스엔 `NoDefaultCurrentDirectoryInExePath` 가 상속돼 cmd.exe 가
+  cwd 를 안 뒤져 **셰도가 마스킹**된다(실측). win32 통합 테스트는 spawn 직전 `process.env` 에서 이 변수를 **삭제**해
+  (대소문자 변형 포함, save→delete→`finally` 복원) 일반 사용자 환경을 재현해야 한다. 안 하면 미수정 코드도 통과하는
+  **false-GREEN** 이 된다. (이 변수 자체가 OS 하드닝이라 제거는 *테스트에서만* — 프로덕션 fix 는 절대경로 해석으로 독립.)
 - **RED(win32, 핵심)** — `detect.test.ts` 신규 `describe.skipIf(process.platform!=='win32')('cwd shadow 하드닝')`:
   temp `bin/` 에 `shadow.cmd`(echo `PATH-MARKER`)를 두고 `process.env.PATH` 앞에 추가, temp `ws/`(워크스페이스)에도
-  `shadow.cmd`(echo `CWD-MARKER`)를 둔다. `defaultRunner('shadow', [], { cwd: ws })` 출력이 **`PATH-MARKER`** 여야
-  한다(미수정 시 `CWD-MARKER` → RED).
-- **보안 거부** — PATH 에 없고 `ws/` 에만 `shadow.cmd` 가 있을 때 `defaultRunner('shadow', [], {cwd: ws})` →
-  `spawnError === 'ENOENT'`(cwd 바이너리 미실행).
+  `shadow.cmd`(echo `CWD-MARKER`)를 둔다. **위 전제대로 변수 제거 후** `defaultRunner('shadow', [], { cwd: ws })`
+  출력이 **`PATH-MARKER`** 여야 한다(미수정 시 `CWD-MARKER` → RED — 실측으로 RED/GREEN 양상 사전 확정).
+- **보안 거부** — (변수 제거 상태) PATH 에 없고 `ws/` 에만 `shadow.cmd` 가 있을 때 `defaultRunner('shadow', [], {cwd: ws})`
+  → `spawnError === 'ENOENT'`(cwd 바이너리 미실행).
 - **절대경로 short-circuit** — 절대 `.cmd` 경로 + cwd → 해석 건너뛰고 그 경로 실행(기존 L250/L287 회귀 보존 확인).
 - **플랫폼 무관 단위** — `resolvePathOnly` 를 `AllResolver` 주입으로 검증: `['<cwd>/x','/usr/bin/x']` → `/usr/bin/x`
   선택, `['<cwd>/x']` 단독 → null, `[]` → null, 절대경로 입력 → 그대로.
