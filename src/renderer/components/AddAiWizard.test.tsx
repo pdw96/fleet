@@ -79,6 +79,29 @@ describe('AddAiWizard', () => {
     expect(screen.getByRole('alert')).toBeTruthy()
     expect(screen.getByText(/상대 PATH/)).toBeTruthy()
   })
+  it('구독: pathShadowRisk 여도 등록 버튼 비차단 (advisory not gate, 스펙 §9)', async () => {
+    mockFleet({
+      detectClis: vi.fn().mockResolvedValue([
+        {
+          id: 'claude',
+          displayName: 'Claude Code',
+          command: 'claude',
+          kind: 'cli',
+          installed: true,
+          version: '1.0.0',
+          resolvedPath: './claude',
+          pathShadowRisk: true,
+        },
+      ]),
+    })
+    await renderSettled(<AddAiWizard onRegistered={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    fireEvent.click(screen.getByRole('button', { name: /구독/ }))
+    await act(async () => {})
+    expect(
+      (screen.getByRole('button', { name: /검증 없이 등록/ }) as HTMLButtonElement).disabled,
+    ).toBe(false)
+  })
   it('구독: 설치됐으나 경로 미해석 → "확인할 수 없음"', async () => {
     mockFleet({
       detectClis: vi.fn().mockResolvedValue([

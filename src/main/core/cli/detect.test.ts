@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  defaultResolver,
   defaultRunner,
   detectAll,
   detectCli,
@@ -31,6 +32,14 @@ describe('parseVersion', () => {
 
   it('returns undefined when there is no version', () => {
     expect(parseVersion('no version here')).toBeUndefined()
+  })
+})
+
+describe('defaultResolver', () => {
+  // 비동기 which 는 {nothrow} 를 무시하고 not-found 시 reject 한다 → defaultResolver 가
+  // PathResolver 계약(null = not-found)을 지키도록 null 로 정규화함을 실측 단언.
+  it('not-found 명령은 throw 하지 않고 null 로 정규화', async () => {
+    await expect(defaultResolver('fleet-no-such-binary-zzz123')).resolves.toBeNull()
   })
 })
 

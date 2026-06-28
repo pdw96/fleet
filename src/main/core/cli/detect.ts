@@ -175,11 +175,22 @@ export function parseVersion(output: string): string | undefined {
   return m ? m[0] : undefined
 }
 
-/** PATH 에서 명령 → 실행 경로 해석기(테스트 주입 가능). null = not-found. */
+/** PATH 에서 명령 → 실행 경로 해석기(테스트 주입 가능). null = not-found(예외 비전파). */
 export type PathResolver = (command: string) => Promise<string | null>
 
-/** 기본 경로 해석기: cross-spawn 이 쓰는 which@2 재사용 — 표시 경로 = 실제 실행 경로. */
-export const defaultResolver: PathResolver = (command) => which(command, { nothrow: true })
+/**
+ * 기본 경로 해석기: cross-spawn 이 쓰는 which@2 재사용 — 표시 경로 = 실제 실행 경로.
+ * ⚠ which 의 *비동기* API 는 `{nothrow}` 옵션을 무시하고 not-found 시 ENOENT 로 reject 한다
+ * (nothrow 는 whichSync 전용). 따라서 여기서 명시적으로 catch→null 정규화해 PathResolver
+ * 계약(null = not-found)을 지킨다. resolveCommandPath 의 try/catch 는 커스텀 resolver 용 심층방어.
+ */
+export const defaultResolver: PathResolver = async (command) => {
+  try {
+    return await which(command)
+  } catch {
+    return null
+  }
+}
 
 /**
  * 명령이 PATH 에서 해석되는 실제 경로와 상대-PATH shadow 위험을 판정한다.
