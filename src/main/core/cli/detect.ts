@@ -55,8 +55,18 @@ const KILL_GRACE_MS = 2000
  * cross-spawn 은 PATHEXT 로 셰임을 찾고, cmd.exe 경유 시 인자를 안전하게
  * 이스케이프(주입 방지)해 실행한다. POSIX 에서는 일반 spawn 과 동일하게 동작.
  */
-export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
-  new Promise<CommandResult>((resolve) => {
+export const defaultRunner: CommandRunner = async (command, args, opts, onStdout) => {
+  // 워크스페이스(custom cwd) Windows spawn 은 cross-spawn 이 bare 를 cmd.exe 로 넘기고 cmd.exe 가 cwd 를
+  // PATH 보다 먼저 검색하므로, bare command 를 PATH-only 절대경로로 미리 해석해 cwd-셰도(워크스페이스 내
+  // 악성 claude.cmd) 실행을 차단한다(#158). PATH 미발견이면 cwd 를 고의로 미조회한 보안 거부(ENOENT).
+  // 가드 미적용 경로(POSIX·cwd 없음·이미 절대경로)는 await 없이 즉시 Promise 진입 → 기존 동기 spawn 타이밍 보존.
+  let resolved = command
+  if (isWindowsLike && opts.cwd != null && !path.isAbsolute(command)) {
+    const abs = await resolvePathOnly(command)
+    if (abs == null) return { code: null, stdout: '', stderr: '', spawnError: 'ENOENT' }
+    resolved = abs
+  }
+  return new Promise<CommandResult>((resolve) => {
     const { timeoutMs, cwd, signal, stdinInput } = opts
     const outChunks: Buffer[] = []
     const errChunks: Buffer[] = []
@@ -88,7 +98,7 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
       resolve({ ...extra, stdout, stderr })
     }
 
-    const child = spawn(command, args, { windowsHide: true, cwd })
+    const child = spawn(resolved, args, { windowsHide: true, cwd })
 
     // 종료가 트리거됐을 때(취소/타임아웃/overflow) 트리 킬 확인과 stdout close 를 둘 다 본 뒤 종결한다.
     const finishWhenTerminated = () => {
@@ -166,6 +176,7 @@ export const defaultRunner: CommandRunner = (command, args, opts, onStdout) =>
     if (stdinInput != null) child.stdin?.end(stdinInput)
     else child.stdin?.end()
   })
+}
 
 const SEMVER = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/
 

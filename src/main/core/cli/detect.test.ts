@@ -430,3 +430,67 @@ describe('resolvePathOnly (#158)', () => {
     expect(r).toBeNull()
   })
 })
+
+describe.skipIf(process.platform !== 'win32')('defaultRunner cwd shadow 하드닝 (#158)', () => {
+  const NODEF = 'NoDefaultCurrentDirectoryInExePath'
+  let root: string
+  let prevPath: string | undefined
+  let prevNoDef: string | undefined
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'shadow158-'))
+    prevPath = process.env.PATH
+    prevNoDef = process.env[NODEF]
+    // 취약 환경 재현: cmd.exe 가 cwd 를 검색하도록 하드닝 변수 제거(대소문자 변형 포함).
+    for (const k of Object.keys(process.env)) {
+      if (/^nodefaultcurrentdirectoryinexepath$/i.test(k)) delete process.env[k]
+    }
+  })
+  afterEach(() => {
+    process.env.PATH = prevPath
+    if (prevNoDef !== undefined) process.env[NODEF] = prevNoDef
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('PATH 의 CLI 를 실행하고 워크스페이스 cwd 셰도를 무시한다', async () => {
+    const binDir = join(root, 'bin')
+    const wsDir = join(root, 'ws')
+    mkdirSync(binDir)
+    mkdirSync(wsDir)
+    writeFileSync(join(binDir, 'shadow158.cmd'), '@echo off\r\necho PATH-MARKER\r\n')
+    writeFileSync(join(wsDir, 'shadow158.cmd'), '@echo off\r\necho CWD-MARKER\r\n')
+    process.env.PATH = `${binDir}${delimiter}${prevPath ?? ''}`
+
+    const res = await defaultRunner('shadow158', [], { timeoutMs: 10_000, cwd: wsDir })
+    expect(res.spawnError).toBeUndefined()
+    expect(res.code).toBe(0)
+    expect(res.stdout).toContain('PATH-MARKER')
+    expect(res.stdout).not.toContain('CWD-MARKER')
+  }, 15_000)
+
+  it('PATH 에 없고 워크스페이스에만 있으면 실행을 거부한다 (ENOENT)', async () => {
+    const wsDir = join(root, 'ws')
+    mkdirSync(wsDir)
+    writeFileSync(join(wsDir, 'shadow158.cmd'), '@echo off\r\necho CWD-MARKER\r\n')
+    // PATH 에 binDir 미추가 → shadow158 은 PATH 에 없음.
+
+    const res = await defaultRunner('shadow158', [], { timeoutMs: 10_000, cwd: wsDir })
+    expect(res.spawnError).toBe('ENOENT')
+    expect(res.stdout).not.toContain('CWD-MARKER')
+  }, 15_000)
+
+  it('절대 .cmd 경로 + cwd 는 해석 없이 그대로 실행한다(short-circuit)', async () => {
+    const binDir = join(root, 'bin')
+    const wsDir = join(root, 'ws')
+    mkdirSync(binDir)
+    mkdirSync(wsDir)
+    writeFileSync(join(binDir, 'shadow158.cmd'), '@echo off\r\necho ABS-MARKER\r\n')
+
+    const res = await defaultRunner(join(binDir, 'shadow158.cmd'), [], {
+      timeoutMs: 10_000,
+      cwd: wsDir,
+    })
+    expect(res.spawnError).toBeUndefined()
+    expect(res.stdout).toContain('ABS-MARKER')
+  }, 15_000)
+})
