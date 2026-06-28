@@ -250,13 +250,7 @@ export interface ChatRoom {
 
 // ── 오케스트레이션 (요구사항 4,5) ──────────────────────────────────────────
 export type AgentRole =
-  | 'planner'
-  | 'architect'
-  | 'implementer'
-  | 'reviewer'
-  | 'tester'
-  | 'critic'
-  | 'summarizer'
+  'planner' | 'architect' | 'implementer' | 'reviewer' | 'tester' | 'critic' | 'summarizer'
 
 export interface RoleAssignment {
   role: AgentRole

@@ -4,8 +4,7 @@ import { installPermissionGuards, type GuardableSession } from './permission-gua
 /** Electron Session 의 권한 setter 만 흉내내는 페이크 — 설치된 핸들러를 캡처해 호출을 시뮬레이트한다. */
 function fakeSession() {
   let requestHandler:
-    | ((wc: unknown, permission: string, cb: (granted: boolean) => void) => void)
-    | undefined
+    ((wc: unknown, permission: string, cb: (granted: boolean) => void) => void) | undefined
   let checkHandler: ((wc: unknown, permission: string) => boolean) | undefined
   let deviceHandler: ((details: unknown) => boolean) | undefined
   const session: GuardableSession = {
