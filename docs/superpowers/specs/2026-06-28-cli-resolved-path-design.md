@@ -19,6 +19,7 @@
 - CLI별 "예상 설치 위치" 평판 판정·allowlist 없음(npm/volta/fnm/homebrew 등 정당 위치가 너무 다양 → false-positive·유지보수 부담).
 - 심볼릭링크 realpath 추적 없음(which가 주는 PATH 해석 경로 = 실제 실행 경로 = 정직한 답).
 - 차단 게이트 아님 — 표시/advisory UX. 경고 중에도 등록 허용.
+- **워크스페이스 cwd shadow는 picker 범위 밖**(PR #157 Codex P1). picker 는 등록 시점이라 워크스페이스가 없어 **앱 cwd/PATH 기준**으로만 해석한다. 그러나 edit/project send 는 `cwd: workspace` 로 bare `adapter.command` 를 실행하므로 Windows 에선 워크스페이스 내 동명 바이너리가 우선될 수 있다(picker 가 사전 탐지 불가). **이 PR 은 UI/spec 고지로 한정**하고, 실행계층 하드닝(세션이 PATH 해석 절대경로로 cwd-독립 실행)은 **후속 이슈로 분리**.
 
 ## 3. 결정 (D1~D7)
 
@@ -132,7 +133,7 @@ export async function resolveCommandPath(
 ## 10. 보안 불변식 (ADR 대체 기록 — Codex 보강)
 
 - Fleet 은 resolved path 를 **표시만** 한다(클릭/실행/열기 버튼 없음, `dangerouslySetInnerHTML` 미사용 — React 기본 escape).
-- `pathShadowRisk` 는 **상대 PATH 해석 + cwd 히트**(Windows which cwd-first 포함)를 경고한다. **그 외 절대경로 디렉터리에 심긴 shadow 는 자동 판정하지 않는다**(사용자 육안 검증 — 보조문구로 고지).
+- `pathShadowRisk` 는 **상대 PATH 해석 + 앱 cwd 히트**(Windows which cwd-first 포함)를 경고한다. **그 외 절대경로 디렉터리에 심긴 shadow 와 워크스페이스 cwd shadow 는 자동 판정하지 않는다**(전자는 육안 검증·후자는 picker 범위 밖 → 보조문구로 고지·실행계층 하드닝은 후속 이슈).
 - 실제 실행과 **동일 계열 resolver(`which@2`, cross-spawn 의존 계열)** 를 사용한다.
 - 보안 판정(`path.isAbsolute`)은 **main 에서만** 수행, renderer 는 boolean 만 받는다.
 - `which` 실패해도 **detection 본 기능(설치/버전)은 깨지지 않는다.**
@@ -160,7 +161,8 @@ export async function resolveCommandPath(
 - **(자체)** 비동기 which `{nothrow}` 무시 → `defaultResolver` catch→null 정규화 / 스펙 §9 "비차단" 회귀 가드 테스트.
 - **(CodeRabbit Major)** 표시용 `resolveCommandPath` 가 timeout 무바운드 → `Promise.race` 자체 타임아웃(2s)으로 detectCli 매달림 방지(§5·§8).
 - **(CodeRabbit Minor×2)** types.ts `resolvedPath` 주석·spec D1/§5 예제를 async 실제 계약에 일치(§4·§5).
-- **(Codex P2 — 보안)** which@2 Windows cwd-first 로 cwd shadow 가 절대경로로 위장 → **cwd 히트도 pathShadowRisk 플래그**(`isShadowRisk`, §3 D2·§7·§10). 출하 런타임=Windows 라 핵심 벡터.
+- **(Codex P2 — 보안)** which@2 Windows cwd-first 로 cwd shadow 가 절대경로로 위장 → **앱 cwd 히트도 pathShadowRisk 플래그**(`isShadowRisk`, §3 D2·§7·§10). 출하 런타임=Windows 라 핵심 벡터.
+- **(Codex P1 — 보안·스코프 결정)** edit/project send 가 `cwd: workspace` 로 bare command 실행 → Windows 워크스페이스 내 동명 바이너리가 picker 표시와 달리 실제 실행될 수 있음. picker 는 등록 시점이라 워크스페이스 미보유 → 사전 탐지 불가. **사용자 결정 = 정직 축소**: 이 PR 은 UI 보조문구·spec(§2·§10)에 한계 고지로 한정(Codex '실행경로로 단정 말라'에 직접 응답), **실행계층 하드닝(세션이 PATH 해석 절대경로로 cwd-독립 실행)은 후속 이슈**로 분리.
 
 ## 13. 영향 파일
 
