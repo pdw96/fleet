@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   allPassed,
   defaultVerifyRunner,
@@ -7,6 +7,7 @@ import {
   summarizeFailure,
   type VerifyRunner,
 } from './run'
+import * as detect from '../cli/detect'
 
 describe('summarizeFailure', () => {
   it('extracts the first error-like line', () => {
@@ -86,6 +87,44 @@ describe('defaultVerifyRunner', () => {
     expect(res.spawnError).toBe('ABORTED')
     expect(res.code).toBeNull()
   }, 10_000)
+
+  // win32 회귀(#158 형제 결함): npm 은 Windows 에서 npm.cmd(배치 셰임)라 raw execFile('npm') 은
+  // ENOENT 로 실패한다(셰임 미해석). verify 는 워크스페이스(custom cwd)에서 npm 스크립트를 돌리므로
+  // cross-spawn 기반 실행기(PATHEXT 셰임 해석 + cmd.exe 인자 이스케이프 + PATH-only cwd-셰도 차단)를
+  // 거쳐야 한다. cwd 를 줘 win32 PATH-only 해석 경로를 실제로 태운다.
+  it('runs npm (a Windows .cmd shim) in a workspace cwd without ENOENT', async () => {
+    // Windows 전용 회귀 — npm.cmd 셰임 해석은 win32 PATHEXT 경로에서만 의미가 있다(POSIX 는
+    // resolvePathOnly 를 안 타고 npm 도 일반 실행파일). 비-win32 에선 실 npm 의존만 늘고 무관 CI
+    // 실패 위험이 있어 가드한다 — CI 의 `windows vitest` 잡이 이 회귀를 강제한다(CodeRabbit).
+    if (process.platform !== 'win32') return
+    const res = await defaultVerifyRunner(
+      { kind: 'test', command: 'npm', args: ['--version'], cwd: process.cwd() },
+      30_000,
+    )
+    expect(res.spawnError).toBeUndefined()
+    expect(res.code).toBe(0)
+    expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/)
+  }, 35_000)
+
+  // 이미 abort 된 신호로 호출되면 자식을 spawn 하지 않고 즉시 ABORTED 로 단락해야 한다(Codex P2).
+  // defaultRunner 의 pre-abort 가드는 win32+cwd 경로에만 있어 POSIX 에선 위임 시 자식이 먼저
+  // spawn 된다(이전 execFile 은 전 플랫폼에서 pre-aborted 면 자식 미시작). cancelRun 후 남은
+  // lint/test 단계가 잠깐 npm 을 띄우지 않도록, 위임 전에 전 플랫폼에서 단락한다.
+  it('short-circuits to ABORTED without delegating when the signal is already aborted', async () => {
+    const spy = vi.spyOn(detect, 'defaultRunner')
+    try {
+      const res = await defaultVerifyRunner(
+        { kind: 'test', command: 'npm', args: ['test'], cwd: process.cwd() },
+        30_000,
+        AbortSignal.abort(),
+      )
+      expect(res.spawnError).toBe('ABORTED')
+      expect(res.code).toBeNull()
+      expect(spy).not.toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
+  })
 })
 
 describe('runAllVerifications / allPassed', () => {
