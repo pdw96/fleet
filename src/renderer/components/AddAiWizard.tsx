@@ -176,7 +176,8 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
     const adapterId = ADAPTER_ID[provider]!
     const meta = CLI_AUTH_INSTALL_META[adapterId]
     const banner = SUBSCRIPTION_BANNERS[provider]
-    const installed = !!clis.find((c) => c.id === adapterId)?.installed
+    const cli = clis.find((c) => c.id === adapterId)
+    const installed = !!cli?.installed
     return (
       <div>
         <h3>구독 (공식 CLI 위임)</h3>
@@ -226,6 +227,16 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
           </div>
         ) : (
           <div>
+            <p>
+              실행 경로: <code>{cli?.resolvedPath ?? '확인할 수 없음'}</code>
+            </p>
+            {cli?.pathShadowRisk && (
+              <p role="alert">
+                ⚠ 상대 PATH 항목에서 해석되었습니다. 현재 작업 디렉터리에 따라 다른 실행 파일이
+                선택될 수 있습니다.
+              </p>
+            )}
+            <p>의도한 공식 CLI 설치 경로인지 확인하세요.</p>
             <p>로그인이 안 돼 있다면 터미널에서 실행(복사):</p>
             <code>{meta.loginCommand}</code>
             <button
