@@ -1,5 +1,7 @@
+import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import spawn from 'cross-spawn'
+import which from 'which'
 import type { CliAdapter, CliDetectionResult } from '../../../shared/types'
 import { killTree } from '../process/kill-tree'
 
@@ -171,6 +173,30 @@ const SEMVER = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/
 export function parseVersion(output: string): string | undefined {
   const m = output.match(SEMVER)
   return m ? m[0] : undefined
+}
+
+/** PATH 에서 명령 → 실행 경로 해석기(테스트 주입 가능). null = not-found. */
+export type PathResolver = (command: string) => Promise<string | null>
+
+/** 기본 경로 해석기: cross-spawn 이 쓰는 which@2 재사용 — 표시 경로 = 실제 실행 경로. */
+export const defaultResolver: PathResolver = (command) => which(command, { nothrow: true })
+
+/**
+ * 명령이 PATH 에서 해석되는 실제 경로와 상대-PATH shadow 위험을 판정한다.
+ * - not-found(null) 또는 해석 예외 → 빈 객체(탐지 본 기능을 깨지 않는다).
+ * - 비절대(상대/CWD PATH 엔트리)로 해석되면 pathShadowRisk: true.
+ */
+export async function resolveCommandPath(
+  command: string,
+  resolver: PathResolver = defaultResolver,
+): Promise<{ resolvedPath?: string; pathShadowRisk?: boolean }> {
+  try {
+    const p = await resolver(command)
+    if (!p) return {}
+    return path.isAbsolute(p) ? { resolvedPath: p } : { resolvedPath: p, pathShadowRisk: true }
+  } catch {
+    return {}
+  }
 }
 
 /** 단일 CLI 감지. */

@@ -7,6 +7,7 @@ import {
   detectAll,
   detectCli,
   parseVersion,
+  resolveCommandPath,
   type CommandRunner,
   type RunOpts,
 } from './detect'
@@ -30,6 +31,27 @@ describe('parseVersion', () => {
 
   it('returns undefined when there is no version', () => {
     expect(parseVersion('no version here')).toBeUndefined()
+  })
+})
+
+describe('resolveCommandPath', () => {
+  it('절대경로 → resolvedPath 설정, pathShadowRisk 없음', async () => {
+    const r = await resolveCommandPath('claude', async () => '/usr/local/bin/claude')
+    expect(r).toEqual({ resolvedPath: '/usr/local/bin/claude' })
+  })
+  it('상대경로 → pathShadowRisk true', async () => {
+    const r = await resolveCommandPath('claude', async () => './claude')
+    expect(r).toEqual({ resolvedPath: './claude', pathShadowRisk: true })
+  })
+  it('null(미해석) → 빈 객체', async () => {
+    const r = await resolveCommandPath('claude', async () => null)
+    expect(r).toEqual({})
+  })
+  it('resolver 예외 → 삼킴(빈 객체)', async () => {
+    const r = await resolveCommandPath('claude', async () => {
+      throw new Error('boom')
+    })
+    expect(r).toEqual({})
   })
 })
 
