@@ -30,8 +30,16 @@ export type VerifyRunner = (
  * `npm.cmd`)를 차단하고(#158), (c) timeout/abort/overflow 종료(트리 킬)를 단일 구현으로 공유한다.
  * `CommandResult` 는 `VerifyExecResult` 와 구조가 동일하다(code·stdout·stderr·spawnError).
  */
-export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs, signal) =>
-  defaultRunner(cmd.command, cmd.args, { timeoutMs, cwd: cmd.cwd, signal })
+export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs, signal) => {
+  // 이미 abort 된 신호면 위임 전에 단락한다 — defaultRunner 의 pre-abort 가드는 win32+cwd 경로
+  // 에만 있어 POSIX 에선 자식이 먼저 spawn 된다(이전 execFile 은 전 플랫폼에서 pre-aborted 면
+  // 자식 미시작). cancelRun 으로 한 단계가 abort 되면 runAllVerifications 가 같은 신호로 호출하는
+  // 나머지 lint/test 가 잠깐 npm 을 띄우지 않게 한다(전 플랫폼 일관; Codex P2).
+  if (signal?.aborted) {
+    return Promise.resolve({ code: null, stdout: '', stderr: '', spawnError: 'ABORTED' })
+  }
+  return defaultRunner(cmd.command, cmd.args, { timeoutMs, cwd: cmd.cwd, signal })
+}
 
 /** 실패 출력에서 대표 에러 라인 추출 (간단 분석, 요구사항 5). */
 export function summarizeFailure(stdout: string, stderr: string): string {
