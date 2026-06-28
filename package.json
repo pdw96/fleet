@@ -16,7 +16,8 @@
   "dependencies": {
     "cross-spawn": "^7.0.6",
     "electron-updater": "^6.8.9",
-    "safe-regex": "^2.1.1"
+    "safe-regex": "^2.1.1",
+    "which": "^2.0.2"
   },
   "scripts": {
     "dev": "electron-vite dev",
@@ -45,6 +46,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/safe-regex": "^1.1.6",
+    "@types/which": "^2.0.2",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^42.0.0",
     "electron-builder": "^26.15.3",
