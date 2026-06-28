@@ -210,6 +210,48 @@ function isShadowRisk(resolved: string): boolean {
   return process.platform === 'win32' ? dir.toLowerCase() === cwd.toLowerCase() : dir === cwd
 }
 
+/** which 의 isWindows 정의와 일치 — cmd.exe 가 cwd 를 PATH 보다 먼저 검색하는(= cwd-셰도 벡터가 성립하는) 플랫폼. */
+export const isWindowsLike =
+  process.platform === 'win32' || process.env.OSTYPE === 'cygwin' || process.env.OSTYPE === 'msys'
+
+/** PATH 전체 매치 해석기(테스트 주입 가능). 기본은 which({all}) — cross-spawn 과 동일 계열. */
+export type AllResolver = (command: string) => Promise<string[]>
+const defaultAllResolver: AllResolver = (command) => which(command, { all: true })
+
+/**
+ * 명령을 **PATH-only 절대경로**로 해석한다(#158, 워크스페이스 cwd-셰도 차단용).
+ * which 는 win32 에서 cwd 를 무조건 prepend 하므로 {all} 로 [cwd?, …PATH] 전체 매치를 받아
+ * **현재 process cwd 내부 매치를 제외**한 첫 PATH 매치를 고른다(앱 컨텍스트 호출 → 워크스페이스는 후보에 없음).
+ * 그 절대경로를 spawn 에 넘기면 cross-spawn 이 cmd.exe 에 절대경로를 줘 cwd 검색을 우회한다.
+ * - 이미 절대경로면 그대로(호출자 해석 완료).
+ * - not-found(전부 cwd 내부거나 0매치)·예외·타임아웃 → null(호출자가 보안 거부).
+ */
+export async function resolvePathOnly(
+  command: string,
+  resolver: AllResolver = defaultAllResolver,
+  timeoutMs = RESOLVE_TIMEOUT_MS,
+): Promise<string | null> {
+  if (path.isAbsolute(command)) return command
+  const cwd = path.resolve(process.cwd()) // which cwd 스냅샷과 일치시키려 await 전 캡처
+  let matches: string[] | null
+  try {
+    matches = await Promise.race([
+      resolver(command).catch(() => [] as string[]), // 비동기 which 는 not-found 시 reject → [] 정규화
+      new Promise<null>((r) => {
+        setTimeout(() => r(null), timeoutMs).unref?.()
+      }),
+    ])
+  } catch {
+    return null
+  }
+  if (!matches) return null // 타임아웃
+  const outsideCwd = matches.find((m) => {
+    const dir = path.resolve(path.dirname(m))
+    return isWindowsLike ? dir.toLowerCase() !== cwd.toLowerCase() : dir !== cwd
+  })
+  return outsideCwd ?? null
+}
+
 /**
  * 명령이 PATH 에서 해석되는 실제 경로와 shadow 위험을 판정한다.
  * - not-found(null)·해석 예외·타임아웃 → 빈 객체(탐지 본 기능을 깨거나 매달지 않는다).

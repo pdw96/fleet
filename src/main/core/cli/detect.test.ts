@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, delimiter } from 'node:path'
 import {
   defaultResolver,
   defaultRunner,
@@ -9,6 +9,7 @@ import {
   detectCli,
   parseVersion,
   resolveCommandPath,
+  resolvePathOnly,
   type CommandRunner,
   type RunOpts,
 } from './detect'
@@ -390,5 +391,42 @@ describe('createCliRegistry', () => {
       expect(a.promptVia).toBe('stdin')
       expect(promptTemplates(a)).not.toContain('{prompt}')
     }
+  })
+})
+
+describe('resolvePathOnly (#158)', () => {
+  it('cwd 내부 매치를 걸러 첫 PATH 매치를 고른다', async () => {
+    const cwdHit = join(process.cwd(), 'shadow.cmd')
+    const pathHit = join(tmpdir(), 'shadow.cmd') // tmpdir() ≠ cwd
+    const r = await resolvePathOnly('shadow', async () => [cwdHit, pathHit])
+    expect(r).toBe(pathHit)
+  })
+  it('cwd 매치만 있으면 null', async () => {
+    const cwdHit = join(process.cwd(), 'shadow.cmd')
+    expect(await resolvePathOnly('shadow', async () => [cwdHit])).toBeNull()
+  })
+  it('매치 0개면 null', async () => {
+    expect(await resolvePathOnly('shadow', async () => [])).toBeNull()
+  })
+  it('resolver reject 면 null (not-found 정규화)', async () => {
+    expect(
+      await resolvePathOnly('shadow', async () => {
+        throw Object.assign(new Error('nf'), { code: 'ENOENT' })
+      }),
+    ).toBeNull()
+  })
+  it('절대경로 입력은 해석 없이 그대로 반환', async () => {
+    const abs = join(tmpdir(), 'x.cmd')
+    let called = false
+    const r = await resolvePathOnly(abs, async () => {
+      called = true
+      return []
+    })
+    expect(r).toBe(abs)
+    expect(called).toBe(false)
+  })
+  it('타임아웃이면 null', async () => {
+    const r = await resolvePathOnly('shadow', () => new Promise<string[]>(() => {}), 20)
+    expect(r).toBeNull()
   })
 })
