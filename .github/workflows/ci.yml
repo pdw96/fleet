@@ -10,6 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 두 잡 모두 checkout + 테스트/빌드만(쓰기·PR·packages 미사용) — 최소권한 읽기 전용.
+# 미명시 시 리포 기본 토큰 권한을 광범위 상속 → CodeQL actions/missing-workflow-permissions 경고.
+permissions:
+  contents: read
+
 jobs:
   quality:
     name: typecheck · lint · test · build
