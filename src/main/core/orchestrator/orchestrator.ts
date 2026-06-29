@@ -759,6 +759,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       const finalTasks = store.listTasks(project.id)
       summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), {
         fresh: true,
+        // 산출 파일을 워크스페이스 cwd 에서 평가한다 — 미전달 시 자식이 Electron(앱 레포) cwd 를
+        // 상속해 엉뚱한 디렉터리를 평가한다(#164). implementer(runTaskIn)·verify-fix 와 동일하게 전달.
+        workspace: opts.workspaceRoot,
         signal: opts.signal,
         bypassTools: true,
       })

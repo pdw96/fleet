@@ -246,6 +246,40 @@ describe('runProject', () => {
     expect(store.listEvents().some((e) => e.type === 'project.done')).toBe(true)
   })
 
+  it('runs the summarizer in the workspace cwd (evaluates the workspace, not the app repo)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    // 요약 세션이 send 로 받은 cwd(opts.workspace)를 포착한다.
+    let summarizerCwd: string | undefined
+    const sumSession: LlmSession = {
+      id: 'sum',
+      descriptor: { id: 'sum', kind: 'cli', displayName: 'sum', ref: 'sum', model: '' },
+      async send(_prompt, opts) {
+        summarizerCwd = opts?.workspace
+        return '요약: 목표 충족'
+      },
+      async dispose() {},
+    }
+    sessions.add(sumSession)
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    // 미전달 시 자식 프로세스가 Electron(=Fleet 레포) cwd 를 상속해 엉뚱한 디렉터리를 평가한다.
+    expect(summarizerCwd).toBe('/ws')
+  })
+
   it('commits a checkpoint per approved task and records changed files', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
