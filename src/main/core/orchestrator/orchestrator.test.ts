@@ -246,6 +246,44 @@ describe('runProject', () => {
     expect(store.listEvents().some((e) => e.type === 'project.done')).toBe(true)
   })
 
+  it('summarizer는 reviewer처럼 순수 분석 호출: workspace/cwd 없이 변경 파일이 실린 프롬프트로 평가 (#164)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    // 요약 세션이 받은 프롬프트와 workspace 옵션을 포착한다.
+    let sumPrompt = ''
+    let sumWorkspace: string | undefined = 'UNSET'
+    const sumSession: LlmSession = {
+      id: 'sum',
+      descriptor: { id: 'sum', kind: 'cli', displayName: 'sum', ref: 'sum', model: '' },
+      async send(prompt, opts) {
+        sumPrompt = prompt
+        sumWorkspace = opts?.workspace
+        return '요약: 목표 충족'
+      },
+      async dispose() {},
+    }
+    sessions.add(sumSession)
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    // workspace 미전달 = 편집 모드·write 권한·fs 재탐색 없음(어댑터/config 무관 안전, #164·#165).
+    expect(sumWorkspace).toBeUndefined()
+    // 산출물(변경 파일)은 프롬프트에 직접 실린다 — 기본 fakeWorkspace diff = src/x.ts.
+    expect(sumPrompt).toContain('src/x.ts')
+  })
+
   it('commits a checkpoint per approved task and records changed files', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

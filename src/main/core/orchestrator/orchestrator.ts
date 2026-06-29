@@ -757,6 +757,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     if (!summarizer || opts.signal?.aborted) return
     try {
       const finalTasks = store.listTasks(project.id)
+      // reviewer 와 동일한 순수 분석 호출: 산출물(변경 파일)은 buildSummaryPrompt 가 프롬프트에 싣는다.
+      // workspace/cwd 를 넘기지 않아 편집 모드·write 권한·fs 재탐색이 없다 — 어댑터(코덱스/제미나이/API)·
+      // 사용자 config 와 무관하게 안전하고 일관된다(#164 원인=fs 재탐색이 앱 레포를 평가 / #165 codex 리뷰).
       summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), {
         fresh: true,
         signal: opts.signal,

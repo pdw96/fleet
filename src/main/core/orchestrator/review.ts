@@ -113,16 +113,30 @@ export function parseReviewVerdict(text: string): ReviewVerdict {
 /** 최종 요약/누락 점검 프롬프트 (요구사항 5: 원래 요구사항과 비교). */
 export function buildSummaryPrompt(
   goal: string,
-  tasks: ReadonlyArray<{ title: string; status: string }>,
+  tasks: ReadonlyArray<{ title: string; status: string; changedFiles?: readonly string[] }>,
 ): string {
-  const lines = tasks.map((t) => `- [${t.status}] ${t.title}`).join('\n')
+  // 산출물(변경 파일)을 프롬프트에 직접 실어 평가한다 — reviewer 가 diff 를 프롬프트로 받는 것과 동일.
+  // 요약 에이전트가 파일시스템을 재탐색하지 않게 해 cwd/샌드박스/어댑터(코덱스·제미나이·API) 차이에
+  // 의존하지 않는다(#164: cwd 재탐색이 엉뚱한 디렉터리를 평가하던 원인 / #165 codex 리뷰: 어댑터 fragility).
+  const lines = tasks
+    .map((t) => {
+      // 변경 파일은 done(승인·커밋) 작업만 권위 있다 — 실패/스킵 작업의 changedFiles 는 revert 됐을 수
+      // 있어(리뷰/keep 실패 시 워크스페이스 되돌림) rolled-back 파일을 산출물로 오기재하지 않는다(#165 P2).
+      const files =
+        t.status === 'done' && t.changedFiles?.length
+          ? ` — 변경 파일: ${t.changedFiles.join(', ')}`
+          : ''
+      return `- [${t.status}] ${t.title}${files}`
+    })
+    .join('\n')
   return [
     `프로젝트 목표:\n${goal}`,
     '',
-    '수행된 작업:',
+    '수행된 작업(상태·변경 파일):',
     lines,
     '',
-    '최종 결과가 원래 목표를 충족하는지 평가하고, 누락되거나 미흡한 부분을 구체적으로 지적하라.',
+    '위 작업 상태와 변경 파일만을 근거로 최종 산출물이 원래 목표를 충족하는지 평가하고, 누락·미흡한 부분을 구체적으로 지적하라.',
+    '파일시스템을 직접 탐색하지 말 것 — 위 목록이 권위 있는 근거다.',
   ].join('\n')
 }
 
