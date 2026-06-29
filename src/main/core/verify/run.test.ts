@@ -213,6 +213,30 @@ describe('npmVerifyCommands', () => {
     }
   })
 
+  it('pre/post 라이프사이클 훅에 실제 검사가 있으면 main 이 exit 0 여도 noop 아님 (#168 Codex)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-hook-'))
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            typecheck: 'exit 0',
+            pretypecheck: 'tsc --noEmit', // npm run typecheck 가 이 실검사를 먼저 실행
+            lint: 'exit 0',
+            test: 'exit 0',
+            posttest: 'true', // post 훅도 no-op → test 는 여전히 noop
+          },
+        }),
+      )
+      const cmds = npmVerifyCommands(dir)
+      expect(cmds.find((c) => c.kind === 'typecheck')?.noop).toBe(false) // pre 훅 실검사
+      expect(cmds.find((c) => c.kind === 'lint')?.noop).toBe(true) // 훅 없음·main no-op
+      expect(cmds.find((c) => c.kind === 'test')?.noop).toBe(true) // main·post 둘 다 no-op
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('비-string 스크립트 값에도 크래시하지 않는다(noop=false) — 비정상 package.json 회귀', () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-badtype-'))
     try {

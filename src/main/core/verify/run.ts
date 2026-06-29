@@ -149,10 +149,20 @@ function readPackageScripts(cwd: string): Record<string, string> | undefined {
 /** JS/TS 프로젝트 표준 검증 명령 세트 (npm 스크립트 기반). package.json 을 읽어 no-op 을 태깅한다. */
 export function npmVerifyCommands(cwd: string): VerifyCommand[] {
   const scripts = readPackageScripts(cwd)
+  // 훅이 없으면(undefined) "실제 검사 아님" 으로 본다. 있으면 그 본문이 no-op 일 때만 무해.
+  const hookNoOp = (name: string): boolean => {
+    const b = scripts?.[name]
+    return b === undefined || isNoOpScript(b)
+  }
   const mk = (kind: VerifyKind, name: string, args: string[]): VerifyCommand => {
     const cmd: VerifyCommand = { kind, command: 'npm', args, cwd }
     const body = scripts?.[name]
-    if (body !== undefined) cmd.noop = isNoOpScript(body)
+    // main 스크립트가 있을 때만 noop 판정(없으면 npm run 실패=검증 실패, 별개).
+    // npm 은 `npm run <name>` 시 pre<name>/post<name> 훅도 실행하므로, 훅에 실검사가 있으면
+    // main 이 exit 0 라도 실제 검증이 돈다 → no-op 아님(#168 Codex: false-positive 방지).
+    if (body !== undefined) {
+      cmd.noop = isNoOpScript(body) && hookNoOp(`pre${name}`) && hookNoOp(`post${name}`)
+    }
     return cmd
   }
   return [

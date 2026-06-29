@@ -84,9 +84,11 @@ running 잠금(둘 다 event-type 기반)에 영향 없음. **오직 project sta
   는 비-noop)하고 `'' | 'exit 0' | 'true' | ':'` 중 하나면 `true`. 그 외 모두 `false`.
   (보수적 — `echo`·`printf`·`... || true`·`sh -c "exit 0"` wrapper 는 의도적 제외; 오탐 0 우선.)
 - `npmVerifyCommands(cwd)` — `<cwd>/package.json` 을 **동기 `readFileSync`** 로 읽어 `scripts` 파싱,
-  각 명령에 `noop: isNoOpScript(scripts?.[name])` 태그. **읽기 실패·`JSON.parse` 실패·`package.json`
-  없음·`scripts` 없음·개별 script 없음 → 모두 `noop` 미설정**(undefined = 비-noop, 보수적).
-  **함수는 동기 유지** → 호출부(`engine.ts:216`) ripple 없음(Codex).
+  각 명령에 `noop` 태그. **읽기 실패·`JSON.parse` 실패·`package.json` 없음·`scripts` 없음·개별
+  script 없음 → 모두 `noop` 미설정**(undefined = 비-noop, 보수적). **함수는 동기 유지** → 호출부
+  (`engine.ts:216`) ripple 없음(Codex). **npm 라이프사이클 훅 고려**: `npm run <name>` 은
+  `pre<name>`/`post<name>` 도 실행하므로, main 이 no-op 이라도 **pre/post 훅에 실검사가 있으면
+  noop 아님**(`noop = isNoOpScript(main) && hookNoOp(pre) && hookNoOp(post)`, #168 Codex P2 — false-positive 방지).
 - `runVerification` — `cmd.noop` 를 `result.noop` 로 전파.
 
 **`orchestrator.ts` `emitVerify`**: `ok && v.length > 0 && v.every(r => r.noop)` 이면 메시지를
