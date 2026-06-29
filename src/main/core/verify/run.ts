@@ -125,9 +125,11 @@ export function allPassed(results: readonly VerificationResult[]): boolean {
  * package.json 스크립트 본문이 "아무 검사도 안 하는" 자명한 no-op 인지.
  * 보수적 — false negative(놓침)는 감수하고 false positive(실제 검사 오판) 0 을 우선한다.
  * 끝 세미콜론은 1개만 허용(`exit 0;;` 는 비-noop). `echo`·`|| true`·wrapper 는 제외.
+ * `typeof` 가드 — 비정상 package.json(스크립트 값이 비-string: null·숫자·배열·객체)에서도
+ * `.trim()` TypeError 로 verify 를 깨뜨리지 않는다(런타임 캐스트가 거짓일 수 있음).
  */
 export function isNoOpScript(body?: string): boolean {
-  if (body === undefined) return false
+  if (typeof body !== 'string') return false
   const n = body.trim().replace(/;$/, '').trim()
   return n === '' || n === 'exit 0' || n === 'true' || n === ':'
 }

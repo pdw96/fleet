@@ -172,6 +172,12 @@ describe('isNoOpScript', () => {
       expect(isNoOpScript(s)).toBe(false)
     }
   })
+
+  it('비-string 값은 크래시 없이 false (비정상 package.json 방어)', () => {
+    for (const v of [null, 123, ['x'], {}, true]) {
+      expect(isNoOpScript(v as unknown as string)).toBe(false)
+    }
+  })
 })
 
 describe('npmVerifyCommands', () => {
@@ -202,6 +208,20 @@ describe('npmVerifyCommands', () => {
       const cmds = npmVerifyCommands(dir)
       expect(cmds.find((c) => c.kind === 'typecheck')?.noop).toBe(false)
       expect(cmds.find((c) => c.kind === 'lint')?.noop).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('비-string 스크립트 값에도 크래시하지 않는다(noop=false) — 비정상 package.json 회귀', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-badtype-'))
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { typecheck: null, lint: 123, test: ['x'] } }),
+      )
+      expect(() => npmVerifyCommands(dir)).not.toThrow()
+      expect(npmVerifyCommands(dir).every((c) => c.noop === false)).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
