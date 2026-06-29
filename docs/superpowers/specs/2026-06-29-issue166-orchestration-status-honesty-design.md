@@ -65,7 +65,8 @@ verify 는 워크스페이스 `package.json` 스크립트(`npm run typecheck/lin
 - 집계 failed(doneCount 0) → `프로젝트 실패: <title> (총 N · 완료 D · 실패 F · 건너뜀 S)`
 - done → `프로젝트 완료: <title>`
 
-> breakdown 헬퍼는 인라인. F/S 는 실제 task status 로 카운트(구현불가 경로가 `failed`/`skipped` 어느 쪽이든 정확).
+> **단일 breakdown 헬퍼**를 verify-fail·partial·집계-failed 메시지가 공유(포맷 drift 방지 · Codex).
+> F/S 는 실제 task status 로 카운트(구현불가 경로가 `failed`/`skipped` 어느 쪽이든 정확).
 
 **렌더러** (`src/renderer/ui.ts` `statusColor`): `case 'partial': return 'var(--warn)'`
 (앰버 — done `--ok` 초록 / failed `--bad` 빨강과 구분). 칩은 `p.status` 그대로 표시.
@@ -79,12 +80,13 @@ running 잠금(둘 다 event-type 기반)에 영향 없음. **오직 project sta
 
 **`verify/run.ts`**:
 - `VerifyCommand` 에 `noop?: boolean` 추가.
-- 신규 `isNoOpScript(body?: string): boolean` — `body` trim 후 **끝 세미콜론 1개 제거**하고
-  `'' | 'exit 0' | 'true' | ':'` 중 하나면 `true`. 그 외 모두 `false`.
-  (보수적 — `echo`·`printf`·`... || true`·wrapper 는 의도적 제외; 오탐 0 우선.)
+- 신규 `isNoOpScript(body?: string): boolean` — `body` trim 후 **끝 세미콜론 1개만 제거**(`exit 0;;`
+  는 비-noop)하고 `'' | 'exit 0' | 'true' | ':'` 중 하나면 `true`. 그 외 모두 `false`.
+  (보수적 — `echo`·`printf`·`... || true`·`sh -c "exit 0"` wrapper 는 의도적 제외; 오탐 0 우선.)
 - `npmVerifyCommands(cwd)` — `<cwd>/package.json` 을 **동기 `readFileSync`** 로 읽어 `scripts` 파싱,
-  각 명령에 `noop: isNoOpScript(scripts?.[name])` 태그. 읽기 실패/스크립트 누락 → `noop` 미설정
-  (undefined = 비-noop, 보수적). **함수는 동기 유지** → 호출부(`engine.ts:216`) ripple 없음(Codex).
+  각 명령에 `noop: isNoOpScript(scripts?.[name])` 태그. **읽기 실패·`JSON.parse` 실패·`package.json`
+  없음·`scripts` 없음·개별 script 없음 → 모두 `noop` 미설정**(undefined = 비-noop, 보수적).
+  **함수는 동기 유지** → 호출부(`engine.ts:216`) ripple 없음(Codex).
 - `runVerification` — `cmd.noop` 를 `result.noop` 로 전파.
 
 **`orchestrator.ts` `emitVerify`**: `ok && v.length > 0 && v.every(r => r.noop)` 이면 메시지를
@@ -109,7 +111,7 @@ running 잠금(둘 다 event-type 기반)에 영향 없음. **오직 project sta
 - abort → `failed` 유지.
 - `total === 0`(유효 빈 플랜, plan.failed 아님) → `done` (의도 고정 — named 테스트).
 - emitVerify: 전부 noop → `검증 항목 없음...`; 실제 스크립트 → `검증 통과`.
-- **기존 project status 기대값 전수 감사** — 일부 task 실패에도 전체 진행하는 기존 테스트가 `done`→`partial` 로 바뀔 수 있음(Codex 핵심 ripple 경고). 의도대로 갱신.
+- **기존 project status 기대값 전수 감사** — 일부 task 실패에도 전체 진행하는 기존 테스트가 `done`→`partial` 로 바뀔 수 있음(Codex 핵심 ripple 경고). 의도대로 갱신. **구체 지목**: "첫 작업 failed·둘째 done 인데 전체는 done" 류 테스트 → `partial` 로 갱신하고 **테스트 이름/주석도** "전체 실행은 계속되지만 최종 status 는 partial" 로 수정(스펙 가시화).
 
 ### `src/renderer/ui.test.ts`
 - `statusColor('partial') === 'var(--warn)'`.
