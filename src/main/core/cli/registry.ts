@@ -45,10 +45,14 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     // 프롬프트는 stdin 으로(codex exec 는 프롬프트 미지정 시 stdin 을 읽는다 — "Reading prompt from stdin...").
     promptVia: 'stdin',
     // --json: 사람용 배너/thinking/토큰 메타 대신 JSONL 이벤트로 출력 → agent_message 만 정제.
-    // -s read-only: headless 는 분석 전용(planner/reviewer/summarizer) — codex config 기본값이
-    // workspace-write 여도 분석 호출이 워크스페이스를 수정하지 못하게 명시적으로 막는다(#165 P1, codex review).
-    // cwd 만으로는 read-only 가 보장되지 않는다. 편집은 아래 edit 가 workspace-write 로 분리.
-    headless: { args: ['exec', '--json', '--sandbox', 'read-only'], parse: 'codex-jsonl' },
+    // headless 는 분석 전용(planner/reviewer/summarizer/probe) — codex config 기본값과 무관하게:
+    //   -s read-only: 워크스페이스 수정 불가(기본값이 workspace-write 여도). 편집은 아래 edit 가 분리.
+    //   --ask-for-approval never: 승인 프롬프트 억제 — Fleet 엔 codex 승인 UI 가 없어, 인터랙티브
+    //     승인 정책이 설정돼 있으면 read-only 점검조차 멈춰 타임아웃날 수 있다(#165 P2, codex review).
+    headless: {
+      args: ['exec', '--json', '--sandbox', 'read-only', '--ask-for-approval', 'never'],
+      parse: 'codex-jsonl',
+    },
     // 세션 재개(실측: codex 0.136). id 사전지정 불가 → 첫 응답 thread.started 의 thread_id 캡처.
     // resume 시그니처: `exec resume [OPTIONS] <SESSION_ID> <PROMPT>`. PROMPT 는 stdin 으로 대체(실측 통과).
     session: {

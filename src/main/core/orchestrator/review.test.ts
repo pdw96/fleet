@@ -92,13 +92,17 @@ describe('prompt builders', () => {
     expect(p).not.toContain('비판적으로 검토')
   })
 
-  it('summary prompt lists task statuses', () => {
+  it('summary prompt lists task statuses and changed files (artifacts in-prompt, no fs re-scan)', () => {
     const p = buildSummaryPrompt('목표', [
-      { title: 'A', status: 'done' },
+      { title: 'A', status: 'done', changedFiles: ['game.js', 'index.html'] },
       { title: 'B', status: 'failed' },
     ])
     expect(p).toContain('[done] A')
     expect(p).toContain('[failed] B')
+    // 산출물(변경 파일)이 프롬프트에 직접 실린다 — 요약 에이전트가 fs 를 재탐색할 필요 없음(#164).
+    expect(p).toContain('game.js')
+    expect(p).toContain('index.html')
+    expect(p).toMatch(/파일시스템을 직접 탐색하지 말/)
   })
 })
 

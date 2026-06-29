@@ -122,9 +122,7 @@ export function createCliSession(
         [...args, ...extraArgs(), ...stream.args],
         {
           timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
-          // 편집 모드(runEditing)는 cwd 를 직접 넘기므로 이 경로는 headless/stateful 전용.
-          // cwd(read-only) 가 명시되면 그 경로를, 아니면 종전대로 workspace 를 cwd 로 쓴다.
-          cwd: sendOpts.cwd ?? sendOpts.workspace,
+          cwd: sendOpts.workspace,
           signal: sendOpts.signal,
           stdinInput,
         },
@@ -145,8 +143,7 @@ export function createCliSession(
     }
     const res = await runner(adapter.command, [...args, ...extraArgs()], {
       timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
-      // cwd(read-only) 우선, 없으면 workspace(headless/stateful 경로). 편집은 runEditing 이 별도 처리.
-      cwd: sendOpts.cwd ?? sendOpts.workspace,
+      cwd: sendOpts.workspace,
       signal: sendOpts.signal,
       stdinInput,
     })
@@ -177,11 +174,9 @@ export function createCliSession(
   ): Promise<string> => {
     if (!adapter.edit) throw new Error(`${adapter.displayName}는 편집 모드를 지원하지 않습니다.`)
     // 편집 모드 stdout 정제는 edit.parse 를 우선한다(편집 CLI 의 출력 포맷이 헤드리스와 다를 수 있다).
-    // cwd 는 항상 workspace 로 고정한다 — read-only cwd 가 함께 와도 편집은 호출자가 체크포인트/승인한
-    // workspace 트리에서 일어나야 한다(claude/gemini edit args 는 {workspace} 없이 spawn cwd 에 의존). #165 P2.
     const { text } = await execute(
       buildEditArgs(adapter.edit, prompt, workspace),
-      { ...sendOpts, cwd: workspace },
+      sendOpts,
       adapter.edit.parse ?? adapter.headless?.parse,
       stdinFor(prompt),
     )

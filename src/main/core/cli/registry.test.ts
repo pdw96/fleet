@@ -15,10 +15,17 @@ describe('CLI adapter auth/install (shared 단일 출처)', () => {
   it('어댑터는 IPC 직렬화 가능 — 함수 필드 없음', () => {
     expect(JSON.parse(JSON.stringify(DEFAULT_CLI_ADAPTERS))).toEqual(DEFAULT_CLI_ADAPTERS)
   })
-  it('codex 분석(headless) 호출은 --sandbox read-only 로 강제하고 편집만 workspace-write 다 (#165 P1)', () => {
+  it('codex 분석(headless)은 read-only 샌드박스 + 승인 억제로 강제하고 편집만 workspace-write 다 (#165 P1/P2)', () => {
     const codex = createCliRegistry().get('codex')!
-    // planner/reviewer/summarizer 등 분석은 read-only 샌드박스 — config 기본값이 workspace-write 여도 write 불가.
-    expect(codex.headless?.args).toEqual(['exec', '--json', '--sandbox', 'read-only'])
+    // 분석(planner/reviewer/summarizer)은 config 기본값과 무관하게 read-only + 비인터랙티브 승인.
+    expect(codex.headless?.args).toEqual([
+      'exec',
+      '--json',
+      '--sandbox',
+      'read-only',
+      '--ask-for-approval',
+      'never',
+    ])
     // 편집 모드만 workspace-write.
     expect(codex.edit?.args).toContain('workspace-write')
   })

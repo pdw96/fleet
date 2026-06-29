@@ -998,59 +998,6 @@ describe('createCliSession', () => {
     expect(seenArgs).toEqual(['agent', '-C', '/ws', 'do it'])
   })
 
-  it('runs headless (read-only) at the given cwd when cwd is set without workspace', async () => {
-    let seenCwd: string | undefined
-    let seenArgs: string[] = []
-    const runner: CommandRunner = async (_cmd, args, opts) => {
-      seenCwd = opts.cwd
-      seenArgs = args
-      return { code: 0, stdout: 'ok', stderr: '' }
-    }
-    const adapter: CliAdapter = {
-      id: 'x',
-      displayName: 'X',
-      command: 'x',
-      versionArgs: ['--version'],
-      headless: { args: ['-p', '{prompt}'] },
-      edit: { args: ['agent', '-C', '{workspace}', '{prompt}'] },
-    }
-    const session = createCliSession(
-      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' },
-      adapter,
-      runner,
-    )
-    // cwd 만 주면 편집 모드(write)를 거치지 않고 headless(read-only) 로 cwd 에서 실행한다(#165 P1).
-    const text = await session.send('eval it', { cwd: '/ws', fresh: true })
-    expect(text).toBe('ok')
-    expect(seenCwd).toBe('/ws')
-    expect(seenArgs).toEqual(['-p', 'eval it']) // edit args(agent -C …) 아님
-  })
-
-  it('edit mode은 read-only cwd가 함께 와도 workspace 트리에서 실행한다 (#165 P2)', async () => {
-    let seenCwd: string | undefined
-    const runner: CommandRunner = async (_cmd, _args, opts) => {
-      seenCwd = opts.cwd
-      return { code: 0, stdout: 'ok', stderr: '' }
-    }
-    // 편집 args 가 {workspace} 토큰 없이 spawn cwd 에 의존하는 어댑터(claude/gemini 형).
-    const adapter: CliAdapter = {
-      id: 'x',
-      displayName: 'X',
-      command: 'x',
-      versionArgs: ['--version'],
-      headless: { args: ['-p', '{prompt}'] },
-      edit: { args: ['agent', '{prompt}'] },
-    }
-    const session = createCliSession(
-      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' },
-      adapter,
-      runner,
-    )
-    // workspace+cwd 동시 지정 → 편집은 체크포인트/승인된 workspace 트리에서 일어나야 한다(cwd 우선 금지).
-    await session.send('do it', { workspace: '/ws', cwd: '/other' })
-    expect(seenCwd).toBe('/ws')
-  })
-
   it('descriptor.model 이 있으면 modelFlag 로 --model 을 모든 실행에 덧붙인다(#8)', async () => {
     let seenArgs: string[] = []
     const runner: CommandRunner = async (_cmd, args) => {

@@ -757,13 +757,11 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     if (!summarizer || opts.signal?.aborted) return
     try {
       const finalTasks = store.listTasks(project.id)
+      // reviewer 와 동일한 순수 분석 호출: 산출물(변경 파일)은 buildSummaryPrompt 가 프롬프트에 싣는다.
+      // workspace/cwd 를 넘기지 않아 편집 모드·write 권한·fs 재탐색이 없다 — 어댑터(코덱스/제미나이/API)·
+      // 사용자 config 와 무관하게 안전하고 일관된다(#164 원인=fs 재탐색이 앱 레포를 평가 / #165 codex 리뷰).
       summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), {
         fresh: true,
-        // 산출 파일을 워크스페이스 cwd 에서 평가한다 — 미전달 시 자식이 Electron(앱 레포) cwd 를
-        // 상속해 엉뚱한 디렉터리를 평가한다(#164). 단 workspace(=편집 모드·write 권한)가 아니라
-        // 읽기 전용 cwd 로 둔다 — 요약 단계는 checkpoint/diff/ApprovalGate 를 거치지 않으므로
-        // 산출물을 수정/삭제할 권한을 주면 안 된다(#165 P1, codex review).
-        cwd: opts.workspaceRoot,
         signal: opts.signal,
         bypassTools: true,
       })
