@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 67 files · 172 import wires · 43 IPC channels · 생성 2026-06-29T06:20 UTC
+> 67 files · 172 import wires · 43 IPC channels · 생성 2026-06-29T06:39 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -88,7 +88,7 @@
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
-  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1005줄
+  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1012줄
 - **orchestrator/diff-risk** — AI가 바꾼 코드가 위험한 변경인지 판정하는 위험 신호등 _AI가 고친 내용을 보고 비밀번호 같은 민감한 파일을 건드렸거나, 파일을 너무 많이 지웠거나, 변경 내용이 너무 길어 끝이 잘려 확인이 불가능하면 '위험'으로 표시하고 그 이유를 함께 알려 줍니다. 의심스러우면 안전하게 '위험' 쪽으로 분류합니다._
   - →의존: safety/approval, shared/types, workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 37줄
 - **orchestrator/plan** — 큰 목표를 실행 가능한 작은 작업 목록으로 쪼개 주는 계획 분해기 _기획 담당 AI에게 목표를 4~8개의 작업으로 나눠 달라고 요청하고, AI가 돌려준 응답이 형식이 조금 어긋나도 너그럽게 읽어내 작업 목록으로 정리합니다. 검증(테스트·빌드)이 실패하면 그 실패 내용을 다시 AI에게 알려 부족한 부분만 채울 '추가 보정 작업'도 뽑아냅니다._

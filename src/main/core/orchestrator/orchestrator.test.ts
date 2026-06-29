@@ -521,6 +521,41 @@ describe('runProject', () => {
     expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
   })
 
+  it('does NOT auto-keep a destructive final-review reject even if the gate approved (#162 safety)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => '{"approved":false,"feedback":"위험 변경 거부"}'))
+
+    const events: OrchestratorEvent[] = []
+    // 민감 파일(.env) → destructive. gate 가 승인하지만, reviewer 가 거부 → 위험 변경은 경고 채택 비대상.
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+      onEvent: (e) => events.push(e),
+    })
+    // 위험 변경을 reviewer 가 거부 → rollback + failed (accept-with-warnings 로 keep 하지 않음)
+    expect(result.tasks[0].status).toBe('failed')
+    expect(ws.commits).toHaveLength(0)
+    expect(ws.reverts).toBeGreaterThanOrEqual(1)
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
+  })
+
   it('does NOT rescue a destructive-gate rejection via accept-with-warnings (#162 safety)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
