@@ -32,6 +32,13 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
       parse: 'claude-stream',
     },
     // 워크스페이스 직접 편집(실측: v2.1.163). -p 헤드리스 + --permission-mode acceptEdits 로 편집 도구만 자동 승인(전체 우회 아님). cwd=workspace 는 세션이 설정.
+    // [#167] 검증 도구(node --check 등)를 --allowedTools 로 자동허용하지 않는다 — `Bash(node --check:*)`
+    // 같은 prefix allow 규칙은 후행 인자를 임의 매칭하는데, node 의 preload 플래그(--require/--import/
+    // --experimental-loader)는 --check 에도 코드를 실행한다(실측: `node --check --import "data:..."` 가
+    // 파일 0건으로 인라인 실행, claude 가 자동승인). prefix 규칙으로는 이 부정 제약을 표현할 수 없어
+    // acceptEdits 의 "쓰기만·실행 차단" 경계를 RCE+네트워크로 깬다. 헤드리스 self-verify 가 필요하면
+    // preload 를 차단하는 검증 래퍼만 별도 allow 해야 한다(미구현). implementer 는 read-only 빌트인
+    // (Read/Grep/Glob)으로 검토하고, 실제 verify(typecheck/lint/test)는 Fleet 이 별도 실행한다.
     edit: { args: ['-p', '--permission-mode', 'acceptEdits'], parse: 'text' },
     auth: { loginCommand: META.claude.loginCommand, docsUrl: META.claude.docsUrl },
     install: { hint: META.claude.installHint, docsUrl: META.claude.docsUrl },

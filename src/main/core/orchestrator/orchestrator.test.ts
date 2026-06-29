@@ -5,7 +5,7 @@ import type { LlmSession } from '../session/types'
 import { createMemoryStore } from '../store/memory'
 import type { DiffResult, TaskWorktree, Workspace } from '../workspace/git'
 import type { IgnoredBaseline, IgnoredChangeSet } from '../workspace/ignored-baseline'
-import { runProject } from './orchestrator'
+import { IMPL_PROGRESS_TAIL_CAP, runProject } from './orchestrator'
 
 function fakeSession(
   id: string,
@@ -2267,6 +2267,236 @@ describe('runProject', () => {
     expect(
       events.some((e) => e.type === 'task.failed' && e.message.includes('되돌리기 실패')),
     ).toBe(true)
+  })
+
+  // ── #167 Part B: implementer 실패 시 스트림 tail 진단 표면화 (quota vs 승인교착 구분) ──
+
+  it('실패(예외) 시 implementer 의 마지막 진행 출력(tail)을 task output 에 표면화한다 (#167)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        // 에이전트가 승인 교착으로 씨름하는 사유를 스트림으로 흘린 뒤 타임아웃으로 죽는 시나리오.
+        opts?.onChunk?.("node and the browser require approval I don't have")
+        throw new Error('claude 실행 실패: ETIMEDOUT')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
+    })
+    const t = result.tasks[0]
+    expect(t.status).toBe('failed')
+    expect(t.output).toContain('실행 오류') // 기존 라벨 유지
+    expect(t.output).toContain('ETIMEDOUT') // 원인 메시지
+    expect(t.output).toContain('마지막 진행 출력') // tail 섹션
+    expect(t.output).toContain('require approval') // tail 내용(승인교착 단서)
+    // (Codex P2#3) 렌더러는 task.output 을 표시하지 않고 task.failed 이벤트 message 만 로그에 보인다 →
+    // tail 이 UI 에서 보이려면 이벤트 message 에도 실려야 한다.
+    const failedEvt = events.find((e) => e.type === 'task.failed')
+    expect(failedEvt?.message).toContain('마지막 진행 출력')
+    expect(failedEvt?.message).toContain('require approval')
+  })
+
+  it('implementer 성공 후 reviewer/keep 단계 실패에는 implementer tail 을 첨부하지 않는다 (#167, Codex P2#1)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // implementer 는 스트림을 내고 성공 반환(편집 완료) → 이후 reviewer.send 가 실패하는 시나리오.
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        opts?.onChunk?.(
+          '정상 편집 요약 — 이 출력은 implementer 실패가 아니므로 tail 로 남으면 안 됨',
+        )
+        return '구현 완료'
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    // reviewer.send 가 던진다 → 실패는 implementer 가 아니라 review 단계.
+    const rev: LlmSession = {
+      id: 'rev',
+      descriptor: { id: 'rev', kind: 'api', displayName: 'rev', ref: 'rev', model: '' },
+      async send() {
+        throw new Error('reviewer API 오류')
+      },
+      async dispose() {},
+    }
+    sessions.add(rev)
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    const t = result.tasks[0]
+    expect(t.status).toBe('failed')
+    expect(t.output).toContain('실행 오류') // 실패 자체는 라벨됨
+    expect(t.output).not.toContain('마지막 진행 출력') // 단, implementer tail 은 오첨부되지 않음
+    expect(t.output).not.toContain('정상 편집 요약') // 직전 성공 implementer 출력 누출 없음
+  })
+
+  it('취소(abort) 실패에는 tail 을 첨부하지 않는다 (#167)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const controller = new AbortController()
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        opts?.onChunk?.('일부 진행 출력')
+        controller.abort() // 작업 실행 중 취소
+        throw new Error('aborted mid-task')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      signal: controller.signal,
+    })
+    const t = result.tasks[0]
+    expect(t.status).toBe('skipped') // 취소는 실패가 아님
+    expect(t.output).not.toContain('마지막 진행 출력') // 취소는 진단 대상 아님
+  })
+
+  it('tail 은 마지막 IMPL_PROGRESS_TAIL_CAP 자만(앞부분 탈락) 정확히 보존한다 (#167)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // 식별 마커로 head 탈락·tail 보존·정확 경계를 검증(head-truncation·under/over-truncation 회귀 차단).
+    // 총 길이 = DROP(9) + filler(CAP) + KEEP(8) > CAP → slice(-CAP) 가 앞 DROP 을 떨궈야 한다.
+    const DROP = 'HEAD_DROP'
+    const KEEP = 'KEEP_END'
+    const payload = DROP + 'a'.repeat(IMPL_PROGRESS_TAIL_CAP) + KEEP
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        opts?.onChunk?.(payload)
+        throw new Error('boom')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    const run = result.tasks[0].output ?? ''
+    const marker = '[마지막 진행 출력]\n'
+    const idx = run.indexOf(marker)
+    expect(idx).toBeGreaterThanOrEqual(0)
+    const tailSection = run.slice(idx + marker.length)
+    expect(tailSection.length).toBe(IMPL_PROGRESS_TAIL_CAP) // 정확히 cap (under/over-truncation 차단)
+    expect(tailSection.endsWith(KEEP)).toBe(true) // 마지막 출력 보존 (head-truncation 이면 실패)
+    expect(tailSection).not.toContain(DROP) // 앞부분은 탈락
+  })
+
+  it('tail 은 여러 chunk 에 걸쳐 마지막 CAP 자를 누적 유지한다(슬라이딩 윈도) (#167)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // 여러 delta 가 누적되며 앞 chunk 가 슬라이딩 탈락하는 실제 스트리밍 경로. 합산 > CAP.
+    const early = 'EARLY_DROP_' + 'a'.repeat(IMPL_PROGRESS_TAIL_CAP)
+    const late = 'LATE_KEEP_require_approval'
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        opts?.onChunk?.(early) // 앞 chunk — 누적 후 탈락해야 함
+        opts?.onChunk?.(late) // 뒤 chunk — 마지막이라 보존돼야 함
+        throw new Error('claude 실행 실패: ETIMEDOUT')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    const run = result.tasks[0].output ?? ''
+    expect(run).toContain(late) // 마지막 chunk 보존(슬라이딩 윈도가 누적 경로에서 동작)
+    expect(run).not.toContain('EARLY_DROP_') // 앞 chunk 식별 토큰은 cap 으로 탈락
+  })
+
+  it('스트림 출력이 없는 실패엔 tail 섹션을 붙이지 않는다 (#167)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        throw new Error('즉시 spawn 실패') // onChunk 없이 즉시 실패
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    const t = result.tasks[0]
+    expect(t.status).toBe('failed')
+    expect(t.output).toContain('실행 오류')
+    expect(t.output).not.toContain('마지막 진행 출력') // tail 없으면 섹션 미첨부
   })
 
   it('verify-fix 정리 중 revert 실패를 무성흡수하지 않고 표면화한다 (#7)', async () => {

@@ -31,6 +31,13 @@ import {
 export type { OrchestratorEvent, RunResult } from '../../../shared/types'
 
 /**
+ * [#167] 작업 실패 시 task output 에 첨부하는 implementer 스트림 tail 의 최대 길이(문자).
+ * task.progress(토큰 델타)는 영속하지 않으므로(아래 emit 주석), 실패 시점의 마지막 출력만
+ * 이 상한으로 잘라 1회 영속해 quota 소진 vs 도구 승인 교착을 사후 구분하게 한다.
+ */
+export const IMPL_PROGRESS_TAIL_CAP = 1000
+
+/**
  * [#128-finding5] workspace.ignored_changes 라이브 이벤트의 사용자 표면화 message.
  * 경로·파일명·내용 없이 카운트 요약만 — 비밀 비노출 계약 유지(경로·종류는 data.changes 에 별도 보존).
  * emit 호출부가 (changes>0 || unrestorable>0) 로 게이트하므로 parts 는 비지 않는다.
@@ -259,6 +266,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       failed.add(task.id)
       return undefined
     }
+    // [#167] implementer 스트림의 마지막 출력(tail). 실패(타임아웃/예외) 시 사후 진단용으로
+    // catch 에서 읽으므로 try 바깥(함수 스코프)에 둔다. cap 으로 잘라 무한 누적을 막는다.
+    let progressTail = ''
     try {
       let approved = false
       let feedback = ''
@@ -277,10 +287,17 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
             workspace: editRoot,
             signal: opts.signal,
             timeoutMs: taskTimeoutMs,
-            onChunk: (delta) =>
-              emit({ type: 'task.progress', message: delta, data: { taskId: task.id } }),
+            onChunk: (delta) => {
+              // 라이브 표면화(비영속)는 종전대로. 추가로 마지막 cap 분량만 보관(실패 시 진단 tail).
+              progressTail = (progressTail + delta).slice(-IMPL_PROGRESS_TAIL_CAP)
+              emit({ type: 'task.progress', message: delta, data: { taskId: task.id } })
+            },
           },
         )
+        // [#167] implementer.send 가 성공 반환하면 tail 을 비운다 — 이후 reviewer/keep 실패나 다음 라운드
+        // 즉시실패에 직전 attempt 의 출력이 오인 첨부되지 않게(tail 은 "실패한 implementer 호출의 마지막
+        // 출력"만 의미). Codex 리뷰 P2(#1 reviewer/keep 실패 오첨부·#2 라운드 간 stale) 반영.
+        progressTail = ''
         diff = await ws.collectDiff(base)
         const ignoredChanges = await ws.collectIgnoredChanges(ignoredBaseline)
         // [#128-m1] 현재(=루프 탈출 시 최종 채택) 라운드 기준 — 거부되어 롤백된 라운드의 ignored 변경은
@@ -478,10 +495,19 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         return undefined
       }
       const message = err instanceof Error ? err.message : String(err)
-      store.updateTask(task.id, { status: 'failed', output: `실행 오류: ${message}${revertNote}` })
+      // [#167] implementer 가 죽기 직전 흘린 마지막 출력을 첨부 → quota 소진(정상 토큰 후 끊김) vs
+      // 도구 승인 교착(거부 사유 반복)을 사후 구분. 취소(skipped) 분기는 위에서 이미 반환되므로
+      // tail 은 실제 실패에만 붙는다. implementer.send 성공 시 위에서 progressTail 을 비우므로
+      // reviewer/keep 실패엔 자연히 빈 tail → 출력 없음(섹션 생략). task.output(API/SUMMARY)과
+      // task.failed 메시지(렌더러 로그에 표시되는 유일 경로) 둘 다에 실어 UI 에서도 보이게 한다(Codex 리뷰 P2#3).
+      const tailNote = progressTail.trim() ? `\n\n[마지막 진행 출력]\n${progressTail.trim()}` : ''
+      store.updateTask(task.id, {
+        status: 'failed',
+        output: `실행 오류: ${message}${revertNote}${tailNote}`,
+      })
       emit({
         type: 'task.failed',
-        message: `${task.title}: 실행 오류 - ${message}${revertNote}`,
+        message: `${task.title}: 실행 오류 - ${message}${revertNote}${tailNote}`,
         data: { taskId: task.id },
       })
       failed.add(task.id)
