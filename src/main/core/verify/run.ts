@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { VerificationResult, VerifyKind } from '../../../shared/types'
 import { defaultRunner } from '../cli/detect'
 
@@ -6,6 +8,8 @@ export interface VerifyCommand {
   command: string
   args: string[]
   cwd?: string
+  /** package.json 스크립트가 자명한 no-op 인지(npmVerifyCommands 가 태깅). */
+  noop?: boolean
 }
 
 export interface VerifyExecResult {
@@ -83,6 +87,7 @@ export async function runVerification(
       stderr: res.stderr,
       analysis: `명령 실행 실패: ${res.spawnError}`,
       durationMs,
+      noop: cmd.noop,
     }
   }
 
@@ -96,6 +101,7 @@ export async function runVerification(
     stderr: res.stderr,
     analysis: passed ? undefined : summarizeFailure(res.stdout, res.stderr),
     durationMs,
+    noop: cmd.noop,
   }
 }
 
@@ -115,11 +121,41 @@ export function allPassed(results: readonly VerificationResult[]): boolean {
   return results.length > 0 && results.every((r) => r.passed)
 }
 
-/** JS/TS 프로젝트 표준 검증 명령 세트 (npm 스크립트 기반). */
+/**
+ * package.json 스크립트 본문이 "아무 검사도 안 하는" 자명한 no-op 인지.
+ * 보수적 — false negative(놓침)는 감수하고 false positive(실제 검사 오판) 0 을 우선한다.
+ * 끝 세미콜론은 1개만 허용(`exit 0;;` 는 비-noop). `echo`·`|| true`·wrapper 는 제외.
+ */
+export function isNoOpScript(body?: string): boolean {
+  if (body === undefined) return false
+  const n = body.trim().replace(/;$/, '').trim()
+  return n === '' || n === 'exit 0' || n === 'true' || n === ':'
+}
+
+/** <cwd>/package.json 의 scripts 맵 (읽기/파싱 실패·없음 → undefined = 알 수 없음). */
+function readPackageScripts(cwd: string): Record<string, string> | undefined {
+  try {
+    const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>
+    }
+    return pkg.scripts
+  } catch {
+    return undefined
+  }
+}
+
+/** JS/TS 프로젝트 표준 검증 명령 세트 (npm 스크립트 기반). package.json 을 읽어 no-op 을 태깅한다. */
 export function npmVerifyCommands(cwd: string): VerifyCommand[] {
+  const scripts = readPackageScripts(cwd)
+  const mk = (kind: VerifyKind, name: string, args: string[]): VerifyCommand => {
+    const cmd: VerifyCommand = { kind, command: 'npm', args, cwd }
+    const body = scripts?.[name]
+    if (body !== undefined) cmd.noop = isNoOpScript(body)
+    return cmd
+  }
   return [
-    { kind: 'typecheck', command: 'npm', args: ['run', 'typecheck'], cwd },
-    { kind: 'lint', command: 'npm', args: ['run', 'lint'], cwd },
-    { kind: 'test', command: 'npm', args: ['test'], cwd },
+    mk('typecheck', 'typecheck', ['run', 'typecheck']),
+    mk('lint', 'lint', ['run', 'lint']),
+    mk('test', 'test', ['test']),
   ]
 }
