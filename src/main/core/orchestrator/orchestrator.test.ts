@@ -2340,16 +2340,20 @@ describe('runProject', () => {
     expect(t.output).not.toContain('마지막 진행 출력') // 취소는 진단 대상 아님
   })
 
-  it('tail 은 IMPL_PROGRESS_TAIL_CAP 으로 상한된다 (#167)', async () => {
+  it('tail 은 마지막 IMPL_PROGRESS_TAIL_CAP 자만(앞부분 탈락) 정확히 보존한다 (#167)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
-    const huge = 'x'.repeat(IMPL_PROGRESS_TAIL_CAP * 3)
+    // 식별 마커로 head 탈락·tail 보존·정확 경계를 검증(head-truncation·under/over-truncation 회귀 차단).
+    // 총 길이 = DROP(9) + filler(CAP) + KEEP(8) > CAP → slice(-CAP) 가 앞 DROP 을 떨궈야 한다.
+    const DROP = 'HEAD_DROP'
+    const KEEP = 'KEEP_END'
+    const payload = DROP + 'a'.repeat(IMPL_PROGRESS_TAIL_CAP) + KEEP
     const impl: LlmSession = {
       id: 'impl',
       descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
       async send(_p, opts) {
-        opts?.onChunk?.(huge)
+        opts?.onChunk?.(payload)
         throw new Error('boom')
       },
       async dispose() {},
@@ -2368,9 +2372,48 @@ describe('runProject', () => {
       workspaceRoot: '/ws',
     })
     const run = result.tasks[0].output ?? ''
-    const xrun = run.match(/x+/)
-    expect(xrun).toBeTruthy()
-    expect(xrun![0].length).toBeLessThanOrEqual(IMPL_PROGRESS_TAIL_CAP) // 거대 출력이 output 을 부풀리지 않음
+    const marker = '[마지막 진행 출력]\n'
+    const idx = run.indexOf(marker)
+    expect(idx).toBeGreaterThanOrEqual(0)
+    const tailSection = run.slice(idx + marker.length)
+    expect(tailSection.length).toBe(IMPL_PROGRESS_TAIL_CAP) // 정확히 cap (under/over-truncation 차단)
+    expect(tailSection.endsWith(KEEP)).toBe(true) // 마지막 출력 보존 (head-truncation 이면 실패)
+    expect(tailSection).not.toContain(DROP) // 앞부분은 탈락
+  })
+
+  it('tail 은 여러 chunk 에 걸쳐 마지막 CAP 자를 누적 유지한다(슬라이딩 윈도) (#167)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // 여러 delta 가 누적되며 앞 chunk 가 슬라이딩 탈락하는 실제 스트리밍 경로. 합산 > CAP.
+    const early = 'EARLY_DROP_' + 'a'.repeat(IMPL_PROGRESS_TAIL_CAP)
+    const late = 'LATE_KEEP_require_approval'
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        opts?.onChunk?.(early) // 앞 chunk — 누적 후 탈락해야 함
+        opts?.onChunk?.(late) // 뒤 chunk — 마지막이라 보존돼야 함
+        throw new Error('claude 실행 실패: ETIMEDOUT')
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+    })
+    const run = result.tasks[0].output ?? ''
+    expect(run).toContain(late) // 마지막 chunk 보존(슬라이딩 윈도가 누적 경로에서 동작)
+    expect(run).not.toContain('EARLY_DROP_') // 앞 chunk 식별 토큰은 cap 으로 탈락
   })
 
   it('스트림 출력이 없는 실패엔 tail 섹션을 붙이지 않는다 (#167)', async () => {

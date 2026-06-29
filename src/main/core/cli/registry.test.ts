@@ -30,47 +30,22 @@ describe('CLI adapter auth/install (shared 단일 출처)', () => {
     expect(codex.edit?.args).toContain('workspace-write')
   })
 
-  // #167: 스폰 claude implementer 가 자기 산출물을 self-verify(node --check 등) 하도록
-  // read-only 검증 도구를 --allowedTools 로 자동 허용한다. acceptEdits 단독은 이런 Bash 를
-  // "requires approval" 로 차단(실측 claude 2.1.195) → 헤드리스엔 승인 경로 없어 수동리뷰 폴백.
-  const claudeAllowedTools = (): string => {
-    const args = createCliRegistry().get('claude')!.edit!.args
-    const i = args.indexOf('--allowedTools')
-    expect(i).toBeGreaterThanOrEqual(0)
-    return args[i + 1]
-  }
-
-  it('claude 편집은 read-only 검증 도구(node --check·tsc --noEmit)를 자동 허용한다 (#167)', () => {
-    const claude = createCliRegistry().get('claude')!
-    // 기존 편집 권한 모드 유지(전체 우회 아님).
-    expect(claude.edit?.args).toContain('acceptEdits')
-    const value = claudeAllowedTools()
-    expect(value).toContain('Bash(node --check:*)') // JS 구문 파싱(무실행)
-    expect(value).toContain('Bash(tsc --noEmit:*)') // TS 타입체크(무emit)
-  })
-
-  it('claude 검증 allowlist 는 read-only 한정 — 쓰기/임의실행 명령 미포함 (#167)', () => {
-    // 허용 엔트리는 전부 read-only 검증 명령이어야 한다(쓰기·임의 코드실행·우회 금지).
-    const READONLY_ONLY = new Set([
-      'Bash(node --check:*)',
-      'Bash(tsc --noEmit)',
-      'Bash(tsc --noEmit:*)',
-    ])
-    for (const entry of claudeAllowedTools().split(',')) {
-      expect(READONLY_ONLY.has(entry)).toBe(true)
-    }
-    // 전체 우회 플래그/모드는 채택하지 않는다.
-    const args = createCliRegistry().get('claude')!.edit!.args
-    expect(args).not.toContain('--dangerously-skip-permissions')
-    expect(args).not.toContain('bypassPermissions')
-  })
-
-  it('gemini·codex 편집은 allowlist 플래그를 쓰지 않는다 — claude-only (#167 무회귀)', () => {
+  // [#167] 편집 어댑터는 검증 도구(node --check 등)를 --allowedTools/--allowed-tools 로 자동허용하지
+  // 않는다(의도적). `Bash(node --check:*)` 같은 prefix allow 규칙은 후행 인자를 임의 매칭하는데, node
+  // preload 플래그(--require/--import/--experimental-loader)가 --check 에도 코드를 실행해(실측: claude
+  // 가 `node --check --import "data:..."` 를 무프롬프트 자동승인·실행) acceptEdits 의 "쓰기만·실행 차단"
+  // 경계를 RCE+네트워크로 깬다. prefix 규칙으로는 이 부정 제약을 표현 불가 → 구조적으로 안전화 못 함.
+  // 이 테스트는 그 결정을 고정해 naive 한 재도입(보안 회귀)을 막는다.
+  it('편집 어댑터는 검증 도구 자동허용(allowlist) 플래그·우회 모드를 두지 않는다 (#167 보안)', () => {
     const reg = createCliRegistry()
-    for (const id of ['gemini', 'codex'] as const) {
+    for (const id of ['claude', 'codex', 'gemini'] as const) {
       const args = reg.get(id)!.edit!.args
       expect(args).not.toContain('--allowedTools')
       expect(args).not.toContain('--allowed-tools')
+      expect(args).not.toContain('--dangerously-skip-permissions')
+      expect(args).not.toContain('bypassPermissions')
     }
+    // claude 편집 권한 모드는 종전 acceptEdits 유지(편집만 자동승인, 전체 우회 아님).
+    expect(reg.get('claude')!.edit!.args).toEqual(['-p', '--permission-mode', 'acceptEdits'])
   })
 })

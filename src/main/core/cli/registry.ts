@@ -2,24 +2,6 @@ import type { CliAdapter } from '../../../shared/types'
 import { CLI_AUTH_INSTALL_META as META } from '../../../shared/cliAuthInstallMeta'
 
 /**
- * 스폰된 claude implementer 가 자기 산출물을 self-verify 하도록 자동 허용하는 read-only 검증 도구(#167).
- * 순수 파싱/타입체크만 — 쓰기·임의 코드실행·네트워크 없음(기존 "전체 우회 아님" posture 유지).
- *
- * 배경: headless `claude -p --permission-mode acceptEdits` 는 편집 + 8개 fs 명령(mkdir·rm 등)만
- * 자동승인하고 그 외 Bash(`node --check` 포함)는 승인 프롬프트를 띄운다 — 헤드리스엔 승인 경로가
- * 없어 차단된다. 실측(claude 2.1.195): allowlist 없으면 `node --check` 가 "requires approval" 로
- * 막히고, 이 목록 추가 시 실제 실행된다. Claude Code 는 셸 연산자(`&&`·`|`·`;` 등)를 분해해 각
- * sub-command 를 독립 매칭하므로 `node --check x && rm -rf /` 같은 컴파운드 우회는 차단된다
- * (docs: code.claude.com/docs/en/permissions.md#compound-commands). `:*` 는 후행 ` *` 와 동등.
- * 콤마결합 단일 값은 Claude Code 가 다중 규칙으로 분리한다(실측 확인).
- */
-export const CLAUDE_VERIFY_ALLOWED_TOOLS = [
-  'Bash(node --check:*)', // JS 구문 파싱(무실행)
-  'Bash(tsc --noEmit)', // TS 타입체크(무emit) — 인자 없는 전체 검사
-  'Bash(tsc --noEmit:*)', // TS 타입체크 — 파일/플래그 동반
-].join(',')
-
-/**
  * 기본 CLI 어댑터 (요구사항 2A). 구독제/TUI 기반 LLM CLI.
  * 새 CLI 는 여기에 추가하거나 런타임에 registry.register() 로 확장한다.
  */
@@ -50,17 +32,14 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
       parse: 'claude-stream',
     },
     // 워크스페이스 직접 편집(실측: v2.1.163). -p 헤드리스 + --permission-mode acceptEdits 로 편집 도구만 자동 승인(전체 우회 아님). cwd=workspace 는 세션이 설정.
-    // --allowedTools 로 read-only 검증 도구(node --check·tsc --noEmit)를 추가 허용해 implementer 가 자기 산출물을 self-verify 한다(#167, CLAUDE_VERIFY_ALLOWED_TOOLS 주석 참조).
-    edit: {
-      args: [
-        '-p',
-        '--permission-mode',
-        'acceptEdits',
-        '--allowedTools',
-        CLAUDE_VERIFY_ALLOWED_TOOLS,
-      ],
-      parse: 'text',
-    },
+    // [#167] 검증 도구(node --check 등)를 --allowedTools 로 자동허용하지 않는다 — `Bash(node --check:*)`
+    // 같은 prefix allow 규칙은 후행 인자를 임의 매칭하는데, node 의 preload 플래그(--require/--import/
+    // --experimental-loader)는 --check 에도 코드를 실행한다(실측: `node --check --import "data:..."` 가
+    // 파일 0건으로 인라인 실행, claude 가 자동승인). prefix 규칙으로는 이 부정 제약을 표현할 수 없어
+    // acceptEdits 의 "쓰기만·실행 차단" 경계를 RCE+네트워크로 깬다. 헤드리스 self-verify 가 필요하면
+    // preload 를 차단하는 검증 래퍼만 별도 allow 해야 한다(미구현). implementer 는 read-only 빌트인
+    // (Read/Grep/Glob)으로 검토하고, 실제 verify(typecheck/lint/test)는 Fleet 이 별도 실행한다.
+    edit: { args: ['-p', '--permission-mode', 'acceptEdits'], parse: 'text' },
     auth: { loginCommand: META.claude.loginCommand, docsUrl: META.claude.docsUrl },
     install: { hint: META.claude.installHint, docsUrl: META.claude.docsUrl },
   },
