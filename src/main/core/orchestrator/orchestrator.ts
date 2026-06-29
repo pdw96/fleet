@@ -479,7 +479,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // @returns 전파를 1건 이상 수행했으면 true(진행 있음).
   const propagateDepFailures = (): boolean => {
     let progressed = false
-    for (let i = 0; i < pending.length; ) {
+    for (let i = 0; i < pending.length;) {
       const task = byId.get(pending[i])
       if (!task) {
         pending.splice(i, 1)
@@ -669,7 +669,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   let aborted = false
   while (!canParallel && pending.length > 0 && progressed && !aborted) {
     progressed = false
-    for (let i = 0; i < pending.length; ) {
+    for (let i = 0; i < pending.length;) {
       const task = byId.get(pending[i])
       if (!task) {
         pending.splice(i, 1)
