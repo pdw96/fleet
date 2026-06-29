@@ -36,7 +36,7 @@ approve/reject** 를 요구한다. 어떤 LLM이든 "비판적 리뷰"를 요청
 
 "비판적으로 검토"를 **대칭적·구체적** 기준으로 교체:
 
-```
+```text
 승인(approved:true) — 아래를 모두 만족:
 - 작업 설명을 실질적으로 달성함.
 - 명백한 버그·요구사항 위반·런타임/타입/테스트 실패 가능성이 없음.
@@ -59,7 +59,7 @@ feedback: 거부면 무엇을 어떻게 고칠지 구체적으로. 승인이어�
 
 ### 레버 2 — accept-with-warnings 최종 라운드 (`orchestrator.ts` 리뷰 루프)
 
-```
+```text
 for round in 0..maxRounds:
   implement → collectDiff → ignored changes → destructive gate(거부 시 fail+return, 불변)
   reviewer verdict

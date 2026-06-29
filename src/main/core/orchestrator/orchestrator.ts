@@ -263,6 +263,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       let approved = false
       let feedback = ''
       let lastRejectRound = 0
+      let lastVerdictParsed = false
       let diff = { files: [] as string[], patch: '', truncated: false }
       let ignoredTouched = false
       for (let round = 0; round < maxRounds; round++) {
@@ -369,6 +370,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         }
         feedback = verdict.feedback
         lastRejectRound = round
+        lastVerdictParsed = verdict.parsed
         // [#162] 마지막 라운드 reject 는 rollback 하지 않는다 — accept-with-warnings 로 그 시도를
         // 채택하려고 워크스페이스에 남긴다. 중간 라운드는 기존대로 rollback 후 다음 라운드 재시도.
         if (round < maxRounds - 1) {
@@ -398,11 +400,32 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       }
 
       if (!approved) {
-        // [#162] accept-with-warnings: 마지막 reviewer reject 는 cascade 실패(task.failed → 의존
-        // 태스크 skip) 대신 마지막 시도를 경고와 함께 채택한다. 마지막 라운드는 위에서 rollback 하지
-        // 않았으므로 워크스페이스에 그 시도가 남아 있고 diff/ignoredTouched 가 최종 채택본 기준이다.
-        // 도달 조건: 순수 reviewer 거부만. destructive gate 미승인·민감 baseline capture 실패·중간
-        // rollback 실패·LLM 오류·abort 는 전부 위에서 이미 return 했으므로 여기 오지 않는다(안전 불변).
+        // [#162] 미승인 후처리. accept-with-warnings 는 (a) 마지막 라운드가 실제 파싱된 리뷰 거부이고
+        // (b) 채택할 변경이 실재할 때만 적용한다 — 미검토(빈/임의 산문 = parsed:false)나 빈 산출물을
+        // done 으로 위장하지 않게(Codex#1·#2). 그 외는 기존처럼 rollback + 실패.
+        // (destructive gate 미승인·민감 baseline capture 실패·중간 rollback 실패·LLM 오류·abort 는
+        //  전부 위에서 이미 return → 여기 미도달, 안전 불변.)
+        if (!lastVerdictParsed || diff.files.length === 0) {
+          const { note } = await rollbackWithIgnored(ws, base, ignoredBaseline)
+          const reason = !lastVerdictParsed
+            ? '미승인(유효한 리뷰 응답 없음)'
+            : '미승인(빈 변경 — 산출물 없음)'
+          store.updateTask(task.id, {
+            status: 'failed',
+            output: `${reason}${note}`,
+            changedFiles: [],
+          })
+          emit({
+            type: 'task.failed',
+            message: `${task.title}: ${reason}`,
+            data: { taskId: task.id },
+          })
+          failed.add(task.id)
+          return undefined
+        }
+        // 마지막 라운드는 위에서 rollback 하지 않았으므로 워크스페이스에 그 시도가 남아 있고
+        // diff/ignoredTouched 가 최종 채택본 기준이다.
+        const warning = feedback.slice(0, 300) // 메시지에 실제 feedback 노출(ProjectPanel 은 message 만 렌더 — Codex#3)
         const keepHash = await ws.keep(`[${task.title}] accept-with-warnings by ${implementerId}`)
         store.updateTask(task.id, {
           status: 'done',
@@ -411,7 +434,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         })
         emit({
           type: 'task.accepted_with_warnings',
-          message: `${task.title}: 검토 미승인 — 마지막 시도 채택(경고)`,
+          message: `${task.title}: 검토 미승인 — 마지막 시도 채택(경고): ${warning}`,
           data: { taskId: task.id, round: lastRejectRound, feedback },
         })
         done.add(task.id)

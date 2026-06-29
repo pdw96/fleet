@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 67 files · 172 import wires · 43 IPC channels · 생성 2026-06-29T06:01 UTC
+> 67 files · 172 import wires · 43 IPC channels · 생성 2026-06-29T06:20 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -88,7 +88,7 @@
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
-  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 982줄
+  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1005줄
 - **orchestrator/diff-risk** — AI가 바꾼 코드가 위험한 변경인지 판정하는 위험 신호등 _AI가 고친 내용을 보고 비밀번호 같은 민감한 파일을 건드렸거나, 파일을 너무 많이 지웠거나, 변경 내용이 너무 길어 끝이 잘려 확인이 불가능하면 '위험'으로 표시하고 그 이유를 함께 알려 줍니다. 의심스러우면 안전하게 '위험' 쪽으로 분류합니다._
   - →의존: safety/approval, shared/types, workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 37줄
 - **orchestrator/plan** — 큰 목표를 실행 가능한 작은 작업 목록으로 쪼개 주는 계획 분해기 _기획 담당 AI에게 목표를 4~8개의 작업으로 나눠 달라고 요청하고, AI가 돌려준 응답이 형식이 조금 어긋나도 너그럽게 읽어내 작업 목록으로 정리합니다. 검증(테스트·빌드)이 실패하면 그 실패 내용을 다시 AI에게 알려 부족한 부분만 채울 '추가 보정 작업'도 뽑아냅니다._
@@ -98,7 +98,7 @@
 - **orchestrator/ignored-guard**
   - →의존: workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 50줄
 - **orchestrator/review** — 각 단계에서 AI에게 보낼 지시문을 만들고 검토 결과를 읽어내는 대화 문구 담당 _구현·검토·요약·수정 단계마다 AI에게 보낼 안내 문구를 상황에 맞게 만들어 주고, 검토 AI의 답에서 '승인인지 수정 요청인지'와 그 피드백을 뽑아냅니다. AI가 형식을 안 지킨 어수선한 답을 줘도 핵심을 읽어내도록 대비책을 갖췄습니다._
-  - →의존: shared/types · ←피의존: orchestrator/orchestrator, orchestrator/plan · 141줄
+  - →의존: shared/types · ←피의존: orchestrator/orchestrator, orchestrator/plan · 154줄
 
 ### session · core — 여러 AI(구독형 CLI와 API)를 똑같은 방식으로 다룰 수 있게 감싸서, 작업방이 AI의 종류를 신경 쓰지 않고 '말 걸고-답받기'만 하면 되도록 통일해 주는 모듈.
 - **session/cli-session** — 클로드·코덱스·제미니 같은 설치형 AI 프로그램을 실제로 실행해 대화를 주고받는 일꾼 _프롬프트를 명령어 형태로 만들어 해당 AI 프로그램을 돌리고 결과 글을 받아 깔끔하게 정리해 돌려준다. 매번 새 프로그램을 띄우는 '독립 실행', AI 자체 기능으로 대화를 이어가는 '대화 유지', 지정한 폴더의 파일을 직접 고치는 '편집'의 세 가지 방식을 지원하며, 가능하면 답을 한 글자씩 실시간으로 흘려보내고 같은 세션의 동시 요청은 순서대로 줄 세운다._

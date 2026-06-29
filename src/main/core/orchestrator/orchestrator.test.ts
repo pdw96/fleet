@@ -460,6 +460,65 @@ describe('runProject', () => {
     expect(warn).toBeDefined()
     expect(warn?.data?.feedback).toContain('테스트 추가 권장')
     expect(result.tasks[0].output).toContain('테스트 추가 권장')
+    // #162(Codex#3): 실제 feedback 이 이벤트 message 에도 노출돼야 한다(ProjectPanel 은 message 만 렌더).
+    expect(warn?.message).toContain('테스트 추가 권장')
+  })
+
+  it('does NOT accept-with-warnings when the reviewer gives no valid verdict (#162 safety)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => '')) // exit 0 이지만 빈 출력 = 유효한 verdict 아님
+
+    const events: OrchestratorEvent[] = []
+    const ws = fakeWorkspace()
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      onEvent: (e) => events.push(e),
+    })
+    // 리뷰어가 유효한 verdict 를 안 냄 → 미검토 채택이 아니라 실패
+    expect(result.tasks[0].status).toBe('failed')
+    expect(ws.commits).toHaveLength(0)
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
+  })
+
+  it('does NOT accept-with-warnings an empty final diff (#162 no-op not done)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => '{"approved":false,"feedback":"미완성"}'))
+
+    const events: OrchestratorEvent[] = []
+    // 구현이 아무것도 안 고침 → collectDiff 빈 files (산출물 없음)
+    const ws = fakeWorkspace([{ files: [], patch: '', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      onEvent: (e) => events.push(e),
+    })
+    // 빈 산출물은 채택하지 않는다 → done 아니라 failed
+    expect(result.tasks[0].status).toBe('failed')
+    expect(ws.commits).toHaveLength(0)
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
   })
 
   it('does NOT rescue a destructive-gate rejection via accept-with-warnings (#162 safety)', async () => {

@@ -3,6 +3,12 @@ import type { VerificationResult } from '../../../shared/types'
 export interface ReviewVerdict {
   approved: boolean
   feedback: string
+  /**
+   * verdict 가 인식된 형식(JSON {approved} 또는 APPROVE/REVISE 토큰)에서 나왔는지(#162).
+   * false = 리뷰어가 유효한 verdict 를 내지 않음(빈/거부 산문) → 폴백 default approved:false 와
+   * 구분한다. accept-with-warnings 는 parsed=true(실제 리뷰 거부)일 때만 적용해 미검토 채택을 막는다.
+   */
+  parsed: boolean
 }
 
 /** reviewer 구조화 출력 스키마. */
@@ -84,7 +90,11 @@ export function parseReviewVerdict(text: string): ReviewVerdict {
     if (parsed && typeof parsed === 'object') {
       const o = parsed as Record<string, unknown>
       if (typeof o.approved === 'boolean') {
-        return { approved: o.approved, feedback: typeof o.feedback === 'string' ? o.feedback : '' }
+        return {
+          approved: o.approved,
+          feedback: typeof o.feedback === 'string' ? o.feedback : '',
+          parsed: true,
+        }
       }
     }
   } catch {
@@ -92,9 +102,12 @@ export function parseReviewVerdict(text: string): ReviewVerdict {
   }
   // 폴백: 앞쪽 마크다운/인용/리스트 마커를 벗기고 첫 토큰 APPROVE/REVISE 를 인식.
   const normalized = candidate.replace(/^[\s*_`"'>•-]+/, '')
+  // 인식된 토큰(APPROVE/REVISE)으로 시작하면 parsed=true. 그 외(빈/임의 산문)는 parsed=false
+  // → 리뷰어가 유효한 verdict 를 내지 않음(accept-with-warnings 비대상).
+  const recognized = /^(APPROVED?|REVISE[DS]?)\b/i.test(normalized)
   const approved = /^APPROVED?\b/i.test(normalized)
   const feedback = normalized.replace(/^(APPROVED?|REVISE[DS]?)\b[:\s]*/i, '').trim()
-  return { approved, feedback }
+  return { approved, feedback, parsed: recognized }
 }
 
 /** 최종 요약/누락 점검 프롬프트 (요구사항 5: 원래 요구사항과 비교). */

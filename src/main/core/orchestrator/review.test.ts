@@ -49,6 +49,17 @@ describe('parseReviewVerdict', () => {
     const v = parseReviewVerdict('```json\n{"approved":true,"feedback":""}\n```')
     expect(v.approved).toBe(true)
   })
+
+  it('parsed=true 는 인식된 verdict(JSON·APPROVE·REVISE), false 는 미인식(빈/거부 산문)을 구분한다 (#162)', () => {
+    // 인식된 verdict
+    expect(parseReviewVerdict('{"approved":false,"feedback":"x"}').parsed).toBe(true)
+    expect(parseReviewVerdict('APPROVE').parsed).toBe(true)
+    expect(parseReviewVerdict('REVISE: 고쳐').parsed).toBe(true)
+    // 미인식(리뷰어가 유효한 verdict 를 내지 않음) → 거짓 approved:false 와 구분되어야 함
+    expect(parseReviewVerdict('').parsed).toBe(false)
+    expect(parseReviewVerdict('   ').parsed).toBe(false)
+    expect(parseReviewVerdict('도와줄 수 없습니다').parsed).toBe(false)
+  })
 })
 
 describe('prompt builders', () => {
