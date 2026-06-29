@@ -92,16 +92,18 @@ describe('prompt builders', () => {
     expect(p).not.toContain('비판적으로 검토')
   })
 
-  it('summary prompt lists task statuses and changed files (artifacts in-prompt, no fs re-scan)', () => {
+  it('summary prompt lists task statuses; changed files only for done tasks (artifacts in-prompt, no fs re-scan)', () => {
     const p = buildSummaryPrompt('목표', [
       { title: 'A', status: 'done', changedFiles: ['game.js', 'index.html'] },
-      { title: 'B', status: 'failed' },
+      { title: 'B', status: 'failed', changedFiles: ['rolledback.js'] },
     ])
     expect(p).toContain('[done] A')
     expect(p).toContain('[failed] B')
-    // 산출물(변경 파일)이 프롬프트에 직접 실린다 — 요약 에이전트가 fs 를 재탐색할 필요 없음(#164).
+    // done 작업의 산출물(변경 파일)은 프롬프트에 직접 실린다 — fs 재탐색 불필요(#164).
     expect(p).toContain('game.js')
     expect(p).toContain('index.html')
+    // 실패 작업의 changedFiles 는 revert 됐을 수 있어 표기하지 않는다(#165 P2).
+    expect(p).not.toContain('rolledback.js')
     expect(p).toMatch(/파일시스템을 직접 탐색하지 말/)
   })
 })

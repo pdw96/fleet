@@ -120,7 +120,12 @@ export function buildSummaryPrompt(
   // 의존하지 않는다(#164: cwd 재탐색이 엉뚱한 디렉터리를 평가하던 원인 / #165 codex 리뷰: 어댑터 fragility).
   const lines = tasks
     .map((t) => {
-      const files = t.changedFiles?.length ? ` — 변경 파일: ${t.changedFiles.join(', ')}` : ''
+      // 변경 파일은 done(승인·커밋) 작업만 권위 있다 — 실패/스킵 작업의 changedFiles 는 revert 됐을 수
+      // 있어(리뷰/keep 실패 시 워크스페이스 되돌림) rolled-back 파일을 산출물로 오기재하지 않는다(#165 P2).
+      const files =
+        t.status === 'done' && t.changedFiles?.length
+          ? ` — 변경 파일: ${t.changedFiles.join(', ')}`
+          : ''
       return `- [${t.status}] ${t.title}${files}`
     })
     .join('\n')

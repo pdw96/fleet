@@ -46,11 +46,13 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
     promptVia: 'stdin',
     // --json: 사람용 배너/thinking/토큰 메타 대신 JSONL 이벤트로 출력 → agent_message 만 정제.
     // headless 는 분석 전용(planner/reviewer/summarizer/probe) — codex config 기본값과 무관하게:
-    //   -s read-only: 워크스페이스 수정 불가(기본값이 workspace-write 여도). 편집은 아래 edit 가 분리.
-    //   --ask-for-approval never: 승인 프롬프트 억제 — Fleet 엔 codex 승인 UI 가 없어, 인터랙티브
-    //     승인 정책이 설정돼 있으면 read-only 점검조차 멈춰 타임아웃날 수 있다(#165 P2, codex review).
+    //   --sandbox read-only: 워크스페이스 수정 불가(기본값이 workspace-write 여도). 편집은 아래 edit 가 분리.
+    //   --config approval_policy="never": 승인 프롬프트 억제 — Fleet 엔 codex 승인 UI 가 없어,
+    //     인터랙티브 승인 정책이면 멈춰 타임아웃날 수 있다(#165 codex review). exec 하위 플래그로 안전한
+    //     형태는 공식 SDK(codex exec.ts)가 쓰는 `--config approval_policy="..."`(top-level `--ask-for-approval`
+    //     를 exec 뒤에 두면 일부 버전서 거부됨 — openai/codex#26602). `--sandbox` 도 exec 뒤가 맞다(SDK 동일).
     headless: {
-      args: ['exec', '--json', '--sandbox', 'read-only', '--ask-for-approval', 'never'],
+      args: ['exec', '--json', '--sandbox', 'read-only', '--config', 'approval_policy="never"'],
       parse: 'codex-jsonl',
     },
     // 세션 재개(실측: codex 0.136). id 사전지정 불가 → 첫 응답 thread.started 의 thread_id 캡처.

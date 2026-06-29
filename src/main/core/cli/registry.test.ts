@@ -23,8 +23,8 @@ describe('CLI adapter auth/install (shared 단일 출처)', () => {
       '--json',
       '--sandbox',
       'read-only',
-      '--ask-for-approval',
-      'never',
+      '--config',
+      'approval_policy="never"',
     ])
     // 편집 모드만 workspace-write.
     expect(codex.edit?.args).toContain('workspace-write')
