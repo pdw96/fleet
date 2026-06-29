@@ -33,12 +33,13 @@ edit: { args: ['-p', '--permission-mode', 'acceptEdits'], parse: 'text' }
 ## 2. 목표 / 비목표
 
 **목표**
-- (A) claude·gemini implementer 가 **read-only 검증**(JS 구문·TS 타입체크)을 자동 승인받아 self-verify 한다.
+- (A) **claude** implementer 가 **read-only 검증**(JS 구문 `node --check`·TS 타입체크 `tsc --noEmit`)을 자동 승인받아 self-verify 한다.
 - (B) implementer 실패 시 **마지막 진행 출력(tail)**을 영속 표면화해 quota vs 승인교착을 사후 구분한다.
 
 **비목표**
 - 브라우저/Computer Use 자기검증 — headless `-p` 에서 pre-approve 불가(공식 docs). 에이전트가 "브라우저 검증 불가" 사유만 표기하는 현 동작 유지.
 - 임의 코드 실행·쓰기·네트워크 자동허용 — 기존 "전체 우회 아님" posture 유지(`bypassPermissions` 채택 안 함).
+- **gemini 동작 변경 — 범위 제외(claude-only).** 실측(2026-06-29, gemini-cli 0.47.0): 개인/무료 티어 인증이 `IneligibleTierError`(→Antigravity)로 **죽어 세션 자체가 실행 불가** → edit allowlist 는 dead-path·검증 불가. 게다가 `--allowed-tools` 는 deprecated(1.0 제거 예정, Policy Engine 권장). 따라서 unverifiable 한 투기적 인자를 싣지 않는다. 발견은 #146(gemini ToS/Antigravity 트랙)에 입력으로 기록.
 - codex 동작 변경 — 갭 없음. (방어적 approval_policy 추가도 본 PR 범위 밖.)
 - Antigravity 어댑터 도입 — 별도 트랙 #124/#146(tier:later).
 - ETIMEDOUT 자체의 근절(quota·hang 원인 제거) — (A)가 node 게이트 교착 일부를 제거하나, 본 PR 은 **진단 표면화**까지만.
@@ -47,19 +48,23 @@ edit: { args: ['-p', '--permission-mode', 'acceptEdits'], parse: 'text' }
 
 ### Part A — read-only 검증 allowlist (`registry.ts`)
 
-edit 어댑터 인자에 read-only 검증 도구만 화이트리스트로 추가:
+claude edit 어댑터 인자에 read-only 검증 도구만 화이트리스트로 추가(gemini/codex 변경 없음):
 
-- **claude**: `['-p', '--permission-mode', 'acceptEdits', '--allowedTools', '<LIST>']`
-- **gemini**: `['-p', '', '--approval-mode', 'auto_edit', '--allowed-tools', '<LIST>']`
-- **codex**: 변경 없음.
+```ts
+edit: { args: ['-p', '--permission-mode', 'acceptEdits', '--allowedTools', CLAUDE_VERIFY_ALLOWED_TOOLS], parse: 'text' }
+```
 
-**allowlist 명령 집합** = 순수 read-only 검증:
-- `node --check <file>` — JS 구문 파싱(무실행).
-- `tsc --noEmit` / `npx tsc --noEmit` — TS 타입체크(무emit).
+**`CLAUDE_VERIFY_ALLOWED_TOOLS`** (콤마결합 단일 값) = 순수 read-only 검증만:
+- `Bash(node --check:*)` — JS 구문 파싱(무실행).
+- `Bash(tsc --noEmit)` · `Bash(tsc --noEmit:*)` — TS 타입체크(무emit, 인자 유무 양쪽).
 
-이 셋만으로 쓰기·임의 코드실행·네트워크 없음 → posture 유지. (Read/Grep/Glob 등 read-only 빌트인 도구는 이미 자동허용이라 별도 불필요. 워크스페이스 verify(typecheck/lint/test)는 Fleet 이 `verify/run.ts` 로 별도 실행하므로, 여기 allowlist 는 에이전트의 **편집 중 즉석 구문/타입 확인** 용도다.)
+쓰기·임의 코드실행·네트워크 없음 → 기존 "전체 우회 아님" posture 유지. (Read/Grep/Glob·ls/cat/grep 등 read-only 빌트인은 이미 자동허용이라 별도 불필요. 워크스페이스 verify(typecheck/lint/test)는 Fleet 이 `verify/run.ts` 로 별도 실행하므로, 여기 allowlist 는 에이전트의 **편집 중 즉석 구문/타입 확인** 용도. npx 러너는 임의 명령 실행 표면이라 제외.)
 
-**정확한 플래그 구문은 구현 시 실측 확정**(claude `Bash(node --check:*)` 콜론형 vs `Bash(node --check *)` 공백형, gemini `ShellTool(...)` vs `run_shell_command(...)`). 잘못된 패턴 = 게이트가 여전히 차단되는 silent 실패이므로, 공식 docs + 실 `claude`/`gemini -p` 호출로 **실제 허용되는지** 검증한 문자열만 채택한다. 컴파운드 명령 우회(`node --check x && rm -rf /`) 가능성도 실측으로 확인(Claude Code 는 셸 연산자 분해 후 각 sub-command 를 매칭 — 검증 대상).
+**플래그 구문은 실측 확정(claude 2.1.195, 2026-06-29)** — silent 미적용 리스크 제거:
+- `--allowedTools "Bash(node --check:*)"` → 에이전트가 `node --check bad.js`/`good.js` 실제 실행(exit 1 SyntaxError / exit 0). ✅
+- **negative control**: allowlist 없이 동일 명령 → "requires your approval to run" 차단(=dogfood 증상). ✅ → fix 가 load-bearing.
+- 콤마결합 다중 값(`Bash(node --check:*),Bash(node --version)`) → 두 번째 엔트리로만 허용되는 `node --version` 실행됨 → **콤마 분리 정상**. ✅
+- 공식 docs(permissions.md): `:*` ≡ 공백 ` *`(동등), 컴파운드(`x && rm -rf /`)는 셸 연산자 분해 후 각 sub-command 매칭이라 우회 차단, `--allowedTools` 는 mode baseline 위에 레이어됨. ✅
 
 ### Part B — 스트림 tail 표면화 (`orchestrator.ts`)
 
@@ -81,7 +86,7 @@ edit 어댑터 인자에 read-only 검증 도구만 화이트리스트로 추가
 
 ## 5. 에러 처리 / 엣지
 
-- allowlist 인자가 비-claude/gemini 어댑터엔 없음(codex 무회귀).
+- allowlist 인자가 비-claude 어댑터(codex·gemini)엔 없음(무회귀).
 - tail 이 비어있는 실패(즉시 spawn 실패 등): 종전 메시지 그대로(빈 `[마지막 진행 출력]` 블록 미첨부).
 - tail 길이 cap 으로 거대 출력이 output/이벤트를 부풀리지 않게 보장.
 - tail 내용은 에이전트 텍스트(경로·민감정보 포함 가능) — 단, 이미 라이브 task.progress 로 노출되던 내용이고 실패 output 은 사용자 본인 세션에만 표시되므로 추가 노출면 없음.
@@ -89,9 +94,9 @@ edit 어댑터 인자에 read-only 검증 도구만 화이트리스트로 추가
 ## 6. 테스트 (TDD RED→GREEN)
 
 - **registry.test.ts**
-  - claude edit args 가 `--allowedTools` + read-only 검증 패턴(node --check, tsc --noEmit)을 포함.
-  - gemini edit args 가 `--allowed-tools` + 동등 패턴 포함.
-  - codex edit args 에 allowlist 미포함(무회귀) — 기존 workspace-write 단언 유지.
+  - claude edit args 가 `--allowedTools` + read-only 검증 패턴(`Bash(node --check:*)`·`Bash(tsc --noEmit:*)`)을 포함.
+  - claude allowlist 에 쓰기/실행 명령(bare `node`·`npm`·`rm`·`bash`)이 **미포함**(read-only 한정 단언).
+  - gemini·codex edit args 에 allowlist 미포함(무회귀) — 기존 단언 유지.
 - **session.test.ts**: edit 모드 실행이 allowlist 인자를 자식 argv 로 전달(buildEditArgs 경로).
 - **orchestrator.test.ts**
   - implementer.send 실패(예외) 시 task output 에 `[마지막 진행 출력]` + tail 첨부.
