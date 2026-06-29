@@ -998,6 +998,34 @@ describe('createCliSession', () => {
     expect(seenArgs).toEqual(['agent', '-C', '/ws', 'do it'])
   })
 
+  it('runs headless (read-only) at the given cwd when cwd is set without workspace', async () => {
+    let seenCwd: string | undefined
+    let seenArgs: string[] = []
+    const runner: CommandRunner = async (_cmd, args, opts) => {
+      seenCwd = opts.cwd
+      seenArgs = args
+      return { code: 0, stdout: 'ok', stderr: '' }
+    }
+    const adapter: CliAdapter = {
+      id: 'x',
+      displayName: 'X',
+      command: 'x',
+      versionArgs: ['--version'],
+      headless: { args: ['-p', '{prompt}'] },
+      edit: { args: ['agent', '-C', '{workspace}', '{prompt}'] },
+    }
+    const session = createCliSession(
+      { id: 'x', kind: 'cli', displayName: 'X', ref: 'x', model: '' },
+      adapter,
+      runner,
+    )
+    // cwd 만 주면 편집 모드(write)를 거치지 않고 headless(read-only) 로 cwd 에서 실행한다(#165 P1).
+    const text = await session.send('eval it', { cwd: '/ws', fresh: true })
+    expect(text).toBe('ok')
+    expect(seenCwd).toBe('/ws')
+    expect(seenArgs).toEqual(['-p', 'eval it']) // edit args(agent -C …) 아님
+  })
+
   it('descriptor.model 이 있으면 modelFlag 로 --model 을 모든 실행에 덧붙인다(#8)', async () => {
     let seenArgs: string[] = []
     const runner: CommandRunner = async (_cmd, args) => {

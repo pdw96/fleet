@@ -122,7 +122,9 @@ export function createCliSession(
         [...args, ...extraArgs(), ...stream.args],
         {
           timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
-          cwd: sendOpts.workspace,
+          // 편집 모드(runEditing)는 cwd 를 직접 넘기므로 이 경로는 headless/stateful 전용.
+          // cwd(read-only) 가 명시되면 그 경로를, 아니면 종전대로 workspace 를 cwd 로 쓴다.
+          cwd: sendOpts.cwd ?? sendOpts.workspace,
           signal: sendOpts.signal,
           stdinInput,
         },
@@ -143,7 +145,8 @@ export function createCliSession(
     }
     const res = await runner(adapter.command, [...args, ...extraArgs()], {
       timeoutMs: sendOpts.timeoutMs ?? timeoutMs,
-      cwd: sendOpts.workspace,
+      // cwd(read-only) 우선, 없으면 workspace(headless/stateful 경로). 편집은 runEditing 이 별도 처리.
+      cwd: sendOpts.cwd ?? sendOpts.workspace,
       signal: sendOpts.signal,
       stdinInput,
     })

@@ -760,8 +760,10 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       summary = await summarizer.send(buildSummaryPrompt(goal, finalTasks), {
         fresh: true,
         // 산출 파일을 워크스페이스 cwd 에서 평가한다 — 미전달 시 자식이 Electron(앱 레포) cwd 를
-        // 상속해 엉뚱한 디렉터리를 평가한다(#164). implementer(runTaskIn)·verify-fix 와 동일하게 전달.
-        workspace: opts.workspaceRoot,
+        // 상속해 엉뚱한 디렉터리를 평가한다(#164). 단 workspace(=편집 모드·write 권한)가 아니라
+        // 읽기 전용 cwd 로 둔다 — 요약 단계는 checkpoint/diff/ApprovalGate 를 거치지 않으므로
+        // 산출물을 수정/삭제할 권한을 주면 안 된다(#165 P1, codex review).
+        cwd: opts.workspaceRoot,
         signal: opts.signal,
         bypassTools: true,
       })

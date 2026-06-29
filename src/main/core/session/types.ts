@@ -13,8 +13,14 @@ export interface SendOptions {
    * 세션의 재개 상태(sessionId/started)와 누적 history 를 건드리지도 참조하지도 않는다.
    */
   fresh?: boolean
-  /** 있으면 CLI를 이 디렉터리를 작업 루트로 하는 편집 에이전트로 실행한다. */
+  /** 있으면 CLI를 이 디렉터리를 작업 루트로 하는 편집 에이전트로 실행한다(write 권한). */
   workspace?: string
+  /**
+   * 읽기 전용 작업 디렉터리. 편집 모드(workspace)를 거치지 않고 headless 실행의 cwd 만 이 경로로
+   * 둔다 — 산출물을 워크스페이스에서 평가하되 write 권한은 주지 않는 분석 호출용(summarizer 등, #165).
+   * workspace 가 함께 주어지면 편집 모드가 우선하므로 cwd 는 무시된다.
+   */
+  cwd?: string
   /** 이 호출의 타임아웃(ms). 미지정 시 세션 기본값. 편집 에이전트는 길게 잡는다. */
   timeoutMs?: number
   /** 응답을 JSON 스키마로 강제(네이티브 구조화 출력). API 세션만 적용; CLI 세션은 무시. */
