@@ -177,9 +177,11 @@ export function createCliSession(
   ): Promise<string> => {
     if (!adapter.edit) throw new Error(`${adapter.displayName}는 편집 모드를 지원하지 않습니다.`)
     // 편집 모드 stdout 정제는 edit.parse 를 우선한다(편집 CLI 의 출력 포맷이 헤드리스와 다를 수 있다).
+    // cwd 는 항상 workspace 로 고정한다 — read-only cwd 가 함께 와도 편집은 호출자가 체크포인트/승인한
+    // workspace 트리에서 일어나야 한다(claude/gemini edit args 는 {workspace} 없이 spawn cwd 에 의존). #165 P2.
     const { text } = await execute(
       buildEditArgs(adapter.edit, prompt, workspace),
-      sendOpts,
+      { ...sendOpts, cwd: workspace },
       adapter.edit.parse ?? adapter.headless?.parse,
       stdinFor(prompt),
     )
