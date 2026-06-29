@@ -262,6 +262,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     try {
       let approved = false
       let feedback = ''
+      let lastRejectRound = 0
+      let lastVerdictParsed = false
+      let lastDiffDestructive = false
       let diff = { files: [] as string[], patch: '', truncated: false }
       let ignoredTouched = false
       for (let round = 0; round < maxRounds; round++) {
@@ -312,6 +315,9 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
         // #5: 민감/위험 diff 는 리뷰어(외부 API 가능)에게 보내기 전에 승인 게이트를 거친다(비밀 유출 방지).
         const dr = classifyDiffRisk(diff, ignoredChanges)
+        // [#162] 최종 채택 가드용으로 현재(=마지막) 라운드의 위험도를 기록한다. gate 가 승인한 destructive
+        // 변경이라도 reviewer 가 거부하면 accept-with-warnings 로 keep 하지 않는다(아래 미승인 후처리).
+        lastDiffDestructive = dr.risk === 'destructive'
         if (dr.risk === 'destructive') {
           // [:301] gate target 은 항상 tracked 파일 목록 + 모든 dr.reasons(ignored 변경 + unrestorable 포함).
           // tracked 만, ignored 만, unrestorable 만, 혼합 모두 승인자가 전체 변경 범위를 볼 수 있어야 함(내용·hash 비노출).
@@ -367,44 +373,79 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           break
         }
         feedback = verdict.feedback
-        // P2-2: rollback 실패(dirty-tree) 시 재시도하면 오염된 트리에서 다음 라운드가 시작된다.
-        // failed=true = 실제 revert/restore throw → 즉시 task failed + 루프 탈출(재시도 중단).
-        // capped 경고만 있는 경우(failed=false)는 rollback 성공이므로 재시도 루프를 계속한다.
-        const { note: rejectRollbackNote, failed: rejectFailed } = await rollbackWithIgnored(
-          ws,
-          base,
-          ignoredBaseline,
-        )
-        if (rejectFailed) {
+        lastRejectRound = round
+        lastVerdictParsed = verdict.parsed
+        // [#162] 마지막 라운드 reject 는 rollback 하지 않는다 — accept-with-warnings 로 그 시도를
+        // 채택하려고 워크스페이스에 남긴다. 중간 라운드는 기존대로 rollback 후 다음 라운드 재시도.
+        if (round < maxRounds - 1) {
+          // P2-2: rollback 실패(dirty-tree) 시 재시도하면 오염된 트리에서 다음 라운드가 시작된다.
+          // failed=true = 실제 revert/restore throw → 즉시 task failed + 루프 탈출(재시도 중단).
+          // capped 경고만 있는 경우(failed=false)는 rollback 성공이므로 재시도 루프를 계속한다.
+          const { note: rejectRollbackNote, failed: rejectFailed } = await rollbackWithIgnored(
+            ws,
+            base,
+            ignoredBaseline,
+          )
+          if (rejectFailed) {
+            store.updateTask(task.id, {
+              status: 'failed',
+              output: `리뷰 거절 후 되돌리기 실패: ${rejectRollbackNote}`,
+              changedFiles: [],
+            })
+            emit({
+              type: 'task.failed',
+              message: `${task.title}: 리뷰 거절 후 되돌리기 실패`,
+              data: { taskId: task.id },
+            })
+            failed.add(task.id)
+            return undefined
+          }
+        }
+      }
+
+      if (!approved) {
+        // [#162] 미승인 후처리. accept-with-warnings 는 (a) 마지막 라운드가 실제 파싱된 리뷰 거부이고
+        // (b) 채택할 변경이 실재하며 (c) 그 변경이 위험(destructive)하지 않을 때만 적용한다 —
+        // 미검토(빈/임의 산문 = parsed:false)·빈 산출물·gate 승인했으나 reviewer 가 거부한 위험 변경을
+        // done 으로 위장하지 않게(Codex#1·#2·#3-재리뷰). 그 외는 기존처럼 rollback + 실패.
+        // (destructive gate 미승인·민감 baseline capture 실패·중간 rollback 실패·LLM 오류·abort 는
+        //  전부 위에서 이미 return → 여기 미도달, 안전 불변.)
+        if (!lastVerdictParsed || diff.files.length === 0 || lastDiffDestructive) {
+          const { note } = await rollbackWithIgnored(ws, base, ignoredBaseline)
+          const reason = !lastVerdictParsed
+            ? '미승인(유효한 리뷰 응답 없음)'
+            : diff.files.length === 0
+              ? '미승인(빈 변경 — 산출물 없음)'
+              : '미승인(위험 변경 — 리뷰 거부, 경고 채택 비대상)'
           store.updateTask(task.id, {
             status: 'failed',
-            output: `리뷰 거절 후 되돌리기 실패: ${rejectRollbackNote}`,
+            output: `${reason}${note}`,
             changedFiles: [],
           })
           emit({
             type: 'task.failed',
-            message: `${task.title}: 리뷰 거절 후 되돌리기 실패`,
+            message: `${task.title}: ${reason}`,
             data: { taskId: task.id },
           })
           failed.add(task.id)
           return undefined
         }
-      }
-
-      if (!approved) {
-        const { note } = await rollbackWithIgnored(ws, base, ignoredBaseline)
+        // 마지막 라운드는 위에서 rollback 하지 않았으므로 워크스페이스에 그 시도가 남아 있고
+        // diff/ignoredTouched 가 최종 채택본 기준이다.
+        const warning = feedback.slice(0, 300) // 메시지에 실제 feedback 노출(ProjectPanel 은 message 만 렌더 — Codex#3)
+        const keepHash = await ws.keep(`[${task.title}] accept-with-warnings by ${implementerId}`)
         store.updateTask(task.id, {
-          status: 'failed',
-          output: `미승인(재검토 한도 초과)${note}`,
-          changedFiles: [],
+          status: 'done',
+          output: `검토 미승인이나 마지막 시도 채택(경고): ${feedback}`,
+          changedFiles: diff.files,
         })
         emit({
-          type: 'task.failed',
-          message: `${task.title}: 미승인(재검토 한도 초과)`,
-          data: { taskId: task.id },
+          type: 'task.accepted_with_warnings',
+          message: `${task.title}: 검토 미승인 — 마지막 시도 채택(경고): ${warning}`,
+          data: { taskId: task.id, round: lastRejectRound, feedback },
         })
-        failed.add(task.id)
-        return undefined
+        done.add(task.id)
+        return { keepHash, ignoredTouched }
       }
 
       // done 경로: keep 커밋 해시를 캡처해 반환 — Task 5 병렬 통합(ws.integrate)에서 사용.

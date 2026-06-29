@@ -3,6 +3,12 @@ import type { VerificationResult } from '../../../shared/types'
 export interface ReviewVerdict {
   approved: boolean
   feedback: string
+  /**
+   * verdict 가 인식된 형식(JSON {approved} 또는 APPROVE/REVISE 토큰)에서 나왔는지(#162).
+   * false = 리뷰어가 유효한 verdict 를 내지 않음(빈/거부 산문) → 폴백 default approved:false 와
+   * 구분한다. accept-with-warnings 는 parsed=true(실제 리뷰 거부)일 때만 적용해 미검토 채택을 막는다.
+   */
+  parsed: boolean
 }
 
 /** reviewer 구조화 출력 스키마. */
@@ -35,22 +41,42 @@ export function buildImplementPrompt(
   return parts.join('\n')
 }
 
-/** 교차 리뷰 프롬프트 (다른 LLM 이 워크스페이스 변경 diff 를 검토). */
+/**
+ * 교차 리뷰 프롬프트 (다른 LLM 이 워크스페이스 변경 diff 를 검토).
+ *
+ * 승인/거부 기준을 대칭적·구체적으로 명시한다(#162). "비판적으로 검토하라" 식 framing 은
+ * 어떤 LLM 이든 "개선 여지"를 "거부 사유"로 승격시켜 올바른 첫 시도조차 거의 무조건 거부하게
+ * 만들었다(격리 재현: claude/codex 둘 다 3줄짜리 올바른 add() 를 approved:false). 작업을
+ * 실질적으로 달성하면 개선 여지가 있어도 승인하고, 실제 결함·요구사항 위반·미완성만 거부한다.
+ */
 export function buildReviewPrompt(
   taskTitle: string,
   taskDescription: string,
   diff: string,
 ): string {
   return [
-    '다음은 한 작업으로 발생한 워크스페이스 변경(diff)이다. 비판적으로 검토하라.',
+    '다음은 한 작업으로 발생한 워크스페이스 변경(diff)이다. 작업 기준으로 검토하라.',
     `작업: ${taskTitle}`,
     `설명: ${taskDescription}`,
     '',
     '변경(diff):',
     diff || '(변경 없음)',
     '',
+    '승인(approved:true) — 아래를 모두 만족하면 승인하라:',
+    '- 변경이 작업 설명을 실질적으로 달성한다.',
+    '- 명백한 버그·요구사항 위반·런타임/타입/테스트 실패 가능성이 없다.',
+    '- 잘못된 파일이나 범위 밖 변경이 없다.',
+    '추가 테스트·더 넓은 입력 검증·스타일 개선·리팩터 제안은 feedback 에 적을 수 있으나,',
+    '그 개선 여지 자체는 거부 사유가 아니다(개선 여지 ≠ 거부).',
+    '',
+    '거부(approved:false) — 아래 중 하나라도 해당할 때만 거부하라:',
+    '- 작업이 미완성이다(요구된 것을 하지 않았다).',
+    '- 변경이 요구사항과 충돌한다.',
+    '- 구체적인 런타임/타입/테스트 실패 가능성이 있다.',
+    '- 잘못된 파일이나 범위 밖 변경이 있다.',
+    '',
     '반드시 아래 형식의 JSON 객체만 출력하라(설명/마크다운 금지):',
-    '{"approved": true 또는 false, "feedback": "승인이면 빈 문자열, 수정이 필요하면 무엇을 어떻게 고칠지"}',
+    '{"approved": true 또는 false, "feedback": "거부면 무엇을 어떻게 고칠지 구체적으로; 승인이어도 advisory 개선 제안을 적을 수 있다"}',
   ].join('\n')
 }
 
@@ -64,7 +90,11 @@ export function parseReviewVerdict(text: string): ReviewVerdict {
     if (parsed && typeof parsed === 'object') {
       const o = parsed as Record<string, unknown>
       if (typeof o.approved === 'boolean') {
-        return { approved: o.approved, feedback: typeof o.feedback === 'string' ? o.feedback : '' }
+        return {
+          approved: o.approved,
+          feedback: typeof o.feedback === 'string' ? o.feedback : '',
+          parsed: true,
+        }
       }
     }
   } catch {
@@ -72,9 +102,12 @@ export function parseReviewVerdict(text: string): ReviewVerdict {
   }
   // 폴백: 앞쪽 마크다운/인용/리스트 마커를 벗기고 첫 토큰 APPROVE/REVISE 를 인식.
   const normalized = candidate.replace(/^[\s*_`"'>•-]+/, '')
+  // 인식된 토큰(APPROVE/REVISE)으로 시작하면 parsed=true. 그 외(빈/임의 산문)는 parsed=false
+  // → 리뷰어가 유효한 verdict 를 내지 않음(accept-with-warnings 비대상).
+  const recognized = /^(APPROVED?|REVISE[DS]?)\b/i.test(normalized)
   const approved = /^APPROVED?\b/i.test(normalized)
   const feedback = normalized.replace(/^(APPROVED?|REVISE[DS]?)\b[:\s]*/i, '').trim()
-  return { approved, feedback }
+  return { approved, feedback, parsed: recognized }
 }
 
 /** 최종 요약/누락 점검 프롬프트 (요구사항 5: 원래 요구사항과 비교). */

@@ -49,6 +49,17 @@ describe('parseReviewVerdict', () => {
     const v = parseReviewVerdict('```json\n{"approved":true,"feedback":""}\n```')
     expect(v.approved).toBe(true)
   })
+
+  it('parsed=true 는 인식된 verdict(JSON·APPROVE·REVISE), false 는 미인식(빈/거부 산문)을 구분한다 (#162)', () => {
+    // 인식된 verdict
+    expect(parseReviewVerdict('{"approved":false,"feedback":"x"}').parsed).toBe(true)
+    expect(parseReviewVerdict('APPROVE').parsed).toBe(true)
+    expect(parseReviewVerdict('REVISE: 고쳐').parsed).toBe(true)
+    // 미인식(리뷰어가 유효한 verdict 를 내지 않음) → 거짓 approved:false 와 구분되어야 함
+    expect(parseReviewVerdict('').parsed).toBe(false)
+    expect(parseReviewVerdict('   ').parsed).toBe(false)
+    expect(parseReviewVerdict('도와줄 수 없습니다').parsed).toBe(false)
+  })
 })
 
 describe('prompt builders', () => {
@@ -69,6 +80,16 @@ describe('prompt builders', () => {
     expect(p).toContain('diff --git')
     expect(p).toContain('approved')
     expect(p).toContain('feedback')
+  })
+
+  it('buildReviewPrompt: 작업 달성 시 승인 · 개선 여지는 거부 사유가 아님을 명시한다', () => {
+    const p = buildReviewPrompt('작업', '설명', 'diff --git a/x b/x')
+    // 승인 기준: 작업을 실질적으로 달성하면 승인
+    expect(p).toContain('달성')
+    // 개선 여지(추가 테스트·검증·스타일)는 거부 사유가 아니라는 점을 명시
+    expect(p).toMatch(/개선 여지[^\n]*거부|거부 사유가 아니/)
+    // "비판적으로 검토" 라는 무조건 트집을 유발하는 framing 은 제거
+    expect(p).not.toContain('비판적으로 검토')
   })
 
   it('summary prompt lists task statuses', () => {

@@ -429,13 +429,14 @@ describe('runProject', () => {
     expect(ws.reverts).toBeGreaterThanOrEqual(1) // 첫 거절 시도는 revert
   })
 
-  it('marks a task failed when review never approves within the round limit', async () => {
+  it('accepts the final attempt with warnings when review never approves (#162, no cascade fail)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
-    sessions.add(fakeSession('rev', () => 'REVISE: 계속 고쳐'))
+    sessions.add(fakeSession('rev', () => '{"approved":false,"feedback":"테스트 추가 권장"}'))
 
+    const events: OrchestratorEvent[] = []
     const ws = fakeWorkspace()
     const result = await runProject('goal', {
       store,
@@ -448,9 +449,244 @@ describe('runProject', () => {
       workspace: ws,
       workspaceRoot: '/ws',
       maxReviewRounds: 1,
+      onEvent: (e) => events.push(e),
     })
+    // 미승인이지만 마지막 시도를 채택 → failed 가 아니라 done (cascade 실패 방지)
+    expect(result.tasks[0].status).toBe('done')
+    expect(ws.commits).toHaveLength(1) // 마지막 시도 keep
+    expect(ws.reverts).toBe(0) // 마지막 라운드는 rollback 하지 않는다
+    // 감사: task.accepted_with_warnings 이벤트 + feedback 가시(이벤트 data·task.output)
+    const warn = events.find((e) => e.type === 'task.accepted_with_warnings')
+    expect(warn).toBeDefined()
+    expect(warn?.data?.feedback).toContain('테스트 추가 권장')
+    expect(result.tasks[0].output).toContain('테스트 추가 권장')
+    // #162(Codex#3): 실제 feedback 이 이벤트 message 에도 노출돼야 한다(ProjectPanel 은 message 만 렌더).
+    expect(warn?.message).toContain('테스트 추가 권장')
+  })
+
+  it('does NOT accept-with-warnings when the reviewer gives no valid verdict (#162 safety)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => '')) // exit 0 이지만 빈 출력 = 유효한 verdict 아님
+
+    const events: OrchestratorEvent[] = []
+    const ws = fakeWorkspace()
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      onEvent: (e) => events.push(e),
+    })
+    // 리뷰어가 유효한 verdict 를 안 냄 → 미검토 채택이 아니라 실패
     expect(result.tasks[0].status).toBe('failed')
-    expect(ws.commits).toHaveLength(0) // 미승인 → keep 없음
+    expect(ws.commits).toHaveLength(0)
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
+  })
+
+  it('does NOT accept-with-warnings an empty final diff (#162 no-op not done)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => '{"approved":false,"feedback":"미완성"}'))
+
+    const events: OrchestratorEvent[] = []
+    // 구현이 아무것도 안 고침 → collectDiff 빈 files (산출물 없음)
+    const ws = fakeWorkspace([{ files: [], patch: '', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      onEvent: (e) => events.push(e),
+    })
+    // 빈 산출물은 채택하지 않는다 → done 아니라 failed
+    expect(result.tasks[0].status).toBe('failed')
+    expect(ws.commits).toHaveLength(0)
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
+  })
+
+  it('does NOT auto-keep a destructive final-review reject even if the gate approved (#162 safety)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => '{"approved":false,"feedback":"위험 변경 거부"}'))
+
+    const events: OrchestratorEvent[] = []
+    // 민감 파일(.env) → destructive. gate 가 승인하지만, reviewer 가 거부 → 위험 변경은 경고 채택 비대상.
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      gate: {
+        async request() {
+          return 'approved'
+        },
+      },
+      onEvent: (e) => events.push(e),
+    })
+    // 위험 변경을 reviewer 가 거부 → rollback + failed (accept-with-warnings 로 keep 하지 않음)
+    expect(result.tasks[0].status).toBe('failed')
+    expect(ws.commits).toHaveLength(0)
+    expect(ws.reverts).toBeGreaterThanOrEqual(1)
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
+  })
+
+  it('does NOT rescue a destructive-gate rejection via accept-with-warnings (#162 safety)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => '{"approved":false,"feedback":"별로"}'))
+
+    const events: OrchestratorEvent[] = []
+    // 민감 파일(.env) → destructive. gate 미지정 → 거부. reviewer 도 거부하지만 destructive 가 먼저.
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      onEvent: (e) => events.push(e),
+    })
+    expect(result.tasks[0].status).toBe('failed') // destructive 미승인 = hard-fail (accept-with-warnings 아님)
+    expect(ws.commits).toHaveLength(0) // keep 없음
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
+  })
+
+  it('continues dependent tasks when the dependency is accepted-with-warnings (#162 no cascade)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    // B(인덱스1)는 A(인덱스0)에 의존. A 는 리뷰 미승인이나 accept-with-warnings 로 done → B 실행돼야.
+    sessions.add(
+      fakeSession(
+        'planner',
+        () => '[{"title":"A","description":"a"},{"title":"B","description":"b","dependsOn":[0]}]',
+      ),
+    )
+    const implemented: string[] = []
+    sessions.add(recordingImplementer(implemented))
+    sessions.add(fakeSession('rev', () => '{"approved":false,"feedback":"개선 권장"}'))
+
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      onEvent: (e) => events.push(e),
+    })
+    const a = result.tasks.find((t) => t.title === 'A')
+    const b = result.tasks.find((t) => t.title === 'B')
+    expect(a?.status).toBe('done') // accept-with-warnings
+    expect(b?.status).toBe('done') // 의존이 done 이므로 실행됨(cascade 방지)
+    expect(implemented).toEqual(['A', 'B'])
+    // 부모 경고가 이벤트로 가시
+    const warns = events.filter((e) => e.type === 'task.accepted_with_warnings')
+    expect(warns.length).toBe(2)
+    expect((warns[0].data as { feedback?: string })?.feedback).toContain('개선 권장')
+  })
+
+  it('does not emit accept-with-warnings when there is no reviewer (#162 no regression)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    // reviewer 미할당 → approved=true 즉시 → 일반 done (accept-with-warnings 경로 아님)
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
+    })
+    expect(result.tasks[0].status).toBe('done')
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
+    expect(events.some((e) => e.type === 'task.done')).toBe(true)
+  })
+
+  it('surfaces verify failure even when a task was accepted-with-warnings (#162 not a clean success)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => '{"approved":false,"feedback":"개선 권장"}'))
+
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      maxVerifyFixRounds: 0,
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'boom',
+          analysis: 'fail',
+          durationMs: 1,
+        },
+      ],
+      onEvent: (e) => events.push(e),
+    })
+    // 리뷰 미승인은 경고로 낮춰 태스크는 done 이지만,
+    expect(result.tasks[0].status).toBe('done')
+    expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(true)
+    // verify 실패는 그대로 표면화 → 최종 성공으로 보이지 않는다.
+    expect(result.verifications?.some((v) => !v.passed)).toBe(true)
+    expect(events.some((e) => e.type === 'verify.failed')).toBe(true)
+    expect(events.some((e) => e.type === 'verify.passed')).toBe(false)
   })
 
   it('marks the project failed (not stuck executing) when ensureRepo throws', async () => {
@@ -537,7 +773,7 @@ describe('runProject', () => {
     expect(store.listProjects()[0].status).toBe('failed')
   })
 
-  it('runs exactly maxReviewRounds implement→review cycles before failing', async () => {
+  it('runs exactly maxReviewRounds cycles, reverting middle rejects and keeping the last (#162)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
@@ -554,6 +790,7 @@ describe('runProject', () => {
     )
     sessions.add(fakeSession('rev', () => 'REVISE: 다시'))
 
+    const ws = fakeWorkspace()
     const result = await runProject('goal', {
       store,
       sessions,
@@ -562,12 +799,15 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
-      workspace: fakeWorkspace(),
+      workspace: ws,
       workspaceRoot: '/ws',
       maxReviewRounds: 2,
     })
     expect(implCalls).toBe(2) // 2회 시도 (off-by-one 이면 3회가 됨)
-    expect(result.tasks[0].status).toBe('failed')
+    // #162: 마지막 라운드 미승인은 accept-with-warnings → failed 가 아니라 done
+    expect(result.tasks[0].status).toBe('done')
+    expect(ws.reverts).toBe(1) // 중간(round0) 거부만 revert, 마지막(round1)은 keep 위해 revert 안 함
+    expect(ws.commits).toHaveLength(1) // 마지막 시도만 keep
   })
 
   it('clamps maxReviewRounds to at least one implement attempt', async () => {
@@ -686,7 +926,8 @@ describe('runProject', () => {
   it('skips a dependent task without running it when its dependency fails', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
-    // B(인덱스1)는 A(인덱스0)에 의존. A 는 리뷰 거절로 실패한다.
+    // B(인덱스1)는 A(인덱스0)에 의존. #162 이후 리뷰 거절은 더 이상 실패가 아니므로, A 는
+    // 위험(destructive) 변경 미승인이라는 genuine 실패로 실패시킨다.
     sessions.add(
       fakeSession(
         'planner',
@@ -695,8 +936,10 @@ describe('runProject', () => {
     )
     const implemented: string[] = []
     sessions.add(recordingImplementer(implemented))
-    sessions.add(fakeSession('rev', () => 'REVISE: 고쳐'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
 
+    // A 의 변경이 민감 파일(.env) → gate 미지정이라 destructive 거부 → A 는 reviewer 도달 전 failed
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
     const result = await runProject('goal', {
       store,
       sessions,
@@ -705,14 +948,14 @@ describe('runProject', () => {
         { role: 'implementer', llmId: 'impl' },
         { role: 'reviewer', llmId: 'rev' },
       ],
-      workspace: fakeWorkspace(),
+      workspace: ws,
       workspaceRoot: '/ws',
       maxReviewRounds: 1,
     })
     const a = result.tasks.find((t) => t.title === 'A')
     const b = result.tasks.find((t) => t.title === 'B')
-    expect(a?.status).toBe('failed') // 실패한 의존 작업 자체는 failed
-    expect(b?.status).toBe('skipped') // 의존 실패로 건너뛴 작업은 skipped
+    expect(a?.status).toBe('failed') // genuine 실패(destructive 미승인)
+    expect(b?.status).toBe('skipped') // 의존 실패로 건너뜀
     expect(implemented).toEqual(['A']) // B 는 의존 실패로 실행되지 않음
   })
 
