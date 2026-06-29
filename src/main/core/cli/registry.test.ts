@@ -40,10 +40,19 @@ describe('CLI adapter auth/install (shared 단일 출처)', () => {
     const reg = createCliRegistry()
     for (const id of ['claude', 'codex', 'gemini'] as const) {
       const args = reg.get(id)!.edit!.args
-      expect(args).not.toContain('--allowedTools')
-      expect(args).not.toContain('--allowed-tools')
-      expect(args).not.toContain('--dangerously-skip-permissions')
-      expect(args).not.toContain('bypassPermissions')
+      // 베어 플래그뿐 아니라 `--allowedTools=…` 같은 =value 형태 재도입도 막는다(CodeRabbit).
+      for (const flag of ['--allowedTools', '--allowed-tools', '--dangerously-skip-permissions']) {
+        expect(args.some((a) => a === flag || a.startsWith(`${flag}=`))).toBe(false)
+      }
+      // bypassPermissions: 베어 토큰·`--permission-mode=bypassPermissions`·`--permission-mode bypassPermissions` 전부 차단.
+      expect(
+        args.some(
+          (a, i) =>
+            a === 'bypassPermissions' ||
+            a === '--permission-mode=bypassPermissions' ||
+            (a === '--permission-mode' && args[i + 1] === 'bypassPermissions'),
+        ),
+      ).toBe(false)
     }
     // claude 편집 권한 모드는 종전 acceptEdits 유지(편집만 자동승인, 전체 우회 아님).
     expect(reg.get('claude')!.edit!.args).toEqual(['-p', '--permission-mode', 'acceptEdits'])

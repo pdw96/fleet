@@ -2287,6 +2287,59 @@ describe('runProject', () => {
     }
     sessions.add(impl)
     sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
+    })
+    const t = result.tasks[0]
+    expect(t.status).toBe('failed')
+    expect(t.output).toContain('실행 오류') // 기존 라벨 유지
+    expect(t.output).toContain('ETIMEDOUT') // 원인 메시지
+    expect(t.output).toContain('마지막 진행 출력') // tail 섹션
+    expect(t.output).toContain('require approval') // tail 내용(승인교착 단서)
+    // (Codex P2#3) 렌더러는 task.output 을 표시하지 않고 task.failed 이벤트 message 만 로그에 보인다 →
+    // tail 이 UI 에서 보이려면 이벤트 message 에도 실려야 한다.
+    const failedEvt = events.find((e) => e.type === 'task.failed')
+    expect(failedEvt?.message).toContain('마지막 진행 출력')
+    expect(failedEvt?.message).toContain('require approval')
+  })
+
+  it('implementer 성공 후 reviewer/keep 단계 실패에는 implementer tail 을 첨부하지 않는다 (#167, Codex P2#1)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // implementer 는 스트림을 내고 성공 반환(편집 완료) → 이후 reviewer.send 가 실패하는 시나리오.
+    const impl: LlmSession = {
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send(_p, opts) {
+        opts?.onChunk?.(
+          '정상 편집 요약 — 이 출력은 implementer 실패가 아니므로 tail 로 남으면 안 됨',
+        )
+        return '구현 완료'
+      },
+      async dispose() {},
+    }
+    sessions.add(impl)
+    // reviewer.send 가 던진다 → 실패는 implementer 가 아니라 review 단계.
+    const rev: LlmSession = {
+      id: 'rev',
+      descriptor: { id: 'rev', kind: 'api', displayName: 'rev', ref: 'rev', model: '' },
+      async send() {
+        throw new Error('reviewer API 오류')
+      },
+      async dispose() {},
+    }
+    sessions.add(rev)
     const result = await runProject('goal', {
       store,
       sessions,
@@ -2300,10 +2353,9 @@ describe('runProject', () => {
     })
     const t = result.tasks[0]
     expect(t.status).toBe('failed')
-    expect(t.output).toContain('실행 오류') // 기존 라벨 유지
-    expect(t.output).toContain('ETIMEDOUT') // 원인 메시지
-    expect(t.output).toContain('마지막 진행 출력') // tail 섹션
-    expect(t.output).toContain('require approval') // tail 내용(승인교착 단서)
+    expect(t.output).toContain('실행 오류') // 실패 자체는 라벨됨
+    expect(t.output).not.toContain('마지막 진행 출력') // 단, implementer tail 은 오첨부되지 않음
+    expect(t.output).not.toContain('정상 편집 요약') // 직전 성공 implementer 출력 누출 없음
   })
 
   it('취소(abort) 실패에는 tail 을 첨부하지 않는다 (#167)', async () => {
