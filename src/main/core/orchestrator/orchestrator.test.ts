@@ -903,6 +903,7 @@ describe('runProject', () => {
     sessions.add(impl)
     sessions.add(fakeSession('rev', () => 'APPROVE'))
 
+    const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
       store,
       sessions,
@@ -913,11 +914,17 @@ describe('runProject', () => {
       ],
       workspace: fakeWorkspace(),
       workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
     })
     expect(result.tasks).toHaveLength(2)
     expect(result.tasks[0].status).toBe('failed') // 첫 작업은 예외로 실패
     expect(result.tasks[1].status).toBe('done') // 둘째 작업은 계속 진행
-    expect(store.getProject(result.projectId)?.status).toBe('done') // 전체는 중단되지 않음
+    // #166: 1 done · 1 failed → 전체 실행은 계속되지만 최종 status 는 partial(거짓 done 금지)
+    expect(store.getProject(result.projectId)?.status).toBe('partial')
+    const done = events.find((e) => e.type === 'project.done')
+    expect(done?.message).toContain('부분 완료')
+    expect(done?.message).toContain('완료 1')
+    expect(done?.message).toContain('실패 1')
   })
 
   function recordingImplementer(sink: string[]): LlmSession {
@@ -1062,7 +1069,8 @@ describe('runProject', () => {
       workspaceRoot: '/ws',
     })
     expect(result.tasks.every((t) => t.status === 'failed')).toBe(true)
-    expect(store.getProject(result.projectId)?.status).toBe('done')
+    // #166: doneCount 0 → 최종 status failed(거짓 done 금지)
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
   it('records a self-review audit event when implementer and reviewer are the same llm', async () => {
@@ -2416,7 +2424,8 @@ describe('runProject', () => {
     const done = events.find((e) => e.type === 'project.done')
     expect(done).toBeDefined()
     expect(done?.message).toContain('실패') // 검증 실패를 '완료'로 위장하지 않는다
-    expect(done?.message).not.toContain('완료')
+    // #166: breakdown 의 "완료 N" 카운트와 충돌 회피 — 의도(「프로젝트 완료」위장 금지) 보존
+    expect(done?.message).not.toContain('프로젝트 완료')
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
