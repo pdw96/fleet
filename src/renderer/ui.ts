@@ -20,6 +20,9 @@ export function statusColor(status: string): string {
   switch (status) {
     case 'done':
       return 'var(--ok)'
+    case 'partial':
+      // 부분 완료 — done(초록)/failed(빨강)과 구분되는 진행 톤(앰버). (#166)
+      return 'var(--warn)'
     case 'failed':
       return 'var(--bad)'
     case 'running':

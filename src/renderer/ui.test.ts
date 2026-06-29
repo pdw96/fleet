@@ -21,6 +21,7 @@ describe('statusColor', () => {
     for (const s of ['running', 'review', 'executing', 'verifying']) {
       expect(statusColor(s)).toBe('var(--warn)')
     }
+    expect(statusColor('partial')).toBe('var(--warn)') // #166: 부분 완료(진행 톤)
     expect(statusColor('pending')).toBe('var(--dim)')
     expect(statusColor('anything-else')).toBe('var(--dim)')
   })

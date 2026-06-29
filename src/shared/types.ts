@@ -295,7 +295,7 @@ export interface Project {
   id: string
   goal: string
   title: string
-  status: 'planning' | 'executing' | 'verifying' | 'done' | 'failed'
+  status: 'planning' | 'executing' | 'verifying' | 'done' | 'partial' | 'failed'
   createdAt: number
   updatedAt: number
 }
