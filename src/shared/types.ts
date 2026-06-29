@@ -295,7 +295,7 @@ export interface Project {
   id: string
   goal: string
   title: string
-  status: 'planning' | 'executing' | 'verifying' | 'done' | 'failed'
+  status: 'planning' | 'executing' | 'verifying' | 'done' | 'partial' | 'failed'
   createdAt: number
   updatedAt: number
 }
@@ -313,6 +313,8 @@ export interface VerificationResult {
   /** 실패 원인 분석(선택) */
   analysis?: string
   durationMs: number
+  /** verify 스크립트가 자명한 no-op(exit 0 류)이라 실제 검사를 안 했음 (있을 때만). */
+  noop?: boolean
 }
 
 // ── 안전 (요구사항 6) ──────────────────────────────────────────────────────

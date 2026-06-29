@@ -1,7 +1,12 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   allPassed,
   defaultVerifyRunner,
+  isNoOpScript,
+  npmVerifyCommands,
   runAllVerifications,
   runVerification,
   summarizeFailure,
@@ -65,6 +70,15 @@ describe('runVerification', () => {
       { runner, signal: controller.signal },
     )
     expect(received).toBe(controller.signal)
+  })
+
+  it('cmd.noop 을 결과로 전파한다', async () => {
+    const runner: VerifyRunner = async () => ({ code: 0, stdout: '', stderr: '' })
+    const r = await runVerification(
+      { kind: 'test', command: 'npm', args: ['test'], noop: true },
+      { runner },
+    )
+    expect(r.noop).toBe(true)
   })
 })
 
@@ -146,5 +160,94 @@ describe('runAllVerifications / allPassed', () => {
 
   it('allPassed is false for an empty result set', () => {
     expect(allPassed([])).toBe(false)
+  })
+})
+
+describe('isNoOpScript', () => {
+  it('자명한 no-op 만 true (보수적)', () => {
+    for (const s of ['', '   ', 'exit 0', 'true', ':', 'exit 0;', ' exit 0 ;']) {
+      expect(isNoOpScript(s)).toBe(true)
+    }
+    for (const s of ['echo ok', 'npm run test:unit', 'tsc', 'exit 1', 'exit 0;;', undefined]) {
+      expect(isNoOpScript(s)).toBe(false)
+    }
+  })
+
+  it('비-string 값은 크래시 없이 false (비정상 package.json 방어)', () => {
+    for (const v of [null, 123, ['x'], {}, true]) {
+      expect(isNoOpScript(v as unknown as string)).toBe(false)
+    }
+  })
+})
+
+describe('npmVerifyCommands', () => {
+  it('package.json 스크립트가 no-op 이면 noop:true, 실제면 noop:false', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-noop-'))
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { typecheck: 'exit 0', lint: 'exit 0', test: 'exit 0' } }),
+      )
+      expect(npmVerifyCommands(dir).every((c) => c.noop === true)).toBe(true)
+
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { typecheck: 'tsc', lint: 'eslint .', test: 'vitest run' } }),
+      )
+      expect(npmVerifyCommands(dir).every((c) => c.noop === false)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('package.json/스크립트 누락 시 noop 미설정(undefined)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-nopkg-'))
+    try {
+      expect(npmVerifyCommands(dir).every((c) => c.noop === undefined)).toBe(true)
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { typecheck: 'tsc' } }))
+      const cmds = npmVerifyCommands(dir)
+      expect(cmds.find((c) => c.kind === 'typecheck')?.noop).toBe(false)
+      expect(cmds.find((c) => c.kind === 'lint')?.noop).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('pre/post 라이프사이클 훅에 실제 검사가 있으면 main 이 exit 0 여도 noop 아님 (#168 Codex)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-hook-'))
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          scripts: {
+            typecheck: 'exit 0',
+            pretypecheck: 'tsc --noEmit', // npm run typecheck 가 이 실검사를 먼저 실행
+            lint: 'exit 0',
+            test: 'exit 0',
+            posttest: 'true', // post 훅도 no-op → test 는 여전히 noop
+          },
+        }),
+      )
+      const cmds = npmVerifyCommands(dir)
+      expect(cmds.find((c) => c.kind === 'typecheck')?.noop).toBe(false) // pre 훅 실검사
+      expect(cmds.find((c) => c.kind === 'lint')?.noop).toBe(true) // 훅 없음·main no-op
+      expect(cmds.find((c) => c.kind === 'test')?.noop).toBe(true) // main·post 둘 다 no-op
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('비-string 스크립트 값에도 크래시하지 않는다(noop=false) — 비정상 package.json 회귀', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-badtype-'))
+    try {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { typecheck: null, lint: 123, test: ['x'] } }),
+      )
+      expect(() => npmVerifyCommands(dir)).not.toThrow()
+      expect(npmVerifyCommands(dir).every((c) => c.noop === false)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

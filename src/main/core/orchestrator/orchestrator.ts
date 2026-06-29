@@ -804,10 +804,13 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     const emitVerify = (v: readonly VerificationResult[]): void => {
       if (v.length === 0) return // 실행 오류는 verifyOnce 가 이미 방출
       const ok = v.every((r) => r.passed)
+      const allNoop = v.every((r) => r.noop) // 전부 자명한 no-op = 실제 검사 0 (#166)
       emit({
         type: ok ? 'verify.passed' : 'verify.failed',
         message: ok
-          ? '검증 통과'
+          ? allNoop
+            ? '검증 항목 없음 (no-op 스크립트 — 실제 검사 없음)'
+            : '검증 통과'
           : `검증 실패: ${v
               .filter((r) => !r.passed)
               .map((r) => r.kind)
@@ -989,8 +992,17 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // (섹션 3 요약은 보정 작업 생성 전이라 누락된다). 취소 시 생략.
   if (replanAppended && !opts.signal?.aborted) await summarize()
 
-  // 취소되면 검증·요약을 건너뛰었으므로 무조건 failed 로 종료한다(misleading done 방지).
-  // run.cancelled 는 engine 이 별도로 방출하므로 오케스트레이터는 일을 멈추기만 하면 된다.
+  // 최종 status 는 task 집계를 반영한다(#166). 취소/검증 실패는 항상 failed(검증=최종 품질
+  // 게이트, task 집계보다 우선). 그 외엔 집계: 전부 done→done · 일부만 done→partial · 0 done→failed.
+  // (빈 플랜은 planTasks 가 throw 하므로 total===0 은 도달 불가 방어 가드 — done 으로 흡수.)
+  const finalTasks = store.listTasks(project.id)
+  const total = finalTasks.length
+  const doneCount = finalTasks.filter((t) => t.status === 'done').length
+  // 단일 breakdown — verify-fail·partial·집계-failed 메시지가 공유(포맷 drift 방지).
+  const breakdown =
+    `총 ${total} · 완료 ${doneCount} · 실패 ${finalTasks.filter((t) => t.status === 'failed').length}` +
+    ` · 건너뜀 ${finalTasks.filter((t) => t.status === 'skipped').length}`
+
   const signalAborted = opts.signal?.aborted === true
   const verifyFailed =
     !!opts.verify &&
@@ -999,15 +1011,26 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       verifications.length > 0 &&
       verifications.every((v) => v.passed)
     )
-  store.updateProject(project.id, { status: signalAborted || verifyFailed ? 'failed' : 'done' })
-  // project.done 메시지는 실제 종료 상태를 반영한다 — 취소/검증 실패를 항상 '완료'로 위장하지 않는다(#7).
+
+  let finalStatus: 'done' | 'partial' | 'failed'
+  if (signalAborted || verifyFailed) finalStatus = 'failed'
+  else if (total === 0 || doneCount === total) finalStatus = 'done'
+  else if (doneCount > 0) finalStatus = 'partial'
+  else finalStatus = 'failed'
+  store.updateProject(project.id, { status: finalStatus })
+
+  // project.done 메시지는 실제 종료 상태를 반영한다 — 취소/검증 실패/부분 완료를 '완료'로 위장하지 않는다(#7·#166).
   // 이벤트 타입('project.done')·data.projectId 는 불변 — engine 의 activeRuns 정리(타입 기반)와 렌더러
-  // running 잠금 해제(타입 기반)가 여기에 의존하므로 메시지 텍스트만 정확화한다.
+  // running 잠금 해제(타입 기반)가 여기에 의존하므로 status 값·메시지 텍스트만 정확화한다.
   const doneMessage = signalAborted
-    ? `프로젝트 취소됨: ${project.title}`
+    ? `프로젝트 취소됨: ${project.title} (${breakdown})`
     : verifyFailed
-      ? `프로젝트 실패: ${project.title}`
-      : `프로젝트 완료: ${project.title}`
+      ? `프로젝트 실패: ${project.title} (검증 실패 · ${breakdown})`
+      : finalStatus === 'partial'
+        ? `프로젝트 부분 완료: ${project.title} (${breakdown})`
+        : finalStatus === 'failed'
+          ? `프로젝트 실패: ${project.title} (${breakdown})`
+          : `프로젝트 완료: ${project.title} (${breakdown})`
   emit({ type: 'project.done', message: doneMessage, data: { projectId: project.id } })
 
   return { projectId: project.id, tasks: store.listTasks(project.id), summary, verifications }
