@@ -804,10 +804,13 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     const emitVerify = (v: readonly VerificationResult[]): void => {
       if (v.length === 0) return // 실행 오류는 verifyOnce 가 이미 방출
       const ok = v.every((r) => r.passed)
+      const allNoop = v.every((r) => r.noop) // 전부 자명한 no-op = 실제 검사 0 (#166)
       emit({
         type: ok ? 'verify.passed' : 'verify.failed',
         message: ok
-          ? '검증 통과'
+          ? allNoop
+            ? '검증 항목 없음 (no-op 스크립트 — 실제 검사 없음)'
+            : '검증 통과'
           : `검증 실패: ${v
               .filter((r) => !r.passed)
               .map((r) => r.kind)

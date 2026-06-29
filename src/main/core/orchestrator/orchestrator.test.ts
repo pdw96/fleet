@@ -2444,6 +2444,51 @@ describe('runProject', () => {
     expect(store.getProject(result.projectId)?.status).toBe('done')
   })
 
+  it('#166: verify 결과가 전부 no-op 이면 "검증 항목 없음" 으로 표면화한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e),
+      verify: async () => [
+        {
+          kind: 'typecheck',
+          command: 'npm run typecheck',
+          passed: true,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          durationMs: 1,
+          noop: true,
+        },
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: true,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          durationMs: 1,
+          noop: true,
+        },
+      ],
+    })
+    const v = events.find((e) => e.type === 'verify.passed')
+    expect(v?.message).toContain('검증 항목 없음')
+  })
+
   // ── Task 3: makeEditSession 팩토리 ──
 
   it('RunOptions.makeEditSession 타입이 존재하고 타입 체크를 통과한다', () => {
