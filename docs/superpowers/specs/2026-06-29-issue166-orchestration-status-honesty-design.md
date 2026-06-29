@@ -59,14 +59,16 @@ verify 는 워크스페이스 `package.json` 스크립트(`npm run typecheck/lin
 
 **`project.done` 메시지** (event type·`data.projectId` 불변):
 
-- aborted → `프로젝트 취소됨: <title>`
-- verifyFailed → `프로젝트 실패: <title> (검증 실패 · 총 N · 완료 D · 실패 F · 건너뜀 S)` ← **breakdown 추가(Codex)**
+- aborted → `프로젝트 취소됨: <title> (총 N · 완료 D · 실패 F · 건너뜀 S)`
+- verifyFailed → `프로젝트 실패: <title> (검증 실패 · 총 N · 완료 D · 실패 F · 건너뜀 S)`
 - partial → `프로젝트 부분 완료: <title> (총 N · 완료 D · 실패 F · 건너뜀 S)`
 - 집계 failed(doneCount 0) → `프로젝트 실패: <title> (총 N · 완료 D · 실패 F · 건너뜀 S)`
-- done → `프로젝트 완료: <title>`
+- done → `프로젝트 완료: <title> (총 N · 완료 D · 실패 F · 건너뜀 S)`
 
-> **단일 breakdown 헬퍼**를 verify-fail·partial·집계-failed 메시지가 공유(포맷 drift 방지 · Codex).
-> F/S 는 실제 task status 로 카운트(구현불가 경로가 `failed`/`skipped` 어느 쪽이든 정확).
+> **단일 breakdown 문자열**을 **모든 종료 상태** 메시지가 공유(포맷 drift 방지 · Codex/CodeRabbit #168 —
+> status-honesty 는 항상 실제 집계를 보고할 때 가장 강함: 성공=완전성 증명·취소=진행도). F/S 는 실제
+> task status 로 카운트(구현불가 경로가 `failed`/`skipped` 어느 쪽이든 정확). 취소 메시지는 「프로젝트
+> 완료」로 위장하지 않음(abort 테스트 단언 = `not.toContain('프로젝트 완료')`).
 
 **렌더러** (`src/renderer/ui.ts` `statusColor`): `case 'partial': return 'var(--warn)'`
 (앰버 — done `--ok` 초록 / failed `--bad` 빨강과 구분). 칩은 `p.status` 그대로 표시.

@@ -1023,14 +1023,14 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // 이벤트 타입('project.done')·data.projectId 는 불변 — engine 의 activeRuns 정리(타입 기반)와 렌더러
   // running 잠금 해제(타입 기반)가 여기에 의존하므로 status 값·메시지 텍스트만 정확화한다.
   const doneMessage = signalAborted
-    ? `프로젝트 취소됨: ${project.title}`
+    ? `프로젝트 취소됨: ${project.title} (${breakdown})`
     : verifyFailed
       ? `프로젝트 실패: ${project.title} (검증 실패 · ${breakdown})`
       : finalStatus === 'partial'
         ? `프로젝트 부분 완료: ${project.title} (${breakdown})`
         : finalStatus === 'failed'
           ? `프로젝트 실패: ${project.title} (${breakdown})`
-          : `프로젝트 완료: ${project.title}`
+          : `프로젝트 완료: ${project.title} (${breakdown})`
   emit({ type: 'project.done', message: doneMessage, data: { projectId: project.id } })
 
   return { projectId: project.id, tasks: store.listTasks(project.id), summary, verifications }

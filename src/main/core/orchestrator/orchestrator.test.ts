@@ -2386,7 +2386,8 @@ describe('runProject', () => {
     const done = events.find((e) => e.type === 'project.done')
     expect(done).toBeDefined()
     expect(done?.message).toContain('취소') // 취소를 '완료'로 위장하지 않는다
-    expect(done?.message).not.toContain('완료')
+    // #166/#168: 메시지에 통일 breakdown(완료 N 카운트) 포함 — 「프로젝트 완료」 위장만 금지
+    expect(done?.message).not.toContain('프로젝트 완료')
     expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
