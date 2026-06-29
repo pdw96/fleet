@@ -262,6 +262,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
     try {
       let approved = false
       let feedback = ''
+      let lastRejectRound = 0
       let diff = { files: [] as string[], patch: '', truncated: false }
       let ignoredTouched = false
       for (let round = 0; round < maxRounds; round++) {
@@ -367,44 +368,54 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           break
         }
         feedback = verdict.feedback
-        // P2-2: rollback 실패(dirty-tree) 시 재시도하면 오염된 트리에서 다음 라운드가 시작된다.
-        // failed=true = 실제 revert/restore throw → 즉시 task failed + 루프 탈출(재시도 중단).
-        // capped 경고만 있는 경우(failed=false)는 rollback 성공이므로 재시도 루프를 계속한다.
-        const { note: rejectRollbackNote, failed: rejectFailed } = await rollbackWithIgnored(
-          ws,
-          base,
-          ignoredBaseline,
-        )
-        if (rejectFailed) {
-          store.updateTask(task.id, {
-            status: 'failed',
-            output: `리뷰 거절 후 되돌리기 실패: ${rejectRollbackNote}`,
-            changedFiles: [],
-          })
-          emit({
-            type: 'task.failed',
-            message: `${task.title}: 리뷰 거절 후 되돌리기 실패`,
-            data: { taskId: task.id },
-          })
-          failed.add(task.id)
-          return undefined
+        lastRejectRound = round
+        // [#162] 마지막 라운드 reject 는 rollback 하지 않는다 — accept-with-warnings 로 그 시도를
+        // 채택하려고 워크스페이스에 남긴다. 중간 라운드는 기존대로 rollback 후 다음 라운드 재시도.
+        if (round < maxRounds - 1) {
+          // P2-2: rollback 실패(dirty-tree) 시 재시도하면 오염된 트리에서 다음 라운드가 시작된다.
+          // failed=true = 실제 revert/restore throw → 즉시 task failed + 루프 탈출(재시도 중단).
+          // capped 경고만 있는 경우(failed=false)는 rollback 성공이므로 재시도 루프를 계속한다.
+          const { note: rejectRollbackNote, failed: rejectFailed } = await rollbackWithIgnored(
+            ws,
+            base,
+            ignoredBaseline,
+          )
+          if (rejectFailed) {
+            store.updateTask(task.id, {
+              status: 'failed',
+              output: `리뷰 거절 후 되돌리기 실패: ${rejectRollbackNote}`,
+              changedFiles: [],
+            })
+            emit({
+              type: 'task.failed',
+              message: `${task.title}: 리뷰 거절 후 되돌리기 실패`,
+              data: { taskId: task.id },
+            })
+            failed.add(task.id)
+            return undefined
+          }
         }
       }
 
       if (!approved) {
-        const { note } = await rollbackWithIgnored(ws, base, ignoredBaseline)
+        // [#162] accept-with-warnings: 마지막 reviewer reject 는 cascade 실패(task.failed → 의존
+        // 태스크 skip) 대신 마지막 시도를 경고와 함께 채택한다. 마지막 라운드는 위에서 rollback 하지
+        // 않았으므로 워크스페이스에 그 시도가 남아 있고 diff/ignoredTouched 가 최종 채택본 기준이다.
+        // 도달 조건: 순수 reviewer 거부만. destructive gate 미승인·민감 baseline capture 실패·중간
+        // rollback 실패·LLM 오류·abort 는 전부 위에서 이미 return 했으므로 여기 오지 않는다(안전 불변).
+        const keepHash = await ws.keep(`[${task.title}] accept-with-warnings by ${implementerId}`)
         store.updateTask(task.id, {
-          status: 'failed',
-          output: `미승인(재검토 한도 초과)${note}`,
-          changedFiles: [],
+          status: 'done',
+          output: `검토 미승인이나 마지막 시도 채택(경고): ${feedback}`,
+          changedFiles: diff.files,
         })
         emit({
-          type: 'task.failed',
-          message: `${task.title}: 미승인(재검토 한도 초과)`,
-          data: { taskId: task.id },
+          type: 'task.accepted_with_warnings',
+          message: `${task.title}: 검토 미승인 — 마지막 시도 채택(경고)`,
+          data: { taskId: task.id, round: lastRejectRound, feedback },
         })
-        failed.add(task.id)
-        return undefined
+        done.add(task.id)
+        return { keepHash, ignoredTouched }
       }
 
       // done 경로: keep 커밋 해시를 캡처해 반환 — Task 5 병렬 통합(ws.integrate)에서 사용.
@@ -468,7 +479,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   // @returns 전파를 1건 이상 수행했으면 true(진행 있음).
   const propagateDepFailures = (): boolean => {
     let progressed = false
-    for (let i = 0; i < pending.length;) {
+    for (let i = 0; i < pending.length; ) {
       const task = byId.get(pending[i])
       if (!task) {
         pending.splice(i, 1)
@@ -658,7 +669,7 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   let aborted = false
   while (!canParallel && pending.length > 0 && progressed && !aborted) {
     progressed = false
-    for (let i = 0; i < pending.length;) {
+    for (let i = 0; i < pending.length; ) {
       const task = byId.get(pending[i])
       if (!task) {
         pending.splice(i, 1)

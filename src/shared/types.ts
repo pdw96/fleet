@@ -250,7 +250,13 @@ export interface ChatRoom {
 
 // ── 오케스트레이션 (요구사항 4,5) ──────────────────────────────────────────
 export type AgentRole =
-  'planner' | 'architect' | 'implementer' | 'reviewer' | 'tester' | 'critic' | 'summarizer'
+  | 'planner'
+  | 'architect'
+  | 'implementer'
+  | 'reviewer'
+  | 'tester'
+  | 'critic'
+  | 'summarizer'
 
 export interface RoleAssignment {
   role: AgentRole
@@ -364,6 +370,8 @@ export type OrchestratorEventType =
   | 'task.failed'
   | 'task.progress'
   | 'task.skipped'
+  // 리뷰 미승인이나 마지막 시도를 경고와 함께 채택(#162) — cascade 실패 대신 진행. data: {taskId, round, feedback}.
+  | 'task.accepted_with_warnings'
   | 'run.cancelled'
   | 'verify.passed'
   | 'verify.failed'
