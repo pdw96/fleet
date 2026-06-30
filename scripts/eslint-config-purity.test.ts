@@ -129,6 +129,8 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     const mod = imp2.paths?.find((p) => p.name === 'node:module')
     expect(mod).toBeDefined()
     expect(mod?.importNames).toBeUndefined()
+    // node:module 동적 import 도 차단(createRequire 동적 로더 경로 봉쇄)
+    expect(selectors).toContain("ImportExpression[source.value='node:module']")
   })
 
   it('프로세스 spawn 호출(dot/computed/bare/구조분해)과 cross-spawn import(정적+동적)를 차단(Codex P2)', () => {

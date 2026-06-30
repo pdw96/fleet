@@ -195,6 +195,18 @@ const CHILD_PROCESS_DYNAMIC_IMPORT_SYNTAX = [
     message:
       '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). 동적 import(cross-spawn) 금지.',
   },
+  {
+    // const { createRequire: cr } = await import('node:module') — 리터럴 동적 import 도 봉쇄(정적 ban·
+    // non-literal source ban 둘 다 통과하던 createRequire 동적 로더 경로, Codex P2).
+    selector: "ImportExpression[source.value='node:module']",
+    message:
+      '도구(src/main/core/tools)는 node 모듈 로더를 동적 import 하지 않는다(#174). createRequire 우회 차단.',
+  },
+  {
+    selector: "ImportExpression[source.value='module']",
+    message:
+      '도구(src/main/core/tools)는 node 모듈 로더를 동적 import 하지 않는다(#174). createRequire 우회 차단.',
+  },
 ]
 // fs 모듈 동적 import 차단 — const { writeFile } = await import('node:fs/promises') 구조분해 우회 봉쇄.
 // 도구는 정적 import 로 읽기만 하므로 fs 모듈 동적 import 자체를 금지(read 포함 — 현 위반 0).
