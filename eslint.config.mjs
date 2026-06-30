@@ -124,6 +124,29 @@ const CREATEREQUIRE_SYNTAX = [
   message:
     '도구(src/main/core/tools)는 createRequire 로 모듈을 로드하지 않는다(#174). spawn/fs 변형 우회 차단 — 정적 import 만 사용.',
 }))
+// 난독화 로더/구문 blanket(#174, Codex P2) — tools 는 아래를 전혀 쓰지 않으므로 충돌 없이 차단:
+//   · 비-문자열-리터럴 동적 import 소스: import(`cross-spawn`)·import('a'+'b') 등 정적 분석 회피.
+//   · CJS require(): ESM tools 에 불필요 — const run = require('cross-spawn') 우회 차단.
+//   · computed 구조분해 키: const { [`writeFile`]: wf } = fs 같은 별칭 우회 차단.
+// (변수키 computed fs[v]·string-concat fs['w'+'F'] 는 정당한 arr[i+1] 과 구분 불가→정적 차단 불가,
+//  boundary 에 명시. 난독화 자체가 리뷰 레드플래그.)
+const OBFUSCATION_GUARD_SYNTAX = [
+  {
+    selector: "ImportExpression[source.type!='Literal']",
+    message:
+      '도구(src/main/core/tools)는 동적 import 소스에 문자열 리터럴만 쓴다(#174). 템플릿/연산 소스로 로더 우회 금지.',
+  },
+  {
+    selector: "CallExpression[callee.name='require']",
+    message:
+      '도구(src/main/core/tools)는 CJS require 를 쓰지 않는다(#174). 정적 import 만 — spawn/fs 변형 우회 차단.',
+  },
+  {
+    selector: 'ObjectPattern > Property[computed=true]',
+    message:
+      '도구(src/main/core/tools)는 computed 구조분해 키를 쓰지 않는다(#174). const { [`writeFile`]: wf } = fs 같은 우회 차단.',
+  },
+]
 const TOOLS_FORBIDDEN_IMPORT_PATHS = [
   {
     name: 'child_process',
@@ -147,9 +170,10 @@ const TOOLS_FORBIDDEN_IMPORT_PATHS = [
     message: `도구는 read-only — ${name} 변형 함수 import 금지(#174).`,
   })),
   ...['module', 'node:module'].map((name) => ({
+    // 전체 금지(importNames 아님) — import * as mod from 'node:module'; const { createRequire: cr } = mod
+    // 같은 네임스페이스 별칭 우회까지 봉쇄(Codex P2). tools 는 node:module 자체가 불필요.
     name,
-    importNames: ['createRequire'],
-    message: `도구는 createRequire 로 모듈을 로드하지 않는다(#174). spawn/fs 변형 우회 차단.`,
+    message: `도구는 node 모듈 로더(module/createRequire)를 import 하지 않는다(#174). spawn/fs 변형 우회 차단.`,
   })),
 ]
 // child_process 동적 import 차단 — 정적 import 는 위 paths 로 막히나 import('node:child_process')
@@ -293,14 +317,16 @@ export default tseslint.config(
   // electron 보호를 공유 const 로 재선언(유실 방지). no-restricted-globals 는 미선언 → core 상속.
   // 테스트는 임시 워크스페이스 준비로 fs 변형을 정상 사용 → ignores 로 제외.
   //
-  // 의도적 경계(정적 분석 한계 — 잔여는 행동 계약 테스트[파일 변형 스냅샷]+코드리뷰가 보완):
-  //   · **변수 키** computed 접근 `fs[name]`(name=런타임 변수)은 정적 판정 불가 — 정적 키(Literal·
-  //     TemplateLiteral)는 차단하나 런타임 변수 키는 원리상 불가.
-  //   · Reflect.get(fs,'writeFile')·process.binding/eval/Function·네이티브 애드온 등 메타프로그래밍
-  //     우회는 범위 밖(read 도구에선 비현실적이고, 그 자체가 리뷰 레드플래그).
-  // 설계 원칙: 모듈 로더(static/dynamic import·createRequire·getBuiltinModule)를 쫓지 않고 fs변형·
-  // spawn 의 **호출 지점**(dot/computed[Literal·Template]/bare/구조분해[식별자·리터럴 키])을 차단 →
-  // 어떻게 로드하든·어떤 별칭이든 실제 호출이 잡힌다. createRequire 는 별도 차단(로더 자체 봉쇄).
+  // 의도적 경계 = 정적 분석의 원리적 한계(여기가 floor — 잔여는 행동 계약 테스트[파일 변형 스냅샷]+코드리뷰):
+  //   · **계산식 키** computed 접근 — `fs[name]`(런타임 변수)·`fs['w'+'F']`(BinaryExpression)·
+  //     `fs[atob(..)]`·`Reflect.get(fs,'writeFile')` 등 키를 식으로 계산하는 경로는 정적 차단 불가.
+  //     특히 string-concat 은 정당한 `glob[i+1]`(동일 BinaryExpression computed)과 구분 불가 →
+  //     차단 시 false-positive. 임의 컴파일타임 평가는 린터가 풀 수 없음(undecidable).
+  //   · eval/Function·process.binding/네이티브 애드온 = 메타프로그래밍 — read 도구에선 비현실적이고
+  //     난독화 자체가 리뷰 레드플래그(이 가드는 회귀 트립와이어이지 적대적 샌드박스가 아님).
+  // 설계 원칙: 모듈 로더(static/dynamic import·createRequire·require·getBuiltinModule)와 fs변형·spawn 의
+  // **호출 지점**을 dot/computed[Literal·Template]/bare/구조분해[식별자·리터럴 키] 형태로 차단 →
+  // 정적으로 표현 가능한(키가 상수 리터럴인) 모든 경로를 어떤 로더·별칭이든 포착한다.
   {
     files: ['src/main/core/tools/**/*.ts'],
     ignores: ['src/main/core/tools/**/*.test.ts'],
@@ -343,6 +369,7 @@ export default tseslint.config(
             '도구(src/main/core/tools)는 정적 템플릿 computed 멤버 접근(obj[`name`]) 금지 — 정적 키는 dot 표기(#174). fs변형/spawn 우회 차단.',
         },
         ...CREATEREQUIRE_SYNTAX,
+        ...OBFUSCATION_GUARD_SYNTAX,
         ...PROCESS_SPAWN_SYNTAX,
       ],
     },

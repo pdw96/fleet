@@ -118,12 +118,17 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(selectors).toContain("MemberExpression[computed=true][property.type='TemplateLiteral']")
     // createRequire 로더 차단(import·호출·멤버)
     expect(selectors).toContain("CallExpression[callee.name='createRequire']")
+    // 난독화 로더/구문 blanket: 비-리터럴 동적 import·CJS require·computed 구조분해 키
+    expect(selectors).toContain("ImportExpression[source.type!='Literal']")
+    expect(selectors).toContain("CallExpression[callee.name='require']")
+    expect(selectors).toContain('ObjectPattern > Property[computed=true]')
+    // node:module 전체 import 금지(네임스페이스 별칭 우회 봉쇄 — importNames 아님)
     const imp2 = toolsBlock?.rules?.['no-restricted-imports']?.[1] as {
       paths?: { name: string; importNames?: string[] }[]
     }
-    expect(
-      imp2.paths?.some((p) => p.name === 'node:module' && p.importNames?.includes('createRequire')),
-    ).toBe(true)
+    const mod = imp2.paths?.find((p) => p.name === 'node:module')
+    expect(mod).toBeDefined()
+    expect(mod?.importNames).toBeUndefined()
   })
 
   it('프로세스 spawn 호출(dot/computed/bare/구조분해)과 cross-spawn import(정적+동적)를 차단(Codex P2)', () => {
