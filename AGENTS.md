@@ -47,9 +47,9 @@ required status check 로 걸어, 통과 전 머지를 플랫폼 차원에서 �
 - **preload/IPC 변경 후 `npm run dev` 재시작 필수.** electron-vite 는 preload 를 핫리로드하지
   않는다. 재시작 안 하면 `window.fleet` 의 새 메서드가 `undefined` → 클릭 시 검은 화면.
   (`src/preload/index.ts` · `src/shared/types.ts` 의 `FleetBridge` 동시 변경 시 특히 주의.)
-- **E2E 활성화는 `FLEET_E2E === '1'` 일 때만.** (`src/main/index.ts:38`) `0`/`false`/빈 값은
-  프로덕션 경로. 이 가드를 느슨하게 바꾸면 페이크 러너(영구 in-flight)·E2E 픽스처가 프로덕션
-  런치로 샌다.
+- **E2E 활성화는 `FLEET_E2E === '1'` 일 때만.** (`isE2EActive` — `src/main/e2e.ts`, 단위 테스트로 핀)
+  `0`/`false`/빈 값은 프로덕션 경로. 이 가드를 느슨하게 바꾸면 페이크 러너(영구 in-flight)·E2E
+  픽스처가 프로덕션 런치로 샌다.
 - **Windows 툴링 경로/인코딩.** Bash 도구는 Git Bash(MSYS) — `/tmp` 가
   `C:\Users\…\AppData\Local\Temp` 로 매핑되지만 **네이티브 Python/도구는 `/tmp` 를 `C:\tmp`
   (드라이브 루트)로 해석한다.** Git Bash 로 만든 파일을 네이티브 도구(예: 시스템 `python`)에

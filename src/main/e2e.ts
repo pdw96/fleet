@@ -12,6 +12,15 @@ import type { FleetEngine } from './core/engine'
  */
 
 /**
+ * E2E 활성화는 FLEET_E2E === '1' 일 때만(엄격 핀). `0`/`false`/빈 값/대소문자 변형은
+ * 모두 프로덕션 경로 — 이 술어가 느슨해지면 페이크 러너(영구 in-flight)·E2E 픽스처가
+ * 프로덕션 런치로 샌다(AGENTS.md 「Fleet 특화 P1 신호」). 순수 함수라 단위 테스트로 핀한다.
+ */
+export function isE2EActive(env: NodeJS.ProcessEnv): boolean {
+  return env['FLEET_E2E'] === '1'
+}
+
+/**
  * 페이크 명령 실행기:
  *  - `--version`(감지): 즉시 설치됨으로 응답해 세션 등록이 가능하게 한다.
  *  - 연결 테스트(probe): stdin 이 PROBE_PROMPT 인 헤드리스 호출은 결정론적 성공으로 응답한다
