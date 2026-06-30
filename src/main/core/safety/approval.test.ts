@@ -1,21 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyCommandRisk, classifyFileRisk, createApprovalGate } from './approval'
-
-describe('risk classification', () => {
-  it('flags destructive commands', () => {
-    expect(classifyCommandRisk('rm -rf /tmp/x')).toBe('destructive')
-    expect(classifyCommandRisk('git push origin main --force')).toBe('destructive')
-    expect(classifyCommandRisk('sudo apt install x')).toBe('destructive')
-    expect(classifyCommandRisk('ls -la')).toBe('caution')
-    expect(classifyCommandRisk('npm test')).toBe('caution')
-  })
-
-  it('flags deletes and sensitive files', () => {
-    expect(classifyFileRisk('file-delete', 'a.txt')).toBe('destructive')
-    expect(classifyFileRisk('file-write', 'config/.env')).toBe('destructive')
-    expect(classifyFileRisk('file-write', 'src/a.ts')).toBe('caution')
-  })
-})
+import { createApprovalGate } from './approval'
 
 describe('createApprovalGate', () => {
   it('auto-approves configured risk levels', async () => {

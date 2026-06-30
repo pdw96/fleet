@@ -1,32 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ApprovalDecision, ApprovalRequest, RiskLevel } from '../../../shared/types'
 
-/** destructive(파괴적) 명령 패턴 (요구사항 6: 승인 없이 실행 금지). */
-const DESTRUCTIVE_PATTERNS: readonly RegExp[] = [
-  /\brm\s+-[a-z]*[rf]/i,
-  /\bdel\s+\/[sq]/i,
-  /\brmdir\s+\/s/i,
-  /\bformat\b/i,
-  /\bmkfs\b/i,
-  /\bgit\s+push\b.*--force/i,
-  /\bgit\s+reset\s+--hard/i,
-  /\bdrop\s+(table|database)\b/i,
-  /\bshutdown\b/i,
-  /\bsudo\b/i,
-  />\s*\/dev\/sd/i,
-]
-
 export const SENSITIVE_FILE = /(^|[/\\])\.env(\.|$)|\.(env|pem|key|p12|pfx)$|(^|[/\\])\.ssh[/\\]/i
-
-export function classifyCommandRisk(command: string): RiskLevel {
-  return DESTRUCTIVE_PATTERNS.some((re) => re.test(command)) ? 'destructive' : 'caution'
-}
-
-export function classifyFileRisk(kind: 'file-write' | 'file-delete', target: string): RiskLevel {
-  if (kind === 'file-delete') return 'destructive'
-  if (SENSITIVE_FILE.test(target)) return 'destructive'
-  return 'caution'
-}
 
 export interface ApprovalGate {
   request(req: Omit<ApprovalRequest, 'id' | 'ts'>): Promise<ApprovalDecision>
@@ -44,6 +19,9 @@ export interface GateOptions {
 
 /**
  * 승인 게이트 (요구사항 6). destructive 작업은 approver 승인 없이는 거부된다.
+ * 게이트는 무엇이 destructive 인지 *판정하지 않는다* — 호출자(도구)가 신고한 req.risk 를
+ * 집행할 뿐이다(risk classification 아닌 risk enforcement). 셸/명령 위험 분류는 코어가 아니라
+ * sub-agent CLI 경계에 위임된다(#167/#170 — 코어 내 명령 denylist 없음).
  * 모든 요청/결정은 onEvent 로 감사 로그에 남는다.
  */
 export function createApprovalGate(opts: GateOptions = {}): ApprovalGate {
