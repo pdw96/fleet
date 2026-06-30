@@ -271,14 +271,16 @@ export function ProjectPanel({ sessions }: Props) {
     }
   }
 
-  // 폼 → goal 결정적 접합(버튼 전용). run() 은 호출하지 않는다(실행 입력은 textarea goal 단일).
-  // 접합 후 폼을 비워 재접합 중복을 막는다(composeGoal 비멱등 계약).
+  /**
+   * 폼 → goal 결정적 접합(버튼 전용). run() 은 호출하지 않는다(실행 입력은 textarea goal 단일).
+   * 접합 후 폼을 비워 재접합 중복을 막는다(composeGoal 비멱등 계약).
+   */
   function applyFields() {
     if (!hasAnyPresent(fields)) return // 빈 폼 no-op
     setGoal(composeGoal(goal, fields))
     setFields(EMPTY_FIELDS)
   }
-  // 텍스트/셀렉트 공통 갱신 — 계산된 키 부분객체를 ElicitationFields 로 좁힌다(UI 가 값 도메인 보장).
+  /** 텍스트/셀렉트 공통 갱신 — 계산된 키 부분객체를 ElicitationFields 로 좁힌다(UI 가 값 도메인 보장). */
   function updateField(key: keyof ElicitationFields, value: string) {
     setFields((s) => ({ ...s, [key]: value }) as ElicitationFields)
   }
