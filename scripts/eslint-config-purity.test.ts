@@ -102,6 +102,8 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(selectors).toContain("ImportExpression[source.value='node:fs']")
     // fs['writeFile'](...) computed 접근 우회 봉쇄
     expect(selectors).toMatch(/MemberExpression\[computed=true\]\[property\.value=.*writeFile/)
+    // const { writeFile } = fs; writeFile(...) 구조분해 bare 호출 우회 봉쇄
+    expect(selectors).toMatch(/CallExpression\[callee\.name=.*writeFile/)
   })
 
   it('tools 블록이 electron 정적·동적 import 보호를 재선언(override 함정 방지)', () => {

@@ -63,6 +63,9 @@ const FS_MUTATION_PATTERN = `/^(${FS_MUTATION_NAMES.join('|')})(Sync)?$/`
 const FS_MUTATION_SELECTOR = `MemberExpression[property.name=${FS_MUTATION_PATTERN}]`
 // computed 접근 fs['writeFile'](...) 우회 봉쇄(Literal 키만 — 변수 키 fs[name] 은 정적 분석 불가, 한계 명시).
 const FS_MUTATION_COMPUTED_SELECTOR = `MemberExpression[computed=true][property.value=${FS_MUTATION_PATTERN}]`
+// bare 호출 writeFile(...) 봉쇄 — 정적 namespace import 에서 const { writeFile } = fs 구조분해(또는 named/동적
+// import 구조분해) 후 bare 호출은 MemberExpression 이 아니라 selector 미포착. callee.name 으로 포착(Codex P2).
+const FS_MUTATION_CALL_SELECTOR = `CallExpression[callee.name=${FS_MUTATION_PATTERN}]`
 // import { writeFile } from 'node:fs/promises' 후 bare writeFile() 누락(MemberExpression 미포착) 봉쇄.
 const FS_MUTATION_IMPORT_NAMES = FS_MUTATION_NAMES.flatMap((n) => [n, `${n}Sync`])
 const TOOLS_FS_MODULES = ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']
@@ -242,6 +245,11 @@ export default tseslint.config(
           selector: FS_MUTATION_COMPUTED_SELECTOR,
           message:
             '도구(src/main/core/tools)는 read-only 계약 — computed fs 변형 메서드 호출(fs["writeFile"]) 금지(#174).',
+        },
+        {
+          selector: FS_MUTATION_CALL_SELECTOR,
+          message:
+            '도구(src/main/core/tools)는 read-only 계약 — 구조분해된 fs 변형 함수의 bare 호출(const { writeFile } = fs) 금지(#174).',
         },
       ],
     },
