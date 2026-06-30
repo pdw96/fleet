@@ -83,6 +83,15 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(selectors).toMatch(/MemberExpression\[property\.name=.*writeFile/)
   })
 
+  it('no-restricted-syntax 가 child_process 동적 import 도 차단(정적 import 우회 봉쇄)', () => {
+    const rule = toolsBlock?.rules?.['no-restricted-syntax']
+    const selectors = (rule?.slice(1) as { selector?: string }[])
+      .map((s) => s.selector ?? '')
+      .join('  ')
+    expect(selectors).toContain("ImportExpression[source.value='child_process']")
+    expect(selectors).toContain("ImportExpression[source.value='node:child_process']")
+  })
+
   it('tools 블록이 electron 정적·동적 import 보호를 재선언(override 함정 방지)', () => {
     const imp = toolsBlock?.rules?.['no-restricted-imports']?.[1] as {
       paths?: { name: string }[]

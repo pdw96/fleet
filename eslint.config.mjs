@@ -81,6 +81,20 @@ const TOOLS_FORBIDDEN_IMPORT_PATHS = [
     message: `도구는 read-only — ${name} 변형 함수 import 금지(#174).`,
   })),
 ]
+// child_process 동적 import 차단 — 정적 import 는 위 paths 로 막히나 import('node:child_process')
+// 는 ImportExpression 이라 no-restricted-imports 가 미방문 → spawn 우회. electron 동적 import 가드와 동형(#173).
+const CHILD_PROCESS_DYNAMIC_IMPORT_SYNTAX = [
+  {
+    selector: "ImportExpression[source.value='child_process']",
+    message:
+      '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). 동적 import(child_process) 금지.',
+  },
+  {
+    selector: "ImportExpression[source.value='node:child_process']",
+    message:
+      '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). 동적 import(node:child_process) 금지.',
+  },
+]
 
 export default tseslint.config(
   // .claude/** 는 eslint 대상에서 제외(워크플로 worktree·Workflow DSL 글로벌 때문).
@@ -209,6 +223,7 @@ export default tseslint.config(
       'no-restricted-syntax': [
         'error',
         ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
+        ...CHILD_PROCESS_DYNAMIC_IMPORT_SYNTAX,
         {
           selector: FS_MUTATION_SELECTOR,
           message:
