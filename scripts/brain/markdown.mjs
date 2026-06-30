@@ -6,6 +6,11 @@
 // main/core/ 접두어와 확장자를 떼어 짧고 모호하지 않은 id 로(예: session/manager).
 const shortId = (id) => id.replace(/^main\/core\//, '').replace(/\.tsx?$/, '')
 
+// 코드포인트 비교(로케일/ICU 무관) — 정렬 동률 tie-breaker 용. localeCompare 는 ICU 로케일에
+// 따라 결과가 달라질 수 있어, brain:check 가 dev↔CI 에서 결정적이려면 extract.mjs 의 .sort() 와
+// 동일한 코드포인트 순서를 써야 한다(#175 적대리뷰 — 무조건적 로케일 독립성).
+const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
+
 function depList(ids) {
   if (!ids.length) return '—'
   const s = [...new Set(ids.map(shortId))].sort()
@@ -40,7 +45,8 @@ export function toMarkdown(graph) {
     if (!groups.has(n.group)) groups.set(n.group, { layer: n.layer, files: [] })
     groups.get(n.group).files.push(n)
   }
-  for (const g of groups.values()) g.files.sort((a, b) => b.degree - a.degree)
+  // degree 내림차순; 동률은 id 코드포인트(#175) — readdir 순서차에 따른 비결정 출력 방지.
+  for (const g of groups.values()) g.files.sort((a, b) => b.degree - a.degree || cmpStr(a.id, b.id))
 
   const L = []
   L.push('# Fleet — 코드베이스 브레인 (자동 생성)')
@@ -63,7 +69,7 @@ export function toMarkdown(graph) {
   L.push('')
 
   // 한눈에: 허브/진입점/레지스트리/게이트
-  const hubs = nodes.filter((n) => n.hub).sort((a, b) => b.degree - a.degree)
+  const hubs = nodes.filter((n) => n.hub).sort((a, b) => b.degree - a.degree || cmpStr(a.id, b.id))
   const flag = (pred) =>
     nodes
       .filter(pred)
@@ -101,7 +107,7 @@ export function toMarkdown(graph) {
     if (la !== lb) return la - lb
     const da = a[1].files.reduce((s, n) => s + n.degree, 0)
     const db = b[1].files.reduce((s, n) => s + n.degree, 0)
-    return db - da
+    return db - da || cmpStr(a[0], b[0]) // 동률은 그룹명 코드포인트(#175) — 결정성.
   })
   for (const [group, g] of orderedGroups) {
     const md = (meta.modules || {})[group]

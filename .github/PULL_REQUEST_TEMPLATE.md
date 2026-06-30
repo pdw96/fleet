@@ -8,13 +8,9 @@ Closes #
 
 ## 품질 게이트 (AGENTS.md — 변경 후 필수)
 
-- [ ] `npm run typecheck`
-- [ ] `npm run lint` (경고도 0)
-- [ ] `npm run format:check`
-- [ ] `npm test`
-- [ ] `npm run build`
+- [ ] `npm run verify` green (skills:lint·brain:check·format:check·typecheck·lint·test·build 집계 = 로컬 == CI)
 - [ ] preload/IPC 변경 시 `npm run dev` 재시작 확인
-- [ ] 코어 코드 변경 시 `npm run brain` 갱신
+- [ ] 코어 코드 변경 시 `npm run brain` 갱신 (verify 의 brain:check 가 강제)
 
 ## 리뷰
 

@@ -34,7 +34,9 @@
     "test:e2e": "electron-vite build && playwright test",
     "brain": "node scripts/brain/build.mjs",
     "brain:watch": "node scripts/brain/watch.mjs",
+    "brain:check": "node scripts/brain/check.mjs",
     "skills:lint": "node scripts/skills-lint.mjs",
+    "verify": "npm run skills:lint && npm run brain:check && npm run format:check && npm run typecheck && npm run lint && npm test && npm run build",
     "prepare": "husky || true"
   },
   "devDependencies": {
@@ -87,6 +89,9 @@
       "node scripts/skills-lint.mjs"
     ],
     "docs/adr/**/*.md": [
+      "node scripts/skills-lint.mjs"
+    ],
+    "src/**/*.{ts,tsx}": [
       "node scripts/skills-lint.mjs"
     ]
   },

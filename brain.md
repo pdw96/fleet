@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 67 files · 172 import wires · 43 IPC channels · 생성 2026-06-29T11:26 UTC
+> 68 files · 173 import wires · 43 IPC channels · 생성 2026-06-30T09:48 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -31,20 +31,22 @@
   - →의존: renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, shared/types · ←피의존: renderer/main · 95줄
 - **renderer/components/AddAiWizard**
   - →의존: renderer/components/authBanners, shared/cliAuthInstallMeta, shared/types · ←피의존: renderer/components/SessionsPanel · 490줄
+- **renderer/components/ProjectPanel** — 목표를 적으면 여러 AI가 역할을 나눠 작업하게 시키는 프로젝트 실행 화면 _원하는 목표와 역할 배정 방식을 입력해 '실행'을 누르면 AI들이 계획·작업·검증을 진행하고, 그 과정을 진행 로그와 작업 보드로 실시간 보여주며 도중에 취소할 수도 있습니다._
+  - →의존: renderer/components/elicitation, renderer/ui, shared/types · ←피의존: renderer/App · 572줄
 - **renderer/components/ChatPanel** — 여러 AI와 한 작업방에서 대화하고 자동 토론을 시키는 채팅 화면 _작업방을 만들어 사용자가 메시지를 보내고 특정 AI에게 묻거나 여러 AI를 자동으로 토론시킬 수 있으며, AI 답변이 한 글자씩 실시간으로 흘러나오는 모습을 말풍선으로 보여줍니다. 탭을 떠났다 돌아와도 진행 중이던 대화가 사라지지 않게 상태를 되살립니다._
   - →의존: renderer/ui, shared/types · ←피의존: renderer/App · 479줄
-- **renderer/components/ProjectPanel** — 목표를 적으면 여러 AI가 역할을 나눠 작업하게 시키는 프로젝트 실행 화면 _원하는 목표와 역할 배정 방식을 입력해 '실행'을 누르면 AI들이 계획·작업·검증을 진행하고, 그 과정을 진행 로그와 작업 보드로 실시간 보여주며 도중에 취소할 수도 있습니다._
-  - →의존: renderer/ui, shared/types · ←피의존: renderer/App · 505줄
 - **renderer/components/SessionsPanel** — 어떤 AI를 쓸지 등록하고 설정하는 세션 관리 화면 _컴퓨터에 깔린 클로드·코덱스 같은 CLI 도구를 감지해 등록하거나, API 키를 넣어 Anthropic·OpenAI·Google AI를 추가하고, 각 AI가 잘하는 역할과 외부 도구(MCP) 연결도 지정합니다._
   - →의존: renderer/components/AddAiWizard, shared/types · ←피의존: renderer/App · 293줄
 - **renderer/components/ApprovalModal** — 위험한 작업을 하기 전에 사용자에게 허락을 받는 확인 창 _파일 삭제·명령 실행 같은 위험 작업이 생기면 '거부/승인' 팝업을 띄우고, 정해진 시간이 지나면 자동으로 거부합니다. 실수로 엔터를 눌러도 거부 쪽으로 떨어지게 해 위험한 작업이 잘못 승인되는 걸 막습니다._
   - →의존: shared/types · ←피의존: renderer/App · 140줄
-- **renderer/components/authBanners**
-  - →의존: shared/types · ←피의존: renderer/components/AddAiWizard · 38줄
 - **renderer/components/UpdateBanner**
   - →의존: shared/types · ←피의존: renderer/App · 72줄
+- **renderer/components/authBanners**
+  - →의존: shared/types · ←피의존: renderer/components/AddAiWizard · 38줄
 - **renderer/ui** — 화면의 색과 클래스 이름을 다루는 작은 도우미 모음 _작업 상태(완료·실패·진행 중 등)에 맞는 색을 골라 주고, 채팅에 참여한 AI마다 고유한 색을 정해 누가 말했는지 한눈에 구분되게 합니다. 조건에 맞는 화면 스타일 이름을 합치는 간단한 기능도 들어 있습니다._
   - →의존: — · ←피의존: renderer/components/ChatPanel, renderer/components/ProjectPanel · 49줄
+- **renderer/components/elicitation**
+  - →의존: — · ←피의존: renderer/components/ProjectPanel · 115줄
 - **renderer/main** — 앱 화면을 맨 처음 켜서 빈 페이지에 띄우는 시작 부품 _웹 페이지의 빈 자리를 찾아 그 안에 위의 App 화면 전체를 그려 넣어 앱을 처음 띄웁니다. 개발 중 실수를 더 잘 잡아주는 점검 모드로 감싸 실행합니다._
   - →의존: renderer/App · ←피의존: — · 14줄
 
@@ -56,7 +58,7 @@
 - **main/index** — 앱에 시동을 걸어 창을 띄우고 화면과 AI 엔진을 이어주는 '시동·교환대' _앱이 준비되면 AI 엔진을 만들고, 화면(창)을 띄우며, 화면이 보내는 모든 요청(세션 등록·채팅·프로젝트 실행·승인 응답 등)을 엔진의 해당 기능으로 연결하는 전화 교환대 역할을 한다. 창을 만들 때 보안 빗장 두 개(이동 차단·권한 차단)를 걸고, 앱을 끌 때는 켜져 있던 AI 프로그램들을 깔끔히 정리한 뒤 종료해 '좀비' 프로세스가 남지 않게 한다._
   - →의존: engine, main/auto-update, main/crash-recovery, main/e2e, main/external-links, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, +2 · ←피의존: — · 266줄
 - **main/e2e** — 자동 테스트할 때만 켜지는 '연습용 가짜 AI' 장치 _진짜 AI를 부르는 대신 미리 정해둔 답을 흉내 내, 화면 자동검사(Playwright)가 흔들림 없이 돌아가게 한다. 가짜 AI 둘과 토론방 하나, 임시 작업폴더를 미리 깔아두며, 일부러 '응답 중' 상태에서 멈춰 탭을 옮겼다 돌아와도 진행 표시가 살아있는지 확인하게 해준다. FLEET_E2E 라는 스위치가 정확히 '1'일 때만 작동하고 평소엔 절대 끼어들지 않는다._
-  - →의존: cli/detect, cli/probe, engine · ←피의존: main/index · 44줄
+  - →의존: cli/detect, cli/probe, engine · ←피의존: main/index · 53줄
 - **main/external-links**
   - →의존: shared/cliAuthInstallMeta, shared/types · ←피의존: main/index · 50줄
 - **main/auto-update**
@@ -88,7 +90,7 @@
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
-  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1038줄
+  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1064줄
 - **orchestrator/diff-risk** — AI가 바꾼 코드가 위험한 변경인지 판정하는 위험 신호등 _AI가 고친 내용을 보고 비밀번호 같은 민감한 파일을 건드렸거나, 파일을 너무 많이 지웠거나, 변경 내용이 너무 길어 끝이 잘려 확인이 불가능하면 '위험'으로 표시하고 그 이유를 함께 알려 줍니다. 의심스러우면 안전하게 '위험' 쪽으로 분류합니다._
   - →의존: safety/approval, shared/types, workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 37줄
 - **orchestrator/plan** — 큰 목표를 실행 가능한 작은 작업 목록으로 쪼개 주는 계획 분해기 _기획 담당 AI에게 목표를 4~8개의 작업으로 나눠 달라고 요청하고, AI가 돌려준 응답이 형식이 조금 어긋나도 너그럽게 읽어내 작업 목록으로 정리합니다. 검증(테스트·빌드)이 실패하면 그 실패 내용을 다시 AI에게 알려 부족한 부분만 채울 '추가 보정 작업'도 뽑아냅니다._
@@ -136,7 +138,7 @@
 - **cli/authHint**
   - →의존: cli/detect, shared/types · ←피의존: cli/probe, session/cli-session · 46줄
 - **cli/registry** — 각 AI 프로그램을 어떻게 부르고 어떤 명령어로 실행하는지 적어 둔 사용설명 목록이자 보관함 _클로드·코덱스·제미니 각각의 실행 명령어 이름, 버전 확인법, 프롬프트 전달 방식, 대화 이어가기·파일 직접 수정에 필요한 옵션을 한곳에 카드처럼 정리해 둔다. 새로운 AI를 나중에 목록에 추가하거나 이름으로 꺼내 쓸 수 있게 해 주는 보관함 역할도 한다._
-  - →의존: shared/cliAuthInstallMeta, shared/types · ←피의존: engine · 118줄
+  - →의존: shared/cliAuthInstallMeta, shared/types · ←피의존: engine · 125줄
 - **cli/output** — AI가 쏟아낸 잡다한 출력에서 사람에게 보여줄 답변 글자만 골라내는 부품 _코덱스 같은 프로그램은 답변 말고도 시작 안내·생각 과정·토큰 사용량 같은 군더더기를 줄줄이 함께 뱉는데, 이 부품이 그중 진짜 답변 글자만 추려낸다. 또 답변이 한 글자씩 흘러나올 때(스트리밍) 각 줄에서 새로 추가된 글자 조각만 뽑아 화면에 실시간으로 이어 붙일 수 있게 하고, 대화를 이어가기 위한 세션 식별 번호도 찾아낸다._
   - →의존: shared/types · ←피의존: session/cli-session · 130줄
 

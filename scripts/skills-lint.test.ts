@@ -1,6 +1,13 @@
 // scripts/skills-lint.test.ts
 import { describe, it, expect } from 'vitest'
-import { scanText, validateFrontmatter, scanWorkflowPins } from './skills-lint.mjs'
+import { readFileSync } from 'node:fs'
+import {
+  scanText,
+  validateFrontmatter,
+  scanWorkflowPins,
+  scanReleaseSafety,
+  DEFAULT_GLOBS,
+} from './skills-lint.mjs'
 
 describe('scanText — 차단 패턴', () => {
   it('Windows 절대경로를 잡는다', () => {
@@ -106,6 +113,171 @@ describe('scanWorkflowPins — GitHub Actions SHA 핀 강제', () => {
 
   it('run 본문 속 {uses:} 문자열은 여전히 무시한다(오탐 방지)', () => {
     expect(scanWorkflowPins('      run: echo "- {uses: actions/x@v1}"')).toEqual([])
+  })
+})
+
+describe('scanReleaseSafety — release.yml 안전장치 약화 회귀 센서(#175)', () => {
+  const SHA = '9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0'
+  const ATTEST = '0f67c3f4856b2e3261c31976d6725780e5e4c373'
+  const good = [
+    'jobs:',
+    '  prepare:',
+    '    steps:',
+    `      - uses: actions/checkout@${SHA} # v7`,
+    '        with:',
+    '          persist-credentials: false',
+    '  build:',
+    '    steps:',
+    `      - uses: actions/checkout@${SHA} # v7`,
+    '        with:',
+    '          persist-credentials: false',
+    '      - name: Generate build provenance attestation',
+    `        uses: actions/attest-build-provenance@${ATTEST} # v4`,
+    '        with:',
+    '          subject-path: dist/*.exe',
+  ].join('\n')
+
+  it('attestation(SHA핀) + 모든 checkout 의 persist-credentials:false 면 통과(빈 배열)', () => {
+    expect(scanReleaseSafety(good)).toEqual([])
+  })
+
+  it('attestation 스텝 삭제를 적발한다', () => {
+    const text = good
+      .split('\n')
+      .filter((l) => !l.includes('attest-build-provenance'))
+      .join('\n')
+    const hits = scanReleaseSafety(text)
+    expect(hits.some((h) => h.rule === 'attestation')).toBe(true)
+  })
+
+  it('attestation 이 태그(@v4)로 un-pin 되면 적발한다(SHA 핀 필요)', () => {
+    const text = good.replace(`attest-build-provenance@${ATTEST}`, 'attest-build-provenance@v4')
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'attestation')).toBe(true)
+  })
+
+  it('한 checkout 스텝의 persist-credentials:false 가 없으면 적발한다', () => {
+    // build 잡 checkout 의 persist-credentials 줄만 제거
+    const lines = good.split('\n')
+    const idx = lines.lastIndexOf('          persist-credentials: false')
+    lines.splice(idx, 1)
+    const hits = scanReleaseSafety(lines.join('\n'))
+    expect(hits.some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
+  it('다른 스텝(non-checkout)의 stray persist-credentials:false 는 count 되지 않는다(블록워크 — 단순 count false-GREEN 차단)', () => {
+    const text = [
+      'jobs:',
+      '  build:',
+      '    steps:',
+      `      - uses: actions/checkout@${SHA}`,
+      '        with:',
+      '          fetch-depth: 0',
+      `      - uses: actions/setup-node@${SHA}`,
+      '        with:',
+      '          persist-credentials: false', // checkout 이 아니라 setup-node 에 있음
+      '      - name: attest',
+      `        uses: actions/attest-build-provenance@${ATTEST}`,
+    ].join('\n')
+    // 단순 count(pc:false 1 ≥ checkout 1)면 통과하지만, checkout 스텝 자체엔 없으므로 적발돼야 한다
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
+  it('주석 처리된 persist-credentials 는 인정하지 않는다', () => {
+    const text = good.replace(
+      '          persist-credentials: false\n  build:',
+      '          # persist-credentials: false\n  build:',
+    )
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
+  it('CRLF 줄바꿈도 정규화해 검사한다', () => {
+    expect(scanReleaseSafety(good.replace(/\n/g, '\r\n'))).toEqual([])
+  })
+
+  it('name-first checkout(uses 가 - 줄에 없음)의 persist-credentials 누락도 적발한다(false-GREEN 차단)', () => {
+    const text = [
+      'jobs:',
+      '  build:',
+      '    steps:',
+      '      - name: Checkout',
+      `        uses: actions/checkout@${SHA}`,
+      '      - name: attest',
+      `        uses: actions/attest-build-provenance@${ATTEST}`,
+    ].join('\n')
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
+  it('name-first checkout 에 persist-credentials:false 있으면 통과', () => {
+    const text = [
+      'jobs:',
+      '  build:',
+      '    steps:',
+      '      - name: Checkout',
+      `        uses: actions/checkout@${SHA}`,
+      '        with:',
+      '          persist-credentials: false',
+      '      - name: attest',
+      `        uses: actions/attest-build-provenance@${ATTEST}`,
+    ].join('\n')
+    expect(scanReleaseSafety(text)).toEqual([])
+  })
+
+  it('persist-credentials: false 뒤 인라인 주석은 통과(false-RED 방지)', () => {
+    const text = good.replace(
+      '          persist-credentials: false\n  build:',
+      '          persist-credentials: false # 자격증명 미보존\n  build:',
+    )
+    expect(scanReleaseSafety(text)).toEqual([])
+  })
+
+  it("따옴표 스칼라 persist-credentials: 'false' 도 통과", () => {
+    const text = good.replace(
+      '          persist-credentials: false\n  build:',
+      "          persist-credentials: 'false'\n  build:",
+    )
+    expect(scanReleaseSafety(text)).toEqual([])
+  })
+
+  it('따옴표로 감싼 checkout uses 도 checkout 으로 분류한다(quoted-uses false-GREEN 차단 — Codex PR리뷰)', () => {
+    const text = [
+      'jobs:',
+      '  build:',
+      '    steps:',
+      `      - uses: "actions/checkout@${SHA}"`,
+      '      - name: attest',
+      `        uses: actions/attest-build-provenance@${ATTEST}`,
+    ].join('\n')
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
+  it('persist-credentials 가 with: 아래가 아니면(예: env:) 인정하지 않는다(GitHub 은 with 만 입력 — Codex PR리뷰)', () => {
+    const text = [
+      'jobs:',
+      '  build:',
+      '    steps:',
+      `      - uses: actions/checkout@${SHA}`,
+      '        env:',
+      '          persist-credentials: false',
+      '      - name: attest',
+      `        uses: actions/attest-build-provenance@${ATTEST}`,
+    ].join('\n')
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
+  it('실제 .github/workflows/release.yml 은 통과한다(부재/리네임 시 readFileSync 가 loud RED)', () => {
+    const text = readFileSync('.github/workflows/release.yml', 'utf8')
+    expect(scanReleaseSafety(text)).toEqual([])
+  })
+})
+
+describe('DEFAULT_GLOBS — skills:lint 무인자 기본 글롭셋(#175)', () => {
+  it('추적 자산 + src 를 포함하고 브레이스 패턴을 쓰지 않는다(fs.globSync 호환)', () => {
+    expect(DEFAULT_GLOBS).toContain('src/**/*.ts')
+    expect(DEFAULT_GLOBS).toContain('src/**/*.tsx')
+    expect(DEFAULT_GLOBS).toContain('.github/workflows/*.yml')
+    expect(DEFAULT_GLOBS).toContain('docs/adr/**/*.md')
+    // 브레이스 확장은 fs.globSync 에서 비신뢰 → 개별 패턴이어야 한다
+    expect(DEFAULT_GLOBS.every((g) => !g.includes('{'))).toBe(true)
   })
 })
 

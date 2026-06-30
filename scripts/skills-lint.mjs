@@ -60,6 +60,75 @@ export function scanWorkflowPins(text) {
   return hits
 }
 
+// release.yml 안전 라인 매처(모듈 스코프 — 테스트·재사용). 주석(#)·CRLF 내성.
+// uses 값의 선행 따옴표 허용(scanWorkflowPins 와 동일하게 `uses: "actions/..."` 도 분류 — Codex PR리뷰).
+const RE_ATTEST = /^\s*(?:-\s+)?uses:\s*['"]?actions\/attest-build-provenance@[0-9a-f]{40}\b/
+const RE_CHECKOUT_USES = /^\s*(?:-\s+)?uses:\s*['"]?actions\/checkout@/
+const RE_WITH = /^(\s*)with:\s*$/
+// persist-credentials: false — 따옴표(GH Actions 입력은 문자열) 및 후행 인라인 주석 허용.
+const RE_PERSIST_FALSE = /^\s*persist-credentials:\s*['"]?false['"]?\s*(?:#.*)?$/
+
+/**
+ * release.yml 안전장치 약화 회귀 센서(#175). scanWorkflowPins(uses: SHA 핀)가 못 보는
+ * 공급망급 약화를 적발한다: (a) build provenance attestation 스텝 삭제/un-pin,
+ * (b) checkout 스텝의 persist-credentials:false 제거/플립.
+ * 단순 텍스트 count(pc:false 수 ≥ checkout 수)는 stray/주석/중복 persist-credentials 로
+ * false-GREEN 여지가 있어(Codex 리뷰·자체 적대검증), YAML 리스트 아이템(`- `)을 스텝 경계로
+ * 잡아 들여쓰기로 블록을 자른 뒤, 그 블록이 checkout(uses 위치·따옴표 무관 — name-first 도)이면
+ * 그 스텝의 `with:` 블록 안에서만 uncommented persist-credentials:false 를 요구한다
+ * (GitHub 은 액션 입력을 steps[*].with 에서만 읽으므로 env: 등 다른 키 아래 값은 무효 — Codex PR리뷰).
+ * 주석(#) 줄은 ^\s* 앵커와 RE 의 주석 허용으로 처리, 따옴표 스칼라('false'/"false")·후행 주석 허용해
+ * false-RED 회피. CRLF 정규화. 권위 강제는 ci.yml skills:lint(`.github/workflows/*.yml`) 게이트.
+ * @returns {{rule:string, line?:number, msg:string}[]} 위반 목록(빈 배열 = 안전)
+ */
+export function scanReleaseSafety(text) {
+  const hits = []
+  const lines = text.split(/\r?\n/)
+  const indentOf = (l) => l.match(/^\s*/)[0].length
+  // (a) attestation: uncommented `uses: actions/attest-build-provenance@<40-hex SHA>` 존재(삭제·un-pin 둘 다 적발).
+  if (!lines.some((l) => RE_ATTEST.test(l)))
+    hits.push({
+      rule: 'attestation',
+      msg: 'build provenance attestation(actions/attest-build-provenance@<40-hex SHA>) 스텝 누락/un-pin — 미서명 릴리스 위험',
+    })
+  // (b) YAML 스텝(`- ...`) 블록을 들여쓰기로 잘라, checkout 스텝마다 with: 아래 persist-credentials:false 확인.
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(\s*)-\s/)
+    if (!m) continue
+    const base = m[1].length // '-' 앞 들여쓰기 = 스텝 레벨
+    let end = i + 1
+    while (end < lines.length && (lines[end].trim() === '' || indentOf(lines[end]) > base)) end++
+    const block = lines.slice(i, end)
+    if (!block.some((l) => RE_CHECKOUT_USES.test(l))) {
+      i = end - 1
+      continue
+    }
+    // 이 스텝의 with: 블록 안에서만 persist-credentials:false 를 인정(env: 등 다른 키 아래는 무효).
+    let ok = false
+    for (let k = 0; k < block.length && !ok; k++) {
+      const wm = block[k].match(RE_WITH)
+      if (!wm) continue
+      const withIndent = wm[1].length
+      for (let j = k + 1; j < block.length; j++) {
+        if (block[j].trim() === '') continue
+        if (indentOf(block[j]) <= withIndent) break // with 블록 종료
+        if (RE_PERSIST_FALSE.test(block[j])) {
+          ok = true
+          break
+        }
+      }
+    }
+    if (!ok)
+      hits.push({
+        rule: 'persist-credentials',
+        line: i + 1,
+        msg: `checkout 스텝(L${i + 1})의 with: 아래 persist-credentials: false 없음 — 자격증명 잔류 위험`,
+      })
+    i = end - 1 // 이 블록은 통째로 소비(중첩 스텝 오탐 방지)
+  }
+  return hits
+}
+
 /** SKILL.md frontmatter에 name·description이 있는지 검증 */
 export function validateFrontmatter(text) {
   const errors = []
@@ -72,8 +141,25 @@ export function validateFrontmatter(text) {
 }
 
 // --- CLI ---
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, globSync } from 'node:fs'
 import { argv, exit } from 'node:process'
+
+/**
+ * 무인자 실행 시의 정규 글롭셋(#175). `npm run skills:lint` 가 단독으로 동작하도록
+ * 게이트 대상 전체를 한 곳에 둔다 — CI(ci.yml)·lint-staged 가 명시 인자를 넘기면 그 경로를
+ * 그대로 존중(아래 CLI 분기)하므로 lint-staged 흐름을 깨지 않는다(Codex 리뷰 #3).
+ * 브레이스(`{ts,tsx}`)는 fs.globSync 에서 비신뢰 → 개별 패턴으로 나열. `src/**` 포함(#175 item5).
+ */
+export const DEFAULT_GLOBS = [
+  '.claude/*.md',
+  '.claude/skills/**/*.md',
+  '.claude/workflows/**/*.js',
+  '.github/workflows/*.yml',
+  '.github/workflows/*.yaml',
+  'docs/adr/**/*.md',
+  'src/**/*.ts',
+  'src/**/*.tsx',
+]
 
 /** 단일 파일 검사 → 위반 메시지 배열 */
 export function lintFile(path) {
@@ -85,6 +171,10 @@ export function lintFile(path) {
     for (const h of scanWorkflowPins(text))
       msgs.push(`${path}:${h.line} 미핀 액션 uses:[${h.ref}] — 40자 커밋 SHA 핀 필요(#137)`)
   }
+  // release.yml 은 공급망 안전장치(attestation·persist-credentials) 약화 회귀 센서(#175).
+  if (/release\.ya?ml$/i.test(path)) {
+    for (const h of scanReleaseSafety(text)) msgs.push(`${path} 릴리스 안전[${h.rule}]: ${h.msg}`)
+  }
   if (path.endsWith('SKILL.md')) {
     const r = validateFrontmatter(text)
     if (!r.ok) for (const e of r.errors) msgs.push(`${path} frontmatter: ${e}`)
@@ -94,7 +184,12 @@ export function lintFile(path) {
 
 // 이 파일이 직접 실행될 때만 CLI 동작 (import 시엔 동작 안 함)
 if (import.meta.url === `file://${argv[1]}` || argv[1]?.endsWith('skills-lint.mjs')) {
-  const files = argv.slice(2).filter(existsSync)
+  const args = argv.slice(2)
+  // 인자 없으면 정규 글롭셋으로 자립(npm run skills:lint 단독 동작). 인자가 있으면 그대로 존중(lint-staged).
+  const files =
+    args.length === 0
+      ? [...new Set(DEFAULT_GLOBS.flatMap((g) => globSync(g)))].filter(existsSync)
+      : args.filter(existsSync)
   if (files.length === 0) {
     console.error('✗ skills:lint 입력 파일이 없습니다. 인자/글롭 설정을 확인하세요.')
     exit(2)
