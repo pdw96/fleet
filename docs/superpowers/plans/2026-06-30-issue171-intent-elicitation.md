@@ -353,6 +353,7 @@ Claude-Session: https://claude.ai/code/session_01Dt3qgef3pAorW8597q9bDm"
       fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
     })
     // 실행은 textarea goal 만 — 폼 필드(미반영분)는 요청에 새지 않는다.
+    expect(fleet.runProject).toHaveBeenCalledTimes(1)
     expect(fleet.runProject).toHaveBeenCalledWith(expect.objectContaining({ goal: '할 일 앱' }))
     expect(fleet.runProject).not.toHaveBeenCalledWith(
       expect.objectContaining({ audience: expect.anything() }),
