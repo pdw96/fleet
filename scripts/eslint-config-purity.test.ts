@@ -47,3 +47,51 @@ describe('코어 순수성 ESLint 게이트 회귀 가드 (#173)', () => {
     expect(opts?.checkGlobalObject).toBe(true)
   })
 })
+
+// #174: 도구 실행 모듈 read-only 구조 가드. ApprovalGate 는 tool.classify() 자가신고만 신뢰하므로
+// (loop.ts:171) classify:'safe' 인 신규 도구가 raw fs 변형/spawn 하면 무프롬프트로 워크스페이스를
+// 바꾼다. 가드가 조용히 삭제/약화되면 lint 는 여전히 green(위반 0)이라 무신호 → 게이트 자체를 핀.
+const toolsBlock = blocks.find((c) => c.files?.includes('src/main/core/tools/**/*.ts'))
+
+describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
+  it('tools 블록 존재 + files/ignores 스코프', () => {
+    expect(toolsBlock).toBeDefined()
+    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.ts')
+    expect((toolsBlock as { ignores?: string[] })?.ignores).toContain(
+      'src/main/core/tools/**/*.test.ts',
+    )
+  })
+
+  it('no-restricted-imports 가 child_process 와 fs 변형 importNames 를 금지', () => {
+    const rule = toolsBlock?.rules?.['no-restricted-imports']
+    expect(rule?.[0]).toBe('error')
+    const opts = rule?.[1] as { paths?: { name: string; importNames?: string[] }[] }
+    const names = (opts.paths ?? []).map((p) => p.name)
+    expect(names).toContain('child_process')
+    expect(names).toContain('node:child_process')
+    const fsProm = opts.paths?.find((p) => p.name === 'node:fs/promises')
+    expect(fsProm?.importNames).toContain('writeFile')
+    expect(fsProm?.importNames).toContain('rm')
+  })
+
+  it('no-restricted-syntax 가 fs 변형 메서드 selector 를 보유', () => {
+    const rule = toolsBlock?.rules?.['no-restricted-syntax']
+    expect(rule?.[0]).toBe('error')
+    const selectors = (rule?.slice(1) as { selector?: string }[])
+      .map((s) => s.selector ?? '')
+      .join('  ')
+    expect(selectors).toMatch(/MemberExpression\[property\.name=.*writeFile/)
+  })
+
+  it('tools 블록이 electron 정적·동적 import 보호를 재선언(override 함정 방지)', () => {
+    const imp = toolsBlock?.rules?.['no-restricted-imports']?.[1] as {
+      paths?: { name: string }[]
+      patterns?: { group: string[] }[]
+    }
+    expect(imp.paths?.some((p) => p.name === 'electron')).toBe(true)
+    expect(imp.patterns?.some((p) => p.group?.includes('electron/*'))).toBe(true)
+    const syn = toolsBlock?.rules?.['no-restricted-syntax']
+    const sel = (syn?.slice(1) as { selector?: string }[]).map((s) => s.selector ?? '').join('  ')
+    expect(sel).toContain("ImportExpression[source.value='electron']")
+  })
+})

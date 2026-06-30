@@ -3,6 +3,85 @@ import tseslint from 'typescript-eslint'
 import reactHooks from 'eslint-plugin-react-hooks'
 import eslintConfigPrettier from 'eslint-config-prettier/flat'
 
+// 코어/도구 공유 electron 가드(공유 const) — flat config 는 같은 rule-key 를 블록 간 병합이 아니라
+// 교체하므로, tools 전용 블록이 no-restricted-imports/syntax 를 재선언할 때 electron 보호가 유실되지
+// 않도록 양쪽에서 spread 한다(#174).
+const ELECTRON_IMPORT_PATHS = [
+  {
+    name: 'electron',
+    message:
+      '코어(src/main/core)는 electron-free 여야 한다(AGENTS.md P1). Electron 의존은 어댑터 계층으로 분리하라.',
+  },
+]
+const ELECTRON_IMPORT_PATTERNS = [
+  {
+    group: ['electron/*'],
+    message: '코어는 electron-free 여야 한다(AGENTS.md P1). electron 하위경로 import 금지.',
+  },
+]
+const ELECTRON_DYNAMIC_IMPORT_SYNTAX = [
+  {
+    selector: "ImportExpression[source.value='electron']",
+    message: '코어는 electron-free 여야 한다(AGENTS.md P1). 동적 import(electron) 금지.',
+  },
+  {
+    selector: 'ImportExpression[source.value=/^electron\\//]',
+    message: '코어는 electron-free 여야 한다(AGENTS.md P1). 동적 import(electron 하위경로) 금지.',
+  },
+]
+
+// 도구 read-only 구조 가드(#174): ApprovalGate 는 tool.classify() 자가신고만 신뢰하므로(loop.ts:171),
+// classify:'safe' 인 신규 도구가 raw fs 변형/spawn 하면 무프롬프트로 워크스페이스를 바꾼다.
+// 도구 execute 는 read-only 계약이라야 한다 → 변형 메서드·child_process·fs 변형 import 를 기계 차단.
+const FS_MUTATION_NAMES = [
+  'writeFile',
+  'appendFile',
+  'rm',
+  'rmdir',
+  'unlink',
+  'mkdir',
+  'mkdtemp',
+  'rename',
+  'copyFile',
+  'cp',
+  'truncate',
+  'ftruncate',
+  'chmod',
+  'chown',
+  'lchmod',
+  'lchown',
+  'symlink',
+  'link',
+  'utimes',
+  'futimes',
+  'write',
+  'writev',
+  'createWriteStream',
+]
+// fs.writeFile·fs.promises.rm·nodeFs.unlinkSync 등 객체명 무관 변형 메서드 호출 차단.
+// anchored property-name 매칭이라 `truncated` 같은 식별자는 미포착.
+const FS_MUTATION_SELECTOR = `MemberExpression[property.name=/^(${FS_MUTATION_NAMES.join('|')})(Sync)?$/]`
+// import { writeFile } from 'node:fs/promises' 후 bare writeFile() 누락(MemberExpression 미포착) 봉쇄.
+const FS_MUTATION_IMPORT_NAMES = FS_MUTATION_NAMES.flatMap((n) => [n, `${n}Sync`])
+const TOOLS_FS_MODULES = ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']
+const TOOLS_FORBIDDEN_IMPORT_PATHS = [
+  {
+    name: 'child_process',
+    message:
+      '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). 실행은 sub-agent CLI 경계에 위임.',
+  },
+  {
+    name: 'node:child_process',
+    message:
+      '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). 실행은 sub-agent CLI 경계에 위임.',
+  },
+  ...TOOLS_FS_MODULES.map((name) => ({
+    name,
+    importNames: FS_MUTATION_IMPORT_NAMES,
+    message: `도구는 read-only — ${name} 변형 함수 import 금지(#174).`,
+  })),
+]
+
 export default tseslint.config(
   // .claude/** 는 eslint 대상에서 제외(워크플로 worktree·Workflow DSL 글로벌 때문).
   // 단 .claude/skills·workflows 일부는 git 추적되며 보안/규약은 `npm run skills:lint`(lint-staged·CI)가 담당.
@@ -88,22 +167,7 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': [
         'error',
-        {
-          paths: [
-            {
-              name: 'electron',
-              message:
-                '코어(src/main/core)는 electron-free 여야 한다(AGENTS.md P1). Electron 의존은 어댑터 계층으로 분리하라.',
-            },
-          ],
-          patterns: [
-            {
-              group: ['electron/*'],
-              message:
-                '코어는 electron-free 여야 한다(AGENTS.md P1). electron 하위경로 import 금지.',
-            },
-          ],
-        },
+        { paths: ELECTRON_IMPORT_PATHS, patterns: ELECTRON_IMPORT_PATTERNS },
       ],
       // object form(globals[]+checkGlobalObject). legacy 위치배열 form 은 checkGlobalObject 가
       // false 로 고정돼 `globalThis.window`·`self.document` 멤버 접근 우회를 놓친다 → object form 채택.
@@ -125,16 +189,30 @@ export default tseslint.config(
       ],
       // no-restricted-imports 는 ImportExpression(동적 import())을 미방문 → 동적 import('electron')
       // 이 정적 import 가드를 우회한다(TS 도 electron 타입 보유라 컴파일 통과). no-restricted-syntax 로 보완.
-      'no-restricted-syntax': [
+      'no-restricted-syntax': ['error', ...ELECTRON_DYNAMIC_IMPORT_SYNTAX],
+    },
+  },
+  // 도구 read-only 구조 가드(#174). core 블록보다 뒤라 no-restricted-imports/syntax 를 교체하므로
+  // electron 보호를 공유 const 로 재선언(유실 방지). no-restricted-globals 는 미선언 → core 상속.
+  // 테스트는 임시 워크스페이스 준비로 fs 변형을 정상 사용 → ignores 로 제외.
+  {
+    files: ['src/main/core/tools/**/*.ts'],
+    ignores: ['src/main/core/tools/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
         'error',
         {
-          selector: "ImportExpression[source.value='electron']",
-          message: '코어는 electron-free 여야 한다(AGENTS.md P1). 동적 import(electron) 금지.',
+          paths: [...ELECTRON_IMPORT_PATHS, ...TOOLS_FORBIDDEN_IMPORT_PATHS],
+          patterns: ELECTRON_IMPORT_PATTERNS,
         },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
         {
-          selector: 'ImportExpression[source.value=/^electron\\//]',
+          selector: FS_MUTATION_SELECTOR,
           message:
-            '코어는 electron-free 여야 한다(AGENTS.md P1). 동적 import(electron 하위경로) 금지.',
+            '도구(src/main/core/tools)는 read-only 계약 — raw fs 변형 메서드 호출 금지(#174). 변형이 필요하면 ApprovalGate 경유 경로를 쓰라.',
         },
       ],
     },
