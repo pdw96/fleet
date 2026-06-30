@@ -7,6 +7,7 @@
 /** 완성도 수준 select 값. ''=미지정(접합 미기여). */
 export type Completeness = '' | 'prototype' | 'standard' | 'high'
 
+/** 폼 입력 값 — 완성도 select + 텍스트 4종. 전부 선택사항(빈/공백 값 = 부재). */
 export interface ElicitationFields {
   completeness: Completeness
   audience: string
@@ -15,6 +16,7 @@ export interface ElicitationFields {
   constraints: string
 }
 
+/** 초기·리셋 상태(전 필드 부재) — 폼 state 기본값이자 "접합 후 폼 비움" 리셋값. */
 export const EMPTY_FIELDS: ElicitationFields = {
   completeness: '',
   audience: '',
@@ -30,6 +32,7 @@ const COMPLETENESS_PHRASE: Record<Exclude<Completeness, ''>, string> = {
   high: '높은 완성도 (폴리시·엣지케이스·견고함까지 투자)',
 }
 
+/** 폼 필드 메타 — 라벨·입력종류·placeholder·select 옵션(렌더링·접합 순서의 단일 원천). */
 export interface FieldMeta {
   key: keyof ElicitationFields
   label: string
