@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { promises as fs, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import * as os from 'node:os'
@@ -11,6 +12,43 @@ const pick = (tools: FleetTool[], name: string): FleetTool => {
   const t = tools.find((x) => x.definition.name === name)
   if (!t) throw new Error(`no tool ${name}`)
   return t
+}
+
+type SnapEntry = {
+  rel: string
+  kind: 'file' | 'dir' | 'symlink'
+  size?: number
+  hash?: string
+  link?: string
+}
+// 워크스페이스 트리 스냅샷(경로·타입·크기·content hash·symlink 대상). mode 는 Windows flaky 라 제외.
+async function snapshotTree(dirRoot: string): Promise<SnapEntry[]> {
+  const out: SnapEntry[] = []
+  async function walk(dir: string): Promise<void> {
+    const dirents = (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )
+    for (const d of dirents) {
+      const full = path.join(dir, d.name)
+      const rel = path.relative(dirRoot, full).split(path.sep).join('/')
+      if (d.isSymbolicLink()) {
+        out.push({ rel, kind: 'symlink', link: await fs.readlink(full) })
+      } else if (d.isDirectory()) {
+        out.push({ rel, kind: 'dir' })
+        await walk(full)
+      } else if (d.isFile()) {
+        const buf = await fs.readFile(full)
+        out.push({
+          rel,
+          kind: 'file',
+          size: buf.length,
+          hash: createHash('sha256').update(buf).digest('hex'),
+        })
+      }
+    }
+  }
+  await walk(dirRoot)
+  return out
 }
 
 beforeEach(async () => {
@@ -199,5 +237,28 @@ describe('createWorkspaceReadTools', () => {
       pick(createWorkspaceReadTools(root), 'read_file').execute({ path: 'link.txt' }, {}),
     ).rejects.toThrow(/워크스페이스 밖/)
     await fs.rm(outside, { recursive: true, force: true })
+  })
+})
+
+// #174 행동 계약: ApprovalGate 는 tool.classify() 자가신고만 신뢰하므로(loop.ts:171), read 도구가
+// 실행 중 워크스페이스를 변경하면 무프롬프트 통과가 된다. 등록 도구 전체가 read-only 임을 스냅샷
+// 불변으로 단언 — 3a eslint 가드(raw fs 변형 차단)의 행동 보완 레이어(대체 아님).
+describe('워크스페이스 read 도구 read-only 행동 계약 (#174)', () => {
+  it('등록 도구 실행은 워크스페이스를 변경하지 않는다(스냅샷 불변)', async () => {
+    const before = await snapshotTree(root)
+    const tools = createWorkspaceReadTools(root)
+    const inputs: Record<string, unknown> = {
+      read_file: { path: 'a.txt' },
+      list_directory: { path: '.' },
+      grep: { pattern: 'x' },
+      glob: { pattern: '**/*' },
+    }
+    const ac = new AbortController()
+    for (const t of tools) {
+      // 예상 가능한 실행 에러(미존재 입력 등)는 무시 — 검증 대상은 변형 부재.
+      await t.execute(inputs[t.definition.name] ?? {}, { signal: ac.signal }).catch(() => undefined)
+    }
+    const after = await snapshotTree(root)
+    expect(after).toEqual(before)
   })
 })
