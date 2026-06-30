@@ -74,13 +74,17 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(fsProm?.importNames).toContain('rm')
   })
 
-  it('no-restricted-syntax 가 fs 변형 메서드 selector 를 보유', () => {
+  it('no-restricted-syntax 가 fs 변형 메서드 selector 를 보유(write·delete·open 경로)', () => {
     const rule = toolsBlock?.rules?.['no-restricted-syntax']
     expect(rule?.[0]).toBe('error')
     const selectors = (rule?.slice(1) as { selector?: string }[])
       .map((s) => s.selector ?? '')
       .join('  ')
-    expect(selectors).toMatch(/MemberExpression\[property\.name=.*writeFile/)
+    const dot = selectors.match(/MemberExpression\[property\.name=\/[^/]*\//)?.[0] ?? ''
+    // write·delete·open(write-mode) 경로를 각각 핀 — 하나만 남아도 통과하던 약점 보완(CodeRabbit).
+    expect(dot).toContain('writeFile')
+    expect(dot).toContain('rm')
+    expect(dot).toContain('open')
   })
 
   it('no-restricted-syntax 가 child_process 동적 import 도 차단(정적 import 우회 봉쇄)', () => {
@@ -104,6 +108,21 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(selectors).toMatch(/MemberExpression\[computed=true\]\[property\.value=.*writeFile/)
     // const { writeFile } = fs; writeFile(...) 구조분해 bare 호출 우회 봉쇄
     expect(selectors).toMatch(/CallExpression\[callee\.name=.*writeFile/)
+  })
+
+  it('프로세스 spawn 호출(dot/computed/bare)과 cross-spawn import 를 차단(Codex P2)', () => {
+    const syn = (toolsBlock?.rules?.['no-restricted-syntax']?.slice(1) as { selector?: string }[])
+      .map((s) => s.selector ?? '')
+      .join('  ')
+    // child_process/cross-spawn 을 어떻게 로드하든 실제 호출 지점을 잡는다.
+    expect(syn).toMatch(/MemberExpression\[property\.name=\/[^/]*spawn/)
+    expect(syn).toMatch(/CallExpression\[callee\.name=\/[^/]*spawn/)
+    expect(syn).toContain('fork')
+    // cross-spawn 정적 import 금지(레포 의존 우회 봉쇄)
+    const imp = toolsBlock?.rules?.['no-restricted-imports']?.[1] as {
+      paths?: { name: string }[]
+    }
+    expect(imp.paths?.some((p) => p.name === 'cross-spawn')).toBe(true)
   })
 
   it('tools 블록이 electron 정적·동적 import 보호를 재선언(override 함정 방지)', () => {

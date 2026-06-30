@@ -57,6 +57,8 @@ const FS_MUTATION_NAMES = [
   'write',
   'writev',
   'createWriteStream',
+  // open('w'/'a'/'wx' 등)은 첫 write* 전에 파일 생성/truncate → 변형. 읽기('r') open 은 각 site inline-disable.
+  'open',
 ]
 const FS_MUTATION_PATTERN = `/^(${FS_MUTATION_NAMES.join('|')})(Sync)?$/`
 // fs.writeFile·fs.promises.rm·nodeFs.unlinkSync 등 dot 접근 변형 메서드 차단(anchored — `truncated` 미포착).
@@ -69,6 +71,22 @@ const FS_MUTATION_CALL_SELECTOR = `CallExpression[callee.name=${FS_MUTATION_PATT
 // import { writeFile } from 'node:fs/promises' 후 bare writeFile() 누락(MemberExpression 미포착) 봉쇄.
 const FS_MUTATION_IMPORT_NAMES = FS_MUTATION_NAMES.flatMap((n) => [n, `${n}Sync`])
 const TOOLS_FS_MODULES = ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']
+
+// 프로세스 spawn 차단(#174, Codex P2): child_process/cross-spawn 을 어떤 경로로 얻든(static/dynamic
+// import·createRequire·process.getBuiltinModule) 실제 spawn/fork 등 **호출 지점**을 dot/computed/bare
+// 형태로 잡는다 → 로더 종류를 일일이 쫓을 필요 없음. import 금지는 흔한 경로의 조기 명확 에러용.
+// bare `exec` 는 RegExp.exec 충돌로 제외(execSync/execFile 등은 child_process 전용이라 포함).
+const PROCESS_SPAWN_NAMES = ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'execSync', 'fork']
+const PROCESS_SPAWN_PATTERN = `/^(${PROCESS_SPAWN_NAMES.join('|')})$/`
+const PROCESS_SPAWN_SYNTAX = [
+  { selector: `MemberExpression[property.name=${PROCESS_SPAWN_PATTERN}]` },
+  { selector: `MemberExpression[computed=true][property.value=${PROCESS_SPAWN_PATTERN}]` },
+  { selector: `CallExpression[callee.name=${PROCESS_SPAWN_PATTERN}]` },
+].map((s) => ({
+  ...s,
+  message:
+    '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). spawn/fork/execFile 등 호출 금지 — 실행은 sub-agent CLI 경계에 위임.',
+}))
 const TOOLS_FORBIDDEN_IMPORT_PATHS = [
   {
     name: 'child_process',
@@ -79,6 +97,12 @@ const TOOLS_FORBIDDEN_IMPORT_PATHS = [
     name: 'node:child_process',
     message:
       '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). 실행은 sub-agent CLI 경계에 위임.',
+  },
+  {
+    // cross-spawn 은 레포 의존(core CLI 러너 사용) — 도구가 import spawn from 'cross-spawn' 로 우회 가능(Codex P2).
+    name: 'cross-spawn',
+    message:
+      '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). cross-spawn 등 spawn 래퍼 import 금지.',
   },
   ...TOOLS_FS_MODULES.map((name) => ({
     name,
@@ -220,6 +244,13 @@ export default tseslint.config(
   // 도구 read-only 구조 가드(#174). core 블록보다 뒤라 no-restricted-imports/syntax 를 교체하므로
   // electron 보호를 공유 const 로 재선언(유실 방지). no-restricted-globals 는 미선언 → core 상속.
   // 테스트는 임시 워크스페이스 준비로 fs 변형을 정상 사용 → ignores 로 제외.
+  //
+  // 의도적 경계(정적 분석 한계 — 잔여는 행동 계약 테스트[파일 변형 스냅샷]+코드리뷰가 보완):
+  //   · 변수 키 computed 접근 `fs[name]`(name=런타임 변수)은 정적 판정 불가 — Literal 키만 차단.
+  //   · bare `exec`(child_process)는 RegExp.exec 충돌로 제외 — execSync/execFile/spawn/fork 는 차단.
+  //   · process.binding/eval/Function·네이티브 애드온 등 우회는 범위 밖(도구에선 비현실적).
+  // 설계 원칙: 모듈 로더(static/dynamic import·createRequire·getBuiltinModule)를 쫓지 않고 fs변형·
+  // spawn 의 **호출 지점**(dot/computed/bare)을 차단 → 어떻게 로드하든 실제 호출이 잡힌다.
   {
     files: ['src/main/core/tools/**/*.ts'],
     ignores: ['src/main/core/tools/**/*.test.ts'],
@@ -251,6 +282,7 @@ export default tseslint.config(
           message:
             '도구(src/main/core/tools)는 read-only 계약 — 구조분해된 fs 변형 함수의 bare 호출(const { writeFile } = fs) 금지(#174).',
         },
+        ...PROCESS_SPAWN_SYNTAX,
       ],
     },
   },
