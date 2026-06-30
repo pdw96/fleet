@@ -81,10 +81,12 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
       .map((s) => s.selector ?? '')
       .join('  ')
     const dot = selectors.match(/MemberExpression\[property\.name=\/[^/]*\//)?.[0] ?? ''
-    // write·delete·open(write-mode) 경로를 각각 핀 — 하나만 남아도 통과하던 약점 보완(CodeRabbit).
+    // write·delete·open(write-mode)·메타데이터(fchmod/lutimes) 경로를 각각 핀 — 하나만 남아도 통과하던 약점 보완.
     expect(dot).toContain('writeFile')
     expect(dot).toContain('rm')
     expect(dot).toContain('open')
+    expect(dot).toContain('fchmod')
+    expect(dot).toContain('lutimes')
   })
 
   it('no-restricted-syntax 가 child_process 동적 import 도 차단(정적 import 우회 봉쇄)', () => {
@@ -108,8 +110,20 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(selectors).toMatch(/MemberExpression\[computed=true\]\[property\.value=.*writeFile/)
     // const { writeFile } = fs; writeFile(...) 구조분해 bare 호출 우회 봉쇄
     expect(selectors).toMatch(/CallExpression\[callee\.name=.*writeFile/)
-    // const { writeFile: wf } = fs 별칭 구조분해 우회 봉쇄(ObjectPattern 키)
+    // const { writeFile: wf } = fs 별칭 구조분해 우회 봉쇄(식별자 키)
     expect(selectors).toMatch(/ObjectPattern > Property\[key\.name=\/[^/]*writeFile/)
+    // const { 'writeFile': wf } = fs 리터럴 키 구조분해 우회 봉쇄
+    expect(selectors).toMatch(/ObjectPattern > Property\[key\.value=\/[^/]*writeFile/)
+    // fs[`writeFile`] 정적 템플릿 computed 우회 봉쇄(blanket)
+    expect(selectors).toContain("MemberExpression[computed=true][property.type='TemplateLiteral']")
+    // createRequire 로더 차단(import·호출·멤버)
+    expect(selectors).toContain("CallExpression[callee.name='createRequire']")
+    const imp2 = toolsBlock?.rules?.['no-restricted-imports']?.[1] as {
+      paths?: { name: string; importNames?: string[] }[]
+    }
+    expect(
+      imp2.paths?.some((p) => p.name === 'node:module' && p.importNames?.includes('createRequire')),
+    ).toBe(true)
   })
 
   it('프로세스 spawn 호출(dot/computed/bare/구조분해)과 cross-spawn import(정적+동적)를 차단(Codex P2)', () => {

@@ -59,6 +59,11 @@ const FS_MUTATION_NAMES = [
   'createWriteStream',
   // open('w'/'a'/'wx' 등)은 첫 write* 전에 파일 생성/truncate → 변형. 읽기('r') open 은 각 site inline-disable.
   'open',
+  // fd 기반 메타데이터 변형 + Node24 mkdtempDisposable(스냅샷이 mode/owner/times 미포함이라 행동테스트도 놓침).
+  'fchmod',
+  'fchown',
+  'lutimes',
+  'mkdtempDisposable',
 ]
 const FS_MUTATION_PATTERN = `/^(${FS_MUTATION_NAMES.join('|')})(Sync)?$/`
 // fs.writeFile·fs.promises.rm·nodeFs.unlinkSync 등 dot 접근 변형 메서드 차단(anchored — `truncated` 미포착).
@@ -91,15 +96,34 @@ const PROCESS_SPAWN_SYNTAX = [
   { selector: `MemberExpression[property.name=${PROCESS_SPAWN_PATTERN}]` },
   { selector: `MemberExpression[computed=true][property.value=${PROCESS_SPAWN_PATTERN}]` },
   { selector: `CallExpression[callee.name=${PROCESS_SPAWN_PATTERN}]` },
-  // const { spawn } = cp / const { spawn: s } = cp — 별칭 무관 구조분해 키로 포착.
+  // const { spawn } = cp / const { spawn: s } = cp — 별칭 무관 구조분해 키로 포착(식별자 키·리터럴 키 양쪽).
   { selector: `ObjectPattern > Property[key.name=${PROCESS_SPAWN_PATTERN}]` },
+  { selector: `ObjectPattern > Property[key.value=${PROCESS_SPAWN_PATTERN}]` },
 ].map((s) => ({
   ...s,
   message:
     '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). spawn/fork/exec 등 호출·구조분해 금지 — 실행은 sub-agent CLI 경계에 위임.',
 }))
-// 별칭 구조분해 const { writeFile: wf } = fs 봉쇄 — bare-call(callee.name) 은 별칭 wf 를 놓침. 키 이름으로 포착.
-const FS_MUTATION_DESTRUCTURE_SELECTOR = `ObjectPattern > Property[key.name=${FS_MUTATION_PATTERN}]`
+// 별칭 구조분해 const { writeFile: wf } = fs / const { 'writeFile': wf } = fs 봉쇄 — bare-call(callee.name)
+// 은 별칭 wf 를 놓침. 키 이름(식별자)·키 값(문자열 리터럴) 양쪽으로 포착.
+const FS_MUTATION_DESTRUCTURE_SELECTORS = [
+  `ObjectPattern > Property[key.name=${FS_MUTATION_PATTERN}]`,
+  `ObjectPattern > Property[key.value=${FS_MUTATION_PATTERN}]`,
+]
+// 정적 템플릿 computed fs[`writeFile`]·cp[`exec`] 봉쇄 — property.value(Literal) selector 가 TemplateLiteral
+// 을 놓침. tools/** 는 템플릿 computed 멤버 접근을 쓰지 않으므로 blanket 차단(정적 키는 dot 표기로).
+const TEMPLATE_COMPUTED_SELECTOR = `MemberExpression[computed=true][property.type='TemplateLiteral']`
+// createRequire 차단(#174, Codex P2): import('cross-spawn')/child_process 정적·동적 import 는 막히나
+// createRequire(import.meta.url)('cross-spawn') 로 임의 별칭 로드 후 호출하면 import 가드·callee 선택자
+// 모두 우회. tools 는 createRequire 가 불필요하므로 import·호출·멤버 전부 차단.
+const CREATEREQUIRE_SYNTAX = [
+  `CallExpression[callee.name='createRequire']`,
+  `MemberExpression[property.name='createRequire']`,
+].map((selector) => ({
+  selector,
+  message:
+    '도구(src/main/core/tools)는 createRequire 로 모듈을 로드하지 않는다(#174). spawn/fs 변형 우회 차단 — 정적 import 만 사용.',
+}))
 const TOOLS_FORBIDDEN_IMPORT_PATHS = [
   {
     name: 'child_process',
@@ -121,6 +145,11 @@ const TOOLS_FORBIDDEN_IMPORT_PATHS = [
     name,
     importNames: FS_MUTATION_IMPORT_NAMES,
     message: `도구는 read-only — ${name} 변형 함수 import 금지(#174).`,
+  })),
+  ...['module', 'node:module'].map((name) => ({
+    name,
+    importNames: ['createRequire'],
+    message: `도구는 createRequire 로 모듈을 로드하지 않는다(#174). spawn/fs 변형 우회 차단.`,
   })),
 ]
 // child_process 동적 import 차단 — 정적 import 는 위 paths 로 막히나 import('node:child_process')
@@ -265,12 +294,13 @@ export default tseslint.config(
   // 테스트는 임시 워크스페이스 준비로 fs 변형을 정상 사용 → ignores 로 제외.
   //
   // 의도적 경계(정적 분석 한계 — 잔여는 행동 계약 테스트[파일 변형 스냅샷]+코드리뷰가 보완):
-  //   · 변수 키 computed 접근 `fs[name]`/`cp[name]`(name=런타임 변수)은 정적 판정 불가 — Literal 키만 차단.
-  //   · 멤버 재바인딩 `const w = fs.writeFile; w()` 의 RHS 는 MemberExpression 이라 차단되나, 깊은
-  //     별칭 체인 등 비정형 우회는 행동 테스트가 보완.
-  //   · process.binding/eval/Function·네이티브 애드온 등 우회는 범위 밖(도구에선 비현실적).
+  //   · **변수 키** computed 접근 `fs[name]`(name=런타임 변수)은 정적 판정 불가 — 정적 키(Literal·
+  //     TemplateLiteral)는 차단하나 런타임 변수 키는 원리상 불가.
+  //   · Reflect.get(fs,'writeFile')·process.binding/eval/Function·네이티브 애드온 등 메타프로그래밍
+  //     우회는 범위 밖(read 도구에선 비현실적이고, 그 자체가 리뷰 레드플래그).
   // 설계 원칙: 모듈 로더(static/dynamic import·createRequire·getBuiltinModule)를 쫓지 않고 fs변형·
-  // spawn 의 **호출 지점**(dot/computed/bare/구조분해)을 차단 → 어떻게 로드하든 실제 호출이 잡힌다.
+  // spawn 의 **호출 지점**(dot/computed[Literal·Template]/bare/구조분해[식별자·리터럴 키])을 차단 →
+  // 어떻게 로드하든·어떤 별칭이든 실제 호출이 잡힌다. createRequire 는 별도 차단(로더 자체 봉쇄).
   {
     files: ['src/main/core/tools/**/*.ts'],
     ignores: ['src/main/core/tools/**/*.test.ts'],
@@ -302,11 +332,17 @@ export default tseslint.config(
           message:
             '도구(src/main/core/tools)는 read-only 계약 — 구조분해된 fs 변형 함수의 bare 호출(const { writeFile } = fs) 금지(#174).',
         },
-        {
-          selector: FS_MUTATION_DESTRUCTURE_SELECTOR,
+        ...FS_MUTATION_DESTRUCTURE_SELECTORS.map((selector) => ({
+          selector,
           message:
             '도구(src/main/core/tools)는 read-only 계약 — fs 변형 함수의 별칭 구조분해(const { writeFile: wf } = fs) 금지(#174).',
+        })),
+        {
+          selector: TEMPLATE_COMPUTED_SELECTOR,
+          message:
+            '도구(src/main/core/tools)는 정적 템플릿 computed 멤버 접근(obj[`name`]) 금지 — 정적 키는 dot 표기(#174). fs변형/spawn 우회 차단.',
         },
+        ...CREATEREQUIRE_SYNTAX,
         ...PROCESS_SPAWN_SYNTAX,
       ],
     },
