@@ -80,6 +80,65 @@ export default tseslint.config(
       'react-hooks/exhaustive-deps': 'error',
     },
   },
+  // 코어 순수성 게이트(AGENTS.md 「Fleet 특화 P1 신호」 #1): src/main/core 는 electron/DOM-free
+  // 순수 TS 계약. 한 줄의 electron import·DOM 전역도 4게이트를 통과하므로(현 위반 0 = 관례일 뿐)
+  // 회귀를 기계적으로 차단한다. core *.test.ts 도 포함 — 테스트도 결합을 정상화하지 않는다.
+  {
+    files: ['src/main/core/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'electron',
+              message:
+                '코어(src/main/core)는 electron-free 여야 한다(AGENTS.md P1). Electron 의존은 어댑터 계층으로 분리하라.',
+            },
+          ],
+          patterns: [
+            {
+              group: ['electron/*'],
+              message:
+                '코어는 electron-free 여야 한다(AGENTS.md P1). electron 하위경로 import 금지.',
+            },
+          ],
+        },
+      ],
+      // object form(globals[]+checkGlobalObject). legacy 위치배열 form 은 checkGlobalObject 가
+      // false 로 고정돼 `globalThis.window`·`self.document` 멤버 접근 우회를 놓친다 → object form 채택.
+      'no-restricted-globals': [
+        'error',
+        {
+          globals: [
+            {
+              name: 'window',
+              message: '코어는 DOM-free 여야 한다(AGENTS.md P1). 렌더러 전역 window 금지.',
+            },
+            {
+              name: 'document',
+              message: '코어는 DOM-free 여야 한다(AGENTS.md P1). 렌더러 전역 document 금지.',
+            },
+          ],
+          checkGlobalObject: true,
+        },
+      ],
+      // no-restricted-imports 는 ImportExpression(동적 import())을 미방문 → 동적 import('electron')
+      // 이 정적 import 가드를 우회한다(TS 도 electron 타입 보유라 컴파일 통과). no-restricted-syntax 로 보완.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "ImportExpression[source.value='electron']",
+          message: '코어는 electron-free 여야 한다(AGENTS.md P1). 동적 import(electron) 금지.',
+        },
+        {
+          selector: 'ImportExpression[source.value=/^electron\\//]',
+          message:
+            '코어는 electron-free 여야 한다(AGENTS.md P1). 동적 import(electron 하위경로) 금지.',
+        },
+      ],
+    },
+  },
   // Prettier 와 충돌하는 ESLint 스타일룰 비활성 (반드시 last). 현재 스타일룰 0 이라 즉효는
   // 미미하나, 향후 stylistic 룰 추가 시 포맷 책임을 Prettier 가 단독으로 갖도록 보장하는 가드.
   eslintConfigPrettier,
