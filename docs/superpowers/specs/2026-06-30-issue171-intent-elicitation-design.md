@@ -13,7 +13,7 @@ r5 도그푸드에서 Fleet 이 8-task 로 MOBA 를 end-to-end 빌드했으나 �
 이는 비개발자에게 진입장벽이다 — 도메인 용어를 몰라 의도를 정밀 명세하지 못하고, 무엇이 품질을 가르는지 모른 채 under-specify 한다.
 
 **현재 코드 경로** (의도를 끌어내는 앞단 없음, 검증됨):
-```
+```text
 ProjectPanel goal textarea ─ run() ─ window.fleet.runProject({ goal })
   → engine.runProjectFlow(input)            (engine.ts:596)
   → runProject(input.goal, {...})           (engine.ts:681)
@@ -54,7 +54,7 @@ Codex 독립 리뷰 4개 정밀화 반영(§5·§6·§8·§9) + dirty-form 엣�
 
 ## 5. 데이터 흐름 — 접합 메커니즘 A
 
-```
+```text
 폼 필드 ─┐
          ├─[goal에 반영]→ setGoal(composeGoal(goal, fields)) + 폼 비움
 textarea ┘                                                    ↓
