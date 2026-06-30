@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 68 files · 173 import wires · 43 IPC channels · 생성 2026-06-30T09:48 UTC
+> 68 files · 173 import wires · 43 IPC channels · 생성 2026-06-30T11:34 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -172,7 +172,7 @@
 
 ### safety · core — AI 가 위험한 작업(파일 삭제, 강제 푸시 등)을 하려 할 때 자동으로 위험도를 판별하고, 위험하면 사람에게 "정말 해도 되나요?" 허락을 받아내는 안전장치 모듈.
 - **safety/approval** — 명령이나 파일 작업이 얼마나 위험한지 등급을 매기고, 위험한 것은 허락 없이는 못 하게 막는 검문소 _파일 강제 삭제·rm -rf·git 강제 푸시·디스크 포맷·DB 테이블 삭제 같은 위험 패턴이나 .env·열쇠 파일(.key, .pem 등)을 알아채 '파괴적' 위험으로 분류하고, 안전한 작업은 그냥 통과시키되 위험한 작업은 사람의 승인을 받아야만 실행하고 아니면 거절한다. 모든 요청과 결정은 기록(감사 로그)으로 남긴다._
-  - →의존: shared/types · ←피의존: engine, mcp/types, orchestrator/diff-risk, orchestrator/orchestrator, tools/types, tools/workspace-tools, workspace/ignored-baseline · 78줄
+  - →의존: shared/types · ←피의존: engine, mcp/types, orchestrator/diff-risk, orchestrator/orchestrator, tools/types, tools/workspace-tools, workspace/ignored-baseline · 56줄
 - **safety/approval-bridge** — 허락이 필요한 작업을 사용자 화면에 물어보고, 사용자의 예/아니오 답을 도로 전달해 주는 중개 창구 _AI 가 위험한 일을 하려 하면 그 요청을 화면(렌더러)으로 보내 사용자에게 묻고, 답이 오면 해당 요청과 짝지어 처리한다. 물어볼 창이 없으면 즉시 거절하고, 사람이 일정 시간(기본 타임아웃) 안에 답하지 않아도 자동으로 거절하는 '안전 우선' 방식이며, 같은 답이 두 번 와도 한 번만 처리한다._
   - →의존: shared/types · ←피의존: main/index · 66줄
 
