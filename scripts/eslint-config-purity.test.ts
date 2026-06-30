@@ -108,21 +108,27 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(selectors).toMatch(/MemberExpression\[computed=true\]\[property\.value=.*writeFile/)
     // const { writeFile } = fs; writeFile(...) 구조분해 bare 호출 우회 봉쇄
     expect(selectors).toMatch(/CallExpression\[callee\.name=.*writeFile/)
+    // const { writeFile: wf } = fs 별칭 구조분해 우회 봉쇄(ObjectPattern 키)
+    expect(selectors).toMatch(/ObjectPattern > Property\[key\.name=\/[^/]*writeFile/)
   })
 
-  it('프로세스 spawn 호출(dot/computed/bare)과 cross-spawn import 를 차단(Codex P2)', () => {
+  it('프로세스 spawn 호출(dot/computed/bare/구조분해)과 cross-spawn import(정적+동적)를 차단(Codex P2)', () => {
     const syn = (toolsBlock?.rules?.['no-restricted-syntax']?.slice(1) as { selector?: string }[])
       .map((s) => s.selector ?? '')
       .join('  ')
     // child_process/cross-spawn 을 어떻게 로드하든 실제 호출 지점을 잡는다.
     expect(syn).toMatch(/MemberExpression\[property\.name=\/[^/]*spawn/)
     expect(syn).toMatch(/CallExpression\[callee\.name=\/[^/]*spawn/)
+    expect(syn).toMatch(/ObjectPattern > Property\[key\.name=\/[^/]*spawn/)
+    // exec(member cp.exec) + fork 포함 확인
     expect(syn).toContain('fork')
-    // cross-spawn 정적 import 금지(레포 의존 우회 봉쇄)
+    expect(syn).toContain('exec')
+    // cross-spawn 정적 + 동적 import 금지(레포 의존 우회 봉쇄)
     const imp = toolsBlock?.rules?.['no-restricted-imports']?.[1] as {
       paths?: { name: string }[]
     }
     expect(imp.paths?.some((p) => p.name === 'cross-spawn')).toBe(true)
+    expect(syn).toContain("ImportExpression[source.value='cross-spawn']")
   })
 
   it('tools 블록이 electron 정적·동적 import 보호를 재선언(override 함정 방지)', () => {
