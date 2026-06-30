@@ -22,7 +22,7 @@
 
 **Files:**
 - Modify: `src/main/e2e.ts` (헬퍼 추가)
-- Create: `src/main/e2e.test.ts`
+- Modify: `src/main/e2e.test.ts` (기존 e2eRunner 테스트에 isE2EActive describe 블록 추가 — 기존 블록 보존)
 - Modify: `src/main/index.ts:22` (import), `:56`, `:234`
 - Modify: `AGENTS.md:50` (stale 주소)
 

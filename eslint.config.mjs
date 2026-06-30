@@ -105,15 +105,36 @@ export default tseslint.config(
           ],
         },
       ],
+      // object form(globals[]+checkGlobalObject). legacy 위치배열 form 은 checkGlobalObject 가
+      // false 로 고정돼 `globalThis.window`·`self.document` 멤버 접근 우회를 놓친다 → object form 채택.
       'no-restricted-globals': [
         'error',
         {
-          name: 'window',
-          message: '코어는 DOM-free 여야 한다(AGENTS.md P1). 렌더러 전역 window 금지.',
+          globals: [
+            {
+              name: 'window',
+              message: '코어는 DOM-free 여야 한다(AGENTS.md P1). 렌더러 전역 window 금지.',
+            },
+            {
+              name: 'document',
+              message: '코어는 DOM-free 여야 한다(AGENTS.md P1). 렌더러 전역 document 금지.',
+            },
+          ],
+          checkGlobalObject: true,
+        },
+      ],
+      // no-restricted-imports 는 ImportExpression(동적 import())을 미방문 → 동적 import('electron')
+      // 이 정적 import 가드를 우회한다(TS 도 electron 타입 보유라 컴파일 통과). no-restricted-syntax 로 보완.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "ImportExpression[source.value='electron']",
+          message: '코어는 electron-free 여야 한다(AGENTS.md P1). 동적 import(electron) 금지.',
         },
         {
-          name: 'document',
-          message: '코어는 DOM-free 여야 한다(AGENTS.md P1). 렌더러 전역 document 금지.',
+          selector: 'ImportExpression[source.value=/^electron\\//]',
+          message:
+            '코어는 electron-free 여야 한다(AGENTS.md P1). 동적 import(electron 하위경로) 금지.',
         },
       ],
     },

@@ -42,7 +42,7 @@ AGENTS.md 「Fleet 특화 P1 신호」 중 **기계적 강제가 0인** 두 건.
     return env['FLEET_E2E'] === '1'
   }
   ```
-- `src/main/e2e.test.ts`(신규): `'1'`→true; `''`/`'0'`/`'false'`/`'TRUE'`/`undefined`→false.
+- `src/main/e2e.test.ts`(기존 파일에 describe 추가): `'1'`→true; `''`/`'0'`/`'false'`/`'TRUE'`/`undefined`→false.
 - `src/main/index.ts`:
   - import 추가: `isE2EActive` (기존 `'./e2e'` import 에 합류).
   - `:56` → `const e2e = isE2EActive(process.env)`.
@@ -64,3 +64,13 @@ AGENTS.md 「Fleet 특화 P1 신호」 중 **기계적 강제가 0인** 두 건.
 ## 영향 / 위험
 - 동작 불변(현 위반 0). 위험 표면은 ESLint 설정 오작성(과·소 차단) 한정 → RED 입증으로 방어.
 - 파일: `eslint.config.mjs`, `src/main/e2e.ts`(+test), `src/main/index.ts`, `AGENTS.md`. 모두 작은 국소 변경.
+
+## 적대 리뷰 반영 (2026-06-30, 5렌즈 find→refute)
+
+17 findings 중 5 confirmed → 전부 반영(receiving-code-review 검증 후):
+
+- **동적 `import('electron')` 미차단 [medium]**: ESLint `no-restricted-imports` 는 `ImportExpression` 을 미방문(정적 import·`import type`·`require`만 차단)하고 TS 도 electron 타입 보유라 컴파일 통과 → 백스톱 부재. `no-restricted-syntax` 로 `ImportExpression[source.value='electron']`·`[source.value=/^electron\//]` 차단 추가.
+- **`globalThis.window` 멤버 우회 [low]**: `no-restricted-globals` legacy 위치배열 form 은 `checkGlobalObject` 가 false 고정 → object form(`{globals:[…], checkGlobalObject:true}`)으로 전환(메시지 유지). TS(DOM lib 부재)가 이미 1차 백스톱이나 defense-in-depth.
+- **게이트 자체 fitness 테스트 부재 [medium]**: core 블록을 통째 삭제하거나 `error`→`warn` 약화해도 lint green(현 위반 0·`--max-warnings` 미사용)이라 무신호. `scripts/eslint-config-purity.test.ts` 로 config 객체 형태(규칙 존재·`error` severity·핵심 옵션)를 단언(zero-dep). isE2EActive 와 동일한 테스트 철학을 게이트에도 적용.
+- **spec/plan 'Create' 오기재 [low]**: `e2e.test.ts` 는 기존 파일(e2eRunner 테스트) → 'Modify' 로 정정(구현은 처음부터 append 로 올바름).
+- _refuted 12건_: require('electron')(=no-require-imports 가 이미 차단)·.tsx/.mts 글롭 누락(현 0건·core 에 비현실)·기타 DOM 전역(TS DOM lib 부재로 컴파일 차단)·동치 검증 통과·생성 산출물 fleet-analysis.html stale(untracked·PR 범위 밖) 등 — 근거는 워크플로 결과에 보존.
