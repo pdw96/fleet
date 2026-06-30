@@ -137,9 +137,10 @@ const OBFUSCATION_GUARD_SYNTAX = [
       '도구(src/main/core/tools)는 동적 import 소스에 문자열 리터럴만 쓴다(#174). 템플릿/연산 소스로 로더 우회 금지.',
   },
   {
-    selector: "CallExpression[callee.name='require']",
+    // bare require(...) 와 member require(module.require/x.require) 양쪽 — createRequire member 는 별도 차단.
+    selector: "CallExpression[callee.name='require'], MemberExpression[property.name='require']",
     message:
-      '도구(src/main/core/tools)는 CJS require 를 쓰지 않는다(#174). 정적 import 만 — spawn/fs 변형 우회 차단.',
+      '도구(src/main/core/tools)는 CJS require(bare·member)를 쓰지 않는다(#174). 정적 import 만 — spawn/fs 변형 우회 차단.',
   },
   {
     selector: 'ObjectPattern > Property[computed=true]',
