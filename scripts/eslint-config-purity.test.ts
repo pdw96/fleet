@@ -23,14 +23,15 @@ describe('코어 순수성 ESLint 게이트 회귀 가드 (#173)', () => {
     expect(opts?.patterns?.some((p) => p.group?.includes('electron/*'))).toBe(true)
   })
 
-  it("no-restricted-syntax 가 동적 import(electron) 를 'error' 로 차단", () => {
+  it("no-restricted-syntax 가 동적 import(electron)·import(electron/*) 를 'error' 로 차단", () => {
     const rule = coreBlock?.rules?.['no-restricted-syntax']
     expect(rule?.[0]).toBe('error')
     const selectors = (rule?.slice(1) as { selector?: string }[] | undefined)
       ?.map((s) => s.selector ?? '')
       .join('  ')
-    expect(selectors).toContain('ImportExpression')
-    expect(selectors).toContain('electron')
+    // bare electron 과 electron/* 하위경로 두 selector 를 각각 핀 — 둘 중 하나만 남아도 통과하던 약점 보완.
+    expect(selectors).toContain("ImportExpression[source.value='electron']")
+    expect(selectors).toMatch(/ImportExpression\[source\.value=\/\^electron/)
   })
 
   it("no-restricted-globals 가 window·document 를 'error' 로 차단하고 globalThis 멤버 우회를 검사", () => {

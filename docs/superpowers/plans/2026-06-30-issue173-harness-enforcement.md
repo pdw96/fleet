@@ -168,6 +168,8 @@ git commit -m "feat(#173): FLEET_E2E 술어를 isE2EActive 헬퍼로 추출·단
   },
 ```
 
+> **※ 최종 반영**: 적대 리뷰(globalThis.window 멤버 우회)로 shipped `eslint.config.mjs` 는 `no-restricted-globals` 를 **object form**(`{ globals: [...], checkGlobalObject: true }`)으로 채택하고, 동적 `import('electron')` 차단용 `no-restricted-syntax` 도 추가했다. 위 snippet 은 초기 설계 형태(spec 「적대 리뷰 반영」 참조).
+
 - [ ] **Step 2: 게이트 green 확인(기존 코어 무위반)**
 
 Run: `npm run lint`
