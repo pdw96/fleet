@@ -795,4 +795,75 @@ describe('ProjectPanel', () => {
     })
     expect(screen.queryByRole('button', { name: '취소' })).toBeNull()
   })
+
+  // elicitation(#171): "goal에 반영" 이 폼을 textarea goal 에 결정적 접합하고 폼을 비운다.
+  it('folds elicitation fields into the goal textarea and clears the form on 반영', async () => {
+    mockFleet()
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    const goalBox = screen.getByPlaceholderText(/사용자 인증/) as HTMLTextAreaElement
+    fireEvent.change(goalBox, { target: { value: '할 일 앱' } })
+    fireEvent.change(screen.getByLabelText('대상 사용자'), { target: { value: '초등학생' } })
+    fireEvent.click(screen.getByRole('button', { name: 'goal에 반영' }))
+    expect(goalBox.value).toBe('할 일 앱\n\n[추가 맥락]\n- 대상 사용자: 초등학생')
+    expect((screen.getByLabelText('대상 사용자') as HTMLInputElement).value).toBe('')
+  })
+
+  // 빈 폼: 반영 버튼 비활성 + goal 불변(no-op).
+  it('disables 반영 and leaves the goal unchanged when the form is empty', async () => {
+    mockFleet()
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    const goalBox = screen.getByPlaceholderText(/사용자 인증/) as HTMLTextAreaElement
+    fireEvent.change(goalBox, { target: { value: '할 일 앱' } })
+    expect(
+      (screen.getByRole('button', { name: 'goal에 반영' }) as HTMLButtonElement).disabled,
+    ).toBe(true)
+    expect(goalBox.value).toBe('할 일 앱')
+  })
+
+  // 반영 후 완성도 select 도 '' (미지정)로 초기화.
+  it('resets the completeness select to 미지정 after 반영', async () => {
+    mockFleet()
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '앱' } })
+    fireEvent.change(screen.getByLabelText('완성도 수준'), { target: { value: 'high' } })
+    fireEvent.click(screen.getByRole('button', { name: 'goal에 반영' }))
+    expect((screen.getByLabelText('완성도 수준') as HTMLSelectElement).value).toBe('')
+  })
+
+  // 무회귀 핵심: 실행은 textarea goal 만 전송, 폼(미반영분 포함)은 절대 전송 안 함.
+  it('run sends only the textarea goal, never the elicitation fields', async () => {
+    const fleet = mockFleet()
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '할 일 앱' } })
+    // 폼을 채우되 반영하지 않는다 — 실행 입력에 새면 안 된다.
+    fireEvent.change(screen.getByLabelText('대상 사용자'), { target: { value: '초등학생' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
+    })
+    // 실행은 textarea goal 만 — 폼 필드(미반영분)는 요청에 새지 않는다.
+    expect(fleet.runProject).toHaveBeenCalledTimes(1)
+    expect(fleet.runProject).toHaveBeenCalledWith(expect.objectContaining({ goal: '할 일 앱' }))
+    expect(fleet.runProject).not.toHaveBeenCalledWith(
+      expect.objectContaining({ audience: expect.anything() }),
+    )
+  })
+
+  // dirty-form 힌트: present 필드에만 표시(공백·미지정엔 미표시), 반영 후 사라짐.
+  it('shows the dirty-form hint only while present fields are unreflected', async () => {
+    mockFleet()
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '앱' } })
+    expect(screen.queryByText(/반영되지 않았습니다/)).toBeNull() // 빈 폼
+    fireEvent.change(screen.getByLabelText('대상 사용자'), { target: { value: '   ' } })
+    expect(screen.queryByText(/반영되지 않았습니다/)).toBeNull() // 공백-only = absent
+    fireEvent.change(screen.getByLabelText('대상 사용자'), { target: { value: '개발자' } })
+    expect(screen.getByText(/반영되지 않았습니다/)).toBeTruthy() // present
+    fireEvent.click(screen.getByRole('button', { name: 'goal에 반영' }))
+    expect(screen.queryByText(/반영되지 않았습니다/)).toBeNull() // 반영 후
+  })
 })
