@@ -60,9 +60,11 @@ export function scanWorkflowPins(text) {
   return hits
 }
 
-// release.yml 안전 라인 매처(모듈 스코프 — 테스트·재사용). 주석(#)·CRLF 내성, 따옴표 스칼라 허용.
-const RE_ATTEST = /^\s*(?:-\s+)?uses:\s*actions\/attest-build-provenance@[0-9a-f]{40}\b/
-const RE_CHECKOUT_USES = /^\s*(?:-\s+)?uses:\s*actions\/checkout@/
+// release.yml 안전 라인 매처(모듈 스코프 — 테스트·재사용). 주석(#)·CRLF 내성.
+// uses 값의 선행 따옴표 허용(scanWorkflowPins 와 동일하게 `uses: "actions/..."` 도 분류 — Codex PR리뷰).
+const RE_ATTEST = /^\s*(?:-\s+)?uses:\s*['"]?actions\/attest-build-provenance@[0-9a-f]{40}\b/
+const RE_CHECKOUT_USES = /^\s*(?:-\s+)?uses:\s*['"]?actions\/checkout@/
+const RE_WITH = /^(\s*)with:\s*$/
 // persist-credentials: false — 따옴표(GH Actions 입력은 문자열) 및 후행 인라인 주석 허용.
 const RE_PERSIST_FALSE = /^\s*persist-credentials:\s*['"]?false['"]?\s*(?:#.*)?$/
 
@@ -72,10 +74,11 @@ const RE_PERSIST_FALSE = /^\s*persist-credentials:\s*['"]?false['"]?\s*(?:#.*)?$
  * (b) checkout 스텝의 persist-credentials:false 제거/플립.
  * 단순 텍스트 count(pc:false 수 ≥ checkout 수)는 stray/주석/중복 persist-credentials 로
  * false-GREEN 여지가 있어(Codex 리뷰·자체 적대검증), YAML 리스트 아이템(`- `)을 스텝 경계로
- * 잡아 들여쓰기로 블록을 자른 뒤, 그 블록이 checkout(uses 위치 무관 — name-first 도)이면
- * 블록 안에서만 uncommented persist-credentials:false 를 요구한다. 주석(#) 줄은 ^\s* 앵커와
- * RE 의 주석 허용으로 처리, 따옴표 스칼라('false'/"false")·후행 주석 허용해 false-RED 회피. CRLF 정규화.
- * 권위 강제는 ci.yml skills:lint(`.github/workflows/*.yml`) 게이트.
+ * 잡아 들여쓰기로 블록을 자른 뒤, 그 블록이 checkout(uses 위치·따옴표 무관 — name-first 도)이면
+ * 그 스텝의 `with:` 블록 안에서만 uncommented persist-credentials:false 를 요구한다
+ * (GitHub 은 액션 입력을 steps[*].with 에서만 읽으므로 env: 등 다른 키 아래 값은 무효 — Codex PR리뷰).
+ * 주석(#) 줄은 ^\s* 앵커와 RE 의 주석 허용으로 처리, 따옴표 스칼라('false'/"false")·후행 주석 허용해
+ * false-RED 회피. CRLF 정규화. 권위 강제는 ci.yml skills:lint(`.github/workflows/*.yml`) 게이트.
  * @returns {{rule:string, line?:number, msg:string}[]} 위반 목록(빈 배열 = 안전)
  */
 export function scanReleaseSafety(text) {
@@ -88,7 +91,7 @@ export function scanReleaseSafety(text) {
       rule: 'attestation',
       msg: 'build provenance attestation(actions/attest-build-provenance@<40-hex SHA>) 스텝 누락/un-pin — 미서명 릴리스 위험',
     })
-  // (b) YAML 스텝(`- ...`) 블록을 들여쓰기로 잘라, checkout 스텝마다 persist-credentials:false 존재 확인.
+  // (b) YAML 스텝(`- ...`) 블록을 들여쓰기로 잘라, checkout 스텝마다 with: 아래 persist-credentials:false 확인.
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^(\s*)-\s/)
     if (!m) continue
@@ -96,11 +99,30 @@ export function scanReleaseSafety(text) {
     let end = i + 1
     while (end < lines.length && (lines[end].trim() === '' || indentOf(lines[end]) > base)) end++
     const block = lines.slice(i, end)
-    if (block.some((l) => RE_CHECKOUT_USES.test(l)) && !block.some((l) => RE_PERSIST_FALSE.test(l)))
+    if (!block.some((l) => RE_CHECKOUT_USES.test(l))) {
+      i = end - 1
+      continue
+    }
+    // 이 스텝의 with: 블록 안에서만 persist-credentials:false 를 인정(env: 등 다른 키 아래는 무효).
+    let ok = false
+    for (let k = 0; k < block.length && !ok; k++) {
+      const wm = block[k].match(RE_WITH)
+      if (!wm) continue
+      const withIndent = wm[1].length
+      for (let j = k + 1; j < block.length; j++) {
+        if (block[j].trim() === '') continue
+        if (indentOf(block[j]) <= withIndent) break // with 블록 종료
+        if (RE_PERSIST_FALSE.test(block[j])) {
+          ok = true
+          break
+        }
+      }
+    }
+    if (!ok)
       hits.push({
         rule: 'persist-credentials',
         line: i + 1,
-        msg: `checkout 스텝(L${i + 1})에 persist-credentials: false 없음 — 자격증명 잔류 위험`,
+        msg: `checkout 스텝(L${i + 1})의 with: 아래 persist-credentials: false 없음 — 자격증명 잔류 위험`,
       })
     i = end - 1 // 이 블록은 통째로 소비(중첩 스텝 오탐 방지)
   }

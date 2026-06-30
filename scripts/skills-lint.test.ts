@@ -238,6 +238,32 @@ describe('scanReleaseSafety — release.yml 안전장치 약화 회귀 센서(#1
     expect(scanReleaseSafety(text)).toEqual([])
   })
 
+  it('따옴표로 감싼 checkout uses 도 checkout 으로 분류한다(quoted-uses false-GREEN 차단 — Codex PR리뷰)', () => {
+    const text = [
+      'jobs:',
+      '  build:',
+      '    steps:',
+      `      - uses: "actions/checkout@${SHA}"`,
+      '      - name: attest',
+      `        uses: actions/attest-build-provenance@${ATTEST}`,
+    ].join('\n')
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
+  it('persist-credentials 가 with: 아래가 아니면(예: env:) 인정하지 않는다(GitHub 은 with 만 입력 — Codex PR리뷰)', () => {
+    const text = [
+      'jobs:',
+      '  build:',
+      '    steps:',
+      `      - uses: actions/checkout@${SHA}`,
+      '        env:',
+      '          persist-credentials: false',
+      '      - name: attest',
+      `        uses: actions/attest-build-provenance@${ATTEST}`,
+    ].join('\n')
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
   it('실제 .github/workflows/release.yml 은 통과한다(부재/리네임 시 readFileSync 가 loud RED)', () => {
     const text = readFileSync('.github/workflows/release.yml', 'utf8')
     expect(scanReleaseSafety(text)).toEqual([])

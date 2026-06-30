@@ -11,7 +11,7 @@
 | 2 | AGENTS.md 4게이트 vs CI 6게이트 drift | ✅ confirmed (low) | CI quality 잡 = typecheck·lint·**skills:lint**·**format:check**·test·build(6). AGENTS.md=4, CONTRIBUTING=5, PR템플릿=5+brain → **3문서 3숫자**. `verify` 스크립트 없음. **함정**: `npm run skills:lint` 무인자 시 exit 2(CI는 명시 글롭+bash globstar로만 동작) |
 | 3 | release 안전장치 약화 회귀센서 부재 | ⚠️ partial (medium) | 핵심 갭 확정: scanWorkflowPins 는 `uses:` 만 봄(step 존재·`with:` 값 무시). **vector1**(attestation 삭제)·**vector2**(persist-credentials 플립) 무방비 확정. **정정 — vector3 refuted**: `allowDowngrade`/`allowPrerelease` 는 release.yml 에 없음(소스 `src/main/auto-update.ts`) → 이미 `auto-update.test.ts:66-80` 가드. release.yml 에 그 assert 추가는 theater |
 | 4 | brain.md 신선도(67 vs 68) | ✅ confirmed (low) | 실측: 커밋 헤더 `67 files`, `node scripts/brain/build.mjs` 재생성 = `68 files`(elicitation.ts 누락, #171/#172). LOC drift 다수(ProjectPanel·orchestrator 등). AGENTS.md L12-13 "54개 파일·≈6K 토큰" stale. **함정 — 제안 fix 결함**: `git diff --exit-code` 는 `generatedAt`(extract.mjs:277 분단위 타임스탬프)로 **영구 false-RED** → 인메모리 정규화 비교 필요 + cross-OS tie-order 비결정성(localeCompare 보강) |
-| 5 | skills-lint 비밀스캔 src/** 미포함 | ✅ confirmed (low, 최저) | 두 호출처(ci.yml:46·lint-staged) 모두 src 제외. src/** 126파일 현재 0히트(통과). **함정**: `scripts/**` 확대 시 `skills-lint.test.ts` 픽스처 self-match 10히트 → **src/** 만**. 핀 패스는 path-gated 라 src 에 미발현 |
+| 5 | skills-lint 비밀스캔 src/** 미포함 | ✅ confirmed (low, 최저) | 두 호출처(ci.yml:46·lint-staged) 모두 src 제외. src/** 126파일 현재 0히트(통과). **함정**: `scripts/**` 확대 시 `skills-lint.test.ts` 픽스처 self-match 10히트 → `src/**` 만 확대. 핀 패스는 path-gated 라 src 에 미발현 |
 
 ## 구현 설계 (TDD)
 
@@ -22,7 +22,7 @@
 ### 항목별
 
 **A. `.gitignore` allowlist (item 1)**
-```
+```gitignore
 # Claude Code 운영 디렉터리 — 추적 자산(README·skills·workflows)만, 런타임/로컬 자산 제외
 .claude/*
 !.claude/README.md
@@ -56,7 +56,7 @@
 - `brain.md` 재생성·커밋(68파일, tiebreaker 적용 결정적 순서).
 - AGENTS.md L12-13: "54개 파일"·"(≈6K 토큰)" 제거 → brain.md 헤더 자체 권위 참조(헤더에 토큰수 없음 → 토큰 추정치는 삭제).
 
-**E. skills-lint src/** 확대 (item 5)** — B 의 기본 글롭셋에 `src/**/*.ts`·`*.tsx` 포함으로 동시 달성. lint-staged 에 `"src/**/*.{ts,tsx}": ["node scripts/skills-lint.mjs"]` 추가. self-match 회피 위해 `scripts/**` 미포함. (착수 전 src 0히트 재확인 — TDD RED 로 검출.)
+**E. skills-lint `src/**` 확대 (item 5)** — B 의 기본 글롭셋에 `src/**/*.ts`·`*.tsx` 포함으로 동시 달성. lint-staged 에 `"src/**/*.{ts,tsx}": ["node scripts/skills-lint.mjs"]` 추가. self-match 회피 위해 `scripts/**` 미포함. (착수 전 src 0히트 재확인 — TDD RED 로 검출.)
 
 ## 순서 / 게이트
 1. RED: scanReleaseSafety·brain check·gitignore·verify-contract 테스트 먼저.
