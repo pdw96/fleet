@@ -46,7 +46,7 @@ Codex 독립 리뷰 4개 정밀화 반영(§5·§6·§8·§9) + dirty-form 엣�
 ## 4. 아키텍처·컴포넌트
 
 - **신규 `src/renderer/components/elicitation.ts`** (`authBanners.ts` 옆 — 렌더러 평면 헬퍼 컨벤션)
-  - `ElicitationFields` 타입 · 필드 메타(키·라벨·placeholder·입력종류·select 옵션) · 순수 함수 `composeGoal(base, fields)`.
+  - `ElicitationFields` 타입 · 필드 메타(키·라벨·placeholder·입력종류·select 옵션) · 순수 함수 `composeGoal(base, fields)` · 공유 헬퍼 `isPresent`/`hasAnyPresent`(§6·§7 동일 absent 기준).
   - React 비의존·부수효과 0 → 단위테스트 결정적.
 - **`src/renderer/components/ProjectPanel.tsx`** 수정
   - elicitation 필드 상태(`useState<ElicitationFields>`), 폼 UI(textarea 위), "goal에 반영" 버튼, dirty-form 힌트.
@@ -70,17 +70,18 @@ textarea ┘                                                    ↓
 
 `composeGoal(base: string, fields: ElicitationFields): string`
 
-- 각 텍스트 필드 trim · select 미지정('')·공백-only 텍스트 = **부재(absent)**로 취급.
+- 부재(absent) 판정은 **공유 헬퍼 `isPresent(value)`**(텍스트: trim 후 비어있지 않음 / select: `''`(미지정) 아님)로 단일화한다. `hasAnyPresent(fields)` = 하나라도 present. **이 헬퍼를 dirty-form 힌트(§7)도 공유**해 compose 와 힌트가 같은 기준을 쓰게 한다.
 - **전 필드 부재 → `base` 그대로 반환**(문자열 동일 — 무회귀의 핵심).
-- 그 외 → 부재 아닌 필드만 **정의 순서**대로 `- <라벨>: <값>` 으로 `[추가 맥락]` 블록 구성, base 뒤 접합.
-  - `base` 가 비어/공백이면 선행 구분 공백 없이 블록만 반환(앞쪽 빈 줄 방지).
+- 그 외 → present 필드만 **정의 순서**대로 `- <라벨>: <값>` 으로 `[추가 맥락]` 블록 구성, base 뒤 접합.
+  - **base 본문은 보존하되 접합 경계 공백만 정규화** *(Codex 스펙리뷰 보강 1)*: `head = base.trimEnd()` 로 trailing 공백만 제거(planner 무관·앞쪽 빈 줄 방지), `head ? head + '\n\n' + block : block`. 즉 비어/공백 base 면 블록만, 아니면 정확히 한 빈 줄로 구분.
 
 > **결정적 함수이되 멱등 함수가 아니다.** 같은 입력 → 같은 출력은 보장되나, 같은 비-부재 `fields` 를 반복 적용하면 `base` 가 이미 보강된 문자열이라 `[추가 맥락]` 블록이 중복된다. **중복 방지는 함수 속성이 아니라 "접합 후 폼 비움"이라는 UI 운영 규칙으로 보장**한다. 유일한 멱등 케이스는 빈 폼: `composeGoal(base, {}) === base`.
 
 ## 7. 에러처리·엣지 *(dirty-form 힌트 — Codex 미언급, 자체 보강)*
 
 - 공백 trim · 전필드 공백 → no-op · select '미지정' → 미기여 · 접합 순서 결정적.
-- **폼 dirty-미반영 가드**: 폼에 비-부재 필드가 있는데 "반영"을 안 누른 채 실행하면 폼 내용이 **조용히 누락**된다. → `run()` 은 순수하게 유지(아래 §8)하고, 대신 **렌더러 비차단 힌트**("폼 내용이 goal 에 반영되지 않았습니다 — [goal에 반영]") 만 표시. 자동 compose-on-run 은 §8 위반이라 하지 않는다.
+- **폼 dirty-미반영 가드**: 폼에 present 필드가 있는데 "반영"을 안 누른 채 실행하면 폼 내용이 **조용히 누락**된다. → `run()` 은 순수하게 유지(아래 §8)하고, 대신 **렌더러 비차단 힌트**("폼 내용이 goal 에 반영되지 않았습니다 — [goal에 반영]") 만 표시. 자동 compose-on-run 은 §8 위반이라 하지 않는다.
+  - **dirty 판정 = `hasAnyPresent(fields)`** (§6과 동일 기준) *(Codex 스펙리뷰 보강 2)*: 공백-only 텍스트·select 미지정은 dirty 가 아니다 → compose 가 아무것도 안 만드는데 힌트만 뜨는 false-alarm 방지.
 
 ## 8. 불변식 *(Codex 정밀화 2)*
 
@@ -114,16 +115,16 @@ select 값 매핑(planner 가 도메인 맥락에 맞게 해석):
 - 전 필드 부재 → `base` 그대로 반환(`===`) — 무회귀 핵심.
 - 각 필드 단독 → 올바른 라벨 줄 접합.
 - 다필드 → 정의 순서·단일 `[추가 맥락]` 블록.
-- 공백-only 텍스트·select 미지정 → 부재 처리.
-- 빈 base + 필드 → 선행 빈 줄 없는 블록.
+- 공백-only 텍스트·select 미지정 → 부재 처리(`isPresent`/`hasAnyPresent` 직접 단언 포함).
+- 빈 base + 필드 → 선행 빈 줄 없는 블록 · **trailing 공백 base → `trimEnd` 후 한 빈 줄 구분**(보강 1).
 - 결정성: 동일 입력 2회 → 동일 출력.
 - 비멱등 계약 문서화: `composeGoal(composeGoal(base,f),f) !== composeGoal(base,f)`.
 
 **`ProjectPanel.test.tsx`** (기존 확장)
-- "반영" 버튼: 필드 채움 → 클릭 → textarea(goal) 갱신 + 폼 비움.
+- "반영" 버튼: 필드 채움 → 클릭 → textarea(goal) 갱신 + **폼 전 필드 비움(텍스트 `''` + select `''` 초기화 확인)** *(보강 3)*.
 - 빈 폼 클릭 → no-op(goal 불변).
-- **run 회귀 가드**: 실행이 여전히 textarea `goal` 값 전송(폼 필드는 미전송).
-- dirty-form 힌트: 비-부재 필드 존재 시 표시 · 반영 후 사라짐.
+- **run 회귀 가드**: 실행이 여전히 textarea `goal` 값 전송(폼 필드는 미전송 — `runProject` mock 인자 단언).
+- dirty-form 힌트: present 필드 존재 시 표시 · 반영 후 사라짐 · **공백-only/select 미지정에는 미표시**(absent 기준 일치, 보강 2).
 
 ## 12. 측정 프로토콜 (문서화만, 다음 도그푸드)
 
