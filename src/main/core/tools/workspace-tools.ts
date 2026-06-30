@@ -78,6 +78,7 @@ function readFileTool(root: string, lim: ResolvedLimits): FleetTool {
       if (!stat.isFile()) throw new Error(`read_file: 파일이 아닙니다: ${p}`)
       if (stat.size > lim.maxFileBytes) {
         // 대형 파일은 전체를 메모리에 적재하지 않고 앞부분만 읽는다.
+        // eslint-disable-next-line no-restricted-syntax -- read-mode open('r'): 비변형(가드는 write-mode open 차단 목적, #174)
         const fh = await fs.open(abs, 'r')
         try {
           const head = Buffer.alloc(lim.maxFileBytes)
