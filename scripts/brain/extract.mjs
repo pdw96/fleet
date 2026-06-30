@@ -129,7 +129,10 @@ const ENTRY = new Set(['main/index.ts', 'preload/index.ts', 'renderer/main.tsx',
 // --- 메인 빌드 --------------------------------------------------------------
 export function buildGraph() {
   const files = walk(SRC)
-  const ids = files.map(toId).filter(Boolean)
+  // id 알파벳 정렬로 추출 순서를 OS-독립(win32 NTFS↔리눅스 ext4 의 readdir 순서차)으로 고정한다 —
+  // nodes 삽입순서·ipc 오버레이 순서·hub slice(top-6) 가 전부 이 순서에 의존하므로, 정렬이 brain.md
+  // 결정성의 뿌리다(#175 brain:check 가 CI 에서 flaky 하지 않도록). markdown.mjs 의 degree tie-breaker 와 이중 보강.
+  const ids = files.map(toId).filter(Boolean).sort()
   const fileSet = new Set(ids)
   const absById = new Map(files.map((abs) => [toId(abs), abs]))
 
@@ -247,9 +250,10 @@ export function buildGraph() {
     'stdio 도구 호스트',
   )
 
-  // 허브 표시: 연결 상위 6개에 글로우 강조.
+  // 허브 표시: 연결 상위 6개에 글로우 강조. degree 동률 시 id 코드포인트로 tie-break 해
+  // 경계(6위)에서 어떤 노드가 허브가 되는지가 readdir 순서에 좌우되지 않게 한다(#175 결정성).
   ;[...nodes.values()]
-    .sort((a, b) => b.degree - a.degree)
+    .sort((a, b) => b.degree - a.degree || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .slice(0, 6)
     .forEach((n) => {
       n.hub = true

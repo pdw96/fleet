@@ -21,4 +21,6 @@
 
 ## 제외(비추적)
 
-`settings.local.json`(비밀)·`worktrees/`(런타임)·실행 저널.
+`settings.local.json`(개인설정)·`worktrees/`(서브에이전트 격리)·`scheduled_tasks`·`routines` 등 런타임/로컬
+자산은 레포 `.gitignore` 의 `.claude/*` allowlist 로 **기계적으로 제외**된다(산문 관례가 아니라 강제 — #175).
+추적 자산은 `README.md`·`skills/`·`workflows/` 뿐(allowlist negation). 새 추적 자산은 `.gitignore` negation 추가로 편입.

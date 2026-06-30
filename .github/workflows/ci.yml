@@ -34,27 +34,12 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Lint
-        run: npm run lint
-
-      - name: skills:lint (경로·시크릿 게이트)
-        run: |
-          shopt -s globstar
-          node scripts/skills-lint.mjs .claude/*.md .claude/skills/**/*.md .claude/workflows/**/*.js .github/workflows/*.yml .github/workflows/*.yaml docs/adr/**/*.md
-        shell: bash
-
-      - name: Format check (prettier)
-        run: npm run format:check
-
-      - name: Test (vitest)
-        run: npm test
-
-      # 산출물 생성 = 기동 가능성 smoke (DESIGN.md §12).
-      - name: Build (smoke)
-        run: npm run build
+      # 품질 게이트 6종 + brain.md 신선도를 단일 집계(`npm run verify`)로 실행 — 로컬과 CI 가
+      # byte-for-byte 동일해 drift 가 원천 차단된다(#175). skills:lint 는 무인자 자립(내부 글롭)이라
+      # bash globstar 가 불필요. 잡 표시명 `typecheck · lint · test · build` 는 master ruleset
+      # required status check 이름이므로 절대 바꾸지 않는다(이름만 유지, 실행은 verify 로 단일화).
+      - name: Verify (skills:lint·brain:check·format:check·typecheck·lint·test·build smoke)
+        run: npm run verify
 
   # Windows 전용 보안 회귀(`.cmd` 셰임 명령주입·프로세스 트리 킬)는 `describe.skipIf(platform!=='win32')`
   # 로 보호돼 ubuntu 단일 게이트에서 영구 skip 된다. 이 잡이 windows 러너에서 vitest 를 돌려 실제로 검증한다.

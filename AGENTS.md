@@ -9,23 +9,30 @@ gemini)와 API provider(anthropic/openai/google)를 통합 `LlmSession` 뒤로 �
 
 ## 코드베이스 빠른 파악 — `brain.md` 먼저 읽기
 
-`src/` 를 통째로 뒤지기 전에 [`brain.md`](./brain.md)(자동 생성)를 **먼저 읽어라.** 54개 파일의 역할·의존(→)·
-피의존(←)·IPC 배선·허브/진입점/게이트를 한 장에 압축한 구조 지도다(≈6K 토큰). 전체 `src/` 탐색(≈90K 토큰)을
-대체해 토큰을 아낀다. 코드 변경 후 `npm run brain` 으로 갱신(`src/` 에서 자동 추출 — drift 시 재생성). 사람용
-시각 그래프는 `fleet-brain.html`(`npm run brain` 산출, gitignore). 설명 문구는 `scripts/brain/descriptions.json` 에서 수정.
+`src/` 를 통째로 뒤지기 전에 [`brain.md`](./brain.md)(자동 생성)를 **먼저 읽어라.** 각 파일의 역할·의존(→)·
+피의존(←)·IPC 배선·허브/진입점/게이트를 한 장에 압축한 구조 지도다(파일 수·배선 수는 brain.md 헤더가 권위 —
+하드코딩 통계 금지). 전체 `src/` 탐색을 대체해 토큰을 아낀다. 코드 변경 후 `npm run brain` 으로 갱신(`src/` 에서
+자동 추출 — drift 시 재생성). **CI(`npm run brain:check`)가 신선도를 강제**하므로 코어 변경 시 재생성·커밋 필수.
+사람용 시각 그래프는 `fleet-brain.html`(`npm run brain` 산출, gitignore). 설명 문구는 `scripts/brain/descriptions.json` 에서 수정.
 
 ## 품질 게이트 (변경 후 반드시 통과)
 
 ```bash
-npm run typecheck   # tsc --noEmit (main + renderer + shared)
-npm run lint        # eslint (경고도 0 으로 유지)
-npm test            # vitest — 코어 엔진 단위/통합 (헤드리스)
-npm run build       # electron-vite build = 기동 가능성 smoke
+npm run verify   # 집계 게이트 — 아래 전부를 cheapest-first 로 순차 실행. 로컬 == CI.
+#   skills:lint     경로·시크릿·액션 SHA 핀·release 안전장치 스캔(무인자 자립)
+#   brain:check     brain.md 가 src/ 와 동기인지(신선도)
+#   format:check    prettier --check
+#   typecheck       tsc --noEmit (main + renderer + shared)
+#   lint            eslint (경고도 0 으로 유지)
+#   test            vitest — 코어 엔진 단위/통합 (헤드리스)
+#   build           electron-vite build = 기동 가능성 smoke
 ```
 
-CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 위 4개를 강제한다. 또한 **master ruleset
+CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 **이 `npm run verify` 단일 명령을 강제**한다
+(개별 게이트를 따로 나열하지 않아 로컬↔CI drift 가 원천 차단된다 — #175). 또한 **master ruleset
 (`master protection`)이 `typecheck · lint · test · build`·`windows vitest (win32 보안 회귀)` 잡을
-required status check 로 걸어, 통과 전 머지를 플랫폼 차원에서 차단한다(관례 → 강제).**
+required status check 로 걸어, 통과 전 머지를 플랫폼 차원에서 차단한다(관례 → 강제).** 잡 표시명은
+required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 로 단일화돼 있다.
 `npm run test:e2e`(playwright)는 느려 CI 게이트에 없다 — 로컬에서 필요 시 수동 실행.
 
 ## 아키텍처 규칙 (어기지 말 것)
@@ -74,8 +81,8 @@ required status check 로 걸어, 통과 전 머지를 플랫폼 차원에서 �
 ## Codex 리뷰 운영 기준
 
 Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회귀를 잡는 senior reviewer** 로
-운용한다. CI 4게이트(`typecheck·lint·test·build`)와 본 가이드가 이미 막는 영역(포맷·자명한 타입)은
-Codex 의 몫이 아니다 — **CI·타입이 못 잡는** 아키텍처/계약/안전 회귀에 집중시킨다.
+운용한다. CI 집계 게이트(`npm run verify` — typecheck·lint·test·build·format·skills:lint·brain)와 본
+가이드가 이미 막는 영역(포맷·자명한 타입)은 Codex 의 몫이 아니다 — **CI·타입이 못 잡는** 아키텍처/계약/안전 회귀에 집중시킨다.
 
 - **운영 모드.** Codex GitHub integration 의 *Code review + Automatic reviews* 를 기본으로 켜
   PR open/ready 시 `@codex review` 없이 자동 리뷰를 받는다. 수동 `@codex review` 코멘트는
@@ -124,7 +131,7 @@ project number `1`, owner `pdw96`).
 2. **브랜치** — 기본 브랜치(현재 `master`) 직접 작업 금지(**ruleset 이 직접 push·force-push·삭제를
    플랫폼 차단**; 비상시 repo admin bypass). `feat/<slug>` 특성 브랜치 생성.
 3. **사이클** — 비자명하면 브레인스토밍 → 스펙(`docs/superpowers/specs/`) → 계획. TDD(RED→GREEN).
-   품질 게이트 4종 green(위 「품질 게이트」 참조; preload 변경 시 dev 재시작). 적대 리뷰.
+   `npm run verify` green(위 「품질 게이트」 참조; preload 변경 시 dev 재시작). 적대 리뷰.
 4. **PR** — 본문에 `Closes #<N>` 를 넣는다(머지 시 이슈 자동 닫힘 → #27 sub-issue 진행률 자동 갱신).
    PR open 후 **Codex 봇 자동리뷰를 기다려** 반영(위 「리뷰 피드백 교차검증」) → 사용자 확인 후 squash 머지.
    **ruleset 이 required check 통과 + 미해결 리뷰 스레드 resolve 를 머지 전 강제** — Codex 인라인 지적은

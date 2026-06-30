@@ -16,3 +16,12 @@ e2e/__screenshots__/
 # 설계도(Second Brain) 자동 생성물 — `npm run brain` 으로 재생성(코드에서 derive).
 fleet-brain.html
 brain.tmp.json
+
+# Claude Code 운영 디렉터리(#175) — 추적 자산(README·skills·workflows)만, 런타임/로컬 자산 제외.
+# settings.local.json(개인설정)·worktrees/(서브에이전트 격리)·scheduled_tasks·routines 등 런타임
+# 산출물은 종전 사용자 전역 ignore / .git/info/exclude(per-clone)에만 의존 → 신규 클론·CI·협업자
+# 에서 `git add -A` 시 staged 위험. allowlist 로 레포와 함께 이동하는 기계적 제외를 보장.
+.claude/*
+!.claude/README.md
+!.claude/skills/
+!.claude/workflows/
