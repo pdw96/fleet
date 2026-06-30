@@ -92,6 +92,18 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(selectors).toContain("ImportExpression[source.value='node:child_process']")
   })
 
+  it('no-restricted-syntax 가 fs 동적 import·computed fs 변형 접근도 차단(잔여 우회 봉쇄)', () => {
+    const rule = toolsBlock?.rules?.['no-restricted-syntax']
+    const selectors = (rule?.slice(1) as { selector?: string }[])
+      .map((s) => s.selector ?? '')
+      .join('  ')
+    // const { writeFile } = await import('node:fs/promises') 구조분해 우회 봉쇄
+    expect(selectors).toContain("ImportExpression[source.value='node:fs/promises']")
+    expect(selectors).toContain("ImportExpression[source.value='node:fs']")
+    // fs['writeFile'](...) computed 접근 우회 봉쇄
+    expect(selectors).toMatch(/MemberExpression\[computed=true\]\[property\.value=.*writeFile/)
+  })
+
   it('tools 블록이 electron 정적·동적 import 보호를 재선언(override 함정 방지)', () => {
     const imp = toolsBlock?.rules?.['no-restricted-imports']?.[1] as {
       paths?: { name: string }[]

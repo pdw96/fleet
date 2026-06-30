@@ -58,9 +58,11 @@ const FS_MUTATION_NAMES = [
   'writev',
   'createWriteStream',
 ]
-// fs.writeFile·fs.promises.rm·nodeFs.unlinkSync 등 객체명 무관 변형 메서드 호출 차단.
-// anchored property-name 매칭이라 `truncated` 같은 식별자는 미포착.
-const FS_MUTATION_SELECTOR = `MemberExpression[property.name=/^(${FS_MUTATION_NAMES.join('|')})(Sync)?$/]`
+const FS_MUTATION_PATTERN = `/^(${FS_MUTATION_NAMES.join('|')})(Sync)?$/`
+// fs.writeFile·fs.promises.rm·nodeFs.unlinkSync 등 dot 접근 변형 메서드 차단(anchored — `truncated` 미포착).
+const FS_MUTATION_SELECTOR = `MemberExpression[property.name=${FS_MUTATION_PATTERN}]`
+// computed 접근 fs['writeFile'](...) 우회 봉쇄(Literal 키만 — 변수 키 fs[name] 은 정적 분석 불가, 한계 명시).
+const FS_MUTATION_COMPUTED_SELECTOR = `MemberExpression[computed=true][property.value=${FS_MUTATION_PATTERN}]`
 // import { writeFile } from 'node:fs/promises' 후 bare writeFile() 누락(MemberExpression 미포착) 봉쇄.
 const FS_MUTATION_IMPORT_NAMES = FS_MUTATION_NAMES.flatMap((n) => [n, `${n}Sync`])
 const TOOLS_FS_MODULES = ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']
@@ -95,6 +97,12 @@ const CHILD_PROCESS_DYNAMIC_IMPORT_SYNTAX = [
       '도구(src/main/core/tools)는 프로세스를 스폰하지 않는다(#174). 동적 import(node:child_process) 금지.',
   },
 ]
+// fs 모듈 동적 import 차단 — const { writeFile } = await import('node:fs/promises') 구조분해 우회 봉쇄.
+// 도구는 정적 import 로 읽기만 하므로 fs 모듈 동적 import 자체를 금지(read 포함 — 현 위반 0).
+const TOOLS_FS_DYNAMIC_IMPORT_SYNTAX = TOOLS_FS_MODULES.map((m) => ({
+  selector: `ImportExpression[source.value='${m}']`,
+  message: `도구(src/main/core/tools)는 fs 모듈 동적 import 금지(구조분해 변형 우회 봉쇄, #174). 정적 import 로 읽기만.`,
+}))
 
 export default tseslint.config(
   // .claude/** 는 eslint 대상에서 제외(워크플로 worktree·Workflow DSL 글로벌 때문).
@@ -224,10 +232,16 @@ export default tseslint.config(
         'error',
         ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
         ...CHILD_PROCESS_DYNAMIC_IMPORT_SYNTAX,
+        ...TOOLS_FS_DYNAMIC_IMPORT_SYNTAX,
         {
           selector: FS_MUTATION_SELECTOR,
           message:
             '도구(src/main/core/tools)는 read-only 계약 — raw fs 변형 메서드 호출 금지(#174). 변형이 필요하면 ApprovalGate 경유 경로를 쓰라.',
+        },
+        {
+          selector: FS_MUTATION_COMPUTED_SELECTOR,
+          message:
+            '도구(src/main/core/tools)는 read-only 계약 — computed fs 변형 메서드 호출(fs["writeFile"]) 금지(#174).',
         },
       ],
     },

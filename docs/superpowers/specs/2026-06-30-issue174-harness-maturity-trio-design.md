@@ -50,7 +50,7 @@
 
 - `no-restricted-imports` (tools): electron(공유 const) + **`child_process`/`node:child_process` 전면 금지** + **fs 변형 함수 직접 import 금지**(`node:fs`·`fs`·`node:fs/promises`·`fs/promises` 모듈의 mutation `importNames`). 후자는 `import { writeFile } from 'node:fs/promises'` 후 bare `writeFile()` 호출 누락(MemberExpression selector 미포착)을 봉쇄(Codex 지적).
 - `no-restricted-syntax` (tools): electron 동적 import(공유 const) + **fs 변형 메서드 호출** selector:
-  ```
+  ```text
   MemberExpression[property.name=/^(writeFile|appendFile|rm|rmdir|unlink|mkdir|mkdtemp|rename|copyFile|cp|truncate|ftruncate|chmod|chown|lchmod|lchown|symlink|link|utimes|futimes|write|writev|createWriteStream)(Sync)?$/]
   ```
   anchored property-name 매칭이라 `truncated`·`writeFileReport` 같은 식별자는 미포착. `fs.writeFile`·`fs.promises.rm`·`nodeFs.unlinkSync` 등 객체명 무관 변형 메서드를 포착. 비-fs 객체 동명 멤버(`builder.mkdir()` 등) false-positive 는 inline disable(레포 기존 패턴) — safety-sensitive 영역이라 fail-closed 비용 < false-negative 비용.

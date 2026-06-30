@@ -253,10 +253,13 @@ describe('워크스페이스 read 도구 read-only 행동 계약 (#174)', () => 
       grep: { pattern: 'x' },
       glob: { pattern: '**/*' },
     }
+    // fail-fast: 신규/개명 도구가 fixture 없이 추가되면 `{}` fallback+swallow 로 실 코드경로를 안 타
+    // false-green 이 된다(이 가드가 잡으려는 미래-도구 케이스 자체). 도구명 집합 == fixture 키 집합 단언.
+    expect(new Set(tools.map((t) => t.definition.name))).toEqual(new Set(Object.keys(inputs)))
     const ac = new AbortController()
     for (const t of tools) {
-      // 예상 가능한 실행 에러(미존재 입력 등)는 무시 — 검증 대상은 변형 부재.
-      await t.execute(inputs[t.definition.name] ?? {}, { signal: ac.signal }).catch(() => undefined)
+      // 입력은 위 단언으로 보장됨. 실행 에러(예: 한도/패턴)는 무시 — 검증 대상은 변형 부재.
+      await t.execute(inputs[t.definition.name], { signal: ac.signal }).catch(() => undefined)
     }
     const after = await snapshotTree(root)
     expect(after).toEqual(before)

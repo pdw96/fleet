@@ -26,7 +26,8 @@
 - Test: `scripts/eslint-config-purity.test.ts` (tools 블록 단언 추가)
 
 **Interfaces:**
-- Produces: `eslint.config.mjs` 최상위 const `ELECTRON_IMPORT_PATHS`, `ELECTRON_IMPORT_PATTERNS`, `ELECTRON_DYNAMIC_IMPORT_SYNTAX`, `FS_MUTATION_NAMES`, `FS_MUTATION_SELECTOR`, `FS_MUTATION_IMPORT_NAMES`, `TOOLS_FORBIDDEN_IMPORT_PATHS`; `files: ['src/main/core/tools/**/*.ts']` 블록.
+- Produces: `eslint.config.mjs` 최상위 const `ELECTRON_IMPORT_PATHS`, `ELECTRON_IMPORT_PATTERNS`, `ELECTRON_DYNAMIC_IMPORT_SYNTAX`, `CHILD_PROCESS_DYNAMIC_IMPORT_SYNTAX`, `FS_MUTATION_NAMES`, `FS_MUTATION_SELECTOR`, `FS_MUTATION_COMPUTED_SELECTOR`, `FS_MUTATION_IMPORT_NAMES`, `TOOLS_FS_MODULES`, `TOOLS_FORBIDDEN_IMPORT_PATHS`, `TOOLS_FS_DYNAMIC_IMPORT_SYNTAX`; `files: ['src/main/core/tools/**/*.ts']` 블록.
+- 가드는 **정적 + 동적** import 양쪽을 차단한다: `child_process`/`node:child_process` 와 `fs`·`node:fs`·`fs/promises`·`node:fs/promises` 의 `import('…')` 동적 import, fs 변형 메서드의 dot·computed 호출, fs 변형 named import 전부. (체크리스트가 약한 정적-only 게이트로 충족되지 않도록 명시 — CodeRabbit 지적.)
 
 - [ ] **Step 1: config 자가단언 테스트 추가(RED)** — `scripts/eslint-config-purity.test.ts` 끝(마지막 `})` 다음)에 추가:
 
