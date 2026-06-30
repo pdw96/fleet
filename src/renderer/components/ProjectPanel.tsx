@@ -2,6 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import type { AgentRole, AssignmentPolicy, LlmDescriptor, Project, Task } from '../../shared/types'
 import { ASSIGNABLE_ROLES, MAX_REPLAN_ROUNDS } from '../../shared/types'
 import { statusColor } from '../ui'
+import {
+  ELICITATION_FIELDS,
+  EMPTY_FIELDS,
+  composeGoal,
+  hasAnyPresent,
+  type ElicitationFields,
+} from './elicitation'
 
 interface Props {
   sessions: LlmDescriptor[]
@@ -18,6 +25,7 @@ interface LogLine {
 export function ProjectPanel({ sessions }: Props) {
   // 새 프로젝트 폼 상태
   const [goal, setGoal] = useState('')
+  const [fields, setFields] = useState<ElicitationFields>(EMPTY_FIELDS)
   const [policy, setPolicy] = useState<AssignmentPolicy>('round-robin')
   // 검증 실패가 verify-fix 로도 안 풀릴 때 planner 가 보정 작업을 분해해 재시도하는 라운드 수. 기본 0=비활성(opt-in).
   const [maxReplanRounds, setMaxReplanRounds] = useState(0)
@@ -263,6 +271,19 @@ export function ProjectPanel({ sessions }: Props) {
     }
   }
 
+  // 폼 → goal 결정적 접합(버튼 전용). run() 은 호출하지 않는다(실행 입력은 textarea goal 단일).
+  // 접합 후 폼을 비워 재접합 중복을 막는다(composeGoal 비멱등 계약).
+  function applyFields() {
+    if (!hasAnyPresent(fields)) return // 빈 폼 no-op
+    setGoal(composeGoal(goal, fields))
+    setFields(EMPTY_FIELDS)
+  }
+  // 텍스트/셀렉트 공통 갱신 — 계산된 키 부분객체를 ElicitationFields 로 좁힌다(UI 가 값 도메인 보장).
+  function updateField(key: keyof ElicitationFields, value: string) {
+    setFields((s) => ({ ...s, [key]: value }) as ElicitationFields)
+  }
+  const formDirty = hasAnyPresent(fields)
+
   const canRun = sessions.length > 0 && goal.trim().length > 0 && !running
   const llmName = (id?: string) =>
     id ? (sessions.find((s) => s.id === id)?.displayName ?? id) : undefined
@@ -312,6 +333,50 @@ export function ProjectPanel({ sessions }: Props) {
               먼저 [세션] 탭에서 LLM 세션을 1개 이상 등록하세요.
             </p>
           )}
+          <div className="elicitation" style={{ marginBottom: 12 }}>
+            <span className="eyebrow">의도 보강 (선택)</span>
+            <div className="grid-2" style={{ marginTop: 8 }}>
+              {ELICITATION_FIELDS.map((f) => (
+                <div key={f.key}>
+                  <label className="field-label" htmlFor={`elic-${f.key}`}>
+                    {f.label}
+                  </label>
+                  {f.kind === 'select' ? (
+                    <select
+                      id={`elic-${f.key}`}
+                      className="field"
+                      value={fields[f.key]}
+                      onChange={(e) => updateField(f.key, e.target.value)}
+                    >
+                      {(f.options ?? []).map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      id={`elic-${f.key}`}
+                      className="field"
+                      placeholder={f.placeholder}
+                      value={fields[f.key]}
+                      onChange={(e) => updateField(f.key, e.target.value)}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="row" style={{ alignItems: 'center', marginTop: 8, gap: 8 }}>
+              <button className="btn btn-ghost btn-sm" onClick={applyFields} disabled={!formDirty}>
+                goal에 반영
+              </button>
+              {formDirty && (
+                <span className="note-warn" style={{ margin: 0 }}>
+                  폼 내용이 goal 에 반영되지 않았습니다 — [goal에 반영]
+                </span>
+              )}
+            </div>
+          </div>
           <textarea
             className="field"
             placeholder="예: 사용자 인증이 있는 할 일 관리 REST API 를 만든다…"
