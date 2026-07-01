@@ -116,12 +116,12 @@ frontmatter의 `cloud-tools:` 리스트를 수동 파싱(YAML dep 회피 — val
 `contracts` = `{ [skillName]: string[] }`(cloud-tools 맵). 워크플로가 `anthropics/claude-code-action`을 쓰고 텍스트에 cloud-capable 스킬명을 참조하면, 그 스킬 계약 위반을 반환:
 
 1. **allowedTools superset** — `--allowedTools` 파싱(따옴표·멀티라인 claude_args 내성; 콤마 분해) ⊇ 스킬 `cloud-tools`. 누락 툴마다 위반.
-2. **context7 배선** — cloud-tools에 `mcp__context7__*` 있으면 워크플로에 `--mcp-config` + `context7`(서버명) + `secrets.CONTEXT7_API_KEY` 존재.
-3. **secret fail-fast** — `-z "$CONTEXT7_API_KEY"` 가드 존재(무근거 실행 차단).
-4. **Task → max-turns** — cloud-tools에 `Task` 있으면 `--max-turns` 존재(비용 캡).
+2. **context7 배선** — cloud-tools에 `mcp__context7__*` 있으면 워크플로에 `--mcp-config` + `"context7":` 서버 선언(allowedTools의 `mcp__context7__` 부분문자열로는 통과 못 함) + `secrets.CONTEXT7_API_KEY` 존재.
+3. **secret fail-fast** — `-z` 시크릿 공백 가드 존재(따옴표·`${...}`·이중대괄호 형태 허용).
+4. **subagent → max-turns** — cloud-tools에 `Task` 또는 `Agent`(신/구 SDK) 있으면 `--max-turns` 존재(비용 캡).
 5. **timeout-minutes** 존재.
 6. **concurrency** 존재.
-7. **코멘트 핀** — unpinned `Bash(gh issue comment:*)` 부재(핀된 `gh issue comment <N>:*`만 허용).
+7. **gh-egress 격리** — 에이전트 allowedTools의 gh 툴은 **읽기전용(`gh issue view/list`)만** 허용. `gh issue comment`·`create`·`edit`·`pr`·광역 `gh:*`/`gh issue:*`는 위반(공개 이슈 exfil 채널). 게시는 결정적 후속 스텝(시크릿 값 스캔)이 수행.
 
 **CLI 배선**: `lintFile`은 단일파일 per-file 검사라 크로스파일 계약엔 부적합 → CLI 블록에서 `.claude/skills/*/SKILL.md`를 읽어 `contracts` 맵 구성 후, 각 `.github/workflows/*.yml`에 `scanCloudContract` 적용(무인자 실행·명시인자 실행 모두). 순수함수는 텍스트+맵 주입으로 단위테스트.
 
