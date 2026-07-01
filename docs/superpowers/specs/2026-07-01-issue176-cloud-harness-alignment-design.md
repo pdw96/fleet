@@ -160,5 +160,16 @@ frontmatter의 `cloud-tools:` 리스트를 수동 파싱(YAML dep 회피 — val
 ## 8. 리스크 / 완화
 
 - **lint false-RED**(멀티라인 claude_args·따옴표 파싱): 실제 두 워크플로로 통과 단언 + CRLF 정규화(기존 선례).
-- **과설계**(ADR-0003 ROI 경계): 7개 assertion은 각각 finding 1/2/3/4에 1:1 매핑 — 산문 강제를 기계 강제로(관례→강제, #173/#174/#175 궤적). 로컬전용 스킬·비-Claude 워크플로는 skip(오탐 0).
+- **과설계**(ADR-0003 ROI 경계): 각 assertion은 finding에 1:1 매핑 — 산문 강제를 기계 강제로(관례→강제, #173/#174/#175 궤적). 로컬전용 스킬·비-Claude 워크플로는 skip(오탐 0).
 - **실 클라우드 비활성**: 시크릿은 추가됐으나 실 dispatch 미검증 — fail-fast로 무근거 실행은 원천 차단(환각 불가).
+
+## 9. 적대리뷰 하드닝 (2026-07-01, 4렌즈 워크플로 → 10 confirmed)
+
+착수 후 다차원 적대 자가리뷰(보안·lint정확성·런타임·완결성 × 독립 refute)에서 **2 P1 + 8 P2** 확정 → 전량 반영.
+
+- **P1-A exfil (보안)**: 레포 PUBLIC + context7(비신뢰 서드파티 문서 주입) + `Bash(gh issue comment 135:*)`(`--body-file` 임의경로 허용) = 치명적 삼요소 → 프롬프트 인젝션으로 `mcp-config.json`(평문 키)·`/proc/self/environ`(토큰)을 공개 이슈 유출 가능. **수정**: 에이전트에서 gh 쓰기 egress 제거(읽기 view/list만) → 리포트를 `cloud-report.md`에 Write → **결정적 후속 스텝이 실제 시크릿 값 스캔 후 게시**(발견 시 차단). `scanCloudContract` gh-egress 규칙으로 기계 강제.
+- **P1-B grounding (런타임)**: claude_args의 `$RUNNER_TEMP`가 claude-code-action의 `shell-quote.parse()`(env 미전달)에서 빈 문자열 소거 → `--mcp-config /mcp-config.json`(부재) → context7 미로딩 → 환각(핀 SHA 소스 추적 실측). **수정**: `${{ runner.temp }}`(GitHub 렌더타임 리터럴 확장).
+- **P2×8**: mcp-server lint 죽은규칙(`/context7/`→`/"context7":/` 서버키) · comment-pin 광역glob 우회(→gh-egress 화이트리스트) · parseCloudTools 빈줄유실/인라인주석오염(→continue+주석strip) · fail-fast 정규식 협소(→`${...}`·이중대괄호 허용) · Grep/Glob 부재(→Write 포함 추가·코드대조 가능) · `.yaml` 글롭 누락(→포함) · file-global first-match(→단일 claude-step 가정 문서화).
+- **refuted 3**: workflow_dispatch 입력 priv-esc(GitHub 위협모델상 불성립)·135 접두 1350매칭(민감이슈 미도달)·skill-ref 휴리스틱(의도된 zero-dep 한계).
+
+계약 툴 갱신: 두 스킬 cloud-tools = `Read,Glob,Grep,Write,Task,mcp__context7__{resolve,query},Bash(gh issue view:*)`(+rerank `list`). **gh issue comment 미포함**(게시는 결정적 스텝).
