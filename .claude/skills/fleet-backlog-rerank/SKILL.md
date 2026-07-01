@@ -3,12 +3,14 @@ name: fleet-backlog-rerank
 description: Fleet 백로그 재랭킹 — #27 차기공급원+신규 입력을 적대 검증으로 재평가해 next/later/drop 티어링. "이슈 27 재랭킹/큐레이션" 류 요청 시 사용.
 cloud-tools:
   - Read
+  - Glob
+  - Grep
+  - Write
   - Task
   - mcp__context7__resolve-library-id
   - mcp__context7__query-docs
   - Bash(gh issue view:*)
   - Bash(gh issue list:*)
-  - Bash(gh issue comment 135:*)
 ---
 
 # Fleet 백로그 재랭킹

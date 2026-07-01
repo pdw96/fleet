@@ -343,13 +343,40 @@ describe('parseCloudTools — 스킬 cloud-tools 계약(#176)', () => {
   it('frontmatter 없으면 null', () => {
     expect(parseCloudTools('# 제목\n본문')).toBeNull()
   })
+  it('리스트 중간 빈 줄이 있어도 뒤 항목을 잘라먹지 않는다(false-GREEN 방지)', () => {
+    const md = '---\nname: x\ndescription: d\ncloud-tools:\n  - Read\n  - Task\n\n  - Write\n---\n'
+    expect(parseCloudTools(md)).toEqual(['Read', 'Task', 'Write'])
+  })
+  it('인라인 주석(공백+#)을 제거한다(false-RED 방지)', () => {
+    const md = '---\nname: x\ndescription: d\ncloud-tools:\n  - Read # 필수\n  - Task\n---\n'
+    expect(parseCloudTools(md)).toEqual(['Read', 'Task'])
+  })
+  it('전체 주석 줄은 건너뛴다', () => {
+    const md = '---\nname: x\ndescription: d\ncloud-tools:\n  - Read\n  # 코멘트\n  - Task\n---\n'
+    expect(parseCloudTools(md)).toEqual(['Read', 'Task'])
+  })
+  it('리스트가 아닌 키가 나오면 종료(다음 키 흡수 안 함)', () => {
+    const md = '---\nname: x\ndescription: d\ncloud-tools:\n  - Read\nother: v\n---\n'
+    expect(parseCloudTools(md)).toEqual(['Read'])
+  })
 })
 
 describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
   const CONTRACTS = {
-    'fleet-x': ['Read', 'Task', 'mcp__context7__query-docs', 'Bash(gh issue comment 135:*)'],
+    'fleet-x': [
+      'Read',
+      'Glob',
+      'Grep',
+      'Write',
+      'Task',
+      'mcp__context7__query-docs',
+      'Bash(gh issue view:*)',
+    ],
   }
-  // 계약 충족 워크플로(모든 assertion 통과)
+  const ALLOWED =
+    '--allowedTools "Read,Glob,Grep,Write,Task,mcp__context7__query-docs,Bash(gh issue view:*)"'
+  // 계약 충족 워크플로(모든 assertion 통과). 에이전트는 gh issue comment(쓰기 egress) 미보유 —
+  // 결정적 후속 스텝(run:)이 시크릿 스캔 후 #135 에 게시(exfil 삼요소 차단).
   const good = [
     'name: X',
     'on: { workflow_dispatch: {} }',
@@ -364,14 +391,19 @@ describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
     '          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}',
     '        run: |',
     '          if [ -z "$CONTEXT7_API_KEY" ]; then exit 1; fi',
+    '      - run: |',
+    '          cat > "${{ runner.temp }}/mcp-config.json" << EOF',
+    '          {"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp"}}}',
+    '          EOF',
     '      - uses: anthropics/claude-code-action@abc',
     '        with:',
-    '          prompt: fleet-x 스킬 절차를 따르라',
+    '          prompt: fleet-x 스킬 절차를 따르라. 결과를 cloud-report.md 에 Write.',
     '          claude_args: |',
-    '            --mcp-config "$RUNNER_TEMP/mcp-config.json"',
-    '            --allowedTools "Read,Task,mcp__context7__query-docs,Bash(gh issue comment 135:*)"',
+    '            --mcp-config "${{ runner.temp }}/mcp-config.json"',
+    '            ' + ALLOWED,
     '            --max-turns 40',
-    '          # context7 server',
+    '      - name: scan and post',
+    '        run: gh issue comment 135 --body-file cloud-report.md',
   ].join('\n')
 
   it('계약 충족 워크플로는 위반 0', () => {
@@ -381,17 +413,23 @@ describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
     expect(scanCloudContract('name: CI\njobs: { a: { steps: [] } }', CONTRACTS)).toEqual([])
   })
   it('cloud-capable 스킬 미참조 워크플로는 skip', () => {
-    const t = good.replace('fleet-x 스킬 절차를 따르라', '일반 작업')
+    const t = good.replace(
+      'fleet-x 스킬 절차를 따르라. 결과를 cloud-report.md 에 Write.',
+      '일반 작업',
+    )
     expect(scanCloudContract(t, CONTRACTS)).toEqual([])
   })
   it('allowedTools가 cloud-tools 부분집합이 아니면 누락 툴마다 위반', () => {
-    const t = good.replace(',Bash(gh issue comment 135:*)', '')
-    const hits = scanCloudContract(t, CONTRACTS)
-    expect(hits.some((h) => h.rule === 'allowedTools')).toBe(true)
+    const t = good.replace('Write,Task', 'Task')
+    expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'allowedTools')).toBe(true)
   })
   it('context7 필요한데 --mcp-config 없으면 위반', () => {
-    const t = good.replace('--mcp-config "$RUNNER_TEMP/mcp-config.json"', '')
+    const t = good.replace('--mcp-config "${{ runner.temp }}/mcp-config.json"', '')
     expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'mcp-config')).toBe(true)
+  })
+  it('mcp-config 에 context7 서버 선언이 없으면 위반(dead-rule 회귀 방지 — allowedTools의 mcp__context7__ 로는 통과 못 함)', () => {
+    const t = good.replace('"context7":{', '"ctx7":{')
+    expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'mcp-server')).toBe(true)
   })
   it('CONTEXT7_API_KEY 미참조면 위반', () => {
     const t = good.replace(/CONTEXT7_API_KEY/g, 'OTHER_KEY')
@@ -400,6 +438,14 @@ describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
   it('fail-fast(-z) 가드 없으면 위반', () => {
     const t = good.replace('if [ -z "$CONTEXT7_API_KEY" ]; then exit 1; fi', 'echo ok')
     expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'fail-fast')).toBe(true)
+  })
+  it('중괄호형 fail-fast [ -z "${CONTEXT7_API_KEY}" ] 는 통과(false-RED 방지)', () => {
+    const t = good.replace('[ -z "$CONTEXT7_API_KEY" ]', '[ -z "${CONTEXT7_API_KEY}" ]')
+    expect(scanCloudContract(t, CONTRACTS)).toEqual([])
+  })
+  it('이중대괄호 비따옴표 fail-fast [[ -z $CONTEXT7_API_KEY ]] 는 통과', () => {
+    const t = good.replace('[ -z "$CONTEXT7_API_KEY" ]', '[[ -z $CONTEXT7_API_KEY ]]')
+    expect(scanCloudContract(t, CONTRACTS)).toEqual([])
   })
   it('Task 허용인데 --max-turns 없으면 위반', () => {
     const t = good.replace('\n            --max-turns 40', '')
@@ -413,12 +459,22 @@ describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
     const t = good.replace('concurrency:\n  group: x-${{ github.ref }}\n', '')
     expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'concurrency')).toBe(true)
   })
-  it('unpinned Bash(gh issue comment:*) 있으면 핀 위반', () => {
+  it('에이전트 allowedTools 에 쓰기 egress(gh issue comment)가 있으면 위반', () => {
     const t = good.replace(
-      '--allowedTools "Read,Task,mcp__context7__query-docs,Bash(gh issue comment 135:*)"',
-      '--allowedTools "Read,Task,mcp__context7__query-docs,Bash(gh issue comment 135:*),Bash(gh issue comment:*)"',
+      'Bash(gh issue view:*)"',
+      'Bash(gh issue view:*),Bash(gh issue comment 135:*)"',
     )
-    expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'comment-pin')).toBe(true)
+    expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'gh-egress')).toBe(true)
+  })
+  it('광역 Bash(gh:*) 는 egress 위반', () => {
+    const t = good.replace('Bash(gh issue view:*)"', 'Bash(gh issue view:*),Bash(gh:*)"')
+    // 광역 gh 는 계약 툴이 아니므로 gh-egress 로 잡는다
+    expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'gh-egress')).toBe(true)
+  })
+  it('읽기전용 gh issue list 는 egress 위반 아님', () => {
+    const c = { 'fleet-x': [...CONTRACTS['fleet-x'], 'Bash(gh issue list:*)'] }
+    const t = good.replace('Bash(gh issue view:*)"', 'Bash(gh issue view:*),Bash(gh issue list:*)"')
+    expect(scanCloudContract(t, c)).toEqual([])
   })
   it('CRLF 정규화', () => {
     expect(scanCloudContract(good.replace(/\n/g, '\r\n'), CONTRACTS)).toEqual([])

@@ -33,7 +33,7 @@ jobs:
         env:
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
         run: |
-          cat > "$RUNNER_TEMP/mcp-config.json" << EOF
+          cat > "${{ runner.temp }}/mcp-config.json" << EOF
           {"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp","headers":{"CONTEXT7_API_KEY":"$CONTEXT7_API_KEY"}}}}
           EOF
       - uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
@@ -41,11 +41,34 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # GitHub App(OIDC) 대신 워크플로 GITHUB_TOKEN 사용 — id-token 권한·App 설치 불요
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # 경로는 ${{ runner.temp }}(GitHub 렌더타임 확장)로 — claude_args 는 shell-quote 로 파싱돼
+          # $RUNNER_TEMP 셸 변수가 소거되므로 리터럴 경로여야 MCP config 가 로드된다(#176 적대리뷰).
           prompt: |
             fleet-cutoff-gap-audit 스킬의 절차를 따라 영역 "${{ github.event.inputs.area }}" 의
             컷오프 갭을 감사하라. context7로 현행 문서를 대조하고 독립 서브에이전트로 적대 검증하라.
-            net-new + 정정 표를 이슈 #135 에 코멘트로 게시하라. sub-issue 등재·ADR 은 사람 게이트(추천만).
+            **결과(net-new + 정정 표)를 워크스페이스 루트의 cloud-report.md 파일에 Write 로 기록하라 —
+            직접 이슈에 게시하지 말 것(후속 스텝이 시크릿 스캔 후 #135 에 게시한다).**
+            sub-issue 등재·ADR 은 사람 게이트(추천만).
           claude_args: |
-            --mcp-config "$RUNNER_TEMP/mcp-config.json"
-            --allowedTools "Read,Task,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh issue view:*),Bash(gh issue comment 135:*)"
+            --mcp-config "${{ runner.temp }}/mcp-config.json"
+            --allowedTools "Read,Glob,Grep,Write,Task,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh issue view:*)"
             --max-turns 40
+      - name: Scan report for secret leakage and post to #135
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          REPORT="$GITHUB_WORKSPACE/cloud-report.md"
+          if [ ! -f "$REPORT" ]; then
+            echo "::error::cloud-report.md 없음 — 에이전트가 리포트를 쓰지 않음"
+            exit 1
+          fi
+          # 결정적 exfil 방지: 리포트에 실제 시크릿 값이 있으면 게시 차단(에이전트가 비신뢰 주입으로 넣었을 수 있음).
+          for secret in "$CONTEXT7_API_KEY" "$GH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"; do
+            if [ -n "$secret" ] && grep -qF -- "$secret" "$REPORT"; then
+              echo "::error::리포트에 시크릿 값 유출 감지 — 게시 차단(exfil 방지)"
+              exit 1
+            fi
+          done
+          gh issue comment 135 --body-file "$REPORT"

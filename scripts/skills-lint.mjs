@@ -153,9 +153,16 @@ export function parseCloudTools(skillMarkdown) {
   if (idx === -1) return null
   const tools = []
   for (let i = idx + 1; i < lines.length; i++) {
-    const lm = lines[i].match(/^[ \t]+-[ \t]+(.+?)[ \t]*$/)
-    if (!lm) break
-    tools.push(lm[1].replace(/^['"]|['"]$/g, ''))
+    const line = lines[i]
+    if (/^\s*$/.test(line)) continue // 빈 줄: YAML 블록 시퀀스 중간 허용 → 건너뜀(뒤 항목 유실 방지)
+    if (/^\s*#/.test(line)) continue // 전체 주석 줄: 건너뜀
+    const lm = line.match(/^[ \t]+-[ \t]+(.+?)[ \t]*$/)
+    if (!lm) break // 리스트 아이템이 아닌 줄(다음 키 등) = 리스트 종료
+    const item = lm[1]
+      .replace(/\s+#.*$/, '') // 인라인 주석(공백+#) 제거
+      .trim()
+      .replace(/^['"]|['"]$/g, '') // 감싼 따옴표 제거
+    if (item) tools.push(item)
   }
   return tools.length ? tools : null
 }
@@ -202,11 +209,14 @@ export function scanCloudContract(workflowText, contracts) {
   if (needsContext7) {
     if (!/--mcp-config/.test(text))
       hits.push({ rule: 'mcp-config', msg: 'context7 필요하나 --mcp-config 없음' })
-    if (!/context7/.test(text))
-      hits.push({ rule: 'mcp-server', msg: 'mcp-config에 context7 서버 참조 없음' })
+    // 서버 선언("context7": 키)을 본다 — allowedTools 의 `mcp__context7__*` 부분문자열로는 통과 못 하도록.
+    // claude MCP 툴명 규약(mcp__<server>__<tool>)상 서버명은 반드시 context7 여야 그 툴이 해소된다.
+    if (!/"context7"\s*:/.test(text))
+      hits.push({ rule: 'mcp-server', msg: 'mcp-config에 context7 서버 선언("context7":) 없음' })
     if (!/secrets\.CONTEXT7_API_KEY/.test(text))
       hits.push({ rule: 'secret', msg: 'CONTEXT7_API_KEY 시크릿 미참조' })
-    if (!/-z\s+"\$CONTEXT7_API_KEY"/.test(text))
+    // fail-fast: -z 로 시크릿 공백 검사. 따옴표 유무·${...} 중괄호·이중대괄호 형태 모두 허용(false-RED 방지).
+    if (!/-z\s+"?\$\{?CONTEXT7_API_KEY\}?"?/.test(text))
       hits.push({
         rule: 'fail-fast',
         msg: 'CONTEXT7_API_KEY fail-fast(-z) 가드 없음 — no grounding→no run',
@@ -217,11 +227,17 @@ export function scanCloudContract(workflowText, contracts) {
   if (!/^\s*timeout-minutes:/m.test(text))
     hits.push({ rule: 'timeout', msg: 'timeout-minutes 없음' })
   if (!/^concurrency:/m.test(text)) hits.push({ rule: 'concurrency', msg: 'concurrency 없음' })
-  if (/Bash\(gh issue comment:\*\)/.test(text))
-    hits.push({
-      rule: 'comment-pin',
-      msg: 'unpinned Bash(gh issue comment:*) — 특정 이슈 번호로 핀 필요',
-    })
+  // egress 격리(#176 적대리뷰 P1): 에이전트 gh 툴은 읽기전용(gh issue view/list)만. 쓰기(comment/create/
+  // edit/pr)·광역 gh(gh:* / gh issue:*)는 비신뢰 MCP 콘텐츠 주입 하에 공개 이슈로 시크릿을 exfil 하는
+  // 채널이 된다 → 리포트 게시는 에이전트가 아니라 결정적 후속 스텝(시크릿 값 스캔)이 수행한다.
+  for (const tool of allowedSet) {
+    if (!/^Bash\(\s*gh\b/.test(tool)) continue
+    if (!/^Bash\(\s*gh issue (view|list):\*\)$/.test(tool))
+      hits.push({
+        rule: 'gh-egress',
+        msg: `agent gh 툴 '${tool}' 은 읽기전용(gh issue view/list)만 허용 — 쓰기/광역 gh 는 공개 이슈 exfil 위험`,
+      })
+  }
   return hits
 }
 
@@ -289,7 +305,10 @@ if (import.meta.url === `file://${argv[1]}` || argv[1]?.endsWith('skills-lint.mj
     const nm = md.match(/^name:[ \t]*(\S+)/m)
     if (ct && nm) contracts[nm[1]] = ct
   }
-  for (const wf of globSync('.github/workflows/*.yml').filter(existsSync)) {
+  const wfFiles = [
+    ...new Set(['.github/workflows/*.yml', '.github/workflows/*.yaml'].flatMap((g) => globSync(g))),
+  ].filter(existsSync)
+  for (const wf of wfFiles) {
     for (const h of scanCloudContract(readFileSync(wf, 'utf8'), contracts))
       all.push(`${wf} 클라우드계약[${h.rule}]: ${h.msg}`)
   }
