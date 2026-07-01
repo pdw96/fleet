@@ -326,7 +326,10 @@ export function createOpenAiProvider(
           .map((m) => m.id)
           .filter((id): id is string => typeof id === 'string')
           // openai-compatible 게이트웨이는 비-chat 분류가 제각각이라 필터하지 않는다(미지의 chat 모델 누락 방지).
-          .filter((id) => compatible || !OPENAI_NON_CHAT.test(id))
+          // ft: 파인튜닝 모델(ft:<base>:<org>:<user-suffix>:<hash>)은 예외 — user-suffix 가 자유입력이라
+          // denylist 토큰(codex·image 등)과 우연히 겹칠 수 있으나, ft: 모델은 Chat Completions 로 호출 가능
+          // (Responses 도 가능) → substring 필터로 오제외하면 유효 chat 모델을 피커서 숨긴다(#186 Codex P2).
+          .filter((id) => compatible || id.startsWith('ft:') || !OPENAI_NON_CHAT.test(id))
           .map((id) => ({ id }))
       )
     },

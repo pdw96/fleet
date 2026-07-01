@@ -3835,6 +3835,29 @@ describe('listModels (#13 라이브 모델 조회)', () => {
     expect(models).toEqual([{ id: 'gpt-5.2' }, { id: 'gpt-5.5' }, { id: 'gpt-4o' }])
   })
 
+  it('openai: ft: 파인튜닝 모델은 커스텀 접미사에 denylist 토큰(codex·image)이 있어도 보존 (#186 Codex P2)', async () => {
+    // 파인튜닝 모델 id = ft:<base>:<org>:<user-suffix>:<hash> (context7 확인). user-suffix 는 자유입력이라
+    // 'codex'·'image' 등 denylist 토큰과 우연히 겹칠 수 있으나 ft: 모델은 Chat Completions 로 호출 가능
+    // ("use its ID in either the Responses or Chat Completions API") → substring 필터가 오제외하면 안 된다.
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'ft:gpt-4.1-nano-2025-04-14:my-org:codex-bot:BTz2REMH', object: 'model' }, // 보존(ft: chat)
+          { id: 'ft:gpt-4o-2024-08-06:acme:image-tagger:aXbY', object: 'model' }, // 보존(ft: — 기존 토큰도 예외)
+          { id: 'gpt-5.1-codex', object: 'model' }, // 제외 — 공개 codex(Responses 전용, ft: 아님)
+        ],
+      }),
+    }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const models = await p.listModels!()
+
+    expect(models).toEqual([
+      { id: 'ft:gpt-4.1-nano-2025-04-14:my-org:codex-bot:BTz2REMH' },
+      { id: 'ft:gpt-4o-2024-08-06:acme:image-tagger:aXbY' },
+    ])
+  })
+
   it('openai-compatible: baseUrl 루트 + /models 로 조회(후행 슬래시 정규화)', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ object: 'list', data: [{ id: 'llama-3.3-70b', object: 'model' }] }),
