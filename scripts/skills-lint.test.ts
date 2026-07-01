@@ -7,6 +7,7 @@ import {
   scanWorkflowPins,
   scanReleaseSafety,
   DEFAULT_GLOBS,
+  parseCloudTools,
 } from './skills-lint.mjs'
 
 describe('scanText — 차단 패턴', () => {
@@ -303,5 +304,42 @@ describe('validateFrontmatter — SKILL.md', () => {
   })
   it('종료 --- 뒤에 extra가 있으면 실패', () => {
     expect(validateFrontmatter('---\nname: x\ndescription: y\n---extra\n본문').ok).toBe(false)
+  })
+})
+
+describe('parseCloudTools — 스킬 cloud-tools 계약(#176)', () => {
+  it('cloud-tools 블록리스트를 배열로 파싱한다', () => {
+    const md = [
+      '---',
+      'name: fleet-x',
+      'description: d',
+      'cloud-tools:',
+      '  - Read',
+      '  - Task',
+      '  - mcp__context7__query-docs',
+      '  - Bash(gh issue comment 135:*)',
+      '---',
+      '본문',
+    ].join('\n')
+    expect(parseCloudTools(md)).toEqual([
+      'Read',
+      'Task',
+      'mcp__context7__query-docs',
+      'Bash(gh issue comment 135:*)',
+    ])
+  })
+  it('cloud-tools 없으면 null(로컬 전용)', () => {
+    expect(parseCloudTools('---\nname: x\ndescription: d\n---\n본문')).toBeNull()
+  })
+  it('CRLF frontmatter도 파싱한다', () => {
+    const md = '---\r\nname: x\r\ndescription: d\r\ncloud-tools:\r\n  - Read\r\n---\r\n본문'
+    expect(parseCloudTools(md)).toEqual(['Read'])
+  })
+  it('따옴표로 감싼 항목의 따옴표를 제거한다', () => {
+    const md = '---\nname: x\ndescription: d\ncloud-tools:\n  - "Bash(gh issue view:*)"\n---\n'
+    expect(parseCloudTools(md)).toEqual(['Bash(gh issue view:*)'])
+  })
+  it('frontmatter 없으면 null', () => {
+    expect(parseCloudTools('# 제목\n본문')).toBeNull()
   })
 })

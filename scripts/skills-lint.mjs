@@ -140,6 +140,26 @@ export function validateFrontmatter(text) {
   return { ok: errors.length === 0, errors }
 }
 
+/**
+ * SKILL.md frontmatter의 `cloud-tools:` 블록리스트(클라우드 실행 시 필요 툴 계약, #176)를 파싱.
+ * 항목 없으면 null(= 로컬 전용, 계약 검사 비대상). YAML dep 회피 — 수동 파싱(validateFrontmatter 선례).
+ * @returns {string[] | null}
+ */
+export function parseCloudTools(skillMarkdown) {
+  const m = skillMarkdown.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/)
+  if (!m) return null
+  const lines = m[1].split(/\r?\n/)
+  const idx = lines.findIndex((l) => /^cloud-tools:[ \t]*$/.test(l))
+  if (idx === -1) return null
+  const tools = []
+  for (let i = idx + 1; i < lines.length; i++) {
+    const lm = lines[i].match(/^[ \t]+-[ \t]+(.+?)[ \t]*$/)
+    if (!lm) break
+    tools.push(lm[1].replace(/^['"]|['"]$/g, ''))
+  }
+  return tools.length ? tools : null
+}
+
 // --- CLI ---
 import { readFileSync, existsSync, globSync } from 'node:fs'
 import { argv, exit } from 'node:process'
