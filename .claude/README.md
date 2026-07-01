@@ -11,9 +11,10 @@
 | `fleet-pr-review` | 다차원 적대 PR 리뷰 | 로컬만(Codex 봇 중복) |
 | `fleet-backlog-induction` | 백로그 착수 절차 래퍼 | 로컬만(L2-only) |
 
-## workflows/ (선택 · Claude 로컬 가속 `.js`)
+## workflows/ (예약 — Claude 로컬 가속 `.js`)
 
-`Workflow` DSL 가속본. **Claude 전용·비포터블**. 스킬(정의) 없이 `.js`만 존재 금지.
+`Workflow` DSL 가속본을 둘 **예약 위치**다. **현재 추적 `.js` 가속본 0**(디렉터리 미생성). 신규 시
+`.gitignore` negation(`!.claude/workflows/`) allowlist 로 편입되며, **Claude 전용·비포터블**·스킬(정의) 없이 `.js`만 존재 금지.
 
 ## 보안
 
