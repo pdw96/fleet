@@ -2,6 +2,9 @@
 # 메이저 번프(#74류) PR 의 트랜지티브 CVE 가 주 타깃 — Fleet 의존성은 26/29 가 devDependency 라
 # fail-on-scopes 에 development 를 명시해야 툴체인 번프가 게이트에 걸린다(action 기본값 runtime 은 dev 스킵).
 # 라이선스 차단은 미설정(취약점 전용 게이트) — 필요 시 allow-licenses/deny-licenses 추가.
+#
+# private 스킵: Dependency Review compare API 는 private 레포에서 GHAS 를 요구한다(개인계정 private 은
+# GHAS 미가용 → 403). 레포가 private 인 동안은 잡을 스킵(중립·머지 무영향)하고, public 전환 시 자동 동작한다.
 name: Dependency Review
 on: [pull_request]
 
@@ -10,6 +13,7 @@ permissions:
 
 jobs:
   dependency-review:
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
