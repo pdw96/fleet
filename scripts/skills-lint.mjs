@@ -160,6 +160,71 @@ export function parseCloudTools(skillMarkdown) {
   return tools.length ? tools : null
 }
 
+/** claude_args의 `--<flag>` 값(따옴표 문자열 또는 단일 토큰) 추출. 없으면 null. */
+function extractFlagValue(text, flag) {
+  const m = text.match(new RegExp('--' + flag + '\\s+("([^"]*)"|\'([^\']*)\'|(\\S+))'))
+  return m ? (m[2] ?? m[3] ?? m[4] ?? null) : null
+}
+
+/**
+ * 클라우드 워크플로(anthropics/claude-code-action)가 참조하는 cloud-capable 스킬의 계약을 강제(#176).
+ * contracts = { [skillName]: cloudTools[] }. 워크플로가 스킬을 참조하지 않거나 claude-code-action
+ * 미사용이면 skip(빈 배열). CRLF 정규화. 강제 항목: allowedTools superset · context7 배선(mcp-config·
+ * 서버·시크릿·fail-fast) · Task→max-turns · timeout-minutes · concurrency · 코멘트 타깃 핀.
+ * @returns {{rule:string, msg:string}[]} 빈 배열 = 계약 충족
+ */
+export function scanCloudContract(workflowText, contracts) {
+  const hits = []
+  const text = workflowText.replace(/\r\n/g, '\n')
+  if (!/anthropics\/claude-code-action/.test(text)) return hits
+  const referenced = Object.keys(contracts).filter((name) => text.includes(name))
+  if (referenced.length === 0) return hits
+  const allowedRaw = extractFlagValue(text, 'allowedTools')
+  const allowedSet = allowedRaw
+    ? allowedRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : []
+  let needsContext7 = false
+  let hasTask = false
+  for (const name of referenced) {
+    for (const tool of contracts[name]) {
+      if (!allowedSet.includes(tool))
+        hits.push({
+          rule: 'allowedTools',
+          msg: `${name} cloud-tools '${tool}' 미허용(--allowedTools 누락)`,
+        })
+      if (tool.startsWith('mcp__context7__')) needsContext7 = true
+      if (tool === 'Task') hasTask = true
+    }
+  }
+  if (needsContext7) {
+    if (!/--mcp-config/.test(text))
+      hits.push({ rule: 'mcp-config', msg: 'context7 필요하나 --mcp-config 없음' })
+    if (!/context7/.test(text))
+      hits.push({ rule: 'mcp-server', msg: 'mcp-config에 context7 서버 참조 없음' })
+    if (!/secrets\.CONTEXT7_API_KEY/.test(text))
+      hits.push({ rule: 'secret', msg: 'CONTEXT7_API_KEY 시크릿 미참조' })
+    if (!/-z\s+"\$CONTEXT7_API_KEY"/.test(text))
+      hits.push({
+        rule: 'fail-fast',
+        msg: 'CONTEXT7_API_KEY fail-fast(-z) 가드 없음 — no grounding→no run',
+      })
+  }
+  if (hasTask && !/--max-turns\b/.test(text))
+    hits.push({ rule: 'max-turns', msg: 'Task 허용 시 --max-turns 비용 캡 필요' })
+  if (!/^\s*timeout-minutes:/m.test(text))
+    hits.push({ rule: 'timeout', msg: 'timeout-minutes 없음' })
+  if (!/^concurrency:/m.test(text)) hits.push({ rule: 'concurrency', msg: 'concurrency 없음' })
+  if (/Bash\(gh issue comment:\*\)/.test(text))
+    hits.push({
+      rule: 'comment-pin',
+      msg: 'unpinned Bash(gh issue comment:*) — 특정 이슈 번호로 핀 필요',
+    })
+  return hits
+}
+
 // --- CLI ---
 import { readFileSync, existsSync, globSync } from 'node:fs'
 import { argv, exit } from 'node:process'
