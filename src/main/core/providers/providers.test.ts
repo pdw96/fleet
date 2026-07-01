@@ -3809,6 +3809,32 @@ describe('listModels (#13 라이브 모델 조회)', () => {
     expect(calls[0].init.headers.authorization).toBe('Bearer key-o')
   })
 
+  it('openai: codex·deep-research(Responses 전용) 제외 · codex 아닌 chat/reasoning 모델은 보존 (#186 false-positive 가드)', async () => {
+    // codex(gpt-5.x-codex·codex-mini-latest)·deep-research(o3/o4-mini-deep-research)는 Responses API 전용
+    // (context7 OpenAI changelog·local-shell 가이드 확인) → 피커 노출 시 chat() 이 400. denylist 로 제외한다.
+    // 동시에 codex 토큰이 정상 chat/reasoning 모델(gpt-5.2·gpt-4o 등)을 오제외하지 않음을 회귀로 고정한다.
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'gpt-5.1-codex', object: 'model' }, // 제외(codex = Responses 전용)
+          { id: 'gpt-5.1-codex-mini', object: 'model' }, // 제외(codex)
+          { id: 'gpt-5.2-codex', object: 'model' }, // 제외(codex)
+          { id: 'codex-mini-latest', object: 'model' }, // 제외(codex)
+          { id: 'o3-deep-research', object: 'model' }, // 제외(deep-research = Responses 전용)
+          { id: 'o4-mini-deep-research', object: 'model' }, // 제외(deep-research)
+          { id: 'gpt-5.2', object: 'model' }, // 보존 — codex 아닌 reasoning chat(과제외 가드)
+          { id: 'gpt-5.5', object: 'model' }, // 보존
+          { id: 'gpt-4o', object: 'model' }, // 보존
+        ],
+      }),
+    }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const models = await p.listModels!()
+
+    expect(models).toEqual([{ id: 'gpt-5.2' }, { id: 'gpt-5.5' }, { id: 'gpt-4o' }])
+  })
+
   it('openai-compatible: baseUrl 루트 + /models 로 조회(후행 슬래시 정규화)', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ object: 'list', data: [{ id: 'llama-3.3-70b', object: 'model' }] }),
