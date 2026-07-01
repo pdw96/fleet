@@ -26,25 +26,26 @@
 ### 3개 seam
 
 1. **`HttpResponse` 계약 확장** (`types.ts:196`)
-   - `header(name: string): string | null` 추가 — case-insensitive 단일 메서드(승인).
-   - 기존 `text()/body` 메서드 스타일과 일관. 전체 헤더 materialize 회피.
+   - `header?(name: string): string | null` 추가 — case-insensitive **선택** 메서드.
+   - 기존 `body?` 와 일관되게 **선택** — 헤더에 무관심한 mock 은 생략 가능(구현 중 확정: 인라인 mock 다수라
+     필수화는 지속적 유지 세금 + `body?` 와 불일치). `defaultHttp` 는 항상 제공. 전체 헤더 materialize 회피.
 
 2. **`defaultHttp` 채움** (`types.ts:207`)
    - `header: (name) => res.headers.get(name)` — Node fetch `Headers.get` 은 이미 case-insensitive·부재 시 `null`.
 
 3. **`resilient.ts` 측정 백오프**
-   - `parseRetryAfter(res: HttpResponse, nowMs: number): number | null` **순수 함수** 신설.
-     - `retry-after-ms` (밀리초 정수) 우선 파싱 → 있으면 그 값.
-     - `Retry-After`: **초 정수**(예: `5`→5000ms) 또는 **HTTP-date**(예: `Wed, 21 Oct 2026 07:28:00 GMT` → `date - nowMs`) 파싱.
-     - 파싱 실패·음수·NaN·비유한 → `null`(폴백 신호).
+   - `parseRetryAfter(res: HttpResponse, nowMs: number): number | null` **순수 함수** 신설(module-private).
+     - `retry-after-ms` (밀리초) 우선 — **`^\d+$`(trim)** 일 때만 수용(정수 ms).
+     - `Retry-After`: **`^\d+$`** 이면 초 정수(예: `5`→5000ms), 아니면 **HTTP-date**(`Date.parse` → `date - nowMs`).
+     - 비정수(빈 `''`·공백·과학표기 `1e3`·hex `0x10`·부호)·`Date.parse` NaN·과거시각 → `null`(폴백 신호).
+       `^\d+$` 엄격 파싱은 `Number("")===0`(빈 헤더 → 0ms 즉시재시도) 등 `Number` 관대함 회피(리뷰 반영).
    - 재시도 대기 계산:
      ```
-     const measured = parseRetryAfter(res, now)
-     const wait = Math.min(measured ?? backoffMs(attempt), maxRetryAfterMs)
+     const serverWait = parseRetryAfter(res, now())
+     const wait = serverWait != null ? Math.min(serverWait, maxRetryAfterMs) : backoffMs(attempt)
      ```
-     — 헤더 있으면 측정값, 없으면 기존 지수 폴백. 둘 다 `maxRetryAfterMs` 로 clamp.
-   - `ResilientOptions.maxRetryAfterMs?: number` 기본 `60_000`(승인) — 과대치(3600s) 무한대기 방지.
-     초과해도 throw 아니라 clamp 후 재시도(서버가 여전히 429면 다음 시도서 재대기).
+     — 서버 지정값이면 `maxRetryAfterMs` 로 clamp, 없거나 무효면 지수 폴백(clamp 미적용 — catch 경로와 대칭·
+     리뷰 반영). `ResilientOptions.maxRetryAfterMs?: number` 기본 `60_000`(승인) — 과대치(3600s) 무한대기 방지.
 
 ### 계층 정합 (스코프 out)
 - Gemini `RetryInfo.retryDelay` 는 **헤더가 아니라 에러 JSON 바디**에 있다. `resilient` 는
@@ -57,9 +58,9 @@
 - 헤더 부재/파싱실패 = 완전한 기존 동작(무회귀).
 
 ## 유닛 경계
-- `parseRetryAfter(res, nowMs)` — 순수·주입 nowMs 로 HTTP-date 결정론 테스트. resilient 내부(비-export 또는 test-only export).
+- `parseRetryAfter(res, nowMs)` — 순수·주입 nowMs 로 HTTP-date 결정론 테스트. **module-private**(비-export) — `createResilientHttp` 통합 경로로 커버.
 - `createResilientHttp` — 통합 지점. 시그니처 불변(옵션 추가만).
-- `HttpResponse` — 소비자(각 provider·mock) 는 `header()` 를 몰라도 됨(선택 사용). 단 **mock HttpResponse 를 만드는 기존 테스트**가 계약 변경으로 컴파일 깨질 수 있음 → 그 지점 갱신(아래).
+- `HttpResponse` — 소비자(각 provider·mock)는 `header` 를 몰라도 됨(**선택**). 헤더 무관심 mock 은 생략 → `providers.test.ts`·`engine.test.ts` **무변경**(선택화 덕분).
 
 ## 테스트 (TDD)
 mock `HttpResponse`(header 주입 가능) + injected `sleep` 캡처:
@@ -68,12 +69,13 @@ mock `HttpResponse`(header 주입 가능) + injected `sleep` 캡처:
 3. `Retry-After: <HTTP-date +3s>` (nowMs 주입) → 대기 ≈3000ms.
 4. cap 초과(`Retry-After: 3600`) → 대기 = 60000ms(clamp).
 5. 헤더 부재 → 기존 지수(250, 500…) 무회귀.
-6. 잘못된 값(`Retry-After: abc`·음수) → 지수 폴백.
+6. 잘못된 값(`Retry-After: abc`·음수 `-5`) → 지수 폴백.
+6b. 빈 `''`·공백·비표준(`1e3`·`0x10`) `Retry-After` → **0ms 아니라 지수 폴백**(리뷰 반영 회귀 테스트).
 7. 사용자 취소 도중 도착 → 즉시 reject(기존).
 8. 기존 resilient 테스트 전량 green(계약 확장 무회귀).
 
-기존 mock HttpResponse 생성처(providers.test.ts 등)가 `header` 부재로 타입 에러 시 → 옵셔널 아닌 필수 메서드면 갱신 필요.
-**결정**: `header` 를 **필수**로 두되(계약 명확), 테스트 헬퍼/기존 mock 에 `header: () => null` 기본 추가로 무회귀.
+**결정**: `header?` 를 **선택**으로 둔다(`body?` 와 일관·인라인 mock 유지세금 회피). `resilient.test.ts` 의 `resp`
+헬퍼만 헤더 주입을 지원하면 되고, 헤더 무관심 mock(`providers.test.ts`·`engine.test.ts`)은 **무변경**.
 
 ## 수용 기준
 - 429/529 응답의 `Retry-After`(초·HTTP-date)·`retry-after-ms` 파싱해 백오프 대기로 사용(cap 적용).

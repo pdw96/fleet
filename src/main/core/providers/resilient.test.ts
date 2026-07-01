@@ -256,4 +256,18 @@ describe('createResilientHttp — Retry-After 존중 (#185)', () => {
     await createResilientHttp(inner, { sleep, retries: 2 })('u', init)
     expect(waits[0]).toBe(2000) // ms 음수 → 무시하고 초 헤더 사용
   })
+
+  it('빈/공백/비표준 Retry-After 는 0ms 가 아니라 지수 폴백한다', async () => {
+    // Number("")===0 관대함 방어: 빈 헤더가 백오프를 제거해 과부하 서버를 즉시 두들기면 안 된다.
+    for (const bad of ['', '   ', '1e3', '0x10']) {
+      const { waits, sleep } = capturingSleep()
+      let calls = 0
+      const inner: HttpClient = async () => {
+        calls++
+        return calls < 2 ? resp(503, '', { 'retry-after': bad }) : resp(200)
+      }
+      await createResilientHttp(inner, { sleep, retries: 2 })('u', init)
+      expect(waits[0]).toBe(250) // 비정수 → null → 지수(0ms 즉시재시도 아님)
+    }
+  })
 })
