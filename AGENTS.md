@@ -100,9 +100,10 @@ Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회
   낸다(코멘트+👍만). 즉 솔로 Plus-플랜+hosted 러너엔 깔끔한 구독-only 게이트 경로가 없어, 자체 `codex exec`
   job(API 키 권장) 또는 서드파티 wrapper 뿐이다. ROI·중복·비결정성 리스크로 **현재 보류**(2026-06-23
   Codex↔Claude 1차출처 토론 합의 · #98). 협업자 합류/1.0 근처 재검토.
-- **CodeRabbit 병행은 실측 후.** CodeRabbit 류 풍부한 코멘트·incremental review·required gate 는
-  중복 코멘트·리뷰 피로 위험이 있어 지금은 도입하지 않는다. contributor 증가·minor/refactor 수요가
-  커지면 false-positive 율·실제 수정 반영률을 측정해 보조 리뷰어로 실험한다(#98).
+- **CodeRabbit 보조 리뷰(advisory·비-required).** `coderabbitai[bot]` 가 활성이다 — PR 당 Codex +
+  CodeRabbit 2봇 리뷰. **required 게이트 아님**(Codex=P0/P1 senior, CodeRabbit=스타일·incremental 보조).
+  인라인 스레드 resolve 는 ruleset(미해결 스레드 0)이 강제하나 CodeRabbit 자체는 머지를 차단하지 않는다.
+  **fix 푸시마다 재리뷰로 새 스레드가 추가될 수 있어 매 푸시 후 unresolved 재확인.** 채택 근거 = ADR-0006(#98).
 
 **Fleet 특화 P1 신호** — Codex 가 우선 잡아야 할 고위험 회귀(CI 가 통과시켜도 P1 로 본다). 각 항목은
 위 「아키텍처 규칙」·「함정」의 계약을 런타임/타입이 못 잡는 지점에서 보강한다:

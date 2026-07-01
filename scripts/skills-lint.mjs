@@ -140,6 +140,136 @@ export function validateFrontmatter(text) {
   return { ok: errors.length === 0, errors }
 }
 
+/**
+ * SKILL.md frontmatter의 `cloud-tools:` 블록리스트(클라우드 실행 시 필요 툴 계약, #176)를 파싱.
+ * 항목 없으면 null(= 로컬 전용, 계약 검사 비대상). YAML dep 회피 — 수동 파싱(validateFrontmatter 선례).
+ * @returns {string[] | null}
+ */
+export function parseCloudTools(skillMarkdown) {
+  const m = skillMarkdown.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/)
+  if (!m) return null
+  const lines = m[1].split(/\r?\n/)
+  const idx = lines.findIndex((l) => /^cloud-tools:[ \t]*$/.test(l))
+  if (idx === -1) return null
+  const tools = []
+  for (let i = idx + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (/^\s*$/.test(line)) continue // 빈 줄: YAML 블록 시퀀스 중간 허용 → 건너뜀(뒤 항목 유실 방지)
+    if (/^\s*#/.test(line)) continue // 전체 주석 줄: 건너뜀
+    const lm = line.match(/^[ \t]+-[ \t]+(.+?)[ \t]*$/)
+    if (!lm) break // 리스트 아이템이 아닌 줄(다음 키 등) = 리스트 종료
+    const item = lm[1]
+      .replace(/\s+#.*$/, '') // 인라인 주석(공백+#) 제거
+      .trim()
+      .replace(/^['"]|['"]$/g, '') // 감싼 따옴표 제거
+    if (item) tools.push(item)
+  }
+  return tools.length ? tools : null
+}
+
+/** claude_args의 `--<flag>` 값(따옴표 문자열 또는 단일 토큰) 추출. 없으면 null. */
+function extractFlagValue(text, flag) {
+  const m = text.match(new RegExp('--' + flag + '\\s+("([^"]*)"|\'([^\']*)\'|(\\S+))'))
+  return m ? (m[2] ?? m[3] ?? m[4] ?? null) : null
+}
+
+/**
+ * 클라우드 워크플로(anthropics/claude-code-action)가 참조하는 cloud-capable 스킬의 계약을 강제(#176).
+ * contracts = { [skillName]: cloudTools[] }. 워크플로가 스킬을 참조하지 않거나 claude-code-action
+ * 미사용이면 skip(빈 배열). CRLF 정규화. 강제 항목: allowedTools superset · context7 배선(mcp-config·
+ * 서버·시크릿·fail-fast) · Task→max-turns · timeout-minutes · concurrency · 코멘트 타깃 핀.
+ * @returns {{rule:string, msg:string}[]} 빈 배열 = 계약 충족
+ */
+export function scanCloudContract(workflowText, contracts) {
+  const hits = []
+  const text = workflowText.replace(/\r\n/g, '\n')
+  // YAML 전체-줄 주석(#…)을 제거해 스캔 — 주석 속 플래그/키워드(예: 설명문의 `--allowedTools`)가
+  // 존재검사·플래그추출을 오도하지 않게 한다(#181: 주석의 --allowedTools 가 실제 값을 가림).
+  const code = text.replace(/^[ \t]*#.*$/gm, '')
+  if (!/anthropics\/claude-code-action/.test(code)) return hits
+  const referenced = Object.keys(contracts).filter((name) => code.includes(name))
+  if (referenced.length === 0) return hits
+  const allowedRaw = extractFlagValue(code, 'allowedTools')
+  const allowedSet = allowedRaw
+    ? allowedRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : []
+  let needsContext7 = false
+  let hasTask = false
+  for (const name of referenced) {
+    for (const tool of contracts[name]) {
+      if (!allowedSet.includes(tool))
+        hits.push({
+          rule: 'allowedTools',
+          msg: `${name} cloud-tools '${tool}' 미허용(--allowedTools 누락)`,
+        })
+      if (tool.startsWith('mcp__context7__')) needsContext7 = true
+      // 서브에이전트 스폰 툴: 신 SDK=Agent · 구 SDK=Task(둘 다 인정 — claude-code-action 버전 무관 캡 강제).
+      if (tool === 'Task' || tool === 'Agent') hasTask = true
+    }
+  }
+  if (needsContext7) {
+    if (!/--mcp-config/.test(code))
+      hits.push({ rule: 'mcp-config', msg: 'context7 필요하나 --mcp-config 없음' })
+    // 서버 선언("context7": 키)을 본다 — allowedTools 의 `mcp__context7__*` 부분문자열로는 통과 못 하도록.
+    // claude MCP 툴명 규약(mcp__<server>__<tool>)상 서버명은 반드시 context7 여야 그 툴이 해소된다.
+    if (!/"context7"\s*:/.test(code))
+      hits.push({ rule: 'mcp-server', msg: 'mcp-config에 context7 서버 선언("context7":) 없음' })
+    if (!/secrets\.CONTEXT7_API_KEY/.test(code))
+      hits.push({ rule: 'secret', msg: 'CONTEXT7_API_KEY 시크릿 미참조' })
+    // fail-fast: -z 로 시크릿 공백 검사. 따옴표 유무·${...} 중괄호·이중대괄호 형태 모두 허용(false-RED 방지).
+    if (!/-z\s+"?\$\{?CONTEXT7_API_KEY\}?"?/.test(code))
+      hits.push({
+        rule: 'fail-fast',
+        msg: 'CONTEXT7_API_KEY fail-fast(-z) 가드 없음 — no grounding→no run',
+      })
+  }
+  if (hasTask && !/--max-turns\b/.test(code))
+    hits.push({ rule: 'max-turns', msg: 'Task 허용 시 --max-turns 비용 캡 필요' })
+  if (!/^\s*timeout-minutes:/m.test(code))
+    hits.push({ rule: 'timeout', msg: 'timeout-minutes 없음' })
+  if (!/^concurrency:/m.test(code)) hits.push({ rule: 'concurrency', msg: 'concurrency 없음' })
+  // egress 격리(#176 적대리뷰 P1): 에이전트 gh 툴은 읽기전용(gh issue view/list)만. 쓰기(comment/create/
+  // edit/pr)·광역 gh(gh:* / gh issue:*)는 비신뢰 MCP 콘텐츠 주입 하에 공개 이슈로 시크릿을 exfil 하는
+  // 채널이 된다 → 리포트 게시는 에이전트가 아니라 결정적 후속 스텝(시크릿 값 스캔)이 수행한다.
+  for (const tool of allowedSet) {
+    if (!/^Bash\(\s*gh\b/.test(tool)) continue
+    if (!/^Bash\(\s*gh issue (view|list):\*\)$/.test(tool))
+      hits.push({
+        rule: 'gh-egress',
+        msg: `agent gh 툴 '${tool}' 은 읽기전용(gh issue view/list)만 허용 — 쓰기/광역 gh 는 공개 이슈 exfil 위험`,
+      })
+  }
+  // credential 격리(#181 Codex P1): claude-code-action 은 내장 GitHub 쓰기 툴을 항상 제공(--allowedTools 로
+  // 제거 불가)하므로, 그 잡이 issues: write 토큰을 가지면 비신뢰 주입이 내장 툴로 공개 이슈에 exfil 할 수 있다.
+  // → 에이전트 잡은 읽기전용, 게시는 issues: write 를 가진 별도 post 잡만. top-level write 도 상속되므로 금지.
+  const rawLines = code.split('\n')
+  const isWrite = (arr) => arr.some((l) => /^\s*issues:\s*write\b/.test(l))
+  const jobsIdx = rawLines.findIndex((l) => /^jobs:\s*$/.test(l))
+  if (jobsIdx !== -1) {
+    if (isWrite(rawLines.slice(0, jobsIdx)))
+      hits.push({
+        rule: 'agent-write-token',
+        msg: 'top-level permissions 의 issues: write 는 에이전트 잡에 상속 — post 잡으로만 스코프하라(공개 이슈 exfil)',
+      })
+    const jobStarts = []
+    for (let i = jobsIdx + 1; i < rawLines.length; i++)
+      if (/^ {2}[A-Za-z0-9_-]+:\s*$/.test(rawLines[i])) jobStarts.push(i)
+    for (let j = 0; j < jobStarts.length; j++) {
+      const end = j + 1 < jobStarts.length ? jobStarts[j + 1] : rawLines.length
+      const block = rawLines.slice(jobStarts[j], end)
+      if (block.some((l) => /anthropics\/claude-code-action/.test(l)) && isWrite(block))
+        hits.push({
+          rule: 'agent-write-token',
+          msg: 'claude-code-action 잡이 issues: write 보유 — 내장 GitHub 쓰기 툴 exfil 위험(읽기전용으로, 게시는 별도 post 잡)',
+        })
+    }
+  }
+  return hits
+}
+
 // --- CLI ---
 import { readFileSync, existsSync, globSync } from 'node:fs'
 import { argv, exit } from 'node:process'
@@ -195,6 +325,22 @@ if (import.meta.url === `file://${argv[1]}` || argv[1]?.endsWith('skills-lint.mj
     exit(2)
   }
   const all = files.flatMap(lintFile)
+  // 크로스파일: 클라우드 워크플로 ↔ 스킬 계약(#176). staged 여부 무관하게 항상 전수 검사
+  // (스킬 변경이 미staged 워크플로 계약을 깰 수 있으므로).
+  const contracts = {}
+  for (const sf of globSync('.claude/skills/*/SKILL.md').filter(existsSync)) {
+    const md = readFileSync(sf, 'utf8')
+    const ct = parseCloudTools(md)
+    const nm = md.match(/^name:[ \t]*(\S+)/m)
+    if (ct && nm) contracts[nm[1]] = ct
+  }
+  const wfFiles = [
+    ...new Set(['.github/workflows/*.yml', '.github/workflows/*.yaml'].flatMap((g) => globSync(g))),
+  ].filter(existsSync)
+  for (const wf of wfFiles) {
+    for (const h of scanCloudContract(readFileSync(wf, 'utf8'), contracts))
+      all.push(`${wf} 클라우드계약[${h.rule}]: ${h.msg}`)
+  }
   if (all.length) {
     console.error('✗ skills:lint 위반:\n' + all.map((m) => '  ' + m).join('\n'))
     exit(1)

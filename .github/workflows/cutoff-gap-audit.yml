@@ -8,22 +8,118 @@ on:
         default: 'all'
 permissions:
   contents: read
-  issues: write
+concurrency:
+  group: cutoff-gap-audit-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
+  # 에이전트 잡: 비신뢰 context7 콘텐츠를 다루므로 쓰기 토큰 미보유(issues: read) —
+  # claude-code-action 내장 GitHub 쓰기 툴(항상 존재·--allowedTools 로 제거 불가)이 공개 이슈로
+  # exfil 하지 못하게 credential 계층에서 차단(#181 Codex P1). 게시는 별도 post 잡만 수행.
+  # timeout-minutes 는 wall-clock 비용 캡 — --max-turns 는 top-level 세션만 제한하고 Agent 서브에이전트는
+  # 자체 컨텍스트라 미제한이므로, 서브에이전트 런어웨이 총비용은 이 timeout 이 백스톱한다(#181 Codex P2).
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 1
           persist-credentials: false
+      - name: Verify context7 secret present
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          if [ -z "$CONTEXT7_API_KEY" ]; then
+            echo "::error::CONTEXT7_API_KEY 시크릿 필요 — context7 현행 문서 그라운딩 없이는 환각 위험(no grounding → no run)"
+            exit 1
+          fi
+      - name: Prepare workspace (stale report 제거 + MCP config)
+        run: |
+          # checkout 이 채운 이전 산출물을 지워 stale report 게시를 막는다(#181 CodeRabbit).
+          rm -f "$GITHUB_WORKSPACE/cloud-report.md"
+          # 키는 config 파일에 평문으로 쓰지 않는다 — 단일따옴표 heredoc(미확장)로 ${CONTEXT7_API_KEY}
+          # 플레이스홀더만 두고, claude 가 런타임에 자기 env 에서 확장(#181 Codex P1). 파일 Read 로 키 유출 불가.
+          cat > "${{ runner.temp }}/mcp-config.json" << 'EOF'
+          {"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp","headers":{"CONTEXT7_API_KEY":"${CONTEXT7_API_KEY}"}}}}
+          EOF
       - uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
+        env:
+          # claude 가 mcp-config 의 ${CONTEXT7_API_KEY} 를 확장하도록 프로세스 env 로 전달(파일엔 평문 없음).
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # GitHub App(OIDC) 대신 워크플로 GITHUB_TOKEN 사용 — id-token 권한·App 설치 불요
+          # 읽기전용 토큰(이 잡 permissions: issues: read) — 내장 쓰기 툴이 이 토큰으로 게시 불가.
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # 경로는 ${{ runner.temp }}(GitHub 렌더타임 확장)로 — claude_args 는 shell-quote 로 파싱돼
+          # $RUNNER_TEMP 셸 변수가 소거되므로 리터럴 경로여야 MCP config 가 로드된다(#176 적대리뷰).
           prompt: |
             fleet-cutoff-gap-audit 스킬의 절차를 따라 영역 "${{ github.event.inputs.area }}" 의
-            컷오프 갭을 감사하라. net-new + 정정 표를 이슈 #135 에 코멘트로 게시하라.
+            컷오프 갭을 감사하라. context7로 현행 문서를 대조하고 독립 서브에이전트로 적대 검증하라.
+            **결과(net-new + 정정 표)를 워크스페이스 루트의 cloud-report.md 파일에 Write 로 기록하라 —
+            직접 이슈에 게시하지 말 것(후속 post 잡이 시크릿 스캔 후 #135 에 게시한다).**
+            sub-issue 등재·ADR 은 사람 게이트(추천만).
           claude_args: |
-            --allowedTools "Read,Bash(gh issue comment:*),Bash(gh issue view:*)"
+            --mcp-config "${{ runner.temp }}/mcp-config.json"
+            --allowedTools "Read,Glob,Grep,Write,Task,Agent,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh issue view:*)"
+            --max-turns 40
+      - name: Scan report for secret leakage (pre-upload gate)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          REPORT="$GITHUB_WORKSPACE/cloud-report.md"
+          # 새로 생성된 비어있지 않은 파일만 허용(-s) — stale/미작성 파일 차단(#181 CodeRabbit).
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::cloud-report.md 없음/빈 파일 — 에이전트가 리포트를 쓰지 않음"
+            exit 1
+          fi
+          # artifact 업로드 전에 스캔 — artifact 도 공개 다운로드 채널이므로 게시 전이 아니라 업로드 전에 차단(#181 Codex P1).
+          for secret in "$CONTEXT7_API_KEY" "$GH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"; do
+            if [ -n "$secret" ] && grep -qF -- "$secret" "$REPORT"; then
+              echo "::error::리포트에 시크릿 값 유출 감지 — artifact 업로드/게시 차단(exfil 방지)"
+              exit 1
+            fi
+          done
+      - name: Upload report artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloud-report
+          path: cloud-report.md
+          if-no-files-found: error
+  # 게시 잡: 유일하게 issues: write 를 갖는다. checkout 없으므로 gh 에 --repo 를 명시.
+  post:
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Download report artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cloud-report
+          path: report
+      - name: Scan report for secret leakage and post to #135
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          REPORT="$GITHUB_WORKSPACE/report/cloud-report.md"
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::cloud-report.md 없음/빈 파일"
+            exit 1
+          fi
+          # 게시 직전 재스캔(defense-in-depth).
+          for secret in "$CONTEXT7_API_KEY" "$GH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"; do
+            if [ -n "$secret" ] && grep -qF -- "$secret" "$REPORT"; then
+              echo "::error::리포트에 시크릿 값 유출 감지 — 게시 차단(exfil 방지)"
+              exit 1
+            fi
+          done
+          # checkout 이 없어 로컬 git 컨텍스트가 없으므로 --repo 로 대상 저장소를 명시(#181 Codex P1).
+          gh issue comment 135 --repo "${{ github.repository }}" --body-file "$REPORT"

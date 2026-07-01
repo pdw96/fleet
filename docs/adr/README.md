@@ -12,3 +12,6 @@
 | [0002](0002-issue27-백로그-본문-다이어트.md) | Accepted | 메타 백로그 #27 본문에 완료 이력을 누적하지 않는다 |
 | [0003](0003-solo-pre-1.0-과설계-roi-경계.md) | Accepted | 솔로 pre-1.0 단계에선 가치가 입증된 것만 등재한다 |
 | [0004](0004-adr-시스템-경량-시작.md) | Accepted | ADR 시스템을 경량으로 시작하고 구조 정합 lint 는 보류한다 |
+| [0005](0005-picker-docs-외부열기.md) | Accepted | picker 문서 외부열기는 main 매개 정적 URL handoff 로만 허용한다 |
+| [0006](0006-coderabbit-advisory-채택.md) | Accepted | CodeRabbit 을 advisory 보조 리뷰어로 채택한다(비-required) |
+| [0007](0007-클라우드-스킬-계약강제-human-gated-write.md) | Accepted | 클라우드 자동화 스킬은 계약을 기계 강제하고 write 는 human-gated 로 둔다 |

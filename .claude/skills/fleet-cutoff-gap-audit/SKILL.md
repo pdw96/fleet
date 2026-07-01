@@ -1,6 +1,16 @@
 ---
 name: fleet-cutoff-gap-audit
 description: Fleet 컷오프 갭 감사 — context7 현행 문서와 Fleet 코드를 fan-out 대조해 net-new 기능·정정 후보를 찾는다. "컷오프 갭 분석", "현행 문서 대비 누락 점검" 시 사용.
+cloud-tools:
+  - Read
+  - Glob
+  - Grep
+  - Write
+  - Task
+  - Agent
+  - mcp__context7__resolve-library-id
+  - mcp__context7__query-docs
+  - Bash(gh issue view:*)
 ---
 
 # Fleet 컷오프 갭 감사
