@@ -15,6 +15,8 @@ jobs:
   # 에이전트 잡: 비신뢰 context7 콘텐츠를 다루므로 쓰기 토큰 미보유(issues: read) —
   # claude-code-action 내장 GitHub 쓰기 툴(항상 존재·--allowedTools 로 제거 불가)이 공개 이슈로
   # exfil 하지 못하게 credential 계층에서 차단(#181 Codex P1). 게시는 별도 post 잡만 수행.
+  # timeout-minutes 는 wall-clock 비용 캡 — --max-turns 는 top-level 세션만 제한하고 Agent 서브에이전트는
+  # 자체 컨텍스트라 미제한이므로, 서브에이전트 런어웨이 총비용은 이 timeout 이 백스톱한다(#181 Codex P2).
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -63,13 +65,32 @@ jobs:
             --mcp-config "${{ runner.temp }}/mcp-config.json"
             --allowedTools "Read,Glob,Grep,Write,Task,Agent,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh issue view:*)"
             --max-turns 40
+      - name: Scan report for secret leakage (pre-upload gate)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          REPORT="$GITHUB_WORKSPACE/cloud-report.md"
+          # 새로 생성된 비어있지 않은 파일만 허용(-s) — stale/미작성 파일 차단(#181 CodeRabbit).
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::cloud-report.md 없음/빈 파일 — 에이전트가 리포트를 쓰지 않음"
+            exit 1
+          fi
+          # artifact 업로드 전에 스캔 — artifact 도 공개 다운로드 채널이므로 게시 전이 아니라 업로드 전에 차단(#181 Codex P1).
+          for secret in "$CONTEXT7_API_KEY" "$GH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"; do
+            if [ -n "$secret" ] && grep -qF -- "$secret" "$REPORT"; then
+              echo "::error::리포트에 시크릿 값 유출 감지 — artifact 업로드/게시 차단(exfil 방지)"
+              exit 1
+            fi
+          done
       - name: Upload report artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cloud-report
           path: cloud-report.md
           if-no-files-found: error
-  # 게시 잡: 유일하게 issues: write 를 갖는다. 에이전트 산출물을 받아 실제 시크릿 값을 스캔한 뒤에만 게시.
+  # 게시 잡: 유일하게 issues: write 를 갖는다. checkout 없으므로 gh 에 --repo 를 명시.
   post:
     needs: audit
     runs-on: ubuntu-latest
@@ -89,16 +110,16 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           REPORT="$GITHUB_WORKSPACE/report/cloud-report.md"
-          # 새로 생성된 비어있지 않은 파일만 허용(-s) — stale/미작성 파일 게시 차단(#181 CodeRabbit).
           if [ ! -s "$REPORT" ]; then
-            echo "::error::cloud-report.md 없음/빈 파일 — 에이전트가 리포트를 쓰지 않음"
+            echo "::error::cloud-report.md 없음/빈 파일"
             exit 1
           fi
-          # 결정적 exfil 방지: 리포트에 실제 시크릿 값이 있으면 게시 차단(에이전트가 비신뢰 주입으로 넣었을 수 있음).
+          # 게시 직전 재스캔(defense-in-depth).
           for secret in "$CONTEXT7_API_KEY" "$GH_TOKEN" "$CLAUDE_CODE_OAUTH_TOKEN"; do
             if [ -n "$secret" ] && grep -qF -- "$secret" "$REPORT"; then
               echo "::error::리포트에 시크릿 값 유출 감지 — 게시 차단(exfil 방지)"
               exit 1
             fi
           done
-          gh issue comment 135 --body-file "$REPORT"
+          # checkout 이 없어 로컬 git 컨텍스트가 없으므로 --repo 로 대상 저장소를 명시(#181 Codex P1).
+          gh issue comment 135 --repo "${{ github.repository }}" --body-file "$REPORT"

@@ -20,9 +20,10 @@ related: "#176, spec:2026-07-01-issue176-cloud-harness-alignment-design, memory:
 에이전트가 공개 이슈 쓰기 능력을 가지면 "치명적 삼요소"(비신뢰 수집 + 시크릿 접근 + 공개 exfil)가 성립한다.
 `--allowedTools` 에서 `gh issue comment` 를 빼는 것만으로는 불충분 — claude-code-action 은 **내장 GitHub 쓰기
 툴을 항상 제공**(allowedTools 로 제거 불가)한다. 따라서 **credential 계층에서 차단**: 워크플로를 2-잡으로 나눠
-(a) 에이전트 잡은 `issues: read`(쓰기 토큰 미보유 → 내장 툴도 게시 불가)로 리포트를 `cloud-report.md` 에 Write·
-artifact 업로드, (b) `issues: write` 는 **오직 별도 post 잡**이 보유해 artifact 를 받아 실제 시크릿 값을 스캔한
-뒤에만 게시(발견 시 차단). `scanCloudContract` 는 이 격리를 기계 강제한다 — gh-egress(에이전트 gh 읽기전용)·
+(a) 에이전트 잡은 `issues: read`(쓰기 토큰 미보유 → 내장 툴도 게시 불가)로 리포트를 `cloud-report.md` 에 Write,
+**artifact 업로드 전에 실제 시크릿 값을 스캔**(artifact 도 공개 다운로드 채널이므로 게시 전이 아니라 업로드
+전에 차단), (b) `issues: write` 는 **오직 별도 post 잡**이 보유해 artifact 를 받아 재스캔(defense-in-depth) 후
+`--repo` 명시로 게시. `scanCloudContract` 는 이 격리를 기계 강제한다 — gh-egress(에이전트 gh 읽기전용)·
 `agent-write-token`(claude-code-action 잡 `issues: write` 금지)·MCP 키 미평문(`${CONTEXT7_API_KEY}` env 확장)·
 MCP 경로 `${{ runner.temp }}` 리터럴(shell-quote 소거 회피).
 
