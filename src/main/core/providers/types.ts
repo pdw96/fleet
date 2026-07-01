@@ -199,6 +199,12 @@ export interface HttpResponse {
   text(): Promise<string>
   /** SSE/스트리밍 본문(있으면). 청크 단위 바이트 스트림 — text() 와 둘 중 하나만 소비한다. */
   body?: AsyncIterable<Uint8Array> | null
+  /**
+   * 응답 헤더 단건 조회(case-insensitive·부재 시 null). 재시도 계층이 서버 지정 대기
+   * (Retry-After / retry-after-ms)를 읽는 최소 표면 — 전체 헤더 materialize 회피(#185).
+   * body 와 마찬가지로 선택 — 헤더에 무관심한 mock 은 생략 가능(defaultHttp 는 항상 제공).
+   */
+  header?(name: string): string | null
 }
 
 export type HttpClient = (url: string, init: HttpInit) => Promise<HttpResponse>
@@ -217,6 +223,8 @@ export const defaultHttp: HttpClient = async (url, init) => {
     status: res.status,
     text: () => res.text(),
     body: res.body as unknown as AsyncIterable<Uint8Array> | null,
+    // fetch Headers.get 은 case-insensitive·부재 시 null 을 그대로 반환한다.
+    header: (name) => res.headers.get(name),
   }
 }
 

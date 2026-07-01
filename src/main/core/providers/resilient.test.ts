@@ -9,11 +9,18 @@ const init: HttpInit = {
   body: '{}',
   signal: new AbortController().signal,
 }
-const resp = (status: number, body = ''): HttpResponse => ({
+const resp = (status: number, body = '', headers: Record<string, string> = {}): HttpResponse => ({
   ok: status >= 200 && status < 300,
   status,
   text: async () => body,
+  header: (name) => headers[name.toLowerCase()] ?? null,
 })
+
+/** 백오프 대기(ms)를 순서대로 기록하는 sleep — 측정 백오프 단언용. */
+function capturingSleep(): { waits: number[]; sleep: (ms: number) => Promise<void> } {
+  const waits: number[] = []
+  return { waits, sleep: async (ms: number) => void waits.push(ms) }
+}
 
 describe('createResilientHttp', () => {
   it('returns a 2xx response without retrying', async () => {
@@ -166,4 +173,101 @@ describe('createResilientHttp — 취소·타임아웃 (run 경로 무결성)', 
     await expect(http('u', { ...init, signal: ac.signal })).rejects.toThrow()
     expect(calls).toBe(1) // 백오프 중 취소 → 다음 시도 없음(미수정 시: 백오프 다 기다린 뒤 재시도)
   }, 3000)
+})
+
+describe('createResilientHttp — Retry-After 존중 (#185)', () => {
+  it('Retry-After(초)를 백오프 대기로 사용한다', async () => {
+    const { waits, sleep } = capturingSleep()
+    let calls = 0
+    const inner: HttpClient = async () => {
+      calls++
+      return calls < 2 ? resp(503, '', { 'retry-after': '2' }) : resp(200)
+    }
+    await createResilientHttp(inner, { sleep, retries: 2 })('u', init)
+    expect(waits[0]).toBe(2000) // 서버 지정 2초 — 지수(250)가 아니라
+  })
+
+  it('retry-after-ms 를 초 헤더보다 우선한다', async () => {
+    const { waits, sleep } = capturingSleep()
+    let calls = 0
+    const inner: HttpClient = async () => {
+      calls++
+      return calls < 2 ? resp(429, '', { 'retry-after': '2', 'retry-after-ms': '1500' }) : resp(200)
+    }
+    await createResilientHttp(inner, { sleep, retries: 2 })('u', init)
+    expect(waits[0]).toBe(1500)
+  })
+
+  it('Retry-After(HTTP-date)를 주입 now 기준 대기로 환산한다', async () => {
+    const now = 1_000_000
+    const dateHeader = new Date(now + 3000).toUTCString()
+    const { waits, sleep } = capturingSleep()
+    let calls = 0
+    const inner: HttpClient = async () => {
+      calls++
+      return calls < 2 ? resp(529, '', { 'retry-after': dateHeader }) : resp(200)
+    }
+    await createResilientHttp(inner, { sleep, retries: 2, now: () => now })('u', init)
+    expect(waits[0]).toBe(3000)
+  })
+
+  it('과대 Retry-After 를 maxRetryAfterMs 로 clamp 한다', async () => {
+    const { waits, sleep } = capturingSleep()
+    let calls = 0
+    const inner: HttpClient = async () => {
+      calls++
+      return calls < 2 ? resp(503, '', { 'retry-after': '3600' }) : resp(200)
+    }
+    await createResilientHttp(inner, { sleep, retries: 2, maxRetryAfterMs: 60_000 })('u', init)
+    expect(waits[0]).toBe(60_000) // 3600s → 60s 로 clamp
+  })
+
+  it('헤더 부재 시 기존 지수백오프를 유지한다', async () => {
+    const { waits, sleep } = capturingSleep()
+    let calls = 0
+    const inner: HttpClient = async () => {
+      calls++
+      return calls < 3 ? resp(503) : resp(200)
+    }
+    await createResilientHttp(inner, { sleep, retries: 3 })('u', init)
+    expect(waits).toEqual([250, 500]) // 지수 폴백 무회귀
+  })
+
+  it('잘못된 Retry-After(비수치·음수)면 지수 폴백', async () => {
+    const { waits, sleep } = capturingSleep()
+    let calls = 0
+    const inner: HttpClient = async () => {
+      calls++
+      if (calls === 1) return resp(503, '', { 'retry-after': 'abc' })
+      if (calls === 2) return resp(503, '', { 'retry-after': '-5' })
+      return resp(200)
+    }
+    await createResilientHttp(inner, { sleep, retries: 3 })('u', init)
+    expect(waits).toEqual([250, 500]) // 파싱 실패·음수 → 지수
+  })
+
+  it('retry-after-ms 가 유효하지 않으면 retry-after(초)로 폴백한다', async () => {
+    const { waits, sleep } = capturingSleep()
+    let calls = 0
+    const inner: HttpClient = async () => {
+      calls++
+      return calls < 2 ? resp(429, '', { 'retry-after-ms': '-1', 'retry-after': '2' }) : resp(200)
+    }
+    await createResilientHttp(inner, { sleep, retries: 2 })('u', init)
+    expect(waits[0]).toBe(2000) // ms 음수 → 무시하고 초 헤더 사용
+  })
+
+  it('빈/공백/비표준 Retry-After 는 0ms 가 아니라 지수 폴백한다', async () => {
+    // Number("")===0 관대함 방어: 빈 헤더가 백오프를 제거해 과부하 서버를 즉시 두들기면 안 된다.
+    for (const bad of ['', '   ', '1e3', '0x10']) {
+      const { waits, sleep } = capturingSleep()
+      let calls = 0
+      const inner: HttpClient = async () => {
+        calls++
+        return calls < 2 ? resp(503, '', { 'retry-after': bad }) : resp(200)
+      }
+      await createResilientHttp(inner, { sleep, retries: 2 })('u', init)
+      expect(waits[0]).toBe(250) // 비정수 → null → 지수(0ms 즉시재시도 아님)
+    }
+  })
 })

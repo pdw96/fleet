@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 68 files · 173 import wires · 43 IPC channels · 생성 2026-06-30T12:19 UTC
+> 68 files · 173 import wires · 43 IPC channels · 생성 2026-07-01T14:14 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -74,7 +74,7 @@
 
 ### providers · core — 클로드·제미니·GPT 같은 여러 AI 서비스의 서로 다른 대화 방식을 똑같은 형태로 맞춰주고, 인터넷 장애에도 잘 견디게 해주는 'AI 통역·연결 창구' 모음.
 - **providers/types** — 모든 AI 창구가 똑같이 쓰는 공통 약속(데이터 모양)과 기본 도구를 모아 둔 규격집 _대화 한 마디, 답변 결과, 도구 호출, 토큰 사용량 같은 데이터의 표준 모양을 정의해 어떤 AI든 같은 형태로 주고받게 한다. 또 API 키 확인, 인터넷 통신 기본 도구, 오류 표현 같은 공용 부품도 함께 담고 있다._
-  - →의존: shared/types · ←피의존: engine, providers/anthropic, providers/google, providers/openai, providers/registry, providers/resilient, session/api-session, tools/context, tools/loop, tools/types · 295줄
+  - →의존: shared/types · ←피의존: engine, providers/anthropic, providers/google, providers/openai, providers/registry, providers/resilient, session/api-session, tools/context, tools/loop, tools/types · 303줄
 - **providers/registry** — 설정에 적힌 AI 종류를 보고 알맞은 창구를 골라 만들어 주는 안내데스크 _'anthropic·openai·google' 중 무엇인지 보고 그에 맞는 대화 창구를 하나 만들어 돌려준다. 새 AI 서비스를 추가할 때 여기 한 곳만 고치면 되도록 분기점을 모아 둔 곳이다._
   - →의존: providers/anthropic, providers/google, providers/openai, providers/types, shared/types · ←피의존: engine · 31줄
 - **providers/anthropic** — 클로드(Anthropic) AI 와 대화하는 전용 창구 _클로드에게 질문을 보내고 답을 받아오며, 답이 한 글자씩 실시간으로 오게 하는 처리도 한다. 또 클로드의 '깊이 생각하기' 기능이 켜지면 답이 잘리지 않게 답변 분량을 더 넉넉히 잡아주고, 모델 종류에 맞춰 안 통하는 설정은 알아서 빼준다._
@@ -86,7 +86,7 @@
 - **providers/sse** — 실시간으로 조각조각 도착하는 답변 데이터를 한 덩어리씩 깔끔히 잘라 주는 도구 _AI 가 답을 한 글자씩 흘려보낼 때 인터넷으로 들어오는 데이터 조각에서 실제 내용만 골라내고, 의미 없는 줄이나 종료 신호는 걸러낸다. 글자가 중간에 끊겨 깨지지 않도록 안전하게 이어 붙인다._
   - →의존: — · ←피의존: providers/anthropic, providers/google, providers/openai · 27줄
 - **providers/resilient** — 인터넷 장애·지연에도 요청이 잘 끝나게 감싸 주는 안전장치 _응답이 너무 안 오면 무한정 기다리지 않게 제한시간을 걸고, 일시적 오류(과부하·서버 오류)면 잠깐 쉬었다 자동으로 다시 시도한다. 단, 사용자가 직접 취소하면 재시도하지 않고 즉시 멈춘다._
-  - →의존: providers/types · ←피의존: engine · 84줄
+  - →의존: providers/types · ←피의존: engine · 122줄
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
