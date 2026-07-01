@@ -1,4 +1,4 @@
-import type { HttpClient } from './types'
+import type { HttpClient, HttpResponse } from './types'
 
 export interface ResilientOptions {
   /** 추가 재시도 횟수 (기본 2 → 최대 3회 시도). */
@@ -7,6 +7,31 @@ export interface ResilientOptions {
   timeoutMs?: number
   /** 백오프 지연 주입(테스트). 기본은 setTimeout 기반이되 signal abort 시 조기 reject(취소 즉시 반영). */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+  /** 서버 지정 Retry-After 대기의 상한 ms — 과대치(예: 3600s)로 인한 무한대기 방지 (기본 60초). */
+  maxRetryAfterMs?: number
+  /** 현재시각 주입(테스트) — Retry-After HTTP-date 환산 기준. 기본 Date.now. */
+  now?: () => number
+}
+
+/**
+ * 429/5xx 응답의 서버 지정 재시도 대기(ms)를 파싱한다. 헤더 부재·비수치·음수·과거시각이면 null(지수 폴백 신호).
+ * - `retry-after-ms`(밀리초 정수)를 우선한다(Anthropic/OpenAI 확장, 초 헤더보다 정밀).
+ * - `Retry-After`(RFC 7231): 정수 delta-seconds 또는 HTTP-date. HTTP-date 는 now 기준 남은 ms 로 환산.
+ */
+export function parseRetryAfter(res: HttpResponse, nowMs: number): number | null {
+  const ms = res.header?.('retry-after-ms')
+  if (ms != null) {
+    const n = Number(ms)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  const ra = res.header?.('retry-after')
+  if (ra == null) return null
+  const secs = Number(ra)
+  if (Number.isFinite(secs)) return secs >= 0 ? secs * 1000 : null
+  const dateMs = Date.parse(ra)
+  if (Number.isNaN(dateMs)) return null
+  const delta = dateMs - nowMs
+  return delta >= 0 ? delta : null
 }
 
 /** 기본 백오프 sleep — signal 이 abort 되면(사용자 취소) 타이머를 끊고 즉시 reject 한다. */
@@ -51,6 +76,8 @@ export function createResilientHttp(inner: HttpClient, opts: ResilientOptions = 
   const retries = opts.retries ?? 2
   const timeoutMs = opts.timeoutMs ?? 120_000
   const sleep = opts.sleep ?? defaultSleep
+  const maxRetryAfterMs = opts.maxRetryAfterMs ?? 60_000
+  const now = opts.now ?? Date.now
 
   return async (url, init) => {
     let lastErr: unknown
@@ -61,8 +88,10 @@ export function createResilientHttp(inner: HttpClient, opts: ResilientOptions = 
       try {
         const res = await inner(url, { ...init, signal })
         if (isRetryable(res.status) && attempt < retries) {
-          // 백오프에 init.signal 을 넘겨 sleep 도중 취소가 오면 즉시 풀리게 한다(취소면 catch 의 가드가 throw).
-          await sleep(backoffMs(attempt), init.signal)
+          // 서버 지정 Retry-After 가 있으면 그 대기를 존중(상한 clamp), 없으면 지수 폴백. 백오프에 init.signal 을
+          // 넘겨 sleep 도중 취소가 오면 즉시 풀리게 한다(취소면 catch 의 가드가 throw).
+          const wait = Math.min(parseRetryAfter(res, now()) ?? backoffMs(attempt), maxRetryAfterMs)
+          await sleep(wait, init.signal)
           continue
         }
         return res
