@@ -134,6 +134,9 @@ project number `1`, owner `pdw96`).
 3. **사이클** — 비자명하면 브레인스토밍 → 스펙(`docs/superpowers/specs/`) → 계획. TDD(RED→GREEN).
    `npm run verify` green(위 「품질 게이트」 참조; preload 변경 시 dev 재시작). 적대 리뷰.
 4. **PR** — 본문에 `Closes #<N>` 를 넣는다(머지 시 이슈 자동 닫힘 → #27 sub-issue 진행률 자동 갱신).
+   단 **`type:meta`/멀티-phase 트래커는 비최종 phase PR 에 `Part of #<N>` 를 써 메타의 조기 종료를 막고**
+   (#135 가 PR #136 의 `Closes #135` 로 Phase 1 만에 `COMPLETED` 종료된 선례 — 트랙 #140), **최종 phase
+   PR 만 `Closes #<N>`** 로 닫는다.
    PR open 후 **Codex 봇 자동리뷰를 기다려** 반영(위 「리뷰 피드백 교차검증」) → 사용자 확인 후 squash 머지.
    **ruleset 이 required check 통과 + 미해결 리뷰 스레드 resolve 를 머지 전 강제** — Codex 인라인 지적은
    반영/반박 후 스레드를 resolve(`gh api graphql … resolveReviewThread`) 해야 머지 가능.
