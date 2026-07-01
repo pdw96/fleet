@@ -37,3 +37,18 @@ MCP 경로 `${{ runner.temp }}` 리터럴(shell-quote 소거 회피).
 클라우드 산출물이 그라운딩(context7)·독립검증(Task)으로 신뢰가능. 계약 lint 로 배선 drift 회귀 차단(관례→강제).
 비용 = `CONTEXT7_API_KEY` 시크릿 운영·구독 쿼터. 실 클라우드 동작은 dispatch 로 검증(fail-fast 로 무근거 실행
 차단). 재검토 트리거 = cron cadence 수요 or 완전 자동화 ROI 전환.
+
+> **exfil 하드닝의 위협모델 범위(정정)**: 위 exfil 격리(2-잡 credential 분리·artifact/게시 전 시크릿 스캔·
+> gh-egress)는 PR#181 봇리뷰가 **레포 PUBLIC** 을 전제로 P1 을 매긴 것이다. **실제 레포는 PRIVATE(solo,
+> 협업자 1)** — 공개 exfil 싱크(외부 열람자)가 없어 라이브 위협은 사실상 부재하다. 따라서 이 하드닝은
+> **defense-in-depth + future-proof**(레포 public 전환 대비)로 유지하며, private 상태에선 과할 수 있음을 명시한다.
+> 반면 그라운딩(`$RUNNER_TEMP`→`${{ runner.temp }}`)·stale-report·repo-context 수정은 보안 무관 **정합성
+> 버그**라 위협모델과 독립적으로 유효.
+>
+> **알려진 잔여(private 라 수용)**: 에이전트 스텝이 `CONTEXT7_API_KEY`(MCP 확장용) env 를 갖고 Bash(`gh issue
+> view/list`)도 쓰므로, 비신뢰 주입이 `--jq`/`--template`+셸 확장으로 시크릿의 **조각/인코딩**을 리포트에 실을
+> 수 있다 — 게시전 스캔은 **완전 일치 값**만 grep 하므로 조각/인코딩은 통과(PR#181 Codex R5). literal-scan 은
+> 근본적으로 조각 exfil 을 못 막는다. **public 전환 시 폐쇄 필수**: 에이전트에서 Bash/시크릿 제거(예: #27 데이터를
+> 결정적 프리페치 스텝으로 주입, 또는 Claude 를 Bash·시크릿 env 없이 실행).
+>
+> 재검토 트리거 = 레포 public 전환(하드닝 필수화·잔여 폐쇄) or private 유지 확정 시 lean 화 검토.
