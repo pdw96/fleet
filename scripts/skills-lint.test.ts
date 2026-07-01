@@ -424,3 +424,26 @@ describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
     expect(scanCloudContract(good.replace(/\n/g, '\r\n'), CONTRACTS)).toEqual([])
   })
 })
+
+describe('실 클라우드 워크플로 계약 통과(#176 회귀락)', () => {
+  const contracts = {
+    'fleet-cutoff-gap-audit': parseCloudTools(
+      readFileSync('.claude/skills/fleet-cutoff-gap-audit/SKILL.md', 'utf8'),
+    ),
+    'fleet-backlog-rerank': parseCloudTools(
+      readFileSync('.claude/skills/fleet-backlog-rerank/SKILL.md', 'utf8'),
+    ),
+  }
+  it('두 스킬 cloud-tools가 선언돼 있다(부재 시 loud RED)', () => {
+    expect(contracts['fleet-cutoff-gap-audit']).toBeTruthy()
+    expect(contracts['fleet-backlog-rerank']).toBeTruthy()
+  })
+  it('cutoff-gap-audit.yml 이 계약을 충족한다', () => {
+    const wf = readFileSync('.github/workflows/cutoff-gap-audit.yml', 'utf8')
+    expect(scanCloudContract(wf, contracts)).toEqual([])
+  })
+  it('backlog-rerank.yml 이 계약을 충족한다', () => {
+    const wf = readFileSync('.github/workflows/backlog-rerank.yml', 'utf8')
+    expect(scanCloudContract(wf, contracts)).toEqual([])
+  })
+})

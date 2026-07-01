@@ -280,6 +280,19 @@ if (import.meta.url === `file://${argv[1]}` || argv[1]?.endsWith('skills-lint.mj
     exit(2)
   }
   const all = files.flatMap(lintFile)
+  // 크로스파일: 클라우드 워크플로 ↔ 스킬 계약(#176). staged 여부 무관하게 항상 전수 검사
+  // (스킬 변경이 미staged 워크플로 계약을 깰 수 있으므로).
+  const contracts = {}
+  for (const sf of globSync('.claude/skills/*/SKILL.md').filter(existsSync)) {
+    const md = readFileSync(sf, 'utf8')
+    const ct = parseCloudTools(md)
+    const nm = md.match(/^name:[ \t]*(\S+)/m)
+    if (ct && nm) contracts[nm[1]] = ct
+  }
+  for (const wf of globSync('.github/workflows/*.yml').filter(existsSync)) {
+    for (const h of scanCloudContract(readFileSync(wf, 'utf8'), contracts))
+      all.push(`${wf} 클라우드계약[${h.rule}]: ${h.msg}`)
+  }
   if (all.length) {
     console.error('✗ skills:lint 위반:\n' + all.map((m) => '  ' + m).join('\n'))
     exit(1)
