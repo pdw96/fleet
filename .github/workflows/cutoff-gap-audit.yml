@@ -9,14 +9,33 @@ on:
 permissions:
   contents: read
   issues: write
+concurrency:
+  group: cutoff-gap-audit-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 1
           persist-credentials: false
+      - name: Verify context7 secret present
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          if [ -z "$CONTEXT7_API_KEY" ]; then
+            echo "::error::CONTEXT7_API_KEY 시크릿 필요 — context7 현행 문서 그라운딩 없이는 환각 위험(no grounding → no run)"
+            exit 1
+          fi
+      - name: Create context7 MCP config
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          cat > "$RUNNER_TEMP/mcp-config.json" << EOF
+          {"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp","headers":{"CONTEXT7_API_KEY":"$CONTEXT7_API_KEY"}}}}
+          EOF
       - uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -24,6 +43,9 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             fleet-cutoff-gap-audit 스킬의 절차를 따라 영역 "${{ github.event.inputs.area }}" 의
-            컷오프 갭을 감사하라. net-new + 정정 표를 이슈 #135 에 코멘트로 게시하라.
+            컷오프 갭을 감사하라. context7로 현행 문서를 대조하고 독립 서브에이전트로 적대 검증하라.
+            net-new + 정정 표를 이슈 #135 에 코멘트로 게시하라. sub-issue 등재·ADR 은 사람 게이트(추천만).
           claude_args: |
-            --allowedTools "Read,Bash(gh issue comment:*),Bash(gh issue view:*)"
+            --mcp-config "$RUNNER_TEMP/mcp-config.json"
+            --allowedTools "Read,Task,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh issue view:*),Bash(gh issue comment 135:*)"
+            --max-turns 40
