@@ -3809,6 +3809,55 @@ describe('listModels (#13 라이브 모델 조회)', () => {
     expect(calls[0].init.headers.authorization).toBe('Bearer key-o')
   })
 
+  it('openai: codex·deep-research(Responses 전용) 제외 · codex 아닌 chat/reasoning 모델은 보존 (#186 false-positive 가드)', async () => {
+    // codex(gpt-5.x-codex·codex-mini-latest)·deep-research(o3/o4-mini-deep-research)는 Responses API 전용
+    // (context7 OpenAI changelog·local-shell 가이드 확인) → 피커 노출 시 chat() 이 400. denylist 로 제외한다.
+    // 동시에 codex 토큰이 정상 chat/reasoning 모델(gpt-5.2·gpt-4o 등)을 오제외하지 않음을 회귀로 고정한다.
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'gpt-5.1-codex', object: 'model' }, // 제외(codex = Responses 전용)
+          { id: 'gpt-5.1-codex-mini', object: 'model' }, // 제외(codex)
+          { id: 'gpt-5.2-codex', object: 'model' }, // 제외(codex)
+          { id: 'codex-mini-latest', object: 'model' }, // 제외(codex)
+          { id: 'o3-deep-research', object: 'model' }, // 제외(deep-research = Responses 전용)
+          { id: 'o4-mini-deep-research', object: 'model' }, // 제외(deep-research)
+          { id: 'gpt-5.2', object: 'model' }, // 보존 — codex 아닌 reasoning chat(과제외 가드)
+          { id: 'gpt-5.5', object: 'model' }, // 보존
+          { id: 'gpt-4o', object: 'model' }, // 보존
+        ],
+      }),
+    }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const models = await p.listModels!()
+
+    expect(models).toEqual([{ id: 'gpt-5.2' }, { id: 'gpt-5.5' }, { id: 'gpt-4o' }])
+  })
+
+  it('openai: ft: 파인튜닝 모델은 커스텀 접미사에 denylist 토큰(codex·image)이 있어도 보존 (#186 Codex P2)', async () => {
+    // 파인튜닝 모델 id = ft:<base>:<org>:<user-suffix>:<hash> (context7 확인). user-suffix 는 자유입력이라
+    // 'codex'·'image' 등 denylist 토큰과 우연히 겹칠 수 있으나 ft: 모델은 Chat Completions 로 호출 가능
+    // ("use its ID in either the Responses or Chat Completions API") → substring 필터가 오제외하면 안 된다.
+    const { http } = mockHttp(() => ({
+      body: JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'ft:gpt-4.1-nano-2025-04-14:my-org:codex-bot:BTz2REMH', object: 'model' }, // 보존(ft: chat)
+          { id: 'ft:gpt-4o-2024-08-06:acme:image-tagger:aXbY', object: 'model' }, // 보존(ft: — 기존 토큰도 예외)
+          { id: 'gpt-5.1-codex', object: 'model' }, // 제외 — 공개 codex(Responses 전용, ft: 아님)
+        ],
+      }),
+    }))
+    const p = createOpenAiProvider(baseOpenai, http)
+    const models = await p.listModels!()
+
+    expect(models).toEqual([
+      { id: 'ft:gpt-4.1-nano-2025-04-14:my-org:codex-bot:BTz2REMH' },
+      { id: 'ft:gpt-4o-2024-08-06:acme:image-tagger:aXbY' },
+    ])
+  })
+
   it('openai-compatible: baseUrl 루트 + /models 로 조회(후행 슬래시 정규화)', async () => {
     const { http, calls } = mockHttp(() => ({
       body: JSON.stringify({ object: 'list', data: [{ id: 'llama-3.3-70b', object: 'model' }] }),

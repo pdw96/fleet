@@ -31,12 +31,15 @@ const MODELS_ENDPOINT = 'https://api.openai.com/v1/models'
 // 방지). 완전 열거가 불가능한 denylist 라 새 계열이 나오면 추가하지만, 입력란이 자유입력+폴백이라 누락된
 // 한두 모델이 제안돼도 사용자가 직접 교정 가능 — chat 모델 누락(false-positive)이 더 해로우니 보수적으로 둔다.
 //   • 임베딩/음성/이미지/모더레이션: embedding·whisper·tts·dall-e·transcribe·image (audio 는 chat 변종과 겹쳐 제외)
-//   • Responses 전용: computer-use(-preview)·realtime·*-pro(pro 티어는 o-pro·gpt-5.5-pro 모두 Responses
-//     전용 — context7 OpenAI changelog 확인. chat 모델엔 '-pro' 접미사가 없어 false-positive 위험 없음)
+//   • Responses 전용: computer-use(-preview)·realtime·codex·deep-research·*-pro. codex(gpt-5.x-codex·
+//     codex-mini-latest)·deep-research(o3/o4-mini-deep-research)는 /v1/models 에 노출되나 Chat Completions
+//     불가 → 선택 시 400 (context7 OpenAI changelog·local-shell 가이드 확인, #186). 두 토큰은 정상 chat/
+//     reasoning 모델(gpt-4o·gpt-5.x)과 겹치지 않아 false-positive 위험 없음. pro 티어는 o-pro·gpt-5.5-pro
+//     모두 Responses 전용 — chat 모델엔 '-pro' 접미사가 없어 마찬가지로 안전.
 //   • 레거시 completions: instruct·davinci·babbage · 비디오: sora
 // (Codex P2/P3 반복 반영). 장기적으론 per-model capability 조회가 정답(#13 후속).
 const OPENAI_NON_CHAT =
-  /embedding|whisper|tts|dall-?e|moderation|transcrib|image|computer-use|instruct|davinci|babbage|realtime|sora|-pro\b/i
+  /embedding|whisper|tts|dall-?e|moderation|transcrib|image|computer-use|codex|deep-research|instruct|davinci|babbage|realtime|sora|-pro\b/i
 
 interface OpenAiToolCall {
   id?: string
@@ -323,7 +326,10 @@ export function createOpenAiProvider(
           .map((m) => m.id)
           .filter((id): id is string => typeof id === 'string')
           // openai-compatible 게이트웨이는 비-chat 분류가 제각각이라 필터하지 않는다(미지의 chat 모델 누락 방지).
-          .filter((id) => compatible || !OPENAI_NON_CHAT.test(id))
+          // ft: 파인튜닝 모델(ft:<base>:<org>:<user-suffix>:<hash>)은 예외 — user-suffix 가 자유입력이라
+          // denylist 토큰(codex·image 등)과 우연히 겹칠 수 있으나, ft: 모델은 Chat Completions 로 호출 가능
+          // (Responses 도 가능) → substring 필터로 오제외하면 유효 chat 모델을 피커서 숨긴다(#186 Codex P2).
+          .filter((id) => compatible || id.startsWith('ft:') || !OPENAI_NON_CHAT.test(id))
           .map((id) => ({ id }))
       )
     },

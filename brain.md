@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 68 files · 173 import wires · 43 IPC channels · 생성 2026-07-01T14:14 UTC
+> 68 files · 173 import wires · 43 IPC channels · 생성 2026-07-01T15:06 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -82,7 +82,7 @@
 - **providers/google** — 구글 제미니(Gemini) AI 와 대화하는 전용 창구 _제미니에게 질문을 보내고 답을 받아오며, 제미니 버전(2.5/3 등)마다 다른 '생각 깊이' 설정 방식을 알아서 맞춰 보낸다. 생각하기를 켜면 답이 굶지 않도록 답변 분량을 늘리고, 제미니가 답을 차단했는지도 가려낸다._
   - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 574줄
 - **providers/openai** — OpenAI(GPT) 및 같은 방식을 쓰는 호환 AI 와 대화하는 전용 창구 _GPT 에게 질문을 보내고 답을 받아오며, o1·GPT-5 같은 추론 모델이 거부하는 설정(온도·토큰 항목 등)을 모델에 맞게 알아서 바꿔 보낸다. 같은 방식을 쓰는 다른 회사 AI(openai-compatible)도 이 창구로 함께 처리한다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 478줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 484줄
 - **providers/sse** — 실시간으로 조각조각 도착하는 답변 데이터를 한 덩어리씩 깔끔히 잘라 주는 도구 _AI 가 답을 한 글자씩 흘려보낼 때 인터넷으로 들어오는 데이터 조각에서 실제 내용만 골라내고, 의미 없는 줄이나 종료 신호는 걸러낸다. 글자가 중간에 끊겨 깨지지 않도록 안전하게 이어 붙인다._
   - →의존: — · ←피의존: providers/anthropic, providers/google, providers/openai · 27줄
 - **providers/resilient** — 인터넷 장애·지연에도 요청이 잘 끝나게 감싸 주는 안전장치 _응답이 너무 안 오면 무한정 기다리지 않게 제한시간을 걸고, 일시적 오류(과부하·서버 오류)면 잠깐 쉬었다 자동으로 다시 시도한다. 단, 사용자가 직접 취소하면 재시도하지 않고 즉시 멈춘다._
