@@ -28,14 +28,19 @@ jobs:
             echo "::error::CONTEXT7_API_KEY 시크릿 필요 — context7 현행 문서 그라운딩 없이는 환각 위험(no grounding → no run)"
             exit 1
           fi
-      - name: Create context7 MCP config
-        env:
-          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+      - name: Prepare workspace (stale report 제거 + MCP config)
         run: |
-          cat > "${{ runner.temp }}/mcp-config.json" << EOF
-          {"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp","headers":{"CONTEXT7_API_KEY":"$CONTEXT7_API_KEY"}}}}
+          # checkout 이 채운 이전 산출물을 지워 stale report 게시를 막는다(#181 CodeRabbit).
+          rm -f "$GITHUB_WORKSPACE/cloud-report.md"
+          # 키는 config 파일에 평문으로 쓰지 않는다 — 단일따옴표 heredoc(미확장)로 ${CONTEXT7_API_KEY}
+          # 플레이스홀더만 두고, claude 가 런타임에 자기 env 에서 확장(#181 Codex P1). 파일 Read 로 키 유출 불가.
+          cat > "${{ runner.temp }}/mcp-config.json" << 'EOF'
+          {"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp","headers":{"CONTEXT7_API_KEY":"${CONTEXT7_API_KEY}"}}}}
           EOF
       - uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
+        env:
+          # claude 가 mcp-config 의 ${CONTEXT7_API_KEY} 를 확장하도록 프로세스 env 로 전달(파일엔 평문 없음).
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # GitHub App(OIDC) 대신 워크플로 GITHUB_TOKEN 사용 — id-token 권한·App 설치 불요
@@ -51,7 +56,7 @@ jobs:
             sub-issue 등재·ADR 은 사람 게이트(추천만).
           claude_args: |
             --mcp-config "${{ runner.temp }}/mcp-config.json"
-            --allowedTools "Read,Glob,Grep,Write,Task,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh issue view:*),Bash(gh issue list:*)"
+            --allowedTools "Read,Glob,Grep,Write,Task,Agent,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh issue view:*),Bash(gh issue list:*)"
             --max-turns 40
       - name: Scan report for secret leakage and post to #135
         env:
@@ -60,8 +65,9 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           REPORT="$GITHUB_WORKSPACE/cloud-report.md"
-          if [ ! -f "$REPORT" ]; then
-            echo "::error::cloud-report.md 없음 — 에이전트가 리포트를 쓰지 않음"
+          # 새로 생성된 비어있지 않은 파일만 허용(-s) — stale/미작성 파일 게시 차단(#181 CodeRabbit).
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::cloud-report.md 없음/빈 파일 — 에이전트가 리포트를 쓰지 않음"
             exit 1
           fi
           # 결정적 exfil 방지: 리포트에 실제 시크릿 값이 있으면 게시 차단(에이전트가 비신뢰 주입으로 넣었을 수 있음).

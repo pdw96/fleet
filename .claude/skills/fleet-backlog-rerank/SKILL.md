@@ -7,6 +7,7 @@ cloud-tools:
   - Grep
   - Write
   - Task
+  - Agent
   - mcp__context7__resolve-library-id
   - mcp__context7__query-docs
   - Bash(gh issue view:*)

@@ -86,21 +86,24 @@ jobs:
 
 ### 4.2 스킬 `cloud-tools` 계약 선언 (finding 2)
 
-두 SKILL.md frontmatter에 `cloud-tools:` YAML 리스트 추가 = 클라우드 실행 시 필요 툴의 기계판독 계약. 예(audit):
+두 SKILL.md frontmatter에 `cloud-tools:` YAML 리스트 추가 = 클라우드 실행 시 필요 툴의 기계판독 계약. **최종 계약**(§9 적대리뷰·#181 봇리뷰 반영 — gh 쓰기 egress 제거·Grep/Glob/Write·서브에이전트 Task/Agent):
 ```yaml
 ---
 name: fleet-cutoff-gap-audit
 description: …
 cloud-tools:
   - Read
+  - Glob
+  - Grep
+  - Write
   - Task
+  - Agent
   - mcp__context7__resolve-library-id
   - mcp__context7__query-docs
   - Bash(gh issue view:*)
-  - Bash(gh issue comment 135:*)
 ---
 ```
-rerank는 추가로 `Bash(gh issue list:*)`. **create/Write/push는 미포함**(human-gated — 포크 A). `cloud-tools` 부재 스킬 = 로컬 전용(계약 검사 대상 아님).
+rerank는 추가로 `Bash(gh issue list:*)`. **gh issue comment(쓰기 egress)·create·push는 미포함** — 리포트는 `cloud-report.md`에 Write, 게시는 결정적 후속 스텝(시크릿 스캔). `cloud-tools` 부재 스킬 = 로컬 전용(계약 검사 대상 아님).
 
 ### 4.3 skills-lint 계약 강제 (finding 2 — TDD 핵심)
 

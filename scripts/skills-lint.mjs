@@ -203,7 +203,8 @@ export function scanCloudContract(workflowText, contracts) {
           msg: `${name} cloud-tools '${tool}' 미허용(--allowedTools 누락)`,
         })
       if (tool.startsWith('mcp__context7__')) needsContext7 = true
-      if (tool === 'Task') hasTask = true
+      // 서브에이전트 스폰 툴: 신 SDK=Agent · 구 SDK=Task(둘 다 인정 — claude-code-action 버전 무관 캡 강제).
+      if (tool === 'Task' || tool === 'Agent') hasTask = true
     }
   }
   if (needsContext7) {

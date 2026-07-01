@@ -369,12 +369,13 @@ describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
       'Grep',
       'Write',
       'Task',
+      'Agent',
       'mcp__context7__query-docs',
       'Bash(gh issue view:*)',
     ],
   }
   const ALLOWED =
-    '--allowedTools "Read,Glob,Grep,Write,Task,mcp__context7__query-docs,Bash(gh issue view:*)"'
+    '--allowedTools "Read,Glob,Grep,Write,Task,Agent,mcp__context7__query-docs,Bash(gh issue view:*)"'
   // 계약 충족 워크플로(모든 assertion 통과). 에이전트는 gh issue comment(쓰기 egress) 미보유 —
   // 결정적 후속 스텝(run:)이 시크릿 스캔 후 #135 에 게시(exfil 삼요소 차단).
   const good = [
@@ -450,6 +451,13 @@ describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
   it('Task 허용인데 --max-turns 없으면 위반', () => {
     const t = good.replace('\n            --max-turns 40', '')
     expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'max-turns')).toBe(true)
+  })
+  it('Agent(신 SDK 서브에이전트 툴)만 있고 --max-turns 없으면 위반', () => {
+    const c = { 'fleet-x': ['Read', 'Agent', 'mcp__context7__query-docs', 'Bash(gh issue view:*)'] }
+    const t = good
+      .replace('Read,Glob,Grep,Write,Task,Agent,', 'Read,Agent,')
+      .replace('\n            --max-turns 40', '')
+    expect(scanCloudContract(t, c).some((h) => h.rule === 'max-turns')).toBe(true)
   })
   it('timeout-minutes 없으면 위반', () => {
     const t = good.replace('    timeout-minutes: 30\n', '')
