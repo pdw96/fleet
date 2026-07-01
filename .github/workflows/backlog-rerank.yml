@@ -7,14 +7,19 @@ on:
         required: false
 permissions:
   contents: read
-  issues: write
 concurrency:
   group: backlog-rerank-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  # 에이전트 잡: 비신뢰 context7 콘텐츠를 다루므로 쓰기 토큰 미보유(issues: read) —
+  # claude-code-action 내장 GitHub 쓰기 툴(항상 존재·--allowedTools 로 제거 불가)이 공개 이슈로
+  # exfil 하지 못하게 credential 계층에서 차단(#181 Codex P1). 게시는 별도 post 잡만 수행.
   rerank:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -43,7 +48,7 @@ jobs:
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # GitHub App(OIDC) 대신 워크플로 GITHUB_TOKEN 사용 — id-token 권한·App 설치 불요
+          # 읽기전용 토큰(이 잡 permissions: issues: read) — 내장 쓰기 툴이 이 토큰으로 게시 불가.
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # 경로는 ${{ runner.temp }}(GitHub 렌더타임 확장)로 — claude_args 는 shell-quote 로 파싱돼
           # $RUNNER_TEMP 셸 변수가 소거되므로 리터럴 경로여야 MCP config 가 로드된다(#176 적대리뷰).
@@ -52,19 +57,38 @@ jobs:
             트리거 사유: ${{ github.event.inputs.note }}
             context7로 현행 교차검증하고 독립 서브에이전트로 적대 refute 하라.
             **결과 표(후보·verdict·근거)를 워크스페이스 루트의 cloud-report.md 파일에 Write 로 기록하라 —
-            직접 이슈에 게시하지 말 것(후속 스텝이 시크릿 스캔 후 #135 에 게시한다).**
+            직접 이슈에 게시하지 말 것(후속 post 잡이 시크릿 스캔 후 #135 에 게시한다).**
             sub-issue 등재·ADR 은 사람 게이트(추천만).
           claude_args: |
             --mcp-config "${{ runner.temp }}/mcp-config.json"
             --allowedTools "Read,Glob,Grep,Write,Task,Agent,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh issue view:*),Bash(gh issue list:*)"
             --max-turns 40
+      - name: Upload report artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloud-report
+          path: cloud-report.md
+          if-no-files-found: error
+  # 게시 잡: 유일하게 issues: write 를 갖는다. 에이전트 산출물을 받아 실제 시크릿 값을 스캔한 뒤에만 게시.
+  post:
+    needs: rerank
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Download report artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cloud-report
+          path: report
       - name: Scan report for secret leakage and post to #135
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          REPORT="$GITHUB_WORKSPACE/cloud-report.md"
+          REPORT="$GITHUB_WORKSPACE/report/cloud-report.md"
           # 새로 생성된 비어있지 않은 파일만 허용(-s) — stale/미작성 파일 게시 차단(#181 CodeRabbit).
           if [ ! -s "$REPORT" ]; then
             echo "::error::cloud-report.md 없음/빈 파일 — 에이전트가 리포트를 쓰지 않음"

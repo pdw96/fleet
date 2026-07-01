@@ -484,8 +484,35 @@ describe('scanCloudContract — 워크플로↔스킬 계약(#176)', () => {
     const t = good.replace('Bash(gh issue view:*)"', 'Bash(gh issue view:*),Bash(gh issue list:*)"')
     expect(scanCloudContract(t, c)).toEqual([])
   })
+  it('claude-code-action 잡이 issues: write 를 가지면 credential 격리 위반', () => {
+    const t = good.replace(
+      '  run:\n    runs-on: ubuntu-latest',
+      '  run:\n    permissions:\n      issues: write\n    runs-on: ubuntu-latest',
+    )
+    expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'agent-write-token')).toBe(true)
+  })
+  it('top-level permissions issues: write 는 에이전트 잡에 상속돼 위반', () => {
+    const t = good.replace('concurrency:', 'permissions:\n  issues: write\nconcurrency:')
+    expect(scanCloudContract(t, CONTRACTS).some((h) => h.rule === 'agent-write-token')).toBe(true)
+  })
+  it('claude-code-action 없는 잡의 issues: write(post 잡)는 위반 아님', () => {
+    const t = good.replace(
+      '      - name: scan and post\n        run: gh issue comment 135 --body-file cloud-report.md',
+      '  post:\n    permissions:\n      issues: write\n    runs-on: ubuntu-latest\n    steps:\n      - run: gh issue comment 135 --body-file r.md',
+    )
+    expect(scanCloudContract(t, CONTRACTS).filter((h) => h.rule === 'agent-write-token')).toEqual(
+      [],
+    )
+  })
   it('CRLF 정규화', () => {
     expect(scanCloudContract(good.replace(/\n/g, '\r\n'), CONTRACTS)).toEqual([])
+  })
+  it('주석에 --allowedTools 가 언급돼도 실제 값을 추출한다(주석 오도 방지)', () => {
+    const t = good.replace(
+      '      - uses: anthropics/claude-code-action@abc',
+      '      # 주의: --allowedTools 로 내장 툴 제거 불가\n      - uses: anthropics/claude-code-action@abc',
+    )
+    expect(scanCloudContract(t, CONTRACTS)).toEqual([])
   })
 })
 

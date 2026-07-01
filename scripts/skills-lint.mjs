@@ -183,10 +183,13 @@ function extractFlagValue(text, flag) {
 export function scanCloudContract(workflowText, contracts) {
   const hits = []
   const text = workflowText.replace(/\r\n/g, '\n')
-  if (!/anthropics\/claude-code-action/.test(text)) return hits
-  const referenced = Object.keys(contracts).filter((name) => text.includes(name))
+  // YAML 전체-줄 주석(#…)을 제거해 스캔 — 주석 속 플래그/키워드(예: 설명문의 `--allowedTools`)가
+  // 존재검사·플래그추출을 오도하지 않게 한다(#181: 주석의 --allowedTools 가 실제 값을 가림).
+  const code = text.replace(/^[ \t]*#.*$/gm, '')
+  if (!/anthropics\/claude-code-action/.test(code)) return hits
+  const referenced = Object.keys(contracts).filter((name) => code.includes(name))
   if (referenced.length === 0) return hits
-  const allowedRaw = extractFlagValue(text, 'allowedTools')
+  const allowedRaw = extractFlagValue(code, 'allowedTools')
   const allowedSet = allowedRaw
     ? allowedRaw
         .split(',')
@@ -208,26 +211,26 @@ export function scanCloudContract(workflowText, contracts) {
     }
   }
   if (needsContext7) {
-    if (!/--mcp-config/.test(text))
+    if (!/--mcp-config/.test(code))
       hits.push({ rule: 'mcp-config', msg: 'context7 필요하나 --mcp-config 없음' })
     // 서버 선언("context7": 키)을 본다 — allowedTools 의 `mcp__context7__*` 부분문자열로는 통과 못 하도록.
     // claude MCP 툴명 규약(mcp__<server>__<tool>)상 서버명은 반드시 context7 여야 그 툴이 해소된다.
-    if (!/"context7"\s*:/.test(text))
+    if (!/"context7"\s*:/.test(code))
       hits.push({ rule: 'mcp-server', msg: 'mcp-config에 context7 서버 선언("context7":) 없음' })
-    if (!/secrets\.CONTEXT7_API_KEY/.test(text))
+    if (!/secrets\.CONTEXT7_API_KEY/.test(code))
       hits.push({ rule: 'secret', msg: 'CONTEXT7_API_KEY 시크릿 미참조' })
     // fail-fast: -z 로 시크릿 공백 검사. 따옴표 유무·${...} 중괄호·이중대괄호 형태 모두 허용(false-RED 방지).
-    if (!/-z\s+"?\$\{?CONTEXT7_API_KEY\}?"?/.test(text))
+    if (!/-z\s+"?\$\{?CONTEXT7_API_KEY\}?"?/.test(code))
       hits.push({
         rule: 'fail-fast',
         msg: 'CONTEXT7_API_KEY fail-fast(-z) 가드 없음 — no grounding→no run',
       })
   }
-  if (hasTask && !/--max-turns\b/.test(text))
+  if (hasTask && !/--max-turns\b/.test(code))
     hits.push({ rule: 'max-turns', msg: 'Task 허용 시 --max-turns 비용 캡 필요' })
-  if (!/^\s*timeout-minutes:/m.test(text))
+  if (!/^\s*timeout-minutes:/m.test(code))
     hits.push({ rule: 'timeout', msg: 'timeout-minutes 없음' })
-  if (!/^concurrency:/m.test(text)) hits.push({ rule: 'concurrency', msg: 'concurrency 없음' })
+  if (!/^concurrency:/m.test(code)) hits.push({ rule: 'concurrency', msg: 'concurrency 없음' })
   // egress 격리(#176 적대리뷰 P1): 에이전트 gh 툴은 읽기전용(gh issue view/list)만. 쓰기(comment/create/
   // edit/pr)·광역 gh(gh:* / gh issue:*)는 비신뢰 MCP 콘텐츠 주입 하에 공개 이슈로 시크릿을 exfil 하는
   // 채널이 된다 → 리포트 게시는 에이전트가 아니라 결정적 후속 스텝(시크릿 값 스캔)이 수행한다.
@@ -238,6 +241,31 @@ export function scanCloudContract(workflowText, contracts) {
         rule: 'gh-egress',
         msg: `agent gh 툴 '${tool}' 은 읽기전용(gh issue view/list)만 허용 — 쓰기/광역 gh 는 공개 이슈 exfil 위험`,
       })
+  }
+  // credential 격리(#181 Codex P1): claude-code-action 은 내장 GitHub 쓰기 툴을 항상 제공(--allowedTools 로
+  // 제거 불가)하므로, 그 잡이 issues: write 토큰을 가지면 비신뢰 주입이 내장 툴로 공개 이슈에 exfil 할 수 있다.
+  // → 에이전트 잡은 읽기전용, 게시는 issues: write 를 가진 별도 post 잡만. top-level write 도 상속되므로 금지.
+  const rawLines = code.split('\n')
+  const isWrite = (arr) => arr.some((l) => /^\s*issues:\s*write\b/.test(l))
+  const jobsIdx = rawLines.findIndex((l) => /^jobs:\s*$/.test(l))
+  if (jobsIdx !== -1) {
+    if (isWrite(rawLines.slice(0, jobsIdx)))
+      hits.push({
+        rule: 'agent-write-token',
+        msg: 'top-level permissions 의 issues: write 는 에이전트 잡에 상속 — post 잡으로만 스코프하라(공개 이슈 exfil)',
+      })
+    const jobStarts = []
+    for (let i = jobsIdx + 1; i < rawLines.length; i++)
+      if (/^ {2}[A-Za-z0-9_-]+:\s*$/.test(rawLines[i])) jobStarts.push(i)
+    for (let j = 0; j < jobStarts.length; j++) {
+      const end = j + 1 < jobStarts.length ? jobStarts[j + 1] : rawLines.length
+      const block = rawLines.slice(jobStarts[j], end)
+      if (block.some((l) => /anthropics\/claude-code-action/.test(l)) && isWrite(block))
+        hits.push({
+          rule: 'agent-write-token',
+          msg: 'claude-code-action 잡이 issues: write 보유 — 내장 GitHub 쓰기 툴 exfil 위험(읽기전용으로, 게시는 별도 post 잡)',
+        })
+    }
   }
   return hits
 }

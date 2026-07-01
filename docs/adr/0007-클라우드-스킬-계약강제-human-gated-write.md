@@ -16,13 +16,15 @@ related: "#176, spec:2026-07-01-issue176-cloud-harness-alignment-design, memory:
 **sub-issue 등재·ADR commit·push 는 클라우드에 부여하지 않고 human-gated 유지**(클라우드는 근거+refute 된
 추천 표만 게시).
 
-**exfil 격리(적대리뷰 P1)**: context7 는 비신뢰 서드파티 문서를 모델 컨텍스트로 주입하므로, 에이전트에
-공개 이슈 쓰기 egress(`gh issue comment`)를 주면 "치명적 삼요소"(비신뢰 수집 + 시크릿 접근 + 공개 exfil)가
-성립한다. 따라서 **에이전트는 gh 읽기(view/list)만 보유**하고 리포트를 워크스페이스 파일(`cloud-report.md`)에
-Write 한다. **결정적 후속 스텝**이 그 파일에서 실제 시크릿 값을 스캔해 발견 시 게시를 차단하고, 없으면
-`gh issue comment 135 --body-file` 로 게시한다. `scanCloudContract` 는 이 격리(egress read-only·gh-egress
-규칙)를 기계 강제한다. MCP config 경로는 `${{ runner.temp }}`(GitHub 렌더타임 확장)로 — claude_args 는
-shell-quote 로 파싱돼 `$RUNNER_TEMP` 셸 변수가 소거되므로 리터럴 경로여야 로드된다.
+**exfil 격리(적대리뷰 + PR#181 봇리뷰)**: context7 는 비신뢰 서드파티 문서를 모델 컨텍스트로 주입하므로,
+에이전트가 공개 이슈 쓰기 능력을 가지면 "치명적 삼요소"(비신뢰 수집 + 시크릿 접근 + 공개 exfil)가 성립한다.
+`--allowedTools` 에서 `gh issue comment` 를 빼는 것만으로는 불충분 — claude-code-action 은 **내장 GitHub 쓰기
+툴을 항상 제공**(allowedTools 로 제거 불가)한다. 따라서 **credential 계층에서 차단**: 워크플로를 2-잡으로 나눠
+(a) 에이전트 잡은 `issues: read`(쓰기 토큰 미보유 → 내장 툴도 게시 불가)로 리포트를 `cloud-report.md` 에 Write·
+artifact 업로드, (b) `issues: write` 는 **오직 별도 post 잡**이 보유해 artifact 를 받아 실제 시크릿 값을 스캔한
+뒤에만 게시(발견 시 차단). `scanCloudContract` 는 이 격리를 기계 강제한다 — gh-egress(에이전트 gh 읽기전용)·
+`agent-write-token`(claude-code-action 잡 `issues: write` 금지)·MCP 키 미평문(`${CONTEXT7_API_KEY}` env 확장)·
+MCP 경로 `${{ runner.temp }}` 리터럴(shell-quote 소거 회피).
 
 ## 고려한 대안 / 기각 사유
 - **로컬 전용화(fleet-pr-review 선례)**: 클라우드 cadence 이점 포기 → 기각(사용자 방향 A 선택).
