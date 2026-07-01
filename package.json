@@ -30,13 +30,14 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:e2e": "electron-vite build && playwright test",
     "brain": "node scripts/brain/build.mjs",
     "brain:watch": "node scripts/brain/watch.mjs",
     "brain:check": "node scripts/brain/check.mjs",
     "skills:lint": "node scripts/skills-lint.mjs",
-    "verify": "npm run skills:lint && npm run brain:check && npm run format:check && npm run typecheck && npm run lint && npm test && npm run build",
+    "verify": "npm run skills:lint && npm run brain:check && npm run format:check && npm run typecheck && npm run lint && npm run test:coverage && npm run build",
     "prepare": "husky || true"
   },
   "devDependencies": {
@@ -50,6 +51,7 @@
     "@types/safe-regex": "^1.1.6",
     "@types/which": "^2.0.2",
     "@vitejs/plugin-react": "^5.2.0",
+    "@vitest/coverage-v8": "^4.1.9",
     "electron": "^42.5.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",

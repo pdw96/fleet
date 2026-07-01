@@ -24,7 +24,7 @@ npm run verify   # 집계 게이트 — 아래 전부를 cheapest-first 로 순�
 #   format:check    prettier --check
 #   typecheck       tsc --noEmit (main + renderer + shared)
 #   lint            eslint (경고도 0 으로 유지)
-#   test            vitest — 코어 엔진 단위/통합 (헤드리스)
+#   test:coverage   vitest --coverage — 코어 단위/통합 + src/main/core/** 커버리지 floor(헤드리스)
 #   build           electron-vite build = 기동 가능성 smoke
 ```
 
@@ -34,6 +34,11 @@ CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 **이 `npm run verify`
 required status check 로 걸어, 통과 전 머지를 플랫폼 차원에서 차단한다(관례 → 강제).** 잡 표시명은
 required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 로 단일화돼 있다.
 `npm run test:e2e`(playwright)는 느려 CI 게이트에 없다 — 로컬에서 필요 시 수동 실행.
+
+**커버리지 floor**: `test:coverage` 가 `src/main/core/**` 전역 4메트릭 floor(회귀 backstop)를 강제한다.
+커버리지가 유의하게 오르면 `vitest.config.ts` 의 `coverage.thresholds` 를 수동 상향(ratchet) — `autoUpdate`
+는 config 자가변경 churn 회피 위해 미사용. **Node24 smoke**: 출하 런타임(Electron 42=Node 24) 회귀는
+advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아님 — required check 이름 보존).
 
 ## 아키텍처 규칙 (어기지 말 것)
 
