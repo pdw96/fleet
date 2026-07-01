@@ -69,5 +69,32 @@ jobs:
       - name: Test (vitest — win32 .cmd 셰임·트리 킬 회귀 실행)
         run: npm test
 
+  # 출하 런타임 = Electron 42 = Node 24 인데 .nvmrc/CI 기본은 Node 22(dev floor). 이 잡이 Node 24 에서
+  # vitest 를 돌려 출하 런타임 고유 회귀를 smoke 한다. matrix 를 quality 잡에 걸면 required check 이름
+  # (`typecheck · lint · test · build`)이 `... (22)`/`... (24)` 로 분기해 사라지므로, 별도 잡으로
+  # required check 를 보존한다(advisory — required 아님).
+  test-node24:
+    name: node24 vitest (출하 런타임 smoke)
+    runs-on: ubuntu-latest
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Test (vitest — Node 24 출하 런타임 회귀)
+        run: npm test
+
 # NOTE: E2E(test:e2e)는 electron 빌드 + playwright 로 느리고 환경 의존이 커
 # 이 게이트에 넣지 않는다. 필요 시 별도 워크플로(스케줄/수동 dispatch)로 분리한다.

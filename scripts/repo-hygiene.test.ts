@@ -34,7 +34,7 @@ describe('package.json verify — 품질게이트 집계(#175 item2)', () => {
       'npm run format:check',
       'npm run typecheck',
       'npm run lint',
-      'npm test',
+      'npm run test:coverage',
       'npm run build',
     ]) {
       expect(verify, `verify 가 "${cmd}" 를 포함해야 한다`).toContain(cmd)
