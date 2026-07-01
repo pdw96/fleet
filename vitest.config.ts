@@ -15,8 +15,9 @@ export default defineConfig({
       include: ['src/main/core/**/*.{ts,tsx}'],
       exclude: ['**/*.test.ts'],
       all: true,
-      // 플랫폼 분기(win32/POSIX skipIf 공존)로 ubuntu==CI 수치가 낮아 보수적. 수동 ratchet(autoUpdate 미사용).
-      thresholds: { lines: 90, statements: 88, functions: 88, branches: 80 },
+      // 첫 ubuntu CI 실측(L94.9/S93.25/F92.86/B86.05) ~2-3pt 아래로 확정한 회귀 backstop.
+      // 플랫폼 분기(win32/POSIX skipIf)는 전역 수치엔 상쇄돼 영향 미미. 수동 ratchet(autoUpdate 미사용).
+      thresholds: { lines: 92, statements: 91, functions: 90, branches: 83 },
     },
   },
 })
