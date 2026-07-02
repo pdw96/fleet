@@ -1,0 +1,1939 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fleet SaaS — 인프라 아키텍처 계획서</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --obsidian: #0a0b0d;
+        --panel: #101216;
+        --panel-2: #15181e;
+        --line: #23272f;
+        --line-2: #2e333d;
+        --ink: #e8eaed;
+        --ink-dim: #a9b0ba;
+        --ink-faint: #737b86;
+        --amber: #ffc24b;
+        --mint: #4fe0c0;
+        --rose: #e0625f;
+        --violet: #a58bff;
+        --serif: 'Fraunces', Georgia, serif;
+        --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+        --sans: 'IBM Plex Sans KR', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--obsidian);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.62;
+        -webkit-font-smoothing: antialiased;
+        background-image:
+          radial-gradient(1100px 520px at 84% -8%, rgba(255, 194, 75, 0.07), transparent 60%),
+          radial-gradient(900px 520px at -6% 12%, rgba(79, 224, 192, 0.06), transparent 60%),
+          radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.022) 1px, transparent 0);
+        background-size:
+          auto,
+          auto,
+          22px 22px;
+        background-attachment: fixed;
+      }
+      a {
+        color: var(--mint);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      ::selection {
+        background: rgba(255, 194, 75, 0.28);
+      }
+      .wrap {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 26px 120px;
+      }
+
+      /* ── masthead ── */
+      header.mast {
+        padding: 56px 0 26px;
+        border-bottom: 1px solid var(--line);
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.34em;
+        text-transform: uppercase;
+        color: var(--amber);
+        margin: 0 0 14px;
+      }
+      h1.title {
+        font-family: var(--serif);
+        font-weight: 600;
+        font-size: clamp(30px, 5vw, 50px);
+        line-height: 1.08;
+        margin: 0;
+        letter-spacing: -0.01em;
+      }
+      h1.title em {
+        font-style: italic;
+        color: var(--ink-dim);
+      }
+      .lede {
+        color: var(--ink-dim);
+        max-width: 82ch;
+        margin: 18px 0 0;
+        font-size: 15.5px;
+      }
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 22px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+      }
+      .pill {
+        border: 1px solid var(--line-2);
+        border-radius: 999px;
+        padding: 5px 12px;
+        background: rgba(255, 255, 255, 0.015);
+      }
+      .pill b {
+        color: var(--ink-dim);
+        font-weight: 500;
+      }
+
+      /* ── TOC ── */
+      nav.toc {
+        margin: 34px 0 0;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel);
+        padding: 20px 24px;
+      }
+      nav.toc h2 {
+        margin: 0 0 12px;
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+      }
+      nav.toc ol {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 4px 26px;
+      }
+      nav.toc li a {
+        display: flex;
+        gap: 10px;
+        padding: 4px 2px;
+        color: var(--ink-dim);
+        border-radius: 6px;
+        font-size: 13.5px;
+      }
+      nav.toc li a:hover {
+        color: var(--ink);
+        text-decoration: none;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      nav.toc .n {
+        font-family: var(--mono);
+        color: var(--amber);
+        font-size: 12px;
+        min-width: 22px;
+      }
+
+      /* ── sections ── */
+      section {
+        margin-top: 64px;
+        scroll-margin-top: 24px;
+      }
+      .sec-head {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
+      .sec-num {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--amber);
+        letter-spacing: 0.12em;
+      }
+      h2.sec-title {
+        font-family: var(--serif);
+        font-weight: 600;
+        font-size: clamp(21px, 3vw, 28px);
+        margin: 0;
+        letter-spacing: -0.005em;
+      }
+      .sec-body {
+        margin-top: 20px;
+      }
+      .sec-body p {
+        color: var(--ink-dim);
+        max-width: 88ch;
+      }
+      .sec-body p strong,
+      .sec-body li strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .sec-body ul,
+      .sec-body ol {
+        color: var(--ink-dim);
+        padding-left: 22px;
+      }
+      .sec-body li {
+        margin: 6px 0;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        color: var(--mint);
+        background: rgba(79, 224, 192, 0.07);
+        border: 1px solid rgba(79, 224, 192, 0.14);
+        border-radius: 5px;
+        padding: 1px 6px;
+        white-space: nowrap;
+      }
+      .callout {
+        border: 1px solid var(--line-2);
+        border-left: 3px solid var(--amber);
+        background: var(--panel);
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin: 18px 0;
+        color: var(--ink-dim);
+        max-width: 92ch;
+      }
+      .callout.rose {
+        border-left-color: var(--rose);
+      }
+      .callout.mint {
+        border-left-color: var(--mint);
+      }
+      .callout b {
+        color: var(--ink);
+      }
+
+      /* ── tables ── */
+      .tbl-wrap {
+        overflow-x: auto;
+        margin: 20px 0;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 13.5px;
+        background: var(--panel);
+      }
+      thead th {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        text-align: left;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line-2);
+        background: var(--panel-2);
+        white-space: nowrap;
+      }
+      tbody td {
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-dim);
+        vertical-align: top;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tbody td:first-child {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      td .path {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        display: block;
+        margin-top: 3px;
+        white-space: nowrap;
+      }
+      .tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        border-radius: 5px;
+        padding: 2px 8px;
+        border: 1px solid var(--line-2);
+        white-space: nowrap;
+      }
+      .tag.ok {
+        color: var(--mint);
+        border-color: rgba(79, 224, 192, 0.35);
+        background: rgba(79, 224, 192, 0.07);
+      }
+      .tag.no {
+        color: var(--rose);
+        border-color: rgba(224, 98, 95, 0.4);
+        background: rgba(224, 98, 95, 0.08);
+      }
+      .tag.warn {
+        color: var(--amber);
+        border-color: rgba(255, 194, 75, 0.4);
+        background: rgba(255, 194, 75, 0.07);
+      }
+      .tag.dim {
+        color: var(--ink-faint);
+      }
+
+      /* ── diagrams ── */
+      .diagram {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel);
+        padding: 22px;
+        margin: 22px 0;
+        overflow-x: auto;
+      }
+      .diagram .cap {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin: 0 0 16px;
+      }
+      .box {
+        border: 1px solid var(--line-2);
+        border-radius: 10px;
+        background: var(--panel-2);
+        padding: 12px 14px;
+        min-width: 0;
+      }
+      .box .bt {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink);
+        margin: 0 0 6px;
+        font-weight: 600;
+      }
+      .box .bd {
+        font-size: 12.5px;
+        color: var(--ink-faint);
+        line-height: 1.5;
+      }
+      .box.amber {
+        border-color: rgba(255, 194, 75, 0.4);
+      }
+      .box.amber .bt {
+        color: var(--amber);
+      }
+      .box.mint {
+        border-color: rgba(79, 224, 192, 0.4);
+      }
+      .box.mint .bt {
+        color: var(--mint);
+      }
+      .box.rose {
+        border-color: rgba(224, 98, 95, 0.45);
+      }
+      .box.rose .bt {
+        color: var(--rose);
+      }
+      .box.violet {
+        border-color: rgba(165, 139, 255, 0.4);
+      }
+      .box.violet .bt {
+        color: var(--violet);
+      }
+      .lane {
+        border: 1px dashed var(--line-2);
+        border-radius: 12px;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1;
+        min-width: 250px;
+      }
+      .lane > .lane-t {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--ink-dim);
+        margin: 0 0 2px;
+      }
+      .cols {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      .rows {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .chip {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--mint);
+        border: 1px solid rgba(79, 224, 192, 0.3);
+        background: rgba(79, 224, 192, 0.06);
+        border-radius: 999px;
+        padding: 2px 9px;
+        white-space: nowrap;
+      }
+      .chip.amber {
+        color: var(--amber);
+        border-color: rgba(255, 194, 75, 0.35);
+        background: rgba(255, 194, 75, 0.06);
+      }
+      .flow {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        flex-wrap: wrap;
+        row-gap: 14px;
+      }
+      .flow .box {
+        flex: 1;
+        min-width: 150px;
+      }
+      .arrow {
+        display: flex;
+        align-items: center;
+        padding: 0 8px;
+        color: var(--amber);
+        font-family: var(--mono);
+        font-size: 15px;
+        flex: none;
+      }
+      .arrow.down {
+        justify-content: center;
+        padding: 2px 0;
+      }
+      .vflow {
+        display: flex;
+        flex-direction: column;
+      }
+      .note-line {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--ink-faint);
+        margin-top: 12px;
+      }
+
+      /* concentric layers */
+      .ring {
+        border: 1px solid var(--line-2);
+        border-radius: 14px;
+        padding: 14px 14px 14px;
+        margin-top: 10px;
+      }
+      .ring > .ring-t {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        margin: 0 0 4px;
+        font-weight: 600;
+      }
+      .ring > .ring-d {
+        font-size: 12.5px;
+        color: var(--ink-faint);
+        margin-bottom: 8px;
+      }
+      .r1 {
+        border-color: rgba(165, 139, 255, 0.45);
+      }
+      .r1 > .ring-t {
+        color: var(--violet);
+      }
+      .r2 {
+        border-color: rgba(79, 224, 192, 0.45);
+      }
+      .r2 > .ring-t {
+        color: var(--mint);
+      }
+      .r3 {
+        border-color: rgba(255, 194, 75, 0.45);
+      }
+      .r3 > .ring-t {
+        color: var(--amber);
+      }
+      .r4 {
+        border-color: rgba(224, 98, 95, 0.5);
+      }
+      .r4 > .ring-t {
+        color: var(--rose);
+      }
+      .r5 {
+        border-color: var(--line-2);
+      }
+      .r5 > .ring-t {
+        color: var(--ink);
+      }
+
+      /* state machine */
+      .sm {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        align-items: center;
+      }
+      .state {
+        border: 1px solid var(--line-2);
+        border-radius: 999px;
+        padding: 8px 18px;
+        font-family: var(--mono);
+        font-size: 12px;
+        background: var(--panel-2);
+        white-space: nowrap;
+      }
+      .state.start {
+        border-color: rgba(79, 224, 192, 0.5);
+        color: var(--mint);
+      }
+      .state.warn {
+        border-color: rgba(255, 194, 75, 0.5);
+        color: var(--amber);
+      }
+      .state.end {
+        border-color: rgba(224, 98, 95, 0.5);
+        color: var(--rose);
+      }
+      .state.ok {
+        border-color: rgba(79, 224, 192, 0.5);
+        color: var(--mint);
+      }
+      .sm-note {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--ink-faint);
+      }
+
+      footer {
+        margin-top: 90px;
+        border-top: 1px solid var(--line);
+        padding-top: 22px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      @media (max-width: 720px) {
+        .cols {
+          flex-direction: column;
+        }
+        .arrow {
+          transform: rotate(90deg);
+          justify-content: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <!-- ═══════════════ MASTHEAD ═══════════════ -->
+      <header class="mast">
+        <p class="eyebrow">Fleet · Infrastructure Architecture Plan</p>
+        <h1 class="title">Fleet SaaS 전환<br /><em>인프라 아키텍처 계획서</em></h1>
+        <p class="lede">
+          멀티 LLM 오케스트레이션 데스크톱 앱 Fleet 을 <strong>풀 클라우드 SaaS</strong> 로 전환하기
+          위한 계획서. 사용자별 격리 샌드박스에서 CLI 에이전트(Claude Code · Codex · Gemini)를
+          클라우드가 직접 실행하고, 브라우저에서 오케스트레이션한다. 경영 요약(§1–3)과 기술
+          상세(§4–13), 로드맵·비용·리스크(§14–16)를 한 문서에 담았다.
+        </p>
+        <div class="meta-row">
+          <span class="pill"><b>버전</b> v1.0 draft</span>
+          <span class="pill"><b>작성</b> 2026-07-02</span>
+          <span class="pill"><b>모델</b> 풀 클라우드 실행</span>
+          <span class="pill"><b>스택</b> 클라우드 중립 (K8s · Postgres · Object Storage)</span>
+          <span class="pill"><b>기준 코드</b> fleet@master (src/main/core 포트 6종)</span>
+        </div>
+      </header>
+
+      <!-- ═══════════════ TOC ═══════════════ -->
+      <nav class="toc">
+        <h2>목차</h2>
+        <ol>
+          <li>
+            <a href="#s1"><span class="n">01</span>요약 (Executive Summary)</a>
+          </li>
+          <li>
+            <a href="#s2"><span class="n">02</span>현재 아키텍처 (As-Is)</a>
+          </li>
+          <li>
+            <a href="#s3"><span class="n">03</span>비즈니스 제약 — LLM 구독 라이선스</a>
+          </li>
+          <li>
+            <a href="#s4"><span class="n">04</span>목표 아키텍처 (To-Be)</a>
+          </li>
+          <li>
+            <a href="#s5"><span class="n">05</span>포트 → 클라우드 어댑터 매핑</a>
+          </li>
+          <li>
+            <a href="#s6"><span class="n">06</span>세션 샌드박스 설계</a>
+          </li>
+          <li>
+            <a href="#s7"><span class="n">07</span>워크스페이스 — git-native 전략</a>
+          </li>
+          <li>
+            <a href="#s8"><span class="n">08</span>데이터 계층</a>
+          </li>
+          <li>
+            <a href="#s9"><span class="n">09</span>실시간 스트리밍 (SSE)</a>
+          </li>
+          <li>
+            <a href="#s10"><span class="n">10</span>멀티테넌시 · 보안</a>
+          </li>
+          <li>
+            <a href="#s11"><span class="n">11</span>승인 게이트 재설계</a>
+          </li>
+          <li>
+            <a href="#s12"><span class="n">12</span>시크릿 · KMS / 과금 · 미터링</a>
+          </li>
+          <li>
+            <a href="#s13"><span class="n">13</span>관측성 · 운영</a>
+          </li>
+          <li>
+            <a href="#s14"><span class="n">14</span>단계별 로드맵</a>
+          </li>
+          <li>
+            <a href="#s15"><span class="n">15</span>비용 모델 스케치</a>
+          </li>
+          <li>
+            <a href="#s16"><span class="n">16</span>리스크 · 미해결 질문</a>
+          </li>
+          <li>
+            <a href="#s17"><span class="n">17</span>부록 — 클라우드 참조 매핑</a>
+          </li>
+        </ol>
+      </nav>
+
+      <!-- ═══════════════ 01 요약 ═══════════════ -->
+      <section id="s1">
+        <div class="sec-head">
+          <span class="sec-num">01</span>
+          <h2 class="sec-title">요약 (Executive Summary)</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            Fleet 은 여러 LLM(구독제 CLI + API)이 하나의 작업방에서 협업해 사용자의 프로젝트를
+            완수하는 데스크톱 앱이다. 이 계획서는 그것을
+            <strong>브라우저에서 쓰는 멀티테넌트 SaaS</strong> 로 전환하는 인프라 설계를 담는다.
+            전환이 현실적인 근거는 하나다 — Fleet 의 오케스트레이션
+            코어(<code>src/main/core/*</code>)는 처음부터
+            <strong>Electron 비의존 순수 TypeScript</strong> 로, 6개 포트 인터페이스 (<code
+              >Store</code
+            >
+            · <code>LlmSession</code> · <code>ApiProvider</code> · <code>CommandRunner</code> ·
+            <code>SecretCrypto</code> · <code>ApprovalGate</code>) 뒤에 격리되어 있다. 어댑터만
+            교체하면 오케스트레이션 두뇌는 서버로 거의 그대로 이식된다.
+          </p>
+          <p>
+            반대로 가장 큰 제약은 기술이 아니라 <strong>라이선스</strong>다. Anthropic(2026-04) ·
+            Google(2026-03)은 소비자 구독 OAuth 토큰의 공식 도구 외 사용을 금지했다. 따라서 "내
+            Claude Pro 구독을 클라우드에 연결" 은 지원 불가능한 경로이고, SaaS 는
+            <strong>API 키 전용</strong>(BYO 키 또는 플랫폼 미터드 키)으로 설계한다. CLI 바이너리
+            자체는 전부 API-키 환경변수 인증을 지원하므로, 오케스트레이션 UX 는 그대로 유지된다.
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>결정 영역</th>
+                  <th>권고</th>
+                  <th>한 줄 근거</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>샌드박스 격리</td>
+                  <td>
+                    K8s + <strong>Kata Containers microVM</strong> (MVP 는 gVisor 허용, plain
+                    컨테이너 불가)
+                  </td>
+                  <td>
+                    에이전트는 LLM 이 생성한 임의 코드를 실행하고, Fleet 의 path-guard 는 명시적으로
+                    advisory — 테넌트 경계는 커널 경계여야 한다.
+                  </td>
+                </tr>
+                <tr>
+                  <td>워크스페이스</td>
+                  <td>
+                    <strong>git-native 에페메럴 체크아웃</strong> (내부 git 미러 → clone → 결과
+                    브랜치 push)
+                  </td>
+                  <td>
+                    워크스페이스 계층이 이미 git-aware. diff/감사/롤백이 공짜고, 크로스테넌트 영속
+                    볼륨이 사라진다.
+                  </td>
+                </tr>
+                <tr>
+                  <td>실시간 전송</td>
+                  <td><strong>SSE</strong> (서버→브라우저) + REST POST (명령/승인)</td>
+                  <td>
+                    코어가 이미 SSE 계열 이벤트 스트림으로 정규화. <code>Last-Event-ID</code> 재개,
+                    프록시/CDN 통과. WebSocket 이 더 주는 것이 없다.
+                  </td>
+                </tr>
+                <tr>
+                  <td>LLM 인증</td>
+                  <td>
+                    <strong>API 키 전용</strong> — BYO 키(KMS 암호화) + 플랫폼 미터드 키(마진)
+                  </td>
+                  <td>
+                    구독 OAuth 의 3rd-party 사용은 ToS 금지(§3). CLI 는 API-키 env 로 클라우드에서
+                    그대로 구동.
+                  </td>
+                </tr>
+                <tr>
+                  <td>데이터스토어</td>
+                  <td>
+                    Postgres(<code>tenant_id</code> RLS) + 오브젝트 스토리지 + Redis 급 캐시/큐
+                  </td>
+                  <td>
+                    <code>Store</code> 인터페이스가 교체 전제로 설계됨. RLS 는 애플리케이션 버그
+                    아래의 2차 테넌시 안전망.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 02 As-Is ═══════════════ -->
+      <section id="s2">
+        <div class="sec-head">
+          <span class="sec-num">02</span>
+          <h2 class="sec-title">현재 아키텍처 (As-Is)</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            현재 Fleet 은 단일 Electron 프로세스 트리다. 별도 데몬·HTTP 서버는 없고 main 프로세스가
+            곧 백엔드다. 플래너가 목표를 작업 그래프로 분해하고, 역할(planner / implementer /
+            reviewer / summarizer)을 정책에 따라 LLM 에 배정하며, implementer CLI 가 로컬
+            워크스페이스 디렉터리를 직접 편집하고, verify 계층 (test/lint/typecheck)이 통과할 때까지
+            루프를 돈다.
+          </p>
+          <div class="diagram">
+            <p class="cap">As-Is — Electron 단일 프로세스</p>
+            <div class="vflow">
+              <div class="box violet">
+                <p class="bt">Renderer — React + Vite</p>
+                <div class="bd">
+                  목표 입력 · 세션 등록 · 멀티 LLM 채팅방 · 작업 보드 · 검증 결과 (sandbox ·
+                  contextIsolation)
+                </div>
+              </div>
+              <div class="arrow down">
+                ▼ &nbsp;contextBridge IPC (preload ·
+                <span style="font-size: 11px">fleet:&lt;domain&gt;:&lt;action&gt;</span>)
+              </div>
+              <div class="box">
+                <p class="bt">Electron Main — Node</p>
+                <div class="bd">IPC 핸들러 · BrowserWindow · 자동 업데이트 · 크래시 복구</div>
+                <div class="box mint" style="margin-top: 12px">
+                  <p class="bt">core/ — 순수 TS 엔진 (Electron 비의존 · 이식 대상)</p>
+                  <div class="bd">
+                    orchestrator(목표분해·역할배정·재검토 루프) · session(LlmSession 통합) ·
+                    cli(스폰·stream-json/JSONL 파싱) · providers(Anthropic/OpenAI/Google SSE) ·
+                    verify · safety(ApprovalGate) · workspace(git · path-guard) · store · secret
+                  </div>
+                  <div class="chip-row">
+                    <span class="chip">Store</span><span class="chip">LlmSession</span
+                    ><span class="chip">ApiProvider</span> <span class="chip">CommandRunner</span
+                    ><span class="chip">SecretCrypto</span><span class="chip">ApprovalGate</span>
+                  </div>
+                </div>
+              </div>
+              <div class="arrow down">
+                ▼ &nbsp;child process spawn (stdin 프롬프트 · stream-json/JSONL stdout)
+              </div>
+              <div class="cols">
+                <div class="box amber" style="flex: 1">
+                  <p class="bt">구독 CLI</p>
+                  <div class="bd">
+                    claude · codex · gemini — 로컬 설치 + 개별 로그인, 세션 resume
+                  </div>
+                </div>
+                <div class="box amber" style="flex: 1">
+                  <p class="bt">API Provider</p>
+                  <div class="bd">
+                    Anthropic · OpenAI · Google — 사용자 API 키, SSE 스트리밍, 재시도(Retry-After
+                    존중)
+                  </div>
+                </div>
+                <div class="box amber" style="flex: 1">
+                  <p class="bt">로컬 워크스페이스</p>
+                  <div class="bd">사용자가 고른 디렉터리 — CLI 가 직접 파일 편집, git 연동</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p>SaaS 전환 관점에서 로컬 머신에 결박된 요소와 그 함의:</p>
+          <ul>
+            <li>
+              <strong>구독 CLI 인증</strong> — 바이너리가 머신에 설치되고 개별 로그인되어 있어야
+              한다. 클라우드에서는 라이선스 문제로 이 경로 자체가 막힌다(§3).
+            </li>
+            <li>
+              <strong>파일시스템 워크스페이스</strong> — OS 폴더 다이얼로그로 고른 로컬 디렉터리.
+              클라우드에서는 세션별 에페메럴 워크스페이스와 코드 입출력 경로(git)가 필요하다(§7).
+            </li>
+            <li>
+              <strong>OS 키체인 시크릿</strong> — Electron <code>safeStorage</code>(DPAPI/Keychain).
+              클라우드 등가물은 KMS 봉투 암호화다(§12).
+            </li>
+            <li>
+              <strong>단일 JSON 파일 store</strong> — 동기 스냅숏 쓰기. 멀티유저 동시성에서 생존
+              불가 → Postgres 로 교체(§8). 교체는 설계 시점부터 예정되어 있었다.
+            </li>
+            <li>
+              <strong>신뢰 모델</strong> — ApprovalGate 는 "모달 앞의 신뢰된 한 사람" 을 가정한다.
+              테넌트 경계·authz 가 어디에도 없다. 위협 모델 자체를 뒤집어야 한다(§10).
+            </li>
+          </ul>
+          <div class="callout mint">
+            <b>이식의 지렛대.</b> 코어 엔진이 순수 TS 이고 모든 외부 접점이 포트 인터페이스라는
+            사실이 이 계획 전체의 비용을 결정한다. "재작성" 이 아니라 "어댑터 교체 + 재배선" 이다.
+            §5 의 매핑 표가 그 작업 목록이다.
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 03 ToS ═══════════════ -->
+      <section id="s3">
+        <div class="sec-head">
+          <span class="sec-num">03</span>
+          <h2 class="sec-title">비즈니스 제약 — LLM 구독 라이선스 (ToS)</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            이 문서에서 가장 중요한 비기술 섹션. 데스크톱 Fleet 의 차별점인 "구독제 CLI 를 그대로
+            에이전트로" 는
+            <strong>클라우드에서 재현할 수 없다</strong>. 2026년 상반기 기준 각 벤더의 소비자 구독
+            OAuth 정책:
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>공급자</th>
+                  <th>구독 OAuth → 3rd-party/클라우드</th>
+                  <th>API 키 (headless CLI 포함)</th>
+                  <th>비고</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Anthropic (Claude)</td>
+                  <td><span class="tag no">금지 (2026-04)</span></td>
+                  <td><span class="tag ok">허용</span></td>
+                  <td>
+                    구독 토큰은 공식 도구 외 사용 금지. <code>ANTHROPIC_API_KEY</code> 로 Claude
+                    Code CLI 구동 가능.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Google (Gemini)</td>
+                  <td><span class="tag no">금지 (2026-03)</span></td>
+                  <td><span class="tag ok">허용</span></td>
+                  <td>동일 구조. Gemini CLI 는 API-키 인증 지원.</td>
+                </tr>
+                <tr>
+                  <td>OpenAI (Codex)</td>
+                  <td><span class="tag warn">회색 지대</span></td>
+                  <td><span class="tag ok">허용</span></td>
+                  <td>
+                    명시 금지·허용 모두 없음 → <strong>금지로 간주하고 설계</strong> (보수적 원칙).
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>결론으로 지원 가능한 두 경로:</p>
+          <ul>
+            <li>
+              <strong>경로 A — BYO API 키</strong>: 사용자가 자신의 provider API 키를 등록(테넌트별
+              KMS 암호화). LLM 비용은 사용자가 provider 에 직접 지불, 플랫폼은 좌석/컴퓨트 요금을
+              받는다.
+            </li>
+            <li>
+              <strong>경로 B — 플랫폼 미터드 키</strong>: 플랫폼 소유 키로 대행 호출하고 토큰
+              사용량에 15–30% 마진을 붙여 재판매. 키 관리 부담이 없어 온보딩이 가장 매끄럽다.
+            </li>
+          </ul>
+          <div class="callout">
+            <b>포지셔닝 분리.</b> 데스크톱 Fleet = 구독 CLI 의 집 (개인, 자기 머신, 자기 구독). SaaS
+            Fleet = API-키/팀 제품 (협업, 격리 실행, 과금). 상호 잠식이 아니라 세그먼트 분리다. 장기
+            escape hatch 로 "로컬 러너 하이브리드" (사용자 머신을 러너로 등록, 구독 CLI 는 사용자
+            머신에서 실행)를 Phase 3 에 남겨두되, 이 역시 별도 ToS 검토가 필요하다.
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 04 To-Be ═══════════════ -->
+      <section id="s4">
+        <div class="sec-head">
+          <span class="sec-num">04</span>
+          <h2 class="sec-title">목표 아키텍처 (To-Be)</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            설계 원칙은 하나: <strong>컨트롤 플레인(멀티테넌트 · 신뢰)</strong> 과
+            <strong>데이터 플레인(세션별 · 비신뢰)</strong> 의 분리. 에이전트가 실행되는 모든 것은
+            데이터 플레인의 샌드박스 안에 가두고, 샌드박스가 바깥으로 쓸 수 있는 유일한 영속 경로는
+            git 미러로 좁힌다.
+          </p>
+          <div class="diagram">
+            <p class="cap">To-Be — 전체 시스템</p>
+            <div class="vflow">
+              <div class="box violet">
+                <p class="bt">브라우저 — 웹 UI (기존 renderer 이식)</p>
+                <div class="bd">
+                  채팅방 · 작업 보드 · 승인 큐 · 검증 결과 — REST POST(명령) ↑ / SSE(이벤트 스트림)
+                  ↓
+                </div>
+              </div>
+              <div class="arrow down">▼ ▲</div>
+              <div class="lane" style="border-color: rgba(79, 224, 192, 0.35)">
+                <p class="lane-t" style="color: var(--mint)">
+                  Control Plane — 멀티테넌트 · 신뢰 영역
+                </p>
+                <div class="cols">
+                  <div class="box mint" style="flex: 1">
+                    <p class="bt">API Gateway / BFF</p>
+                    <div class="bd">OIDC 인증 · 테넌트 해석 · 레이트리밋 · SSE 팬아웃</div>
+                  </div>
+                  <div class="box mint" style="flex: 1">
+                    <p class="bt">Auth &amp; 테넌시</p>
+                    <div class="bd">조직/사용자/역할 · API 토큰 · 모든 행에 tenant_id + RLS</div>
+                  </div>
+                  <div class="box mint" style="flex: 1">
+                    <p class="bt">승인 서비스</p>
+                    <div class="bd">비동기 승인 큐 · 정책 프리셋 · 알림 (§11)</div>
+                  </div>
+                </div>
+                <div class="cols">
+                  <div class="box mint" style="flex: 1.4">
+                    <p class="bt">오케스트레이터 서비스</p>
+                    <div class="bd">
+                      재홈된 core 엔진 — 목표분해→작업그래프→역할배정→verify 루프. stateless 워커 +
+                      런 큐, 상태는 Postgres
+                    </div>
+                  </div>
+                  <div class="box mint" style="flex: 1">
+                    <p class="bt">세션 스케줄러</p>
+                    <div class="bd">
+                      샌드박스 할당 · 웜풀 · 테넌트 동시성 쿼터 · 유휴 하이버네이션
+                    </div>
+                  </div>
+                  <div class="box mint" style="flex: 1">
+                    <p class="bt">시크릿 (KMS)</p>
+                    <div class="bd">봉투 암호화 · 스폰 시 단명 주입 (§12)</div>
+                  </div>
+                </div>
+                <div class="cols">
+                  <div class="box" style="flex: 1">
+                    <p class="bt">Postgres</p>
+                    <div class="bd">테넌시·프로젝트·런·이벤트·승인·과금 (RLS)</div>
+                  </div>
+                  <div class="box" style="flex: 1">
+                    <p class="bt">Object Storage</p>
+                    <div class="bd">아티팩트 · 로그 아카이브 · 스냅숏</div>
+                  </div>
+                  <div class="box" style="flex: 1">
+                    <p class="bt">과금/미터링</p>
+                    <div class="bd">샌드박스-초 · 토큰 · 스토리지 → 청구 파이프라인</div>
+                  </div>
+                  <div class="box" style="flex: 1">
+                    <p class="bt">이벤트 로그</p>
+                    <div class="bd">append-only · 감사 = 타임라인 소스</div>
+                  </div>
+                </div>
+              </div>
+              <div class="arrow down">
+                ▼ &nbsp;러너 심 gRPC 스트림 (spawn · stdin · stdout · kill)
+              </div>
+              <div class="lane" style="border-color: rgba(224, 98, 95, 0.4)">
+                <p class="lane-t" style="color: var(--rose)">Data Plane — 세션별 · 비신뢰 영역</p>
+                <div class="cols">
+                  <div class="box rose" style="flex: 1.5">
+                    <p class="bt">세션 샌드박스 — Kata microVM (세션당 1개)</p>
+                    <div class="bd">
+                      러너 심 + CLI 바이너리(claude/codex/gemini, API-키 env) + 에페메럴
+                      워크스페이스 디스크 + verify 툴체인
+                    </div>
+                  </div>
+                  <div class="box rose" style="flex: 1">
+                    <p class="bt">이그레스 프록시</p>
+                    <div class="bd">
+                      default-deny · allowlist: LLM API · git 미러 · 패키지 레지스트리(opt-in) ·
+                      테넌트별 로깅
+                    </div>
+                  </div>
+                  <div class="box rose" style="flex: 1">
+                    <p class="bt">git 미러 서비스</p>
+                    <div class="bd">프로젝트별 bare repo — 샌드박스의 유일한 영속 쓰기 경로</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p>
+            핵심 자산의 이동: 오케스트레이터 서비스는 기존 <code>src/main/core</code> 엔진을 서버
+            패키지로 추출한 것이다. planner→그래프→역할→verify 루프 로직, provider
+            재시도(<code>resilient.ts</code>), CLI 출력 파서(<code>cli/output.ts</code>)까지 전부
+            재사용한다. 새로 작성하는 것은 얇은 계층 — 게이트웨이, 스케줄러, 러너 심, 어댑터들이다.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 05 포트 매핑 ═══════════════ -->
+      <section id="s5">
+        <div class="sec-head">
+          <span class="sec-num">05</span>
+          <h2 class="sec-title">포트 → 클라우드 어댑터 매핑</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            이 표가 곧 이식 작업 목록이다. 왼쪽 열의 인터페이스는 코드에 이미 존재하고, 데스크톱
+            어댑터를 클라우드 어댑터로 바꿔 끼우는 것이 전환의 본체다.
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fleet 포트</th>
+                  <th>데스크톱 어댑터 (현재)</th>
+                  <th>클라우드 어댑터 (목표)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Store<span class="path">store/types.ts · json-file.ts</span></td>
+                  <td>단일 JSON 파일, 원자적 쓰기</td>
+                  <td>Postgres 리포지토리 + tenant_id RLS · 이벤트는 파티셔닝된 로그 테이블</td>
+                </tr>
+                <tr>
+                  <td>ApiProvider<span class="path">providers/types.ts · resilient.ts</span></td>
+                  <td>앱에서 직접 HTTPS + SSE</td>
+                  <td>
+                    동일 코드가 오케스트레이터 워커에서 실행 · 키는 시크릿 서비스에서 주입 · 재시도
+                    로직 재사용
+                  </td>
+                </tr>
+                <tr>
+                  <td>LlmSession (CLI)<span class="path">session/cli-session.ts</span></td>
+                  <td>로컬 child process</td>
+                  <td>
+                    러너 심 RPC → 샌드박스 내 CLI · JSONL 파싱은 기존
+                    <code>cli/output.ts</code> 서버측 재사용
+                  </td>
+                </tr>
+                <tr>
+                  <td>CommandRunner<span class="path">cli/detect.ts</span></td>
+                  <td>cross-spawn (로컬)</td>
+                  <td>샌드박스 exec API (gRPC 스트림) · kill-tree 는 VM 내부에서</td>
+                </tr>
+                <tr>
+                  <td>SecretCrypto<span class="path">secret/types.ts</span></td>
+                  <td>Electron safeStorage (DPAPI/Keychain)</td>
+                  <td>KMS 봉투 암호화 · 테넌트별 DEK</td>
+                </tr>
+                <tr>
+                  <td>ApprovalGate<span class="path">safety/approval.ts</span></td>
+                  <td>renderer 모달 (IPC 브리지)</td>
+                  <td>비동기 승인 큐 + SSE/알림 · 정책 엔진 · 타임아웃 시 기본 거부 (§11)</td>
+                </tr>
+                <tr>
+                  <td>path-guard<span class="path">workspace/path-guard.ts</span></td>
+                  <td>advisory realpath 검사 (스폰된 CLI 구속 불가)</td>
+                  <td>심층 방어로 유지 · <strong>실제 경계 = microVM + 이그레스 정책</strong></td>
+                </tr>
+                <tr>
+                  <td>Workspace<span class="path">workspace/git.ts</span></td>
+                  <td>로컬 디렉터리 (폴더 다이얼로그)</td>
+                  <td>git 미러에서 에페메럴 clone · 결과 = 브랜치/PR push (§7)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 06 샌드박스 ═══════════════ -->
+      <section id="s6">
+        <div class="sec-head">
+          <span class="sec-num">06</span>
+          <h2 class="sec-title">세션 샌드박스 설계</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            샌드박스는 이 시스템에서 유일하게 "적대적일 수 있는 코드" 가 실행되는 곳이다. 에이전트는
+            LLM 이 생성한 임의 명령을 실행하고(verify 루프의 <code>npm install</code>·테스트 실행
+            포함), Fleet 자체의 path-guard 는 문서화된 대로 advisory 다. 격리 티어 선택:
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>티어</th>
+                  <th>경계</th>
+                  <th>부팅 지연</th>
+                  <th>밀도</th>
+                  <th>호환성</th>
+                  <th>판정</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>runc 컨테이너</td>
+                  <td>네임스페이스 (커널 공유)</td>
+                  <td>~수십 ms</td>
+                  <td>최고</td>
+                  <td>완전</td>
+                  <td><span class="tag no">기각</span> — 커널 취약점 하나가 곧 테넌트 경계 붕괴</td>
+                </tr>
+                <tr>
+                  <td>gVisor</td>
+                  <td>유저스페이스 커널 (syscall 필터)</td>
+                  <td>~100ms</td>
+                  <td>높음</td>
+                  <td>빌드 툴체인 일부 갭</td>
+                  <td><span class="tag warn">MVP 허용</span> — Phase 0–1 과도기 티어</td>
+                </tr>
+                <tr>
+                  <td>Kata / Firecracker microVM</td>
+                  <td>하드웨어 가상화</td>
+                  <td>~125ms–1s</td>
+                  <td>중간</td>
+                  <td>거의 완전</td>
+                  <td><span class="tag ok">권고</span> — GA 기준 티어, 커널 경계 = 테넌트 경계</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="diagram">
+            <p class="cap">샌드박스 내부 — 세션당 1 microVM</p>
+            <div class="cols">
+              <div class="box mint" style="flex: 1">
+                <p class="bt">러너 심 (runner shim)</p>
+                <div class="bd">
+                  유일한 제어 채널. 오케스트레이터와 gRPC 스트림 — spawn / stdin / stream-json·JSONL
+                  stdout 릴레이 / kill-tree / 파일 ops. <code>CommandRunner</code>·<code
+                    >cli-session</code
+                  >
+                  의 클라우드 어댑터.
+                </div>
+              </div>
+              <div class="box amber" style="flex: 1">
+                <p class="bt">CLI 에이전트 + 툴체인</p>
+                <div class="bd">
+                  claude · codex · gemini (API-키 env 인증, 세션 resume 상태 디렉터리) +
+                  node/git/테스트 러너 등 verify 툴체인 이미지.
+                </div>
+              </div>
+              <div class="box" style="flex: 1">
+                <p class="bt">에페메럴 워크스페이스</p>
+                <div class="bd">
+                  git clone 으로 채워지는 일회용 암호화 디스크. 세션 종료 시 파기 — 결과는 push 된
+                  브랜치만 남는다.
+                </div>
+              </div>
+            </div>
+            <p class="note-line">
+              네트워크: 이그레스 프록시 외 전면 차단 (NetworkPolicy default-deny) · 시크릿: 스폰 시
+              단명 주입, 이미지에 미포함
+            </p>
+          </div>
+          <p>운영 최적화 두 가지:</p>
+          <ul>
+            <li>
+              <strong>웜풀</strong> — CLI·툴체인이 설치된 microVM 을 미리 부팅해 풀로 유지. 세션
+              시작 = 풀에서 꺼내 clone + 키 주입. 체감 시작 지연을 초 단위로 낮춘다.
+            </li>
+            <li>
+              <strong>유휴 하이버네이션</strong> — N분 무활동 시 워크스페이스를 git 스냅숏(+CLI 세션
+              상태 디렉터리를 오브젝트 스토리지에 스냅숏)하고 VM 을 kill. 재개 시 re-clone + CLI
+              세션 resume(코어가 이미 지원). 샌드박스-초 비용의 최대 절감 레버(§15).
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 07 워크스페이스 ═══════════════ -->
+      <section id="s7">
+        <div class="sec-head">
+          <span class="sec-num">07</span>
+          <h2 class="sec-title">워크스페이스 — git-native 전략</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            "로컬 폴더" 의 클라우드 등가물로 영속 네트워크 볼륨 대신
+            <strong>git-native 에페메럴 체크아웃</strong> 을 채택한다. 프로젝트마다 내부 bare 미러를
+            두고(외부 GitHub/GitLab 연동 시 동기화), 샌드박스는 시작할 때 clone 하고 끝날 때 결과
+            브랜치를 push 한다.
+          </p>
+          <div class="diagram">
+            <p class="cap">워크스페이스 수명주기</p>
+            <div class="flow">
+              <div class="box">
+                <p class="bt">1 · 연결</p>
+                <div class="bd">사용자 repo → 내부 git 미러 동기화 (또는 빈 프로젝트 초기화)</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box">
+                <p class="bt">2 · 시작</p>
+                <div class="bd">웜풀 VM 할당 → shallow clone → 세션 브랜치 생성</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box">
+                <p class="bt">3 · 작업</p>
+                <div class="bd">
+                  implementer CLI 편집 · verify 루프 · 중간 커밋 (diff = 감사 단위)
+                </div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box">
+                <p class="bt">4 · 완료</p>
+                <div class="bd">결과 브랜치 push → 리뷰/PR → 사용자 repo 반영</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box rose">
+                <p class="bt">5 · 파기</p>
+                <div class="bd">VM · 디스크 폐기. 영속물 = push 된 브랜치뿐</div>
+              </div>
+            </div>
+          </div>
+          <p>볼륨 방식 대비 트레이드오프:</p>
+          <ul>
+            <li>
+              <strong>얻는 것</strong> — diff 기반 감사·롤백 무료, 크로스테넌트 영속 볼륨
+              제거(공격면·비용), 네트워크 FS 지연 제거, 하이버네이션이 자연스러움(스냅숏 = push).
+            </li>
+            <li>
+              <strong>비용</strong> — 대형 repo 의 clone 지연(shallow/partial clone 으로 완화), git
+              미러 서비스 운영, 비-git 자산(대용량 바이너리)은 오브젝트 스토리지 별도 경로 필요.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 08 데이터 계층 ═══════════════ -->
+      <section id="s8">
+        <div class="sec-head">
+          <span class="sec-num">08</span>
+          <h2 class="sec-title">데이터 계층</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            기존 <code>StoreState</code>(projects · tasks · rooms · messages · events · sessions)를
+            Postgres 스키마 영역으로 전개한다. 모든 테이블에 <code>tenant_id</code> 를 강제하고
+            Row-Level Security 를 켠다 — 애플리케이션 계층의 테넌시 버그가 나도 DB 가 교차 조회를
+            거부하는 2차 안전망.
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>스키마 영역</th>
+                  <th>주요 테이블</th>
+                  <th>특성 · 보존</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>테넌시</td>
+                  <td>orgs · users · memberships · api_tokens</td>
+                  <td>영구 보존 · RLS 루트</td>
+                </tr>
+                <tr>
+                  <td>프로젝트</td>
+                  <td>projects · repos(미러 참조) · role_assignments</td>
+                  <td>영구 · 프로젝트당 미러 1</td>
+                </tr>
+                <tr>
+                  <td>런/세션</td>
+                  <td>runs · tasks · llm_sessions · sandboxes</td>
+                  <td>런 = 작업그래프 스냅숏 · 상태머신 컬럼</td>
+                </tr>
+                <tr>
+                  <td>대화</td>
+                  <td>rooms · messages</td>
+                  <td>대용량 본문은 오브젝트 스토리지 오프로드 옵션</td>
+                </tr>
+                <tr>
+                  <td>이벤트/감사</td>
+                  <td>events (append-only)</td>
+                  <td>월 파티셔닝 · 핫 90일 → 콜드 아카이브(오브젝트 스토리지)</td>
+                </tr>
+                <tr>
+                  <td>승인</td>
+                  <td>approvals · approval_policies</td>
+                  <td>상태머신(§11) · 전 결정 감사 연동</td>
+                </tr>
+                <tr>
+                  <td>과금</td>
+                  <td>usage_events · invoices</td>
+                  <td>미터링 파이프라인 소스 · 불변</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <ul>
+            <li>
+              <strong>오브젝트 스토리지</strong> — 아티팩트(빌드 산출물·로그 원문·하이버네이션
+              스냅숏)는 테넌트 프리픽스 아래, 스코프드 자격증명으로 접근.
+            </li>
+            <li>
+              <strong>큐/캐시</strong> — 런 큐·SSE 팬아웃 버퍼·웜풀 상태는 Redis 급 인메모리 스토어.
+              진실 원천은 항상 Postgres.
+            </li>
+            <li>
+              <strong>이벤트 로그의 이중 역할</strong> — 데스크톱과 동일하게 감사 추적이자
+              채팅방/작업보드 타임라인의 소스. append-only 를 스키마로 강제.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 09 SSE ═══════════════ -->
+      <section id="s9">
+        <div class="sec-head">
+          <span class="sec-num">09</span>
+          <h2 class="sec-title">실시간 스트리밍 (SSE)</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            서버→브라우저 전송은 <strong>SSE</strong> 를 채택한다. 근거: 코어가 이미 모든 provider
+            출력을 SSE 계열 이벤트 스트림으로 정규화하고(<code>providers/sse.ts</code>), 데스크톱의
+            push 채널 (<code>fleet:orchestrator:event</code> · <code>fleet:chat:stream</code> 의
+            start|delta|end|error)이 SSE 이벤트 타입으로 1:1 번역된다. <code>Last-Event-ID</code> 로
+            재접속 resume 이 공짜고, 프록시/CDN 통과성이 WebSocket 보다 좋다. 양방향이 필요 없다 —
+            명령·승인은 REST POST 로 충분하다.
+          </p>
+          <div class="diagram">
+            <p class="cap">토큰 스트림 경로</p>
+            <div class="flow">
+              <div class="box rose">
+                <p class="bt">샌드박스</p>
+                <div class="bd">CLI stdout (stream-json/JSONL)</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box mint">
+                <p class="bt">러너 심</p>
+                <div class="bd">gRPC 스트림 릴레이</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box mint">
+                <p class="bt">오케스트레이터</p>
+                <div class="bd">기존 파서로 이벤트화 · 이벤트 로그 기록</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box mint">
+                <p class="bt">게이트웨이</p>
+                <div class="bd">SSE 팬아웃 (룸 구독자별)</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box violet">
+                <p class="bt">브라우저</p>
+                <div class="bd">EventSource · Last-Event-ID resume</div>
+              </div>
+            </div>
+          </div>
+          <ul>
+            <li>
+              <strong>이벤트 타입 체계</strong> — <code>run.*</code>(그래프/작업 상태) ·
+              <code>chat.*</code>(start|delta|end|error) · <code>approval.*</code>(요청/결정) ·
+              <code>verify.*</code>(결과) — 데스크톱 IPC 채널 체계를 계승.
+            </li>
+            <li>
+              <strong>재접속</strong> — 이벤트 로그가 진실 원천이므로, 끊긴 클라이언트는
+              Last-Event-ID 이후를 로그에서 재생받는다.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 10 보안 ═══════════════ -->
+      <section id="s10">
+        <div class="sec-head">
+          <span class="sec-num">10</span>
+          <h2 class="sec-title">멀티테넌시 · 보안</h2>
+        </div>
+        <div class="sec-body">
+          <div class="callout rose">
+            <b>위협 모델 전환.</b> 데스크톱: "신뢰된 단일 사용자 + advisory 가드". SaaS:
+            <b>"에이전트 출력은 적대적일 수 있고, 테넌트도 적대적일 수 있다"</b>. 모든 계층 설계가
+            이 가정에서 출발한다.
+          </div>
+          <div class="diagram">
+            <p class="cap">5계층 격리 모델 (바깥 → 안)</p>
+            <div class="ring r1">
+              <p class="ring-t">L1 · 테넌트 신원</p>
+              <p class="ring-d">
+                OIDC + 모든 요청에 tenant_id · Postgres RLS 가 애플리케이션 버그의 백스톱
+              </p>
+              <div class="ring r2">
+                <p class="ring-t">L2 · 컴퓨트</p>
+                <p class="ring-d">
+                  세션당 microVM 1 (하드웨어 가상화 경계) · 내부에도 seccomp + no-new-privileges
+                </p>
+                <div class="ring r3">
+                  <p class="ring-t">L3 · 네트워크</p>
+                  <p class="ring-d">
+                    NetworkPolicy default-deny · 샌드박스 → 이그레스 프록시만 · allowlist(LLM
+                    API·git 미러·opt-in 레지스트리) · 테넌트별 이그레스 로깅
+                  </p>
+                  <div class="ring r4">
+                    <p class="ring-t">L4 · 데이터</p>
+                    <p class="ring-d">
+                      테넌트별 KMS DEK · 오브젝트 스토리지 테넌트 프리픽스 + 스코프드 자격증명 ·
+                      샌드박스 디스크 암호화 후 파기
+                    </p>
+                    <div class="ring r5">
+                      <p class="ring-t">L5 · 행위 통제</p>
+                      <p class="ring-d">
+                        비동기 승인 게이트(§11) + append-only 감사 로그 — path-guard 는 심층 방어로
+                        존속
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>위협 시나리오</th>
+                  <th>1차 통제</th>
+                  <th>2차 통제</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>에이전트가 생성한 악성 코드 실행 (샌드박스 탈출 시도)</td>
+                  <td>microVM 커널 경계</td>
+                  <td>seccomp · 최소 이미지 · 파기형 디스크</td>
+                </tr>
+                <tr>
+                  <td>prompt-injection → 소스코드/시크릿 유출 시도</td>
+                  <td>이그레스 default-deny + allowlist</td>
+                  <td>단명 시크릿 주입 · 이그레스 로깅 (LLM API 경유 유출은 §16 잔여 리스크)</td>
+                </tr>
+                <tr>
+                  <td>테넌트 간 데이터 교차 조회 (앱 버그)</td>
+                  <td>애플리케이션 tenant 스코핑</td>
+                  <td>Postgres RLS · 오브젝트 스토리지 스코프드 자격증명</td>
+                </tr>
+                <tr>
+                  <td>파괴적 작업 (force push · 대량 삭제)</td>
+                  <td>승인 게이트 — destructive 패턴 기본 차단</td>
+                  <td>git-native 워크스페이스 = 롤백 가능 · 감사 로그</td>
+                </tr>
+                <tr>
+                  <td>탈취된 사용자 계정</td>
+                  <td>OIDC + MFA · API 토큰 스코프</td>
+                  <td>이상 사용 탐지(미터링 파이프라인 재사용) · 감사 로그</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 11 승인 게이트 ═══════════════ -->
+      <section id="s11">
+        <div class="sec-head">
+          <span class="sec-num">11</span>
+          <h2 class="sec-title">승인 게이트 재설계 — 모달 → 비동기 큐</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            데스크톱 ApprovalGate 는 "사용자가 모달 앞에 있다" 를 가정한다. 웹에서는 사용자가 자리에
+            없다. 승인을 <strong>영속 큐 항목</strong> 으로 바꾸고, 기존 destructive-pattern
+            blocklist 를 심각도 등급의 시드로 재사용한다: <span class="tag ok">safe</span> 자동
+            승인(정책 프리셋) · <span class="tag warn">risky</span> 사람 승인 필요 ·
+            <span class="tag no">destructive</span> 기본 차단.
+          </p>
+          <div class="diagram">
+            <p class="cap">승인 상태 머신</p>
+            <div class="sm">
+              <span class="state start">requested</span>
+              <span class="arrow">→</span>
+              <span class="state warn">pending</span>
+              <span class="arrow">→</span>
+              <span class="state ok">approved</span>
+              <span class="sm-note">/</span>
+              <span class="state end">denied</span>
+              <span class="sm-note">/</span>
+              <span class="state end">expired (TTL → 기본 거부)</span>
+            </div>
+            <p class="note-line">
+              pending 진입 시: SSE 인앱 알림 + 이메일/모바일 푸시 · 모든 전이는 감사 이벤트 ·
+              auto-approve 는 정책 프리셋이 requested→approved 를 즉시 단락
+            </p>
+          </div>
+          <ul>
+            <li>
+              <strong>정책 프리셋</strong> — 조직 단위로 "safe 클래스 자동 승인 범위" 를 설정. 예:
+              워크스페이스 내 파일 쓰기 auto, 패키지 설치 auto/ask, shell 임의 명령 ask, destructive
+              는 항상 차단.
+            </li>
+            <li>
+              <strong>타임아웃 = 기본 거부</strong> — fail-closed. 승인 대기로 런이 장시간 멈추는
+              문제는 "안전 경로 우선 계속(speculative continue)" 설계로 완화 — 승인 불필요한 다른
+              작업 그래프 노드를 먼저 진행한다.
+            </li>
+            <li>
+              <strong>감사</strong> — 요청·결정·정책 근거·행위자를 전부 이벤트 로그에 남긴다.
+              컴플라이언스(§13) 증적으로 직결.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 12 시크릿/과금 ═══════════════ -->
+      <section id="s12">
+        <div class="sec-head">
+          <span class="sec-num">12</span>
+          <h2 class="sec-title">시크릿 · KMS / 과금 · 미터링</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            <strong>시크릿.</strong> <code>SecretCrypto</code> 의 클라우드 어댑터는 KMS 봉투
+            암호화다. 테넌트별 DEK(데이터 암호화 키)를 KMS 루트 키로 감싸고, BYO API 키는 DEK 로
+            암호화해 Postgres 에 저장한다. 샌드박스에는 스폰 시점에
+            <strong>단명 자격증명으로만 주입</strong>(env 또는 tmpfs 파일)하고 이미지·스냅숏에는
+            절대 굽지 않는다. 하이버네이션 스냅숏 전에 시크릿을 반드시 스크럽한다.
+          </p>
+          <p>
+            <strong>미터링 → 과금.</strong> 사용량은 이벤트로 발행되고 파이프라인이 집계해 청구로
+            이어진다.
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>미터링 항목</th>
+                  <th>단위</th>
+                  <th>소스</th>
+                  <th>과금 반영</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>샌드박스 컴퓨트</td>
+                  <td>샌드박스-초 × 티어(vCPU/RAM)</td>
+                  <td>세션 스케줄러</td>
+                  <td>사용량 과금 본체</td>
+                </tr>
+                <tr>
+                  <td>LLM 토큰 (플랫폼 키)</td>
+                  <td>input/output 토큰 × 모델</td>
+                  <td>provider usage 응답 (코어가 이미 파싱)</td>
+                  <td>원가 + 15–30% 마진</td>
+                </tr>
+                <tr>
+                  <td>LLM 토큰 (BYO 키)</td>
+                  <td>동일</td>
+                  <td>동일</td>
+                  <td>과금 없음 — 대시보드 가시화만</td>
+                </tr>
+                <tr>
+                  <td>스토리지</td>
+                  <td>GB-월 (미러 + 아티팩트 + 스냅숏)</td>
+                  <td>스토리지 인벤토리</td>
+                  <td>소액 종량</td>
+                </tr>
+                <tr>
+                  <td>동시 세션</td>
+                  <td>피크 동시성</td>
+                  <td>스케줄러 쿼터</td>
+                  <td>플랜 티어 결정 (좌석/플랜 요금)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 13 관측성 ═══════════════ -->
+      <section id="s13">
+        <div class="sec-head">
+          <span class="sec-num">13</span>
+          <h2 class="sec-title">관측성 · 운영</h2>
+        </div>
+        <div class="sec-body">
+          <ul>
+            <li>
+              <strong>상관 ID</strong> — <code>tenant_id / run_id / task_id / session_id</code> 를
+              모든 로그·메트릭·트레이스에 전파. 게이트웨이→오케스트레이터→러너 심→CLI stdout 까지 한
+              런을 끝까지 추적.
+            </li>
+            <li>
+              <strong>스택</strong> — OpenTelemetry 계열 수집 + 메트릭(Prometheus 호환) + 구조화
+              로그. 이벤트 로그(§8)는 감사용, 운영 로그와 분리.
+            </li>
+            <li>
+              <strong>컴플라이언스 트랙</strong> — append-only 감사 로그 + 승인 증적 + 접근 로그를
+              SOC 2 / K-ISMS 대비 형태로 설계 시점부터 축적 (인증 자체는 GA 이후 §16).
+            </li>
+          </ul>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>SLO (초안)</th>
+                  <th>목표</th>
+                  <th>측정</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>세션 시작 지연 (웜풀 히트)</td>
+                  <td>p95 &lt; 5s</td>
+                  <td>요청→첫 CLI ready 이벤트</td>
+                </tr>
+                <tr>
+                  <td>토큰 스트림 지연</td>
+                  <td>p95 &lt; 500ms (심→브라우저)</td>
+                  <td>스트림 타임스탬프 차</td>
+                </tr>
+                <tr>
+                  <td>API 가용성</td>
+                  <td>99.9%</td>
+                  <td>게이트웨이 성공률</td>
+                </tr>
+                <tr>
+                  <td>런 완주율 (인프라 귀책)</td>
+                  <td>&gt; 99%</td>
+                  <td>인프라 오류로 실패한 런 비율</td>
+                </tr>
+                <tr>
+                  <td>승인 알림 전달</td>
+                  <td>p95 &lt; 30s</td>
+                  <td>pending→알림 발송</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 14 로드맵 ═══════════════ -->
+      <section id="s14">
+        <div class="sec-head">
+          <span class="sec-num">14</span>
+          <h2 class="sec-title">단계별 로드맵</h2>
+        </div>
+        <div class="sec-body">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Phase</th>
+                  <th>기간 · 팀</th>
+                  <th>범위</th>
+                  <th>인프라 비용 밴드</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>0 · 기반 (Foundation)</td>
+                  <td>2–3개월 · 엔지니어 3–4</td>
+                  <td>
+                    코어를 서버 패키지로 추출 · Postgres Store 어댑터 · 단일 테넌트 배포 · gVisor
+                    샌드박스 · BYO 키 · SSE · renderer 의 웹 포팅(기본)
+                  </td>
+                  <td>~$1–2k/월 (dev 클러스터)</td>
+                </tr>
+                <tr>
+                  <td>1 · MVP / 클로즈드 베타</td>
+                  <td>3–4개월 · 엔지니어 5–7</td>
+                  <td>
+                    멀티테넌트 auth + RLS · Kata microVM 전환 · git 미러 워크스페이스 · 비동기 승인
+                    큐 · 이그레스 프록시 · 미터링 스켈레톤
+                  </td>
+                  <td>~$3–8k/월</td>
+                </tr>
+                <tr>
+                  <td>2 · GA</td>
+                  <td>3–4개월 · 엔지니어 8–10 + SRE 1 + 보안 1</td>
+                  <td>
+                    과금/청구 · 플랫폼 미터드 키 · 웜풀 + 하이버네이션 · 관측성/SLO · SOC2-트랙 감사
+                    로깅 · 쿼터/어뷰즈 통제
+                  </td>
+                  <td>~$10–30k/월 (base, 세션 비용 별도)</td>
+                </tr>
+                <tr>
+                  <td>3 · 스케일</td>
+                  <td>지속</td>
+                  <td>
+                    멀티리전 · 엔터프라이즈 SSO / VPC 피어링 · 로컬 러너 하이브리드(ToS 재검토 전제)
+                    · 역할 프리셋 마켓플레이스
+                  </td>
+                  <td>수요 비례</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Phase 0 의 핵심 마일스톤은 화려한 것이 아니다 —
+            <strong>"데스크톱과 동일한 오케스트레이션 런이 서버에서 완주한다"</strong> 하나다.
+            코어의 vitest 스위트가 서버 어댑터 조합으로 그대로 GREEN 이 되는 것이 이식 성공의 기계적
+            정의다.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 15 비용 모델 ═══════════════ -->
+      <section id="s15">
+        <div class="sec-head">
+          <span class="sec-num">15</span>
+          <h2 class="sec-title">비용 모델 스케치</h2>
+        </div>
+        <div class="sec-body">
+          <p>세션당 원가의 지배 항은 샌드박스-초와 LLM 토큰이다. 범용 컴퓨트 단가 기준 추정:</p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>드라이버</th>
+                  <th>추정 단가</th>
+                  <th>비고</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>microVM 2vCPU / 4GB</td>
+                  <td>~$0.07–0.12 /시간</td>
+                  <td>범용 K8s 노드 단가 환산 · 웜풀 오버헤드 별도 상각</td>
+                </tr>
+                <tr>
+                  <td>병렬 실행 배수</td>
+                  <td>× 동시 implementer 수</td>
+                  <td>병렬 작업 실행(출하됨)이 켜진 런은 샌드박스 수가 곱해진다</td>
+                </tr>
+                <tr>
+                  <td>LLM 토큰 (BYO)</td>
+                  <td>원가 패스스루</td>
+                  <td>플랫폼 수익 아님 — 좌석/컴퓨트 요금이 수익</td>
+                </tr>
+                <tr>
+                  <td>LLM 토큰 (플랫폼 키)</td>
+                  <td>원가 + 15–30% 마진</td>
+                  <td>온보딩 최적 경로이자 마진 소스</td>
+                </tr>
+                <tr>
+                  <td>스토리지 · 이그레스</td>
+                  <td>소액</td>
+                  <td>미러 + 아티팩트, GB-월</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            <strong>유닛 이코노믹스 예시</strong> — implementer 3개가 병렬로 도는 1시간
+            오케스트레이션 런: 컴퓨트 ≈ 3 VM × 1h × $0.1 ≈ <strong>$0.3–0.5</strong> + 토큰
+            비용(모델·규모 의존, 통상 컴퓨트를 수 배 상회). 가격 구조는
+            <em>좌석(플랜) + 사용량(샌드박스-초·토큰)</em> 2축이 자연스럽다. 최대 원가 절감 레버는
+            <strong>유휴 하이버네이션</strong>(§6) — 대화형 세션은 대기 시간이 지배적이라 벽시계
+            시간 대비 과금 가능한 샌드박스-초를 크게 줄인다.
+          </p>
+          <div class="callout">
+            <b>미검증 가정.</b> verify 루프(<code>npm install</code>·테스트)의 CPU/IO 부하가 밀도
+            경제성을 좌우하는데 실측 전이다. Phase 0 에서 대표 워크로드 프로파일링을 최우선 계측
+            항목으로 둔다(§16).
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 16 리스크 ═══════════════ -->
+      <section id="s16">
+        <div class="sec-head">
+          <span class="sec-num">16</span>
+          <h2 class="sec-title">리스크 · 미해결 질문</h2>
+        </div>
+        <div class="sec-body">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>리스크</th>
+                  <th>영향</th>
+                  <th>완화</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>CLI 벤더가 API-키 headless/클라우드 사용도 제한</td>
+                  <td><span class="tag no">치명</span> — CLI 에이전트 경로 상실</td>
+                  <td>
+                    코어에 네이티브 <code>ApiProvider</code> + 툴 루프가 이미 있음 → provider SDK
+                    폴백으로 오케스트레이션 유지
+                  </td>
+                </tr>
+                <tr>
+                  <td>verify 워크로드의 밀도 경제성 미검증</td>
+                  <td><span class="tag warn">높음</span> — 원가 모델 붕괴 가능</td>
+                  <td>Phase 0 프로파일링 · 캐시(패키지 미러) · verify 전용 노드풀 분리</td>
+                </tr>
+                <tr>
+                  <td>비동기 승인 대기로 런 스톨</td>
+                  <td><span class="tag warn">중</span> — UX·비용(유휴 샌드박스)</td>
+                  <td>정책 프리셋 · speculative continue · 대기 중 하이버네이션</td>
+                </tr>
+                <tr>
+                  <td>에페메럴 VM 에서 CLI 세션 resume 상태 유실</td>
+                  <td><span class="tag warn">중</span> — 하이버네이션 재개 실패</td>
+                  <td>
+                    CLI 상태 디렉터리를 스냅숏 대상에 포함 · CLI 별 resume 시맨틱 Phase 0 검증
+                  </td>
+                </tr>
+                <tr>
+                  <td>prompt-injection → 허용된 LLM 엔드포인트로 데이터 유출</td>
+                  <td><span class="tag warn">잔여 리스크</span></td>
+                  <td>
+                    이그레스 DLP 는 부분 완화에 그침을 <strong>솔직히 인정</strong> · 민감 repo 는
+                    BYO 키 + 자체 org 키로 경로 한정 · 이그레스 로깅으로 사후 탐지
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p><strong>미해결 질문 (열림):</strong></p>
+          <ul>
+            <li>
+              SOC 2 / K-ISMS 인증 착수 시점 — GA 전 트랙 축적, 인증은 수요(엔터프라이즈 파이프라인)
+              확인 후.
+            </li>
+            <li>
+              GPU / self-hosted 모델 지원 여부 — 클라우드 중립 스택이라 노드풀 추가로 열려는 있음.
+            </li>
+            <li>국가별 데이터 레지던시 — 멀티리전(Phase 3)과 함께 결정.</li>
+            <li>병렬 실행의 가격 책정 — 배수 과금 그대로 vs 플랜별 동시성 캡.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 17 부록 ═══════════════ -->
+      <section id="s17">
+        <div class="sec-head">
+          <span class="sec-num">17</span>
+          <h2 class="sec-title">부록 — 클라우드 참조 매핑</h2>
+        </div>
+        <div class="sec-body">
+          <p>본문은 클라우드 중립으로 기술했다. 특정 벤더로 착지할 때의 대응표:</p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>중립 컴포넌트</th>
+                  <th>AWS</th>
+                  <th>GCP</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>K8s + microVM 샌드박스</td>
+                  <td>EKS + Kata / Firecracker (베어메탈 노드) · 대안: Fargate</td>
+                  <td>GKE + gVisor(GKE Sandbox) · Kata 는 자체 노드풀</td>
+                </tr>
+                <tr>
+                  <td>Postgres (RLS)</td>
+                  <td>Aurora PostgreSQL / RDS</td>
+                  <td>Cloud SQL / AlloyDB</td>
+                </tr>
+                <tr>
+                  <td>오브젝트 스토리지</td>
+                  <td>S3</td>
+                  <td>GCS</td>
+                </tr>
+                <tr>
+                  <td>KMS</td>
+                  <td>AWS KMS</td>
+                  <td>Cloud KMS</td>
+                </tr>
+                <tr>
+                  <td>큐 / 캐시</td>
+                  <td>ElastiCache · SQS</td>
+                  <td>Memorystore · Pub/Sub</td>
+                </tr>
+                <tr>
+                  <td>이그레스 프록시 · 네트워크 정책</td>
+                  <td>VPC + NetworkPolicy(Calico/Cilium) + NAT 경유 프록시</td>
+                  <td>VPC-native GKE + NetworkPolicy + 프록시</td>
+                </tr>
+                <tr>
+                  <td>관측성</td>
+                  <td>CloudWatch + 관리형 Prometheus/OTel</td>
+                  <td>Cloud Operations + 관리형 Prometheus</td>
+                </tr>
+                <tr>
+                  <td>청구</td>
+                  <td colspan="2">Stripe 등 외부 billing — usage_events 파이프라인에서 공급</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note-line">
+            근거 코드 앵커: src/main/core/engine.ts (조립 루트) · store/types.ts (Store 계약) ·
+            session/cli-session.ts (심이 대체할 스폰/스트림) · safety/approval.ts (승인 계약) ·
+            workspace/path-guard.ts (advisory 한계 = microVM 채택 근거)
+          </p>
+        </div>
+      </section>
+
+      <footer>
+        <span>Fleet — SaaS Infrastructure Architecture Plan · v1.0 draft</span>
+        <span>2026-07-02 · docs/fleet-saas-infra-plan.html</span>
+      </footer>
+    </div>
+  </body>
+</html>

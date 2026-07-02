@@ -1,0 +1,1562 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fleet SaaS v2 — 클라우드 네이티브 하이브리드 아키텍처 계획서</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --obsidian: #0a0b0d;
+        --panel: #101216;
+        --panel-2: #15181e;
+        --line: #23272f;
+        --line-2: #2e333d;
+        --ink: #e8eaed;
+        --ink-dim: #a9b0ba;
+        --ink-faint: #737b86;
+        --amber: #ffc24b;
+        --mint: #4fe0c0;
+        --rose: #e0625f;
+        --violet: #a58bff;
+        --serif: 'Fraunces', Georgia, serif;
+        --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+        --sans: 'IBM Plex Sans KR', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--obsidian);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.62;
+        -webkit-font-smoothing: antialiased;
+        background-image:
+          radial-gradient(1100px 520px at 84% -8%, rgba(79, 224, 192, 0.07), transparent 60%),
+          radial-gradient(900px 520px at -6% 12%, rgba(255, 194, 75, 0.06), transparent 60%),
+          radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.022) 1px, transparent 0);
+        background-size:
+          auto,
+          auto,
+          22px 22px;
+        background-attachment: fixed;
+      }
+      a {
+        color: var(--mint);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      ::selection {
+        background: rgba(79, 224, 192, 0.28);
+      }
+      .wrap {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 26px 120px;
+      }
+
+      header.mast {
+        padding: 56px 0 26px;
+        border-bottom: 1px solid var(--line);
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.34em;
+        text-transform: uppercase;
+        color: var(--mint);
+        margin: 0 0 14px;
+      }
+      h1.title {
+        font-family: var(--serif);
+        font-weight: 600;
+        font-size: clamp(30px, 5vw, 50px);
+        line-height: 1.08;
+        margin: 0;
+        letter-spacing: -0.01em;
+      }
+      h1.title em {
+        font-style: italic;
+        color: var(--ink-dim);
+      }
+      .lede {
+        color: var(--ink-dim);
+        max-width: 82ch;
+        margin: 18px 0 0;
+        font-size: 15.5px;
+      }
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 22px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+      }
+      .pill {
+        border: 1px solid var(--line-2);
+        border-radius: 999px;
+        padding: 5px 12px;
+        background: rgba(255, 255, 255, 0.015);
+      }
+      .pill b {
+        color: var(--ink-dim);
+        font-weight: 500;
+      }
+
+      nav.toc {
+        margin: 34px 0 0;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel);
+        padding: 20px 24px;
+      }
+      nav.toc h2 {
+        margin: 0 0 12px;
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+      }
+      nav.toc ol {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 4px 26px;
+      }
+      nav.toc li a {
+        display: flex;
+        gap: 10px;
+        padding: 4px 2px;
+        color: var(--ink-dim);
+        border-radius: 6px;
+        font-size: 13.5px;
+      }
+      nav.toc li a:hover {
+        color: var(--ink);
+        text-decoration: none;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      nav.toc .n {
+        font-family: var(--mono);
+        color: var(--mint);
+        font-size: 12px;
+        min-width: 22px;
+      }
+
+      section {
+        margin-top: 64px;
+        scroll-margin-top: 24px;
+      }
+      .sec-head {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
+      .sec-num {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--mint);
+        letter-spacing: 0.12em;
+      }
+      h2.sec-title {
+        font-family: var(--serif);
+        font-weight: 600;
+        font-size: clamp(21px, 3vw, 28px);
+        margin: 0;
+        letter-spacing: -0.005em;
+      }
+      .sec-body {
+        margin-top: 20px;
+      }
+      .sec-body p {
+        color: var(--ink-dim);
+        max-width: 88ch;
+      }
+      .sec-body p strong,
+      .sec-body li strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .sec-body ul,
+      .sec-body ol {
+        color: var(--ink-dim);
+        padding-left: 22px;
+      }
+      .sec-body li {
+        margin: 6px 0;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        color: var(--mint);
+        background: rgba(79, 224, 192, 0.07);
+        border: 1px solid rgba(79, 224, 192, 0.14);
+        border-radius: 5px;
+        padding: 1px 6px;
+        white-space: nowrap;
+      }
+      .callout {
+        border: 1px solid var(--line-2);
+        border-left: 3px solid var(--amber);
+        background: var(--panel);
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin: 18px 0;
+        color: var(--ink-dim);
+        max-width: 92ch;
+      }
+      .callout.rose {
+        border-left-color: var(--rose);
+      }
+      .callout.mint {
+        border-left-color: var(--mint);
+      }
+      .callout b {
+        color: var(--ink);
+      }
+
+      .tbl-wrap {
+        overflow-x: auto;
+        margin: 20px 0;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 13.5px;
+        background: var(--panel);
+      }
+      thead th {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        text-align: left;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line-2);
+        background: var(--panel-2);
+        white-space: nowrap;
+      }
+      tbody td {
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-dim);
+        vertical-align: top;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tbody td:first-child {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      td .path {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        display: block;
+        margin-top: 3px;
+        white-space: nowrap;
+      }
+      .tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        border-radius: 5px;
+        padding: 2px 8px;
+        border: 1px solid var(--line-2);
+        white-space: nowrap;
+      }
+      .tag.ok {
+        color: var(--mint);
+        border-color: rgba(79, 224, 192, 0.35);
+        background: rgba(79, 224, 192, 0.07);
+      }
+      .tag.no {
+        color: var(--rose);
+        border-color: rgba(224, 98, 95, 0.4);
+        background: rgba(224, 98, 95, 0.08);
+      }
+      .tag.warn {
+        color: var(--amber);
+        border-color: rgba(255, 194, 75, 0.4);
+        background: rgba(255, 194, 75, 0.07);
+      }
+
+      .diagram {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel);
+        padding: 22px;
+        margin: 22px 0;
+        overflow-x: auto;
+      }
+      .diagram .cap {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin: 0 0 16px;
+      }
+      .box {
+        border: 1px solid var(--line-2);
+        border-radius: 10px;
+        background: var(--panel-2);
+        padding: 12px 14px;
+        min-width: 0;
+      }
+      .box .bt {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink);
+        margin: 0 0 6px;
+        font-weight: 600;
+      }
+      .box .bd {
+        font-size: 12.5px;
+        color: var(--ink-faint);
+        line-height: 1.5;
+      }
+      .box.amber {
+        border-color: rgba(255, 194, 75, 0.4);
+      }
+      .box.amber .bt {
+        color: var(--amber);
+      }
+      .box.mint {
+        border-color: rgba(79, 224, 192, 0.4);
+      }
+      .box.mint .bt {
+        color: var(--mint);
+      }
+      .box.rose {
+        border-color: rgba(224, 98, 95, 0.45);
+      }
+      .box.rose .bt {
+        color: var(--rose);
+      }
+      .box.violet {
+        border-color: rgba(165, 139, 255, 0.4);
+      }
+      .box.violet .bt {
+        color: var(--violet);
+      }
+      .lane {
+        border: 1px dashed var(--line-2);
+        border-radius: 12px;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1;
+        min-width: 250px;
+      }
+      .lane > .lane-t {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--ink-dim);
+        margin: 0 0 2px;
+      }
+      .cols {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .chip {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--mint);
+        border: 1px solid rgba(79, 224, 192, 0.3);
+        background: rgba(79, 224, 192, 0.06);
+        border-radius: 999px;
+        padding: 2px 9px;
+        white-space: nowrap;
+      }
+      .chip.amber {
+        color: var(--amber);
+        border-color: rgba(255, 194, 75, 0.35);
+        background: rgba(255, 194, 75, 0.06);
+      }
+      .flow {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        flex-wrap: wrap;
+        row-gap: 14px;
+      }
+      .flow .box {
+        flex: 1;
+        min-width: 150px;
+      }
+      .arrow {
+        display: flex;
+        align-items: center;
+        padding: 0 8px;
+        color: var(--amber);
+        font-family: var(--mono);
+        font-size: 15px;
+        flex: none;
+      }
+      .arrow.down {
+        justify-content: center;
+        padding: 2px 0;
+      }
+      .vflow {
+        display: flex;
+        flex-direction: column;
+      }
+      .note-line {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--ink-faint);
+        margin-top: 12px;
+      }
+
+      .sm {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        align-items: center;
+      }
+      .state {
+        border: 1px solid var(--line-2);
+        border-radius: 999px;
+        padding: 8px 18px;
+        font-family: var(--mono);
+        font-size: 12px;
+        background: var(--panel-2);
+        white-space: nowrap;
+      }
+      .state.start {
+        border-color: rgba(79, 224, 192, 0.5);
+        color: var(--mint);
+      }
+      .state.warn {
+        border-color: rgba(255, 194, 75, 0.5);
+        color: var(--amber);
+      }
+      .state.end {
+        border-color: rgba(224, 98, 95, 0.5);
+        color: var(--rose);
+      }
+      .state.ok {
+        border-color: rgba(79, 224, 192, 0.5);
+        color: var(--mint);
+      }
+      .sm-note {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--ink-faint);
+      }
+
+      footer {
+        margin-top: 90px;
+        border-top: 1px solid var(--line);
+        padding-top: 22px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      @media (max-width: 720px) {
+        .cols {
+          flex-direction: column;
+        }
+        .arrow {
+          transform: rotate(90deg);
+          justify-content: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <!-- ═══════════════ MASTHEAD ═══════════════ -->
+      <header class="mast">
+        <p class="eyebrow">Fleet · Cloud-Native Hybrid Architecture Plan · v2</p>
+        <h1 class="title">
+          Fleet 클라우드 네이티브 하이브리드<br /><em>Vercel + Supabase + 로컬 Docker 러너</em>
+        </h1>
+        <p class="lede">
+          Fleet 을 "어디서든 브라우저로 쓰는" 서비스로 만드는 계획서 — 단, 서버 인프라를 사지
+          않는다. 프론트엔드는 <strong>Vercel</strong>, 상태·인증·실시간 중계는
+          <strong>Supabase</strong>, 오케스트레이터와 실행은 <strong>내 PC 의 Docker 러너</strong>가
+          담당한다. 클라우드에는 얇은 관제탑만 두고 두뇌와 근육은 로컬에 남기는 설계. 풀 클라우드
+          SaaS(v1)로의 승격 경로는 §11 에 보존한다.
+        </p>
+        <div class="meta-row">
+          <span class="pill"><b>버전</b> v2.0 draft</span>
+          <span class="pill"><b>작성</b> 2026-07-02</span>
+          <span class="pill"><b>모델</b> 하이브리드 — 클라우드 관제 + 로컬 실행</span>
+          <span class="pill"><b>스택</b> Vercel · Supabase · Docker(WSL2)</span>
+          <span class="pill"><b>운영비 목표</b> ≈ $0 (무료 티어)</span>
+          <span class="pill"><b>선행 문서</b> v1 풀 클라우드 (fleet-saas-infra-plan.html)</span>
+        </div>
+      </header>
+
+      <!-- ═══════════════ TOC ═══════════════ -->
+      <nav class="toc">
+        <h2>목차</h2>
+        <ol>
+          <li>
+            <a href="#s1"><span class="n">01</span>요약 — 왜 v2 인가</a>
+          </li>
+          <li>
+            <a href="#s2"><span class="n">02</span>전체 아키텍처</a>
+          </li>
+          <li>
+            <a href="#s3"><span class="n">03</span>역할 분담과 포트 매핑</a>
+          </li>
+          <li>
+            <a href="#s4"><span class="n">04</span>러너 설계 — 내 PC 의 Docker</a>
+          </li>
+          <li>
+            <a href="#s5"><span class="n">05</span>데이터 모델 — Supabase Postgres</a>
+          </li>
+          <li>
+            <a href="#s6"><span class="n">06</span>실시간 스트리밍</a>
+          </li>
+          <li>
+            <a href="#s7"><span class="n">07</span>승인 게이트 — 모바일 승인</a>
+          </li>
+          <li>
+            <a href="#s8"><span class="n">08</span>시크릿 전략</a>
+          </li>
+          <li>
+            <a href="#s9"><span class="n">09</span>보안 · 위협 모델</a>
+          </li>
+          <li>
+            <a href="#s10"><span class="n">10</span>라이선스 (ToS) — 구독 CLI 의 여지</a>
+          </li>
+          <li>
+            <a href="#s11"><span class="n">11</span>확장 경로 — v1 풀 클라우드로</a>
+          </li>
+          <li>
+            <a href="#s12"><span class="n">12</span>로드맵</a>
+          </li>
+          <li>
+            <a href="#s13"><span class="n">13</span>비용</a>
+          </li>
+          <li>
+            <a href="#s14"><span class="n">14</span>리스크 · 미해결 질문</a>
+          </li>
+        </ol>
+      </nav>
+
+      <!-- ═══════════════ 01 ═══════════════ -->
+      <section id="s1">
+        <div class="sec-head">
+          <span class="sec-num">01</span>
+          <h2 class="sec-title">요약 — 왜 v2 인가</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            v1(풀 클라우드)은 "남에게 파는 멀티테넌트 SaaS" 를 전제로 K8s + microVM 플릿을 설계했다.
+            그 설계의 비용 지배 항은 샌드박스-초(실행 컴퓨트)였고, 최대 제약은 구독 OAuth ToS(제3자
+            서버에서 사용자 구독 실행 금지)였다. v2 는 전제를 바꾼다 —
+            <strong>1차 목표는 "내가 어디서든 브라우저로 쓰는 Fleet"</strong> 이다. 그러면 두 문제가
+            동시에 풀린다:
+          </p>
+          <ul>
+            <li>
+              <strong>실행이 내 PC 로 내려온다</strong> → 샌드박스 컴퓨트 비용 소멸, 클라우드에는
+              무료 티어로 충분한 관제탑만 남는다.
+            </li>
+            <li>
+              <strong>실행이 본인 머신이다</strong> → 구독 CLI(Claude Pro 등)를 데스크톱 Fleet 과
+              같은 위치에서 쓸 여지가 생긴다(§10, 회색지대 유의).
+            </li>
+            <li>
+              <strong>단일 사용자다</strong> → microVM 급 격리가 불필요해지고 평범한 Docker
+              컨테이너로 충분하다.
+            </li>
+          </ul>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>결정 영역</th>
+                  <th>v1 (풀 클라우드)</th>
+                  <th>v2 (하이브리드) 권고</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>실행 위치</td>
+                  <td>클라우드 microVM 플릿</td>
+                  <td><strong>내 PC Docker</strong> — 오케스트레이터(코어 엔진)까지 함께</td>
+                </tr>
+                <tr>
+                  <td>백엔드</td>
+                  <td>자체 서비스 군 (게이트웨이·스케줄러·승인·시크릿…)</td>
+                  <td>
+                    <strong>Supabase</strong> — Auth·Postgres(RLS)·Realtime·Storage·Vault 로 대체,
+                    자체 서버 코드 최소화
+                  </td>
+                </tr>
+                <tr>
+                  <td>프론트엔드</td>
+                  <td>자체 호스팅 웹</td>
+                  <td><strong>Vercel</strong> — 기존 React renderer 이식</td>
+                </tr>
+                <tr>
+                  <td>연결</td>
+                  <td>러너 심 gRPC (클라우드 내부)</td>
+                  <td>
+                    <strong>아웃바운드 전용</strong> — 러너가 Supabase 에 접속해 작업을 당김(pull).
+                    포트포워딩 불필요
+                  </td>
+                </tr>
+                <tr>
+                  <td>격리</td>
+                  <td>Kata microVM (커널 경계)</td>
+                  <td>Docker 컨테이너 (단일 테넌트라 충분)</td>
+                </tr>
+                <tr>
+                  <td>LLM 인증</td>
+                  <td>API 키 전용 (ToS)</td>
+                  <td>API 키 + <strong>구독 CLI 여지</strong> (본인 머신 실행)</td>
+                </tr>
+                <tr>
+                  <td>운영비</td>
+                  <td>GA 기준 ~$10–30k/월</td>
+                  <td><strong>≈ $0</strong> (무료 티어) ~ 수십 $/월</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout mint">
+            <b>버려지는 것이 없다.</b> Supabase 는 Postgres + RLS 이므로 v1 의 멀티테넌시 데이터
+            설계가 그대로 유효하고, 코어 엔진의 포트/어댑터 구조도 동일하게 쓰인다. 나중에 상용 SaaS
+            로 가면 러너만 클라우드 microVM 플릿으로 갈아끼우면 된다(§11).
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 02 ═══════════════ -->
+      <section id="s2">
+        <div class="sec-head">
+          <span class="sec-num">02</span>
+          <h2 class="sec-title">전체 아키텍처</h2>
+        </div>
+        <div class="sec-body">
+          <div class="diagram">
+            <p class="cap">v2 — 3조각 하이브리드</p>
+            <div class="vflow">
+              <div class="box violet">
+                <p class="bt">브라우저 — Vercel 호스팅 React UI</p>
+                <div class="bd">
+                  채팅방 · 작업 보드 · 승인 큐 · 검증 결과 — 데스크톱 renderer 이식. PC·폰·태블릿
+                  어디서든 접속. Supabase JS 클라이언트로 직접 통신(로그인 → RLS 가 접근 범위 강제)
+                  — 별도 API 서버 없음.
+                </div>
+              </div>
+              <div class="arrow down">▼ ▲ &nbsp;Supabase JS SDK (HTTPS + WebSocket)</div>
+              <div class="lane" style="border-color: rgba(79, 224, 192, 0.35)">
+                <p class="lane-t" style="color: var(--mint)">
+                  Supabase — 얇은 관제탑 (상태 · 인증 · 중계)
+                </p>
+                <div class="cols">
+                  <div class="box mint" style="flex: 1">
+                    <p class="bt">Auth</p>
+                    <div class="bd">
+                      이메일/OAuth 로그인 · JWT 발급 — 브라우저와 러너 모두 이 신원으로 접근
+                    </div>
+                  </div>
+                  <div class="box mint" style="flex: 1.3">
+                    <p class="bt">Postgres + RLS</p>
+                    <div class="bd">
+                      runs · tasks · messages · approvals · events — 진실 원천. RLS 로 소유자만 접근
+                    </div>
+                  </div>
+                  <div class="box mint" style="flex: 1">
+                    <p class="bt">Realtime</p>
+                    <div class="bd">
+                      Postgres Changes(작업 큐 감지) + Broadcast(토큰 스트림) + Presence(러너 온라인
+                      표시)
+                    </div>
+                  </div>
+                  <div class="box mint" style="flex: 1">
+                    <p class="bt">Storage · Vault</p>
+                    <div class="bd">아티팩트/로그 아카이브 · (선택) API 키 보관</div>
+                  </div>
+                </div>
+              </div>
+              <div class="arrow down">
+                ▲ &nbsp;아웃바운드 전용 — 러너가 먼저 접속해 작업을 당김 (pull) · 포트 개방 불필요
+              </div>
+              <div class="lane" style="border-color: rgba(255, 194, 75, 0.4)">
+                <p class="lane-t" style="color: var(--amber)">
+                  내 PC — Docker (WSL2) · 두뇌 + 근육
+                </p>
+                <div class="cols">
+                  <div class="box amber" style="flex: 1.3">
+                    <p class="bt">러너 데몬 + Fleet 코어 엔진</p>
+                    <div class="bd">
+                      jobs 구독 → 오케스트레이션 루프(목표분해·역할배정·verify) 실행 → 이벤트/결과를
+                      Postgres 에 기록, 토큰은 Broadcast 로 중계. <code>src/main/core</code> 를
+                      그대로 컨테이너에 탑재.
+                    </div>
+                  </div>
+                  <div class="box amber" style="flex: 1">
+                    <p class="bt">CLI 에이전트 컨테이너</p>
+                    <div class="bd">
+                      claude · codex · gemini — 구독 로그인(볼륨 마운트) 또는 API-키 env. 세션별
+                      스폰.
+                    </div>
+                  </div>
+                  <div class="box" style="flex: 1">
+                    <p class="bt">워크스페이스</p>
+                    <div class="bd">
+                      로컬 디스크 바인드 마운트 (데스크톱과 동일) — 옵션: git 체크아웃 모드
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p class="note-line">
+              런 시작: 브라우저가 runs 테이블에 행 삽입 → 러너가 Realtime 으로 감지 → 실행 → 진행
+              상황이 역방향으로 흐름
+            </p>
+          </div>
+          <div class="callout">
+            <b>왜 오케스트레이터가 PC 쪽인가.</b> Supabase 의 서버 코드 실행 수단(Edge Functions)은
+            수초짜리 단명 함수라 몇 시간짜리 오케스트레이션 루프를 수용할 수 없다. 코어 엔진을
+            러너에 두면 클라우드에 새로 짤 백엔드가 사실상 사라지고, CLI 스폰·verify 실행과 같은
+            프로세스에 있어 데스크톱과 코드 경로가 동일해진다 — 이식 리스크 최소화.
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 03 ═══════════════ -->
+      <section id="s3">
+        <div class="sec-head">
+          <span class="sec-num">03</span>
+          <h2 class="sec-title">역할 분담과 포트 매핑</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            프론트엔드 = Vercel, "백엔드" 는 둘로 쪼개진다 —
+            <strong>상태·인증·중계는 Supabase, 로직·실행은 PC 러너</strong>. 코어 엔진의 포트
+            인터페이스는 v1 과 동일하게 어댑터만 바꾼다:
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fleet 포트</th>
+                  <th>데스크톱 어댑터</th>
+                  <th>v2 어댑터</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Store<span class="path">store/types.ts · json-file.ts</span></td>
+                  <td>단일 JSON 파일</td>
+                  <td>
+                    Supabase Postgres (supabase-js) — RLS 로 소유자 스코핑. 러너는 service-role 대신
+                    러너 전용 사용자로 접근
+                  </td>
+                </tr>
+                <tr>
+                  <td>ApiProvider<span class="path">providers/*.ts</span></td>
+                  <td>앱에서 직접 HTTPS</td>
+                  <td>
+                    <span class="tag ok">변경 없음</span> — 러너 컨테이너에서 동일 코드 실행 (재시도
+                    로직 포함)
+                  </td>
+                </tr>
+                <tr>
+                  <td>LlmSession (CLI)<span class="path">session/cli-session.ts</span></td>
+                  <td>로컬 child process</td>
+                  <td>
+                    거의 동일 — 기본은 러너 컨테이너 <strong>내부의 child process</strong> 스폰
+                    (데스크톱과 동일 코드 경로). 별도 컨테이너 분리가 필요하면 rootless/중첩 데몬
+                    또는 브로커드 launch API 로만 — <strong>host Docker socket 마운트 금지</strong>
+                    (데몬 접근 = 사실상 host root, Codex P1). 파서 재사용
+                  </td>
+                </tr>
+                <tr>
+                  <td>CommandRunner<span class="path">cli/detect.ts</span></td>
+                  <td>cross-spawn (호스트)</td>
+                  <td>컨테이너 내 spawn — PATH 셰도잉 방어는 이미지 고정으로 대체</td>
+                </tr>
+                <tr>
+                  <td>SecretCrypto<span class="path">secret/types.ts</span></td>
+                  <td>Electron safeStorage</td>
+                  <td>러너 로컬 키체인/암호화 파일 우선 · 선택적으로 Supabase Vault (§8)</td>
+                </tr>
+                <tr>
+                  <td>ApprovalGate<span class="path">safety/approval.ts</span></td>
+                  <td>renderer 모달</td>
+                  <td>approvals 테이블 + Realtime — 브라우저(폰 포함)에서 승인/거부 (§7)</td>
+                </tr>
+                <tr>
+                  <td>Workspace<span class="path">workspace/git.ts · path-guard.ts</span></td>
+                  <td>로컬 디렉터리</td>
+                  <td>동일(바인드 마운트) — path-guard 존속 · 컨테이너 경계가 1차 방어로 추가</td>
+                </tr>
+                <tr>
+                  <td>이벤트 push<span class="path">webContents.send</span></td>
+                  <td>Electron IPC broadcast</td>
+                  <td>Supabase Realtime — Broadcast(스트림) + Postgres Changes(상태 변화)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            브라우저↔Supabase 는 SDK 직결이 기본이고(로그인 토큰 + RLS 가 인가를 담당), 서버 로직이
+            꼭 필요한 얇은 조각(예: 초대 링크 발급)만 Vercel 서버리스 함수나 Supabase Edge Functions
+            에 둔다.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 04 ═══════════════ -->
+      <section id="s4">
+        <div class="sec-head">
+          <span class="sec-num">04</span>
+          <h2 class="sec-title">러너 설계 — 내 PC 의 Docker</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            러너는 <code>docker compose up -d</code> 하나로 뜨는 상주 데몬이다. 부팅 시 Supabase 에
+            로그인하고, Realtime Presence 로 "러너 온라인" 을 알리며, <code>runs</code> 테이블
+            구독을 걸어둔다.
+          </p>
+          <div class="diagram">
+            <p class="cap">런 1회의 수명주기 (pull 모델)</p>
+            <div class="flow">
+              <div class="box violet">
+                <p class="bt">1 · 요청</p>
+                <div class="bd">브라우저: runs 에 행 삽입 (status=queued)</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box mint">
+                <p class="bt">2 · 감지</p>
+                <div class="bd">러너: Realtime 알림 → 행을 원자적으로 claim (status=running)</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box amber">
+                <p class="bt">3 · 실행</p>
+                <div class="bd">
+                  코어 엔진 루프 — CLI 컨테이너 스폰 · verify · 승인 요청은 §7 큐로
+                </div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box amber">
+                <p class="bt">4 · 중계</p>
+                <div class="bd">토큰 → Broadcast · 상태/이벤트 → Postgres</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box mint">
+                <p class="bt">5 · 완료</p>
+                <div class="bd">status=done/failed · 산출물 링크 기록 · 컨테이너 정리</div>
+              </div>
+            </div>
+            <p class="note-line">
+              claim 은 UPDATE ... WHERE status='queued' RETURNING 으로 원자화 — 러너를 나중에 2대
+              이상 등록해도 중복 실행이 없다
+            </p>
+          </div>
+          <ul>
+            <li>
+              <strong>구성</strong> — ① 러너 데몬 컨테이너(코어 엔진 + supabase-js), ② CLI
+              이미지(claude/codex/gemini + node/git/verify 툴체인), ③ 워크스페이스 바인드 마운트.
+              구독 CLI 를 쓸 경우 로그인 상태 디렉터리(<code>~/.claude</code> 등)를 볼륨으로 유지.
+            </li>
+            <li>
+              <strong>연결 회복</strong> — WebSocket 이 끊기면 지수 백오프로 재접속, 복귀 시 queued
+              행을 폴링으로 1회 보정(이벤트 유실 대비). 하트비트를 <code>runners</code> 테이블에
+              주기 기록해 브라우저가 "러너 오프라인" 을 표시.
+            </li>
+            <li>
+              <strong>PC 절전/종료</strong> — 러너가 죽으면 running 행이 고아가 된다 → 하트비트 만료
+              시 status=stale 로 전환하고 재시작 시 재개(코어의 CLI 세션 resume 활용) 또는 실패
+              처리.
+            </li>
+            <li>
+              <strong>Windows 전제</strong> — Docker Desktop(WSL2 백엔드). 바인드 마운트는 WSL2
+              파일시스템 쪽에 워크스페이스를 두는 편이 I/O 성능상 유리.
+            </li>
+            <li>
+              <strong>업데이트</strong> — 러너 이미지는 태그 고정 + watchtower 류 자동 갱신은 쓰지
+              않는다(실행 중 런 보호). 수동 <code>compose pull</code>.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 05 ═══════════════ -->
+      <section id="s5">
+        <div class="sec-head">
+          <span class="sec-num">05</span>
+          <h2 class="sec-title">데이터 모델 — Supabase Postgres</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            데스크톱의 <code>StoreState</code> 를 테이블로 전개한다. 모든 행에
+            <code>owner_id</code>(auth.users 참조)를 두고 RLS 로 "본인 것만" 을 강제 — 지금은 단일
+            사용자지만, 이 한 줄이 나중에 팀/멀티테넌트 확장의 기반이 된다(<code>owner_id</code> →
+            <code>org_id</code> 승격).
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>테이블</th>
+                  <th>내용</th>
+                  <th>비고</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>projects</td>
+                  <td>프로젝트 · 워크스페이스 경로/모드 · 역할 배정 정책</td>
+                  <td>데스크톱 Project 대응</td>
+                </tr>
+                <tr>
+                  <td>runs</td>
+                  <td>
+                    오케스트레이션 런 — status(queued→running→done/failed/stale) · 목표 · claim 정보
+                  </td>
+                  <td><strong>작업 큐를 겸함</strong> (DB-as-queue)</td>
+                </tr>
+                <tr>
+                  <td>tasks</td>
+                  <td>분해된 작업 그래프 노드 — 상태 · 담당 LLM</td>
+                  <td>작업 보드 소스</td>
+                </tr>
+                <tr>
+                  <td>rooms · messages</td>
+                  <td>채팅방 · 메시지 (완결된 메시지만 — 스트리밍 델타는 저장 안 함)</td>
+                  <td>대용량 본문은 Storage 오프로드</td>
+                </tr>
+                <tr>
+                  <td>approvals</td>
+                  <td>승인 요청 — 명령/경로/위험도 · 상태머신(§7)</td>
+                  <td>Realtime 구독 대상</td>
+                </tr>
+                <tr>
+                  <td>events</td>
+                  <td>append-only 감사/타임라인 이벤트</td>
+                  <td>INSERT 전용 정책으로 불변 강제</td>
+                </tr>
+                <tr>
+                  <td>llm_sessions</td>
+                  <td>등록된 LLM 세션 · capabilities</td>
+                  <td>데스크톱 sessions 대응</td>
+                </tr>
+                <tr>
+                  <td>runners</td>
+                  <td>러너 등록 · 하트비트 · 버전</td>
+                  <td>온라인 표시 · stale 판정</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <ul>
+            <li>
+              <strong>RLS 이중 정책</strong> — 사용자 롤: 자기 <code>owner_id</code> 행만 · 러너 롤:
+              자기 소유자의 행만 + <code>events</code> 는 INSERT 전용. Supabase
+              <code>service_role</code> 키는 러너에 두지 않는다(유출 시 전권 탈취).
+              <strong>주의(Codex P2): <code>owner_id</code> 필터만으론 부족하다</strong> —
+              브라우저는 Supabase 에 직결되므로, 로그인된 브라우저(devtools·XSS)가 자기 소유
+              <code>runs/tasks/messages/approvals</code> 를 임의 UPDATE 해 완료·승인을 위조하고 감사
+              추적을 오염시킬 수 있다.
+              <strong
+                >러너 전용 상태 전이(실행 상태·완료·결과 기록)는 롤별 컬럼/전이 정책 또는 SECURITY
+                DEFINER RPC 로만 허용</strong
+              >하고, 브라우저 롤에는 생성(INSERT)·승인 응답 등 사용자 몫의 전이만 연다.
+            </li>
+            <li>
+              <strong>큐의 원자성</strong> — 러너의 claim 은 조건부 UPDATE 로. Postgres 가 큐 역할을
+              하므로 별도 메시지 브로커가 필요 없다.
+            </li>
+            <li>
+              <strong>무료 티어 한도 내 운용</strong> — DB 500MB 급이므로 토큰 스트림을 행으로
+              저장하지 않는 것(§6)과 오래된 events 의 Storage 아카이브가 중요.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 06 ═══════════════ -->
+      <section id="s6">
+        <div class="sec-head">
+          <span class="sec-num">06</span>
+          <h2 class="sec-title">실시간 스트리밍</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            Supabase Realtime 의 세 모드를 용도별로 나눠 쓴다. 원칙:
+            <strong>휘발성 스트림은 DB 를 거치지 않는다.</strong>
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>모드</th>
+                  <th>용도</th>
+                  <th>왜</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Broadcast</td>
+                  <td>LLM 토큰 델타 (start | delta | end | error)</td>
+                  <td>
+                    DB 를 거치지 않는 pub/sub — 초당 수십 건의 델타를 행으로 쓰면 무료 티어 DB 가
+                    즉사한다. 유실돼도 완결 메시지가 DB 에 남으므로 무해.
+                    <strong>단 반드시 private 채널</strong>(<code>private: true</code> +
+                    <code>realtime.messages</code> RLS 정책으로 룸 소유자만 join) — 공개 Broadcast
+                    토픽은 테이블 RLS 밖이라, 토픽명이 유출/추측되면 타 클라이언트가 델타를 읽거나
+                    위조할 수 있다 (Codex P2)
+                  </td>
+                </tr>
+                <tr>
+                  <td>Postgres Changes</td>
+                  <td>runs · tasks · approvals 상태 변화</td>
+                  <td>영속 상태의 변화 알림 — 놓쳐도 테이블 재조회로 복구 가능 (진실 원천 = DB)</td>
+                </tr>
+                <tr>
+                  <td>Presence</td>
+                  <td>러너 온라인/오프라인 · 실행 중 표시</td>
+                  <td>연결 기반 생존 신호 — 하트비트 테이블의 즉시성 보완</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="diagram">
+            <p class="cap">토큰 스트림 경로 — 데스크톱 IPC 의 1:1 번역</p>
+            <div class="flow">
+              <div class="box amber">
+                <p class="bt">CLI 컨테이너</p>
+                <div class="bd">stream-json / JSONL stdout</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box amber">
+                <p class="bt">러너 (코어 파서)</p>
+                <div class="bd">기존 cli/output.ts 로 이벤트화</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box mint">
+                <p class="bt">Realtime Broadcast</p>
+                <div class="bd">room:{id} 채널 · delta 릴레이</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box violet">
+                <p class="bt">브라우저</p>
+                <div class="bd">
+                  구독 렌더만 — <strong>완결 messages 행 영속은 러너 책임</strong>(broadcast 전에
+                  기록). 브라우저에 맡기면 탭이 닫힌 런의 기록이 유실되고 변조 가능 (Codex P2)
+                </div>
+              </div>
+            </div>
+            <p class="note-line">
+              재접속 시: Broadcast 는 과거를 재생하지 않음 → messages + events 테이블에서 마지막
+              확정 상태를 읽고 이후 델타만 이어받는다
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 07 ═══════════════ -->
+      <section id="s7">
+        <div class="sec-head">
+          <span class="sec-num">07</span>
+          <h2 class="sec-title">승인 게이트 — 모바일 승인</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            이 아키텍처의 킬러 시나리오:
+            <strong
+              >PC 에서 런이 돌다가 위험 명령을 만나면, 외출 중인 내 폰으로 승인 요청이 오고,
+              승인하면 PC 가 이어서 실행한다.</strong
+            >
+            데스크톱 ApprovalGate 의 destructive-pattern 분류(기본 차단 목록)를 그대로 심각도 시드로
+            쓴다.
+          </p>
+          <div class="diagram">
+            <p class="cap">승인 상태 머신 (approvals 테이블)</p>
+            <div class="sm">
+              <span class="state start">requested</span>
+              <span class="arrow">→</span>
+              <span class="state warn">pending</span>
+              <span class="arrow">→</span>
+              <span class="state ok">approved</span>
+              <span class="sm-note">/</span>
+              <span class="state end">denied</span>
+              <span class="sm-note">/</span>
+              <span class="state end">expired (TTL → 기본 거부)</span>
+            </div>
+            <p class="note-line">
+              safe 클래스는 정책 프리셋이 requested→approved 즉시 단락 · destructive 는 항상 차단 ·
+              모든 전이는 events 에 기록
+            </p>
+          </div>
+          <ul>
+            <li>
+              <strong>알림</strong> — 1차: 브라우저 Realtime 구독(열려 있을 때) · 2차: Web Push(PWA
+              로 설치 시 폰 잠금화면 알림). 이메일은 폴백.
+            </li>
+            <li>
+              <strong>대기 중 러너</strong> — 해당 작업 노드만 블록하고 승인 불필요한 다른 그래프
+              노드를 먼저 진행(speculative continue). 전체 대기 시 CLI 프로세스는 유휴 정지.
+            </li>
+            <li><strong>타임아웃 = 기본 거부</strong> — fail-closed. 데스크톱과 동일 원칙.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 08 ═══════════════ -->
+      <section id="s8">
+        <div class="sec-head">
+          <span class="sec-num">08</span>
+          <h2 class="sec-title">시크릿 전략</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            원칙: <strong>실행이 로컬이면 키도 로컬이 기본.</strong> 클라우드에 올리는 시크릿을
+            최소화한다.
+          </p>
+          <ul>
+            <li>
+              <strong>LLM API 키 / 구독 CLI 로그인</strong> — 러너 머신에만 둔다(암호화 파일 또는 OS
+              키체인, CLI 로그인 상태는 Docker 볼륨). Supabase 에는 올라가지 않는다 → Supabase
+              계정이 뚫려도 LLM 키는 안전.
+            </li>
+            <li>
+              <strong>러너 자격증명</strong> — 러너 전용 Supabase 계정의 리프레시 토큰.
+              <code>service_role</code> 키 사용 금지. <strong>주의(Codex P1)</strong>: 별도 러너
+              계정의 <code>auth.uid()</code> 는 소유자가 아니므로, "자기 <code>owner_id</code> 행만"
+              RLS 아래에서는 runs 를 볼 수도 claim 할 수도 없다 —
+              <strong
+                >runner→owner 매핑 테이블(소유자가 승인한 러너 등록) 또는 러너 JWT 의 owner claim +
+                그것을 참조하는 전용 RLS 정책</strong
+              >이 스키마에 선행되어야 한다.
+            </li>
+            <li>
+              <strong>Supabase Vault (선택)</strong> — 여러 기기에서 러너를 돌리고 키를 동기화하고
+              싶을 때만. 이때도 봉투 암호화로 저장.
+            </li>
+            <li>
+              <strong>Vercel 쪽</strong> — 프론트는 anon 키만 가진다(공개 전제 + RLS 가 방어선).
+              서버리스 함수에만 필요 시 상위 권한.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 09 ═══════════════ -->
+      <section id="s9">
+        <div class="sec-head">
+          <span class="sec-num">09</span>
+          <h2 class="sec-title">보안 · 위협 모델</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            v1 의 "적대적 테넌트" 가정이 빠지고
+            <strong>"에이전트 출력은 여전히 적대적일 수 있다"</strong> 만 남는다. 단, 새
+            면(surface)이 하나 생긴다 — 계정 탈취 시
+            <strong>원격으로 내 PC 에 작업을 주입</strong>할 수 있다는 점.
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>위협</th>
+                  <th>1차 통제</th>
+                  <th>2차 통제</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>에이전트 생성 코드의 폭주 (rm -rf · 호스트 침범)</td>
+                  <td>Docker 컨테이너 경계 + 워크스페이스만 마운트</td>
+                  <td>ApprovalGate destructive 차단 · path-guard 존속 · git 롤백</td>
+                </tr>
+                <tr>
+                  <td><strong>계정 탈취 → 원격 작업 주입</strong> (v2 신규)</td>
+                  <td>Auth MFA 필수 · 세션 만료 짧게</td>
+                  <td>
+                    위험 명령은 어차피 승인 필요 · 신규 기기 로그인 알림 · runners 승인제(러너 등록
+                    토큰)
+                  </td>
+                </tr>
+                <tr>
+                  <td>Supabase 데이터 유출</td>
+                  <td>LLM 키·CLI 로그인은 애초에 클라우드에 없음(§8)</td>
+                  <td>RLS · 민감 본문 Storage 암호화</td>
+                </tr>
+                <tr>
+                  <td>prompt-injection → 데이터 유출</td>
+                  <td>(로컬 실행이라 이그레스 통제는 현실적으로 포기)</td>
+                  <td>승인 게이트가 파일 밖 반출 명령을 잡음 · 잔여 리스크로 인정</td>
+                </tr>
+                <tr>
+                  <td>악성 러너 위장 등록</td>
+                  <td>러너 등록 = 1회용 페어링 토큰 + 소유자 승인</td>
+                  <td>runners 테이블에 기기 지문 기록</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout rose">
+            <b>정직한 한계.</b> 컨테이너는 microVM 이 아니다 — 커널 취약점 앞에서는 뚫린다. 단일
+            사용자 · 본인 머신 · 본인 코드라는 전제에서 감수 가능한 수준이며, 이 전제가 깨지는
+            순간(타인에게 서비스) v1 의 microVM 티어로 승격해야 한다(§11).
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 10 ═══════════════ -->
+      <section id="s10">
+        <div class="sec-head">
+          <span class="sec-num">10</span>
+          <h2 class="sec-title">라이선스 (ToS) — 구독 CLI 의 여지</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            v1 의 하드 제약 — 구독 OAuth 의 제3자/클라우드 사용 금지(Anthropic 2026-04 · Google
+            2026-03) — 는 "제3자 서버에서 실행" 이 문제였다. v2 는 실행이
+            <strong>사용자 본인 머신</strong>이므로 데스크톱 Fleet 과 같은 위치로 내려온다:
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>경로</th>
+                  <th>v2 판정</th>
+                  <th>근거 · 조건</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>구독 CLI 를 러너 컨테이너에서 (본인 로그인)</td>
+                  <td><span class="tag warn">회색 — 개인용 한정 가능성</span></td>
+                  <td>
+                    실행 주체·머신·구독이 모두 본인. 단 "원격 트리거 자동화" 라는 점은 명시 허용이
+                    아님 — 개인 사용에 한정하고, 상용 전환 시 이 경로는 제외
+                  </td>
+                </tr>
+                <tr>
+                  <td>BYO API 키 (CLI 를 API-키 env 로)</td>
+                  <td><span class="tag ok">안전</span></td>
+                  <td>v1 과 동일 — 전 CLI 지원. 기본 권장 경로</td>
+                </tr>
+                <tr>
+                  <td>구독 OAuth 를 클라우드 러너로 (미래 v1 승격 시)</td>
+                  <td><span class="tag no">금지</span></td>
+                  <td>v1 §3 그대로 — 승격 시 API-키 경로만 이관</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            운영 원칙: 기본값은 API-키, 구독 CLI 는 "본인 머신 러너에서만 사용 가능" 으로 UI 에서
+            명시하고, 제3자에게 서비스를 여는 순간 자동으로 비활성화되는 구조로 설계한다.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 11 ═══════════════ -->
+      <section id="s11">
+        <div class="sec-head">
+          <span class="sec-num">11</span>
+          <h2 class="sec-title">확장 경로 — v1 풀 클라우드로</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            v2 는 v1 의 축소판이 아니라 <strong>Phase 0.5</strong> 다. 상용 SaaS 수요가 확인되면
+            아래 순서로 승격하며, 데이터 모델·코어 엔진·승인 설계는 그대로 간다. 상세 설계는 v1 문서
+            (<code>fleet-saas-infra-plan.html</code>) 참조.
+          </p>
+          <div class="diagram">
+            <p class="cap">승격 시퀀스 — 갈아끼우는 것만</p>
+            <div class="flow">
+              <div class="box mint">
+                <p class="bt">지금 (v2)</p>
+                <div class="bd">Vercel + Supabase + 내 PC 러너</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box">
+                <p class="bt">1 · 러너 플릿화</p>
+                <div class="bd">
+                  러너를 클라우드 K8s 로 — 동일 pull 프로토콜, gVisor→Kata microVM
+                </div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box">
+                <p class="bt">2 · 테넌시 승격</p>
+                <div class="bd">owner_id → org_id · RLS 정책 확장 · 과금/미터링 추가</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box">
+                <p class="bt">3 · 격리 강화</p>
+                <div class="bd">이그레스 프록시 · git-native 워크스페이스 · KMS (v1 §6–10)</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box amber">
+                <p class="bt">v1 풀 클라우드</p>
+                <div class="bd">+ "BYO 러너" 는 정식 기능으로 존속</div>
+              </div>
+            </div>
+          </div>
+          <ul>
+            <li>
+              <strong>보존되는 것</strong> — Postgres 스키마(RLS 포함) · 코어 엔진과 포트/어댑터 ·
+              승인 상태머신 · 이벤트 로그 · Realtime 이벤트 체계 · 프론트엔드 전체.
+            </li>
+            <li>
+              <strong>교체되는 것</strong> — 러너의 실행 기반(Docker→microVM) · 워크스페이스(로컬
+              디스크→git-native) · 시크릿(로컬→KMS) · Supabase 무료 티어→Pro 또는 자체 관리형
+              Postgres.
+            </li>
+            <li>
+              <strong>v2 에서 미리 지켜야 승격이 싼 것</strong> — ① 러너↔클라우드 프로토콜을 "테이블
+              + Realtime" 계약으로만 유지(러너 내부 구현에 의존 금지), ② <code>owner_id</code> 를
+              모든 테이블에, ③ 토큰 스트림을 DB 에 안 쓰는 규율.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 12 ═══════════════ -->
+      <section id="s12">
+        <div class="sec-head">
+          <span class="sec-num">12</span>
+          <h2 class="sec-title">로드맵</h2>
+        </div>
+        <div class="sec-body">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Phase</th>
+                  <th>기간 (1인 기준)</th>
+                  <th>범위</th>
+                  <th>완료 정의</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>0 · 러너 골격</td>
+                  <td>2–4주</td>
+                  <td>
+                    코어 엔진 서버 패키지 추출 · Supabase 프로젝트/스키마+RLS · 러너 데몬(runs
+                    claim→실행→기록) · CLI 이미지 1종(claude)
+                  </td>
+                  <td>CLI 로 삽입한 runs 행이 PC Docker 에서 완주하고 결과가 DB 에 남는다</td>
+                </tr>
+                <tr>
+                  <td>1 · 웹 UI + 스트리밍</td>
+                  <td>3–5주</td>
+                  <td>
+                    renderer 를 Vercel 로 이식(Auth 로그인·프로젝트·채팅방·작업보드) · Broadcast
+                    토큰 스트림 · Presence 러너 표시
+                  </td>
+                  <td>폰 브라우저에서 런을 시작하고 토큰 스트림을 실시간으로 본다</td>
+                </tr>
+                <tr>
+                  <td>2 · 승인 + 안정화</td>
+                  <td>3–4주</td>
+                  <td>
+                    approvals 큐 + Web Push · stale 런 복구(하트비트·resume) · events 아카이브 ·
+                    정책 프리셋
+                  </td>
+                  <td>외출 중 폰 알림으로 승인하면 PC 가 이어서 실행한다</td>
+                </tr>
+                <tr>
+                  <td>3 · 선택 확장</td>
+                  <td>수요 발생 시</td>
+                  <td>멀티 러너 · git 체크아웃 모드 · 팀 공유(org_id) · v1 승격 판단(§11)</td>
+                  <td>—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Phase 0 의 리트머스는 v1 과 동일하다 —
+            <strong>코어 vitest 스위트가 Supabase Store 어댑터 조합으로 그대로 GREEN</strong> 이
+            되는 것. 데스크톱 앱은 이 기간 내내 그대로 쓸 수 있다(같은 코어를 공유하므로 병행 유지
+            비용이 낮다).
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 13 ═══════════════ -->
+      <section id="s13">
+        <div class="sec-head">
+          <span class="sec-num">13</span>
+          <h2 class="sec-title">비용</h2>
+        </div>
+        <div class="sec-body">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>항목</th>
+                  <th>티어</th>
+                  <th>월 비용</th>
+                  <th>한도 주의점</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Vercel</td>
+                  <td>Hobby (개인 비상업)</td>
+                  <td>$0</td>
+                  <td>상업 전환 시 Pro ~$20 — 정적 UI 라 대역폭 부담 낮음</td>
+                </tr>
+                <tr>
+                  <td>Supabase</td>
+                  <td>Free</td>
+                  <td>$0</td>
+                  <td>
+                    DB ~500MB · Realtime 동시접속/메시지 한도 ·
+                    <strong>비활성 7일 일시정지</strong>(러너 하트비트가 사실상 keep-alive 역할) —
+                    걸리면 Pro ~$25
+                  </td>
+                </tr>
+                <tr>
+                  <td>PC 러너</td>
+                  <td>—</td>
+                  <td>전기료</td>
+                  <td>실행 시간만 부하 · 24시간 상주는 데몬뿐(유휴 부하 미미)</td>
+                </tr>
+                <tr>
+                  <td>LLM</td>
+                  <td>구독 or API 키</td>
+                  <td>기존 지출 그대로</td>
+                  <td>v1 처럼 플랫폼 마진 구조가 없음 — 원가 = 내 사용량</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            합계 <strong>$0 ~ $45/월</strong> (무료 티어 한도에 걸리는 정도에 따라). v1 GA 기준 월
+            $10–30k base 와 비교하면, "일단 나부터 쓴다" 단계에서 이 설계를 선택하지 않을 이유가
+            비용 면에서는 없다. 티어 한도·가격은 변동 가능하므로 착수 시점에 재확인.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 14 ═══════════════ -->
+      <section id="s14">
+        <div class="sec-head">
+          <span class="sec-num">14</span>
+          <h2 class="sec-title">리스크 · 미해결 질문</h2>
+        </div>
+        <div class="sec-body">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>리스크</th>
+                  <th>영향</th>
+                  <th>완화</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>PC 가 꺼져 있으면 실행 불가</td>
+                  <td><span class="tag warn">구조적</span> — 이 설계의 본질적 트레이드오프</td>
+                  <td>queued 대기 + 러너 오프라인 표시 · WoL/상시 미니PC · 급하면 v1 승격</td>
+                </tr>
+                <tr>
+                  <td>Supabase Realtime 한도/유실</td>
+                  <td><span class="tag warn">중</span> — 스트림 끊김·지연</td>
+                  <td>Broadcast 는 휘발 전제(진실 원천 = DB) · 재조회 복구 · 한도 초과 시 Pro</td>
+                </tr>
+                <tr>
+                  <td>구독 CLI 원격 트리거의 ToS 회색지대</td>
+                  <td><span class="tag warn">중</span> — 계정 제재 가능성</td>
+                  <td>
+                    기본값 API-키 · 구독 경로는 개인용 opt-in + 명시 경고 · 정책 변화 모니터링
+                  </td>
+                </tr>
+                <tr>
+                  <td>계정 탈취 → 원격 작업 주입 (v2 신규 면)</td>
+                  <td><span class="tag warn">중</span></td>
+                  <td>MFA 필수 · 러너 페어링 승인제 · 위험 명령 승인 게이트 (§9)</td>
+                </tr>
+                <tr>
+                  <td>Docker Desktop/WSL2 의존</td>
+                  <td>낮음 — 러너 셋업 마찰</td>
+                  <td>compose 원커맨드 셋업 문서화 · 향후 네이티브 러너 옵션</td>
+                </tr>
+                <tr>
+                  <td>Supabase 벤더 종속</td>
+                  <td>낮음 — 표면이 Postgres+WS 라 얇음</td>
+                  <td>
+                    전부 표준 Postgres/Realtime 패턴 → self-host Supabase 또는 일반
+                    Postgres+웹소켓으로 이전 가능
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p><strong>미해결 질문:</strong></p>
+          <ul>
+            <li>
+              CLI 컨테이너 이미지 전략 — 3사 CLI 를 한 이미지에 vs 개별 이미지 (버전 갱신 주기가
+              달라 개별이 유리해 보임).
+            </li>
+            <li>구독 CLI 로그인 볼륨의 컨테이너 공유 시 세션 충돌 여부 — Phase 0 에서 실측.</li>
+            <li>
+              워크스페이스 로컬 디스크 vs git 체크아웃 기본값 — 개인용은 로컬 디스크가 자연스러우나
+              다중 러너 시 git 필요.
+            </li>
+            <li>Web Push(PWA) 의 iOS 제약 수준 — 승인 알림 UX 의 관건.</li>
+          </ul>
+        </div>
+      </section>
+
+      <footer>
+        <span>Fleet — Cloud-Native Hybrid Architecture Plan · v2.0 draft</span>
+        <span
+          >2026-07-02 · docs/fleet-saas-infra-plan-v2.html · 선행: fleet-saas-infra-plan.html
+          (v1)</span
+        >
+      </footer>
+    </div>
+  </body>
+</html>
