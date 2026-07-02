@@ -1,6 +1,6 @@
 // scripts/skills-lint.mjs
-// .claude/skills·.claude/workflows·.github/workflows 추적 자산의 경로·시크릿 누출과
-// SKILL.md frontmatter 규약을 검사하는 강제 게이트(스펙 §8). fail-on-match.
+// .claude/agents·.claude/skills·.claude/workflows·.github/workflows 추적 자산의 경로·시크릿
+// 누출과 SKILL.md frontmatter 규약을 검사하는 강제 게이트(스펙 §8). fail-on-match.
 
 /** 차단 패턴 셋 — 개인 절대경로·세션경로·사용자명·자격증명 (스펙 §8) */
 export const BANNED_PATTERNS = [
@@ -282,6 +282,7 @@ import { argv, exit } from 'node:process'
  */
 export const DEFAULT_GLOBS = [
   '.claude/*.md',
+  '.claude/agents/**/*.md',
   '.claude/skills/**/*.md',
   '.claude/workflows/**/*.js',
   '.github/workflows/*.yml',
