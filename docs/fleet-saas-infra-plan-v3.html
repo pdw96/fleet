@@ -766,8 +766,10 @@
             <strong>단 이 왕복은 순차가 전제다(Codex P1)</strong> — Fleet 의 diff 수집/롤백은 base
             커밋 기준 repo 전체 단위(<code>collectDiff(base)</code>/<code>revert(base)</code>)라
             터미널 편집과 에이전트 편집을 구분하지 못하므로,
-            <strong>런 실행 중 터미널 동시 편집은 런 락 또는 per-run worktree 로 보호</strong
-            >한다(Phase B). 보호 이전에는 "런 중 터미널 편집 금지" 가 운영 규칙이다.
+            <strong>런 실행 중 터미널 동시 편집은 per-run worktree(권장)로 보호</strong>한다(Phase
+            B). 락 방식을 쓴다면 <strong>터미널/파일시스템 경계에서 실제 강제되는 락</strong>이어야
+            한다 — ttyd 는 같은 볼륨을 쓰는 별도 셸이라 Fleet 내부 상태 락(advisory)을 관측하지
+            못한다(Codex P1). 보호 이전에는 "런 중 터미널 편집 금지" 가 운영 규칙이다.
           </p>
         </div>
       </section>
@@ -963,8 +965,14 @@
                   <td>
                     SecretCrypto = safeStorage <span class="path">src/main/secret-crypto.ts</span>
                   </td>
-                  <td>파일 기반 암호화(키 파일 볼륨) 또는 env 주입</td>
-                  <td>어댑터 교체 1</td>
+                  <td>
+                    <strong>env 전용 주입</strong>(서버 프로세스 한정 · 자식 스크럽) 또는 기동 시
+                    로드 후 파일 미노출 — <strong>키 파일 볼륨/마운트 금지(§7)</strong>
+                  </td>
+                  <td>
+                    어댑터 교체 1 — 같은 서비스의 자식 프로세스가 마운트된 키 파일을 읽으면 UID
+                    분리가 무력화된다 (Codex P1)
+                  </td>
                 </tr>
                 <tr>
                   <td>워크스페이스 폴더 다이얼로그</td>
@@ -1150,10 +1158,11 @@ fleet-data/  store · 이벤트 로그 — <b>시크릿 필드(API 키 등)만 �
             </table>
           </div>
           <div class="callout rose">
-            <b>웹터미널과 승인 게이트의 관계.</b> 문 ② 는 위험 명령이 게이트에 걸리지만, 문 ① 은
-            사용자가 곧 셸이라 게이트가 없다. 이는 결함이 아니라 데스크톱과 동일한 신뢰
-            모델(본인=전권)이다 — 단 그만큼 문 ① 의 앞단 인증이 문 ② 보다 강해야 한다는 비대칭을
-            Access 정책에 반영한다.
+            <b>웹터미널과 승인 게이트의 관계.</b> 문 ② 는 Fleet 매개 위험 작업과 결과 diff 가
+            <b>사후 게이트</b>에 걸리고(위 표 — 스폰된 프로세스의 pre-exec 차단이 아니다), 문 ① 은
+            사용자가 곧 셸이라 게이트 자체가 없다. 이는 결함이 아니라 데스크톱과 동일한 신뢰
+            모델(본인=전권)이다 — 단 그만큼 두 문 모두 앞단 인증이 유일한 사전 방어선이며, 문 ① 의
+            Access 정책을 문 ② 보다 강하게 가져가는 비대칭을 반영한다.
           </div>
         </div>
       </section>
@@ -1266,7 +1275,8 @@ fleet-data/  store · 이벤트 로그 — <b>시크릿 필드(API 키 등)만 �
                     >
                     ·
                     <strong
-                      >런 중 워크스페이스 동시 편집 보호(§3 — 런 락 또는 per-run worktree)</strong
+                      >런 중 워크스페이스 동시 편집 보호(§3 — per-run worktree 권장 · Fleet 내부
+                      advisory 락은 불충분)</strong
                     >
                     · <strong>run 이벤트 커서(eventId) 계약 추가(§6)</strong>
                   </td>
