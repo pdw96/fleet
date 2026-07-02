@@ -53,17 +53,22 @@ silent truncation 을 **기본적으로 불가능**하게 만들고, 부분 텍�
 
 ### 3.1 `unwrap` 재구조화
 
-비정상 종료 표면화를 빈-응답 조건에서 분리한다.
+비정상 종료 표면화를 빈-응답 조건에서 분리한다. **opt-out(`allowTruncation`)은
+`length`(순수 truncation)에만 적용**하고, `content_filter`(안전/거부 신호)·`other`
+(미상/이상 종료)는 **인터랙티브에서도 항상 throw**한다 — 안전·무결성 신호를 부분
+텍스트로 위장하지 않는다(Codex 설계 리뷰 정제).
 
 ```ts
 function unwrap(provider: string, result: ChatResult, allowTruncation = false): string {
-  // 비정상 종료(잘림·거부·이상)는 부분 텍스트가 있어도 표면화한다 — 부분/거부 응답을
-  // 완전 응답으로 위장하지 않는다(#7 확장). 인터랙티브 소비자는 allowTruncation 으로
-  // opt-out 해 스트리밍된 부분 텍스트를 보존한다(이미 사용자에게 노출됨).
-  if (!allowTruncation) {
-    if (result.finishReason === 'content_filter') throw new Error(/* 차단 */)
-    if (result.finishReason === 'length')         throw new Error(/* 잘림·max_tokens */)
-    if (result.finishReason === 'other')          throw new Error(/* 이상 종료 */)
+  // 안전/거부·미상 종료는 부분 텍스트가 있어도, allowTruncation 과 무관하게 항상 표면화한다
+  // — refusal/이상 종료를 정상 응답으로 위장하면 안전 신호가 소실된다.
+  if (result.finishReason === 'content_filter') throw new Error(/* 차단 */)
+  if (result.finishReason === 'other')          throw new Error(/* 이상 종료 */)
+  // 토큰 한도 truncation: 기본 표면화. 부분 텍스트가 있는 인터랙티브 경로만 allowTruncation
+  // 으로 보존한다(이미 스트리밍으로 사용자에게 노출됨). 빈-텍스트 truncation 은 보존할 부분이
+  // 없으므로 opt-out 여부와 무관하게 throw(#7 유지).
+  if (result.finishReason === 'length' && !(allowTruncation && result.text !== '')) {
+    throw new Error(/* 잘림·max_tokens */)
   }
   // 텍스트·도구호출 모두 없는 blank 응답 — thinking-only 는 가시출력 부재 전용(빈-텍스트 조건 유지)
   if (result.text === '' && result.toolCalls.length === 0) {
@@ -80,10 +85,12 @@ function unwrap(provider: string, result: ChatResult, allowTruncation = false): 
 
 ### 3.2 플러밍 — `SendOptions.allowTruncation`
 
-- `session/types.ts` 의 `SendOptions` 에 `allowTruncation?: boolean` 추가(문서화 주석 포함).
+- `session/types.ts` 의 `SendOptions` 에 `allowTruncation?: boolean` 추가(문서화 주석 —
+  **`length` truncation 에만 적용**·`content_filter`/`other` 는 불가 명시).
 - `createApiSession.send` 가 두 unwrap 호출(fresh 경로·accumulate 경로)에
   `sendOpts.allowTruncation` 을 전달.
-- **opt-out 소비자 = 채팅룸(`room.ts:117`)만** `allowTruncation: true`.
+- **opt-out 소비자 = 채팅룸(`room.ts:117`)만** `allowTruncation: true`. 옆에 **"후속 UI
+  잘림 신호 필요 — 의도적 UX debt"** 주석을 남긴다(Codex 권고 — renderer/IPC 알림은 후속 범위).
 - CLI 세션은 unwrap 미경유 → 무시(플래그 무해).
 
 ### 3.3 소비자별 정책
@@ -118,12 +125,25 @@ function unwrap(provider: string, result: ChatResult, allowTruncation = false): 
 - **기존 반전(RED)**: `session.test.ts`
   - L209 `부분 텍스트가 있는 length 응답은 그대로 반환한다` ⟹ `→ throw`.
   - L247 `텍스트가 있는 other 응답은 그대로 반환한다` ⟹ `→ throw`.
-- **신규**: 부분+`content_filter` → throw · 부분+`length`+`allowTruncation:true` → 부분 텍스트 반환.
+- **신규(정책)**:
+  - 부분+`content_filter` → throw.
+  - 부분+`other` → throw.
+  - 부분+`length`+`allowTruncation:true` → 부분 텍스트 반환(opt-out).
+  - 부분+`content_filter`+`allowTruncation:true` → **여전히 throw**(opt-out 은 length 전용).
+  - 부분+`other`+`allowTruncation:true` → **여전히 throw**.
+  - 빈+`length`+`allowTruncation:true` → **throw**(보존할 부분 없음).
+- **엣지/회귀(Codex 권고)**:
+  - tool-loop 최종 턴 `length`+부분 텍스트+`toolCalls:[]` → throw 하고 **history 미커밋** 회귀.
+  - usage sink 가 strict throw **전에** 호출됨(소비 토큰 무손실).
 - **회귀 보존**: `stop`+텍스트 → 반환 · 빈+`length` → throw(#7) · 빈+thinking-only → throw ·
-  `tool_use` → 반환 · 채팅룸 `allowTruncation` 통합(truncated → 부분 반환·no throw).
+  `tool_use` → 반환 · 채팅룸 `allowTruncation` 통합(length truncated → 부분 반환·no throw).
 
-## 7. 열린 검토 지점 (Codex 체크포인트 리뷰 요청)
+## 7. Codex 체크포인트 리뷰 결과 (2026-07-02, `#190` `issuecomment-4862599...`)
 
-1. `other` 버킷 strict 포함이 benign `other`(gemini `UNSPECIFIED`+텍스트)에 false-positive 과잉인가?
-2. 채팅룸 opt-out 의 잔여 silent-fail(UI 신호 부재)을 스코프 밖으로 미루는 판단이 타당한가?
-3. summarizer strict(부분 요약 상실) vs opt-out(부분 보존) — 어느 쪽이 옳은가?
+**설계 승인.** 정제 반영:
+
+1. `other` strict 포함 — **동의**(provider-중립 unwrap 에 rawFinishReason allowlist 예외는 복잡도↑, 이번 범위 제외).
+2. 채팅룸 opt-out 잔여 silent-fail — UI 알림은 후속 범위 OK, **`room.ts` 에 UX debt 주석** 남김.
+3. summarizer strict — **동의**(try/catch 강등이 부분 요약 위장보다 안전).
+4. **`allowTruncation` 을 `length` 전용으로 좁힘** — `content_filter`/`other` 는 인터랙티브에서도
+   항상 throw(안전/무결성). §3.1 반영 완료.
