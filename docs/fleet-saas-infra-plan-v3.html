@@ -1,0 +1,1359 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fleet v3 — 터널 셀프호스트 아키텍처 계획서</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --obsidian: #0a0b0d;
+        --panel: #101216;
+        --panel-2: #15181e;
+        --line: #23272f;
+        --line-2: #2e333d;
+        --ink: #e8eaed;
+        --ink-dim: #a9b0ba;
+        --ink-faint: #737b86;
+        --amber: #ffc24b;
+        --mint: #4fe0c0;
+        --rose: #e0625f;
+        --violet: #a58bff;
+        --serif: 'Fraunces', Georgia, serif;
+        --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+        --sans: 'IBM Plex Sans KR', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--obsidian);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 15px;
+        line-height: 1.62;
+        -webkit-font-smoothing: antialiased;
+        background-image:
+          radial-gradient(1100px 520px at 84% -8%, rgba(165, 139, 255, 0.08), transparent 60%),
+          radial-gradient(900px 520px at -6% 12%, rgba(79, 224, 192, 0.06), transparent 60%),
+          radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.022) 1px, transparent 0);
+        background-size:
+          auto,
+          auto,
+          22px 22px;
+        background-attachment: fixed;
+      }
+      a {
+        color: var(--mint);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      ::selection {
+        background: rgba(165, 139, 255, 0.3);
+      }
+      .wrap {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 26px 120px;
+      }
+
+      header.mast {
+        padding: 56px 0 26px;
+        border-bottom: 1px solid var(--line);
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.34em;
+        text-transform: uppercase;
+        color: var(--violet);
+        margin: 0 0 14px;
+      }
+      h1.title {
+        font-family: var(--serif);
+        font-weight: 600;
+        font-size: clamp(30px, 5vw, 50px);
+        line-height: 1.08;
+        margin: 0;
+        letter-spacing: -0.01em;
+      }
+      h1.title em {
+        font-style: italic;
+        color: var(--ink-dim);
+      }
+      .lede {
+        color: var(--ink-dim);
+        max-width: 82ch;
+        margin: 18px 0 0;
+        font-size: 15.5px;
+      }
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 22px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+      }
+      .pill {
+        border: 1px solid var(--line-2);
+        border-radius: 999px;
+        padding: 5px 12px;
+        background: rgba(255, 255, 255, 0.015);
+      }
+      .pill b {
+        color: var(--ink-dim);
+        font-weight: 500;
+      }
+
+      nav.toc {
+        margin: 34px 0 0;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel);
+        padding: 20px 24px;
+      }
+      nav.toc h2 {
+        margin: 0 0 12px;
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+      }
+      nav.toc ol {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 4px 26px;
+      }
+      nav.toc li a {
+        display: flex;
+        gap: 10px;
+        padding: 4px 2px;
+        color: var(--ink-dim);
+        border-radius: 6px;
+        font-size: 13.5px;
+      }
+      nav.toc li a:hover {
+        color: var(--ink);
+        text-decoration: none;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      nav.toc .n {
+        font-family: var(--mono);
+        color: var(--violet);
+        font-size: 12px;
+        min-width: 22px;
+      }
+
+      section {
+        margin-top: 64px;
+        scroll-margin-top: 24px;
+      }
+      .sec-head {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
+      .sec-num {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--violet);
+        letter-spacing: 0.12em;
+      }
+      h2.sec-title {
+        font-family: var(--serif);
+        font-weight: 600;
+        font-size: clamp(21px, 3vw, 28px);
+        margin: 0;
+        letter-spacing: -0.005em;
+      }
+      .sec-body {
+        margin-top: 20px;
+      }
+      .sec-body p {
+        color: var(--ink-dim);
+        max-width: 88ch;
+      }
+      .sec-body p strong,
+      .sec-body li strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .sec-body ul,
+      .sec-body ol {
+        color: var(--ink-dim);
+        padding-left: 22px;
+      }
+      .sec-body li {
+        margin: 6px 0;
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        color: var(--mint);
+        background: rgba(79, 224, 192, 0.07);
+        border: 1px solid rgba(79, 224, 192, 0.14);
+        border-radius: 5px;
+        padding: 1px 6px;
+        white-space: nowrap;
+      }
+      pre.code {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.7;
+        color: var(--ink-dim);
+        background: var(--panel-2);
+        border: 1px solid var(--line-2);
+        border-radius: 10px;
+        padding: 16px 18px;
+        overflow-x: auto;
+        margin: 16px 0;
+      }
+      pre.code b {
+        color: var(--mint);
+        font-weight: 500;
+      }
+      .callout {
+        border: 1px solid var(--line-2);
+        border-left: 3px solid var(--amber);
+        background: var(--panel);
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin: 18px 0;
+        color: var(--ink-dim);
+        max-width: 92ch;
+      }
+      .callout.rose {
+        border-left-color: var(--rose);
+      }
+      .callout.mint {
+        border-left-color: var(--mint);
+      }
+      .callout.violet {
+        border-left-color: var(--violet);
+      }
+      .callout b {
+        color: var(--ink);
+      }
+
+      .tbl-wrap {
+        overflow-x: auto;
+        margin: 20px 0;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 13.5px;
+        background: var(--panel);
+      }
+      thead th {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        text-align: left;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line-2);
+        background: var(--panel-2);
+        white-space: nowrap;
+      }
+      tbody td {
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--line);
+        color: var(--ink-dim);
+        vertical-align: top;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tbody td:first-child {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      td .path {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        display: block;
+        margin-top: 3px;
+        white-space: nowrap;
+      }
+      .tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        border-radius: 5px;
+        padding: 2px 8px;
+        border: 1px solid var(--line-2);
+        white-space: nowrap;
+      }
+      .tag.ok {
+        color: var(--mint);
+        border-color: rgba(79, 224, 192, 0.35);
+        background: rgba(79, 224, 192, 0.07);
+      }
+      .tag.no {
+        color: var(--rose);
+        border-color: rgba(224, 98, 95, 0.4);
+        background: rgba(224, 98, 95, 0.08);
+      }
+      .tag.warn {
+        color: var(--amber);
+        border-color: rgba(255, 194, 75, 0.4);
+        background: rgba(255, 194, 75, 0.07);
+      }
+      .tag.info {
+        color: var(--violet);
+        border-color: rgba(165, 139, 255, 0.4);
+        background: rgba(165, 139, 255, 0.07);
+      }
+
+      .diagram {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel);
+        padding: 22px;
+        margin: 22px 0;
+        overflow-x: auto;
+      }
+      .diagram .cap {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin: 0 0 16px;
+      }
+      .box {
+        border: 1px solid var(--line-2);
+        border-radius: 10px;
+        background: var(--panel-2);
+        padding: 12px 14px;
+        min-width: 0;
+      }
+      .box .bt {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink);
+        margin: 0 0 6px;
+        font-weight: 600;
+      }
+      .box .bd {
+        font-size: 12.5px;
+        color: var(--ink-faint);
+        line-height: 1.5;
+      }
+      .box.amber {
+        border-color: rgba(255, 194, 75, 0.4);
+      }
+      .box.amber .bt {
+        color: var(--amber);
+      }
+      .box.mint {
+        border-color: rgba(79, 224, 192, 0.4);
+      }
+      .box.mint .bt {
+        color: var(--mint);
+      }
+      .box.rose {
+        border-color: rgba(224, 98, 95, 0.45);
+      }
+      .box.rose .bt {
+        color: var(--rose);
+      }
+      .box.violet {
+        border-color: rgba(165, 139, 255, 0.4);
+      }
+      .box.violet .bt {
+        color: var(--violet);
+      }
+      .lane {
+        border: 1px dashed var(--line-2);
+        border-radius: 12px;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1;
+        min-width: 250px;
+      }
+      .lane > .lane-t {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--ink-dim);
+        margin: 0 0 2px;
+      }
+      .cols {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      .flow {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        flex-wrap: wrap;
+        row-gap: 14px;
+      }
+      .flow .box {
+        flex: 1;
+        min-width: 150px;
+      }
+      .arrow {
+        display: flex;
+        align-items: center;
+        padding: 0 8px;
+        color: var(--amber);
+        font-family: var(--mono);
+        font-size: 15px;
+        flex: none;
+      }
+      .arrow.down {
+        justify-content: center;
+        padding: 2px 0;
+      }
+      .vflow {
+        display: flex;
+        flex-direction: column;
+      }
+      .note-line {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--ink-faint);
+        margin-top: 12px;
+      }
+
+      footer {
+        margin-top: 90px;
+        border-top: 1px solid var(--line);
+        padding-top: 22px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      @media (max-width: 720px) {
+        .cols {
+          flex-direction: column;
+        }
+        .arrow {
+          transform: rotate(90deg);
+          justify-content: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <!-- ═══════════════ MASTHEAD ═══════════════ -->
+      <header class="mast">
+        <p class="eyebrow">Fleet · Self-Hosted Tunnel Architecture Plan · v3</p>
+        <h1 class="title">
+          Fleet 터널 셀프호스트<br /><em>컨테이너 하나 + 터널 하나, 어디서든 브라우저로</em>
+        </h1>
+        <p class="lede">
+          데스크톱 Fleet 을 "어디서든 브라우저로 쓰는" 형태로 만드는 최단 경로 계획서. 클라우드
+          백엔드(Supabase·Vercel)도 사지 않는다 — 내 PC 의 <strong>Docker 컨테이너 하나</strong>에
+          Fleet 서버·CLI·웹터미널을 담고, <strong>Cloudflare Tunnel / Tailscale</strong> 로
+          노출한다. 유일한 공사는 Electron IPC 를 WebSocket 으로 갈아끼우는 전송층 교체이며, 이
+          작업은 v1(풀 클라우드)·v2(Supabase 하이브리드)로 갈 때도 그대로 쓰이는 공통 기반이다.
+        </p>
+        <div class="meta-row">
+          <span class="pill"><b>버전</b> v3.0 draft</span>
+          <span class="pill"><b>작성</b> 2026-07-02</span>
+          <span class="pill"><b>모델</b> 셀프호스트 — 컨테이너 + 터널</span>
+          <span class="pill"><b>스택</b> Docker(WSL2) · Node · Cloudflare Tunnel/Tailscale</span>
+          <span class="pill"><b>운영비</b> $0</span>
+          <span class="pill"><b>선행 문서</b> v1 풀 클라우드 · v2 Supabase 하이브리드</span>
+        </div>
+      </header>
+
+      <!-- ═══════════════ TOC ═══════════════ -->
+      <nav class="toc">
+        <h2>목차</h2>
+        <ol>
+          <li>
+            <a href="#s1"><span class="n">01</span>요약</a>
+          </li>
+          <li>
+            <a href="#s2"><span class="n">02</span>버전 계보 — v1 · v2 · v3</a>
+          </li>
+          <li>
+            <a href="#s3"><span class="n">03</span>전체 아키텍처 — 두 개의 문</a>
+          </li>
+          <li>
+            <a href="#s4"><span class="n">04</span>문 ① 웹터미널 — TUI 직접 대화</a>
+          </li>
+          <li>
+            <a href="#s5"><span class="n">05</span>문 ② 오케스트레이션 — 헤드리스는 유지된다</a>
+          </li>
+          <li>
+            <a href="#s6"><span class="n">06</span>전송층 교체 — IPC → WebSocket</a>
+          </li>
+          <li>
+            <a href="#s7"><span class="n">07</span>컨테이너 구성</a>
+          </li>
+          <li>
+            <a href="#s8"><span class="n">08</span>접근 · 보안</a>
+          </li>
+          <li>
+            <a href="#s9"><span class="n">09</span>구독제 · 헤드리스 포지셔닝</a>
+          </li>
+          <li>
+            <a href="#s10"><span class="n">10</span>로드맵</a>
+          </li>
+          <li>
+            <a href="#s11"><span class="n">11</span>비용</a>
+          </li>
+          <li>
+            <a href="#s12"><span class="n">12</span>리스크 · 미해결 질문</a>
+          </li>
+          <li>
+            <a href="#s13"><span class="n">13</span>확장 경로 — v2 · v1 로</a>
+          </li>
+        </ol>
+      </nav>
+
+      <!-- ═══════════════ 01 ═══════════════ -->
+      <section id="s1">
+        <div class="sec-head">
+          <span class="sec-num">01</span>
+          <h2 class="sec-title">요약</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            목표는 하나다 —
+            <strong>"내가 어디서든(폰·노트북·외부 PC) 브라우저로 Fleet 을 쓴다."</strong>
+            v1(풀 클라우드 SaaS)과 v2(Supabase 하이브리드)를 검토한 끝에, 이 목표만 놓고 보면
+            클라우드 구성요소가 하나도 필요 없다는 결론에 도달했다. 근거는 Fleet 의 구조 자체에
+            있다:
+          </p>
+          <ul>
+            <li>
+              <strong>코어 엔진은 Electron 비의존 순수 TS</strong> — 오케스트레이션
+              두뇌(<code>src/main/core/*</code>)는 어떤 Node 프로세스에서든 돈다.
+            </li>
+            <li>
+              <strong>renderer 는 타입드 브리지(<code>window.fleet</code>) 뒤에 있다</strong> —
+              브리지 구현체만 IPC→WebSocket 으로 바꾸면 React UI 는 무변경.
+            </li>
+            <li>
+              <strong>터널이 나머지를 해결한다</strong> — 포트 개방·고정 IP·인증서·로그인 서버 전부
+              Cloudflare Tunnel(+Access) 또는 Tailscale 이 대신한다.
+            </li>
+          </ul>
+          <p>결과물은 컨테이너 하나에 담긴 <strong>두 개의 문</strong>이다:</p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>문</th>
+                  <th>경험</th>
+                  <th>CLI 모드</th>
+                  <th>구독제(ToS) 위상</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>① 웹터미널</td>
+                  <td>
+                    브라우저 터미널에서 <code>cd 프로젝트 && claude</code> — 데스크톱과 똑같은
+                    라이브 대화
+                  </td>
+                  <td>TUI (인터랙티브)</td>
+                  <td><span class="tag ok">정석 사용</span> — 사람이 앉아서 쓰는 그 자체</td>
+                </tr>
+                <tr>
+                  <td>② Fleet 오케스트레이션</td>
+                  <td>목표 입력 → 작업 그래프 → 멀티 LLM 협업 → 승인 → verify, 전부 브라우저 UI</td>
+                  <td>헤드리스 (stream-json) — §5</td>
+                  <td><span class="tag warn">회색 → API 키 폴백 상비</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout violet">
+            <b>이 계획의 한 줄 요약.</b> 새로 만드는 것은 오케스트레이션이 아니라 <b>배선</b>이다 —
+            엔진·CLI 스폰·verify 루프·승인 게이트는 지금 코드 그대로, Electron 이라는 껍데기만
+            웹서버로 바꾼다. 그리고 그 배선(IPC→WS)은 v2·v1 로 갈 때도 반드시 필요한 공통 선행
+            작업이라 버려질 수 없다.
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 02 ═══════════════ -->
+      <section id="s2">
+        <div class="sec-head">
+          <span class="sec-num">02</span>
+          <h2 class="sec-title">버전 계보 — v1 · v2 · v3</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            세 계획서는 대체 관계가 아니라 <strong>같은 코어 위의 단계</strong>다. v3 가 실질적
+            Phase 0 이고, "PC 꺼져 있을 때도" 가 아쉬워지면 v2, 남에게 팔게 되면 v1 로
+            승격한다(§13).
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>v3 — 터널 셀프호스트 (본 문서)</th>
+                  <th>v2 — Supabase 하이브리드</th>
+                  <th>v1 — 풀 클라우드 SaaS</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>대상</td>
+                  <td>나 (개인)</td>
+                  <td>나 → 소규모 팀</td>
+                  <td>고객 (멀티테넌트)</td>
+                </tr>
+                <tr>
+                  <td>실행 위치</td>
+                  <td>내 PC Docker</td>
+                  <td>내 PC Docker (러너)</td>
+                  <td>클라우드 microVM 플릿</td>
+                </tr>
+                <tr>
+                  <td>상태 저장</td>
+                  <td>로컬 (기존 store 그대로)</td>
+                  <td>Supabase Postgres</td>
+                  <td>Postgres + RLS + KMS</td>
+                </tr>
+                <tr>
+                  <td>인증</td>
+                  <td>터널이 대신 (Access/tailnet)</td>
+                  <td>Supabase Auth</td>
+                  <td>OIDC + 테넌시</td>
+                </tr>
+                <tr>
+                  <td>PC 꺼짐</td>
+                  <td><span class="tag warn">전부 다운</span></td>
+                  <td>UI·이력·예약 생존, 실행만 대기</td>
+                  <td>무관</td>
+                </tr>
+                <tr>
+                  <td>공사 규모</td>
+                  <td><strong>최소</strong> — 전송층 교체</td>
+                  <td>+ Store 이식·Realtime 배선</td>
+                  <td>+ 격리·과금·이그레스 전부</td>
+                </tr>
+                <tr>
+                  <td>운영비</td>
+                  <td>$0</td>
+                  <td>$0–45/월</td>
+                  <td>GA ~$10–30k/월</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            공통 분모: <strong>IPC→WebSocket 전송층</strong>(§6)과
+            <strong>CLI 컨테이너 이미지</strong>(§7)는 세 버전 모두에서 동일하게 쓰인다. v3 에서
+            만든 것 중 버려지는 조각이 없도록 이 두 가지를 계약(인터페이스) 중심으로 만든다.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 03 ═══════════════ -->
+      <section id="s3">
+        <div class="sec-head">
+          <span class="sec-num">03</span>
+          <h2 class="sec-title">전체 아키텍처 — 두 개의 문</h2>
+        </div>
+        <div class="sec-body">
+          <div class="diagram">
+            <p class="cap">v3 — 컨테이너 하나 + 터널 하나</p>
+            <div class="vflow">
+              <div class="box violet">
+                <p class="bt">브라우저 — 폰 · 노트북 · 외부 PC</p>
+                <div class="bd">
+                  fleet.example.com → Fleet UI (React) &nbsp;·&nbsp; term.example.com → 웹터미널
+                  (xterm.js)
+                </div>
+              </div>
+              <div class="arrow down">▼ ▲ &nbsp;HTTPS / WebSocket — 포트 개방 없음</div>
+              <div class="box mint">
+                <p class="bt">Cloudflare Tunnel + Access &nbsp;(또는 Tailscale)</p>
+                <div class="bd">
+                  아웃바운드 터널 · 접속 전 인증(이메일 OTP/SSO + MFA) · 인증서/도메인 자동
+                </div>
+              </div>
+              <div class="arrow down">▼ ▲</div>
+              <div class="lane" style="border-color: rgba(255, 194, 75, 0.4)">
+                <p class="lane-t" style="color: var(--amber)">내 PC — Docker 컨테이너 (WSL2)</p>
+                <div class="cols">
+                  <div class="box amber" style="flex: 1.4">
+                    <p class="bt">Fleet 서버 (신규 배선판 — §6)</p>
+                    <div class="bd">
+                      코어 엔진(FleetEngine) 탑재 · WebSocket 핸들러(기존 IPC 채널 1:1) · renderer
+                      정적 서빙 · 승인 이벤트 중계
+                    </div>
+                  </div>
+                  <div class="box amber" style="flex: 1">
+                    <p class="bt">문 ① ttyd + tmux</p>
+                    <div class="bd">웹터미널 — 셸 PTY 를 WebSocket 노출 · tmux 로 세션 영속</div>
+                  </div>
+                </div>
+                <div class="cols">
+                  <div class="box" style="flex: 1">
+                    <p class="bt">CLI 에이전트</p>
+                    <div class="bd">
+                      claude · codex · gemini (버전 태그 고정) — 로그인 볼륨 영속
+                    </div>
+                  </div>
+                  <div class="box" style="flex: 1">
+                    <p class="bt">워크스페이스</p>
+                    <div class="bd">프로젝트 폴더 바인드 마운트 — 두 문이 같은 폴더를 본다</div>
+                  </div>
+                  <div class="box" style="flex: 1">
+                    <p class="bt">store</p>
+                    <div class="bd">기존 JSON store 그대로 (단일 사용자) — 볼륨 영속</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p class="note-line">
+              배포 = docker compose up -d (fleet 서버 + ttyd + cloudflared 사이드카) · 갱신 = 이미지
+              태그 교체 후 재기동
+            </p>
+          </div>
+          <p>
+            두 문이 <strong>같은 컨테이너·같은 워크스페이스</strong>를 공유한다는 점이 실사용의
+            핵심이다: Fleet 오케스트레이션이 돌려놓은 결과물을 웹터미널로 들어가 직접 이어서 만지고,
+            터미널에서 하던 작업을 Fleet 작업 그래프로 넘기는 왕복이 자연스럽다.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 04 ═══════════════ -->
+      <section id="s4">
+        <div class="sec-head">
+          <span class="sec-num">04</span>
+          <h2 class="sec-title">문 ① 웹터미널 — TUI 직접 대화</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            "터미널에서 <code>claude</code> 로 접속해 대화하는 경험" 을 브라우저로 옮기는 문.
+            파싱하는 코드가 없으므로(읽는 주체 = 사람) CLI 버전 업데이트로 TUI 모양이 바뀌어도 아무
+            영향이 없고, 구독제의 의도된 사용 그 자체라 ToS 걱정이 없다.
+          </p>
+          <ul>
+            <li>
+              <strong>ttyd</strong> — 컨테이너 셸의 PTY 를 WebSocket 웹터미널로 노출하는 검증된 단일
+              바이너리. 직접 구현할 것이 없다.
+            </li>
+            <li>
+              <strong>tmux (핵심)</strong> — 브라우저 탭을 닫거나 폰 화면이 꺼져도 세션이 컨테이너에
+              살아있다. 재접속 후 <code>tmux attach</code> 하면 Claude 가 작업하던 화면 그대로 복귀.
+              노트북에서 시작한 대화를 폰에서 이어받는 것도 이것으로 해결.
+            </li>
+            <li>
+              <strong>구독 로그인</strong> — 컨테이너에서 <code>claude login</code> 1회 → 상태가
+              로그인 볼륨(<code>~/.claude</code> 등)에 영속. codex·gemini 동일.
+            </li>
+            <li>
+              <strong>모바일</strong> — xterm.js 는 폰에서도 동작하나 TUI 특성상 화면이 좁다. tmux
+              상태줄 + 폰트 축소로 실용 수준은 확보되고, 본격 사용은 노트북 권장.
+            </li>
+          </ul>
+          <div class="callout mint">
+            <b>이 문만 먼저 열 수 있다.</b> 문 ① 은 Fleet 코드 변경이 전혀 필요 없다 — 이미지에 CLI
+            + ttyd + tmux 를 넣고 터널만 걸면 끝. 그래서 로드맵(§10)의 Phase A 로 분리해
+            <b>하루 만에</b> 먼저 가동한다.
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 05 ═══════════════ -->
+      <section id="s5">
+        <div class="sec-head">
+          <span class="sec-num">05</span>
+          <h2 class="sec-title">문 ② 오케스트레이션 — 헤드리스는 유지된다</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            중요한 사실 관계를 먼저 못박는다:
+            <strong
+              >v3 에서도 오케스트레이션은 헤드리스 모드 (<code>--output-format stream-json</code>)를
+              쓴다.</strong
+            >
+            CLI 를 운전하는 주체가 사람이 아니라 기계(오케스트레이터)이기 때문이다 — 기계는 응답이
+            끝났는지, 어디가 본문이고 어디가 도구 호출인지, verify 를 돌릴 타이밍인지를 알아야 하고,
+            그건 화면(TUI)이 아니라 기계용 출력 계약에서만 안정적으로 읽을 수 있다. TUI 를 긁는
+            대안은 버전 업데이트마다 깨지는 스크린 스크레이핑이라 채택하지 않는다.
+          </p>
+          <p>
+            실행 흐름 — 폰에서 목표를 입력했을 때 (오케스트레이션 로직은 데스크톱과 동일, 굵은
+            단계만 신규 배선):
+          </p>
+          <div class="diagram">
+            <p class="cap">런 1회의 흐름</p>
+            <div class="flow">
+              <div class="box violet">
+                <p class="bt">1 · 입력</p>
+                <div class="bd">
+                  <strong>WS</strong> fleet:project:run → 서버가 engine.runProject()
+                </div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box">
+                <p class="bt">2 · 분해·배정</p>
+                <div class="bd">플래너가 작업 그래프 생성 · 역할↔LLM 배정 (동일)</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box">
+                <p class="bt">3 · 실행</p>
+                <div class="bd">
+                  CLI 를 stream-json 으로 스폰 — 컨테이너 안 child process (동일)
+                </div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box violet">
+                <p class="bt">4 · 스트림</p>
+                <div class="bd">파서 이벤트를 <strong>WS broadcast</strong> → 브라우저 라이브</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box amber">
+                <p class="bt">5 · 승인</p>
+                <div class="bd">
+                  위험 명령 → fleet:approval:request → 폰 승인 카드 → 게이트 통과
+                </div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box mint">
+                <p class="bt">6 · verify</p>
+                <div class="bd">test/lint GREEN 까지 루프 → 작업 보드 갱신 (동일)</div>
+              </div>
+            </div>
+          </div>
+          <p>
+            즉 2·3·6(오케스트레이션의 본질)은 코드 무변경이고, 공사는 1·4·5 의
+            <strong>전송 통로</strong>에만 있다 — 그것이 §6 이다.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 06 ═══════════════ -->
+      <section id="s6">
+        <div class="sec-head">
+          <span class="sec-num">06</span>
+          <h2 class="sec-title">전송층 교체 — IPC → WebSocket</h2>
+        </div>
+        <div class="sec-body">
+          <p>v3 의 유일한 실질 공사. Electron 배선판을 웹 배선판으로 1:1 번역한다:</p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>지금 (Electron)</th>
+                  <th>v3 (웹서버)</th>
+                  <th>비고</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>main 엔트리 <span class="path">src/main/index.ts</span></td>
+                  <td>서버 엔트리 <span class="path">server/index.ts (신규)</span></td>
+                  <td>
+                    FleetEngine 조립 코드는 기존 것을 거의 그대로 — Electron 어댑터 2개만 교체
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>ipcMain.handle</code> (요청-응답)</td>
+                  <td>WS 요청-응답 (id 매칭) 또는 REST POST</td>
+                  <td>
+                    채널명(<code>fleet:&lt;domain&gt;:&lt;action&gt;</code>)·페이로드 타입 그대로 —
+                    <code>src/shared/types.ts</code> 가 계약
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>webContents.send</code> (이벤트 push)</td>
+                  <td>WS broadcast (접속 클라이언트 전원)</td>
+                  <td>스트리밍 start|delta|end|error 체계 그대로</td>
+                </tr>
+                <tr>
+                  <td>preload 브리지 <span class="path">src/preload/index.ts</span></td>
+                  <td>WS 클라이언트가 같은 <code>window.fleet</code> 인터페이스 구현</td>
+                  <td>
+                    <strong>React 컴포넌트 무변경</strong> — 브리지 뒤가 IPC 인지 WS 인지 UI 는
+                    모른다
+                  </td>
+                </tr>
+                <tr>
+                  <td>renderer 로딩 (BrowserWindow)</td>
+                  <td>Vite 빌드 결과물 정적 서빙</td>
+                  <td>같은 빌드, 서빙 방식만 변경</td>
+                </tr>
+                <tr>
+                  <td>
+                    SecretCrypto = safeStorage <span class="path">src/main/secret-crypto.ts</span>
+                  </td>
+                  <td>파일 기반 암호화(키 파일 볼륨) 또는 env 주입</td>
+                  <td>어댑터 교체 1</td>
+                </tr>
+                <tr>
+                  <td>워크스페이스 폴더 다이얼로그</td>
+                  <td>서버측 경로 목록/직접 입력 UI</td>
+                  <td>어댑터 교체 2 — 컨테이너에 마운트된 경로 중 선택</td>
+                </tr>
+                <tr>
+                  <td>ApprovalGate → renderer 모달 <span class="path">approval-bridge.ts</span></td>
+                  <td>같은 게이트 → WS 이벤트 → 승인 카드 UI</td>
+                  <td>
+                    게이트 로직·destructive 차단 무변경 · 응답 대기 시맨틱 동일 ·
+                    <strong>연결된 클라이언트가 없으면 타임아웃 = 거부(fail-closed)</strong>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <ul>
+            <li>
+              <strong>재접속 복구</strong> — WS 단절 후 재접속 시 스냅숏(현재 rooms/tasks/승인
+              대기)을 먼저 내려주고 이후 이벤트를 잇는다. 이벤트 로그가 이미 있으므로 스냅숏 API 는
+              store 조회로 충분.
+            </li>
+            <li>
+              <strong>동시 접속</strong> — 단일 사용자·다중 기기(노트북+폰)는 허용: broadcast 라
+              자연 지원. 단
+              <strong>같은 store 를 쓰는 Electron 앱과 컨테이너 서버의 동시 기동은 금지</strong
+              >(JSON store 동시 쓰기 충돌) — 컨테이너 store 볼륨을 데스크톱과 분리해 해결.
+            </li>
+            <li>
+              <strong>알림</strong> — 1차: 열려 있는 UI 의 승인 카드. 2차(선택): 서버가 Web Push
+              발송(PWA 설치 시 폰 잠금화면). iOS 제약은 §12.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 07 ═══════════════ -->
+      <section id="s7">
+        <div class="sec-head">
+          <span class="sec-num">07</span>
+          <h2 class="sec-title">컨테이너 구성</h2>
+        </div>
+        <div class="sec-body">
+          <pre class="code"><b># 이미지</b>
+node:24-slim
+ + claude / codex / gemini CLI   ← 버전 태그 고정 (자동 업데이트 금지)
+ + git · 프로젝트 verify 툴체인
+ + fleet-server (코어 엔진 + renderer dist)
+ + ttyd · tmux
+
+<b># compose 서비스</b>
+fleet    : fleet-server (WS + 정적 서빙)
+ttyd     : 웹터미널 (같은 볼륨)
+cloudflared : 터널 사이드카 (fleet·ttyd 를 각 호스트네임으로)
+
+<b># 볼륨</b>
+workspace/   프로젝트 폴더 (호스트 바인드)
+cli-auth/    CLI 로그인 상태 (~/.claude 등)
+fleet-data/  store · 이벤트 로그 · 시크릿 키 파일</pre>
+          <ul>
+            <li>
+              <strong>CLI 버전 고정</strong> — 데스크톱과 달리 자동 업데이트에 노출되지 않는다. 새
+              CLI 버전은 이미지 재빌드 → stream-json 파싱 스모크 테스트 GREEN 확인 → 교체. 헤드리스
+              출력 계약이 깨지는 업데이트를 게이트에서 잡는다.
+            </li>
+            <li>
+              <strong>WSL2</strong> — 워크스페이스는 WSL2 파일시스템 쪽에 두는 것이 I/O 성능상 유리
+              (Windows 경로 바인드는 느리다).
+            </li>
+            <li>
+              <strong>재기동 안전</strong> — 실행 중 런이 있으면 graceful drain(현재 task 완료까지
+              대기) 후 재기동. CLI 세션 resume 이 있으므로 중단돼도 이어받기 가능.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 08 ═══════════════ -->
+      <section id="s8">
+        <div class="sec-head">
+          <span class="sec-num">08</span>
+          <h2 class="sec-title">접근 · 보안</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            노출하는 것이
+            <strong>웹터미널(=원격 셸)과 오케스트레이터(=코드 실행 지시권)</strong>라는 점을
+            직시해야 한다. 계정이 뚫리면 내 PC 의 셸을 내주는 것과 같다. 따라서 터널 앞단 인증이
+            타협 불가 전제다.
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>위협</th>
+                  <th>1차 통제</th>
+                  <th>2차 통제</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>외부인 접근 (URL 노출·크리덴셜 탈취)</td>
+                  <td>
+                    Cloudflare Access(이메일 OTP/SSO + MFA) 또는 tailnet 한정 —
+                    <strong>익명 도달 자체가 불가</strong>
+                  </td>
+                  <td>접속 로그 · 새 기기 알림 · 세션 만료 짧게</td>
+                </tr>
+                <tr>
+                  <td>계정 탈취 → 웹터미널 = 원격 셸</td>
+                  <td>MFA 필수 · 터미널 호스트네임은 별도 Access 정책(더 엄격)</td>
+                  <td>컨테이너 경계 — 호스트 전체가 아니라 마운트된 워크스페이스만 노출</td>
+                </tr>
+                <tr>
+                  <td>에이전트 생성 코드 폭주 (rm -rf 등)</td>
+                  <td>ApprovalGate destructive 차단 (기존 그대로)</td>
+                  <td>컨테이너 경계 · git 롤백 · path-guard 존속</td>
+                </tr>
+                <tr>
+                  <td>승인 응답자 부재 중 위험 명령</td>
+                  <td>타임아웃 = 기본 거부 (fail-closed)</td>
+                  <td>승인 불필요 노드 우선 진행(speculative continue)</td>
+                </tr>
+                <tr>
+                  <td>CLI 로그인 볼륨 유출</td>
+                  <td>볼륨은 호스트 로컬 — 클라우드에 아무것도 안 올라감</td>
+                  <td>디스크 암호화(BitLocker) 전제</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="callout rose">
+            <b>웹터미널과 승인 게이트의 관계.</b> 문 ② 는 위험 명령이 게이트에 걸리지만, 문 ① 은
+            사용자가 곧 셸이라 게이트가 없다. 이는 결함이 아니라 데스크톱과 동일한 신뢰
+            모델(본인=전권)이다 — 단 그만큼 문 ① 의 앞단 인증이 문 ② 보다 강해야 한다는 비대칭을
+            Access 정책에 반영한다.
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 09 ═══════════════ -->
+      <section id="s9">
+        <div class="sec-head">
+          <span class="sec-num">09</span>
+          <h2 class="sec-title">구독제 · 헤드리스 포지셔닝</h2>
+        </div>
+        <div class="sec-body">
+          <p>
+            이 대화에서 확정한 사실 관계의 요약. 구독 OAuth 의 제3자/클라우드 사용은 금지(Anthropic
+            2026-04 · Google 2026-03)지만, v3 는 실행이 <strong>본인 머신</strong>이므로 데스크톱과
+            같은 위치다. 남는 리스크는 "구독 계정의 헤드리스 자동화" 에 대한 조임 — 하드 차단보다는
+            <strong>레이트리밋으로 서서히</strong> 올 가능성이 높고, 실제로 무거운 오케스트레이션이
+            Claude Max 한도를 소진시킨 실측 사례가 있다.
+          </p>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>경로</th>
+                  <th>모드</th>
+                  <th>판정</th>
+                  <th>조임이 와도</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>문 ① 웹터미널 + 구독 로그인</td>
+                  <td>TUI · 사람 운전</td>
+                  <td><span class="tag ok">안전 — 정석 사용</span></td>
+                  <td>영향 없음 (사람 사용량이 곧 정상 사용량)</td>
+                </tr>
+                <tr>
+                  <td>문 ② 오케스트레이션 + 구독 로그인</td>
+                  <td>헤드리스 · 기계 운전</td>
+                  <td><span class="tag warn">회색 — 개인용 한정, 한도 내</span></td>
+                  <td>구독 한도 소진/정책 변경 시 ↓ 로 전환</td>
+                </tr>
+                <tr>
+                  <td>문 ② 오케스트레이션 + API 키</td>
+                  <td>헤드리스 · 기계 운전</td>
+                  <td><span class="tag ok">안전 — 기본 폴백</span></td>
+                  <td>
+                    <code>ANTHROPIC_API_KEY</code> env 하나로 전환,
+                    <strong>코드 무변경</strong> (LlmSession 추상화)
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            운영 원칙: <strong>구독제 헤드리스는 "쓸 수 있는 동안 쓰는 할인"</strong> 으로 취급한다.
+            아키텍처와 비용 계산은 API 키 기준으로 세우고, 구독 경로가 죽어도 시스템은 죽지 않는다.
+            최후 폴백으로 CLI 를 아예 우회하는 <code>ApiProvider</code>(SDK 직접 호출 + 도구 루프)
+            경로도 코어에 이미 존재한다.
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 10 ═══════════════ -->
+      <section id="s10">
+        <div class="sec-head">
+          <span class="sec-num">10</span>
+          <h2 class="sec-title">로드맵</h2>
+        </div>
+        <div class="sec-body">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Phase</th>
+                  <th>기간 (1인)</th>
+                  <th>범위</th>
+                  <th>완료 정의</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>A · 웹터미널 먼저</td>
+                  <td>1–2일</td>
+                  <td>
+                    CLI+ttyd+tmux 이미지 · compose · Cloudflare Tunnel+Access (Fleet 코드 변경 0)
+                  </td>
+                  <td>
+                    폰 브라우저에서 <code>claude</code> 로 접속해 대화하고, 끊었다 붙여도 tmux
+                    세션이 살아있다
+                  </td>
+                </tr>
+                <tr>
+                  <td>B · 전송층 교체</td>
+                  <td>2–3주</td>
+                  <td>
+                    server/index.ts 배선판 · IPC→WS 핸들러 이사 · <code>window.fleet</code> WS
+                    브리지 · 어댑터 2개(시크릿·경로) · renderer 정적 서빙
+                  </td>
+                  <td>
+                    <strong>코어 vitest 전량 GREEN 유지</strong> + 브라우저에서 목표
+                    입력→오케스트레이션 런 완주
+                  </td>
+                </tr>
+                <tr>
+                  <td>C · 승인 + 안정화</td>
+                  <td>1–2주</td>
+                  <td>승인 카드 UI · 재접속 스냅숏 복구 · graceful drain · (선택) Web Push</td>
+                  <td>외출 중 폰으로 승인하면 PC 가 이어서 실행한다</td>
+                </tr>
+                <tr>
+                  <td>D · 확장 판단</td>
+                  <td>수요 발생 시</td>
+                  <td>"PC 꺼짐" 이 아프면 → v2 (Supabase 계층 추가) · 상용화 → v1 (§13)</td>
+                  <td>—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Phase A 를 분리한 이유: 가장 원하는 경험(터미널 라이브 대화)을 코드 변경 없이 즉시
+            확보하고, 터널·인증·컨테이너 운영을 실전에서 먼저 검증한 뒤에 Phase B 공사를 시작하기
+            위함이다. 데스크톱 Electron 앱은 전 기간 병행 사용 가능하다(store 볼륨 분리 전제, §6).
+          </p>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 11 ═══════════════ -->
+      <section id="s11">
+        <div class="sec-head">
+          <span class="sec-num">11</span>
+          <h2 class="sec-title">비용</h2>
+        </div>
+        <div class="sec-body">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>항목</th>
+                  <th>비용</th>
+                  <th>비고</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Cloudflare Tunnel + Access</td>
+                  <td>$0</td>
+                  <td>
+                    Zero Trust 무료 플랜(소규모 사용자) 범위 내 · 도메인 하나는 있으면 편리(~$10/년)
+                  </td>
+                </tr>
+                <tr>
+                  <td>Tailscale (대안)</td>
+                  <td>$0</td>
+                  <td>개인 tailnet 무료 — 단 브라우저 접속 기기도 tailnet 에 있어야 함</td>
+                </tr>
+                <tr>
+                  <td>PC 전기료</td>
+                  <td>수천 원/월</td>
+                  <td>유휴 시 부하 미미 · 실행 시간만 CPU 사용</td>
+                </tr>
+                <tr>
+                  <td>LLM</td>
+                  <td>기존 지출 그대로</td>
+                  <td>구독(문 ① + 문 ② 한도 내) + API 키(문 ② 폴백)</td>
+                </tr>
+                <tr>
+                  <td><strong>합계</strong></td>
+                  <td><strong>≈ $0/월</strong></td>
+                  <td>v2 $0–45 · v1 GA $10–30k 와 비교</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 12 ═══════════════ -->
+      <section id="s12">
+        <div class="sec-head">
+          <span class="sec-num">12</span>
+          <h2 class="sec-title">리스크 · 미해결 질문</h2>
+        </div>
+        <div class="sec-body">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>리스크</th>
+                  <th>영향</th>
+                  <th>완화</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>PC 꺼짐/절전 = 전부 다운</td>
+                  <td><span class="tag warn">구조적</span> — UI·이력 조회조차 불가</td>
+                  <td>절전 해제 설정 · WoL · 이게 자주 아프면 그것이 곧 v2 승격 신호</td>
+                </tr>
+                <tr>
+                  <td>계정 탈취 = 원격 셸 (§8)</td>
+                  <td><span class="tag warn">높음</span></td>
+                  <td>Access MFA 필수 · 터미널 별도 정책 · 접속 알림</td>
+                </tr>
+                <tr>
+                  <td>구독 헤드리스 조임 (레이트리밋)</td>
+                  <td>중 — 문 ② 비용 상승</td>
+                  <td>API 키 env 전환(무변경) · 문 ① 은 무관</td>
+                </tr>
+                <tr>
+                  <td>JSON store 동시 쓰기 (데스크톱 앱 병행 시)</td>
+                  <td>중 — 상태 손상</td>
+                  <td>컨테이너 store 볼륨 분리 · 장기적으로 SQLite 전환(설계상 예정된 교체)</td>
+                </tr>
+                <tr>
+                  <td>WS 재접속 시 이벤트 유실</td>
+                  <td>낮음</td>
+                  <td>재접속 스냅숏 API (§6) — 진실 원천은 store</td>
+                </tr>
+                <tr>
+                  <td>iOS Web Push 제약</td>
+                  <td>낮음 — 승인 알림 UX</td>
+                  <td>PWA 설치 전제로 동작하나 제약 실측 필요 · 폴백 = UI 열어두기/이메일</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p><strong>미해결 질문:</strong></p>
+          <ul>
+            <li>
+              ttyd 대신 code-server(브라우저 VS Code — 터미널+에디터 일체)를 문 ① 로 쓸지 — 취향
+              문제, Phase A 에서 둘 다 띄워보고 결정.
+            </li>
+            <li>
+              문 ① 과 문 ② 가 같은 CLI 로그인 볼륨을 공유할 때 세션 간섭 여부 — Phase A/B 사이에
+              실측.
+            </li>
+            <li>
+              Cloudflare Tunnel vs Tailscale — 폰에서 아무 브라우저로나 열려면 전자, 기기 통제를 더
+              세게 하려면 후자. 기본 권고는 Cloudflare Access.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ═══════════════ 13 ═══════════════ -->
+      <section id="s13">
+        <div class="sec-head">
+          <span class="sec-num">13</span>
+          <h2 class="sec-title">확장 경로 — v2 · v1 로</h2>
+        </div>
+        <div class="sec-body">
+          <div class="diagram">
+            <p class="cap">승격 시퀀스</p>
+            <div class="flow">
+              <div class="box violet">
+                <p class="bt">v3 (본 계획)</p>
+                <div class="bd">컨테이너 + 터널 — 전송층(IPC→WS) 확보</div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box mint">
+                <p class="bt">v2 승격 조건: "PC 꺼짐" 이 아플 때</p>
+                <div class="bd">
+                  Store 어댑터를 Supabase Postgres 로 추가 · UI 를 Vercel 로 · 러너는 지금 컨테이너
+                  그대로
+                </div>
+              </div>
+              <div class="arrow">→</div>
+              <div class="box amber">
+                <p class="bt">v1 승격 조건: 남에게 팔 때</p>
+                <div class="bd">
+                  러너를 클라우드 microVM 플릿으로 · 테넌시/과금/이그레스 (v1 문서 전체)
+                </div>
+              </div>
+            </div>
+          </div>
+          <ul>
+            <li>
+              <strong>v3 에서 지켜야 승격이 싼 규율</strong> — ① UI↔서버 통신을
+              <code>src/shared/types.ts</code> 계약으로만(임의 우회 금지), ② Store 접근을 인터페이스
+              뒤로 유지(직접 파일 접근 금지 — 이미 그렇다), ③ CLI 이미지 를 서버와 분리 빌드
+              가능하게(v1 의 샌드박스 이미지가 됨).
+            </li>
+            <li>
+              <strong>세 문서의 관계</strong> — v3 = 지금 만드는 것 ·
+              v2(<code>fleet-saas-infra-plan-v2.html</code>) = PC 가용성 문제의 해법 ·
+              v1(<code>fleet-saas-infra-plan.html</code>) = 상용 멀티테넌트 설계의 보관소.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <footer>
+        <span>Fleet — Self-Hosted Tunnel Architecture Plan · v3.0 draft</span>
+        <span>2026-07-02 · docs/fleet-saas-infra-plan-v3.html · 계보: v1 → v2 → v3(본 문서)</span>
+      </footer>
+    </div>
+  </body>
+</html>
