@@ -18,7 +18,9 @@ description: Fleet 다차원 적대 PR 리뷰 — 차원별 find → 독립 veri
    ApprovalGate 우회·IPC/FleetBridge drift·provider 계약·FLEET_E2E 가드·engine/lockfile·release 안전장치)
    + 보안·정합성·범위 렌즈.
 2. **find** — 렌즈별 **독립 서브에이전트 디스패치**로 결함 탐지(구조화 출력: severity·위치·문제·제안).
+   Claude Code 로컬 = `fleet-finder` 에이전트(`.claude/agents/`).
 3. **verify(refute)** — 각 발견을 별도 서브에이전트가 refute 시도(불확실하면 거짓양성으로 기각).
+   Claude Code 로컬 = `fleet-refuter` 에이전트 — find≠verify 가 에이전트 타입 수준에서 분리된다.
 4. **합성** — 확정 발견만 severity별로. 거짓양성은 사유와 함께 기록.
 
 ## 주의

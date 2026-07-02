@@ -17,11 +17,18 @@ e2e/__screenshots__/
 fleet-brain.html
 brain.tmp.json
 
-# Claude Code 운영 디렉터리(#175) — 추적 자산(README·skills·workflows)만, 런타임/로컬 자산 제외.
+# Claude Code 운영 디렉터리(#175) — 추적 자산(README·agents·skills·workflows)만, 런타임/로컬 자산 제외.
 # settings.local.json(개인설정)·worktrees/(서브에이전트 격리)·scheduled_tasks·routines 등 런타임
 # 산출물은 종전 사용자 전역 ignore / .git/info/exclude(per-clone)에만 의존 → 신규 클론·CI·협업자
 # 에서 `git add -A` 시 staged 위험. allowlist 로 레포와 함께 이동하는 기계적 제외를 보장.
 .claude/*
 !.claude/README.md
+# agents/ 는 md 정의만 재귀 추적 — 트리 전체 재포함 시 비-md 파일이 skills:lint(*.md 글롭)
+# 스캔 없이 git add -A 로 staged 되는 #175 갭 재현(Codex PR#192 P2 2건). Claude Code 는
+# agents/ 를 하위 폴더까지 재귀 스캔하므로 디렉터리(!**/)를 열고 md 만 negation.
+!.claude/agents/
+.claude/agents/**
+!.claude/agents/**/
+!.claude/agents/**/*.md
 !.claude/skills/
 !.claude/workflows/

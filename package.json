@@ -81,6 +81,9 @@
     ".claude/*.md": [
       "node scripts/skills-lint.mjs"
     ],
+    ".claude/agents/**/*.md": [
+      "node scripts/skills-lint.mjs"
+    ],
     ".claude/skills/**/*.md": [
       "node scripts/skills-lint.mjs"
     ],

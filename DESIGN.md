@@ -107,7 +107,7 @@ goal ──▶ Planner(LLM) ──▶ TaskGraph(작업 분해)
 - **역량 시드**: 세션 등록 시 CLI 어댑터 / API provider 별 기본 역량을 시드한다(서로 다른 역할로 차별화 →
   capability-scored 가 빈 설정에서도 즉시 분산 동작). `claude`/`anthropic`→`reviewer`,
   `codex`/`openai`→`implementer`, `gemini`/`google`→`planner`+`summarizer`. [세션] 탭에서 토글로 수정하며
-  세션 수명 동안 유지(in-memory, 재시작 초기화). 정의: `engine.ts` 의 `DEFAULT_CAPABILITIES`.
+  store 에 영속되어 재시작 시 복원된다(#52; 손상값은 재시드). 정의: `engine.ts` 의 `DEFAULT_CAPABILITIES`.
 - 실행된 LLM 은 `Task.assignedLlmId`(폴백 해소 후 id)로 기록해 배정 효과를 추적·검증 가능하게 한다.
 - 재검토 루프는 결정론적 제어(최대 반복·종료 조건)로 무한루프 방지. 단위 테스트 대상.
 

@@ -278,6 +278,8 @@ describe('DEFAULT_GLOBS — skills:lint 무인자 기본 글롭셋(#175)', () =>
     expect(DEFAULT_GLOBS).toContain('src/**/*.tsx')
     expect(DEFAULT_GLOBS).toContain('.github/workflows/*.yml')
     expect(DEFAULT_GLOBS).toContain('docs/adr/**/*.md')
+    // 커스텀 서브에이전트 정의도 추적 자산 — `.claude/*.md` 는 최상위만 매칭하므로 별도 글롭 필수
+    expect(DEFAULT_GLOBS).toContain('.claude/agents/**/*.md')
     // 브레이스 확장은 fs.globSync 에서 비신뢰 → 개별 패턴이어야 한다
     expect(DEFAULT_GLOBS.every((g) => !g.includes('{'))).toBe(true)
   })
