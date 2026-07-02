@@ -807,7 +807,10 @@
                   <td>LlmSession (CLI)<span class="path">session/cli-session.ts</span></td>
                   <td>로컬 child process</td>
                   <td>
-                    거의 동일 — 러너 컨테이너 → CLI 컨테이너 스폰 (docker exec/run). 파서 재사용
+                    거의 동일 — 기본은 러너 컨테이너 <strong>내부의 child process</strong> 스폰
+                    (데스크톱과 동일 코드 경로). 별도 컨테이너 분리가 필요하면 rootless/중첩 데몬
+                    또는 브로커드 launch API 로만 — <strong>host Docker socket 마운트 금지</strong>
+                    (데몬 접근 = 사실상 host root, Codex P1). 파서 재사용
                   </td>
                 </tr>
                 <tr>

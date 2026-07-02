@@ -759,9 +759,10 @@
             </p>
           </div>
           <p>
-            두 문이 <strong>같은 컨테이너·같은 워크스페이스</strong>를 공유한다는 점이 실사용의
-            핵심이다: Fleet 오케스트레이션이 돌려놓은 결과물을 웹터미널로 들어가 직접 이어서 만지고,
-            터미널에서 하던 작업을 Fleet 작업 그래프로 넘기는 왕복이 자연스럽다.
+            두 문이 <strong>같은 compose 스택·같은 워크스페이스 볼륨</strong>을 공유한다는 점이
+            실사용의 핵심이다(같은 컨테이너가 아니다 — fleet·ttyd 는 분리 서비스, §7): Fleet
+            오케스트레이션이 돌려놓은 결과물을 웹터미널로 들어가 직접 이어서 만지고, 터미널에서 하던
+            작업을 Fleet 작업 그래프로 넘기는 왕복이 자연스럽다.
           </p>
         </div>
       </section>
@@ -1038,6 +1039,17 @@ fleet-data/  store · 이벤트 로그 — <b>시크릿 필드(API 키 등)만 �
               출력 계약이 깨지는 업데이트를 게이트에서 잡는다.
             </li>
             <li>
+              <strong>에이전트 프로세스 격리 (Codex P1)</strong> — fleet 서비스 안에서 스폰되는
+              CLI·verify 자식 프로세스는 부모와 파일시스템·env 를 공유하므로, 그대로 두면
+              prompt-injection 된 에이전트나 악성 프로젝트 스크립트(<code>npm test</code> 등)가
+              fleet-data(store·이벤트 로그)와 시크릿을 읽거나 오염시킬 수 있다. Phase B 에서 강제: ①
+              자식 프로세스는 <strong>비특권 별도 UID</strong> 로 스폰, fleet-data 는 서버 UID
+              전용(0700) ② SecretCrypto 키·store 경로 등 서버 전용 env 는 자식에 미전달(자식에는
+              해당 세션에 필요한 provider API 키만 명시 주입) ③ 완전한 서비스 분리(agent 사이드카 +
+              브로커드 exec)는 선택 후속 — 이때도 <strong>host Docker socket 마운트는 금지</strong>
+              (데몬 접근 = 사실상 host root).
+            </li>
+            <li>
               <strong>WSL2</strong> — 워크스페이스는 WSL2 파일시스템 쪽에 두는 것이 I/O 성능상 유리
               (Windows 경로 바인드는 느리다).
             </li>
@@ -1226,7 +1238,11 @@ fleet-data/  store · 이벤트 로그 — <b>시크릿 필드(API 키 등)만 �
                     <strong
                       >Electron 전용 표면 게이팅(업데이트 배너·버전 footer·updater 채널)</strong
                     >
-                    · <strong>재접속 스냅숏 복구(§6 — C 에서 앞당김)</strong> · Origin/Access 검증
+                    · <strong>재접속 스냅숏 복구(§6 — C 에서 앞당김)</strong> · Origin/Access 검증 ·
+                    <strong
+                      >에이전트 자식 프로세스 격리(§7 — 비특권 UID·fleet-data 0700·서버 env
+                      미전달)</strong
+                    >
                   </td>
                   <td>
                     <strong>코어 vitest 전량 GREEN 유지</strong> + 전송층 계약 테스트 전량 GREEN: ①
