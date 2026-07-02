@@ -11,9 +11,10 @@ import {
 
 /**
  * 라이브 GUI 관측: 최근 머지된 UI 표면 두 가지를 실제 Electron 앱에서 확인한다.
- *  - #47/#54 effort 게이트: SessionsPanel 의 Thinking effort 셀렉트가 anthropic·openai·google
- *    에서 모두 보이고 provider 별 안내문이 전환된다(#54 가 게이트를 google 까지 확장 → 기존
- *    'google 숨김' 기대는 stale 정정 · #73 은 이후 Gemini 2.5 thinkingBudget 매핑을 정교화).
+ *  - #47/#54 effort 게이트: thinking effort 셀렉트가 anthropic·openai·google 에서 모두 보인다.
+ *    #144 세션 인증 picker 가 SessionsPanel 인라인 폼을 AddAiWizard(프로바이더 → 인증 방식 →
+ *    API 키 단계)로 교체하며 effort 셀렉트·라벨이 위저드 API 키 단계로 이동 — provider 별
+ *    안내문은 개편에서 제거돼 단언도 제거(anthropic 전용 cache TTL 이 provider 차등의 관측점).
  *  - #44 #12 replan 슬라이스 활성화: ProjectPanel 의 '보정 재계획' 셀렉트가 공유 상수
  *    MAX_REPLAN_ROUNDS 에서 파생된 옵션(비활성/1회/2회/3회)으로 렌더된다(데드코드였던 배선의 UI 표면).
  */
@@ -37,29 +38,45 @@ test.afterAll(async () => {
   if (userDataDir) rmSync(userDataDir, { recursive: true, force: true })
 })
 
-test('#47/#54 Thinking effort 게이트가 anthropic·openai·google 에서 보이고 provider 별 안내문이 전환된다', async () => {
-  // nav 버튼만 정확히 잡는다 — 세션 탭의 '세션 등록' 버튼들과 substring 충돌 방지(exact).
+test('#47/#54 thinking effort 게이트가 AddAiWizard API 키 단계에서 anthropic·openai·google 모두 열린다', async () => {
+  // nav 버튼만 정확히 잡는다 — 세션 탭 내부 버튼들과 substring 충돌 방지(exact).
   await page.getByRole('button', { name: '세션', exact: true }).click()
-  const effort = page.getByLabel('Thinking effort (선택)')
+  const effort = page.getByLabel('thinking effort')
+  const cacheTtl = page.getByLabel('cache TTL')
 
-  // 기본 provider=anthropic → 게이트 열림
-  await expect(effort).toBeVisible()
+  // #144 위저드: 프로바이더 → 인증 방식 → API 키 단계에 effort 셀렉트. 프로바이더 전환은
+  // '뒤로' 2회(apikey→method→provider)로 돌아가 다른 프로바이더를 고른다.
+  async function openApikeyStep(providerLabel: string) {
+    await page.getByRole('button', { name: providerLabel, exact: true }).click()
+    await page.getByRole('button', { name: 'API 키', exact: true }).click()
+  }
+  async function backToProviderStep() {
+    await page.getByRole('button', { name: '뒤로', exact: true }).click()
+    await page.getByRole('button', { name: '뒤로', exact: true }).click()
+  }
 
-  // openai → 여전히 열림(#47 이 anthropic→anthropic|openai 로 원자 확장한 부분)
-  await page.getByLabel('Provider').selectOption('openai')
+  // anthropic → 게이트 열림 + anthropic 전용 cache TTL 노출(provider 차등 관측점)
+  await openApikeyStep('Claude (Anthropic)')
   await expect(effort).toBeVisible()
-  await expect(page.getByText(/reasoning 모델\(o-series/)).toBeVisible() // openai 전용 모델-인지 안내문
+  await expect(cacheTtl).toBeVisible()
+
+  // openai → 여전히 열림(#47 이 anthropic→anthropic|openai 로 원자 확장한 부분) · cache TTL 은 숨김
+  await backToProviderStep()
+  await openApikeyStep('Codex (OpenAI)')
+  await expect(effort).toBeVisible()
+  await expect(cacheTtl).toBeHidden()
   await page.screenshot({ path: 'e2e/__screenshots__/05-effort-gate-openai.png' })
 
   // google → 여전히 열림(#54 가 thinkingSupported 게이트를 google 까지 확장 — #53 의 google
   // thinkingConfig 배선을 UI 에서 활성화. #73 은 이후 Gemini 2.5 thinkingBudget 매핑 정교화).
-  // SessionsPanel.test.tsx 의 'Google thinking effort … config 에 thinking 이 실린다' 단위 테스트와 짝.
-  await page.getByLabel('Provider').selectOption('google')
+  await backToProviderStep()
+  await openApikeyStep('Gemini (Google)')
   await expect(effort).toBeVisible()
-  await expect(page.getByText(/Gemini 2\.5 는 동적 사고/)).toBeVisible() // gemini 전용 안내문
+  await expect(cacheTtl).toBeHidden()
 
   // anthropic 으로 복귀 → 다시 열림
-  await page.getByLabel('Provider').selectOption('anthropic')
+  await backToProviderStep()
+  await openApikeyStep('Claude (Anthropic)')
   await expect(effort).toBeVisible()
 })
 
