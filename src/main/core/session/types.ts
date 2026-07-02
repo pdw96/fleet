@@ -21,6 +21,14 @@ export interface SendOptions {
   responseSchema?: { name: string; schema: Record<string, unknown> }
   /** true 면 이 호출은 도구 루프를 건너뛰고 단발 chat 으로 실행한다(planner/reviewer 등 분석 호출). */
   bypassTools?: boolean
+  /**
+   * true 면 토큰 한도 truncation(finishReason='length')으로 잘린 **부분 텍스트를 에러 없이 그대로
+   * 반환**한다(기본 false = 잘림을 에러로 표면화). 인터랙티브 소비자(채팅룸)가 스트리밍으로 이미
+   * 사용자에게 노출된 부분 답변을 보존하는 용도다(#190). **length 전용** — 안전/무결성 신호인
+   * content_filter(거부)·other(미상 종료)는 이 플래그와 무관하게 항상 표면화한다. API 세션만 적용;
+   * CLI 세션은 무시. ⚠️ 기계파싱 소비자(planner/reviewer)엔 쓰지 말 것(잘린 JSON 을 삼킨다).
+   */
+  allowTruncation?: boolean
 }
 
 /** createCliSession 동작 옵션. */

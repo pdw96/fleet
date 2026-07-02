@@ -206,7 +206,7 @@ describe('createApiSession', () => {
     await expect(s.send('아주 긴 답변 요청')).rejects.toThrow(/잘렸|truncat|length|max_tokens|토큰/)
   })
 
-  it('부분 텍스트가 있는 length 응답은 그대로 반환한다(정상 긴 답변 보호)', async () => {
+  it('부분 텍스트가 있는 length 응답도 기본은 표면화한다(잘린 답을 완전 답으로 위장 금지 — #190)', async () => {
     const provider: ApiProvider = {
       id: 'partial',
       provider: 'anthropic',
@@ -221,7 +221,63 @@ describe('createApiSession', () => {
       },
     }
     const s = createApiSession(apiDesc, provider)
-    expect(await s.send('x')).toBe('부분 답변')
+    await expect(s.send('x')).rejects.toThrow(/잘렸|truncat|length|max_tokens|토큰/)
+  })
+
+  it('allowTruncation 이면 부분 텍스트 length 응답을 그대로 반환한다(인터랙티브 opt-out — #190)', async () => {
+    const provider: ApiProvider = {
+      id: 'partial-optout',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return {
+          text: '부분 답변',
+          toolCalls: [],
+          finishReason: 'length',
+          rawFinishReason: 'max_tokens',
+        }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    expect(await s.send('x', { allowTruncation: true })).toBe('부분 답변')
+  })
+
+  it('allowTruncation 은 length 전용 — 부분 텍스트 content_filter 는 여전히 표면화한다(#190)', async () => {
+    const provider: ApiProvider = {
+      id: 'partial-refusal',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return {
+          text: '부분 거부 설명',
+          toolCalls: [],
+          finishReason: 'content_filter',
+          rawFinishReason: 'refusal',
+        }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('x', { allowTruncation: true })).rejects.toThrow(
+      /안전 필터|content_filter|차단|refusal/,
+    )
+  })
+
+  it('부분 텍스트 content_filter 는 기본도 표면화한다(mid-response refusal — #190)', async () => {
+    const provider: ApiProvider = {
+      id: 'partial-refusal2',
+      provider: 'openai',
+      model: 'm',
+      async chat() {
+        return {
+          text: '일부 텍스트',
+          toolCalls: [],
+          finishReason: 'content_filter',
+          rawFinishReason: 'refusal: policy',
+        }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('x')).rejects.toThrow(/안전 필터|content_filter|차단|refusal/)
   })
 
   it('빈 텍스트 + 매핑되지 않은 종료 사유(other: MALFORMED_FUNCTION_CALL 등)는 표면화한다(#7)', async () => {
@@ -244,14 +300,14 @@ describe('createApiSession', () => {
     await expect(s.send('도구 호출 요청')).rejects.toThrow(/빈 응답|MALFORMED/)
   })
 
-  it('텍스트가 있는 other 응답은 그대로 반환한다(빈 응답만 표면화)', async () => {
+  it('부분 텍스트가 있는 other(미상/이상 종료) 응답도 표면화한다 — 정상 완료로 못 믿음(#190)', async () => {
     const provider: ApiProvider = {
-      id: 'other-ok',
+      id: 'other-partial',
       provider: 'google',
       model: 'm',
       async chat() {
         return {
-          text: '정상 답변',
+          text: '부분 답변',
           toolCalls: [],
           finishReason: 'other',
           rawFinishReason: 'UNSPECIFIED',
@@ -259,7 +315,123 @@ describe('createApiSession', () => {
       },
     }
     const s = createApiSession(apiDesc, provider)
-    expect(await s.send('x')).toBe('정상 답변')
+    await expect(s.send('x')).rejects.toThrow(/비정상 종료|재시도|other|UNSPECIFIED/)
+  })
+
+  it('allowTruncation 은 length 전용 — 부분 텍스트 other 는 여전히 표면화한다(#190)', async () => {
+    const provider: ApiProvider = {
+      id: 'other-partial-optout',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return {
+          text: '부분 답변',
+          toolCalls: [],
+          finishReason: 'other',
+          rawFinishReason: 'model_context_window_exceeded',
+        }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('x', { allowTruncation: true })).rejects.toThrow(
+      /비정상 종료|재시도|other|model_context/,
+    )
+  })
+
+  it('빈 텍스트 length + allowTruncation 은 여전히 표면화한다(보존할 부분 없음 — #190)', async () => {
+    const provider: ApiProvider = {
+      id: 'empty-len-optout',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return { text: '', toolCalls: [], finishReason: 'length', rawFinishReason: 'max_tokens' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('x', { allowTruncation: true })).rejects.toThrow(
+      /잘렸|length|max_tokens|토큰/,
+    )
+  })
+
+  it('strict throw(부분+length)는 history 를 커밋하지 않는다 — 다음 send 가 실패 턴을 안 본다(#190)', async () => {
+    const seen: ChatTurn[][] = []
+    let n = 0
+    const provider: ApiProvider = {
+      id: 'trunc-history',
+      provider: 'anthropic',
+      model: 'm',
+      async chat(messages) {
+        seen.push(structuredClone(messages))
+        return n++ === 0
+          ? { text: '부분', toolCalls: [], finishReason: 'length', rawFinishReason: 'max_tokens' }
+          : { text: 'echo', toolCalls: [], finishReason: 'stop' }
+      },
+    }
+    const s = createApiSession(apiDesc, provider)
+    await expect(s.send('첫 질문')).rejects.toThrow(/잘렸|length|토큰/)
+    expect(await s.send('둘째')).toBe('echo')
+    // 둘째 send 가 본 history 엔 실패한 '첫 질문'·부분 응답이 없어야 한다(throw → 미커밋 불변식).
+    expect(seen[1].map((m) => m.content)).toEqual(['둘째'])
+  })
+
+  it('부분 텍스트 length strict throw 에서도 usage sink 가 발화한다(소비 토큰 무손실 — #190)', async () => {
+    const usages: TokenUsage[] = []
+    const provider: ApiProvider = {
+      id: 'trunc-usage',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return {
+          text: '부분',
+          toolCalls: [],
+          finishReason: 'length',
+          rawFinishReason: 'max_tokens',
+          usage: { inputTokens: 30, outputTokens: 5 },
+        }
+      },
+    }
+    const s = createApiSession(apiDesc, provider, { onUsage: (u) => usages.push(u) })
+    await expect(s.send('x')).rejects.toThrow(/잘렸|length|토큰/)
+    expect(usages).toEqual([{ inputTokens: 30, outputTokens: 5 }])
+  })
+
+  it('tool-loop 최종 턴이 truncated(부분 텍스트 + length + toolCalls 없음)면 표면화한다(#190)', async () => {
+    let n = 0
+    const provider: ApiProvider = {
+      id: 'trunc-loop',
+      provider: 'anthropic',
+      model: 'm',
+      async chat() {
+        return n++ === 0
+          ? {
+              text: '',
+              toolCalls: [{ type: 'tool_use', id: 't1', name: 'echo', input: {} }],
+              finishReason: 'tool_use',
+            }
+          : {
+              text: '부분 최종',
+              toolCalls: [],
+              finishReason: 'length',
+              rawFinishReason: 'max_tokens',
+            }
+      },
+    }
+    const registry = createToolRegistry([
+      {
+        definition: { name: 'echo', parameters: { type: 'object' } },
+        classify: () => 'safe',
+        async execute() {
+          return 'r'
+        },
+      },
+    ])
+    const gate = {
+      async request() {
+        return 'approved' as const
+      },
+    }
+    const s = createApiSession(apiDesc, provider, { toolDeps: () => ({ registry, gate }) })
+    await expect(s.send('go')).rejects.toThrow(/잘렸|length|max_tokens|토큰/)
   })
 
   it('toolDeps 가 있으면 도구 루프로 처리해 최종 텍스트를 반환한다', async () => {
