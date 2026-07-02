@@ -15,3 +15,4 @@
 | [0005](0005-picker-docs-외부열기.md) | Accepted | picker 문서 외부열기는 main 매개 정적 URL handoff 로만 허용한다 |
 | [0006](0006-coderabbit-advisory-채택.md) | Accepted | CodeRabbit 을 advisory 보조 리뷰어로 채택한다(비-required) |
 | [0007](0007-클라우드-스킬-계약강제-human-gated-write.md) | Accepted | 클라우드 자동화 스킬은 계약을 기계 강제하고 write 는 human-gated 로 둔다 |
+| [0008](0008-saas-전환-v3-터널-셀프호스트-채택.md) | Accepted | SaaS 전환의 첫 단계로 v3 터널 셀프호스트(컨테이너+터널)를 채택한다 |

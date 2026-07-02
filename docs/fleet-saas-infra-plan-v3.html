@@ -922,7 +922,13 @@
                 <tr>
                   <td>renderer 로딩 (BrowserWindow)</td>
                   <td>Vite 빌드 결과물 정적 서빙</td>
-                  <td>같은 빌드, 서빙 방식만 변경</td>
+                  <td>
+                    같은 빌드, 서빙 방식만 변경 — 단 <strong>Electron 전용 표면은 게이팅</strong>:
+                    renderer 에는 데스크톱 전용 UI·브리지 호출(자동 업데이트 배너, Electron/Node
+                    버전 footer, updater 채널)이 있어 브라우저 배포에서 무의미한 컨트롤이 노출되지
+                    않게 환경 플래그로 숨기거나 분리한다 (Codex P2 — "renderer 무변경" 의 두 번째
+                    한정)
+                  </td>
                 </tr>
                 <tr>
                   <td>
@@ -1013,7 +1019,9 @@ cloudflared : 터널 사이드카 (fleet·ttyd 를 각 호스트네임으로)
 <b># 볼륨</b>
 workspace/   프로젝트 폴더 (호스트 바인드)
 cli-auth/    CLI 로그인 상태 (~/.claude 등) — 문 ① 의 본질상 터미널에 노출됨(§8)
-fleet-data/  store · 이벤트 로그 — <b>암호문만</b>
+fleet-data/  store · 이벤트 로그 — <b>시크릿 필드(API 키 등)만 암호화, 본문(메시지·경로·
+             이벤트)은 평문</b>: 현 JSON store 의 실제 동작이며, at-rest 보호는 호스트 디스크
+             암호화(BitLocker, §8) 전제. 전체 암호화 store 어댑터는 선택 후속(로드맵 외)
 시크릿 키    fleet-data 에 두지 않는다 — 호스트 주입(env/Docker secret). 키와 암호문을
              같은 볼륨에 두면 백업·볼륨 복사 한 번에 둘 다 유출된다 (Codex P2)</pre>
           <ul>
@@ -1208,7 +1216,10 @@ fleet-data/  store · 이벤트 로그 — <b>암호문만</b>
                   <td>
                     server/index.ts 배선판 · IPC→WS 핸들러 이사 · <code>window.fleet</code> WS
                     브리지 · 어댑터 2개(시크릿·경로) · renderer 정적 서빙 ·
-                    <strong>재접속 스냅숏 복구(§6 — C 에서 앞당김)</strong> · Origin/Access 검증
+                    <strong
+                      >Electron 전용 표면 게이팅(업데이트 배너·버전 footer·updater 채널)</strong
+                    >
+                    · <strong>재접속 스냅숏 복구(§6 — C 에서 앞당김)</strong> · Origin/Access 검증
                   </td>
                   <td>
                     <strong>코어 vitest 전량 GREEN 유지</strong> + 전송층 계약 테스트 전량 GREEN: ①
