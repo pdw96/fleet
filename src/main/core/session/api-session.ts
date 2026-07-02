@@ -28,38 +28,48 @@ function hasTokenData(usage: TokenUsage | undefined): usage is TokenUsage {
 
 /**
  * ChatResult 를 레거시 string send() 계약으로 환원한다.
- * 텍스트도 도구호출도 없는데 콘텐츠/안전 필터(content_filter)로 차단되거나 토큰 한도(length)로
- * 잘려 빈 응답이 된 경우(과거 조용히 '' 로 흡수되던 케이스)는 명확한 에러로 표면화한다
- * — silent truncation/refusal 방지(#7). 부분 텍스트가 있는 length 응답은 그대로 통과시킨다.
+ * 잘림(length)·거부(content_filter)·미상 종료(other)는 **부분 텍스트가 있어도** 완전한 응답으로
+ * 위장하지 않고 명확한 에러로 표면화한다 — silent truncation/refusal 방지(#7 · #190 확장:
+ * 과거엔 빈-응답일 때만 표면화해 부분 텍스트가 있는 잘린/거부 응답이 조용히 통과했다).
+ *
+ * 인터랙티브 소비자(채팅룸)만 `allowTruncation` 으로 **순수 truncation(length)** 을 opt-out 해
+ * 스트리밍으로 이미 사용자에게 노출된 부분 텍스트를 보존한다. 안전/무결성 신호인 `content_filter`
+ * (거부)·`other`(미상)는 opt-out 불가 — 인터랙티브에서도 항상 표면화한다(Codex 설계 리뷰).
  */
-function unwrap(provider: string, result: ChatResult): string {
+function unwrap(provider: string, result: ChatResult, allowTruncation = false): string {
+  // 콘텐츠/안전 필터 거부: 부분 텍스트가 있어도, allowTruncation 과 무관하게 항상 표면화한다
+  // (부분 거부를 정상 답으로 위장하면 안전 신호가 소실된다).
+  if (result.finishReason === 'content_filter') {
+    throw new Error(
+      `[${provider}] 응답이 콘텐츠/안전 필터로 차단되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}).`,
+    )
+  }
+  // 매핑되지 않은 종료 사유('other': Gemini MALFORMED_FUNCTION_CALL·UNEXPECTED_TOOL_CALL,
+  // anthropic model_context_window_exceeded 등)는 정상 완료로 신뢰할 수 없어 표면화한다 —
+  // allowTruncation 과 무관(미상 종료는 truncation 이 아니다).
+  // ⚠️ 유일한 '정당한 other' = anthropic `pause_turn`(server-side tool 의 장기 턴 일시정지·재개 가능)인데,
+  // Fleet 은 Anthropic server tools(web_search 등)를 전혀 전송 안 해(client-side input_schema tools 만) 현재
+  // 미도달이라 throw 가 안전(Codex 적대리뷰 P2). 향후 server tools 도입 시 pause_turn 의 resume 처리를 선행할 것.
+  if (result.finishReason === 'other') {
+    throw new Error(
+      `[${provider}] 모델이 비정상 종료했습니다 (finish=${result.rawFinishReason ?? 'unknown'}). 재시도하거나 입력/도구 정의를 조정하세요.`,
+    )
+  }
+  // 토큰 한도 truncation(length): 기본 표면화. 단 부분 텍스트가 있는 인터랙티브 경로만 allowTruncation
+  // 으로 보존한다(이미 스트리밍으로 사용자에게 노출됨). 빈-텍스트 truncation 은 보존할 부분이 없어
+  // opt-out 여부와 무관하게 표면화한다(#7 유지).
+  if (result.finishReason === 'length' && !(allowTruncation && result.text !== '')) {
+    throw new Error(
+      `[${provider}] 응답이 토큰 한도로 잘렸습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리세요.`,
+    )
+  }
+  // 사고(thinking)만 하고 가시 답변/도구호출이 없는 경우 — includeThoughts 응답에서 발생 가능(Gemini 가
+  // thought 파트만 방출). finishReason 이 stop 이어도 무성 빈 응답이 되므로 표면화한다(#7, silent blank 방지).
+  // (가시 출력 부재 전용이라 빈-텍스트 조건 유지 — 위 length/refusal/other 가 이미 걸러진 뒤 도달한다.)
   if (result.text === '' && result.toolCalls.length === 0) {
-    if (result.finishReason === 'content_filter') {
-      throw new Error(
-        `[${provider}] 응답이 콘텐츠/안전 필터로 차단되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}).`,
-      )
-    }
-    if (result.finishReason === 'length') {
-      throw new Error(
-        `[${provider}] 응답이 토큰 한도로 잘려 빈 응답이 되었습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리세요.`,
-      )
-    }
-    // 사고(thinking)만 하고 가시 답변/도구호출이 없는 경우 — includeThoughts 응답에서 발생 가능(Gemini 가
-    // thought 파트만 방출). finishReason 이 stop 이어도 무성 빈 응답이 되므로 표면화한다(#7, silent blank 방지).
     if (result.content?.some((b) => b.type === 'thinking')) {
       throw new Error(
         `[${provider}] 모델이 사고(thinking)만 하고 가시 답변을 생성하지 않았습니다 (finish=${result.rawFinishReason ?? 'unknown'}). max_tokens 를 늘리거나 재시도하세요.`,
-      )
-    }
-    // 매핑되지 않은 종료 사유('other': Gemini MALFORMED_FUNCTION_CALL·UNEXPECTED_TOOL_CALL,
-    // anthropic model_context_window_exceeded 등)로 텍스트·도구호출 없이 끝난 빈 응답 — 조용한 '' 흡수
-    // 대신 표면화한다(#7, silent blank 방지). tool_use(toolCalls 있음)·정상 빈 stop 응답엔 해당 없음.
-    // ⚠️ 유일한 '정당한 빈 other' = anthropic `pause_turn`(server-side tool 의 장기 턴 일시정지·재개 가능)인데,
-    // Fleet 은 Anthropic server tools(web_search 등)를 전혀 전송 안 해(client-side input_schema tools 만) 현재
-    // 미도달이라 throw 가 안전(Codex 적대리뷰 P2). 향후 server tools 도입 시 pause_turn 의 resume 처리를 선행할 것.
-    if (result.finishReason === 'other') {
-      throw new Error(
-        `[${provider}] 모델이 빈 응답을 반환했습니다 (finish=${result.rawFinishReason ?? 'unknown'}). 재시도하거나 입력/도구 정의를 조정하세요.`,
       )
     }
   }
@@ -164,7 +174,7 @@ export function createApiSession(
             ]
           : [{ role: 'user', content: prompt }]
         const result = await runChatReportingUsage(turns, callOpts, sendOpts.bypassTools)
-        return emit(unwrap(provider.provider, result))
+        return emit(unwrap(provider.provider, result, sendOpts.allowTruncation))
       }
       // 누적 경로: 직렬화 체인에 올려 동시 send 끼리 순서를 보장한다(앞 호출의 성공/실패와 무관하게
       // 순서만). 성공 시에만 history 에 원자적으로 커밋하므로 루프 중간 throw 가 history 를 부분 확장
@@ -179,7 +189,7 @@ export function createApiSession(
         started = true
         const working: ChatTurn[] = [...history, { role: 'user', content: prompt }]
         const result = await runChatReportingUsage(working, callOpts, sendOpts.bypassTools)
-        const reply = unwrap(provider.provider, result)
+        const reply = unwrap(provider.provider, result, sendOpts.allowTruncation)
         // provider 가 순서보존 content(thinking·서명된 파트 등)를 채웠으면 평문 reply 대신 그대로 history 에
         // 커밋한다 — 평문만 넣으면 다음 턴 요청에서 providerMeta(서명)가 사라져 멀티턴 왕복이 tool 루프 밖
         // (비-tool 누적 chat)에선 깨진다(Codex P2). 미설정이면 기존대로 평문(하위호환). LlmSession.send()

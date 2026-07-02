@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 68 files · 173 import wires · 43 IPC channels · 생성 2026-07-01T15:06 UTC
+> 68 files · 173 import wires · 43 IPC channels · 생성 2026-07-02T06:00 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -106,11 +106,11 @@
 - **session/cli-session** — 클로드·코덱스·제미니 같은 설치형 AI 프로그램을 실제로 실행해 대화를 주고받는 일꾼 _프롬프트를 명령어 형태로 만들어 해당 AI 프로그램을 돌리고 결과 글을 받아 깔끔하게 정리해 돌려준다. 매번 새 프로그램을 띄우는 '독립 실행', AI 자체 기능으로 대화를 이어가는 '대화 유지', 지정한 폴더의 파일을 직접 고치는 '편집'의 세 가지 방식을 지원하며, 가능하면 답을 한 글자씩 실시간으로 흘려보내고 같은 세션의 동시 요청은 순서대로 줄 세운다._
   - →의존: cli/authHint, cli/detect, cli/output, session/abort, session/types, shared/types · ←피의존: cli/probe, engine · 248줄
 - **session/api-session** — Anthropic·OpenAI·Google 같은 인터넷 API로 AI와 대화하며 이전 대화를 기억하게 해 주는 일꾼 _주고받은 대화를 차곡차곡 쌓아 여러 번 이어서 물을 수 있게 하고, 필요하면 AI가 도구를 쓰며 일을 처리하는 반복 과정도 돌린다. 빈 답이 조용히 넘어가지 않도록 (필터 차단·글자 한도 초과·생각만 하고 답 없음 같은 경우) 명확한 오류로 알려 주고, 사용한 토큰량을 따로 기록하며, 같은 세션의 동시 요청이 대화 기록을 뒤섞지 않게 순서를 보장한다._
-  - →의존: providers/types, session/abort, session/types, shared/types, tools/loop, tools/types · ←피의존: engine · 204줄
+  - →의존: providers/types, session/abort, session/types, shared/types, tools/loop, tools/types · ←피의존: engine · 214줄
 - **session/manager** — 등록된 모든 AI 세션을 한곳에 모아 두고 종류 상관없이 꺼내 쓰게 해 주는 보관함 _AI 세션을 이름표(id)로 추가·조회·목록 확인·삭제할 수 있게 하고, 각 AI가 맡을 수 있는 역할 정보를 그 자리에서 바꿔 화면까지 반영되게 한다. 세션을 지우거나 전체를 닫을 때는 각 세션의 정리 작업을 호출해 깔끔히 마무리한다._
   - →의존: session/types, shared/types · ←피의존: chat/room, engine, orchestrator/orchestrator · 59줄
 - **session/types** — 모든 AI 세션이 똑같이 지켜야 할 약속(규격)을 적어 둔 설계도 _AI에게 말을 거는 send 함수와 정리하는 dispose 함수를 모든 AI가 똑같은 모양으로 갖추도록 정해 둔다. 또 말을 걸 때 붙일 수 있는 옵션들(취소 신호, 답을 조금씩 받아보기, 이번 한 번만 맥락 없이 깨끗하게 묻기, 작업 폴더 지정, 시간제한, 정해진 형식으로 답 받기 등)도 함께 규정한다._
-  - →의존: shared/types · ←피의존: orchestrator/plan, session/api-session, session/cli-session, session/manager · 53줄
+  - →의존: shared/types · ←피의존: orchestrator/plan, session/api-session, session/cli-session, session/manager · 61줄
 - **session/abort**
   - →의존: — · ←피의존: engine, session/api-session, session/cli-session · 57줄
 
@@ -178,7 +178,7 @@
 
 ### chat · core — 여러 AI가 한 채팅방에서 서로의 말을 보고 토론하도록 진행을 맡아 주는 모듈이다.
 - **chat/room** — 여러 AI가 한 채팅방에서 차례로 발언하며 토론하도록 진행을 맡는 사회자 부품 _사용자나 시스템의 글을 방에 올리고, 특정 AI를 지목해 지금까지의 대화 내용을 보여준 뒤 다음 발언을 받아 다시 방에 저장한다. 여러 AI에게 한 주제를 정해진 횟수만큼 돌아가며 토론시키는 기능도 있어, 회의의 진행자처럼 누가 언제 말할지를 정리해 준다._
-  - →의존: session/manager, shared/types, store/types · ←피의존: engine · 150줄
+  - →의존: session/manager, shared/types, store/types · ←피의존: engine · 155줄
 
 ### verify · core — AI가 고친 코드가 정말 멀쩡한지, 타입 검사·문법 검사·테스트 같은 점검 명령을 실제로 돌려보고 합격/불합격 결과를 정리해 주는 '코드 자동 검사 담당' 부품 모음.
 - **verify/run** — 고친 코드가 제대로 됐는지 점검 명령을 실제로 돌려 합격·불합격을 가려내는 자동 검사 부품. _타입 검사·문법 검사·테스트 같은 점검 명령을 컴퓨터에서 실제로 실행하고, 끝난 결과(성공했는지, 화면에 뜬 글, 걸린 시간)를 모아 합격/불합격으로 정리한다. 실패하면 출력에서 'error'·'fail' 같은 단어가 든 대표 한 줄을 뽑아 무엇이 잘못됐는지 요약해 주고, 사용자가 도중에 멈추라고 하면(취소) 돌던 검사를 중단시키며, 너무 오래 걸리면(2분 기본) 시간 초과로 끊는다._

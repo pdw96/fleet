@@ -114,10 +114,15 @@ export function createChatController(deps: ChatControllerDeps): ChatController {
       // onToken 이 있으면 onChunk 로 연결돼 스트리밍 활성화(없으면 onChunk=undefined → 버퍼링).
       // onToolStep 은 API 세션 도구 루프의 라이브 도구 단계 싱크로 연결된다(CLI 세션은 무시).
       // signal 은 취소(cancelChat) 신호 — api/cli-session 이 honor 해 in-flight 호출을 중단한다.
+      // allowTruncation: 인터랙티브 채팅에서 토큰 한도로 잘린 부분 답변을 에러 대신 그대로 보여준다(#190).
+      // 사람이 스트리밍으로 잘림을 인지할 수 있는 human-facing 경로라 opt-out 한다(기계파싱 소비자는 strict).
+      // TODO(#190 후속·UX debt): 잘림을 사용자에게 명시 표시할 UI 신호가 없다 — onFinish/ChatResult metadata
+      //   경로를 후속으로 설계해 "응답이 잘렸습니다" 배지/이어쓰기 유도를 렌더러에 노출할 것.
       const reply = await session.send(prompt, {
         signal: opts.signal,
         onChunk: opts.onToken,
         onToolStep: opts.onToolStep,
+        allowTruncation: true,
       })
       return store.appendMessage({
         roomId,
