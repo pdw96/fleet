@@ -763,6 +763,11 @@
             실사용의 핵심이다(같은 컨테이너가 아니다 — fleet·ttyd 는 분리 서비스, §7): Fleet
             오케스트레이션이 돌려놓은 결과물을 웹터미널로 들어가 직접 이어서 만지고, 터미널에서 하던
             작업을 Fleet 작업 그래프로 넘기는 왕복이 자연스럽다.
+            <strong>단 이 왕복은 순차가 전제다(Codex P1)</strong> — Fleet 의 diff 수집/롤백은 base
+            커밋 기준 repo 전체 단위(<code>collectDiff(base)</code>/<code>revert(base)</code>)라
+            터미널 편집과 에이전트 편집을 구분하지 못하므로,
+            <strong>런 실행 중 터미널 동시 편집은 런 락 또는 per-run worktree 로 보호</strong
+            >한다(Phase B). 보호 이전에는 "런 중 터미널 편집 금지" 가 운영 규칙이다.
           </p>
         </div>
       </section>
@@ -986,9 +991,13 @@
               <strong>재접속 복구 (Phase B 필수 — C 아님)</strong> — <code>window.fleet</code> 가 WS
               로 바뀌는 순간부터 네트워크 단절은 정상 상황이다. 재접속 시 활동 스냅숏
               (<code>getChatActivity</code>·<code>getRunActivity</code>·프로젝트 이벤트)을 재조회한
-              뒤 <strong>스냅숏의 <code>seq</code> 를 초과하는 이벤트만</strong> 적용한다(기존
-              마운트 하이드레이션 패턴의 확장). stale 스냅숏이 완료된 런을 running 으로 되살리지
-              않는 race guard 도 기존 로직을 계승.
+              뒤 스냅숏 이후의 이벤트만 적용한다(기존 마운트 하이드레이션 패턴의 확장).
+              <strong>커서 주의(Codex P2)</strong>: <code>seq</code> 단조 규칙은 현재
+              <strong>채팅 스트림 한정</strong>이다 — project/run
+              이벤트(<code>FleetEvent</code>)에는 단조 커서가 없으므로 Phase B 에서
+              <strong>이벤트 커서(eventId/단조 seq)를 run-이벤트 계약에 추가</strong>해야 재접속
+              dedupe/재개가 성립한다. stale 스냅숏이 완료된 런을 running 으로 되살리지 않는 race
+              guard 는 기존 로직을 계승.
             </li>
             <li>
               <strong>동시 접속</strong> — 단일 사용자·다중 기기(노트북+폰)는 허용: broadcast 라
@@ -1030,8 +1039,11 @@ cli-auth/    CLI 로그인 상태 (~/.claude 등) — 문 ① 의 본질상 터�
 fleet-data/  store · 이벤트 로그 — <b>시크릿 필드(API 키 등)만 암호화, 본문(메시지·경로·
              이벤트)은 평문</b>: 현 JSON store 의 실제 동작이며, at-rest 보호는 호스트 디스크
              암호화(BitLocker, §8) 전제. 전체 암호화 store 어댑터는 선택 후속(로드맵 외)
-시크릿 키    fleet-data 에 두지 않는다 — 호스트 주입(env/Docker secret). 키와 암호문을
-             같은 볼륨에 두면 백업·볼륨 복사 한 번에 둘 다 유출된다 (Codex P2)</pre>
+시크릿 키    fleet-data 에 두지 않는다 — <b>env 주입(서버 프로세스 한정·자식 미전달)</b> 또는
+             기동 시 로드 후 파일 미노출. <b>compose file-backed secret 은 금지</b> — 기본
+             0444(world-readable)에 uid/mode 속성이 무시되어 비특권 자식 UID 가
+             /run/secrets 를 읽어 fleet-data 를 복호화할 수 있다 (Codex P1). 키와 암호문을
+             같은 볼륨에 두면 백업 한 번에 둘 다 유출된다 (Codex P2)</pre>
           <ul>
             <li>
               <strong>CLI 버전 고정</strong> — 데스크톱과 달리 자동 업데이트에 노출되지 않는다. 새
@@ -1112,8 +1124,17 @@ fleet-data/  store · 이벤트 로그 — <b>시크릿 필드(API 키 등)만 �
                 </tr>
                 <tr>
                   <td>에이전트 생성 코드 폭주 (rm -rf 등)</td>
-                  <td>ApprovalGate destructive 차단 (기존 그대로)</td>
-                  <td>컨테이너 경계 · git 롤백 · path-guard 존속</td>
+                  <td>
+                    컨테이너 경계 + 비특권 UID(§7) —
+                    <strong>정직한 한정(Codex P1): ApprovalGate 는 사후 게이트</strong>다(에이전트
+                    diff 의 통합/롤백 판정·Fleet 매개 위험 op 신고). 스폰된 프로세스의
+                    <strong>pre-exec 차단이 아니므로</strong>
+                    승인 전 워크스페이스 삭제·유출 자체는 막지 못한다 — 데스크톱과 동일한 한계
+                  </td>
+                  <td>
+                    git 롤백(워크스페이스 복구) · path-guard 존속 · pre-exec 수준 방어(일회용
+                    워크스페이스·세션별 auth 사본/RO 마운트)는 Phase B 이후 후속 검토
+                  </td>
                 </tr>
                 <tr>
                   <td>승인 응답자 부재 중 위험 명령</td>
@@ -1243,6 +1264,11 @@ fleet-data/  store · 이벤트 로그 — <b>시크릿 필드(API 키 등)만 �
                       >에이전트 자식 프로세스 격리(§7 — 비특권 UID·fleet-data 0700·서버 env
                       미전달)</strong
                     >
+                    ·
+                    <strong
+                      >런 중 워크스페이스 동시 편집 보호(§3 — 런 락 또는 per-run worktree)</strong
+                    >
+                    · <strong>run 이벤트 커서(eventId) 계약 추가(§6)</strong>
                   </td>
                   <td>
                     <strong>코어 vitest 전량 GREEN 유지</strong> + 전송층 계약 테스트 전량 GREEN: ①
