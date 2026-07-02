@@ -1,9 +1,13 @@
 name: E2E
 
 # Electron GUI e2e(playwright)는 빌드 + 실 디스플레이가 필요해 느리고 환경 의존이 크다(ci.yml 참조).
-# CI 4게이트와 분리해 수동 dispatch 로만 돌린다. 1~2주 안정화 후 nightly cron(schedule) 추가 예정.
+# CI 4게이트와 분리해 수동 dispatch + nightly cron 으로 돌린다(#98 — dispatch 안정화 후 cron 승격).
+# schedule 은 기본 브랜치(master)의 워크플로만 실행된다. 시각은 정시 혼잡(스케줄 지연·드롭)을
+# 피해 임의 분으로 오프셋 — 18:23 UTC = 03:23 KST(개발 활동 없는 새벽, 그날 머지분 회귀를 밤새 검증).
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '23 18 * * *'
 
 concurrency:
   group: e2e-${{ github.ref }}
