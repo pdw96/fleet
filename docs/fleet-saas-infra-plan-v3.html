@@ -478,14 +478,15 @@
       <header class="mast">
         <p class="eyebrow">Fleet · Self-Hosted Tunnel Architecture Plan · v3</p>
         <h1 class="title">
-          Fleet 터널 셀프호스트<br /><em>컨테이너 하나 + 터널 하나, 어디서든 브라우저로</em>
+          Fleet 터널 셀프호스트<br /><em>compose 스택 하나 + 터널 하나, 어디서든 브라우저로</em>
         </h1>
         <p class="lede">
           데스크톱 Fleet 을 "어디서든 브라우저로 쓰는" 형태로 만드는 최단 경로 계획서. 클라우드
-          백엔드(Supabase·Vercel)도 사지 않는다 — 내 PC 의 <strong>Docker 컨테이너 하나</strong>에
-          Fleet 서버·CLI·웹터미널을 담고, <strong>Cloudflare Tunnel / Tailscale</strong> 로
-          노출한다. 유일한 공사는 Electron IPC 를 WebSocket 으로 갈아끼우는 전송층 교체이며, 이
-          작업은 v1(풀 클라우드)·v2(Supabase 하이브리드)로 갈 때도 그대로 쓰이는 공통 기반이다.
+          백엔드(Supabase·Vercel)도 사지 않는다 — 내 PC 의
+          <strong>Docker compose 스택 하나</strong>에 Fleet 서버·CLI·웹터미널을 담고,
+          <strong>Cloudflare Tunnel / Tailscale</strong> 로 노출한다. 유일한 공사는 Electron IPC 를
+          WebSocket 으로 갈아끼우는 전송층 교체이며, 이 작업은 v1(풀 클라우드)·v2(Supabase
+          하이브리드)로 갈 때도 그대로 쓰이는 공통 기반이다.
         </p>
         <div class="meta-row">
           <span class="pill"><b>버전</b> v3.0 draft</span>
@@ -571,7 +572,10 @@
               Cloudflare Tunnel(+Access) 또는 Tailscale 이 대신한다.
             </li>
           </ul>
-          <p>결과물은 컨테이너 하나에 담긴 <strong>두 개의 문</strong>이다:</p>
+          <p>
+            결과물은 compose 스택 하나에 담긴 <strong>두 개의 문</strong>이다 (fleet·ttyd 는 분리
+            서비스 — 의도된 볼륨만 공유, §7):
+          </p>
           <div class="tbl-wrap">
             <table>
               <thead>
@@ -699,7 +703,7 @@
         </div>
         <div class="sec-body">
           <div class="diagram">
-            <p class="cap">v3 — 컨테이너 하나 + 터널 하나</p>
+            <p class="cap">v3 — compose 스택 하나 + 터널 하나 (fleet·ttyd 분리 서비스)</p>
             <div class="vflow">
               <div class="box violet">
                 <p class="bt">브라우저 — 폰 · 노트북 · 외부 PC</p>
@@ -785,8 +789,11 @@
               노트북에서 시작한 대화를 폰에서 이어받는 것도 이것으로 해결.
             </li>
             <li>
-              <strong>구독 로그인</strong> — 컨테이너에서 <code>claude login</code> 1회 → 상태가
-              로그인 볼륨(<code>~/.claude</code> 등)에 영속. codex·gemini 동일.
+              <strong>구독 로그인</strong> — 컨테이너에서 <code>claude auth login</code> 1회 (<code
+                >src/shared/cliAuthInstallMeta.ts</code
+              >
+              의 공식 명령 · codex 는 <code>codex login</code>, gemini 는 실행 후 프롬프트 로그인) →
+              상태가 로그인 볼륨(<code>~/.claude</code> 등)에 영속. codex·gemini 동일.
             </li>
             <li>
               <strong>모바일</strong> — xterm.js 는 폰에서도 동작하나 TUI 특성상 화면이 좁다. tmux

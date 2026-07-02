@@ -994,6 +994,14 @@
               <strong>RLS 이중 정책</strong> — 사용자 롤: 자기 <code>owner_id</code> 행만 · 러너 롤:
               자기 소유자의 행만 + <code>events</code> 는 INSERT 전용. Supabase
               <code>service_role</code> 키는 러너에 두지 않는다(유출 시 전권 탈취).
+              <strong>주의(Codex P2): <code>owner_id</code> 필터만으론 부족하다</strong> —
+              브라우저는 Supabase 에 직결되므로, 로그인된 브라우저(devtools·XSS)가 자기 소유
+              <code>runs/tasks/messages/approvals</code> 를 임의 UPDATE 해 완료·승인을 위조하고 감사
+              추적을 오염시킬 수 있다.
+              <strong
+                >러너 전용 상태 전이(실행 상태·완료·결과 기록)는 롤별 컬럼/전이 정책 또는 SECURITY
+                DEFINER RPC 로만 허용</strong
+              >하고, 브라우저 롤에는 생성(INSERT)·승인 응답 등 사용자 몫의 전이만 연다.
             </li>
             <li>
               <strong>큐의 원자성</strong> — 러너의 claim 은 조건부 UPDATE 로. Postgres 가 큐 역할을
