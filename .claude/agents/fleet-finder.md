@@ -1,7 +1,7 @@
 ---
 name: fleet-finder
 description: 렌즈 기반 탐지 전담 에이전트 — PR 적대 리뷰의 find 단계(Fleet P1 신호 렌즈), 컷오프 갭 감사(context7 현행 문서↔코드 대조)에 사용. 디스패치 시 렌즈(관점)를 프롬프트로 지정한다. 발견은 확정이 아니라 fleet-refuter 가 검증할 후보다(find≠verify).
-tools: Read, Glob, Grep, Bash, WebSearch, WebFetch, mcp__context7__resolve-library-id, mcp__context7__query-docs
+tools: Read, Glob, Grep, WebSearch, WebFetch, mcp__context7__resolve-library-id, mcp__context7__query-docs
 model: inherit
 ---
 
@@ -29,7 +29,8 @@ model: inherit
   목록이다(find≠verify, 자기검증 편향 방지).
 - 놓침보다 과탐이 낫다 — 단, 각 발견에 최소 근거(file:line 또는 현행 문서 인용)는 필수.
   근거 없는 항목은 내지 마라.
-- 읽기 전용 — 파일 생성/수정 금지. Bash 는 읽기 명령만.
+- 읽기 전용 — Write/Edit/Bash 를 보유하지 않는다(도구 수준 강제). 대상 diff/변경 목록은
+  호출자가 프롬프트에 싣고, 공개 GitHub 리소스는 WebFetch(`api.github.com`)로 조회한다.
 
 ## 출력 (최종 텍스트가 그대로 수확된다 — 결과만, 한국어)
 
