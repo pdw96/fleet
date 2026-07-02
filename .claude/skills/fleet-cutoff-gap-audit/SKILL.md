@@ -26,7 +26,9 @@ provider/SDK/CLI의 **현행 문서(context7)** 와 Fleet 코드를 대조해 �
 1. **영역 분할** — anthropic·openai·google·mcp 등 영역별로 나눈다.
 2. **fan-out 대조** — 영역마다 **독립 서브에이전트 디스패치**: context7로 현행 문서를 받아
    Fleet 코드(`src/main/core/providers/*` 등)와 대조, net-new/정정 후보 추출.
+   Claude Code 로컬 = `fleet-finder` 에이전트(갭감사 렌즈).
 3. **적대 검증** — 후보를 refute(이미 출하됨? 클라 SHOULD≠MUST? stale 전제?).
+   Claude Code 로컬 = `fleet-refuter` 에이전트(find 와 다른 인스턴스).
 4. **산출** — net-new + 정정 표를 근거와 함께. 등재 가치 있으면 #27 후보로.
 
 ## 주의

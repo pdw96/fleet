@@ -28,6 +28,7 @@ cloud-tools:
 1. **수집** — `gh issue view 27 --repo pdw96/fleet` 본문 후보 + 신규 입력 이슈(라벨 `tier:*`)를 모은다.
 2. **fan-out 검증** — 후보마다 **독립 서브에이전트를 디스패치**해 적대적으로 refute 한다
    (현행 코드/문서 재검증 — 상당수 refuted 전력). 병렬 가용 시 N개 동시, 불가 시 동일 에이전트 N회 독립 패스.
+   Claude Code 로컬 실행 시 디스패치 타입은 `fleet-refuter`(`.claude/agents/` — verdict 스키마·ROI 렌즈 내장).
 3. **티어링** — refute 생존분을 `tier:next`/`tier:later`/`drop` 으로 분류. 솔로 pre-1.0 ROI 렌즈 적용.
 4. **산출** — 재랭킹 표(후보·verdict·근거)를 코멘트로. 즉시등재분은 sub-issue 로 등재.
 5. **결정 기록** — 티어 정책 변경·refute 확정 등 지속·교차 결정이면 **ADR 작성/갱신**
