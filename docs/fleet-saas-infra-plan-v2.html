@@ -1033,7 +1033,11 @@
                   <td>LLM 토큰 델타 (start | delta | end | error)</td>
                   <td>
                     DB 를 거치지 않는 pub/sub — 초당 수십 건의 델타를 행으로 쓰면 무료 티어 DB 가
-                    즉사한다. 유실돼도 완결 메시지가 DB 에 남으므로 무해
+                    즉사한다. 유실돼도 완결 메시지가 DB 에 남으므로 무해.
+                    <strong>단 반드시 private 채널</strong>(<code>private: true</code> +
+                    <code>realtime.messages</code> RLS 정책으로 룸 소유자만 join) — 공개 Broadcast
+                    토픽은 테이블 RLS 밖이라, 토픽명이 유출/추측되면 타 클라이언트가 델타를 읽거나
+                    위조할 수 있다 (Codex P2)
                   </td>
                 </tr>
                 <tr>
@@ -1069,7 +1073,10 @@
               <div class="arrow">→</div>
               <div class="box violet">
                 <p class="bt">브라우저</p>
-                <div class="bd">구독 렌더 · 완결 시 messages 행으로 확정</div>
+                <div class="bd">
+                  구독 렌더만 — <strong>완결 messages 행 영속은 러너 책임</strong>(broadcast 전에
+                  기록). 브라우저에 맡기면 탭이 닫힌 런의 기록이 유실되고 변조 가능 (Codex P2)
+                </div>
               </div>
             </div>
             <p class="note-line">
@@ -1146,9 +1153,14 @@
               계정이 뚫려도 LLM 키는 안전.
             </li>
             <li>
-              <strong>러너 자격증명</strong> — 러너 전용 Supabase 계정의 리프레시 토큰. RLS 로
-              권한이 "본인 데이터 + events INSERT" 로 제한되므로 유출 반경이 작다.
-              <code>service_role</code> 키 사용 금지.
+              <strong>러너 자격증명</strong> — 러너 전용 Supabase 계정의 리프레시 토큰.
+              <code>service_role</code> 키 사용 금지. <strong>주의(Codex P1)</strong>: 별도 러너
+              계정의 <code>auth.uid()</code> 는 소유자가 아니므로, "자기 <code>owner_id</code> 행만"
+              RLS 아래에서는 runs 를 볼 수도 claim 할 수도 없다 —
+              <strong
+                >runner→owner 매핑 테이블(소유자가 승인한 러너 등록) 또는 러너 JWT 의 owner claim +
+                그것을 참조하는 전용 RLS 정책</strong
+              >이 스키마에 선행되어야 한다.
             </li>
             <li>
               <strong>Supabase Vault (선택)</strong> — 여러 기기에서 러너를 돌리고 키를 동기화하고
