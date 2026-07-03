@@ -32,6 +32,11 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
   // 손상 파일이 비배열 events(유효 JSON → .corrupt 미발동)를 실으면 아래 로드 정규화의 length/splice 가
   // throw → UI 열기 전 부팅 크래시. sessions 와 동일 손상 클래스 — 로드 시 1회 정규화로 방어(#126 Codex 리뷰).
   if (!Array.isArray(state.events)) state.events = []
+  // 배열이지만 원소가 비객체(null·primitive)인 부분 손상도 방어한다 — 아래 seq 백필이 `e.seq` 를
+  // 참조/대입하므로(strict 모드 ESM 에서 null 참조·primitive 대입은 throw) 부팅 크래시가 된다.
+  // events=42 와 동일 복구 가능 클래스로 취급해 비객체 원소를 걸러낸다(#197 B1 Codex P2).
+  else if (state.events.some((e) => typeof e !== 'object' || e === null))
+    state.events = state.events.filter((e): e is FleetEvent => typeof e === 'object' && e !== null)
 
   // 이벤트 커서 seq 정규화(#197 B1): 구파일(seq 미보유)·신규파일 공통. store 가 유일 스탬프 지점이라
   // 로드 시 불변식(모든 이벤트 numeric seq · eventSeq=최대)을 복원한다. enforceEventCap 전에 실행해

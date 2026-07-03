@@ -648,6 +648,30 @@ describe('memory store — 이벤트 커서 seq (#197 B1)', () => {
     }
   })
 
+  it('비객체 events 원소(null·primitive)를 로드 시 걸러내 backfill 크래시를 막는다', () => {
+    // 유효 JSON·부분 손상(배열이지만 원소가 null/primitive). seq 백필의 e.seq 참조/대입이
+    // strict 모드(ESM)서 throw → 부팅 크래시. events=42 와 동일 복구 가능 클래스로 걸러내야 한다.
+    const store = createMemoryStore({
+      ...deterministic(),
+      initial: {
+        projects: [],
+        tasks: [],
+        rooms: [],
+        messages: [],
+        events: [
+          null,
+          42,
+          { id: 'a', type: 'e0', data: {}, ts: 1 },
+          undefined,
+        ] as unknown as StoreState['events'],
+        sessions: [],
+      },
+    })
+    expect(store.listEvents().map((e) => e.type)).toEqual(['e0']) // 손상 원소 제거, 유효분만
+    expect(store.listEvents().map((e) => e.seq)).toEqual([1]) // 유효분에 seq 백필
+    expect(store.appendEvent({ type: 'e1' }).seq).toBe(2) // 크래시 없이 이어감
+  })
+
   it('손상 eventSeq 가 있어도 기존 유효 events 의 seq 로 카운터를 복원한다', () => {
     const store = createMemoryStore({
       ...deterministic(),
