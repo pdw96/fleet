@@ -32,8 +32,9 @@ describe('전송 채널 매니페스트', () => {
     expect(CHANNELS['fleet:update:event']).toEqual({ kind: 'push', scope: 'desktop' })
   })
 
-  it('invokeChannels(desktop) 는 자동 업데이트 7채널이 전부다', () => {
+  it('invokeChannels(desktop) 는 update 7채널 + external:openDocs(웹은 클라 도출)다', () => {
     expect(invokeChannels('desktop')).toEqual([
+      'fleet:external:openDocs',
       'fleet:update:check',
       'fleet:update:dismiss',
       'fleet:update:download',

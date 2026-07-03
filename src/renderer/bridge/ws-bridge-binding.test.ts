@@ -34,7 +34,8 @@ const BINDINGS: readonly {
   { method: 'detectClis', channel: 'fleet:cli:detect', args: [] },
   { method: 'listAdapters', channel: 'fleet:cli:adapters', args: [] },
   { method: 'probeCli', channel: 'fleet:cli:probe', args: ['claude'] },
-  { method: 'openCliDocs', channel: 'fleet:external:openDocs', args: ['claude'] },
+  // openCliDocs 는 wire 를 안 태우고 shared 정적 docsUrl 을 동기 open 하므로 채널 바인딩 테이블에서 제외
+  // (external:openDocs 는 desktop 전용). 클라 도출 동작은 ws-bridge.test.ts 가 검증.
   {
     method: 'registerCliSession',
     channel: 'fleet:session:registerCli',

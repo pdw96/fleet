@@ -24,8 +24,7 @@ export const CHANNEL_FIXTURES = {
   'fleet:cli:detect': { args: [], result: [] },
   'fleet:cli:adapters': { args: [], result: [] },
   'fleet:cli:probe': { args: ['claude'], result: { status: 'ok' } },
-  // 웹 openDocs 는 검증된 URL 을 반환(데스크톱은 void) — 브리지가 window.open.
-  'fleet:external:openDocs': { args: ['claude'], result: 'https://docs.anthropic.com/claude-code' },
+  // (fleet:external:openDocs 는 desktop 전용 — 웹은 shared 정적 docsUrl 동기 open, 서버 미등록.)
   'fleet:session:registerCli': {
     args: ['claude', { stateful: true }],
     result: { id: 'cli:claude', kind: 'cli', displayName: 'Claude', ref: 'claude' },

@@ -35,7 +35,9 @@ export const CHANNELS = {
   'fleet:cli:detect': { kind: 'invoke', scope: 'both' },
   'fleet:cli:adapters': { kind: 'invoke', scope: 'both' },
   'fleet:cli:probe': { kind: 'invoke', scope: 'both' },
-  'fleet:external:openDocs': { kind: 'invoke', scope: 'both' },
+  // 문서 열기: 데스크톱은 shell.openExternal(이 채널). 웹은 shared 정적 docsUrl 을 동기 window.open
+  // 하므로 server 미등록 = desktop 전용(#197 B2 리뷰 — 팝업 차단·서버 URL 신뢰 회피).
+  'fleet:external:openDocs': { kind: 'invoke', scope: 'desktop' },
   'fleet:session:registerCli': { kind: 'invoke', scope: 'both' },
   'fleet:session:registerApi': { kind: 'invoke', scope: 'both' },
   'fleet:session:list': { kind: 'invoke', scope: 'both' },

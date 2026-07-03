@@ -18,6 +18,7 @@ import type {
   UpdateEvent,
   UpdaterChannel,
 } from '../../shared/types'
+import { CLI_AUTH_INSTALL_META } from '../../shared/cliAuthInstallMeta'
 import { decodeFrame, type ReqFrame } from '../../shared/transport/protocol'
 
 /**
@@ -286,17 +287,27 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
   }
 
   function openSocket(): void {
-    socket = opts.connect()
-    socket.onopen = (): void => {
+    // 소켓 인스턴스를 캡처해 stale(교체·종료된) 소켓의 늦은 콜백을 무시한다 — 옛 연결의 지연 push/hello 가
+    // 새 커서를 덮거나 중복 UI 이벤트를 내는 race 를 차단(#197 B2 리뷰 Codex P2).
+    const s = opts.connect()
+    socket = s
+    s.onopen = (): void => {
+      if (s !== socket || disposed) return
       isOpen = true
       backoff = initialBackoff // 성공 접속 시 백오프 리셋
       // 큐를 먼저 flush 한 뒤 통지 — 'connected' 리스너의 read 가 offline 큐잉된 write 를 앞지르지 않게.
       flushQueue()
       setState('connected')
     }
-    socket.onmessage = (ev): void => handleMessage(ev.data)
-    socket.onclose = (): void => handleClose()
-    socket.onerror = (): void => {
+    s.onmessage = (ev): void => {
+      if (s !== socket || disposed) return
+      handleMessage(ev.data)
+    }
+    s.onclose = (): void => {
+      if (s !== socket || disposed) return
+      handleClose()
+    }
+    s.onerror = (): void => {
       /* 브라우저는 error 뒤에 close 를 발화 — 재접속은 onclose 단일 경로에서 처리 */
     }
   }
@@ -317,17 +328,18 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
     setSessionCapabilities: (id, roles) =>
       invoke<LlmDescriptor>('fleet:session:capabilities', id, roles),
     listModels: (config) => invoke<ModelOption[]>('fleet:session:listModels', config),
-    // 웹은 Electron shell 이 없다 — server 가 검증된 docsUrl 을 반환(desktop 은 void), 브리지가 여기서
-    // window.open(noopener). FleetBridge.openCliDocs 표면은 Promise<void> 로 데스크톱과 동일 유지.
-    openCliDocs: async (adapterId) => {
-      const url = await invoke<unknown>('fleet:external:openDocs', adapterId)
-      // 서버(B3)가 allowlist 검증 후 URL 을 반환하지만, 클라도 http(s) 스킴만 열어 javascript:/data:
-      // 같은 위험 스킴을 방어(defense-in-depth). noopener 로 opener 접근 차단.
+    // 웹은 docsUrl 을 shared 정적 맵에서 **동기 도출**해 곧장 window.open — 서버 왕복을 없애 (1) 클릭
+    // user-activation 손실로 인한 팝업 차단(#197 B2 리뷰 Codex P3)과 (2) 서버 반환 URL 무검증 신뢰를
+    // 함께 제거한다. 데스크톱은 종전대로 fleet:external:openDocs(shell.openExternal)를 쓴다(그 채널은
+    // desktop 전용). http(s) 스킴만 열고 noopener 로 opener 접근 차단. 표면은 Promise<void> 유지.
+    openCliDocs: (adapterId) => {
+      const url = CLI_AUTH_INSTALL_META[adapterId]?.docsUrl
       if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
         ;(
           globalThis as { open?: (url: string, target: string, features: string) => unknown }
         ).open?.(url, '_blank', 'noopener')
       }
+      return Promise.resolve()
     },
     probeCli: (adapterId) => invoke<ProbeResult>('fleet:cli:probe', adapterId),
 

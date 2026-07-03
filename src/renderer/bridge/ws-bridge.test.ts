@@ -374,16 +374,20 @@ describe('ws-bridge desktop 전용 표면 스텁(update)', () => {
   })
 })
 
-describe('ws-bridge openCliDocs (검증 URL 수신 → window.open)', () => {
-  it('fleet:external:openDocs 를 invoke 하고 node(window 부재)에서도 크래시 없이 resolve 한다', async () => {
+describe('ws-bridge openCliDocs (클라 측 URL 도출 → 동기 window.open)', () => {
+  it('서버 왕복 없이 도출·resolve 하며 wire 를 태우지 않는다(팝업 차단·서버 URL 신뢰 회피)', async () => {
     const h = harness()
     const bridge = createWsBridge({ connect: h.connect })
     h.sockets[0].open()
-    const p = bridge.fleet.openCliDocs('claude')
-    const req = h.sockets[0].lastReq()
-    expect(req).toMatchObject({ ch: 'fleet:external:openDocs', args: ['claude'] })
-    h.sockets[0].message(makeOkFrame(req.id, 'https://docs.anthropic.com/claude-code'))
-    await expect(p).resolves.toBeUndefined()
+    await expect(bridge.fleet.openCliDocs('claude')).resolves.toBeUndefined()
+    expect(h.sockets[0].sent).toHaveLength(0) // fleet:external:openDocs 미invoke(desktop 전용)
+  })
+
+  it('node(window 부재)에서도 크래시 없이 resolve 한다', async () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect })
+    h.sockets[0].open()
+    await expect(bridge.fleet.openCliDocs('codex')).resolves.toBeUndefined()
   })
 })
 
@@ -428,6 +432,25 @@ describe('ws-bridge hello 이벤트 커서', () => {
 })
 
 describe('ws-bridge 재접속(지수 백오프)', () => {
+  it('교체된(stale) 소켓의 늦은 프레임은 현재 커서/구독을 오염시키지 않는다', () => {
+    vi.useFakeTimers()
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect, initialBackoffMs: 1000 })
+    h.sockets[0].open()
+    const events: unknown[] = []
+    bridge.fleet.onOrchestratorEvent((e) => events.push(e))
+    h.sockets[0].fireClose() // 재접속
+    vi.advanceTimersByTime(1000)
+    h.sockets[1].open()
+    h.sockets[1].message({ t: 'hello', maxEventSeq: 20, minRetainedEventSeq: 5 })
+    expect(bridge.getEventCursor()).toEqual({ maxEventSeq: 20, minRetainedEventSeq: 5 })
+    // stale 소켓0 이 늦은 오래된 hello·push 를 흘려도 무시된다.
+    h.sockets[0].message({ t: 'hello', maxEventSeq: 3, minRetainedEventSeq: 1 })
+    h.sockets[0].message({ t: 'push', ch: 'fleet:orchestrator:event', event: { type: 'stale' } })
+    expect(bridge.getEventCursor()).toEqual({ maxEventSeq: 20, minRetainedEventSeq: 5 }) // 미오염
+    expect(events).toHaveLength(0) // stale push 미전달
+  })
+
   it('onConnectionState 리스너가 던져도 재접속 스케줄을 막지 않는다(예외 격리)', () => {
     vi.useFakeTimers()
     const h = harness()

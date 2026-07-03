@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 72 files · 176 import wires · 43 IPC channels · 생성 2026-07-03T17:02 UTC
+> 72 files · 177 import wires · 43 IPC channels · 생성 2026-07-03T17:23 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -33,12 +33,12 @@
   - →의존: renderer/components/authBanners, shared/cliAuthInstallMeta, shared/types · ←피의존: renderer/components/SessionsPanel · 490줄
 - **renderer/components/ProjectPanel** — 목표를 적으면 여러 AI가 역할을 나눠 작업하게 시키는 프로젝트 실행 화면 _원하는 목표와 역할 배정 방식을 입력해 '실행'을 누르면 AI들이 계획·작업·검증을 진행하고, 그 과정을 진행 로그와 작업 보드로 실시간 보여주며 도중에 취소할 수도 있습니다._
   - →의존: renderer/components/elicitation, renderer/ui, shared/types · ←피의존: renderer/App · 572줄
+- **renderer/bridge/ws-bridge**
+  - →의존: shared/cliAuthInstallMeta, shared/transport/protocol, shared/types · ←피의존: — · 421줄
 - **renderer/components/ChatPanel** — 여러 AI와 한 작업방에서 대화하고 자동 토론을 시키는 채팅 화면 _작업방을 만들어 사용자가 메시지를 보내고 특정 AI에게 묻거나 여러 AI를 자동으로 토론시킬 수 있으며, AI 답변이 한 글자씩 실시간으로 흘러나오는 모습을 말풍선으로 보여줍니다. 탭을 떠났다 돌아와도 진행 중이던 대화가 사라지지 않게 상태를 되살립니다._
   - →의존: renderer/ui, shared/types · ←피의존: renderer/App · 479줄
 - **renderer/components/SessionsPanel** — 어떤 AI를 쓸지 등록하고 설정하는 세션 관리 화면 _컴퓨터에 깔린 클로드·코덱스 같은 CLI 도구를 감지해 등록하거나, API 키를 넣어 Anthropic·OpenAI·Google AI를 추가하고, 각 AI가 잘하는 역할과 외부 도구(MCP) 연결도 지정합니다._
   - →의존: renderer/components/AddAiWizard, shared/types · ←피의존: renderer/App · 293줄
-- **renderer/bridge/ws-bridge**
-  - →의존: shared/transport/protocol, shared/types · ←피의존: — · 409줄
 - **renderer/components/ApprovalModal** — 위험한 작업을 하기 전에 사용자에게 허락을 받는 확인 창 _파일 삭제·명령 실행 같은 위험 작업이 생기면 '거부/승인' 팝업을 띄우고, 정해진 시간이 지나면 자동으로 거부합니다. 실수로 엔터를 눌러도 거부 쪽으로 떨어지게 해 위험한 작업이 잘못 승인되는 걸 막습니다._
   - →의존: shared/types · ←피의존: renderer/App · 140줄
 - **renderer/components/UpdateBanner**
@@ -198,11 +198,11 @@
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
   - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +35 · 621줄
 - **shared/cliAuthInstallMeta**
-  - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/components/AddAiWizard · 42줄
+  - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/bridge/ws-bridge, renderer/components/AddAiWizard · 42줄
 - **shared/transport/channels**
-  - →의존: — · ←피의존: shared/transport/fixtures · 134줄
+  - →의존: — · ←피의존: shared/transport/fixtures · 136줄
 - **shared/transport/fixtures**
-  - →의존: shared/transport/channels · ←피의존: — · 99줄
+  - →의존: shared/transport/channels · ←피의존: — · 98줄
 - **shared/transport/protocol**
   - →의존: — · ←피의존: renderer/bridge/ws-bridge · 131줄
 
