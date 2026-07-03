@@ -1,0 +1,29 @@
+# Cloudflare Tunnel — 로컬 관리(config.yml) 방식 예시.
+# 기본 권장은 토큰 기반(무상태 · docker-compose.yml 의 cloudflared 서비스). 이 파일은 대안이다.
+#
+# 쓰는 법:
+#   1) cloudflared tunnel login  (한 번)
+#   2) cloudflared tunnel create fleet-terminal   → <UUID>.json 크리덴셜 생성
+#   3) 이 파일과 <UUID>.json 을 cloudflared 컨테이너의 /home/nonroot/.cloudflared 에 마운트
+#   4) command: tunnel --no-autoupdate run <UUID>   로 기동
+#
+# 주의(v3 §7·§8):
+#   - ingress 는 위에서부터 매칭, 마지막 규칙은 반드시 bare catch-all(http_status:404).
+#   - service 는 compose 서비스명(http://ttyd:7681) — localhost 아님(cloudflared 는 별도 netns).
+#   - 토큰 기반 터널과 섞지 말 것(라우팅은 대시보드 또는 이 파일 중 한 곳에서만).
+#   - ⚠️ 생성된 <UUID>.json 크리덴셜은 시크릿 — 절대 커밋 금지(.gitignore 가 deploy/cloudflared/*.json 가드).
+
+tunnel: REPLACE_WITH_TUNNEL_UUID
+credentials-file: /home/nonroot/.cloudflared/REPLACE_WITH_TUNNEL_UUID.json
+
+ingress:
+  - hostname: terminal.example.com
+    service: http://ttyd:7681
+    # 심층방어: cloudflared 자체가 Access JWT(aud)를 검증 — 엣지를 우회한 요청도 미인증이면 차단.
+    originRequest:
+      access:
+        required: true
+        teamName: REPLACE_WITH_TEAM_NAME
+        audTag:
+          - REPLACE_WITH_ACCESS_APP_AUD_TAG
+  - service: http_status:404

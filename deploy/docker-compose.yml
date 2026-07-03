@@ -1,0 +1,75 @@
+# Fleet 웹터미널 compose 스택 (Phase A · #195 · Part of #193).
+#   ttyd        : 웹터미널 — 마운트 = workspace + cli-auth 만 (fleet-data·Docker 소켓 미마운트).
+#   cloudflared : 터널 사이드카 (tunnel 프로파일). 토큰 기반·무상태. Service = http://ttyd:7681.
+#
+# 사용:
+#   실배포(터널 포함):  docker compose --env-file .env --profile tunnel up -d --build
+#   로컬 검증(터널 X):  bash deploy/smoke.sh   ← 이미지·컨테이너 불변식만 검증(포트 퍼블리시는 스모크 한정)
+#
+# Phase B 에서 이 파일에 `fleet` 서비스(fleet-server = 코어 엔진 + renderer 정적 서빙 + WS)를 추가하고,
+# 그 서비스에만 fleet-data 볼륨을 마운트한다(터미널 셸에는 계속 미노출).
+
+name: fleet-webterminal
+
+services:
+  ttyd:
+    build:
+      context: ./webterminal
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim}
+        CLAUDE_VERSION: ${CLAUDE_VERSION:-2.1.199}
+        CODEX_VERSION: ${CODEX_VERSION:-0.142.5}
+        GEMINI_VERSION: ${GEMINI_VERSION:-0.49.0}
+        TTYD_VERSION: ${TTYD_VERSION:-1.7.7}
+    image: fleet-webterminal:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true # tini = PID1 → 좀비 수거·시그널 전달
+    environment:
+      # 구독 로그인 모드: provider API 키를 넣지 않는다 — 있으면 OAuth 를 덮어써 인증이 깨진다(v3 §9).
+      TTYD_CREDENTIAL: ${TTYD_CREDENTIAL:-}
+      TTYD_MAX_CLIENTS: ${TTYD_MAX_CLIENTS:-5}
+      TTYD_CHECK_ORIGIN: ${TTYD_CHECK_ORIGIN:-1}
+    volumes:
+      # 마운트 범위 = workspace + cli-auth 만 (v3 §7 · ADR-0008). fleet-data 는 마운트하지 않는다.
+      - type: bind
+        source: ${WORKSPACE_DIR:-./workspace}
+        target: /workspace
+      - type: volume
+        source: cli-auth
+        target: /home/node
+    # 주의 1) ports: 없음 — ttyd 는 Docker 내부망에서만 도달, 공개 경로는 터널+Access 뿐.
+    # 주의 2) host Docker 소켓(/var/run/docker.sock) 미마운트 — 데몬 접근 = 사실상 host root(ADR-0008).
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'c=$$(curl -s -o /dev/null -w "%{http_code}" http://localhost:7681); [ "$$c" = "200" ] || [ "$$c" = "401" ]'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - fleet-net
+
+  cloudflared:
+    image: cloudflare/cloudflared:${CLOUDFLARED_VERSION:-2026.6.1}
+    profiles:
+      - tunnel
+    restart: unless-stopped
+    # 토큰 기반(원격 관리): ingress·Access 는 Zero Trust 대시보드에서 설정, 컨테이너는 무상태.
+    # 대시보드 Public Hostname 의 Service 를 http://ttyd:7681 (compose 서비스명)로 지정한다.
+    # 토큰은 argv(`docker ps`/inspect 노출·로그 붙여넣기 유출) 대신 env 로 — cloudflared 가 자동 소비.
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - ttyd
+    # cloudflared 에는 어떤 볼륨/소켓도 마운트하지 않는다(토큰만 있으면 된다).
+    networks:
+      - fleet-net
+
+networks:
+  fleet-net:
+    driver: bridge
+
+volumes:
+  cli-auth:

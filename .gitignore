@@ -6,6 +6,11 @@ build/
 .DS_Store
 .env
 .env.*
+!.env.example
+# 로컬관리 터널 크리덴셜(<UUID>.json)·파생 config.yml 은 시크릿 — deploy/cloudflared/ 는 추적
+# 디렉터리라 명시 가드(예시 파일 config.example.yml 은 이 패턴에 안 걸려 그대로 커밋된다).
+deploy/cloudflared/*.json
+deploy/cloudflared/config.yml
 fleet-data/
 coverage/
 *.tsbuildinfo
