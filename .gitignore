@@ -11,6 +11,9 @@ build/
 # 디렉터리라 명시 가드(예시 파일 config.example.yml 은 이 패턴에 안 걸려 그대로 커밋된다).
 deploy/cloudflared/*.json
 deploy/cloudflared/config.yml
+# 기본 워크스페이스(WORKSPACE_DIR=./workspace → deploy/workspace)는 사용자 프로젝트·생성물이므로
+# 추적 금지(우발 커밋 방지). 실제 프로젝트는 보통 레포 밖 경로를 가리킨다.
+deploy/workspace/
 fleet-data/
 coverage/
 *.tsbuildinfo

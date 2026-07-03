@@ -11,9 +11,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="fleet-webterminal:smoke"
+IMAGE="" # step 1(compose build)에서 해석된 이미지명으로 설정
 CONTAINER="fleet-webterminal-smoke"
 RO_CONTAINER="fleet-webterminal-smoke-ro"
+FC_CONTAINER="fleet-webterminal-smoke-fc"
 VOL_AUTH="fleet-smoke-cli-auth"
 VOL_WS="fleet-smoke-workspace"
 HOST_PORT="${SMOKE_PORT:-7681}"
@@ -31,15 +32,21 @@ bad() {
 }
 
 cleanup() {
-  docker rm -f "$CONTAINER" "$RO_CONTAINER" >/dev/null 2>&1 || true
+  docker rm -f "$CONTAINER" "$RO_CONTAINER" "$FC_CONTAINER" >/dev/null 2>&1 || true
   docker volume rm "$VOL_AUTH" "$VOL_WS" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 cleanup
 
-log "1) 이미지 빌드"
-docker build -t "$IMAGE" "$SCRIPT_DIR/webterminal"
+log "1) 이미지 빌드 (compose — .env 의 버전 build-arg 를 반영해 실제 배포될 이미지를 검증)"
+COMPOSE=(docker compose -f "$SCRIPT_DIR/docker-compose.yml")
+[ -f "$SCRIPT_DIR/.env" ] && COMPOSE+=(--env-file "$SCRIPT_DIR/.env")
+"${COMPOSE[@]}" build ttyd
+IMAGES="$("${COMPOSE[@]}" config --images 2>/dev/null || true)"
+IMAGE="$(printf '%s\n' "$IMAGES" | grep '^fleet-webterminal:' | head -n1 || true)"
+[ -n "$IMAGE" ] || IMAGE="fleet-webterminal:local"
+echo "    빌드·검증 대상 이미지: $IMAGE"
 
 log "2) 도구 존재 + 비특권 실행"
 # entrypoint 를 우회. whoami 는 이미지 기본 USER(node)여야 한다. 각 도구를 PATH 에서 찾고(command -v)
@@ -108,6 +115,16 @@ RO_LOGS="$(docker logs "$RO_CONTAINER" 2>&1 || true)"
 RO_RUNNING="$(docker inspect -f '{{.State.Running}}' "$RO_CONTAINER" 2>/dev/null || echo unknown)"
 echo "$RO_LOGS" | grep -qiE 'FATAL|chown' && ok "쓰기 불가 → 프리플라이트 loud-fail(원인·해결책 로그)" || bad "프리플라이트 미작동 (logs: $RO_LOGS)"
 [ "$RO_RUNNING" != "true" ] && ok "가드가 컨테이너를 중단(Running=$RO_RUNNING)" || bad "쓰기 불가인데 컨테이너가 계속 실행됨"
+
+log "9) -O 비활성 + credential 없음 → fail-closed (CSWSH 방어 강제)"
+# TTYD_CHECK_ORIGIN=0 인데 TTYD_CREDENTIAL 이 없으면 entrypoint 가 시작을 거부해야 한다(무방비 CSWSH 차단).
+docker run -d --name "$FC_CONTAINER" -e TTYD_CHECK_ORIGIN=0 \
+  -v "$VOL_WS:/workspace" -v "$VOL_AUTH:/home/node" "$IMAGE" >/dev/null 2>&1 || true
+sleep 3
+FC_LOGS="$(docker logs "$FC_CONTAINER" 2>&1 || true)"
+FC_RUNNING="$(docker inspect -f '{{.State.Running}}' "$FC_CONTAINER" 2>/dev/null || echo unknown)"
+echo "$FC_LOGS" | grep -qiE 'CSWSH|TTYD_CREDENTIAL' && ok "-O 끄고 credential 없음 → fail-closed(경고 로그)" || bad "fail-closed 미작동 (logs: $FC_LOGS)"
+[ "$FC_RUNNING" != "true" ] && ok "가드가 컨테이너 중단(Running=$FC_RUNNING)" || bad "취약 구성인데 계속 실행됨"
 
 log "결과: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" = "0" ] || exit 1

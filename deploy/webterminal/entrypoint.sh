@@ -63,6 +63,13 @@ set -- ttyd \
 #    반드시 TTYD_CREDENTIAL(basic-auth)을 함께 설정할 것.
 if [ "${TTYD_CHECK_ORIGIN:-1}" = "1" ]; then
   set -- "$@" --check-origin
+elif [ -z "${TTYD_CREDENTIAL:-}" ]; then
+  # fail-closed: -O 를 끄는데 basic-auth 도 없으면 writable 원격 셸이 CSWSH 에 무방비로 열린다.
+  # 한 줄 env 변경으로 조용히 취약해지는 것을 막는다(v3 의 fail-closed 원칙).
+  echo "FATAL: TTYD_CHECK_ORIGIN=0 인데 TTYD_CREDENTIAL 이 없습니다 — writable ttyd 가 CSWSH 에 노출됩니다." >&2
+  echo "  -O 를 끄려면 반드시 TTYD_CREDENTIAL=\"user:password\" 를 함께 설정하세요(.env)." >&2
+  echo "  (정상 터널에선 -O 가 깨질 일이 드무니, 대개 TTYD_CHECK_ORIGIN=1 유지가 맞습니다.)" >&2
+  exit 1
 fi
 
 # 선택: ttyd basic-auth (Access 뒤 심층방어). TTYD_CREDENTIAL="user:pass" 있을 때만.
@@ -71,7 +78,9 @@ if [ -n "${TTYD_CREDENTIAL:-}" ]; then
   set -- "$@" --credential "$TTYD_CREDENTIAL"
 fi
 
-# 실행 명령 = tmux attach-or-create(-A) + 재접속 시 stale 클라이언트 detach(-D).
-set -- "$@" tmux -f /etc/tmux.conf new-session -A -D -s "$TMUX_SESSION"
+# 실행 명령 = tmux attach-or-create(-A). -D(다른 클라이언트 detach)는 쓰지 않는다 — 여러 클라이언트가
+# 같은 세션을 미러링(랩탑+폰 동시)하게 두고, 재접속 시 stale 클라이언트의 창 크기 clamp 는 tmux.conf 의
+# window-size latest + aggressive-resize 로 처리한다(-D 는 live 뷰어까지 축출해 미러링 약속을 깨뜨림).
+set -- "$@" tmux -f /etc/tmux.conf new-session -A -s "$TMUX_SESSION"
 
 exec "$@"
