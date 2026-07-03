@@ -376,6 +376,35 @@ describe('ws-bridge hello 이벤트 커서', () => {
     h.sockets[0].message({ t: 'hello', maxEventSeq: 42, minRetainedEventSeq: 10 })
     expect(bridge.getEventCursor()).toEqual({ maxEventSeq: 42, minRetainedEventSeq: 10 })
   })
+
+  it('hello 수신 시 onEventCursor 로 커서 준비를 통지한다(B4 재하이드레이션 트리거)', () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect })
+    h.sockets[0].open()
+    const cursors: unknown[] = []
+    const off = bridge.onEventCursor((c) => {
+      // 통지 시점에 getEventCursor() 도 이미 갱신돼 있어야 한다.
+      expect(bridge.getEventCursor()).toEqual(c)
+      cursors.push(c)
+    })
+    h.sockets[0].message({ t: 'hello', maxEventSeq: 7, minRetainedEventSeq: 2 })
+    expect(cursors).toEqual([{ maxEventSeq: 7, minRetainedEventSeq: 2 }])
+    off()
+    h.sockets[0].message({ t: 'hello', maxEventSeq: 9, minRetainedEventSeq: 2 })
+    expect(cursors).toHaveLength(1) // 해제 후 무통지
+  })
+
+  it('onEventCursor 콜백이 던져도 소켓 루프를 깨지 않는다', () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect })
+    h.sockets[0].open()
+    bridge.onEventCursor(() => {
+      throw new Error('bad cursor listener')
+    })
+    expect(() =>
+      h.sockets[0].message({ t: 'hello', maxEventSeq: 1, minRetainedEventSeq: 1 }),
+    ).not.toThrow()
+  })
 })
 
 describe('ws-bridge 재접속(지수 백오프)', () => {

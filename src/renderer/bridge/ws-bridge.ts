@@ -85,14 +85,22 @@ export interface WsBridge {
   /** window.fleet 를 대체하는 FleetBridge 구현. */
   fleet: FleetBridge
   /**
-   * 접속 상태 변화 구독(웹 전용 — B4 재하이드레이션 트리거). 해제 함수 반환. 'connected' 는 소켓 open +
-   * offline 큐 flush 완료를 뜻한다(리스너 read 가 큐잉된 write 를 앞지르지 않음). 단 커서(hello)는 그
-   * 직후 비동기로 도착하므로, 재하이드레이션은 getEventCursor() 가 non-null 이 될 때 수행한다(B4).
+   * 접속 상태 변화 구독(웹 전용). 해제 함수 반환. 'connected' 는 소켓 open + offline 큐 flush 완료를
+   * 뜻한다(리스너 read 가 큐잉된 write 를 앞지르지 않음). 단 이벤트 커서(hello)는 그 직후 비동기로
+   * 도착하므로, **재하이드레이션 트리거는 onEventCursor 를 쓴다**(onConnectionState 는 전송 상태 표시용).
    */
   onConnectionState(cb: (state: ConnectionState) => void): () => void
   /**
+   * 이벤트 커서(hello) 수신 통지(웹 전용 — B4 재하이드레이션의 실제 트리거). 소켓 open 후 서버가
+   * hello 를 보내면 발화하며, 이 시점에 getEventCursor() 도 갱신돼 있다. 재접속마다 새 hello 로 다시
+   * 발화 → B4 는 커서로 gap 을 판정해 전체/증분 재하이드레이션을 결정한다. 해제 함수 반환.
+   */
+  onEventCursor(
+    cb: (cursor: { maxEventSeq: number; minRetainedEventSeq: number }) => void,
+  ): () => void
+  /**
    * 최근 hello 의 이벤트 커서 워터마크(재접속 gap 판정용 — B4). hello 수신 전·재접속 직후엔 null
-   * (이전 연결의 stale 커서를 노출하지 않는다). null 이면 커서 미확정 → B4 는 도착까지 대기.
+   * (이전 연결의 stale 커서를 노출하지 않는다). 준비 시점은 onEventCursor 로 통지된다.
    */
   getEventCursor(): { maxEventSeq: number; minRetainedEventSeq: number } | null
   /** 현재 접속 상태. */
@@ -119,9 +127,11 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
   const maxBackoff = opts.maxBackoffMs ?? 30000
   const autoReconnect = opts.autoReconnect ?? true
 
+  type EventCursor = { maxEventSeq: number; minRetainedEventSeq: number }
   const pending = new Map<number, Pending>()
   const listeners = new Map<string, Set<(event: unknown) => void>>()
   const stateListeners = new Set<(state: ConnectionState) => void>()
+  const cursorListeners = new Set<(cursor: EventCursor) => void>()
   // 미open 중 발행된 요청 프레임(id 태그 — flush 시 이미 타임아웃/취소된 고아 프레임을 거른다).
   const sendQueue: { id: number; data: string }[] = []
 
@@ -132,7 +142,7 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
   let backoff = initialBackoff
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined
   let state: ConnectionState = 'connecting'
-  let hello: { maxEventSeq: number; minRetainedEventSeq: number } | null = null
+  let hello: EventCursor | null = null
 
   function setState(next: ConnectionState): void {
     if (next === state) return
@@ -202,6 +212,15 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
       }
     } else {
       hello = { maxEventSeq: frame.maxEventSeq, minRetainedEventSeq: frame.minRetainedEventSeq }
+      // 커서 준비 통지(B4 재하이드레이션 트리거) — 콜백 예외는 격리해 소켓 루프를 지킨다.
+      const cursor = hello
+      for (const cb of [...cursorListeners]) {
+        try {
+          cb({ ...cursor })
+        } catch {
+          /* 소비자 콜백 오류는 전송층에서 삼킨다 */
+        }
+      }
     }
   }
 
@@ -340,6 +359,12 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
       stateListeners.add(cb)
       return () => {
         stateListeners.delete(cb)
+      }
+    },
+    onEventCursor: (cb) => {
+      cursorListeners.add(cb)
+      return () => {
+        cursorListeners.delete(cb)
       }
     },
     getEventCursor: () => (hello ? { ...hello } : null),
