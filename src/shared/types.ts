@@ -10,6 +10,11 @@ export interface AppInfo {
   electron: string
   node: string
   chrome: string
+  /**
+   * 실행 런타임(#197 B2). 데스크톱 Electron main 은 'electron', 컨테이너 fleet-server(B3)는 'web'.
+   * renderer 가 Electron 전용 표면(자동 업데이트 배너·footer)을 게이팅하는 단일 판별값(B4).
+   */
+  runtime: 'electron' | 'web'
 }
 
 // ── LLM 연결 ────────────────────────────────────────────────────────────────

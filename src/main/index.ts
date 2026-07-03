@@ -81,6 +81,7 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
     electron: process.versions.electron,
     node: process.versions.node,
     chrome: process.versions.chrome,
+    runtime: 'electron', // 데스크톱 판별 — 웹 server(B3)는 'web' 스탬프. renderer 표면 게이팅(B4).
   }))
 
   // 세션 / CLI
