@@ -81,3 +81,52 @@ describe('hasEventGap — rotation 폐기 구간 감지', () => {
     expect(hasEventGap(100, { minRetainedEventSeq: 131 })).toBe(true)
   })
 })
+
+describe('decodeFrame — 프레임별 필드 불변식(신뢰 경계 완성)', () => {
+  // 판별자 t 만 통과시키면 하류(handleMessage)가 무검증 역참조로 crash·영구 hang 한다(#197 B2 리뷰 P2).
+  it('res: id 비수치·ok 비boolean·ok=false 시 error.message 부재를 null 로 떨군다', () => {
+    expect(decodeFrame('{"t":"res","id":"x","ok":true}')).toBeNull() // id 비수치
+    expect(decodeFrame('{"t":"res","id":1,"ok":"false"}')).toBeNull() // ok 비boolean(truthy 문자열)
+    expect(decodeFrame('{"t":"res","id":1}')).toBeNull() // ok 부재
+    expect(decodeFrame('{"t":"res","id":1,"ok":false}')).toBeNull() // error 부재
+    expect(decodeFrame('{"t":"res","id":1,"ok":false,"error":{}}')).toBeNull() // error.message 부재
+    expect(decodeFrame('{"t":"res","id":1,"ok":false,"error":{"message":5}}')).toBeNull() // message 비문자열
+  })
+
+  it('res: 정상 ok/err 프레임은 통과한다', () => {
+    expect(decodeFrame('{"t":"res","id":1,"ok":true}')).toEqual({ t: 'res', id: 1, ok: true })
+    expect(decodeFrame('{"t":"res","id":1,"ok":true,"value":null}')).toEqual({
+      t: 'res',
+      id: 1,
+      ok: true,
+      value: null,
+    })
+    expect(decodeFrame('{"t":"res","id":1,"ok":false,"error":{"message":"boom"}}')).toEqual({
+      t: 'res',
+      id: 1,
+      ok: false,
+      error: { message: 'boom' },
+    })
+  })
+
+  it('push: ch 비문자열/부재를 null 로 떨군다', () => {
+    expect(decodeFrame('{"t":"push","event":{}}')).toBeNull()
+    expect(decodeFrame('{"t":"push","ch":5,"event":{}}')).toBeNull()
+    expect(decodeFrame('{"t":"push","ch":"fleet:x","event":1}')).toEqual({
+      t: 'push',
+      ch: 'fleet:x',
+      event: 1,
+    })
+  })
+
+  it('hello: seq 비정수/부재를 null 로 떨군다(missed-gap 방지)', () => {
+    expect(decodeFrame('{"t":"hello","maxEventSeq":"5","minRetainedEventSeq":1}')).toBeNull()
+    expect(decodeFrame('{"t":"hello","minRetainedEventSeq":1}')).toBeNull() // max 부재
+    expect(decodeFrame('{"t":"hello","maxEventSeq":5.5,"minRetainedEventSeq":1}')).toBeNull() // 비정수
+    expect(decodeFrame('{"t":"hello","maxEventSeq":5,"minRetainedEventSeq":1}')).toEqual({
+      t: 'hello',
+      maxEventSeq: 5,
+      minRetainedEventSeq: 1,
+    })
+  })
+})

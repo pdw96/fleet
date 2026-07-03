@@ -161,6 +161,16 @@ describe('ws-bridge close → pending 전원 reject', () => {
     await expect(p1).rejects.toThrow()
     await expect(p2).rejects.toThrow()
   })
+
+  it('terminal closed(autoReconnect=false) 후 새 invoke 는 즉시 reject 된다(hang 방지)', async () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect, autoReconnect: false })
+    h.sockets[0].open()
+    h.sockets[0].fireClose()
+    expect(bridge.connectionState()).toBe('closed')
+    // 재접속 없는 terminal 상태 — 새 요청이 큐에 갇혀 영구 hang 하면 안 된다.
+    await expect(bridge.fleet.listRooms()).rejects.toThrow()
+  })
 })
 
 describe('ws-bridge per-request timeout', () => {
@@ -193,6 +203,49 @@ describe('ws-bridge per-request timeout', () => {
     const id = h.sockets[0].lastReq().id
     h.sockets[0].message(makeOkFrame(id, { projectId: 'p', tasks: [], summary: 'ok' }))
     expect(await p).toMatchObject({ summary: 'ok' })
+  })
+
+  it('타임아웃된 요청의 큐 프레임은 이후 flush 에서 전송되지 않는다(고아 방지)', () => {
+    vi.useFakeTimers()
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect, requestTimeoutMs: 5000 })
+    // 소켓 미open(connecting) 상태에서 요청 → sendQueue 로 밀림.
+    const p = bridge.fleet.listRooms()
+    p.catch(() => {})
+    expect(h.sockets[0].sent).toHaveLength(0)
+    vi.advanceTimersByTime(5000) // 타임아웃 → 해당 pending 삭제
+    h.sockets[0].open() // flush 시도
+    expect(h.sockets[0].sent).toHaveLength(0) // 고아 프레임 미전송
+  })
+})
+
+describe('ws-bridge 불량 프레임 견고성', () => {
+  it('구조 불량 res(error 누락)는 무시하고 소켓 루프를 깨지 않는다(crash/hang 방지)', async () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect })
+    h.sockets[0].open()
+    const p = bridge.fleet.listRooms()
+    const id = h.sockets[0].lastReq().id
+    // error 필드 없는 ok:false 프레임 — decodeFrame 이 null 로 떨궈 무시(무크래시).
+    expect(() => h.sockets[0].message(`{"t":"res","id":${id},"ok":false}`)).not.toThrow()
+    // pending 은 유지돼 정상 응답으로 해소 가능.
+    h.sockets[0].message(makeOkFrame(id, [{ id: 'r1' }]))
+    expect(await p).toEqual([{ id: 'r1' }])
+  })
+
+  it('구독 콜백이 던져도 다른 콜백/소켓 루프를 깨지 않는다', () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect })
+    h.sockets[0].open()
+    let second = false
+    bridge.fleet.onChatStream(() => {
+      throw new Error('bad listener')
+    })
+    bridge.fleet.onChatStream(() => (second = true))
+    expect(() =>
+      h.sockets[0].message({ t: 'push', ch: 'fleet:chat:stream', event: { kind: 'idle' } }),
+    ).not.toThrow()
+    expect(second).toBe(true) // 첫 콜백 예외가 둘째를 막지 않음
   })
 })
 

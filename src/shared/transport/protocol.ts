@@ -75,8 +75,12 @@ export function makeErrFrame(id: number, message: string): ResErrFrame {
 }
 
 /**
- * 와이어 문자열을 ServerFrame 으로 안전 파싱. 깨진 JSON·비객체·미지 `t` 는 null(호출부에서 무시).
- * 신뢰 경계 — 라이브러리/네트워크가 넣은 임의 입력을 프레임 스위치 전에 정규화한다.
+ * 와이어 문자열을 ServerFrame 으로 안전 파싱. 깨진 JSON·비객체·미지 `t`·**필드 불변식 위반**은
+ * null(호출부에서 무시). 신뢰 경계 — 판별자뿐 아니라 변형별 필수 필드까지 검증해야 하류(handleMessage)가
+ * 무검증 역참조로 crash/영구 hang 하지 않는다(#197 B2 리뷰 P2). 불변식:
+ *  - res  : id 는 number · ok 는 boolean · ok===false 면 error.message 가 string(스택 미노출)
+ *  - push : ch 는 string(event 는 임의)
+ *  - hello: maxEventSeq·minRetainedEventSeq 가 정수(비수치면 missed-gap 오판 — B1 방어 재개방 차단)
  */
 export function decodeFrame(data: string): ServerFrame | null {
   let parsed: unknown
@@ -86,9 +90,31 @@ export function decodeFrame(data: string): ServerFrame | null {
     return null
   }
   if (typeof parsed !== 'object' || parsed === null) return null
-  const t = (parsed as { t?: unknown }).t
-  if (t === 'res' || t === 'push' || t === 'hello') return parsed as ServerFrame
-  return null
+  const f = parsed as Record<string, unknown>
+  switch (f['t']) {
+    case 'res': {
+      if (typeof f['id'] !== 'number' || typeof f['ok'] !== 'boolean') return null
+      if (f['ok'] === false) {
+        const err = f['error']
+        if (
+          typeof err !== 'object' ||
+          err === null ||
+          typeof (err as Record<string, unknown>)['message'] !== 'string'
+        ) {
+          return null
+        }
+      }
+      return parsed as ServerFrame
+    }
+    case 'push':
+      return typeof f['ch'] === 'string' ? (parsed as ServerFrame) : null
+    case 'hello':
+      return Number.isInteger(f['maxEventSeq']) && Number.isInteger(f['minRetainedEventSeq'])
+        ? (parsed as ServerFrame)
+        : null
+    default:
+      return null
+  }
 }
 
 /**

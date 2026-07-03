@@ -18,7 +18,7 @@ import type {
   UpdateEvent,
   UpdaterChannel,
 } from '../../shared/types'
-import { type ClientFrame, decodeFrame } from '../../shared/transport/protocol'
+import { decodeFrame, type ReqFrame } from '../../shared/transport/protocol'
 
 /**
  * ws-bridge(#197 B2) — Electron IPC(`window.fleet`) 대체용 FleetBridge WS 구현.
@@ -98,7 +98,8 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
   const pending = new Map<number, Pending>()
   const listeners = new Map<string, Set<(event: unknown) => void>>()
   const stateListeners = new Set<(state: ConnectionState) => void>()
-  const sendQueue: string[] = []
+  // 미open 중 발행된 요청 프레임(id 태그 — flush 시 이미 타임아웃/취소된 고아 프레임을 거른다).
+  const sendQueue: { id: number; data: string }[] = []
 
   let socket: WsLike | null = null
   let isOpen = false
@@ -115,14 +116,15 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
     for (const cb of [...stateListeners]) cb(next)
   }
 
-  function send(frame: ClientFrame): void {
+  function send(frame: ReqFrame): void {
     const data = JSON.stringify(frame)
     if (socket && isOpen) socket.send(data)
-    else sendQueue.push(data)
+    else sendQueue.push({ id: frame.id, data })
   }
 
   function invoke<T>(ch: string, ...args: unknown[]): Promise<T> {
-    if (disposed) return Promise.reject(new Error('전송 브리지가 종료됨'))
+    // terminal 상태(종료·재접속 없는 close)에서는 요청이 큐에 갇혀 영구 hang 하므로 즉시 reject.
+    if (disposed || state === 'closed') return Promise.reject(new Error('전송 브리지가 종료됨'))
     return new Promise<T>((resolve, reject) => {
       const id = ++lastId
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -162,7 +164,16 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
       else entry.reject(new Error(frame.error.message))
     } else if (frame.t === 'push') {
       const set = listeners.get(frame.ch)
-      if (set) for (const cb of [...set]) cb(frame.event) // 스냅샷 순회 — 콜백이 해제해도 안전
+      if (set) {
+        // 스냅샷 순회(콜백이 해제해도 안전) + 콜백 예외 격리(한 리스너 throw 가 나머지·소켓 루프를 깨지 않게).
+        for (const cb of [...set]) {
+          try {
+            cb(frame.event)
+          } catch {
+            /* 소비자 콜백 오류는 전송층에서 삼킨다 — 관측은 콜백 내부 책임 */
+          }
+        }
+      }
     } else {
       hello = { maxEventSeq: frame.maxEventSeq, minRetainedEventSeq: frame.minRetainedEventSeq }
     }
@@ -179,7 +190,8 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
 
   function flushQueue(): void {
     if (!socket) return
-    for (const data of sendQueue) socket.send(data)
+    // 아직 pending 인 요청만 전송 — 큐잉 후 타임아웃/취소된 고아 프레임은 건너뛴다.
+    for (const q of sendQueue) if (pending.has(q.id)) socket.send(q.data)
     sendQueue.length = 0
   }
 
@@ -235,7 +247,9 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
     // window.open(noopener). FleetBridge.openCliDocs 표면은 Promise<void> 로 데스크톱과 동일 유지.
     openCliDocs: async (adapterId) => {
       const url = await invoke<unknown>('fleet:external:openDocs', adapterId)
-      if (typeof url === 'string' && url) {
+      // 서버(B3)가 allowlist 검증 후 URL 을 반환하지만, 클라도 http(s) 스킴만 열어 javascript:/data:
+      // 같은 위험 스킴을 방어(defense-in-depth). noopener 로 opener 접근 차단.
+      if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
         ;(
           globalThis as { open?: (url: string, target: string, features: string) => unknown }
         ).open?.(url, '_blank', 'noopener')
