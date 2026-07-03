@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 68 files · 173 import wires · 43 IPC channels · 생성 2026-07-02T06:00 UTC
+> 68 files · 173 import wires · 43 IPC channels · 생성 2026-07-03T11:57 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -90,7 +90,7 @@
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
-  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1064줄
+  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1071줄
 - **orchestrator/diff-risk** — AI가 바꾼 코드가 위험한 변경인지 판정하는 위험 신호등 _AI가 고친 내용을 보고 비밀번호 같은 민감한 파일을 건드렸거나, 파일을 너무 많이 지웠거나, 변경 내용이 너무 길어 끝이 잘려 확인이 불가능하면 '위험'으로 표시하고 그 이유를 함께 알려 줍니다. 의심스러우면 안전하게 '위험' 쪽으로 분류합니다._
   - →의존: safety/approval, shared/types, workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 37줄
 - **orchestrator/plan** — 큰 목표를 실행 가능한 작은 작업 목록으로 쪼개 주는 계획 분해기 _기획 담당 AI에게 목표를 4~8개의 작업으로 나눠 달라고 요청하고, AI가 돌려준 응답이 형식이 조금 어긋나도 너그럽게 읽어내 작업 목록으로 정리합니다. 검증(테스트·빌드)이 실패하면 그 실패 내용을 다시 AI에게 알려 부족한 부분만 채울 '추가 보정 작업'도 뽑아냅니다._
@@ -116,7 +116,7 @@
 
 ### engine · core — 여러 AI(구독형 CLI와 API)를 한곳에서 등록·관리하고, 채팅과 프로젝트 작업을 진행시키는 앱의 중앙 관제실 역할을 하는 모듈이다.
 - **engine** — 앱의 모든 핵심 기능을 한곳에 모아 화면 쪽에 단일 창구로 내주는 '중앙 관제실' 부품 _AI 세션 등록·삭제, 채팅 주고받기, 프로젝트 작업 실행과 취소, 외부 도구 연결 같은 기능을 묶어 화면(IPC) 쪽에서 부르기 쉬운 하나의 입구로 제공한다. 앱을 다시 켜도 저장해 둔 AI 세션을 다시 살려내고, API 키는 OS 암호화로 안전하게 보관·복원한다._
-  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, providers/resilient, +14 · ←피의존: main/e2e, main/index · 854줄
+  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, providers/resilient, +14 · ←피의존: main/e2e, main/index · 858줄
 
 ### mcp · core — 바깥에서 가져온 도구 프로그램(MCP 서버)을 Fleet 안으로 안전하게 연결해, AI들이 쓸 수 있는 도구로 바꿔 관리하는 모듈이다.
 - **mcp/types** — 이 모듈의 부품들이 공유하는 약속(설계도) 모음 파일 _자식 프로세스, 통신 통로, 도구 정보, 서버 관리자 등이 각각 어떤 기능을 갖춰야 하는지 형태만 정의해 둔다. 실제 동작 코드는 없고, 부품들이 서로 같은 규격으로 끼워 맞춰지도록 하는 인터페이스다._
@@ -156,9 +156,9 @@
 
 ### store · core — 앱이 다루는 모든 데이터(프로젝트, 할 일, 채팅방, 대화, 기록, AI 연결 정보)를 한곳에 모아 보관하고, 컴퓨터를 껐다 켜도 그대로 남도록 파일에 저장하는 '데이터 창고'다.
 - **store/types** — 창고에 담기는 데이터들의 모양과 규칙을 미리 적어 둔 설계도 부품 _프로젝트·할 일·채팅방·저장된 AI 세션 등이 각각 어떤 항목들로 이뤄지는지 형태를 정의한 명세서다. 특히 AI 연결 정보는 구독형 CLI(클로드·코덱스 등)와 API 두 종류로 나뉘며, API 키 같은 비밀번호는 절대 그대로 적지 않고 암호로 바꾼 형태만 저장하도록 규칙을 못 박아 둔다._
-  - →의존: shared/types · ←피의존: chat/room, engine, main/index, orchestrator/orchestrator, store/json-file, store/memory · 155줄
+  - →의존: shared/types · ←피의존: chat/room, engine, main/index, orchestrator/orchestrator, store/json-file, store/memory · 167줄
 - **store/memory** — 데이터를 메모리에서 직접 넣고 빼고 고치는 실제 일꾼 부품 _프로젝트·할 일·채팅방·메시지·기록 등을 만들고(create), 찾고(get), 목록을 보고(list), 수정하는(update) 모든 기능이 여기에 들어 있다. 데이터를 바꿀 때마다 사본을 따로 떠서 넘겨주어 원본이 바깥에서 함부로 바뀌지 않게 보호하고, 변경이 생기면 위의 파일 저장 담당에게 알려 디스크에 기록하게 한다._
-  - →의존: shared/types, store/types · ←피의존: engine, store/json-file · 246줄
+  - →의존: shared/types, store/types · ←피의존: engine, store/json-file · 280줄
 - **store/json-file** — 데이터를 컴퓨터 안 파일에 안전하게 저장해 두는 보관 담당 부품 _앱이 다루는 모든 정보를 'fleet-store.json'이라는 파일에 적어두고, 다음에 앱을 켜면 다시 불러온다. 저장할 때는 임시 파일에 먼저 쓴 뒤 이름만 바꿔치기해서 도중에 멈춰도 원본이 안 깨지게 하고, 파일이 읽다가 망가져 있으면 '.corrupt' 라는 이름으로 따로 백업해 둔 뒤 빈 상태로 시작한다._
   - →의존: store/memory, store/types · ←피의존: main/index · 60줄
 
@@ -194,7 +194,7 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +34 · 604줄
+  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +34 · 616줄
 - **shared/cliAuthInstallMeta**
   - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/components/AddAiWizard · 42줄
 

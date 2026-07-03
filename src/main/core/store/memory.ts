@@ -33,6 +33,28 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
   // throw → UI 열기 전 부팅 크래시. sessions 와 동일 손상 클래스 — 로드 시 1회 정규화로 방어(#126 Codex 리뷰).
   if (!Array.isArray(state.events)) state.events = []
 
+  // 이벤트 커서 seq 정규화(#197 B1): 구파일(seq 미보유)·신규파일 공통. store 가 유일 스탬프 지점이라
+  // 로드 시 불변식(모든 이벤트 numeric seq · eventSeq=최대)을 복원한다. enforceEventCap 전에 실행해
+  // 폐기 후에도 남은 이벤트가 배정 당시 seq 를 유지하게 한다(재번호 금지). seq 는 비음수 정수만 유효로 봐
+  // 손상 파일(유효 JSON·잘못된 타입 — sessions=42·events=42 와 동일 위협 클래스)의 오염을 걸러낸다.
+  {
+    const validSeq = (v: unknown): v is number =>
+      typeof v === 'number' && Number.isInteger(v) && v >= 0
+    let maxSeq = validSeq(state.eventSeq) ? state.eventSeq : 0
+    // 1패스: 기존 유효 seq 최대(신규파일은 이미 seq 보유 — 백필하지 않고 카운터 하한만 확보).
+    for (const e of state.events) {
+      if (validSeq(e.seq) && e.seq > maxSeq) maxSeq = e.seq
+    }
+    // 2패스: seq 미보유(구파일)·손상 seq 만 배열 순서(=시간순)로 백필 — 기존 최대 위로 배정해 충돌을 막는다.
+    for (const e of state.events) {
+      if (!validSeq(e.seq)) e.seq = ++maxSeq
+    }
+    // maxSeq>0 이면 카운터 확정, 아니면 손상 eventSeq(문자열·음수·비정수)를 제거한다 — 남기면 appendEvent
+    // 의 `(state.eventSeq ?? 0)+1` 이 'x'+1='x1'·-4 로 seq 를 오염시킨다(?? 는 null/undefined 만 거름).
+    if (maxSeq > 0) state.eventSeq = maxSeq
+    else delete state.eventSeq // 0/부재/손상 → 미기록(빈 상태·구파일 무회귀)
+  }
+
   // events rotation cap(#126): 상한 초과 시 가장 오래된 것부터 폐기 + 누적 카운터. 매 append 마다 전체 state 를
   // 동기 재직렬화하므로(json-file.ts) cap 이 없으면 events 길이 N 에서 누적 O(N²). cap 으로 per-append O(cap) bounded.
   const enforceEventCap = (): void => {
@@ -166,8 +188,12 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
 
     // ── audit events ──
     appendEvent(input) {
+      // 단조 seq 스탬프(#197 B1) — rotation 폐기와 무관하게 카운터는 증가만(재사용 없음).
+      const seq = (state.eventSeq ?? 0) + 1
+      state.eventSeq = seq
       const event: FleetEvent = {
         id: idGen(),
+        seq,
         type: input.type,
         message: input.message,
         data: input.data ?? {},
@@ -188,6 +214,14 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
           (e) => e.type !== 'task.progress' && e.data?.['projectId'] === projectId,
         ),
       )
+    },
+    eventCursor() {
+      const maxEventSeq = state.eventSeq ?? 0
+      // 최소 보존 seq = 가장 오래된(앞) 이벤트의 seq. 로드 백필로 events 는 항상 numeric seq 를 가지나
+      // 방어적으로 타입 가드. 비어있으면 "다음 생성 seq"(maxEventSeq+1)라 커서 0 은 갭 없음으로 판정된다.
+      const oldest = state.events[0]?.seq
+      const minRetainedEventSeq = typeof oldest === 'number' ? oldest : maxEventSeq + 1
+      return { maxEventSeq, minRetainedEventSeq }
     },
 
     // ── ui 상태 ──

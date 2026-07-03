@@ -338,6 +338,12 @@ export const APPROVAL_TIMEOUT_MS = 60_000
 // ── 감사 로그 (요구사항 6) ────────────────────────────────────────────────
 export interface FleetEvent {
   id: string
+  /**
+   * store 가 append 시 단조 증가로 스탬프하는 시퀀스(재접속 이벤트 커서용 · #197 B1). 1부터 시작하고
+   * rotation(#126) 폐기에도 후퇴하지 않는다. 구파일(pre-B1)엔 부재 → 로드 시 백필하므로 store 가
+   * 반환하는 이벤트는 항상 보유한다. 옵셔널은 오직 디스크 전방호환(구파일 로드 순간)을 위한 것.
+   */
+  seq?: number
   type: string
   /** 사람이 읽는 진행 메시지(오케스트레이터 이벤트 재생용, 감사 이벤트엔 없을 수 있음). */
   message?: string
@@ -383,6 +389,12 @@ export interface OrchestratorEvent {
   type: OrchestratorEventType
   message: string
   data?: Record<string, unknown>
+  /**
+   * 영속 이벤트의 store seq(#197 B1). emit 이 영속 성공 후 라이브 방출 이벤트에 스탬프 —
+   * 재접속 시 렌더러가 커서를 갱신하는 데 쓴다. 비영속 task.progress(토큰 델타)엔 부재
+   * (재접속 재생 불가 = 명시적 비범위 · RunActivity 스냅숏이 상태 권위).
+   */
+  seq?: number
 }
 
 /**

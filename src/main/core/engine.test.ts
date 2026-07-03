@@ -319,7 +319,7 @@ describe('FleetEngine', () => {
         async dispose() {},
       })
 
-      const events: { type: string; data?: Record<string, unknown> }[] = []
+      const events: OrchestratorEvent[] = []
       const engine = createFleetEngine({
         store,
         sessions,
@@ -356,6 +356,9 @@ describe('FleetEngine', () => {
       const persistedCancel = store.listEvents().find((e) => e.type === 'run.cancelled')
       expect(liveCancel?.data?.['eventId']).toBeTruthy()
       expect(liveCancel?.data?.['eventId']).toBe(persistedCancel?.id)
+      // #197 B1: cancelRun 도 emit() 과 동형으로 영속 seq 를 라이브에 실어야 한다(재접속 커서 계약).
+      expect(typeof liveCancel?.seq).toBe('number')
+      expect(liveCancel?.seq).toBe(persistedCancel?.seq)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -702,6 +705,94 @@ describe('FleetEngine', () => {
 
       // 검증이 매번 실패하므로 replan 은 상한 라운드만큼만 돌아야 한다(라운드당 'replan' 1회 방출).
       expect(events.filter((e) => e.type === 'replan').length).toBe(MAX_REPLAN_ROUNDS)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // #197 B1: 영속 라이브 orchestrator 이벤트는 store 가 배정한 단조 seq 를 실어(재접속 커서용),
+  // 영속본(FleetEvent.seq)과 일치하고 방출 순서로 단조·유일하다.
+  it('stamps monotonic seq on persisted live orchestrator events matching FleetEvent.seq', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-seq-live-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const events: OrchestratorEvent[] = []
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }), // 실 npm 검증 회피(테스트 속도)
+        onOrchestratorEvent: (e) => events.push(e),
+      })
+      engine.registerCliSession('claude')
+
+      await engine.runProjectFlow({ goal: 'g' })
+
+      const persistedSeqById = new Map(store.listEvents().map((e) => [e.id, e.seq]))
+      const livePersisted = events.filter((e) => e.type !== 'task.progress')
+      expect(livePersisted.length).toBeGreaterThan(0)
+      for (const e of livePersisted) {
+        expect(typeof e.seq).toBe('number') // 영속 이벤트는 seq 보유
+        // 라이브가 실은 seq 는 그 이벤트의 영속본(data.eventId 로 매칭) seq 와 일치
+        expect(e.seq).toBe(persistedSeqById.get(e.data?.['eventId'] as string))
+      }
+      const seqs = livePersisted.map((e) => e.seq as number)
+      expect(seqs).toEqual([...seqs].sort((a, b) => a - b)) // 방출 순서 단조
+      expect(new Set(seqs).size).toBe(seqs.length) // 유일
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // #197 B1: 비영속 task.progress(토큰 델타) 라이브 이벤트에는 seq 를 스탬프하지 않는다
+  // (재접속 재생 불가 = 명시적 비범위 — RunActivity 스냅숏이 상태 권위).
+  it('does not stamp seq on non-persisted task.progress live events', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-seq-progress-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const sessions = createSessionManager()
+      sessions.add({
+        id: 'cli:claude',
+        descriptor: {
+          id: 'cli:claude',
+          kind: 'cli',
+          displayName: 'Claude',
+          ref: 'claude',
+          model: '',
+          capabilities: ['planner', 'implementer', 'reviewer', 'summarizer'],
+        },
+        async send(prompt, opts) {
+          if (prompt.includes('분해')) return '[{"title":"작업1","description":"d1"}]'
+          if (prompt.includes('검토')) return 'APPROVE'
+          if (prompt.includes('누락')) return '요약'
+          // 구현 호출: 델타 토큰을 흘려 task.progress 를 유발한 뒤 파일을 만들어 diff 를 발생시킨다.
+          if (opts?.workspace) {
+            opts.onChunk?.('토큰델타')
+            writeFileSync(join(opts.workspace, 'impl.txt'), '구현 결과물')
+          }
+          return '구현 결과물'
+        },
+        async dispose() {},
+      })
+      const events: OrchestratorEvent[] = []
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }), // 실 npm 검증 회피(테스트 속도)
+        onOrchestratorEvent: (e) => events.push(e),
+      })
+
+      await engine.runProjectFlow({ goal: 'g' })
+
+      const progress = events.filter((e) => e.type === 'task.progress')
+      expect(progress.length).toBeGreaterThan(0) // 델타가 실제로 흘렀다
+      for (const e of progress) expect(e.seq).toBeUndefined() // 비영속 → 무스탬프
+      // 대조군: 영속 이벤트는 seq 보유
+      const persisted = events.filter((e) => e.type !== 'task.progress')
+      expect(persisted.every((e) => typeof e.seq === 'number')).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -490,3 +490,181 @@ describe('memory store — persisted sessions', () => {
     expect(store.snapshot().sessions).toEqual([entry])
   })
 })
+
+describe('memory store — 이벤트 커서 seq (#197 B1)', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('appendEvent 가 1부터 단조 증가하는 seq 를 삽입 순서대로 스탬프한다', () => {
+    const store = createMemoryStore(deterministic())
+    store.appendEvent({ type: 'e0' })
+    store.appendEvent({ type: 'e1' })
+    store.appendEvent({ type: 'e2' })
+    expect(store.listEvents().map((e) => e.seq)).toEqual([1, 2, 3])
+  })
+
+  it('snapshot().eventSeq 가 마지막 배정 seq 를 노출한다', () => {
+    const store = createMemoryStore(deterministic())
+    for (let i = 0; i < 4; i++) store.appendEvent({ type: `e${i}` })
+    expect(store.snapshot().eventSeq).toBe(4)
+  })
+
+  it('빈 store 는 eventSeq 를 기록하지 않는다(빈 상태 무회귀)', () => {
+    const store = createMemoryStore(deterministic())
+    expect(store.snapshot().eventSeq).toBeUndefined()
+  })
+
+  it('rotation 후 남은 events 의 seq 는 재번호되지 않고 eventSeq 는 후퇴하지 않는다', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 3 })
+    for (let i = 0; i < 5; i++) store.appendEvent({ type: `e${i}` })
+    // 최근 3건만 보존하되 seq 는 배정 당시 값(3,4,5) 유지 — 재번호 금지.
+    expect(store.listEvents().map((e) => e.seq)).toEqual([3, 4, 5])
+    expect(store.snapshot().eventSeq).toBe(5) // 카운터 비후퇴
+  })
+
+  it('다음 append 는 폐기 후에도 eventSeq+1 로 이어진다(seq 재사용 금지)', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 2 })
+    for (let i = 0; i < 3; i++) store.appendEvent({ type: `e${i}` }) // seq 1,2,3 → 남은 [2,3]
+    const e3 = store.appendEvent({ type: 'e3' }) // seq 4
+    expect(e3.seq).toBe(4)
+    expect(store.listEvents().map((e) => e.seq)).toEqual([3, 4])
+    expect(store.snapshot().eventSeq).toBe(4)
+  })
+
+  it('eventCursor(): 빈 store 는 {max:0, minRetained:1}', () => {
+    const store = createMemoryStore(deterministic())
+    expect(store.eventCursor()).toEqual({ maxEventSeq: 0, minRetainedEventSeq: 1 })
+  })
+
+  it('eventCursor(): 폐기 없이 N append → {max:N, minRetained:1}', () => {
+    const store = createMemoryStore(deterministic())
+    for (let i = 0; i < 4; i++) store.appendEvent({ type: `e${i}` })
+    expect(store.eventCursor()).toEqual({ maxEventSeq: 4, minRetainedEventSeq: 1 })
+  })
+
+  it('eventCursor(): rotation 후 minRetained 가 최소 보존 seq 를 가리킨다(갭 감지 핵심)', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createMemoryStore({ ...deterministic(), eventCap: 3 })
+    for (let i = 0; i < 5; i++) store.appendEvent({ type: `e${i}` }) // 남은 seq [3,4,5]
+    expect(store.eventCursor()).toEqual({ maxEventSeq: 5, minRetainedEventSeq: 3 })
+  })
+
+  it('구파일 백필: seq 미보유 events 에 배열 순서대로 1..N 백필 + eventSeq=N', () => {
+    const initial: StoreState = {
+      projects: [],
+      tasks: [],
+      rooms: [],
+      messages: [],
+      events: [
+        { id: 'a', type: 'e0', data: {}, ts: 1 },
+        { id: 'b', type: 'e1', data: {}, ts: 2 },
+        { id: 'c', type: 'e2', data: {}, ts: 3 },
+      ],
+      sessions: [],
+    }
+    const store = createMemoryStore({ ...deterministic(), initial })
+    expect(store.listEvents().map((e) => e.seq)).toEqual([1, 2, 3])
+    expect(store.snapshot().eventSeq).toBe(3)
+    // 백필 후 다음 append 는 과거 seq 재사용 없이 이어진다.
+    expect(store.appendEvent({ type: 'e3' }).seq).toBe(4)
+  })
+
+  it('신규파일: seq 보유 events + eventSeq 는 백필하지 않고 카운터를 유지한다', () => {
+    const initial: StoreState = {
+      projects: [],
+      tasks: [],
+      rooms: [],
+      messages: [],
+      events: [
+        { id: 'a', type: 'e0', data: {}, ts: 1, seq: 5 },
+        { id: 'b', type: 'e1', data: {}, ts: 2, seq: 6 },
+        { id: 'c', type: 'e2', data: {}, ts: 3, seq: 7 },
+      ],
+      sessions: [],
+      eventSeq: 7,
+    }
+    const store = createMemoryStore({ ...deterministic(), initial })
+    expect(store.listEvents().map((e) => e.seq)).toEqual([5, 6, 7]) // 불변
+    expect(store.appendEvent({ type: 'e3' }).seq).toBe(8) // 카운터 이어감
+  })
+
+  it('구파일 백필 + rotation: 백필 후 앞에서 폐기, 남은 seq·minRetained·droppedEventCount 정합', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const initial: StoreState = {
+      projects: [],
+      tasks: [],
+      rooms: [],
+      messages: [],
+      events: [
+        { id: 'a', type: 'e0', data: {}, ts: 1 },
+        { id: 'b', type: 'e1', data: {}, ts: 2 },
+        { id: 'c', type: 'e2', data: {}, ts: 3 },
+        { id: 'd', type: 'e3', data: {}, ts: 4 },
+      ],
+      sessions: [],
+    }
+    const store = createMemoryStore({ ...deterministic(), eventCap: 2, initial })
+    // 백필 1,2,3,4 → cap 2 → 앞 [1,2] 폐기 → 남은 seq [3,4]
+    expect(store.listEvents().map((e) => e.seq)).toEqual([3, 4])
+    expect(store.eventCursor()).toEqual({ maxEventSeq: 4, minRetainedEventSeq: 3 })
+    expect(store.snapshot().droppedEventCount).toBe(2)
+  })
+
+  it('json-file: seq·eventSeq 를 디스크 왕복 후에도 복원하고 다음 append 가 이어진다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-seq-'))
+    try {
+      const a = createJsonFileStore(dir, deterministic())
+      a.appendEvent({ type: 'e0' })
+      a.appendEvent({ type: 'e1' })
+      a.appendEvent({ type: 'e2' })
+      const b = createJsonFileStore(dir)
+      expect(b.listEvents().map((e) => e.seq)).toEqual([1, 2, 3])
+      expect(b.snapshot().eventSeq).toBe(3)
+      expect(b.appendEvent({ type: 'e3' }).seq).toBe(4) // 왕복 후 카운터 이어감
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('손상 eventSeq(문자열·음수·비정수)를 로드 시 걸러내 seq 오염을 막는다', () => {
+    // 유효 JSON 이지만 잘못된 타입 — sessions=42·events=42 와 동일 위협 클래스. `?? 0` 만으로는
+    // 'x'+1='x1'·-4 로 seq 가 오염되므로 로드 정규화가 비음수 정수만 유효로 봐 제거해야 한다.
+    for (const bad of ['x', -5, 1.5, Number.NaN] as unknown[]) {
+      const store = createMemoryStore({
+        ...deterministic(),
+        initial: {
+          projects: [],
+          tasks: [],
+          rooms: [],
+          messages: [],
+          events: [],
+          sessions: [],
+          eventSeq: bad as number,
+        },
+      })
+      expect(store.snapshot().eventSeq).toBeUndefined() // 손상값 제거(빈 상태로 정규화)
+      expect(store.appendEvent({ type: 'e' }).seq).toBe(1) // 1부터 정상 재개
+    }
+  })
+
+  it('손상 eventSeq 가 있어도 기존 유효 events 의 seq 로 카운터를 복원한다', () => {
+    const store = createMemoryStore({
+      ...deterministic(),
+      initial: {
+        projects: [],
+        tasks: [],
+        rooms: [],
+        messages: [],
+        events: [
+          { id: 'a', type: 'e0', data: {}, ts: 1, seq: 5 },
+          { id: 'b', type: 'e1', data: {}, ts: 2, seq: 6 },
+        ],
+        sessions: [],
+        eventSeq: 'x' as unknown as number, // 손상 카운터
+      },
+    })
+    expect(store.snapshot().eventSeq).toBe(6) // 손상 카운터 대신 events 최대 seq 로 복원
+    expect(store.appendEvent({ type: 'e2' }).seq).toBe(7) // 정상 이어감
+  })
+})
