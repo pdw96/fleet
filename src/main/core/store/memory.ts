@@ -43,16 +43,22 @@ export function createMemoryStore(opts: StoreOptions = {}): Store {
   // 폐기 후에도 남은 이벤트가 배정 당시 seq 를 유지하게 한다(재번호 금지). seq 는 비음수 정수만 유효로 봐
   // 손상 파일(유효 JSON·잘못된 타입 — sessions=42·events=42 와 동일 위협 클래스)의 오염을 걸러낸다.
   {
-    const validSeq = (v: unknown): v is number =>
+    // 카운터 eventSeq 는 0/부재 허용(빈 상태 = 아직 이벤트 없음)이나, per-event FleetEvent.seq 는 1-based
+    // (appendEvent 가 1부터 배정)라 0·음수·비정수는 손상으로 보고 백필로 복구한다 — seq:0 을 유효로 두면
+    // eventCursor 가 minRetainedEventSeq:0 을 파생해 갭 규칙(cursor < minRetained-1)상 모든 비음수 커서가
+    // 연속으로 오판(missed-gap, 위험 방향)된다(#197 B1 Codex P2).
+    const validCounter = (v: unknown): v is number =>
       typeof v === 'number' && Number.isInteger(v) && v >= 0
-    let maxSeq = validSeq(state.eventSeq) ? state.eventSeq : 0
+    const validEventSeq = (v: unknown): v is number =>
+      typeof v === 'number' && Number.isInteger(v) && v >= 1
+    let maxSeq = validCounter(state.eventSeq) ? state.eventSeq : 0
     // 1패스: 기존 유효 seq 최대(신규파일은 이미 seq 보유 — 백필하지 않고 카운터 하한만 확보).
     for (const e of state.events) {
-      if (validSeq(e.seq) && e.seq > maxSeq) maxSeq = e.seq
+      if (validEventSeq(e.seq) && e.seq > maxSeq) maxSeq = e.seq
     }
-    // 2패스: seq 미보유(구파일)·손상 seq 만 배열 순서(=시간순)로 백필 — 기존 최대 위로 배정해 충돌을 막는다.
+    // 2패스: seq 미보유(구파일)·손상 seq(0·음수·비정수)만 배열 순서(=시간순)로 백필 — 기존 최대 위로 배정.
     for (const e of state.events) {
-      if (!validSeq(e.seq)) e.seq = ++maxSeq
+      if (!validEventSeq(e.seq)) e.seq = ++maxSeq
     }
     // maxSeq>0 이면 카운터 확정, 아니면 손상 eventSeq(문자열·음수·비정수)를 제거한다 — 남기면 appendEvent
     // 의 `(state.eventSeq ?? 0)+1` 이 'x'+1='x1'·-4 로 seq 를 오염시킨다(?? 는 null/undefined 만 거름).

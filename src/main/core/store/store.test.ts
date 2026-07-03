@@ -672,6 +672,27 @@ describe('memory store — 이벤트 커서 seq (#197 B1)', () => {
     expect(store.appendEvent({ type: 'e1' }).seq).toBe(2) // 크래시 없이 이어감
   })
 
+  it('per-event seq 0(1-based 위반)은 유효로 보지 않고 백필로 복구해 minRetained≥1 을 지킨다', () => {
+    // seq:0 을 유효로 두면 eventCursor 가 minRetainedEventSeq:0 을 파생 → 갭 규칙상 모든 커서가
+    // 연속으로 오판(missed-gap). 1-based 약속대로 백필해 복구해야 한다.
+    const store = createMemoryStore({
+      ...deterministic(),
+      initial: {
+        projects: [],
+        tasks: [],
+        rooms: [],
+        messages: [],
+        events: [
+          { id: 'a', type: 'e0', data: {}, ts: 1, seq: 0 },
+          { id: 'b', type: 'e1', data: {}, ts: 2, seq: 0 },
+        ],
+        sessions: [],
+      },
+    })
+    expect(store.listEvents().map((e) => e.seq)).toEqual([1, 2]) // 0 → 1..N 백필 복구
+    expect(store.eventCursor().minRetainedEventSeq).toBe(1) // 1-based 약속 유지(0 아님)
+  })
+
   it('손상 eventSeq 가 있어도 기존 유효 events 의 seq 로 카운터를 복원한다', () => {
     const store = createMemoryStore({
       ...deterministic(),
