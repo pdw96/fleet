@@ -147,7 +147,14 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
   function setState(next: ConnectionState): void {
     if (next === state) return
     state = next
-    for (const cb of [...stateListeners]) cb(next)
+    // 콜백 예외 격리 — 리스너 throw 가 재접속 스케줄 등 상태 전이 후속을 막지 않게(push/cursor 와 동형).
+    for (const cb of [...stateListeners]) {
+      try {
+        cb(next)
+      } catch {
+        /* 소비자 콜백 오류는 전송층에서 삼킨다 */
+      }
+    }
   }
 
   function send(frame: ReqFrame): void {
@@ -224,13 +231,30 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
     }
   }
 
+  /** 전원 reject + 큐 폐기(dispose·terminal close 용). */
   function rejectAllPending(err: Error): void {
     for (const entry of pending.values()) {
       if (entry.timer) clearTimeout(entry.timer)
       entry.reject(err)
     }
     pending.clear()
-    sendQueue.length = 0 // 미전송 요청도 폐기(대응 pending 은 위에서 reject 됨)
+    sendQueue.length = 0
+  }
+
+  /**
+   * transient close(재접속 예정) 용 — **이미 전송된** 요청만 reject(응답 소실). 아직 미전송인
+   * 큐(sendQueue) 요청은 보존해 다음 open 의 flush 에 태운다(offline 큐의 목적). id 가 sendQueue 에
+   * 남아있으면 미전송으로 판정한다.
+   */
+  function rejectSentPending(err: Error): void {
+    const queuedIds = new Set(sendQueue.map((q) => q.id))
+    for (const [id, entry] of [...pending]) {
+      if (queuedIds.has(id)) continue // 미전송 — 보존
+      if (entry.timer) clearTimeout(entry.timer)
+      entry.reject(err)
+      pending.delete(id)
+    }
+    // sendQueue 는 유지(보존된 pending 과 짝).
   }
 
   function flushQueue(): void {
@@ -250,11 +274,14 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
   function handleClose(): void {
     isOpen = false
     hello = null // 재접속 후 이전 연결의 stale 커서를 노출하지 않는다(gap 오판 방지).
-    rejectAllPending(new TransportError('disconnected', '전송 연결이 끊김'))
     if (disposed || !autoReconnect) {
+      // terminal — 큐 포함 전원 reject(재접속으로 flush 될 기회가 없다).
+      rejectAllPending(new TransportError('disconnected', '전송 연결이 끊김'))
       setState('closed')
       return
     }
+    // transient — 전송된 것만 reject, 미전송 큐는 다음 open 까지 보존.
+    rejectSentPending(new TransportError('disconnected', '전송 연결이 끊김'))
     scheduleReconnect()
   }
 

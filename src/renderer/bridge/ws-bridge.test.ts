@@ -204,6 +204,26 @@ describe('ws-bridge close → pending 전원 reject', () => {
     // 재접속 없는 terminal 상태 — 새 요청이 큐에 갇혀 영구 hang 하면 안 된다.
     await expect(bridge.fleet.listRooms()).rejects.toThrow()
   })
+
+  it('open 전 close(재접속) 시 미전송 큐 요청은 reject 하지 않고 다음 open 에 flush·resolve 한다', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect, initialBackoffMs: 1000 })
+    const p = bridge.fleet.getAppInfo() // socket0 미open → 큐잉(미전송)
+    let settled = false
+    void p.then(
+      () => (settled = true),
+      () => (settled = true),
+    )
+    h.sockets[0].fireClose() // open 전 실패 → 재접속 예약. 미전송 요청은 보존돼야 한다.
+    await Promise.resolve()
+    expect(settled).toBe(false) // reject 되지 않음
+    vi.advanceTimersByTime(1000)
+    h.sockets[1].open() // 재접속 성공 → flush
+    const id = h.sockets[1].lastReq().id
+    h.sockets[1].message(makeOkFrame(id, { name: 'Fleet', runtime: 'web' }))
+    expect(await p).toMatchObject({ runtime: 'web' })
+  })
 })
 
 describe('ws-bridge per-request timeout', () => {
@@ -408,6 +428,19 @@ describe('ws-bridge hello 이벤트 커서', () => {
 })
 
 describe('ws-bridge 재접속(지수 백오프)', () => {
+  it('onConnectionState 리스너가 던져도 재접속 스케줄을 막지 않는다(예외 격리)', () => {
+    vi.useFakeTimers()
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect, initialBackoffMs: 1000 })
+    bridge.onConnectionState((s) => {
+      if (s === 'reconnecting') throw new Error('bad state listener')
+    })
+    h.sockets[0].open()
+    expect(() => h.sockets[0].fireClose()).not.toThrow() // 리스너 예외가 close 경로를 깨지 않음
+    vi.advanceTimersByTime(1000)
+    expect(h.sockets).toHaveLength(2) // 재접속 타이머가 정상 예약·발화
+  })
+
   it('예기치 않은 close 후 백오프 뒤 재접속하며 상태를 전이한다', () => {
     vi.useFakeTimers()
     const h = harness()
