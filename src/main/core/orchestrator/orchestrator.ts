@@ -121,9 +121,16 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         message: enriched.message,
         data: enriched.data ?? {},
       })
-      opts.onEvent?.({ ...enriched, data: { ...enriched.data, eventId: persisted.id } })
+      // 영속 성공 후에만 store 가 배정한 seq 를 라이브 이벤트에 실어 방출한다(#197 B1 재접속 커서).
+      // appendEvent 는 동기 → append+seq 배정과 방출 사이 인터리브 없음(레이스 없음).
+      opts.onEvent?.({
+        ...enriched,
+        seq: persisted.seq,
+        data: { ...enriched.data, eventId: persisted.id },
+      })
       return
     }
+    // task.progress(비영속)는 seq 없이 방출 — 재접속 재생 불가는 명시적 비범위(#197 B1).
     opts.onEvent?.(enriched)
   }
   const sessionForRole = (role: AgentRole, fallback?: AgentRole) => {

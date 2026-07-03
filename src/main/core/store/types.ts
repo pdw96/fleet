@@ -61,6 +61,11 @@ export interface StoreState {
   updaterChannel?: UpdaterChannel
   /** events rotation cap(#126) 으로 폐기된 이벤트 누적 수. 미설정=0. 폐기 발생 시에만 기록(emptyState 엔 미포함). */
   droppedEventCount?: number
+  /**
+   * 이벤트 커서(#197 B1) — 마지막 배정 seq(= 최대). appendEvent 마다 +1, rotation 폐기에도 비후퇴.
+   * 미설정=0(빈 상태·구파일 — emptyState 엔 미포함). 재시작 간 영속돼 폐기된 seq 재사용을 막는다.
+   */
+  eventSeq?: number
 }
 
 export interface StoreOptions {
@@ -129,6 +134,13 @@ export interface Store {
   listEvents(): FleetEvent[]
   /** 한 프로젝트의 영속 이벤트(시간순). task.progress 는 제외. */
   listProjectEvents(projectId: string): FleetEvent[]
+  /**
+   * 재접속 이벤트 커서(#197 B1). maxEventSeq=마지막 배정 seq(카운터), minRetainedEventSeq=현재
+   * 보존 이벤트 중 최소 seq(비어있으면 다음 생성 seq = maxEventSeq+1). 클라이언트 커서가
+   * minRetainedEventSeq-1 보다 작으면 폐기 구간 갭 → 스냅숏 권위로 강제 재하이드레이션(B2 hello 소비).
+   * minRetainedEventSeq 는 events[0].seq 로 파생 — 별도 영속 안 함(정확·drift 불가).
+   */
+  eventCursor(): { maxEventSeq: number; minRetainedEventSeq: number }
 
   // ── ui 상태 ──
   /** 마지막 본 프로젝트 저장. */

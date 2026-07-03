@@ -717,9 +717,13 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         message: '실행 취소됨',
         data: { projectId },
       })
+      // orchestrator.emit() 과 동형으로 store 배정 seq 도 실어 방출한다(#197 B1) — cancelRun 은 emit() 을
+      // 우회하는 유일한 또 다른 영속 라이브 orchestrator 이벤트 생산자라, seq 를 빠뜨리면 영속본(seq 보유)과
+      // 라이브본(seq 부재)이 비대칭이 돼 재접속 커서 계약이 이 한 경로에서만 깨진다.
       opts.onOrchestratorEvent?.({
         type: 'run.cancelled',
         message: '실행 취소됨',
+        seq: persisted.seq,
         data: { projectId, eventId: persisted.id },
       })
     },
