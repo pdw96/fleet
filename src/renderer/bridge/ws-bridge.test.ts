@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { makeErrFrame, makeOkFrame, type ClientFrame } from '../../shared/transport/protocol'
-import { createWsBridge, type ConnectionState, type WsLike } from './ws-bridge'
+import { createWsBridge, TransportError, type ConnectionState, type WsLike } from './ws-bridge'
 
 /**
  * ws-bridge 동작 계약(#197 B2). 주입된 WebSocket 팩토리 + 페이크 소켓으로 Electron IPC 의 네 시맨틱
@@ -72,6 +72,29 @@ describe('ws-bridge 접속 수명주기', () => {
     h.sockets[0].open()
     expect(bridge.connectionState()).toBe('connected')
     expect(states).toEqual(['connected'])
+  })
+
+  it('open 시 큐를 먼저 flush 한 뒤 connected 를 통지한다(리스너 read 가 offline write 를 앞지르지 않게)', () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect })
+    const p = bridge.fleet.listRooms() // 미open → 큐잉
+    p.catch(() => {})
+    let sentAtNotify = -1
+    bridge.onConnectionState((s) => {
+      if (s === 'connected') sentAtNotify = h.sockets[0].sent.length
+    })
+    h.sockets[0].open()
+    expect(sentAtNotify).toBe(1) // 통지 시점에 큐 프레임이 이미 전송됨(flush 선행)
+  })
+
+  it('재접속 close 시 stale 이벤트 커서를 비운다(getEventCursor null)', () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect, autoReconnect: false })
+    h.sockets[0].open()
+    h.sockets[0].message({ t: 'hello', maxEventSeq: 5, minRetainedEventSeq: 1 })
+    expect(bridge.getEventCursor()).toEqual({ maxEventSeq: 5, minRetainedEventSeq: 1 })
+    h.sockets[0].fireClose()
+    expect(bridge.getEventCursor()).toBeNull() // 이전 연결 커서를 재접속 후 노출 금지
   })
 })
 
@@ -160,6 +183,16 @@ describe('ws-bridge close → pending 전원 reject', () => {
     h.sockets[0].fireClose()
     await expect(p1).rejects.toThrow()
     await expect(p2).rejects.toThrow()
+  })
+
+  it('close reject 는 reason=disconnected 의 TransportError 다(B4 가 완료 아닌 재접속으로 구분)', async () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect, autoReconnect: false })
+    h.sockets[0].open()
+    const p = bridge.fleet.runProject({ goal: 'x' })
+    h.sockets[0].fireClose()
+    await expect(p).rejects.toBeInstanceOf(TransportError)
+    await expect(p).rejects.toMatchObject({ reason: 'disconnected' })
   })
 
   it('terminal closed(autoReconnect=false) 후 새 invoke 는 즉시 reject 된다(hang 방지)', async () => {
@@ -417,7 +450,7 @@ describe('ws-bridge dispose', () => {
     bridge.dispose()
     expect(bridge.connectionState()).toBe('closed')
     expect(h.sockets[0].closed).toBe(true)
-    await expect(p).rejects.toThrow()
+    await expect(p).rejects.toMatchObject({ name: 'TransportError', reason: 'closed' })
     vi.advanceTimersByTime(60000)
     expect(h.sockets).toHaveLength(1) // 재접속 안 함
   })

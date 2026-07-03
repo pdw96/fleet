@@ -31,6 +31,23 @@ import { decodeFrame, type ReqFrame } from '../../shared/transport/protocol'
 
 export type ConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'closed'
 
+/** 전송층 사유. B4 가 이 사유로 "전송 문제(재접속·재하이드레이션)"를 "연산 실패"와 구분한다. */
+export type TransportErrorReason = 'disconnected' | 'closed' | 'timeout'
+
+/**
+ * 전송층 유래 reject(#197 B2 리뷰 Codex P2). 소켓 드롭·종료·요청 타임아웃으로 pending 이 reject 될 때
+ * 서버 연산 실패(plain Error)와 구분되는 타입을 실어, B4 호출부가 이를 연산 완료/실패로 오인하지 않고
+ * 재접속→RunActivity 스냅숏 재하이드레이션으로 복구하게 한다(correlation 은 소켓별이라 pending 보존 불가).
+ */
+export class TransportError extends Error {
+  readonly reason: TransportErrorReason
+  constructor(reason: TransportErrorReason, message: string) {
+    super(message)
+    this.name = 'TransportError'
+    this.reason = reason
+  }
+}
+
 /**
  * 주입되는 소켓의 최소 계약(브라우저 WebSocket 부분집합). 팩토리가 이 형태를 만족하는 객체를 준다 —
  * B4 는 `() => new WebSocket(url)` 어댑터를, 테스트는 페이크를 주입한다.
@@ -67,9 +84,16 @@ export interface WsBridgeOptions {
 export interface WsBridge {
   /** window.fleet 를 대체하는 FleetBridge 구현. */
   fleet: FleetBridge
-  /** 접속 상태 변화 구독(웹 전용 — B4 재하이드레이션 트리거). 해제 함수 반환. */
+  /**
+   * 접속 상태 변화 구독(웹 전용 — B4 재하이드레이션 트리거). 해제 함수 반환. 'connected' 는 소켓 open +
+   * offline 큐 flush 완료를 뜻한다(리스너 read 가 큐잉된 write 를 앞지르지 않음). 단 커서(hello)는 그
+   * 직후 비동기로 도착하므로, 재하이드레이션은 getEventCursor() 가 non-null 이 될 때 수행한다(B4).
+   */
   onConnectionState(cb: (state: ConnectionState) => void): () => void
-  /** 최근 hello 의 이벤트 커서 워터마크(재접속 gap 판정용 — B4). 미수신이면 null. */
+  /**
+   * 최근 hello 의 이벤트 커서 워터마크(재접속 gap 판정용 — B4). hello 수신 전·재접속 직후엔 null
+   * (이전 연결의 stale 커서를 노출하지 않는다). null 이면 커서 미확정 → B4 는 도착까지 대기.
+   */
   getEventCursor(): { maxEventSeq: number; minRetainedEventSeq: number } | null
   /** 현재 접속 상태. */
   connectionState(): ConnectionState
@@ -124,14 +148,16 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
 
   function invoke<T>(ch: string, ...args: unknown[]): Promise<T> {
     // terminal 상태(종료·재접속 없는 close)에서는 요청이 큐에 갇혀 영구 hang 하므로 즉시 reject.
-    if (disposed || state === 'closed') return Promise.reject(new Error('전송 브리지가 종료됨'))
+    if (disposed || state === 'closed') {
+      return Promise.reject(new TransportError('closed', '전송 브리지가 종료됨'))
+    }
     return new Promise<T>((resolve, reject) => {
       const id = ++lastId
       let timer: ReturnType<typeof setTimeout> | undefined
       if (opts.requestTimeoutMs != null) {
         timer = setTimeout(() => {
           pending.delete(id)
-          reject(new Error(`요청 시간 초과: ${ch}`))
+          reject(new TransportError('timeout', `요청 시간 초과: ${ch}`))
         }, opts.requestTimeoutMs)
       }
       pending.set(id, { resolve: (v) => resolve(v as T), reject, timer })
@@ -204,7 +230,8 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
 
   function handleClose(): void {
     isOpen = false
-    rejectAllPending(new Error('전송 연결이 끊김'))
+    hello = null // 재접속 후 이전 연결의 stale 커서를 노출하지 않는다(gap 오판 방지).
+    rejectAllPending(new TransportError('disconnected', '전송 연결이 끊김'))
     if (disposed || !autoReconnect) {
       setState('closed')
       return
@@ -217,8 +244,9 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
     socket.onopen = (): void => {
       isOpen = true
       backoff = initialBackoff // 성공 접속 시 백오프 리셋
-      setState('connected')
+      // 큐를 먼저 flush 한 뒤 통지 — 'connected' 리스너의 read 가 offline 큐잉된 write 를 앞지르지 않게.
       flushQueue()
+      setState('connected')
     }
     socket.onmessage = (ev): void => handleMessage(ev.data)
     socket.onclose = (): void => handleClose()
@@ -320,7 +348,7 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
       if (disposed) return
       disposed = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
-      rejectAllPending(new Error('전송 브리지가 종료됨'))
+      rejectAllPending(new TransportError('closed', '전송 브리지가 종료됨'))
       socket?.close()
       setState('closed')
     },
