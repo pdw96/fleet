@@ -540,3 +540,15 @@ describe('ws-bridge dispose', () => {
     expect(h.sockets).toHaveLength(1) // 재접속 안 함
   })
 })
+
+describe('desktop 전용 update 스텁 shape(#197 B4 — 체크포인트 2-R 노트 4)', () => {
+  it('update 표면은 undefined/ reject 가 아니라 no-op/idle shape 를 반환한다(웹 게이팅 보조 방어)', async () => {
+    const h = harness()
+    const bridge = createWsBridge({ connect: h.connect })
+    await expect(bridge.fleet.getUpdateState()).resolves.toEqual({ kind: 'unsupported' })
+    await expect(bridge.fleet.getUpdaterChannel()).resolves.toBe('stable')
+    await expect(bridge.fleet.checkForUpdate()).resolves.toBeUndefined() // reject 아님
+    expect(typeof bridge.fleet.onUpdateEvent(() => {})).toBe('function') // no-op 해제 함수
+    bridge.dispose()
+  })
+})
