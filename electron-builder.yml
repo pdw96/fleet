@@ -4,6 +4,7 @@ directories:
   output: dist
 files:
   - out/**
+  - '!out/server/**' # 서버 번들은 컨테이너 전용(B6 deploy) — 데스크톱 asar 에 싣지 않는다
   - package.json
 asar: true
 # 채널별 업데이트 피드 생성(#98) — 안정=latest.yml, 베타(x.y.z-beta.N)=beta.yml.
