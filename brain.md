@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 82 files · 213 import wires · 44 IPC channels · 생성 2026-07-04T17:20 UTC
+> 82 files · 213 import wires · 44 IPC channels · 생성 2026-07-04T17:26 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -80,7 +80,7 @@
 - **main/index** — 앱에 시동을 걸어 창을 띄우고 화면과 AI 엔진을 이어주는 '시동·교환대' _앱이 준비되면 AI 엔진을 만들고, 화면(창)을 띄우며, 화면이 보내는 모든 요청(세션 등록·채팅·프로젝트 실행·승인 응답 등)을 엔진의 해당 기능으로 연결하는 전화 교환대 역할을 한다. 창을 만들 때 보안 빗장 두 개(이동 차단·권한 차단)를 걸고, 앱을 끌 때는 켜져 있던 AI 프로그램들을 깔끔히 정리한 뒤 종료해 '좀비' 프로세스가 남지 않게 한다._
   - →의존: engine, main/auto-update, main/crash-recovery, main/e2e, main/external-links, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, +3 · ←피의존: — · 281줄
 - **main/e2e** — 자동 테스트할 때만 켜지는 '연습용 가짜 AI' 장치 _진짜 AI를 부르는 대신 미리 정해둔 답을 흉내 내, 화면 자동검사(Playwright)가 흔들림 없이 돌아가게 한다. 가짜 AI 둘과 토론방 하나, 임시 작업폴더를 미리 깔아두며, 일부러 '응답 중' 상태에서 멈춰 탭을 옮겼다 돌아와도 진행 표시가 살아있는지 확인하게 해준다. FLEET_E2E 라는 스위치가 정확히 '1'일 때만 작동하고 평소엔 절대 끼어들지 않는다._
-  - →의존: cli/detect, cli/probe, engine, verify/run · ←피의존: main/index, server/boot · 102줄
+  - →의존: cli/detect, cli/probe, engine, verify/run · ←피의존: main/index, server/boot · 103줄
 - **main/external-links**
   - →의존: shared/cliAuthInstallMeta, shared/types · ←피의존: main/index · 50줄
 - **main/auto-update**
