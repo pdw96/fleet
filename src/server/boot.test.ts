@@ -120,4 +120,98 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
       }),
     ).rejects.toThrow()
   })
+
+  describe('WS Origin 가드 — CSWSH 방어(#197 B3 · Codex P1)', () => {
+    /**
+     * node `ws` 클라의 `origin` 옵션이 실제 Origin 헤더를 세팅한다(결정론). 'open' → allowed,
+     * 'error'/'unexpected-response' → rejected. 타임아웃은 안전측(rejected)으로 판정해 hang 을
+     * "허용"으로 오판하지 않는다.
+     */
+    function tryConnect(port: number, origin?: string): Promise<'allowed' | 'rejected'> {
+      return new Promise((res) => {
+        const socket =
+          origin === undefined
+            ? new WebSocket(`ws://127.0.0.1:${port}`)
+            : new WebSocket(`ws://127.0.0.1:${port}`, { origin })
+        const timer = setTimeout(() => {
+          socket.terminate()
+          res('rejected')
+        }, 2000)
+        const settle = (outcome: 'allowed' | 'rejected'): void => {
+          clearTimeout(timer)
+          res(outcome)
+        }
+        socket.once('open', () => {
+          socket.close()
+          settle('allowed')
+        })
+        socket.once('error', () => settle('rejected'))
+        socket.once('unexpected-response', () => settle('rejected'))
+      })
+    }
+
+    it('cross-origin(https://evil.example) → 거부', async () => {
+      const server = await boot()
+      try {
+        await expect(tryConnect(server.port, 'https://evil.example')).resolves.toBe('rejected')
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('no-origin(비브라우저 클라/ws 테스트 클라) → 허용', async () => {
+      const server = await boot()
+      try {
+        await expect(tryConnect(server.port)).resolves.toBe('allowed')
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('loopback-origin(http://127.0.0.1:PORT) → 허용', async () => {
+      const server = await boot()
+      try {
+        await expect(tryConnect(server.port, `http://127.0.0.1:${server.port}`)).resolves.toBe(
+          'allowed',
+        )
+      } finally {
+        await server.close()
+      }
+    })
+  })
+
+  describe('소켓 error 핸들러 — 프로세스 생존(#197 B3 · Codex P2)', () => {
+    it('비정상(unmasked) 프레임 → 서버측 소켓 error 가 발생해도 서버는 생존, 이후 접속도 정상', async () => {
+      const server = await boot()
+      try {
+        const bad = await connect(server.port)
+        await nextFrame(bad) // hello 소비
+
+        // client→server 프레임은 마스킹이 RFC 6455 필수 — unmasked 프레임을 raw 로 흘리면 서버측 ws
+        // 파서가 'MASK must be set' error 를 emit 한다(결정론적 트리거). 리스너가 없으면 Node 가
+        // 프로세스를 종료한다 — 이게 바로 Codex P2 가 지적한 크래시 경로.
+        const rawSocket = (bad as unknown as { _socket: { write(data: Buffer): void } })._socket
+        rawSocket.write(Buffer.from([0x81, 0x01, 0x41])) // FIN+text, len 1, 'A' — unmasked
+
+        // 아래 새 접속이 hello 를 받는 데 도달한다는 것 자체가 프로세스 생존 증거다(unhandled error 로
+        // 죽었다면 이 시점에 도달 불가 — 테스트 프로세스 자체가 죽는다).
+        const next = await connect(server.port)
+        const hello = await nextFrame(next)
+        expect(hello.t).toBe('hello')
+        next.close()
+
+        // 부가 확인(최선노력) — 악성 소켓 자체는 서버에 의해 종료된다.
+        await new Promise<void>((res) => {
+          const t = setTimeout(res, 500)
+          bad.once('close', () => {
+            clearTimeout(t)
+            res()
+          })
+        })
+        expect(bad.readyState).not.toBe(WebSocket.OPEN)
+      } finally {
+        await server.close()
+      }
+    })
+  })
 })

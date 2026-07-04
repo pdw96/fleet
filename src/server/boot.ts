@@ -23,6 +23,22 @@ import { createWsHost, type WsHost } from './ws-host'
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 const DEFAULT_PORT = 8791
 
+/**
+ * CSWSH 방어(#197 B3 · Codex P1): 브라우저는 WS 핸드셰이크에 SOP/CORS 를 적용하지 않으므로 사용자가
+ * 방문한 임의 오리진 페이지가 loopback 서버에 접속해 승인 프레임을 가로챌 수 있다(cross-site WebSocket
+ * hijacking). Origin 이 있으면(=브라우저) loopback 오리진만 허용하고, Origin 부재(비브라우저 CLI/ws
+ * 클라)는 통과 — same-machine 비브라우저는 loopback 신뢰 모델 대상. B5 가 JWT/nonce 로 강화.
+ */
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true // 비브라우저 클라이언트(Origin 미전송)
+  try {
+    const host = new URL(origin).hostname.replace(/^\[|\]$/g, '') // IPv6 대괄호 제거
+    return LOOPBACK_HOSTS.has(host)
+  } catch {
+    return false // 파싱 불가 Origin 거부
+  }
+}
+
 export function resolveBindHost(env: NodeJS.ProcessEnv): string {
   const raw = env['FLEET_HOST']?.trim()
   if (!raw) return '127.0.0.1'
@@ -121,7 +137,10 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
   const staticDir =
     env['FLEET_STATIC_DIR'] ?? join(dirname(fileURLToPath(import.meta.url)), '../renderer')
   const httpServer = createServer(createStaticHandler(staticDir))
-  const wss = new WebSocketServer({ server: httpServer })
+  const wss = new WebSocketServer({
+    server: httpServer,
+    verifyClient: ({ origin }: { origin: string }) => isAllowedOrigin(origin),
+  })
   wss.on('connection', (socket) => {
     const binding = wsHost!.attach({
       send: (data) => socket.send(data),
@@ -129,6 +148,12 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
     })
     socket.on('message', (data) => binding.onMessage(rawDataToString(data)))
     socket.on('close', () => binding.onClose())
+    socket.on('error', () => {
+      // 소켓 error(비정상 프레임/전송 오류) 리스너 부재 시 Node 가 프로세스를 종료(#197 B3 · Codex P2) —
+      // 바인딩 정리 후 해당 소켓만 종료(다른 연결 무영향).
+      binding.onClose()
+      socket.close()
+    })
   })
 
   await new Promise<void>((resolveListen, rejectListen) => {
