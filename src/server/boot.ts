@@ -68,6 +68,12 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
   const host = resolveBindHost(env)
   const port = resolvePort(env)
   const e2e = isE2EActive(env)
+  // 워크스페이스 검증(dialog 대신 env 경로): 미존재/비디렉터리는 fail-fast — store 생성(mkdirSync
+  // 부수효과) 이전에 순수 검증부터 끝낸다. 실제 적용(setWorkspace)은 engine 생성 후로 미룬다.
+  const workspaceRoot = env['FLEET_WORKSPACE_ROOT']?.trim()
+  if (workspaceRoot && !statSync(workspaceRoot, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`FLEET_WORKSPACE_ROOT 가 디렉터리가 아님: ${workspaceRoot}`)
+  }
   const dataDir = resolve(env['FLEET_DATA_DIR'] ?? 'fleet-data')
   const store = createJsonFileStore(join(dataDir, 'fleet'))
 
@@ -96,12 +102,8 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
   })
   if (e2e) seedE2eFixtures(engine)
 
-  // 워크스페이스 어댑터(boot 측): dialog 대신 env 경로 검증 — 미존재/비디렉터리는 fail-fast.
-  const workspaceRoot = env['FLEET_WORKSPACE_ROOT']?.trim()
+  // 워크스페이스 적용(검증은 위에서 끝남 — engine 이 여기서야 존재하므로 setWorkspace 만 늦춘다).
   if (workspaceRoot) {
-    if (!statSync(workspaceRoot, { throwIfNoEntry: false })?.isDirectory()) {
-      throw new Error(`FLEET_WORKSPACE_ROOT 가 디렉터리가 아님: ${workspaceRoot}`)
-    }
     engine.setWorkspace(resolve(workspaceRoot))
   }
 

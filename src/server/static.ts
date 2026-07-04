@@ -67,6 +67,10 @@ export function createStaticHandler(rootDir: string) {
         }
         send(res, 404, 'not found', 'text/plain; charset=utf-8')
       }
-    })()
+    })().catch(() => {
+      // 드문 이중 writeHead(응답 커밋/중단 후 재전송 시도로 ERR_HTTP_HEADERS_SENT 등)가
+      // void 처리된 프로미스 밖으로 새면 unhandledRejection 으로 프로세스가 죽을 수 있다 —
+      // 이 시점엔 보낼 게 없으므로 그냥 삼킨다(entry-signal 과 동일한 floating-promise 방어).
+    })
   }
 }
