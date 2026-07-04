@@ -131,7 +131,12 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
     chrome: '',
     runtime: 'web',
   }
-  const handlers = createHandlers({ engine, approver: ipcApprover, appInfo })
+  const handlers = createHandlers({
+    engine,
+    approver: ipcApprover,
+    appInfo,
+    workspaceRoot: workspaceRoot ? resolve(workspaceRoot) : null,
+  })
   wsHost = createWsHost({ handlers, eventCursor: () => store.eventCursor() })
 
   // `?.trim() || 기본값` — FLEET_HOST/FLEET_WORKSPACE_ROOT/FLEET_PORT 와 동일 패턴. `??` 는 빈

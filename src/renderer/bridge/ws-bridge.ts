@@ -354,6 +354,7 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
     getRunActivity: () => invoke<RunActivity>('fleet:project:activity'),
     getWorkspace: () => invoke<string | null>('fleet:workspace:get'),
     selectWorkspace: () => invoke<string | null>('fleet:workspace:select'),
+    setWorkspace: (path) => invoke<string>('fleet:workspace:set', path),
 
     // 채팅
     createRoom: (title, participants) =>

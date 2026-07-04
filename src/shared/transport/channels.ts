@@ -56,6 +56,9 @@ export const CHANNELS = {
   'fleet:project:activity': { kind: 'invoke', scope: 'both' },
   'fleet:workspace:get': { kind: 'invoke', scope: 'both' },
   'fleet:workspace:select': { kind: 'invoke', scope: 'both' },
+  // 웹 워크스페이스 경로 설정(#197 B4) — dialog 없는 웹의 selectWorkspace 대체 입력. 서버는
+  // FLEET_WORKSPACE_ROOT 하위 한정 + 런 중 거부, 데스크톱 main 은 루트 env 미설정 시 fail-closed(비활성).
+  'fleet:workspace:set': { kind: 'invoke', scope: 'both' },
 
   // ── 채팅 ──
   'fleet:chat:createRoom': { kind: 'invoke', scope: 'both' },

@@ -570,6 +570,12 @@ export interface FleetBridge {
   getWorkspace(): Promise<string | null>
   /** 워크스페이스 디렉터리 선택(취소 시 기존 값 유지). 적용된 경로(또는 null) 반환. */
   selectWorkspace(): Promise<string | null>
+  /**
+   * 워크스페이스 경로 직접 설정(#197 B4 — 웹 UI 경로 입력). FLEET_WORKSPACE_ROOT 하위 한정·존재
+   * 디렉터리만·런 진행 중 거부. 적용된 정준 절대경로를 반환한다. 데스크톱은 루트 env 미설정 시
+   * reject(fail-closed — dialog 선택이 유일 경로).
+   */
+  setWorkspace(path: string): Promise<string>
 
   // 채팅
   createRoom(title: string, participants?: string[]): Promise<ChatRoom>

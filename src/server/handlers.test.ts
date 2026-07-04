@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ApprovalRequest, AppInfo } from '../shared/types'
 import { invokeChannels } from '../shared/transport/channels'
@@ -15,7 +18,7 @@ const APP_INFO: AppInfo = {
   runtime: 'web',
 }
 
-function build() {
+function build(opts: { workspaceRoot?: string | null } = {}) {
   const sent: ApprovalRequest[] = []
   const approver = createIpcApprover({ send: (r) => sent.push(r), hasWindow: () => true })
   const engine = createFleetEngine({ approver: approver.approver })
@@ -23,7 +26,12 @@ function build() {
     engine,
     approver,
     sent,
-    handlers: createHandlers({ engine, approver, appInfo: APP_INFO }),
+    handlers: createHandlers({
+      engine,
+      approver,
+      appInfo: APP_INFO,
+      workspaceRoot: opts.workspaceRoot ?? null,
+    }),
   }
 }
 
@@ -70,5 +78,30 @@ describe('서버 핸들러 테이블(#197 B3)', () => {
     expect(desc.id).toBe('cli:claude')
     const list = await handlers['fleet:session:list']()
     expect(list.map((s) => s.id)).toContain('cli:claude')
+  })
+})
+
+describe('fleet:workspace:set(#197 B4)', () => {
+  it('루트 하위 존재 디렉터리를 적용하고 정준 경로를 반환한다', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fleet-wsroot-'))
+    mkdirSync(join(root, 'proj-a'))
+    const { handlers, engine } = build({ workspaceRoot: root })
+    const applied = await handlers['fleet:workspace:set']('proj-a')
+    expect(engine.getWorkspace()).toBe(applied)
+    expect(applied.toLowerCase()).toContain('proj-a')
+  })
+
+  it('루트 밖 경로는 거부한다(워크스페이스 무변경)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fleet-wsroot-'))
+    const { handlers, engine } = build({ workspaceRoot: root })
+    // applyWorkspaceSet 은 동기 throw — async IIFE 로 rejection 정규화(연산 자체가 throw 하면
+    // Promise.resolve(...) 인자 평가 중 throw 돼 rejects 단언이 성립하지 않는다).
+    await expect((async () => handlers['fleet:workspace:set'](tmpdir()))()).rejects.toThrow()
+    expect(engine.getWorkspace()).toBeNull()
+  })
+
+  it('workspaceRoot 미설정 서버는 fail-closed', async () => {
+    const { handlers } = build({ workspaceRoot: null })
+    await expect((async () => handlers['fleet:workspace:set']('x'))()).rejects.toThrow(/미설정/)
   })
 })

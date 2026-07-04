@@ -58,6 +58,7 @@ export const CHANNEL_FIXTURES = {
   'fleet:project:activity': { args: [], result: { activeProjectIds: [] } },
   'fleet:workspace:get': { args: [], result: null },
   'fleet:workspace:select': { args: [], result: null },
+  'fleet:workspace:set': { args: ['proj-a'], result: '/srv/workspace/proj-a' },
 
   // ── 채팅 ──
   'fleet:chat:createRoom': {

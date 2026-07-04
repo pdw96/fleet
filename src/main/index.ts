@@ -18,6 +18,7 @@ import { installAutoUpdate } from './auto-update'
 import { createFleetEngine, type FleetEngine } from './core/engine'
 import { createIpcApprover, type IpcApprover } from './core/safety/approval-bridge'
 import { createJsonFileStore } from './core/store/json-file'
+import { applyWorkspaceSet } from './core/workspace/set-workspace'
 import type { Store } from './core/store/types'
 import { e2eRunner, isE2EActive, seedE2eFixtures } from './e2e'
 import { openVerifiedCliDocs } from './external-links'
@@ -135,6 +136,19 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
     engine.setWorkspace(res.filePaths[0])
     return res.filePaths[0]
   })
+  // 웹 UI 경로 설정 채널의 데스크톱 면(#197 B4) — preload/main 리터럴 parity 를 위해 등록하되,
+  // 데스크톱 기본(FLEET_WORKSPACE_ROOT 미설정)에선 fail-closed 로 비활성이다(dialog 선택이 유일 경로 —
+  // 사용자 매개 없는 임의 경로 설정 표면을 데스크톱에 열지 않는다).
+  ipcMain.handle('fleet:workspace:set', (_e, path: string) =>
+    applyWorkspaceSet(
+      {
+        workspaceRoot: process.env['FLEET_WORKSPACE_ROOT']?.trim() || null,
+        isRunActive: () => engine.getRunActivity().activeProjectIds.length > 0,
+        setWorkspace: (dir) => engine.setWorkspace(dir),
+      },
+      path,
+    ),
+  )
 
   // 채팅
   ipcMain.handle('fleet:chat:createRoom', (_e, title: string, participants?: string[]) =>
