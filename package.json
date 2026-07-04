@@ -17,14 +17,17 @@
     "cross-spawn": "^7.0.6",
     "electron-updater": "^6.8.9",
     "safe-regex": "^2.1.1",
-    "which": "^2.0.2"
+    "which": "^2.0.2",
+    "ws": "^8.21.0"
   },
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && npm run build:server",
+    "build:server": "vite build --config vite.server.config.ts",
     "dist": "electron-vite build && electron-builder",
     "dist:dir": "electron-vite build && electron-builder --dir",
     "preview": "electron-vite preview",
+    "start:server": "node out/server/index.mjs",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json && tsc -p tsconfig.e2e.json",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
@@ -50,6 +53,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/safe-regex": "^1.1.6",
     "@types/which": "^2.0.2",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.2.0",
     "@vitest/coverage-v8": "^4.1.9",
     "electron": "^42.5.0",

@@ -6,5 +6,5 @@
     "allowJs": true,
     "checkJs": false
   },
-  "include": ["src/main", "src/preload", "src/shared", "scripts"]
+  "include": ["src/main", "src/preload", "src/server", "src/shared", "scripts"]
 }

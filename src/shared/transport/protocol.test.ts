@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeFrame, hasEventGap, makeErrFrame, makeOkFrame } from './protocol'
+import { decodeClientFrame, decodeFrame, hasEventGap, makeErrFrame, makeOkFrame } from './protocol'
 
 /**
  * WS 프레임 프로토콜 순수 헬퍼(#197 B2). Electron IPC 가 암묵 제공하던 직렬화·응답·gap 감지
@@ -128,5 +128,35 @@ describe('decodeFrame — 프레임별 필드 불변식(신뢰 경계 완성)', 
       maxEventSeq: 5,
       minRetainedEventSeq: 1,
     })
+  })
+})
+
+describe('decodeClientFrame — 서버측 신뢰 경계(#197 B3)', () => {
+  it('정상 req 프레임을 파싱한다', () => {
+    const f = decodeClientFrame(JSON.stringify({ t: 'req', id: 1, ch: 'fleet:app:info', args: [] }))
+    expect(f).toEqual({ t: 'req', id: 1, ch: 'fleet:app:info', args: [] })
+  })
+
+  it('양의 safe integer id 만 허용한다', () => {
+    expect(
+      decodeClientFrame(
+        JSON.stringify({ t: 'req', id: Number.MAX_SAFE_INTEGER, ch: 'x', args: [] }),
+      ),
+    ).not.toBeNull()
+  })
+
+  it.each([
+    ['깨진 JSON', '{nope'],
+    ['비객체', '"str"'],
+    ['미지 t', JSON.stringify({ t: 'push', ch: 'x', event: 1 })],
+    ['id 비정수', JSON.stringify({ t: 'req', id: 1.5, ch: 'x', args: [] })],
+    ['id 비수치', JSON.stringify({ t: 'req', id: 'a', ch: 'x', args: [] })],
+    ['id 0/음수', JSON.stringify({ t: 'req', id: 0, ch: 'x', args: [] })],
+    ['id -1', JSON.stringify({ t: 'req', id: -1, ch: 'x', args: [] })],
+    ['id unsafe 범위', JSON.stringify({ t: 'req', id: 9007199254740992, ch: 'x', args: [] })],
+    ['ch 비문자열', JSON.stringify({ t: 'req', id: 1, ch: 7, args: [] })],
+    ['args 비배열', JSON.stringify({ t: 'req', id: 1, ch: 'x', args: {} })],
+  ])('%s → null (무시)', (_name, wire) => {
+    expect(decodeClientFrame(wire)).toBeNull()
   })
 })
