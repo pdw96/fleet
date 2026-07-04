@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 78 files · 195 import wires · 43 IPC channels · 생성 2026-07-04T04:32 UTC
+> 78 files · 195 import wires · 43 IPC channels · 생성 2026-07-04T04:50 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -28,7 +28,7 @@
 
 ### other · other
 - **server/boot**
-  - →의존: engine, main/e2e, safety/approval-bridge, server/env-key-crypto, server/handlers, server/static, server/ws-host, shared/types, store/json-file · ←피의존: server/index · 147줄
+  - →의존: engine, main/e2e, safety/approval-bridge, server/env-key-crypto, server/handlers, server/static, server/ws-host, shared/types, store/json-file · ←피의존: server/index · 149줄
 - **server/handlers**
   - →의존: engine, safety/approval-bridge, shared/transport/channels, shared/types · ←피의존: server/boot, server/ws-host · 117줄
 - **server/ws-host**
@@ -38,7 +38,7 @@
 - **server/index**
   - →의존: server/boot · ←피의존: — · 31줄
 - **server/static**
-  - →의존: — · ←피의존: server/boot · 73줄
+  - →의존: — · ←피의존: server/boot · 77줄
 
 ### renderer · renderer — 사용자가 실제로 보고 클릭하는 앱 화면 전체를 그리고, 세션 등록·프로젝트 실행·AI 채팅·승인 같은 모든 조작 화면을 담당하는 부분입니다.
 - **renderer/App** — 앱 화면의 큰 틀과 위쪽 탭 메뉴를 그리는 부품 _맨 위 'FLEET' 제목과 세션·프로젝트·채팅 세 탭을 보여주고, 누른 탭에 맞는 화면을 갈아끼웁니다. 현재 등록된 AI 세션 개수와 위험 작업 승인 창도 항상 켜 둡니다._
