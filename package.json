@@ -35,7 +35,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "test:e2e": "electron-vite build && playwright test",
+    "test:e2e": "npm run build && playwright test",
     "brain": "node scripts/brain/build.mjs",
     "brain:watch": "node scripts/brain/watch.mjs",
     "brain:check": "node scripts/brain/check.mjs",

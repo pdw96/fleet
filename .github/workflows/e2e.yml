@@ -50,6 +50,10 @@ jobs:
       - name: Electron 런타임 deps
         run: npx playwright install-deps
 
+      # web 프로젝트(#197 B4)는 chromium 브라우저 바이너리가 필요하다(electron e2e 는 자체 바이너리).
+      - name: Install chromium (web e2e)
+        run: npx playwright install chromium
+
       # Electron setuid 샌드박스 정상화. e2e 는 --no-sandbox 없이 띄우므로(프로덕션 충실)
       # 샌드박스를 끄지 않고: (1) 24.04 AppArmor 의 unprivileged userns 제약을 풀고
       # (2) chrome-sandbox 헬퍼를 root:root + 4755 로 맞춘다.
