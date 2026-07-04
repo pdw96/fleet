@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { AgentRole, AssignmentPolicy, LlmDescriptor, Project, Task } from '../../shared/types'
 import { ASSIGNABLE_ROLES, MAX_REPLAN_ROUNDS } from '../../shared/types'
 import { statusColor } from '../ui'
-import { describeError } from '../bridge/errors'
+import { describeError, isTransportError } from '../bridge/errors'
 import { useHydration } from '../bridge/hydration'
 import {
   ELICITATION_FIELDS,
@@ -312,12 +312,18 @@ export function ProjectPanel({ sessions, runtime = null }: Props) {
       if (selectedIdRef.current) await refreshTasks(selectedIdRef.current)
     } catch (err) {
       setError(describeError(err))
-      // 실행이 거부돼도 오케스트레이터가 프로젝트를 failed 로 표시했을 수 있으니 사이드바/상태칩을 갱신한다.
+      if (isTransportError(err)) {
+        // 웹 전송 단절 — 요청이 서버에 도달해 런이 계속 진행 중일 수 있다. running/activeProjectId 를
+        // 여기서 내리지 않고 재접속 재하이드레이션(getRunActivity 스냅샷)이 실제 상태로 복원하게 둔다 —
+        // 잘못된 2차 실행 시도·취소 버튼 소실 방지(#202 Codex P2). 전송 단절은 여기서 early-return.
+        return
+      }
+      // 비-전송(엔진) 거부 = 실패 종료 — 사이드바/상태칩 갱신 후 아래에서 잠금 해제.
       await refreshProjects().catch(() => undefined)
-    } finally {
-      setRunning(false)
-      setActiveProjectId(null)
     }
+    // 정상 완료 또는 비-전송 실패 종료 — 잠금 해제(전송 단절만 위에서 잠금 유지).
+    setRunning(false)
+    setActiveProjectId(null)
   }
 
   /**

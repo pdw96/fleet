@@ -14,3 +14,11 @@ export function describeError(err: unknown): string {
   }
   return err instanceof Error ? err.message : String(err)
 }
+
+/**
+ * 전송층 유래 오류(TransportError) 판별 — 연산의 성패가 미상임을 뜻한다(요청이 서버에 도달했을 수
+ * 있음). 호출부는 이 경우 낙관적 상태를 성급히 되돌리지 말고 재접속 재하이드레이션에 맡긴다(#202 Codex P2).
+ */
+export function isTransportError(err: unknown): err is TransportError {
+  return err instanceof TransportError
+}

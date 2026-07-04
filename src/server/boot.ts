@@ -8,7 +8,7 @@ import type { AppInfo } from '../shared/types'
 import { createFleetEngine } from '../main/core/engine'
 import { createIpcApprover } from '../main/core/safety/approval-bridge'
 import { createJsonFileStore } from '../main/core/store/json-file'
-import { isE2EActive, resolveE2eRunner, seedE2eFixtures } from '../main/e2e'
+import { isE2EActive, resolveE2eRunner, resolveE2eVerifyRunner, seedE2eFixtures } from '../main/e2e'
 import { createEnvKeyCrypto } from './env-key-crypto'
 import { createHandlers } from './handlers'
 import { createStaticHandler } from './static'
@@ -114,6 +114,7 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
     onChatStream: (e) => wsHost?.broadcast('fleet:chat:stream', e),
     approver: ipcApprover.approver,
     runner: e2e ? resolveE2eRunner(env) : undefined,
+    verifyRunner: e2e ? resolveE2eVerifyRunner(env) : undefined,
     secretCrypto,
   })
   if (e2e) seedE2eFixtures(engine)

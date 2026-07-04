@@ -82,5 +82,7 @@ test.describe('런 완주 (완주 러너 opt-in)', () => {
     // 완주: 요약 패널이 뜨고(런 결과), 실행 버튼이 재활성(잠금 해제 = project.done)된다.
     await expect(page.getByText('최종 요약 / 누락 점검')).toBeVisible({ timeout: 45_000 })
     await expect(page.getByRole('button', { name: '오케스트레이션 실행' })).toBeEnabled()
+    // 최종 프로젝트 상태가 성공 종료(done)인지 단언 — 실패 완주를 성공으로 오통과하지 않게 한다(#202 Codex P3).
+    await expect(page.locator('.proj-status').first()).toHaveText('done')
   })
 })

@@ -11,6 +11,7 @@ import type {
 } from '../../shared/types'
 import type { ReactElement } from 'react'
 import { HydrationContext } from '../bridge/hydration'
+import { TransportError } from '../bridge/ws-bridge'
 import { ProjectPanel } from './ProjectPanel'
 
 function mockFleet(overrides: Record<string, unknown> = {}) {
@@ -960,5 +961,33 @@ describe('웹 워크스페이스 경로 입력(#197 B4)', () => {
     await renderSettled(<ProjectPanel sessions={[]} />)
     expect(screen.getByRole('button', { name: '워크스페이스 선택' })).toBeTruthy()
     expect(screen.queryByLabelText('워크스페이스 경로')).toBeNull()
+  })
+})
+
+describe('웹 전송 단절 시 run 잠금(#202 Codex P2)', () => {
+  it('runProject 가 TransportError 로 reject 되면 running 잠금을 유지한다(재접속 하이드레이션이 복원)', async () => {
+    mockFleet({
+      runProject: vi.fn().mockRejectedValue(new TransportError('disconnected', '전송 연결이 끊김')),
+    })
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
+    })
+    // 전송 단절 → 잠금 유지: 실행 버튼이 '실행 중…'(비활성)로 남아 2차 실행을 막는다.
+    expect((screen.getByRole('button', { name: '실행 중…' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    )
+  })
+
+  it('비-전송(엔진) 거부는 잠금을 해제한다(무회귀)', async () => {
+    mockFleet({ runProject: vi.fn().mockRejectedValue(new Error('엔진 거부')) })
+    await renderSettled(<ProjectPanel sessions={[SESSION]} />)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
+    })
+    expect(screen.getByRole('button', { name: '오케스트레이션 실행' })).toBeTruthy()
+    expect(screen.getByText(/엔진 거부/)).toBeTruthy()
   })
 })

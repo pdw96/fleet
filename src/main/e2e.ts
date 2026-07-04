@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { CommandResult, CommandRunner } from './core/cli/detect'
 import { PROBE_PROMPT } from './core/cli/probe'
 import type { FleetEngine } from './core/engine'
+import type { VerifyRunner } from './core/verify/run'
 
 /**
  * E2E 전용 훅(FLEET_E2E 환경변수로만 활성). 실제 CLI/네트워크 대신 결정론적 동작을 주입해
@@ -84,4 +85,18 @@ export const e2eCompletingRunner: CommandRunner = (_command, args, opts, onStdou
 /** e2e 러너 선택 — 완주 러너는 명시 opt-in(`complete`)만. 미지 값은 기본(hang) 러너로 fail-safe. */
 export function resolveE2eRunner(env: NodeJS.ProcessEnv): CommandRunner {
   return env['FLEET_E2E_RUNNER'] === 'complete' ? e2eCompletingRunner : e2eRunner
+}
+
+/**
+ * 완주 스모크의 검증 단계 결정론화(#202 Codex P3) — e2e 는 실 npm(defaultVerifyRunner)을 스폰하지
+ * 않는다. seedE2eFixtures 의 워크스페이스엔 package.json 이 없어 실 `npm run typecheck` 가 실패하고
+ * project 가 failed 로 끝났다(전송-완주 스모크가 실패 완주도 성공으로 통과). 완주 러너는 verify 정확성이
+ * 아니라 오케스트레이션 흐름 완주를 검증하므로, 검증을 결정론적 pass 로 대체해 project.done(성공)까지 이른다.
+ */
+export const e2eVerifyRunner: VerifyRunner = () =>
+  Promise.resolve({ code: 0, stdout: '', stderr: '' })
+
+/** 검증 러너 선택 — 완주 러너(complete)일 때만 결정론 pass. 기본(hang) 러너는 verify 미도달이라 무관(undefined). */
+export function resolveE2eVerifyRunner(env: NodeJS.ProcessEnv): VerifyRunner | undefined {
+  return env['FLEET_E2E_RUNNER'] === 'complete' ? e2eVerifyRunner : undefined
 }
