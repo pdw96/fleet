@@ -9,6 +9,8 @@ import type {
   RunResult,
   Task,
 } from '../../shared/types'
+import type { ReactElement } from 'react'
+import { HydrationContext } from '../bridge/hydration'
 import { ProjectPanel } from './ProjectPanel'
 
 function mockFleet(overrides: Record<string, unknown> = {}) {
@@ -22,6 +24,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     }),
     getWorkspace: vi.fn().mockResolvedValue(null),
     selectWorkspace: vi.fn().mockResolvedValue(null),
+    setWorkspace: vi.fn().mockResolvedValue('/srv/ws'),
     runProject: vi.fn().mockResolvedValue({ projectId: 'p', tasks: [], summary: '' }),
     cancelRun: vi.fn().mockResolvedValue(undefined),
     listProjects: vi.fn().mockResolvedValue([]),
@@ -865,5 +868,97 @@ describe('ProjectPanel', () => {
     expect(screen.getByText(/반영되지 않았습니다/)).toBeTruthy() // present
     fireEvent.click(screen.getByRole('button', { name: 'goal에 반영' }))
     expect(screen.queryByText(/반영되지 않았습니다/)).toBeNull() // 반영 후
+  })
+})
+
+function renderWithNonce(nonce: number, ui: ReactElement) {
+  return render(
+    <HydrationContext.Provider value={{ nonce, connection: 'connected' }}>
+      {ui}
+    </HydrationContext.Provider>,
+  )
+}
+
+describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)', () => {
+  it('끊긴 사이 끝난 실행의 stale running 잠금을 스냅샷이 내린다', async () => {
+    mockFleet({
+      listProjects: vi.fn().mockResolvedValue([P2]),
+      getRunActivity: vi
+        .fn()
+        .mockResolvedValueOnce({ activeProjectIds: ['p2'] }) // 최초: 진행 중
+        .mockResolvedValue({ activeProjectIds: [] }), // 재접속: 끝났음
+    })
+    const { rerender } = renderWithNonce(0, <ProjectPanel sessions={[SESSION]} />)
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: '실행 중…' })).toBeTruthy()
+    rerender(
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+        <ProjectPanel sessions={[SESSION]} />
+      </HydrationContext.Provider>,
+    )
+    await act(async () => {})
+    expect(screen.queryByRole('button', { name: '실행 중…' })).toBeNull()
+    expect(screen.getByRole('button', { name: '오케스트레이션 실행' })).toBeTruthy()
+  })
+
+  it('윈도우 중 라이브 project.created 는 스냅샷(빈)보다 우선한다', async () => {
+    let resolveActivity!: (a: { activeProjectIds: string[] }) => void
+    const fleet = mockFleet({
+      getRunActivity: vi
+        .fn()
+        .mockResolvedValueOnce({ activeProjectIds: [] })
+        .mockImplementationOnce(
+          () => new Promise<{ activeProjectIds: string[] }>((r) => (resolveActivity = r)),
+        ),
+    })
+    const { rerender } = renderWithNonce(0, <ProjectPanel sessions={[SESSION]} />)
+    await act(async () => {})
+    rerender(
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+        <ProjectPanel sessions={[SESSION]} />
+      </HydrationContext.Provider>,
+    )
+    fleet.fire({ type: 'project.created', message: '', data: { projectId: 'p9', eventId: 'e9' } })
+    await act(async () => resolveActivity({ activeProjectIds: [] })) // stale 빈 스냅샷이 늦게 도착
+    expect(screen.getByRole('button', { name: '실행 중…' })).toBeTruthy() // 라이브 우선 — 잠금 유지
+  })
+})
+
+describe('웹 워크스페이스 경로 입력(#197 B4)', () => {
+  it('runtime=web 이면 dialog 버튼 대신 경로 입력+적용이 보인다', async () => {
+    mockFleet()
+    await renderSettled(<ProjectPanel sessions={[]} runtime="web" />)
+    expect(screen.queryByRole('button', { name: '워크스페이스 선택' })).toBeNull()
+    expect(screen.getByLabelText('워크스페이스 경로')).toBeTruthy()
+  })
+
+  it('적용 클릭이 setWorkspace 를 호출하고 반환 경로를 표시한다', async () => {
+    const fleet = mockFleet({ setWorkspace: vi.fn().mockResolvedValue('/srv/ws/proj-a') })
+    await renderSettled(<ProjectPanel sessions={[]} runtime="web" />)
+    fireEvent.change(screen.getByLabelText('워크스페이스 경로'), { target: { value: 'proj-a' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '적용' }))
+    })
+    expect(fleet.setWorkspace).toHaveBeenCalledWith('proj-a')
+    expect(await screen.findByText(/\/srv\/ws\/proj-a/)).toBeTruthy()
+  })
+
+  it('서버 거부(루트 밖 등)는 오류로 표시한다', async () => {
+    mockFleet({
+      setWorkspace: vi.fn().mockRejectedValue(new Error('경로가 워크스페이스 밖입니다: x')),
+    })
+    await renderSettled(<ProjectPanel sessions={[]} runtime="web" />)
+    fireEvent.change(screen.getByLabelText('워크스페이스 경로'), { target: { value: 'x' } })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '적용' }))
+    })
+    expect(await screen.findByText(/워크스페이스 밖/)).toBeTruthy()
+  })
+
+  it('runtime=electron(기본)은 기존 dialog 버튼 그대로(무회귀)', async () => {
+    mockFleet()
+    await renderSettled(<ProjectPanel sessions={[]} />)
+    expect(screen.getByRole('button', { name: '워크스페이스 선택' })).toBeTruthy()
+    expect(screen.queryByLabelText('워크스페이스 경로')).toBeNull()
   })
 })
