@@ -128,3 +128,28 @@ export function hasEventGap(
 ): boolean {
   return clientCursor + 1 < hello.minRetainedEventSeq
 }
+
+/**
+ * 와이어 문자열을 ClientFrame(req)으로 안전 파싱 — 서버측 신뢰 경계(#197 B3, decodeFrame 의 대칭).
+ * 불변식 위반은 null — 호출부(ws-host)가 무시한다(응답 없음: id 를 신뢰할 수 없는 프레임엔
+ * correlation 가능한 res 를 만들 수 없다). id 는 **양의 safe integer 한정**(체크포인트 3 P2-1):
+ * correlation id 는 res 에 그대로 반사되므로 비정상 id(0/음수/unsafe/소수)를 허용하면 클라 pending
+ * map 쪽에 추적 어려운 edge 가 생긴다(ws-bridge 는 ++lastId 로 1부터 발급 — 정상 경로 무영향).
+ * args 원소의 내용 검증은 비범위(런타임 validator 비범위 정책 — 체크포인트 2 §1).
+ */
+export function decodeClientFrame(data: string): ReqFrame | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(data)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const f = parsed as Record<string, unknown>
+  if (f['t'] !== 'req') return null
+  const id = f['id']
+  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) return null
+  if (typeof f['ch'] !== 'string') return null
+  if (!Array.isArray(f['args'])) return null
+  return parsed as ReqFrame
+}
