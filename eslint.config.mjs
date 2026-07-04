@@ -296,8 +296,10 @@ export default tseslint.config(
   // 코어 순수성 게이트(AGENTS.md 「Fleet 특화 P1 신호」 #1): src/main/core 는 electron/DOM-free
   // 순수 TS 계약. 한 줄의 electron import·DOM 전역도 4게이트를 통과하므로(현 위반 0 = 관례일 뿐)
   // 회귀를 기계적으로 차단한다. core *.test.ts 도 포함 — 테스트도 결합을 정상화하지 않는다.
+  // #197 B3 부터 서버 전송층(src/server)·공유 전송 계약(src/shared/transport)도 동일 게이트 —
+  // 서버는 컨테이너 Node 에서 돌므로 한 줄의 electron import 도 런타임 크래시다.
   {
-    files: ['src/main/core/**/*.ts'],
+    files: ['src/main/core/**/*.ts', 'src/server/**/*.ts', 'src/shared/transport/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

@@ -46,6 +46,11 @@ describe('코어 순수성 ESLint 게이트 회귀 가드 (#173)', () => {
     expect(names).toContain('document')
     expect(opts?.checkGlobalObject).toBe(true)
   })
+
+  it('게이트 스코프가 src/server·src/shared/transport 를 포함한다(#197 B3 확장)', () => {
+    expect(coreBlock?.files).toContain('src/server/**/*.ts')
+    expect(coreBlock?.files).toContain('src/shared/transport/**/*.ts')
+  })
 })
 
 // #174: 도구 실행 모듈 read-only 구조 가드. ApprovalGate 는 tool.classify() 자가신고만 신뢰하므로
