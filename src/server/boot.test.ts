@@ -1,0 +1,123 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import WebSocket, { type RawData } from 'ws'
+import { bootServer, resolveBindHost, resolvePort, type RunningServer } from './boot'
+import type { ServerFrame } from '../shared/transport/protocol'
+
+/** ws `RawData`(Buffer|ArrayBuffer|Buffer[])를 텍스트 프레임 문자열로 정규화(no-base-to-string 회피). */
+function rawDataToString(data: RawData): string {
+  if (Buffer.isBuffer(data)) return data.toString('utf8')
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
+  return Buffer.from(data).toString('utf8')
+}
+
+describe('resolveBindHost — B5 전 loopback 강제(#197 B3 완료 조건)', () => {
+  it.each([undefined, '', '127.0.0.1', '::1', 'localhost'])('loopback(%s) 허용', (v) => {
+    expect(['127.0.0.1', '::1', 'localhost']).toContain(resolveBindHost({ FLEET_HOST: v }))
+  })
+  it.each(['0.0.0.0', '::', '0:0:0:0:0:0:0:0', '192.168.0.10', 'fleet.example.com', '10.0.0.1'])(
+    'non-loopback(%s) → throw — 어떤 env 로도 안 열림',
+    (v) => {
+      expect(() => resolveBindHost({ FLEET_HOST: v })).toThrow(/loopback/i)
+    },
+  )
+})
+
+describe('resolvePort', () => {
+  it('기본 8791 · FLEET_PORT 정수 파싱 · 0(임시 포트) 허용', () => {
+    expect(resolvePort({})).toBe(8791)
+    expect(resolvePort({ FLEET_PORT: '0' })).toBe(0)
+  })
+  it.each(['abc', '-1', '65536', '3.5'])('위반(%s) → throw', (v) => {
+    expect(() => resolvePort({ FLEET_PORT: v })).toThrow()
+  })
+})
+
+describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
+  async function boot(): Promise<RunningServer> {
+    return bootServer({
+      FLEET_PORT: '0',
+      FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-b3-data-')),
+      FLEET_E2E: '1', // 결정론 픽스처(세션 2·방 1) + 페이크 러너
+    })
+  }
+
+  // 프레임 큐 — server 는 attach 시점(connection 이벤트)에 hello 를 동기 push 하므로, loopback 이라
+  // 클라 소켓의 'message' 이벤트가 우리 쪽 `await connect()` 의 이어짐(then 마이크로태스크)보다 먼저
+  // 실행될 수 있다. `connect()` 이후 `nextFrame()` 호출 시점에야 `once('message', …)` 를 붙이면 그 사이
+  // 도착한 hello 프레임을 통째로 놓쳐 영구 대기(hang)한다(실측: win32 로컬 100% 재현 — 파일 병렬성과
+  // 무관한 결정론적 레이스). socket 생성 즉시(= open 이전) 리스너를 걸어 도착 순서와 무관하게 큐잉한다.
+  const queues = new WeakMap<
+    WebSocket,
+    { pending: ServerFrame[]; waiters: Array<(f: ServerFrame) => void> }
+  >()
+  function connect(port: number): Promise<WebSocket> {
+    return new Promise((res, rej) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+      const state = { pending: [] as ServerFrame[], waiters: [] as Array<(f: ServerFrame) => void> }
+      queues.set(socket, state)
+      socket.on('message', (d) => {
+        const frame = JSON.parse(rawDataToString(d)) as ServerFrame
+        const waiter = state.waiters.shift()
+        if (waiter) waiter(frame)
+        else state.pending.push(frame)
+      })
+      socket.once('open', () => res(socket))
+      socket.once('error', rej)
+    })
+  }
+  function nextFrame(socket: WebSocket): Promise<ServerFrame> {
+    const state = queues.get(socket)
+    if (!state) throw new Error('connect() 로 생성되지 않은 소켓')
+    const queued = state.pending.shift()
+    if (queued) return Promise.resolve(queued)
+    return new Promise((res) => state.waiters.push(res))
+  }
+
+  it('non-loopback host 로는 부팅 자체가 거부된다', async () => {
+    await expect(bootServer({ FLEET_HOST: '0.0.0.0', FLEET_PORT: '0' })).rejects.toThrow(
+      /loopback/i,
+    )
+  })
+
+  it('접속 첫 프레임=hello → app:info(runtime=web) → E2E 시드 세션 조회 → 미지 채널 에러', async () => {
+    const server = await boot()
+    const socket = await connect(server.port)
+    try {
+      const hello = await nextFrame(socket)
+      expect(hello.t).toBe('hello')
+
+      const resOf = async (id: number, ch: string, args: unknown[] = []) => {
+        const p = nextFrame(socket)
+        socket.send(JSON.stringify({ t: 'req', id, ch, args }))
+        return p
+      }
+      const info = (await resOf(1, 'fleet:app:info')) as { ok: boolean; value: { runtime: string } }
+      expect(info.ok).toBe(true)
+      expect(info.value.runtime).toBe('web')
+
+      const list = (await resOf(2, 'fleet:session:list')) as { value: { id: string }[] }
+      expect(list.value.map((s) => s.id).sort()).toEqual(['cli:claude', 'cli:codex'])
+
+      const unknown = (await resOf(3, 'fleet:update:check')) as { ok: boolean }
+      expect(unknown.ok).toBe(false)
+    } finally {
+      socket.close()
+      await server.close()
+    }
+  })
+
+  it('FLEET_WORKSPACE_ROOT 미존재 경로 → 부팅 거부(fail-fast)', async () => {
+    // workspaceRoot 검증은 store 생성 이후라 FLEET_DATA_DIR 누락 시 던지기 전에 레포 루트에
+    // `fleet-data/` 를 실제로 만들어버린다(anti-footgun) — 임시 dataDir 로 격리한다.
+    await expect(
+      bootServer({
+        FLEET_PORT: '0',
+        FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-b3-data-')),
+        FLEET_WORKSPACE_ROOT: join(tmpdir(), 'no-such-dir-xyz'),
+      }),
+    ).rejects.toThrow()
+  })
+})
