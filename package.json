@@ -22,10 +22,12 @@
   },
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && npm run build:server",
+    "build:server": "vite build --config vite.server.config.ts",
     "dist": "electron-vite build && electron-builder",
     "dist:dir": "electron-vite build && electron-builder --dir",
     "preview": "electron-vite preview",
+    "start:server": "node out/server/index.mjs",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json && tsc -p tsconfig.e2e.json",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
