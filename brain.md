@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 72 files · 177 import wires · 43 IPC channels · 생성 2026-07-03T17:23 UTC
+> 78 files · 195 import wires · 43 IPC channels · 생성 2026-07-04T04:32 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -13,7 +13,7 @@
 - **바깥 세계 runtime** — 앱 밖의 실제 대상 — 설치된 AI CLI(클로드/코덱스/제미니), AI 회사 API, 외부 도구(MCP) 서버.
 
 ## 한눈에
-- **허브**(많이 연결): shared/types(45) · engine(26) · orchestrator/orchestrator(12) · main/index(12) · providers/types(11) · tools/types(10)
+- **허브**(많이 연결): shared/types(47) · engine(28) · orchestrator/orchestrator(12) · main/index(12) · providers/types(11) · tools/types(10)
 - **진입점**: main/e2e · main/index · preload/index · renderer/main
 - **레지스트리**(확장점, 분기 대신 등록): cli/registry · providers/registry · tools/registry
 - **승인 게이트**(위험작업 차단): safety/approval
@@ -25,6 +25,20 @@
 - mcp/stdio → MCP servers
 
 ## 모듈별 (파일 — 역할 · →의존 · ←피의존)
+
+### other · other
+- **server/boot**
+  - →의존: engine, main/e2e, safety/approval-bridge, server/env-key-crypto, server/handlers, server/static, server/ws-host, shared/types, store/json-file · ←피의존: server/index · 147줄
+- **server/handlers**
+  - →의존: engine, safety/approval-bridge, shared/transport/channels, shared/types · ←피의존: server/boot, server/ws-host · 117줄
+- **server/ws-host**
+  - →의존: server/handlers, shared/transport/channels, shared/transport/protocol · ←피의존: server/boot · 98줄
+- **server/env-key-crypto**
+  - →의존: secret/types · ←피의존: server/boot · 47줄
+- **server/index**
+  - →의존: server/boot · ←피의존: — · 31줄
+- **server/static**
+  - →의존: — · ←피의존: server/boot · 73줄
 
 ### renderer · renderer — 사용자가 실제로 보고 클릭하는 앱 화면 전체를 그리고, 세션 등록·프로젝트 실행·AI 채팅·승인 같은 모든 조작 화면을 담당하는 부분입니다.
 - **renderer/App** — 앱 화면의 큰 틀과 위쪽 탭 메뉴를 그리는 부품 _맨 위 'FLEET' 제목과 세션·프로젝트·채팅 세 탭을 보여주고, 누른 탭에 맞는 화면을 갈아끼웁니다. 현재 등록된 AI 세션 개수와 위험 작업 승인 창도 항상 켜 둡니다._
@@ -60,7 +74,7 @@
 - **main/index** — 앱에 시동을 걸어 창을 띄우고 화면과 AI 엔진을 이어주는 '시동·교환대' _앱이 준비되면 AI 엔진을 만들고, 화면(창)을 띄우며, 화면이 보내는 모든 요청(세션 등록·채팅·프로젝트 실행·승인 응답 등)을 엔진의 해당 기능으로 연결하는 전화 교환대 역할을 한다. 창을 만들 때 보안 빗장 두 개(이동 차단·권한 차단)를 걸고, 앱을 끌 때는 켜져 있던 AI 프로그램들을 깔끔히 정리한 뒤 종료해 '좀비' 프로세스가 남지 않게 한다._
   - →의존: engine, main/auto-update, main/crash-recovery, main/e2e, main/external-links, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, +2 · ←피의존: — · 267줄
 - **main/e2e** — 자동 테스트할 때만 켜지는 '연습용 가짜 AI' 장치 _진짜 AI를 부르는 대신 미리 정해둔 답을 흉내 내, 화면 자동검사(Playwright)가 흔들림 없이 돌아가게 한다. 가짜 AI 둘과 토론방 하나, 임시 작업폴더를 미리 깔아두며, 일부러 '응답 중' 상태에서 멈춰 탭을 옮겼다 돌아와도 진행 표시가 살아있는지 확인하게 해준다. FLEET_E2E 라는 스위치가 정확히 '1'일 때만 작동하고 평소엔 절대 끼어들지 않는다._
-  - →의존: cli/detect, cli/probe, engine · ←피의존: main/index · 53줄
+  - →의존: cli/detect, cli/probe, engine · ←피의존: main/index, server/boot · 53줄
 - **main/external-links**
   - →의존: shared/cliAuthInstallMeta, shared/types · ←피의존: main/index · 50줄
 - **main/auto-update**
@@ -104,6 +118,10 @@
 - **orchestrator/review** — 각 단계에서 AI에게 보낼 지시문을 만들고 검토 결과를 읽어내는 대화 문구 담당 _구현·검토·요약·수정 단계마다 AI에게 보낼 안내 문구를 상황에 맞게 만들어 주고, 검토 AI의 답에서 '승인인지 수정 요청인지'와 그 피드백을 뽑아냅니다. AI가 형식을 안 지킨 어수선한 답을 줘도 핵심을 읽어내도록 대비책을 갖췄습니다._
   - →의존: shared/types · ←피의존: orchestrator/orchestrator, orchestrator/plan · 168줄
 
+### engine · core — 여러 AI(구독형 CLI와 API)를 한곳에서 등록·관리하고, 채팅과 프로젝트 작업을 진행시키는 앱의 중앙 관제실 역할을 하는 모듈이다.
+- **engine** — 앱의 모든 핵심 기능을 한곳에 모아 화면 쪽에 단일 창구로 내주는 '중앙 관제실' 부품 _AI 세션 등록·삭제, 채팅 주고받기, 프로젝트 작업 실행과 취소, 외부 도구 연결 같은 기능을 묶어 화면(IPC) 쪽에서 부르기 쉬운 하나의 입구로 제공한다. 앱을 다시 켜도 저장해 둔 AI 세션을 다시 살려내고, API 키는 OS 암호화로 안전하게 보관·복원한다._
+  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, providers/resilient, +14 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 858줄
+
 ### session · core — 여러 AI(구독형 CLI와 API)를 똑같은 방식으로 다룰 수 있게 감싸서, 작업방이 AI의 종류를 신경 쓰지 않고 '말 걸고-답받기'만 하면 되도록 통일해 주는 모듈.
 - **session/cli-session** — 클로드·코덱스·제미니 같은 설치형 AI 프로그램을 실제로 실행해 대화를 주고받는 일꾼 _프롬프트를 명령어 형태로 만들어 해당 AI 프로그램을 돌리고 결과 글을 받아 깔끔하게 정리해 돌려준다. 매번 새 프로그램을 띄우는 '독립 실행', AI 자체 기능으로 대화를 이어가는 '대화 유지', 지정한 폴더의 파일을 직접 고치는 '편집'의 세 가지 방식을 지원하며, 가능하면 답을 한 글자씩 실시간으로 흘려보내고 같은 세션의 동시 요청은 순서대로 줄 세운다._
   - →의존: cli/authHint, cli/detect, cli/output, session/abort, session/types, shared/types · ←피의존: cli/probe, engine · 248줄
@@ -115,10 +133,6 @@
   - →의존: shared/types · ←피의존: orchestrator/plan, session/api-session, session/cli-session, session/manager · 61줄
 - **session/abort**
   - →의존: — · ←피의존: engine, session/api-session, session/cli-session · 57줄
-
-### engine · core — 여러 AI(구독형 CLI와 API)를 한곳에서 등록·관리하고, 채팅과 프로젝트 작업을 진행시키는 앱의 중앙 관제실 역할을 하는 모듈이다.
-- **engine** — 앱의 모든 핵심 기능을 한곳에 모아 화면 쪽에 단일 창구로 내주는 '중앙 관제실' 부품 _AI 세션 등록·삭제, 채팅 주고받기, 프로젝트 작업 실행과 취소, 외부 도구 연결 같은 기능을 묶어 화면(IPC) 쪽에서 부르기 쉬운 하나의 입구로 제공한다. 앱을 다시 켜도 저장해 둔 AI 세션을 다시 살려내고, API 키는 OS 암호화로 안전하게 보관·복원한다._
-  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, providers/resilient, +14 · ←피의존: main/e2e, main/index · 858줄
 
 ### mcp · core — 바깥에서 가져온 도구 프로그램(MCP 서버)을 Fleet 안으로 안전하게 연결해, AI들이 쓸 수 있는 도구로 바꿔 관리하는 모듈이다.
 - **mcp/types** — 이 모듈의 부품들이 공유하는 약속(설계도) 모음 파일 _자식 프로세스, 통신 통로, 도구 정보, 서버 관리자 등이 각각 어떤 기능을 갖춰야 하는지 형태만 정의해 둔다. 실제 동작 코드는 없고, 부품들이 서로 같은 규격으로 끼워 맞춰지도록 하는 인터페이스다._
@@ -159,10 +173,10 @@
 ### store · core — 앱이 다루는 모든 데이터(프로젝트, 할 일, 채팅방, 대화, 기록, AI 연결 정보)를 한곳에 모아 보관하고, 컴퓨터를 껐다 켜도 그대로 남도록 파일에 저장하는 '데이터 창고'다.
 - **store/types** — 창고에 담기는 데이터들의 모양과 규칙을 미리 적어 둔 설계도 부품 _프로젝트·할 일·채팅방·저장된 AI 세션 등이 각각 어떤 항목들로 이뤄지는지 형태를 정의한 명세서다. 특히 AI 연결 정보는 구독형 CLI(클로드·코덱스 등)와 API 두 종류로 나뉘며, API 키 같은 비밀번호는 절대 그대로 적지 않고 암호로 바꾼 형태만 저장하도록 규칙을 못 박아 둔다._
   - →의존: shared/types · ←피의존: chat/room, engine, main/index, orchestrator/orchestrator, store/json-file, store/memory · 167줄
+- **store/json-file** — 데이터를 컴퓨터 안 파일에 안전하게 저장해 두는 보관 담당 부품 _앱이 다루는 모든 정보를 'fleet-store.json'이라는 파일에 적어두고, 다음에 앱을 켜면 다시 불러온다. 저장할 때는 임시 파일에 먼저 쓴 뒤 이름만 바꿔치기해서 도중에 멈춰도 원본이 안 깨지게 하고, 파일이 읽다가 망가져 있으면 '.corrupt' 라는 이름으로 따로 백업해 둔 뒤 빈 상태로 시작한다._
+  - →의존: store/memory, store/types · ←피의존: main/index, server/boot · 60줄
 - **store/memory** — 데이터를 메모리에서 직접 넣고 빼고 고치는 실제 일꾼 부품 _프로젝트·할 일·채팅방·메시지·기록 등을 만들고(create), 찾고(get), 목록을 보고(list), 수정하는(update) 모든 기능이 여기에 들어 있다. 데이터를 바꿀 때마다 사본을 따로 떠서 넘겨주어 원본이 바깥에서 함부로 바뀌지 않게 보호하고, 변경이 생기면 위의 파일 저장 담당에게 알려 디스크에 기록하게 한다._
   - →의존: shared/types, store/types · ←피의존: engine, store/json-file · 291줄
-- **store/json-file** — 데이터를 컴퓨터 안 파일에 안전하게 저장해 두는 보관 담당 부품 _앱이 다루는 모든 정보를 'fleet-store.json'이라는 파일에 적어두고, 다음에 앱을 켜면 다시 불러온다. 저장할 때는 임시 파일에 먼저 쓴 뒤 이름만 바꿔치기해서 도중에 멈춰도 원본이 안 깨지게 하고, 파일이 읽다가 망가져 있으면 '.corrupt' 라는 이름으로 따로 백업해 둔 뒤 빈 상태로 시작한다._
-  - →의존: store/memory, store/types · ←피의존: main/index · 60줄
 
 ### workspace · core — AI들이 작업방에서 코드를 고칠 때, 시작 시점을 기록해 두고 무엇이 바뀌었는지 보여주거나 통째로 되돌릴 수 있게 해주는 안전장치 모듈.
 - **workspace/git** — AI가 코드를 고치기 전 상태를 저장해 두고, 바뀐 내용을 모아 보여주거나 처음으로 되돌리는 작업 기록 관리원 _작업방을 버전 관리 저장소(git)로 만들어 '시작 사진'을 찍어두고, AI가 무엇을 바꿨는지 변경 목록과 그 내용(diff)을 모아 보여주거나, 마음에 안 들면 시작 사진 시점으로 통째로 되돌립니다. 사용자가 미리 만들어둔 작업은 시작 때 따로 보존해 지워지지 않게 하고, 여러 AI가 동시에 저장소를 건드려 생기는 잠금 충돌은 잠깐 기다렸다 다시 시도하며, 변경 내용이 너무 길면 6만 자에서 잘라 보여줍니다._
@@ -176,11 +190,15 @@
 - **safety/approval** — 호출자가 신고한 위험도를 집행하는 승인 검문소(위험도 자체는 판정하지 않음) _게이트는 무엇이 위험한지 스스로 판정하지 않는다 — 호출하는 도구가 신고한 위험도를 집행할 뿐이다. 안전(safe)으로 신고된 작업은 자동 통과시키고, 그 외(주의/파괴적)는 승인자에게 묻되 승인자가 없으면 거절하는 '안전 우선' 방식이며, 모든 요청과 결정을 기록(감사 로그)으로 남긴다. 셸·명령 위험 분류는 코어가 아니라 sub-agent CLI 경계에 위임된다(코어 내 명령 데니리스트 없음). 민감 파일 정규식(SENSITIVE_FILE)만 export 해 diff 위험판정·워크스페이스 도구가 공유한다._
   - →의존: shared/types · ←피의존: engine, mcp/types, orchestrator/diff-risk, orchestrator/orchestrator, tools/types, tools/workspace-tools, workspace/ignored-baseline · 56줄
 - **safety/approval-bridge** — 허락이 필요한 작업을 사용자 화면에 물어보고, 사용자의 예/아니오 답을 도로 전달해 주는 중개 창구 _AI 가 위험한 일을 하려 하면 그 요청을 화면(렌더러)으로 보내 사용자에게 묻고, 답이 오면 해당 요청과 짝지어 처리한다. 물어볼 창이 없으면 즉시 거절하고, 사람이 일정 시간(기본 타임아웃) 안에 답하지 않아도 자동으로 거절하는 '안전 우선' 방식이며, 같은 답이 두 번 와도 한 번만 처리한다._
-  - →의존: shared/types · ←피의존: main/index · 66줄
+  - →의존: shared/types · ←피의존: main/index, server/boot, server/handlers · 66줄
 
 ### chat · core — 여러 AI가 한 채팅방에서 서로의 말을 보고 토론하도록 진행을 맡아 주는 모듈이다.
 - **chat/room** — 여러 AI가 한 채팅방에서 차례로 발언하며 토론하도록 진행을 맡는 사회자 부품 _사용자나 시스템의 글을 방에 올리고, 특정 AI를 지목해 지금까지의 대화 내용을 보여준 뒤 다음 발언을 받아 다시 방에 저장한다. 여러 AI에게 한 주제를 정해진 횟수만큼 돌아가며 토론시키는 기능도 있어, 회의의 진행자처럼 누가 언제 말할지를 정리해 준다._
   - →의존: session/manager, shared/types, store/types · ←피의존: engine · 155줄
+
+### secret · core — 사용자의 API 키 같은 비밀 정보를 컴퓨터에 안전하게 잠그고(암호화) 다시 푸는(복호화) 방법을 정해두는 규칙 모음이다.
+- **secret/types** — 비밀 정보를 안전하게 잠그고 푸는 기능이 갖춰야 할 약속(규칙표)을 적어둔 설계도 _API 키 같은 중요한 비밀을 다룰 때 '잠금이 가능한지 확인', '평문을 암호로 잠그기', '암호를 다시 평문으로 풀기' 이 세 가지 기능을 반드시 제공하도록 정해둔 약속이다. 실제 잠금 작업은 운영체제(윈도우·맥·리눅스)의 금고 기능에 맡기고, 이 파일은 그 기능이 따라야 할 형식만 명시한다._
+  - →의존: — · ←피의존: engine, main/secret-crypto, server/env-key-crypto · 15줄
 
 ### verify · core — AI가 고친 코드가 정말 멀쩡한지, 타입 검사·문법 검사·테스트 같은 점검 명령을 실제로 돌려보고 합격/불합격 결과를 정리해 주는 '코드 자동 검사 담당' 부품 모음.
 - **verify/run** — 고친 코드가 제대로 됐는지 점검 명령을 실제로 돌려 합격·불합격을 가려내는 자동 검사 부품. _타입 검사·문법 검사·테스트 같은 점검 명령을 컴퓨터에서 실제로 실행하고, 끝난 결과(성공했는지, 화면에 뜬 글, 걸린 시간)를 모아 합격/불합격으로 정리한다. 실패하면 출력에서 'error'·'fail' 같은 단어가 든 대표 한 줄을 뽑아 무엇이 잘못됐는지 요약해 주고, 사용자가 도중에 멈추라고 하면(취소) 돌던 검사를 중단시키며, 너무 오래 걸리면(2분 기본) 시간 초과로 끊는다._
@@ -190,21 +208,17 @@
 - **process/kill-tree** — 실행 중인 AI 프로그램과 그것이 줄줄이 띄운 하위 프로그램들을 통째로 종료시키는 부품 _작업을 취소하거나 시간 초과로 멈출 때, 윈도우에서는 시스템의 taskkill 명령(/T 트리·/F 강제)으로 부모부터 손자까지 가족 전체를 한 번에 끝낸다. 윈도우가 아니면 그냥 프로그램 하나만 끄면 충분하므로 바로 멈춘다._
   - →의존: — · ←피의존: cli/detect, mcp/stdio · 92줄
 
-### secret · core — 사용자의 API 키 같은 비밀 정보를 컴퓨터에 안전하게 잠그고(암호화) 다시 푸는(복호화) 방법을 정해두는 규칙 모음이다.
-- **secret/types** — 비밀 정보를 안전하게 잠그고 푸는 기능이 갖춰야 할 약속(규칙표)을 적어둔 설계도 _API 키 같은 중요한 비밀을 다룰 때 '잠금이 가능한지 확인', '평문을 암호로 잠그기', '암호를 다시 평문으로 풀기' 이 세 가지 기능을 반드시 제공하도록 정해둔 약속이다. 실제 잠금 작업은 운영체제(윈도우·맥·리눅스)의 금고 기능에 맡기고, 이 파일은 그 기능이 따라야 할 형식만 명시한다._
-  - →의존: — · ←피의존: engine, main/secret-crypto · 15줄
-
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +35 · 621줄
+  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +37 · 621줄
 - **shared/cliAuthInstallMeta**
   - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/bridge/ws-bridge, renderer/components/AddAiWizard · 42줄
 - **shared/transport/channels**
-  - →의존: — · ←피의존: shared/transport/fixtures · 136줄
+  - →의존: — · ←피의존: server/handlers, server/ws-host, shared/transport/fixtures · 136줄
+- **shared/transport/protocol**
+  - →의존: — · ←피의존: renderer/bridge/ws-bridge, server/ws-host · 156줄
 - **shared/transport/fixtures**
   - →의존: shared/transport/channels · ←피의존: — · 98줄
-- **shared/transport/protocol**
-  - →의존: — · ←피의존: renderer/bridge/ws-bridge · 131줄
 
 ---
 _이 파일은 자동 생성물이다. 코드 변경 후 `npm run brain` 으로 갱신. 설명은 `scripts/brain/descriptions.json` 에서 손볼 수 있다._
