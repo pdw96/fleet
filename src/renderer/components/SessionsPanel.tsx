@@ -12,6 +12,8 @@ import { AddAiWizard } from './AddAiWizard'
 interface Props {
   sessions: LlmDescriptor[]
   onRefresh: () => void
+  /** AppInfo.runtime — 웹이면 Electron 전용 업데이트 섹션을 숨긴다(#197 B4). null=미확정(데스크톱 동형). */
+  runtime?: 'electron' | 'web' | null
 }
 
 // MCP 상태 경량 폴링 간격(ms). 포커스 유지 중 서버 종료/크래시도 반영하기 위한 보조 경로(#21 옵션B).

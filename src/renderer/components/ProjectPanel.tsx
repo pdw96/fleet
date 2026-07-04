@@ -12,6 +12,8 @@ import {
 
 interface Props {
   sessions: LlmDescriptor[]
+  /** AppInfo.runtime — 웹이면 dialog 버튼 대신 경로 입력을 렌더(#197 B4). null=미확정(데스크톱 동형). */
+  runtime?: 'electron' | 'web' | null
 }
 
 /** 진행 로그 한 줄 — 저장소 재생(FleetEvent)과 라이브(OrchestratorEvent)를 동일 형태로 보관. */
