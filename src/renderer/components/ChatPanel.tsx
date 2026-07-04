@@ -8,6 +8,7 @@ import type {
   ToolStep,
 } from '../../shared/types'
 import { agentHue, cx, vars } from '../ui'
+import { useHydration } from '../bridge/hydration'
 
 interface Props {
   sessions: LlmDescriptor[]
@@ -69,24 +70,31 @@ export function ChatPanel({ sessions }: Props) {
   // 보관했다가, 스냅샷 머지 시 텍스트 델타와 함께 seq 순으로 재생한다(ok 유실로 칩이 running 에 멈추는 것 방지).
   const pendingToolsRef = useRef<Record<string, { seq: number; step: ToolStep }[]>>({})
   const hydratedRef = useRef(false)
+  const { nonce: hydrateNonce } = useHydration()
+  // 하이드레이션 윈도우 중 라이브로 도착한 busy 방 / start 스트림 — 스냅샷 replace 시 보존 대상(라이브 우선).
+  const liveBusyRef = useRef<Set<string>>(new Set())
+  const liveStartedStreamsRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     // fire-and-forget 갱신은 reject 를 직접 처리해야 한다 — 안 그러면 일시적 IPC 실패가
     // unhandled rejection 으로 샌다(앱·테스트 양쪽). 최선노력 갱신이라 로그만 남기고 무시한다.
     refreshRooms().catch((e) => console.error('방 목록 갱신 실패', e))
-    // 마운트 1회 로드(refreshRooms 는 초기 activeRoom=null 로 1회 실행 의도) — 의존성 추가 시 방 전환마다 재실행되어 잘못.
+    // 마운트 + 웹 재접속 세대(hydrateNonce)에 방 목록 재조회. refreshRooms 는 activeRoom 이 이미 있으면
+    // 자동선택하지 않으므로 방 전환마다 재실행되지 않는다(데스크톱은 nonce 0 고정 — 마운트 1회).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [hydrateNonce])
 
   useEffect(() => {
     activeRoomRef.current = activeRoom
     if (activeRoom) refreshMessages(activeRoom).catch((e) => console.error('메시지 갱신 실패', e))
-  }, [activeRoom])
+    // hydrateNonce: 웹 재접속 세대마다 활성 방 히스토리 재조회(데스크톱은 0 고정 — refreshMessages 는 ref만 클로저해 안정).
+  }, [activeRoom, hydrateNonce])
 
   // 채팅 토큰 스트림 구독 — 마운트 1회. 방 필터는 렌더에서 하므로 activeRoom 클로저에 의존하지 않는다.
   useEffect(() => {
     const unsub = window.fleet.onChatStream((e: ChatStreamEvent) => {
       if (e.kind === 'start') {
+        if (!hydratedRef.current) liveStartedStreamsRef.current.add(e.streamId)
         setStreams((prev) => ({
           ...prev,
           [e.streamId]: {
@@ -130,6 +138,7 @@ export function ChatPanel({ sessions }: Props) {
         })
       } else if (e.kind === 'end') {
         endedStreamsRef.current.add(e.streamId) // 하이드레이션 레이스 가드(스냅샷 되살림 방지)
+        liveStartedStreamsRef.current.delete(e.streamId) // 윈도우 중 종료 — replace 보존 대상서 제외
         // 라이브 말풍선 제거(어느 방이든) + 영속 메시지를 활성 방에 한해 낙관적 추가(토론 중간 발언 즉시 표시).
         setStreams((prev) => {
           if (!prev[e.streamId]) return prev
@@ -144,6 +153,7 @@ export function ChatPanel({ sessions }: Props) {
         }
       } else if (e.kind === 'error') {
         endedStreamsRef.current.add(e.streamId) // 에러도 종료 — 스냅샷 되살림 방지
+        liveStartedStreamsRef.current.delete(e.streamId) // 윈도우 중 종료 — replace 보존 대상서 제외
         // 말풍선을 에러 표시로 전환(다음 ask/discuss 시 정리됨).
         setStreams((prev) => {
           const cur = prev[e.streamId]
@@ -152,10 +162,12 @@ export function ChatPanel({ sessions }: Props) {
         })
       } else if (e.kind === 'busy') {
         // 방 진행 시작 — main 권위 신호. 활성 방이면 렌더에서 진행 표시로 파생된다.
+        if (!hydratedRef.current) liveBusyRef.current.add(e.roomId)
         setBusyRooms((prev) => (prev.has(e.roomId) ? prev : new Set(prev).add(e.roomId)))
       } else {
         // idle: 방의 마지막 연산 종료.
         idledRoomsRef.current.add(e.roomId) // 하이드레이션 레이스 가드(스냅샷 되살림 방지)
+        liveBusyRef.current.delete(e.roomId) // 윈도우 중 idle — replace 보존 대상서 제외
         setBusyRooms((prev) => {
           if (!prev.has(e.roomId)) return prev
           const next = new Set(prev)
@@ -167,55 +179,73 @@ export function ChatPanel({ sessions }: Props) {
     return unsub
   }, [])
 
-  // 마운트 시 진행 상태 스냅샷 복원(단일 소스 오브 트루스) — 탭 재진입으로 로컬 state 가 날아가도
-  // main 이 보유한 busy 방·라이브 스트림을 되살려 "진행 중"이 끝난 것처럼 보이지 않게 한다.
-  // 구독(onChatStream)을 먼저 건 뒤 조회해, 조회와 라이브 델타 사이 간극을 최소화한다.
+  // 마운트·웹 재접속(hydrateNonce) 시 진행 상태 스냅샷 복원 — 스냅샷은 권위(replace). merge(추가만)면
+  // 끊긴 사이 idle/end 된 방·스트림의 stale 진행 표시(유령 말풍선·영구 busy)가 남는다(#197 B4).
+  // 라이브-우선 가드(ended/idled/liveBusy/liveStarted)와 델타 버퍼는 이 하이드레이션 윈도우 기준으로 리셋한다.
   useEffect(() => {
-    void window.fleet.getChatActivity().then((a) => {
-      // 스냅샷은 조회 시점값이라 resolve 전 도착한 라이브 이벤트보다 스테일할 수 있다.
-      // 항상 라이브 우선: 윈도우 중 끝난(idle/end) 건 되살리지 않고, 이미 아는 키는 덮어쓰지 않는다.
-      // 버퍼는 setStreams 갱신부가 지연 실행되므로 지금 지역 변수로 캡처한 뒤 윈도우를 닫는다
-      // (갱신부 안에서 ref 를 비우면 캡처 전에 사라질 수 있다).
-      const pending = pendingDeltasRef.current
-      pendingDeltasRef.current = {}
-      const pendingTools = pendingToolsRef.current
-      pendingToolsRef.current = {}
-      hydratedRef.current = true
-      setBusyRooms((prev) => {
-        const next = new Set(prev) // 윈도우 중 도착한 busy 반영분 유지
-        for (const r of a.busyRooms) if (!idledRoomsRef.current.has(r)) next.add(r)
-        return next
-      })
-      setStreams((prev) => {
-        const merged = { ...prev } // 라이브 start/delta 반영분 유지
-        for (const s of a.streams) {
-          if (s.streamId in merged) continue // 라이브가 이미 아는 스트림 — 덮어쓰지 않음
-          if (endedStreamsRef.current.has(s.streamId)) continue // 윈도우 중 종료됨 — 되살리지 않음
-          // 스냅샷(seq 까지 반영) + 윈도우 중 버퍼된 더 새로운 이벤트(seq>스냅샷)를 seq 순으로 재생한다.
-          // 델타는 텍스트로, 도구 단계는 id in-place 로 적용하며 공유 seq 를 전진시킨다(이중 집계 방지).
-          let { text, seq } = s
-          const steps = [...s.steps]
-          const buffered: ({ seq: number; delta: string } | { seq: number; step: ToolStep })[] = [
-            ...(pending[s.streamId] ?? []),
-            ...(pendingTools[s.streamId] ?? []),
-          ].sort((x, y) => x.seq - y.seq)
-          for (const ev of buffered) {
-            if (ev.seq <= seq) continue // 스냅샷이 이미 반영 — 이중 집계 방지
-            if ('step' in ev) {
-              const i = steps.findIndex((x) => x.id === ev.step.id)
-              if (i >= 0) steps[i] = ev.step
-              else steps.push(ev.step)
-            } else {
-              text += ev.delta
-            }
-            seq = ev.seq
+    hydratedRef.current = false
+    endedStreamsRef.current = new Set()
+    idledRoomsRef.current = new Set()
+    liveBusyRef.current = new Set()
+    liveStartedStreamsRef.current = new Set()
+    pendingDeltasRef.current = {}
+    pendingToolsRef.current = {}
+    let cancelled = false
+    window.fleet
+      .getChatActivity()
+      .then((a) => {
+        if (cancelled) return // 더 새 하이드레이션 세대가 시작됨 — 이 스냅샷은 stale
+        const pending = pendingDeltasRef.current
+        pendingDeltasRef.current = {}
+        const pendingTools = pendingToolsRef.current
+        pendingToolsRef.current = {}
+        hydratedRef.current = true
+        setBusyRooms(() => {
+          // replace: 윈도우 중 라이브 busy(liveBusyRef) ∪ 스냅샷 busy(윈도우 중 idle 된 방 제외).
+          const next = new Set(liveBusyRef.current)
+          for (const r of a.busyRooms) if (!idledRoomsRef.current.has(r)) next.add(r)
+          return next
+        })
+        setStreams((prev) => {
+          const merged: Record<string, StreamBubble> = {}
+          // 윈도우 중 라이브 start 로 생긴 스트림만 보존 — 그 외 prev(재접속 전 잔존)는 스냅샷에 없으면
+          // 끊긴 사이 종료된 유령이므로 폐기한다(스냅샷 권위 · 스냅샷에 있으면 아래 루프가 복원).
+          for (const [id, s] of Object.entries(prev)) {
+            if (liveStartedStreamsRef.current.has(id)) merged[id] = s
           }
-          merged[s.streamId] = { ...s, text, seq, steps }
-        }
-        return merged
+          for (const s of a.streams) {
+            if (s.streamId in merged) continue // 라이브가 이미 아는 스트림 — 덮어쓰지 않음
+            if (endedStreamsRef.current.has(s.streamId)) continue // 윈도우 중 종료 — 되살리지 않음
+            // 스냅샷(seq 까지 반영) + 윈도우 중 버퍼된 더 새로운 이벤트(seq>스냅샷)를 seq 순으로 재생.
+            let { text, seq } = s
+            const steps = [...s.steps]
+            const buffered: ({ seq: number; delta: string } | { seq: number; step: ToolStep })[] = [
+              ...(pending[s.streamId] ?? []),
+              ...(pendingTools[s.streamId] ?? []),
+            ].sort((x, y) => x.seq - y.seq)
+            for (const ev of buffered) {
+              if (ev.seq <= seq) continue
+              if ('step' in ev) {
+                const i = steps.findIndex((x) => x.id === ev.step.id)
+                if (i >= 0) steps[i] = ev.step
+                else steps.push(ev.step)
+              } else {
+                text += ev.delta
+              }
+              seq = ev.seq
+            }
+            merged[s.streamId] = { ...s, text, seq, steps }
+          }
+          return merged
+        })
       })
-    })
-  }, [])
+      .catch((e) => console.error('채팅 활동 스냅샷 복원 실패', e)) // 재접속 하이드레이션이 재시도(#197 B4)
+    return () => {
+      cancelled = true
+    }
+    // hydrateNonce: 마운트 + 웹 재접속 세대 — 그 외 상태에 비의존(윈도우 리셋이 정확성 조건)이라 의도적 한정.
+    // (effect 는 setter·ref·window.fleet 만 참조 — 리액티브 누락 deps 없음.)
+  }, [hydrateNonce])
 
   async function refreshRooms() {
     const r = await window.fleet.listRooms()
@@ -232,20 +262,28 @@ export function ChatPanel({ sessions }: Props) {
 
   async function createRoom() {
     const title = newRoomTitle.trim() || `작업방 ${rooms.length + 1}`
-    const room = await window.fleet.createRoom(
-      title,
-      sessions.map((s) => s.id),
-    )
-    setNewRoomTitle('')
-    await refreshRooms()
-    setActiveRoom(room.id)
+    try {
+      const room = await window.fleet.createRoom(
+        title,
+        sessions.map((s) => s.id),
+      )
+      setNewRoomTitle('')
+      await refreshRooms()
+      setActiveRoom(room.id)
+    } catch (e) {
+      console.error('방 생성 실패', e) // 전송 단절 포함 — 재접속 후 재시도 가능(#197 B4 reject audit)
+    }
   }
 
   async function postMessage() {
     if (!activeRoom || !text.trim()) return
-    await window.fleet.postUserMessage(activeRoom, text.trim())
-    setText('')
-    await refreshMessages(activeRoom)
+    try {
+      await window.fleet.postUserMessage(activeRoom, text.trim())
+      setText('')
+      await refreshMessages(activeRoom)
+    } catch (e) {
+      console.error('메시지 전송 실패', e) // 입력은 보존(setText 미실행) — 재전송 가능
+    }
   }
 
   // 진행(busy) 해제는 main 의 idle 이벤트가 권위. 여기선 round-trip 동안의 중복 클릭만 낙관적으로 막는다.

@@ -1,7 +1,9 @@
 /** @vitest-environment jsdom */
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ReactElement } from 'react'
 import type { ChatActivity, ChatRoom, ChatStreamEvent, LlmDescriptor } from '../../shared/types'
+import { HydrationContext } from '../bridge/hydration'
 import { ChatPanel } from './ChatPanel'
 
 const SESSIONS: LlmDescriptor[] = [
@@ -337,5 +339,79 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
 
     expect(screen.getByText('✓ grep')).toBeTruthy() // 유실되지 않고 ok 로 복원
     expect(screen.queryByText('⏳ grep')).toBeNull() // running 에 멈추지 않음
+  })
+})
+
+function renderWithNonce(ui: ReactElement, nonce: number) {
+  return render(
+    <HydrationContext.Provider value={{ nonce, connection: 'connected' }}>
+      {ui}
+    </HydrationContext.Provider>,
+  )
+}
+
+describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)', () => {
+  it('끊긴 사이 idle 된 방의 stale busy 를 스냅샷이 내린다', async () => {
+    mockFleet({
+      listRooms: vi.fn().mockResolvedValue([ROOM]),
+      getChatActivity: vi
+        .fn()
+        .mockResolvedValueOnce({ busyRooms: [ROOM.id], streams: [] } satisfies ChatActivity) // 최초: busy
+        .mockResolvedValue({ busyRooms: [], streams: [] } satisfies ChatActivity), // 재접속: idle 됐음
+    })
+    const { rerender } = renderWithNonce(<ChatPanel sessions={SESSIONS} />, 0)
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: 'AI 토론 중…' })).toBeTruthy()
+    // 재접속(nonce+1) → 스냅샷 재조회 → busy 해제(replace)
+    rerender(
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+        <ChatPanel sessions={SESSIONS} />
+      </HydrationContext.Provider>,
+    )
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: '🤖 AI 자동 토론' })).toBeTruthy()
+  })
+
+  it('끊긴 사이 종료된 라이브 스트림(유령 말풍선)을 스냅샷이 걷어낸다', async () => {
+    const fleet = mockFleet({
+      listRooms: vi.fn().mockResolvedValue([ROOM]),
+      getChatActivity: vi
+        .fn()
+        .mockResolvedValue({ busyRooms: [], streams: [] } satisfies ChatActivity),
+    })
+    const { rerender } = renderWithNonce(<ChatPanel sessions={SESSIONS} />, 0)
+    await act(async () => {})
+    fleet.fire({ kind: 'start', streamId: 'st1', roomId: ROOM.id, llmId: SESSIONS[0].id })
+    expect(screen.getByText(/응답 대기 중/)).toBeTruthy()
+    // 재접속: 스냅샷에 st1 없음(끊긴 사이 end 유실) → 말풍선 제거
+    rerender(
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+        <ChatPanel sessions={SESSIONS} />
+      </HydrationContext.Provider>,
+    )
+    await act(async () => {})
+    expect(screen.queryByText(/응답 대기 중/)).toBeNull()
+  })
+
+  it('재하이드레이션 윈도우 중 라이브 start 로 생긴 스트림은 보존한다(라이브 우선)', async () => {
+    let resolveActivity!: (a: ChatActivity) => void
+    const fleet = mockFleet({
+      listRooms: vi.fn().mockResolvedValue([ROOM]),
+      getChatActivity: vi
+        .fn()
+        .mockResolvedValueOnce({ busyRooms: [], streams: [] } satisfies ChatActivity)
+        .mockImplementationOnce(() => new Promise<ChatActivity>((r) => (resolveActivity = r))), // 재접속 스냅샷은 지연
+    })
+    const { rerender } = renderWithNonce(<ChatPanel sessions={SESSIONS} />, 0)
+    await act(async () => {})
+    rerender(
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+        <ChatPanel sessions={SESSIONS} />
+      </HydrationContext.Provider>,
+    )
+    // 윈도우 중 라이브 start 도착 → 스냅샷(빈)이 나중에 resolve 돼도 보존돼야 한다
+    fleet.fire({ kind: 'start', streamId: 'st-live', roomId: ROOM.id, llmId: SESSIONS[0].id })
+    await act(async () => resolveActivity({ busyRooms: [], streams: [] }))
+    expect(screen.getByText(/응답 대기 중/)).toBeTruthy()
   })
 })
