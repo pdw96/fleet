@@ -34,7 +34,9 @@ export function ApprovalModal() {
 
   const decide = (approved: boolean): void => {
     if (!current) return
-    void window.fleet.respondApproval(current.id, approved)
+    // 회신 유실(전송 단절)은 조용히 흡수 — main/server 의 승인 타임아웃(fail-closed 자동 거부)이 권위라
+    // 렌더러가 재시도하지 않는다(#197 B4 reject audit).
+    void window.fleet.respondApproval(current.id, approved).catch(() => undefined)
     setQueue((prev) => prev.slice(1))
   }
 

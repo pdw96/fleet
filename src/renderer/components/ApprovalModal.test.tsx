@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest } from '../../shared/types'
 import { ApprovalModal } from './ApprovalModal'
 
-function mockFleet() {
+function mockFleet(overrides: { respondApproval?: ReturnType<typeof vi.fn> } = {}) {
   let handler: ((req: ApprovalRequest) => void) | undefined
-  const respondApproval = vi.fn().mockResolvedValue(undefined)
+  const respondApproval = overrides.respondApproval ?? vi.fn().mockResolvedValue(undefined)
   const fleet = {
     onApprovalRequest: vi.fn((cb: (req: ApprovalRequest) => void) => {
       handler = cb
@@ -189,5 +189,23 @@ describe('ApprovalModal', () => {
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Enter' }) // dialog 핸들러는 Enter 를 무시
     expect(respondApproval).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog')).toBeTruthy() // 모달 유지(우발적 결정 없음)
+  })
+
+  it('respondApproval reject 는 unhandled rejection 없이 흡수된다(#197 B4)', async () => {
+    const onUnhandled = vi.fn()
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const { fire } = mockFleet({
+        respondApproval: vi.fn().mockRejectedValue(new Error('전송 단절')),
+      })
+      render(<ApprovalModal />)
+      fire(REQ)
+      fireEvent.click(await screen.findByRole('button', { name: '승인' }))
+      await act(async () => {})
+      await new Promise((r) => setTimeout(r, 0)) // unhandledRejection 은 매크로태스크에 방출 — 한 틱 양보
+      expect(onUnhandled).not.toHaveBeenCalled()
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled)
+    }
   })
 })
