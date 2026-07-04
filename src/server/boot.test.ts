@@ -121,6 +121,26 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
     ).rejects.toThrow()
   })
 
+  describe('FLEET_STATIC_DIR 공백 폴백 — 정보노출 방지(#197 B3 · Codex P2)', () => {
+    it('빈 문자열 → CWD 대신 renderer 폴백 → 레포 package.json 미서빙(404)', async () => {
+      // `??` 는 ''(빈 문자열)에서 폴백하지 않는다 — env 템플레이팅으로 FLEET_STATIC_DIR='' 가 되면
+      // staticDir 가 CWD(레포 루트)로 해소돼 소스/package.json 이 그대로 서빙된다(#197 B3 · Codex
+      // P2). 이 테스트는 '/package.json' 200(레포 파일 노출) 대신 404(renderer 폴백엔 없음)를 요구해
+      // 픽스 유무를 구분한다.
+      const server = await bootServer({
+        FLEET_PORT: '0',
+        FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-b3-data-')),
+        FLEET_STATIC_DIR: '',
+      })
+      try {
+        const res = await fetch(`http://127.0.0.1:${server.port}/package.json`)
+        expect(res.status).toBe(404)
+      } finally {
+        await server.close()
+      }
+    })
+  })
+
   describe('WS Origin 가드 — CSWSH 방어(#197 B3 · Codex P1)', () => {
     /**
      * node `ws` 클라의 `origin` 옵션이 실제 Origin 헤더를 세팅한다(결정론). 'open' → allowed,

@@ -134,8 +134,12 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
   const handlers = createHandlers({ engine, approver: ipcApprover, appInfo })
   wsHost = createWsHost({ handlers, eventCursor: () => store.eventCursor() })
 
+  // `?.trim() || 기본값` — FLEET_HOST/FLEET_WORKSPACE_ROOT/FLEET_PORT 와 동일 패턴. `??` 는 빈
+  // 문자열에서 폴백하지 않아, env 템플레이팅으로 FLEET_STATIC_DIR='' 가 되면 staticDir 가 CWD 로
+  // 해소되고 createStaticHandler('') 가 저장소/앱 루트 파일을 그대로 서빙한다(정보 노출 · #197 B3
+  // Codex P2). trim 후 빈 문자열/공백만도 미설정으로 취급해 renderer 폴백을 강제한다.
   const staticDir =
-    env['FLEET_STATIC_DIR'] ?? join(dirname(fileURLToPath(import.meta.url)), '../renderer')
+    env['FLEET_STATIC_DIR']?.trim() || join(dirname(fileURLToPath(import.meta.url)), '../renderer')
   const httpServer = createServer(createStaticHandler(staticDir))
   const wss = new WebSocketServer({
     server: httpServer,
