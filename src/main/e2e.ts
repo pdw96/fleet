@@ -50,3 +50,38 @@ export function seedE2eFixtures(engine: FleetEngine): void {
   // 취소 버튼·running 잠금의 탭 전환 복원(getRunActivity)을 관찰할 수 있다(앱 종료가 정리).
   engine.setWorkspace(mkdtempSync(join(tmpdir(), 'fleet-e2e-ws-')))
 }
+
+/**
+ * 완주 러너(#197 B4 — 웹 스모크 "목표 입력→런 완주" 게이트 전용). 기본 e2eRunner 는 의도적 영구
+ * in-flight(데스크톱 e2e 가 진행 고정에 의존)라 완주가 불가하다 — 이 러너는 프롬프트 내용으로 단계를
+ * 판별해 결정론적으로 응답한다: 플래너→단일 작업 계획 JSON · 리뷰어→approved(빈 diff 도 승인이
+ * 리뷰 프롬프트의 명시 계약) · 그 외(구현/요약)→고정 텍스트. 파일 무변경 실행이라 diff 는 항상 비고
+ * verify 는 빈 워크스페이스(package.json 부재)에서 미구동 → project.done 까지 완주한다.
+ * 활성화는 FLEET_E2E==='1' 안에서 FLEET_E2E_RUNNER==='complete' 로만(이중 opt-in — 프로덕션 격리).
+ * (replan 프롬프트도 플래너 마커를 포함하지만 maxReplanRounds 기본 0=비활성이라 스모크 경로 미도달.)
+ */
+export const e2eCompletingRunner: CommandRunner = (_command, args, opts, onStdout) => {
+  if (args.includes('--version'))
+    return Promise.resolve({ code: 0, stdout: 'fleet-e2e 9.9.9', stderr: '' })
+  if (opts.stdinInput === PROBE_PROMPT)
+    return Promise.resolve({ code: 0, stdout: 'ok', stderr: '' })
+  const prompt = opts.stdinInput ?? ''
+  const payload = prompt.includes('너는 소프트웨어 프로젝트 플래너다')
+    ? '{"tasks":[{"title":"산출물 작성","description":"목표를 요약한 산출물을 만든다","role":"implementer","dependsOn":[]}]}'
+    : prompt.includes('변경(diff)')
+      ? '{"approved": true, "feedback": ""}'
+      : 'E2E 완주 러너 응답'
+  // 스트림 파서(누적 델타)와 stdout 수확 어느 경로든 같은 본문을 얻도록 두 채널 모두에 싣는다.
+  onStdout?.(
+    JSON.stringify({
+      type: 'stream_event',
+      event: { delta: { type: 'text_delta', text: payload } },
+    }) + '\n',
+  )
+  return Promise.resolve({ code: 0, stdout: payload, stderr: '' })
+}
+
+/** e2e 러너 선택 — 완주 러너는 명시 opt-in(`complete`)만. 미지 값은 기본(hang) 러너로 fail-safe. */
+export function resolveE2eRunner(env: NodeJS.ProcessEnv): CommandRunner {
+  return env['FLEET_E2E_RUNNER'] === 'complete' ? e2eCompletingRunner : e2eRunner
+}
