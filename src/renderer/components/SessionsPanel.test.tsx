@@ -320,4 +320,16 @@ describe('SessionsPanel', () => {
     await waitFor(() => expect(fleet.getMcpStatus).toHaveBeenCalledTimes(2))
     expect(screen.queryByText(/mcp__fs__read/)).toBeTruthy()
   })
+
+  it('web 런타임에선 업데이트 채널 섹션을 렌더하지 않는다(#197 B4)', async () => {
+    mockFleet()
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={() => {}} runtime="web" />)
+    expect(screen.queryByText('업데이트 채널')).toBeNull()
+  })
+
+  it('electron 런타임에선 업데이트 채널 섹션이 보인다(#197 B4)', async () => {
+    mockFleet()
+    await renderSettled(<SessionsPanel sessions={[]} onRefresh={() => {}} runtime="electron" />)
+    expect(screen.getByText('업데이트 채널')).toBeTruthy()
+  })
 })

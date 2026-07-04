@@ -16,14 +16,17 @@ export function UpdateBanner() {
       liveReceivedRef.current = true
       setState(e)
     })
-    void window.fleet.getUpdateState().then((snap) => {
-      if (!liveReceivedRef.current) setState(snap)
-    })
+    void window.fleet
+      .getUpdateState()
+      .then((snap) => {
+        if (!liveReceivedRef.current) setState(snap)
+      })
+      .catch(() => undefined) // IPC/전송 실패 — idle 유지(#197 B4 reject audit)
     return unsub
   }, [])
 
   const dismiss = (): void => {
-    void window.fleet.dismissUpdate()
+    void window.fleet.dismissUpdate().catch(() => undefined)
     setState({ kind: 'idle' })
   }
 
@@ -31,7 +34,10 @@ export function UpdateBanner() {
     return (
       <div className="update-banner" role="status">
         <span>새 버전 {state.version} 사용 가능</span>
-        <button className="btn" onClick={() => void window.fleet.downloadUpdate()}>
+        <button
+          className="btn"
+          onClick={() => void window.fleet.downloadUpdate().catch(() => undefined)}
+        >
           다운로드
         </button>
       </div>
@@ -48,7 +54,10 @@ export function UpdateBanner() {
     return (
       <div className="update-banner" role="status">
         <span>버전 {state.version} 다운로드 완료 — 재시작해 적용</span>
-        <button className="btn" onClick={() => void window.fleet.installUpdate()}>
+        <button
+          className="btn"
+          onClick={() => void window.fleet.installUpdate().catch(() => undefined)}
+        >
           지금
         </button>
         <button className="btn btn-ghost" onClick={dismiss}>
