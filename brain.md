@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 82 files · 210 import wires · 44 IPC channels · 생성 2026-07-04T14:51 UTC
+> 82 files · 212 import wires · 44 IPC channels · 생성 2026-07-04T15:56 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -44,23 +44,23 @@
 - **renderer/App** — 앱 화면의 큰 틀과 위쪽 탭 메뉴를 그리는 부품 _맨 위 'FLEET' 제목과 세션·프로젝트·채팅 세 탭을 보여주고, 누른 탭에 맞는 화면을 갈아끼웁니다. 현재 등록된 AI 세션 개수와 위험 작업 승인 창도 항상 켜 둡니다._
   - →의존: renderer/bridge/hydration, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, shared/types · ←피의존: renderer/main · 118줄
 - **renderer/bridge/hydration**
-  - →의존: renderer/bridge/ws-bridge, shared/transport/protocol · ←피의존: renderer/App, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/main · 107줄
+  - →의존: renderer/bridge/ws-bridge, shared/transport/protocol · ←피의존: renderer/App, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/main · 109줄
 - **renderer/bridge/ws-bridge**
   - →의존: shared/cliAuthInstallMeta, shared/transport/protocol, shared/types · ←피의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/bridge/web-bridge · 422줄
 - **renderer/components/ProjectPanel** — 목표를 적으면 여러 AI가 역할을 나눠 작업하게 시키는 프로젝트 실행 화면 _원하는 목표와 역할 배정 방식을 입력해 '실행'을 누르면 AI들이 계획·작업·검증을 진행하고, 그 과정을 진행 로그와 작업 보드로 실시간 보여주며 도중에 취소할 수도 있습니다._
-  - →의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/components/elicitation, renderer/ui, shared/types · ←피의존: renderer/App · 644줄
+  - →의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/components/elicitation, renderer/ui, shared/types · ←피의존: renderer/App · 647줄
 - **renderer/components/AddAiWizard**
-  - →의존: renderer/components/authBanners, shared/cliAuthInstallMeta, shared/types · ←피의존: renderer/components/SessionsPanel · 490줄
+  - →의존: renderer/bridge/errors, renderer/components/authBanners, shared/cliAuthInstallMeta, shared/types · ←피의존: renderer/components/SessionsPanel · 491줄
+- **renderer/components/SessionsPanel** — 어떤 AI를 쓸지 등록하고 설정하는 세션 관리 화면 _컴퓨터에 깔린 클로드·코덱스 같은 CLI 도구를 감지해 등록하거나, API 키를 넣어 Anthropic·OpenAI·Google AI를 추가하고, 각 AI가 잘하는 역할과 외부 도구(MCP) 연결도 지정합니다._
+  - →의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/components/AddAiWizard, shared/types · ←피의존: renderer/App · 306줄
+- **renderer/bridge/errors**
+  - →의존: renderer/bridge/ws-bridge · ←피의존: renderer/components/AddAiWizard, renderer/components/ProjectPanel, renderer/components/SessionsPanel · 17줄
 - **renderer/components/ChatPanel** — 여러 AI와 한 작업방에서 대화하고 자동 토론을 시키는 채팅 화면 _작업방을 만들어 사용자가 메시지를 보내고 특정 AI에게 묻거나 여러 AI를 자동으로 토론시킬 수 있으며, AI 답변이 한 글자씩 실시간으로 흘러나오는 모습을 말풍선으로 보여줍니다. 탭을 떠났다 돌아와도 진행 중이던 대화가 사라지지 않게 상태를 되살립니다._
   - →의존: renderer/bridge/hydration, renderer/ui, shared/types · ←피의존: renderer/App · 517줄
-- **renderer/components/SessionsPanel** — 어떤 AI를 쓸지 등록하고 설정하는 세션 관리 화면 _컴퓨터에 깔린 클로드·코덱스 같은 CLI 도구를 감지해 등록하거나, API 키를 넣어 Anthropic·OpenAI·Google AI를 추가하고, 각 AI가 잘하는 역할과 외부 도구(MCP) 연결도 지정합니다._
-  - →의존: renderer/bridge/hydration, renderer/components/AddAiWizard, shared/types · ←피의존: renderer/App · 304줄
 - **renderer/bridge/web-bridge**
   - →의존: renderer/bridge/ws-bridge, shared/types · ←피의존: renderer/main · 39줄
 - **renderer/main** — 앱 화면을 맨 처음 켜서 빈 페이지에 띄우는 시작 부품 _웹 페이지의 빈 자리를 찾아 그 안에 위의 App 화면 전체를 그려 넣어 앱을 처음 띄웁니다. 개발 중 실수를 더 잘 잡아주는 점검 모드로 감싸 실행합니다._
   - →의존: renderer/App, renderer/bridge/hydration, renderer/bridge/web-bridge · ←피의존: — · 21줄
-- **renderer/bridge/errors**
-  - →의존: renderer/bridge/ws-bridge · ←피의존: renderer/components/ProjectPanel · 17줄
 - **renderer/components/ApprovalModal** — 위험한 작업을 하기 전에 사용자에게 허락을 받는 확인 창 _파일 삭제·명령 실행 같은 위험 작업이 생기면 '거부/승인' 팝업을 띄우고, 정해진 시간이 지나면 자동으로 거부합니다. 실수로 엔터를 눌러도 거부 쪽으로 떨어지게 해 위험한 작업이 잘못 승인되는 걸 막습니다._
   - →의존: shared/types · ←피의존: renderer/App · 142줄
 - **renderer/components/UpdateBanner**
