@@ -56,8 +56,8 @@ export function seedE2eFixtures(engine: FleetEngine): void {
  * 완주 러너(#197 B4 — 웹 스모크 "목표 입력→런 완주" 게이트 전용). 기본 e2eRunner 는 의도적 영구
  * in-flight(데스크톱 e2e 가 진행 고정에 의존)라 완주가 불가하다 — 이 러너는 프롬프트 내용으로 단계를
  * 판별해 결정론적으로 응답한다: 플래너→단일 작업 계획 JSON · 리뷰어→approved(빈 diff 도 승인이
- * 리뷰 프롬프트의 명시 계약) · 그 외(구현/요약)→고정 텍스트. 파일 무변경 실행이라 diff 는 항상 비고
- * verify 는 빈 워크스페이스(package.json 부재)에서 미구동 → project.done 까지 완주한다.
+ * 리뷰 프롬프트의 명시 계약) · 그 외(구현/요약)→고정 텍스트. 파일 무변경 실행이라 diff 는 항상 비고,
+ * 검증 단계는 e2eVerifyRunner(결정론 pass)가 대체(실 npm 미스폰) → project.done(성공)까지 완주한다.
  * 활성화는 FLEET_E2E==='1' 안에서 FLEET_E2E_RUNNER==='complete' 로만(이중 opt-in — 프로덕션 격리).
  * (replan 프롬프트도 플래너 마커를 포함하지만 maxReplanRounds 기본 0=비활성이라 스모크 경로 미도달.)
  */
