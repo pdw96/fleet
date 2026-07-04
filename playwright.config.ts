@@ -17,4 +17,14 @@ export default defineConfig({
   reporter: [['list'], ['html', { open: 'never' }]],
   // 재시도 발생 시에만 trace 수집(test-results/, gitignore) — 실패 디버깅용, 정상 실행 오버헤드 0.
   use: { trace: 'on-first-retry' },
+  // electron(기존 _electron.launch e2e)과 web(chromium — fleet-server + ws-bridge, #197 B4)을 분리한다.
+  // web 스모크는 loopback endpoint 한정(B5 전 bind 게이트와 짝 — 이슈 B4).
+  projects: [
+    { name: 'electron', testIgnore: /\.web\.e2e\.ts$/ },
+    {
+      name: 'web',
+      testMatch: /\.web\.e2e\.ts$/,
+      use: { browserName: 'chromium', trace: 'on-first-retry' },
+    },
+  ],
 })

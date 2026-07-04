@@ -2,6 +2,7 @@ import type { AppInfo, FleetBridge } from '../shared/types'
 import type { BothInvokeChannel } from '../shared/transport/channels'
 import type { FleetEngine } from '../main/core/engine'
 import type { IpcApprover } from '../main/core/safety/approval-bridge'
+import { applyWorkspaceSet } from '../main/core/workspace/set-workspace'
 
 /**
  * 서버 핸들러 테이블(#197 B3) — main/index.ts `registerIpc` 의 기계적 이사(웹 스코프 32채널).
@@ -31,6 +32,7 @@ type ChannelMethodMap = {
   'fleet:project:activity': 'getRunActivity'
   'fleet:workspace:get': 'getWorkspace'
   'fleet:workspace:select': 'selectWorkspace'
+  'fleet:workspace:set': 'setWorkspace'
   'fleet:chat:createRoom': 'createRoom'
   'fleet:chat:listRooms': 'listRooms'
   'fleet:chat:history': 'roomHistory'
@@ -62,9 +64,16 @@ export interface HandlerDeps {
   approver: IpcApprover
   /** boot 이 조립(version 산출·runtime:'web' 스탬프). */
   appInfo: AppInfo
+  /** FLEET_WORKSPACE_ROOT(정규화) — workspace:set 의 허용 루트. null = 경로 설정 미지원. */
+  workspaceRoot: string | null
 }
 
-export function createHandlers({ engine, approver, appInfo }: HandlerDeps): HandlerTable {
+export function createHandlers({
+  engine,
+  approver,
+  appInfo,
+  workspaceRoot,
+}: HandlerDeps): HandlerTable {
   return {
     'fleet:app:info': () => appInfo,
 
@@ -92,6 +101,16 @@ export function createHandlers({ engine, approver, appInfo }: HandlerDeps): Hand
     // 헤드리스 서버엔 dialog 가 없다 — Electron "dialog 취소" 와 동형으로 현 워크스페이스 반환.
     // 웹의 경로 설정은 B4 `fleet:workspace:set`(FLEET_WORKSPACE_ROOT 하위 한정) 몫.
     'fleet:workspace:select': () => engine.getWorkspace(),
+    // 웹 경로 설정(#197 B4) — FLEET_WORKSPACE_ROOT 하위 한정·존재 디렉터리·런 중 거부(applyWorkspaceSet).
+    'fleet:workspace:set': (path) =>
+      applyWorkspaceSet(
+        {
+          workspaceRoot,
+          isRunActive: () => engine.getRunActivity().activeProjectIds.length > 0,
+          setWorkspace: (dir) => engine.setWorkspace(dir),
+        },
+        path,
+      ),
 
     // ── 채팅 ──
     'fleet:chat:createRoom': (title, participants) => engine.createRoom(title, participants),

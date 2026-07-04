@@ -60,6 +60,7 @@ const BINDINGS: readonly {
   { method: 'getRunActivity', channel: 'fleet:project:activity', args: [] },
   { method: 'getWorkspace', channel: 'fleet:workspace:get', args: [] },
   { method: 'selectWorkspace', channel: 'fleet:workspace:select', args: [] },
+  { method: 'setWorkspace', channel: 'fleet:workspace:set', args: ['proj-a'] },
   { method: 'createRoom', channel: 'fleet:chat:createRoom', args: ['My Room', ['llm-1']] },
   { method: 'listRooms', channel: 'fleet:chat:listRooms', args: [] },
   { method: 'roomHistory', channel: 'fleet:chat:history', args: ['room-1'] },

@@ -37,6 +37,7 @@ const api: FleetBridge = {
   getRunActivity: () => ipcRenderer.invoke('fleet:project:activity'),
   getWorkspace: () => ipcRenderer.invoke('fleet:workspace:get'),
   selectWorkspace: () => ipcRenderer.invoke('fleet:workspace:select'),
+  setWorkspace: (path) => ipcRenderer.invoke('fleet:workspace:set', path),
 
   // 채팅
   createRoom: (title, participants) =>

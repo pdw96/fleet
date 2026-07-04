@@ -8,7 +8,7 @@ import type { AppInfo } from '../shared/types'
 import { createFleetEngine } from '../main/core/engine'
 import { createIpcApprover } from '../main/core/safety/approval-bridge'
 import { createJsonFileStore } from '../main/core/store/json-file'
-import { e2eRunner, isE2EActive, seedE2eFixtures } from '../main/e2e'
+import { isE2EActive, resolveE2eRunner, resolveE2eVerifyRunner, seedE2eFixtures } from '../main/e2e'
 import { createEnvKeyCrypto } from './env-key-crypto'
 import { createHandlers } from './handlers'
 import { createStaticHandler } from './static'
@@ -113,7 +113,8 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
     onOrchestratorEvent: (e) => wsHost?.broadcast('fleet:orchestrator:event', e),
     onChatStream: (e) => wsHost?.broadcast('fleet:chat:stream', e),
     approver: ipcApprover.approver,
-    runner: e2e ? e2eRunner : undefined,
+    runner: e2e ? resolveE2eRunner(env) : undefined,
+    verifyRunner: e2e ? resolveE2eVerifyRunner(env) : undefined,
     secretCrypto,
   })
   if (e2e) seedE2eFixtures(engine)
@@ -131,7 +132,12 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
     chrome: '',
     runtime: 'web',
   }
-  const handlers = createHandlers({ engine, approver: ipcApprover, appInfo })
+  const handlers = createHandlers({
+    engine,
+    approver: ipcApprover,
+    appInfo,
+    workspaceRoot: workspaceRoot ? resolve(workspaceRoot) : null,
+  })
   wsHost = createWsHost({ handlers, eventCursor: () => store.eventCursor() })
 
   // `?.trim() || 기본값` — FLEET_HOST/FLEET_WORKSPACE_ROOT/FLEET_PORT 와 동일 패턴. `??` 는 빈

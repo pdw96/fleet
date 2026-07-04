@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { AgentRole, AssignmentPolicy, LlmDescriptor, Project, Task } from '../../shared/types'
 import { ASSIGNABLE_ROLES, MAX_REPLAN_ROUNDS } from '../../shared/types'
 import { statusColor } from '../ui'
+import { describeError, isTransportError } from '../bridge/errors'
+import { useHydration } from '../bridge/hydration'
 import {
   ELICITATION_FIELDS,
   EMPTY_FIELDS,
@@ -12,6 +14,8 @@ import {
 
 interface Props {
   sessions: LlmDescriptor[]
+  /** AppInfo.runtime — 웹이면 dialog 버튼 대신 경로 입력을 렌더(#197 B4). null=미확정(데스크톱 동형). */
+  runtime?: 'electron' | 'web' | null
 }
 
 /** 진행 로그 한 줄 — 저장소 재생(FleetEvent)과 라이브(OrchestratorEvent)를 동일 형태로 보관. */
@@ -22,7 +26,7 @@ interface LogLine {
   id?: string
 }
 
-export function ProjectPanel({ sessions }: Props) {
+export function ProjectPanel({ sessions, runtime = null }: Props) {
   // 새 프로젝트 폼 상태
   const [goal, setGoal] = useState('')
   const [fields, setFields] = useState<ElicitationFields>(EMPTY_FIELDS)
@@ -65,6 +69,10 @@ export function ProjectPanel({ sessions }: Props) {
   // run.cancelled 는 제외 — 취소 ack 시점엔 실행이 아직 revert 중(활성)이라 스냅샷이 복원해야 옳다(project.done
   // 까지 잠금 유지). 마운트 1회용이라 누적은 무해(ChatPanel 의 endedStreamsRef 와 동형).
   const endedRunsRef = useRef<Set<string>>(new Set())
+  const { nonce: hydrateNonce } = useHydration()
+  const [workspaceInput, setWorkspaceInput] = useState('')
+  // 하이드레이션 윈도우 중 라이브 project.created 로 시작된 실행 — 스냅샷 replace 시 보존(라이브 우선).
+  const liveStartedRunsRef = useRef<Set<string>>(new Set())
 
   // 방 선택을 동기적으로 확정한다: selectedIdRef·카운터를 즉시 갱신하고 이전 방의 보드/로그/요약을 비운다.
   // 동기 처리라 (a) 직후 도착 라이브 이벤트가 새 방 필터를 통과하고(특히 막 생성된 프로젝트의 task.progress),
@@ -102,24 +110,30 @@ export function ProjectPanel({ sessions }: Props) {
     if (selectedIdRef.current === projectId && token === boardTokenRef.current) setTasks(t)
   }
 
-  // 마운트: 방 목록 로드 + 마지막 보던(없으면 최신) 프로젝트 자동 선택.
+  // 마운트·웹 재접속(hydrateNonce): 방 목록 로드 + 마지막 보던(없으면 최신) 프로젝트 자동 선택.
+  // 전송 실패는 조용히(재접속 하이드레이션이 재시도 — #197 B4 reject audit). refreshProjects·selectProject
+  // 는 ref/setter 만 클로저해 안정(리액티브 누락 deps 없음).
   useEffect(() => {
     void (async () => {
-      const list = await refreshProjects()
-      const last = await window.fleet.getLastActiveProject()
-      const pick = last && list.some((p) => p.id === last) ? last : (list[0]?.id ?? null)
-      // 마운트 await 동안 사용자가 이미 방을 선택했으면(예: 새 실행의 project.created) 자동선택으로 되돌리지 않는다.
-      if (pick && !hasSelectedRef.current) selectProject(pick)
+      try {
+        const list = await refreshProjects()
+        const last = await window.fleet.getLastActiveProject()
+        const pick = last && list.some((p) => p.id === last) ? last : (list[0]?.id ?? null)
+        // 마운트 await 동안 사용자가 이미 방을 선택했으면(예: 새 실행의 project.created) 자동선택으로 되돌리지 않는다.
+        if (pick && !hasSelectedRef.current) selectProject(pick)
+      } catch {
+        /* 스냅샷 로드 실패 — 다음 하이드레이션 세대가 재시도 */
+      }
     })()
-  }, [])
+  }, [hydrateNonce])
 
-  // 마운트: 워크스페이스 상태.
+  // 마운트·웹 재접속: 워크스페이스 상태.
   useEffect(() => {
     void window.fleet
       .getWorkspace()
       .then(setWorkspace)
       .catch(() => undefined)
-  }, [])
+  }, [hydrateNonce])
 
   // 마운트: 오케스트레이터 라이브 이벤트 구독(방 필터는 selectedIdRef 로).
   useEffect(() => {
@@ -129,11 +143,12 @@ export function ProjectPanel({ sessions }: Props) {
       // 취소 버튼용 in-flight id. selectProject 가 selectedIdRef 를 동기로 잡으므로 project.created 직후
       // 도착하는 task.progress(영속 안 됨, 재조회로 복원 불가)도 곧바로 라이브 로그 필터를 통과한다.
       if (e.type === 'project.created' && pid) {
+        liveStartedRunsRef.current.add(pid)
         setActiveProjectId(pid)
         // running 잠금은 main 진행 신호로 켠다 — run() 을 호출하지 않은 마운트-옵저버도(스냅샷이 빈 사각
         // = created 직전 마운트) 진행 표시·동시 실행 차단을 얻는다. run() 호출자에겐 멱등(이미 true).
         setRunning(true)
-        void refreshProjects()
+        void refreshProjects().catch(() => undefined)
         selectProject(pid) // 새 프로젝트를 바로 연다(ref 동기 갱신)
       }
       // 실행의 *최종* 종료(완료/계획실패): in-flight id·running 해제 + 목록 갱신 + 하이드레이션 가드 기록.
@@ -145,12 +160,13 @@ export function ProjectPanel({ sessions }: Props) {
       // (engine 의 동시 실행 가드·activeRuns 도 cancelRun 에서 제거하지 않고 project.done 까지 유지 — 대칭).
       if ((e.type === 'project.done' || e.type === 'plan.failed') && pid) {
         endedRunsRef.current.add(pid) // 하이드레이션 레이스 가드(스냅샷 되살림 방지)
+        liveStartedRunsRef.current.delete(pid) // 윈도우 중 종료 — replace 보존 대상서 제외
         setActiveProjectId((cur) => (cur === pid ? null : cur))
         setRunning(false)
-        void refreshProjects()
+        void refreshProjects().catch(() => undefined)
       }
       // 취소 ack: 사이드바/로그만 갱신한다(running·activeProjectId 는 project.done 까지 유지 — 위 참조).
-      if (e.type === 'run.cancelled' && pid) void refreshProjects()
+      if (e.type === 'run.cancelled' && pid) void refreshProjects().catch(() => undefined)
       // 상태 전환 마일스톤도 목록 갱신 — planning→executing(plan.created), executing→verifying(verify.*).
       // 그러지 않으면 실행/검증 내내 사이드바·상태칩이 이전 단계(planning/executing)에 고착된다.
       // (verify.passed/failed/fixing 은 orchestrator 가 status 를 verifying 으로 바꾼 뒤 방출한다.)
@@ -161,7 +177,7 @@ export function ProjectPanel({ sessions }: Props) {
           e.type === 'verify.fixing') &&
         pid
       )
-        void refreshProjects()
+        void refreshProjects().catch(() => undefined)
       // 현재 열려 있는 프로젝트의 이벤트만 라이브 로그/보드에 반영(크로스-프로젝트 누수 방지).
       if (pid && pid === selectedIdRef.current) {
         const eventId =
@@ -170,65 +186,98 @@ export function ProjectPanel({ sessions }: Props) {
         liveDuringLoadRef.current += 1 // 진행 중 로드가 끝날 때 스냅샷 뒤로 보존할 라이브 행 카운트(아래 선택 effect 가 리셋·소비)
         // 보드는 마일스톤에서만 갱신. refreshTasks 가 boardToken 으로 순서를 보장하고, 선택 스냅샷보다 새 갱신이면
         // 스냅샷 setTasks 를 자연히 폐기시킨다(별도 플래그 불필요).
-        if (e.type !== 'task.progress') void refreshTasks(pid)
+        if (e.type !== 'task.progress') void refreshTasks(pid).catch(() => undefined)
       }
     })
     return unsub
   }, [])
 
-  // 마운트 시 진행 중 실행 스냅샷 복원(단일 소스 오브 트루스) — 탭 재진입으로 로컬 state(running/activeProjectId)가
-  // 날아가도 main 이 보유한 in-flight 실행을 되살려 (a) 취소 버튼 소실과 (b) running 해제로 인한 동시 2번째 실행
-  // 시도(엔진 가드가 거부하지만 UX 가 나쁘다)를 막는다. 구독(onOrchestratorEvent)을 먼저 건 뒤 조회해, 조회와
-  // 라이브 종료 이벤트 사이 간극을 최소화한다(라이브 우선 — 윈도우 중 끝난 실행은 endedRunsRef 로 거른다).
+  // 마운트·웹 재접속(hydrateNonce) 시 진행 중 실행 스냅샷 복원 — 스냅샷은 권위(replace). merge(추가만)면
+  // 끊긴 사이 끝난 실행의 stale running 잠금이 영구 잔존한다(#197 B4). 라이브-우선 가드(endedRunsRef·
+  // liveStartedRunsRef)는 이 윈도우 기준으로 리셋: 스냅샷 resolve 전 도착한 라이브 종료는 되살리지 않고,
+  // 라이브 시작은 stale 빈 스냅샷이 내리지 못한다. (주의: run() 직후~project.created 사이에 재접속이
+  // 겹치면 잠금이 순간 풀릴 수 있으나 project.created 가 즉시 재잠금하고 엔진 동시 실행 가드가 백스톱.)
   useEffect(() => {
-    void window.fleet.getRunActivity().then((a) => {
-      // 스냅샷은 조회 시점값이라 resolve 전 도착한 라이브 종료보다 스테일할 수 있다. 이미 끝난 실행은 되살리지 않는다.
-      const live = a.activeProjectIds.filter((pid) => !endedRunsRef.current.has(pid))
-      if (live.length === 0) return // 진행 중 실행 없음 — 라이브가 이미 종료를 반영했거나 애초에 없었다.
-      // 라이브 created 가 이미 잡았으면 그 값을 유지(라이브 우선). 순차 전제상 단일 실행이라 충돌은 없다.
-      setActiveProjectId((cur) => cur ?? live[0])
-      setRunning(true)
-    })
-  }, [])
+    endedRunsRef.current = new Set()
+    liveStartedRunsRef.current = new Set()
+    // 라이브 로그 tail 카운트 리셋은 nonce(마운트·재접속) 세대에서만 — 스냅샷 권위(이전 세대 tail 미보존).
+    // 일반 선택(selectedId 변경)은 selectProject 가 리셋하므로 선택 effect 는 건드리지 않는다(선택 effect
+    // 주석의 "여기서 다시 비우면 그 사이 도착한 라이브 행을 잃는다" 불변식 복원 — 리뷰 [14]).
+    liveDuringLoadRef.current = 0
+    let cancelled = false
+    window.fleet
+      .getRunActivity()
+      .then((a) => {
+        if (cancelled) return
+        const live = [
+          ...a.activeProjectIds.filter((pid) => !endedRunsRef.current.has(pid)),
+          ...liveStartedRunsRef.current,
+        ]
+        setRunning(live.length > 0)
+        setActiveProjectId((cur) => (cur && live.includes(cur) ? cur : (live[0] ?? null)))
+      })
+      .catch(() => undefined) // 전송 실패 — 다음 하이드레이션 세대가 재시도
+    return () => {
+      cancelled = true
+    }
+  }, [hydrateNonce])
 
   // 선택 변경: 저장소 스냅샷 로드(보드/로그)와 마지막 선택 영속. 보드/로그/요약 비우기와 카운터 리셋은
   // selectProject 가 선택 시점에 동기로 끝냈다(여기서 다시 비우면 그 사이 도착한 라이브 행을 잃는다).
   useEffect(() => {
     if (!selectedId) return // selectProject(null) 이 이미 보드/로그/요약을 비웠다
-    void window.fleet.setLastActiveProject(selectedId)
+    // (라이브 tail 카운터 리셋은 여기서 하지 않는다 — 선택 시점 selectProject 가·재접속 시 getRunActivity
+    // effect 가 담당. 여기서 다시 비우면 그 사이 도착한 라이브 행을 잃는다. 리뷰 [14].)
+    void window.fleet.setLastActiveProject(selectedId).catch(() => undefined)
     const token = ++loadTokenRef.current // 이 로드의 신원 — 같은 방 재방문으로 중첩된 로드 중 최신만 반영
     const boardToken = ++boardTokenRef.current // 보드 갱신 토큰 — 로드 중 라이브 refreshTasks 가 더 새 토큰을 만들면 이 스냅샷 setTasks 는 폐기
     void (async () => {
-      const [t, ev] = await Promise.all([
-        window.fleet.getProjectTasks(selectedId),
-        window.fleet.listProjectEvents(selectedId),
-      ])
-      // 더 새 로드가 시작됐거나(같은 방 재방문) 다른 방으로 바뀌었으면 오래된 응답을 버린다.
-      if (loadTokenRef.current !== token || selectedIdRef.current !== selectedId) return
-      // 로드 중(또는 이후) 라이브 refreshTasks 가 보드를 더 최신으로 갱신했으면 오래된 스냅샷으로 덮어쓰지 않는다.
-      if (boardToken === boardTokenRef.current) setTasks(t)
-      const snapshot: LogLine[] = ev.map((e) => ({
-        type: e.type,
-        message: e.message ?? '',
-        id: e.id,
-      }))
-      const snapshotIds = new Set(snapshot.map((s) => s.id))
-      // 로드 중 도착한 라이브 행을 스냅샷 뒤에 보존하되, 스냅샷에 이미 영속된 같은 id 의 행만 중복으로 제외한다.
-      // id 로 dedup 하므로 (type,message)가 같은 서로 다른 마일스톤(예: 여러 작업의 '리뷰 승인')은 보존되고,
-      // id 없는 task.progress 도 항상 보존된다.
-      setLog((prev) => {
-        const tail = prev.slice(prev.length - liveDuringLoadRef.current)
-        const fresh = tail.filter((r) => !(r.id && snapshotIds.has(r.id)))
-        return [...snapshot, ...fresh]
-      })
+      try {
+        const [t, ev] = await Promise.all([
+          window.fleet.getProjectTasks(selectedId),
+          window.fleet.listProjectEvents(selectedId),
+        ])
+        // 더 새 로드가 시작됐거나(같은 방 재방문) 다른 방으로 바뀌었으면 오래된 응답을 버린다.
+        if (loadTokenRef.current !== token || selectedIdRef.current !== selectedId) return
+        // 로드 중(또는 이후) 라이브 refreshTasks 가 보드를 더 최신으로 갱신했으면 오래된 스냅샷으로 덮어쓰지 않는다.
+        if (boardToken === boardTokenRef.current) setTasks(t)
+        const snapshot: LogLine[] = ev.map((e) => ({
+          type: e.type,
+          message: e.message ?? '',
+          id: e.id,
+        }))
+        const snapshotIds = new Set(snapshot.map((s) => s.id))
+        // 로드 중 도착한 라이브 행을 스냅샷 뒤에 보존하되, 스냅샷에 이미 영속된 같은 id 의 행만 중복으로 제외한다.
+        // id 로 dedup 하므로 (type,message)가 같은 서로 다른 마일스톤(예: 여러 작업의 '리뷰 승인')은 보존되고,
+        // id 없는 task.progress 도 항상 보존된다.
+        setLog((prev) => {
+          const tail = prev.slice(prev.length - liveDuringLoadRef.current)
+          const fresh = tail.filter((r) => !(r.id && snapshotIds.has(r.id)))
+          return [...snapshot, ...fresh]
+        })
+      } catch {
+        /* 스냅샷 로드 실패 — 재접속 하이드레이션이 재시도(#197 B4) */
+      }
     })()
-  }, [selectedId])
+  }, [selectedId, hydrateNonce])
 
   async function pickWorkspace() {
     try {
       setWorkspace(await window.fleet.selectWorkspace())
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(describeError(err))
+    }
+  }
+
+  // 웹 경로 설정(#197 B4) — 서버가 FLEET_WORKSPACE_ROOT 하위 한정·런 중 거부를 강제(disabled 는 보조 UX).
+  async function applyWorkspacePath() {
+    const path = workspaceInput.trim()
+    if (!path) return
+    try {
+      setWorkspace(await window.fleet.setWorkspace(path))
+      setError(null)
+    } catch (err) {
+      setError(describeError(err))
     }
   }
 
@@ -237,7 +286,7 @@ export function ProjectPanel({ sessions }: Props) {
     try {
       await window.fleet.cancelRun(activeProjectId)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(describeError(err))
     }
   }
 
@@ -262,13 +311,19 @@ export function ProjectPanel({ sessions }: Props) {
       await refreshProjects()
       if (selectedIdRef.current) await refreshTasks(selectedIdRef.current)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      // 실행이 거부돼도 오케스트레이터가 프로젝트를 failed 로 표시했을 수 있으니 사이드바/상태칩을 갱신한다.
+      setError(describeError(err))
+      if (isTransportError(err)) {
+        // 웹 전송 단절 — 요청이 서버에 도달해 런이 계속 진행 중일 수 있다. running/activeProjectId 를
+        // 여기서 내리지 않고 재접속 재하이드레이션(getRunActivity 스냅샷)이 실제 상태로 복원하게 둔다 —
+        // 잘못된 2차 실행 시도·취소 버튼 소실 방지(#202 Codex P2). 전송 단절은 여기서 early-return.
+        return
+      }
+      // 비-전송(엔진) 거부 = 실패 종료 — 사이드바/상태칩 갱신 후 아래에서 잠금 해제.
       await refreshProjects().catch(() => undefined)
-    } finally {
-      setRunning(false)
-      setActiveProjectId(null)
     }
+    // 정상 완료 또는 비-전송 실패 종료 — 잠금 해제(전송 단절만 위에서 잠금 유지).
+    setRunning(false)
+    setActiveProjectId(null)
   }
 
   /**
@@ -433,16 +488,42 @@ export function ProjectPanel({ sessions }: Props) {
               </button>
             )}
           </div>
-          <div className="row" style={{ alignItems: 'center', marginTop: 12, gap: 8 }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => void pickWorkspace()}>
-              워크스페이스 선택
-            </button>
-            <span className="meta">
-              {workspace
-                ? `산출물·검증 활성 → ${workspace}`
-                : '워크스페이스 미설정 — 파일 기록/검증 비활성(텍스트 산출물만)'}
-            </span>
-          </div>
+          {runtime === 'web' ? (
+            <div className="row" style={{ alignItems: 'center', marginTop: 12, gap: 8 }}>
+              <input
+                className="field"
+                style={{ maxWidth: 320 }}
+                aria-label="워크스페이스 경로"
+                placeholder="워크스페이스 경로 (서버 루트 하위)"
+                value={workspaceInput}
+                onChange={(e) => setWorkspaceInput(e.target.value)}
+                disabled={running}
+              />
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => void applyWorkspacePath()}
+                disabled={running || !workspaceInput.trim()}
+              >
+                적용
+              </button>
+              <span className="meta">
+                {workspace
+                  ? `산출물·검증 활성 → ${workspace}`
+                  : '워크스페이스 미설정 — 파일 기록/검증 비활성(텍스트 산출물만)'}
+              </span>
+            </div>
+          ) : (
+            <div className="row" style={{ alignItems: 'center', marginTop: 12, gap: 8 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => void pickWorkspace()}>
+                워크스페이스 선택
+              </button>
+              <span className="meta">
+                {workspace
+                  ? `산출물·검증 활성 → ${workspace}`
+                  : '워크스페이스 미설정 — 파일 기록/검증 비활성(텍스트 산출물만)'}
+              </span>
+            </div>
+          )}
           {noCapsConfigured && (
             <p className="note-warn" style={{ marginBottom: 0 }}>
               capability-scored 선택됨 — 어떤 세션에도 역량이 설정되지 않아 사실상 round-robin 으로

@@ -7,17 +7,22 @@ import type {
   UpdaterChannel,
 } from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
+import { describeError } from '../bridge/errors'
+import { useHydration } from '../bridge/hydration'
 import { AddAiWizard } from './AddAiWizard'
 
 interface Props {
   sessions: LlmDescriptor[]
   onRefresh: () => void
+  /** AppInfo.runtime — 웹이면 Electron 전용 업데이트 섹션을 숨긴다(#197 B4). null=미확정(데스크톱 동형). */
+  runtime?: 'electron' | 'web' | null
 }
 
 // MCP 상태 경량 폴링 간격(ms). 포커스 유지 중 서버 종료/크래시도 반영하기 위한 보조 경로(#21 옵션B).
 const MCP_POLL_INTERVAL_MS = 5000
 
-export function SessionsPanel({ sessions, onRefresh }: Props) {
+export function SessionsPanel({ sessions, onRefresh, runtime = null }: Props) {
+  const { nonce: hydrateNonce } = useHydration()
   const [error, setError] = useState<string | null>(null)
   // 자동 업데이트 채널(#98). main(store)이 권위 — 마운트 시 1회 조회하고 토글 시 낙관적 반영.
   const [channel, setChannel] = useState<UpdaterChannel>('stable')
@@ -27,14 +32,18 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
   // early-return 을 하이드레이션 후로 미뤄 사용자의 첫 클릭이 유실되지 않게 한다.
   const channelHydrated = useRef(false)
 
-  const asError = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+  // 전송 단절(TransportError)을 '연산 실패'와 구분해 웹 재접속 자동 복원을 안내한다(#197 B4 · 리뷰 [3]).
+  const asError = (e: unknown): string => describeError(e)
 
   // 업데이트 채널 초기 로드(#98) — main store 가 권위 소스.
   useEffect(() => {
-    void window.fleet.getUpdaterChannel().then((c) => {
-      channelHydrated.current = true
-      if (!channelEdited.current) setChannel(c) // 사용자가 이미 토글했으면 늦은 하이드레이션 무시
-    })
+    void window.fleet
+      .getUpdaterChannel()
+      .then((c) => {
+        channelHydrated.current = true
+        if (!channelEdited.current) setChannel(c) // 사용자가 이미 토글했으면 늦은 하이드레이션 무시
+      })
+      .catch(() => undefined) // 전송 실패 — 표시 기본(stable) 유지, 다음 하이드레이션이 재시도(#197 B4)
   }, [])
 
   async function changeChannel(next: UpdaterChannel): Promise<void> {
@@ -102,7 +111,8 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
       window.removeEventListener('focus', refreshMcpStatus)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [refreshMcpStatus])
+    // hydrateNonce: 웹 재접속 세대마다 MCP 권위 상태 재조회(데스크톱은 0 고정 — 마운트/포커스만).
+  }, [refreshMcpStatus, hydrateNonce])
 
   // 활성 서버가 있을 때만 경량 폴링(포커스 유지 중 크래시도 반영). 서버 미설정 시 타이머 없음.
   const hasMcpServers = mcpStatus.length > 0
@@ -257,36 +267,39 @@ export function SessionsPanel({ sessions, onRefresh }: Props) {
         )}
       </section>
 
-      <section className="panel">
-        <div className="panel-head">
-          <span className="eyebrow">05 — 업데이트</span>
-          <h2 className="panel-title">업데이트 채널</h2>
-        </div>
-        <span className="field-label" style={{ margin: 0 }}>
-          이 채널의 업데이트만 확인합니다.
-        </span>
-        <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-          {(['stable', 'beta'] as const).map((c) => (
-            <button
-              key={c}
-              className="chip"
-              onClick={() => void changeChannel(c)}
-              style={{
-                cursor: 'pointer',
-                color: channel === c ? 'var(--ok)' : 'var(--faint)',
-                borderColor: 'currentColor',
-              }}
-            >
-              {c === 'stable' ? '안정(stable)' : '베타(beta)'}
-            </button>
-          ))}
-        </div>
-        <p className="meta" style={{ marginTop: 8 }}>
-          {channel === 'stable'
-            ? '안정 — 검증된 정식 릴리스만 받습니다(권장).'
-            : '베타 — 프리릴리스를 먼저 받습니다(미검증 빌드 포함).'}
-        </p>
-      </section>
+      {/* 자동 업데이트 채널은 Electron 전용 표면 — 웹에선 죽은 컨트롤을 숨긴다(스텁은 동작하나 무의미, #197 B4). */}
+      {runtime !== 'web' && (
+        <section className="panel">
+          <div className="panel-head">
+            <span className="eyebrow">05 — 업데이트</span>
+            <h2 className="panel-title">업데이트 채널</h2>
+          </div>
+          <span className="field-label" style={{ margin: 0 }}>
+            이 채널의 업데이트만 확인합니다.
+          </span>
+          <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+            {(['stable', 'beta'] as const).map((c) => (
+              <button
+                key={c}
+                className="chip"
+                onClick={() => void changeChannel(c)}
+                style={{
+                  cursor: 'pointer',
+                  color: channel === c ? 'var(--ok)' : 'var(--faint)',
+                  borderColor: 'currentColor',
+                }}
+              >
+                {c === 'stable' ? '안정(stable)' : '베타(beta)'}
+              </button>
+            ))}
+          </div>
+          <p className="meta" style={{ marginTop: 8 }}>
+            {channel === 'stable'
+              ? '안정 — 검증된 정식 릴리스만 받습니다(권장).'
+              : '베타 — 프리릴리스를 먼저 받습니다(미검증 빌드 포함).'}
+          </p>
+        </section>
+      )}
     </div>
   )
 }
