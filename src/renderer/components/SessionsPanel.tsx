@@ -7,6 +7,7 @@ import type {
   UpdaterChannel,
 } from '../../shared/types'
 import { ASSIGNABLE_ROLES } from '../../shared/types'
+import { describeError } from '../bridge/errors'
 import { useHydration } from '../bridge/hydration'
 import { AddAiWizard } from './AddAiWizard'
 
@@ -31,7 +32,8 @@ export function SessionsPanel({ sessions, onRefresh, runtime = null }: Props) {
   // early-return 을 하이드레이션 후로 미뤄 사용자의 첫 클릭이 유실되지 않게 한다.
   const channelHydrated = useRef(false)
 
-  const asError = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+  // 전송 단절(TransportError)을 '연산 실패'와 구분해 웹 재접속 자동 복원을 안내한다(#197 B4 · 리뷰 [3]).
+  const asError = (e: unknown): string => describeError(e)
 
   // 업데이트 채널 초기 로드(#98) — main store 가 권위 소스.
   useEffect(() => {

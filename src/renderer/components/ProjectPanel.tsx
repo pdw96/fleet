@@ -200,6 +200,10 @@ export function ProjectPanel({ sessions, runtime = null }: Props) {
   useEffect(() => {
     endedRunsRef.current = new Set()
     liveStartedRunsRef.current = new Set()
+    // 라이브 로그 tail 카운트 리셋은 nonce(마운트·재접속) 세대에서만 — 스냅샷 권위(이전 세대 tail 미보존).
+    // 일반 선택(selectedId 변경)은 selectProject 가 리셋하므로 선택 effect 는 건드리지 않는다(선택 effect
+    // 주석의 "여기서 다시 비우면 그 사이 도착한 라이브 행을 잃는다" 불변식 복원 — 리뷰 [14]).
+    liveDuringLoadRef.current = 0
     let cancelled = false
     window.fleet
       .getRunActivity()
@@ -222,9 +226,8 @@ export function ProjectPanel({ sessions, runtime = null }: Props) {
   // selectProject 가 선택 시점에 동기로 끝냈다(여기서 다시 비우면 그 사이 도착한 라이브 행을 잃는다).
   useEffect(() => {
     if (!selectedId) return // selectProject(null) 이 이미 보드/로그/요약을 비웠다
-    // 재하이드레이션(nonce) 재실행 시 스냅샷 권위 — 이전 세대 라이브 tail 은 재보존하지 않는다(진행 델타
-    // 유실은 ConnectionBanner 통지 문구가 안내). 일반 선택은 selectProject 가 이미 0 으로 리셋했다.
-    liveDuringLoadRef.current = 0
+    // (라이브 tail 카운터 리셋은 여기서 하지 않는다 — 선택 시점 selectProject 가·재접속 시 getRunActivity
+    // effect 가 담당. 여기서 다시 비우면 그 사이 도착한 라이브 행을 잃는다. 리뷰 [14].)
     void window.fleet.setLastActiveProject(selectedId).catch(() => undefined)
     const token = ++loadTokenRef.current // 이 로드의 신원 — 같은 방 재방문으로 중첩된 로드 중 최신만 반영
     const boardToken = ++boardTokenRef.current // 보드 갱신 토큰 — 로드 중 라이브 refreshTasks 가 더 새 토큰을 만들면 이 스냅샷 setTasks 는 폐기

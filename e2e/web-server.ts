@@ -23,32 +23,51 @@ export async function startFleetWebServer(
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let log = ''
-  const url = await new Promise<string>((resolveUrl, reject) => {
-    const timer = setTimeout(() => reject(new Error(`fleet-server 기동 타임아웃:\n${log}`)), 15_000)
-    child.stdout?.on('data', (d: Buffer) => {
-      log += d.toString()
-      const m = log.match(/fleet-server: (http:\/\/127\.0\.0\.1:\d+)/)
-      if (m) {
+  let url: string
+  try {
+    url = await new Promise<string>((resolveUrl, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`fleet-server 기동 타임아웃:\n${log}`)),
+        15_000,
+      )
+      child.stdout?.on('data', (d: Buffer) => {
+        log += d.toString()
+        const m = log.match(/fleet-server: (http:\/\/127\.0\.0\.1:\d+)/)
+        if (m) {
+          clearTimeout(timer)
+          resolveUrl(m[1])
+        }
+      })
+      child.stderr?.on('data', (d: Buffer) => {
+        log += d.toString()
+      })
+      child.once('exit', (code) => {
         clearTimeout(timer)
-        resolveUrl(m[1])
-      }
+        reject(new Error(`fleet-server 조기 종료(code ${code}):\n${log}`))
+      })
     })
-    child.stderr?.on('data', (d: Buffer) => {
-      log += d.toString()
-    })
-    child.once('exit', (code) => {
-      clearTimeout(timer)
-      reject(new Error(`fleet-server 조기 종료(code ${code}):\n${log}`))
-    })
-  })
+  } catch (err) {
+    // 기동 실패(타임아웃·조기종료)에서 자식 프로세스·임시 디렉터리를 정리하고 rethrow — 핸들이 반환되지
+    // 않아 stop() 이 절대 호출되지 않으므로 여기서 정리하지 않으면 orphan 프로세스/tmp 누수(리뷰 [8]).
+    child.kill()
+    rmSync(dataDir, { recursive: true, force: true })
+    throw err
+  }
   return {
     url,
     stop: () =>
       new Promise<void>((r) => {
-        child.once('exit', () => {
+        const done = () => {
           rmSync(dataDir, { recursive: true, force: true })
           r()
-        })
+        }
+        // 이미 종료된 child 에는 exit 가 재발화하지 않는다(kill=no-op) — 가드 없이 once('exit')만 걸면
+        // 2차 stop()/중도 크래시 후 stop() 이 영구 hang(리뷰 [9]).
+        if (child.exitCode !== null || child.signalCode !== null) {
+          done()
+          return
+        }
+        child.once('exit', done)
         child.kill()
       }),
   }

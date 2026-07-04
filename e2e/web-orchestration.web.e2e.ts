@@ -4,7 +4,7 @@ import { startFleetWebServer, type RunningWebServer } from './web-server'
 /**
  * 웹모드 브라우저 스모크(#197 B4) — 실 chromium 이 fleet-server(빌드 번들)의 정적 renderer 를 열고
  * ws-bridge 로 오케스트레이션을 구동한다(문 ② e2e). ① 목표 입력→런 개시 + 리로드 후 WS 스냅샷
- * 재하이드레이션 복원(데스크톱 탭전환 스모크의 웹 등가) ② 오프라인→온라인 재접속 배너·복구
+ * 재하이드레이션 복원(데스크톱 탭전환 스모크의 웹 등가) ② 서버 단절→같은 포트 재기동 재접속 배너·복구
  * ③ 완주 러너로 목표 입력→project.done(이슈 완료 정의 "런 완주").
  */
 

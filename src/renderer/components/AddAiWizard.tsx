@@ -9,6 +9,7 @@ import type {
   ReasoningEffort,
 } from '../../shared/types'
 import { CLI_AUTH_INSTALL_META } from '../../shared/cliAuthInstallMeta'
+import { describeError } from '../bridge/errors'
 import { SUBSCRIPTION_BANNERS, subscriptionSupported } from './authBanners'
 
 type Provider = ApiProviderConfig['provider']
@@ -129,7 +130,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
       const options = await window.fleet.listModels(probe)
       if (seq === modelReqSeq.current) setModelOptions(options)
     } catch (e) {
-      if (seq === modelReqSeq.current) setErr(`모델 조회 실패: ${String(e)}`)
+      if (seq === modelReqSeq.current) setErr(`모델 조회 실패: ${describeError(e)}`)
     } finally {
       if (seq === modelReqSeq.current) setLoadingModels(false)
     }
@@ -385,7 +386,7 @@ export function AddAiWizard({ onRegistered }: { onRegistered: () => void }) {
       setApiKey('')
       onRegistered()
     } catch (e) {
-      setErr(`등록 실패: ${String(e)}`)
+      setErr(`등록 실패: ${describeError(e)}`)
     } finally {
       setSubmitting(false)
     }

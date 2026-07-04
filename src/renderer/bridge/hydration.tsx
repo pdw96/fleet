@@ -37,7 +37,9 @@ export function HydrationProvider({
   useEffect(() => {
     if (!bridge) return
     // 클라이언트 이벤트 커서 — hello.maxEventSeq 와 라이브 영속 이벤트 seq 의 max 로 전진한다.
-    let cursor: number | null = null
+    // 마지막 hello 워터마크로 시드한다: 최초 hello 가 이 구독보다 먼저 도착하면(초기 로드 레이스) 커서가
+    // null 로 남아 첫 재접속 hello 가 '최초 접속'으로 오분류돼 nonce 를 안 올리는 gap 을 닫는다(리뷰 [11]).
+    let cursor: number | null = bridge.getEventCursor()?.maxEventSeq ?? null
     const offLive = bridge.fleet.onOrchestratorEvent((e) => {
       if (typeof e.seq === 'number' && (cursor === null || e.seq > cursor)) cursor = e.seq
     })
