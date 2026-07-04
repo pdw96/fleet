@@ -191,21 +191,17 @@ describe('ApprovalModal', () => {
     expect(screen.getByRole('dialog')).toBeTruthy() // 모달 유지(우발적 결정 없음)
   })
 
-  it('respondApproval reject 는 unhandled rejection 없이 흡수된다(#197 B4)', async () => {
-    const onUnhandled = vi.fn()
-    process.on('unhandledRejection', onUnhandled)
-    try {
-      const { fire } = mockFleet({
-        respondApproval: vi.fn().mockRejectedValue(new Error('전송 단절')),
-      })
-      render(<ApprovalModal />)
-      fire(REQ)
-      fireEvent.click(await screen.findByRole('button', { name: '승인' }))
-      await act(async () => {})
-      await new Promise((r) => setTimeout(r, 0)) // unhandledRejection 은 매크로태스크에 방출 — 한 틱 양보
-      expect(onUnhandled).not.toHaveBeenCalled()
-    } finally {
-      process.removeListener('unhandledRejection', onUnhandled)
-    }
+  it('respondApproval reject 를 흡수한다 — 동기 throw 없이 큐 전진(#197 B4 reject audit)', async () => {
+    // decide 가 respondApproval reject 를 .catch 로 흡수하므로 클릭이 동기 throw 없이 큐를 전진(모달 닫힘)
+    // 시킨다. main/server 의 승인 타임아웃(fail-closed)이 회신 유실의 권위 — 렌더러는 재시도하지 않는다.
+    const { fire, respondApproval } = mockFleet({
+      respondApproval: vi.fn().mockRejectedValue(new Error('전송 단절')),
+    })
+    render(<ApprovalModal />)
+    fire(REQ)
+    expect(() => fireEvent.click(screen.getByRole('button', { name: '승인' }))).not.toThrow()
+    expect(respondApproval).toHaveBeenCalledWith('req-1', true)
+    await act(async () => {})
+    expect(screen.queryByRole('dialog')).toBeNull() // 큐 전진 — reject 가 decide 를 깨지 않음
   })
 })
