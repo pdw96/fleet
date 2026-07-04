@@ -120,6 +120,20 @@ describe('ws-host(#197 B3)', () => {
     }
   })
 
+  it.each(['constructor', 'toString', 'valueOf', '__proto__'])(
+    '프로토타입 멤버명(%s) 위조 채널 → 명시 에러 res (fail-open 차단)',
+    async (ch) => {
+      const host = build()
+      const s = new FakeSocket()
+      const b = host.attach(s)
+      b.onMessage(JSON.stringify({ t: 'req', id: 9, ch, args: [] }))
+      await vi.waitFor(() => expect(s.frames()).toHaveLength(2))
+      const res = s.frames()[1] as { ok: boolean; error: { message: string } }
+      expect(res.ok).toBe(false)
+      expect(res.error.message).toContain(ch)
+    },
+  )
+
   it('close 후엔 push 미수신·clientCount 감소(presence)', () => {
     const host = build()
     const s = new FakeSocket()

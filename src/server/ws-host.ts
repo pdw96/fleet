@@ -54,7 +54,9 @@ export function createWsHost(opts: WsHostOptions): WsHost {
   }
 
   async function dispatch(socket: WsSocket, frame: ReqFrame): Promise<void> {
-    const handler = handlers[frame.ch]
+    // own-property 게이트 — 브래킷 접근 단독으로는 프로토타입 체인(constructor/toString 등)
+    // 위조 채널이 핸들러로 오인되어 fail-open 하므로 Object.hasOwn 로 테이블 소유 키만 통과시킨다.
+    const handler = Object.hasOwn(handlers, frame.ch) ? handlers[frame.ch] : undefined
     if (!handler) {
       safeSend(socket, JSON.stringify(makeErrFrame(frame.id, `알 수 없는 채널: ${frame.ch}`)))
       return
