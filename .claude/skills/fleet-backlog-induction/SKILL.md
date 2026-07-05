@@ -16,7 +16,8 @@ AGENTS.md 「백로그 착수 절차」의 실행가능 래퍼. **사람-게이�
 
 1. **선정** — `gh issue view 27` 의 sub-issue 트래커에서 `tier:next` 최상위(모호하면 사용자 확인).
 2. **브랜치** — master 직접 금지(ruleset). `feat/<slug>` 생성.
-3. **사이클** — 비자명하면 brainstorm → spec(`docs/superpowers/specs/`) → plan(`docs/superpowers/plans/`).
+3. **사이클** — 비자명하면 brainstorm → spec(`docs/superpowers/specs/`) → plan(`docs/superpowers/plans/`
+   — 중형+는 fleet-plan-panel 스킬(판사 패널)로 작성).
    TDD(RED→GREEN). `npm run verify` green. 적대 리뷰(fleet-pr-review 스킬 — find=`fleet-finder`·
    verify=`fleet-refuter` 에이전트). **설계 선택이 지속·교차 결정이면 ADR 작성/갱신**
    (AGENTS.md 「백로그 착수 절차」 §결정 기록 참조).
