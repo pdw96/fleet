@@ -129,14 +129,15 @@ Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회
 project number `1`, owner `pdw96`).
 
 > 이 절차·재랭킹·갭감사·리뷰는 `.claude/skills/`(fleet-backlog-induction·fleet-backlog-rerank·
-> fleet-cutoff-gap-audit·fleet-pr-review)에 재사용 스킬로도 정착돼 있다(이슈 #135). 산문은 이 절이 권위, 스킬은 실행 래퍼.
+> fleet-cutoff-gap-audit·fleet-pr-review·fleet-plan-panel)에 재사용 스킬로도 정착돼 있다(이슈 #135). 산문은 이 절이 권위, 스킬은 실행 래퍼.
 
 1. **선정** — `gh issue view 27 --repo pdw96/fleet` 로 본문 «🎯 착수 sub-issues» 트래커를 확인하고
    `tier:next` 최상위를 집는다(나열 순서 = 권장 착수순; 후보가 비었거나 모호하면 사용자에게 확인).
    `gh issue list --repo pdw96/fleet --label tier:next` 로도 필터 가능.
 2. **브랜치** — 기본 브랜치(현재 `master`) 직접 작업 금지(**ruleset 이 직접 push·force-push·삭제를
    플랫폼 차단**; 비상시 repo admin bypass). `feat/<slug>` 특성 브랜치 생성.
-3. **사이클** — 비자명하면 브레인스토밍 → 스펙(`docs/superpowers/specs/`) → 계획. TDD(RED→GREEN).
+3. **사이클** — 비자명하면 브레인스토밍 → 스펙(`docs/superpowers/specs/`) → 계획(중형+ 계획은
+   fleet-plan-panel 판사 패널). TDD(RED→GREEN).
    `npm run verify` green(위 「품질 게이트」 참조; preload 변경 시 dev 재시작). 적대 리뷰.
 4. **PR** — 본문에 `Closes #<N>` 를 넣는다(머지 시 이슈 자동 닫힘 → #27 sub-issue 진행률 자동 갱신).
    단 **`type:meta`/멀티-phase 트래커는 비최종 phase PR 에 `Part of #<N>` 를 써 메타의 조기 종료를 막고**
