@@ -15,6 +15,12 @@ export interface IpcApprover {
   approver: (req: ApprovalRequest) => Promise<boolean>
   /** 렌더러 회신을 해소한다. 미존재/이미 해소 id 는 무시(idempotent). */
   resolve: (id: string, approved: boolean) => void
+  /**
+   * 대기 중 승인 전원을 즉시 거부(resolve(false))하고 타이머·맵을 비운다. 인증 클라이언트가 0 이 되는
+   * 순간의 fail-closed 용(#197 B5 — secured 모드 presence-0 전이 시 boot 이 호출). 이후 늦은 resolve 는
+   * 무시(멱등). 데스크톱은 미배선이라 무영향(additive).
+   */
+  rejectAll: () => void
   /** 대기 중 요청 수(테스트/진단용). */
   pendingCount: () => number
 }
@@ -56,6 +62,16 @@ export function createIpcApprover(opts: IpcApproverOptions): IpcApprover {
       clearTimeout(p.timer)
       pending.delete(id)
       p.resolve(approved)
+    },
+
+    rejectAll() {
+      // 맵을 먼저 비운 뒤 해소 — resolve 콜백이 재진입해도(동기 then) 이미 삭제돼 재해소 없음.
+      const outstanding = [...pending.values()]
+      pending.clear()
+      for (const p of outstanding) {
+        clearTimeout(p.timer)
+        p.resolve(false)
+      }
     },
 
     pendingCount() {
