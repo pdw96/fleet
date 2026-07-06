@@ -12,5 +12,5 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: { output: { format: 'es', entryFileNames: 'index.mjs' } },
   },
-  ssr: { external: ['ws'] }, // 런타임 dep — 번들 미포함(node_modules 해소)
+  ssr: { external: ['ws', 'jose'] }, // 런타임 dep — 번들 미포함(node_modules 해소). jose 누락 시 인라인돼 빌드는 green 인 침묵 함정(#197 B5)
 })
