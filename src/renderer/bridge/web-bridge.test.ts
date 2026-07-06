@@ -153,6 +153,7 @@ describe('browserSocket — nonce 선취 지연 소켓(#197 B5 T8)', () => {
     installFakeWebSocket()
     vi.stubGlobal('fetch', fetchFn)
     const sock = browserSocket(WS, NONCE)
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalled()) // microtask 실행 → fetch in-flight
     sock.close() // fetch 진행 중 close
     resolveFetch({ status: 200, json: async () => ({ nonce: 'abc' }) })
     await new Promise((r) => setTimeout(r, 10))
@@ -166,5 +167,30 @@ describe('browserSocket — nonce 선취 지연 소켓(#197 B5 T8)', () => {
     browserSocket(WS, NONCE)
     browserSocket(WS, NONCE)
     await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(2))
+  })
+
+  // Codex 재리뷰 P2: AbortSignal.timeout 미지원 환경에서 동기 throw → onclose 배선 전 fail() → 통지 유실.
+  it('⑦ AbortSignal.timeout 미지원 → 폴백 시그널로 정상 접속(동기 throw 없음)', async () => {
+    installFakeWebSocket()
+    vi.stubGlobal('fetch', makeFetch({ status: 200, nonce: 'abc' }))
+    vi.stubGlobal('AbortSignal', class {}) // timeout static 부재 → AbortController 폴백
+    const sock = browserSocket(WS, NONCE)
+    const onclose = vi.fn()
+    sock.onclose = onclose
+    await vi.waitFor(() => expect(fakeSockets).toHaveLength(1))
+    expect(fakeSockets[0]!.url).toBe('ws://x/ws?nonce=abc')
+    expect(onclose).not.toHaveBeenCalled() // 정상 접속 — 실패 통지 없음
+  })
+
+  it('⑧ 동기 throw(fetch 부재)여도 onclose 유실 없음 — microtask 지연으로 배선 후 발화', async () => {
+    installFakeWebSocket()
+    vi.stubGlobal('fetch', () => {
+      throw new Error('no fetch') // 동기 throw(구형/부재 모사) — 지연 없으면 배선 전 fail()
+    })
+    const sock = browserSocket(WS, NONCE)
+    const onclose = vi.fn()
+    sock.onclose = onclose // browserSocket 반환 후 배선(ws-bridge 동형)
+    await vi.waitFor(() => expect(onclose).toHaveBeenCalled()) // microtask 지연 덕에 통지 도달
+    expect(fakeSockets).toHaveLength(0)
   })
 })

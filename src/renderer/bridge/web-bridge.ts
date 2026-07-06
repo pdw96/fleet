@@ -18,6 +18,24 @@ export type WebBridgeWindow = Pick<Window, 'location'> & { fleet?: FleetBridge }
  *   · 그 외(401/403/503/네트워크/타임아웃) → onclose 발화 = 기존 백오프 재접속 합류(영구 hang 금지).
  * 재접속 = 팩토리 재호출 = 매번 새 nonce(단일사용 정합). 발급 중 close() 는 소켓 생성을 취소(누수 없음).
  */
+
+/**
+ * 10s 타임아웃 신호(#197 B5 · Codex 재리뷰 P2) — AbortSignal.timeout 미지원 환경(구형 브라우저·일부 dev)
+ * 에서 호출이 throw 하지 않도록 가드하고 AbortController+setTimeout 으로 폴백. 둘 다 없으면 undefined
+ * (타임아웃 없이 fetch — 기능은 유지). 지연 소켓 async 본문 밖에서 던지지 않는 게 핵심(아래 microtask 주석).
+ */
+function makeTimeoutSignal(ms: number): AbortSignal | undefined {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms)
+  }
+  if (typeof AbortController === 'function') {
+    const ctrl = new AbortController()
+    setTimeout(() => ctrl.abort(), ms)
+    return ctrl.signal
+  }
+  return undefined
+}
+
 export function browserSocket(wsUrl: string, nonceUrl: string): WsLike {
   let real: WebSocket | null = null
   let closed = false
@@ -48,26 +66,32 @@ export function browserSocket(wsUrl: string, nonceUrl: string): WsLike {
     like.onclose?.() // 소켓 미생성 상태로 disconnect 통지 → 백오프 재접속
   }
 
-  void (async () => {
-    try {
-      const res = await fetch(nonceUrl, { method: 'POST', signal: AbortSignal.timeout(10_000) })
-      if (closed) return
-      if (res.status === 200) {
-        const body = (await res.json()) as { nonce?: string }
-        if (typeof body.nonce === 'string' && body.nonce.length > 0) {
-          openWith(`${wsUrl}?nonce=${encodeURIComponent(body.nonce)}`)
+  // queueMicrotask 로 지연 — 이 본문의 어떤 동기 throw(예: 구형 브라우저 fetch/AbortSignal 부재)라도
+  // browserSocket 이 반환되고 ws-bridge 가 onclose 를 배선한 뒤에 발생하도록 보장한다. 동기 발화 시
+  // fail()→like.onclose?.() 가 아직 null 인 onclose 를 건드려 종료 통지를 잃고 'connecting' 에 영구
+  // 정지하는 race 를 차단(#197 B5 · Codex 재리뷰 P2). 정상 경로(await 뒤)는 어차피 비동기라 무영향.
+  queueMicrotask(() => {
+    void (async () => {
+      try {
+        const res = await fetch(nonceUrl, { method: 'POST', signal: makeTimeoutSignal(10_000) })
+        if (closed) return
+        if (res.status === 200) {
+          const body = (await res.json()) as { nonce?: string }
+          if (typeof body.nonce === 'string' && body.nonce.length > 0) {
+            openWith(`${wsUrl}?nonce=${encodeURIComponent(body.nonce)}`)
+          } else {
+            fail() // 200 인데 nonce 없음(형식 이상) → 재접속
+          }
+        } else if (res.status === 404 || res.status === 405) {
+          openWith(wsUrl) // loopback — endpoint 부재(정적 method guard 405 포함)
         } else {
-          fail() // 200 인데 nonce 없음(형식 이상) → 재접속
+          fail() // 401/403/503 등 → 재접속(access 서버가 발급 거부)
         }
-      } else if (res.status === 404 || res.status === 405) {
-        openWith(wsUrl) // loopback — endpoint 부재(정적 method guard 405 포함)
-      } else {
-        fail() // 401/403/503 등 → 재접속(access 서버가 발급 거부)
+      } catch {
+        fail() // fetch reject/타임아웃/네트워크
       }
-    } catch {
-      fail() // fetch reject/타임아웃/네트워크
-    }
-  })()
+    })()
+  })
 
   return like
 }
