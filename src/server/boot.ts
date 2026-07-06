@@ -2,11 +2,12 @@ import { readFileSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
+import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type RawData } from 'ws'
 import type { AppInfo } from '../shared/types'
 import { createFleetEngine } from '../main/core/engine'
-import { createIpcApprover } from '../main/core/safety/approval-bridge'
+import { createIpcApprover, type IpcApprover } from '../main/core/safety/approval-bridge'
 import { createJsonFileStore } from '../main/core/store/json-file'
 import { isE2EActive, resolveE2eRunner, resolveE2eVerifyRunner, seedE2eFixtures } from '../main/e2e'
 import { AccessJwtError, createAccessJwtVerifier, type AccessJwtVerifier } from './access-jwt'
@@ -23,16 +24,18 @@ export interface BootDeps {
   accessJwks?: AccessJwtVerifierOptionsJwks
   /** 보안 거부 관측 훅(단계·사유 코드만 — 토큰/nonce 값 금지). 미주입 시 서버 로그 1줄. */
   onSecurityReject?: (stage: SecurityRejectStage, reason: string) => void
+  /** 승인 presence 검증용 approver 핸들 노출(테스트 — in-flight 승인 주입/관측). */
+  onApprover?: (approver: IpcApprover) => void
 }
 
 type AccessJwtVerifierOptionsJwks = Parameters<typeof createAccessJwtVerifier>[0]['jwks']
 type SecurityRejectStage = 'nonce' | 'upgrade'
 
 /**
- * fleet-server 조립(#197 B3) — main/index.ts buildEngine+registerIpc 의 서버 대응물.
- * index.ts(엔트리)와 분리해 포트 0 으로 vitest 통합 검증한다. B5(보안층) 전까지 loopback bind 를
- * resolveBindHost 가 강제한다 — presence(clientCount) 기반 임시 승인이 loopback 한정과 짝이기 때문
- * (체크포인트 2 §4). 개방은 B5 의 설정 게이트에서만.
+ * fleet-server 조립(#197 B3·B5) — main/index.ts buildEngine+registerIpc 의 서버 대응물.
+ * index.ts(엔트리)와 분리해 포트 0 으로 vitest 통합 검증한다. 2모드(#197 B5): loopback(보안 env 미설정 —
+ * B3/B4 시맨틱·loopback bind 고정) / access(Cloudflare Access JWT+nonce+Origin exact 게이팅 · non-loopback
+ * bind 는 이때만 개방 — resolveBindHost). access presence = 인증 클라 한정(clientCount = 검증 통과 소켓 수).
  */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 const DEFAULT_PORT = 8791
@@ -135,6 +138,15 @@ function isNonceRequest(req: IncomingMessage): boolean {
   }
 }
 
+/** upgrade 쿼리에서 `?nonce=` 추출(malformed URL·부재·빈 값 → null). 중복 쿼리는 첫 값 채택. */
+function parseNonceParam(url: string | undefined): string | null {
+  try {
+    return new URL(url ?? '/', 'http://local').searchParams.get('nonce') || null
+  } catch {
+    return null
+  }
+}
+
 export function resolveBindHost(env: NodeJS.ProcessEnv): string {
   const raw = env['FLEET_HOST']?.trim()
   if (!raw) return '127.0.0.1'
@@ -166,6 +178,8 @@ function readOwnVersion(): string {
 
 export interface RunningServer {
   port: number
+  /** 현재 attach 된(검증 통과) 클라이언트 수 — access presence 소스·health 관측. */
+  clientCount(): number
   close(): Promise<void>
 }
 
@@ -198,9 +212,11 @@ export async function bootServer(
   let wsHost: WsHost | null = null
   const ipcApprover = createIpcApprover({
     send: (req) => wsHost?.broadcast('fleet:approval:request', req),
-    // B5 전 임시 presence: 접속 클라이언트 존재 = 응답 가능. loopback 고정과 짝(체크포인트 2 §4).
+    // presence: 접속(검증 통과) 클라이언트 존재 = 응답 가능. access 모드는 인증 클라 0 전이 시 rejectAll 이
+    // outstanding 을 즉시 거둔다(#197 B5 · 체크포인트 2 §4). loopback 은 타임아웃 시맨틱 유지.
     hasWindow: () => (wsHost?.clientCount() ?? 0) > 0,
   })
+  deps.onApprover?.(ipcApprover) // 테스트 관측(운영 no-op)
   // 키 부재/형식 오류는 fail-open 이 아니라 "라이브 세션만 유지·디스크 미영속" 강등 — 운영자가
   // 조용한 미영속에 놀라지 않게 부팅 로그로 명시한다(체크포인트 3 권고).
   const secretCrypto = createEnvKeyCrypto(env)
@@ -281,22 +297,93 @@ export async function bootServer(
     }
     staticHandler(req, res)
   })
-  const wss = new WebSocketServer({
-    server: httpServer,
-    verifyClient: ({ origin }: { origin: string }) => isAllowedOrigin(origin),
-  })
+  // noServer 모드(#197 B5) — JWKS 검증이 async 라 sync verifyClient 로는 불가. httpServer 'upgrade' 를
+  // 직접 받아 nonce 선소모→Origin→JWT→바인딩 순으로 게이팅한 소켓만 handleUpgrade→attach 한다.
+  const wss = new WebSocketServer({ noServer: true })
+
   wss.on('connection', (socket) => {
     const binding = wsHost!.attach({
       send: (data) => socket.send(data),
       close: () => socket.close(),
     })
+    // close·error 공통 정리 — 인증 클라이언트가 0 이 되는 순간(access 한정) outstanding 승인 즉시 reject.
+    // 검증 통과 소켓만 attach 되므로 clientCount = 인증 클라 수(presence 오염 없음). loopback 은 타임아웃
+    // 시맨틱 유지(rejectAll 미호출 — B3/B4 하위호환·T1 핀). rejectAll 은 pending 0 이면 no-op(멱등).
+    const handleSocketGone = (): void => {
+      binding.onClose()
+      if (securityConfig.mode === 'access' && wsHost!.clientCount() === 0) {
+        ipcApprover.rejectAll()
+      }
+    }
     socket.on('message', (data) => binding.onMessage(rawDataToString(data)))
-    socket.on('close', () => binding.onClose())
+    socket.on('close', handleSocketGone)
     socket.on('error', () => {
       // 소켓 error(비정상 프레임/전송 오류) 리스너 부재 시 Node 가 프로세스를 종료(#197 B3 · Codex P2) —
-      // 바인딩 정리 후 해당 소켓만 종료(다른 연결 무영향).
-      binding.onClose()
+      // 바인딩 정리(+presence 전이) 후 해당 소켓만 종료(다른 연결 무영향).
+      handleSocketGone()
       socket.close()
+    })
+  })
+
+  /** 검증 실패 — 401 상태줄 write 후 소켓 파괴 + 관측 로그 1줄(stage/reason 코드만 · 토큰/nonce 값 금지). */
+  const rejectUpgrade = (socket: Duplex, reason: string): void => {
+    onSecurityReject('upgrade', reason)
+    try {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
+    } catch {
+      /* 이미 닫힌 소켓 write 실패 무시 */
+    }
+    socket.destroy()
+  }
+
+  const acceptUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+  }
+
+  async function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    if (socket.destroyed) return // handleUpgrade 전 파괴 확인(B3 P2 형제)
+    const origin = req.headers.origin
+
+    if (securityConfig.mode === 'loopback') {
+      // B3/B4 시맨틱 — isAllowedOrigin(부재 허용·loopback 오리진만). nonce 는 선택적(무시).
+      if (!originAllowed(origin)) return rejectUpgrade(socket, 'origin')
+      acceptUpgrade(req, socket, head)
+      return
+    }
+
+    // access 모드 — nonce 선소모 파이프라인(체크포인트 4-R 확정 순서).
+    const nonce = parseNonceParam(req.url)
+    if (!nonce) return rejectUpgrade(socket, 'nonce-absent')
+    // 무조건 삭제(성패 무관 소모) — 이후 어떤 실패에도 재사용 불가.
+    const record = nonceStore.take(nonce)
+    if (!record) return rejectUpgrade(socket, 'nonce-invalid')
+    if (!originAllowed(origin)) return rejectUpgrade(socket, 'origin')
+    let identity: string
+    try {
+      identity = (await accessVerifier!.verify(extractAccessToken(req) ?? '')).identity
+    } catch {
+      return rejectUpgrade(socket, 'jwt')
+    }
+    // 바인딩 대조 — nonce 발급 시 identity+Origin 과 upgrade 의 JWT sub+Origin 이 일치해야 한다.
+    if (record.identity !== identity || record.origin !== origin) {
+      return rejectUpgrade(socket, 'binding')
+    }
+    if (socket.destroyed) return // async 검증 도중 파괴됐으면 중단
+    acceptUpgrade(req, socket, head)
+  }
+
+  httpServer.on('upgrade', (req, socket, head) => {
+    // raw socket 'error' 리스너 선부착 — handleUpgrade 전/중 소켓 오류가 unhandled 로 프로세스를 죽이지
+    // 않게(B3 P2 형제). async 검증 경로 예외는 여기서 삼키고 소켓을 파괴(fail-closed).
+    socket.on('error', () => {
+      /* 업그레이드 중 소켓 오류 격리 — destroy 는 아래 경로가 처리 */
+    })
+    void handleUpgrade(req, socket, head).catch(() => {
+      try {
+        socket.destroy()
+      } catch {
+        /* already destroyed */
+      }
     })
   })
 
@@ -307,7 +394,10 @@ export async function bootServer(
 
   return {
     port: (httpServer.address() as AddressInfo).port,
+    clientCount: () => wsHost?.clientCount() ?? 0,
     close: async () => {
+      // 종료 시 outstanding 승인 전원 즉시 reject(dispose 전) — 어떤 클라도 응답 못 함(멱등·mode 무관 안전).
+      ipcApprover.rejectAll()
       for (const c of wss.clients) c.terminate()
       wss.close()
       await new Promise<void>((r) => httpServer.close(() => r()))
