@@ -18,6 +18,16 @@ import { createStaticHandler } from './static'
 import { createNonceStore, type NonceStore } from './ws-nonce'
 import { createWsHost, type WsHost } from './ws-host'
 
+/**
+ * 소켓 exp-시한 종료(#197-B6 T6)용 시계 — 주입 가능(테스트 결정론). 핸들은 불투명(setTimeout 반환을
+ * clearTimeout 에 그대로 전달). 미주입 시 실 Date.now + globalThis.setTimeout(unref) 를 쓴다.
+ */
+export interface SocketExpiryClock {
+  now(): number
+  setTimeout(fn: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
 /** 테스트 전용 주입(운영 env 표면 0) — 실 JWKS/네트워크 없이 secured 통합 검증. */
 export interface BootDeps {
   /** access 모드 JWKS getKey 주입(미주입 시 createRemoteJWKSet — 프로덕션). */
@@ -26,6 +36,8 @@ export interface BootDeps {
   onSecurityReject?: (stage: SecurityRejectStage, reason: string) => void
   /** 승인 presence 검증용 approver 핸들 노출(테스트 — in-flight 승인 주입/관측). */
   onApprover?: (approver: IpcApprover) => void
+  /** 소켓 exp 타이머 구동 시계(테스트 — 주입 clock 으로 만료 결정론 검증). 미주입 시 실 타이머. */
+  clock?: SocketExpiryClock
 }
 
 type AccessJwtVerifierOptionsJwks = Parameters<typeof createAccessJwtVerifier>[0]['jwks']
@@ -39,6 +51,19 @@ type SecurityRejectStage = 'nonce' | 'upgrade'
  */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 const DEFAULT_PORT = 8791
+/** Node setTimeout 최대 지연(2^31-1 ms ≈ 24.8일). 초과 지연은 즉시 발화(1ms 클램프)하므로 재무장한다. */
+const TIMEOUT_MAX = 2_147_483_647
+
+/** 기본 소켓 exp 시계 — 실 Date.now + globalThis 타이머(unref 로 프로세스 미붙듦). */
+const defaultClock: SocketExpiryClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => {
+    const t = setTimeout(fn, ms)
+    t.unref?.()
+    return t
+  },
+  clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+}
 
 /**
  * CSWSH 방어(#197 B3 · Codex P1): 브라우저는 WS 핸드셰이크에 SOP/CORS 를 적용하지 않으므로 사용자가
@@ -279,6 +304,7 @@ export async function bootServer(
     deps.onSecurityReject ??
     ((stage, reason) => console.warn(`fleet-server: 보안 거부 stage=${stage} reason=${reason}`))
   const originAllowed = makeOriginAllowed(securityConfig)
+  const clock = deps.clock ?? defaultClock
   const nonceStore = createNonceStore()
   const accessVerifier: AccessJwtVerifier | null =
     securityConfig.mode === 'access'
@@ -317,19 +343,46 @@ export async function bootServer(
   // 직접 받아 nonce 선소모→Origin→JWT→바인딩 순으로 게이팅한 소켓만 handleUpgrade→attach 한다.
   const wss = new WebSocketServer({ noServer: true })
 
-  wss.on('connection', (socket) => {
+  wss.on('connection', (socket, _req, expiresAtMs?: number) => {
+    // 소켓 exp-시한 종료(#197-B6 T6): access 모드에서 검증된 JWT 의 exp 도달 시 소켓을 닫는다. attach
+    // 시점에 이미 만료(exp<=now)면 소켓을 유지하지 않는다 — attach 이전에 close 해 presence(clientCount)
+    // 오염·rejectAll 오발을 막는다. loopback 은 exp 무관(handshake-only B3/B4 시맨틱).
+    const hasExpiry = securityConfig.mode === 'access' && expiresAtMs !== undefined
+    if (hasExpiry && expiresAtMs - clock.now() <= 0) {
+      socket.close()
+      return
+    }
     const binding = wsHost!.attach({
       send: (data) => socket.send(data),
       close: () => socket.close(),
     })
+    let expTimer: unknown
     // close·error 공통 정리 — 인증 클라이언트가 0 이 되는 순간(access 한정) outstanding 승인 즉시 reject.
     // 검증 통과 소켓만 attach 되므로 clientCount = 인증 클라 수(presence 오염 없음). loopback 은 타임아웃
     // 시맨틱 유지(rejectAll 미호출 — B3/B4 하위호환·T1 핀). rejectAll 은 pending 0 이면 no-op(멱등).
+    // exp 타이머는 여기서 반드시 clear — 닫힌 소켓이 만료 시각까지 타이머 클로저를 붙들거나 이중 close 하지 않게.
     const handleSocketGone = (): void => {
+      if (expTimer !== undefined) {
+        clock.clearTimeout(expTimer)
+        expTimer = undefined
+      }
       binding.onClose()
       if (securityConfig.mode === 'access' && wsHost!.clientCount() === 0) {
         ipcApprover.rejectAll()
       }
+    }
+    // exp 타이머 무장 — 지연이 Node TIMEOUT_MAX(≈24.8일)를 넘으면 즉시 발화(1ms 클램프)하므로 clamp 후
+    // 재무장(arm 재귀)한다. 장수명 Access 토큰이 접속 직후 닫혀 재접속 루프에 빠지지 않게(오버플로 방지).
+    if (hasExpiry) {
+      const arm = (): void => {
+        const remaining = expiresAtMs - clock.now()
+        if (remaining <= 0) {
+          socket.close()
+          return
+        }
+        expTimer = clock.setTimeout(arm, Math.min(remaining, TIMEOUT_MAX))
+      }
+      arm()
     }
     socket.on('message', (data) => binding.onMessage(rawDataToString(data)))
     socket.on('close', handleSocketGone)
@@ -352,8 +405,14 @@ export async function bootServer(
     socket.destroy()
   }
 
-  const acceptUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+  // expiresAtMs: access 모드에서 검증된 JWT exp(ms) — connection 핸들러의 소켓 exp 타이머 근거(#197-B6 T6).
+  const acceptUpgrade = (
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    expiresAtMs?: number,
+  ): void => {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, expiresAtMs))
   }
 
   async function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
@@ -375,8 +434,11 @@ export async function bootServer(
     if (!record) return rejectUpgrade(socket, 'nonce-invalid')
     if (!originAllowed(origin)) return rejectUpgrade(socket, 'origin')
     let identity: string
+    let expiresAtMs: number
     try {
-      identity = (await accessVerifier!.verify(extractAccessToken(req) ?? '')).identity
+      const verified = await accessVerifier!.verify(extractAccessToken(req) ?? '')
+      identity = verified.identity
+      expiresAtMs = verified.expiresAtMs // exp 부재/비유한수는 verify 가 이미 fail-closed(여기 도달=유한값)
     } catch {
       return rejectUpgrade(socket, 'jwt')
     }
@@ -385,7 +447,7 @@ export async function bootServer(
       return rejectUpgrade(socket, 'binding')
     }
     if (socket.destroyed) return // async 검증 도중 파괴됐으면 중단
-    acceptUpgrade(req, socket, head)
+    acceptUpgrade(req, socket, head, expiresAtMs)
   }
 
   httpServer.on('upgrade', (req, socket, head) => {

@@ -24,6 +24,11 @@ export class AccessJwtError extends Error {
 export interface AccessIdentity {
   /** 검증된 사용자 식별자(JWT `sub`). nonce 바인딩 대조의 권위(#197 B5 T7). */
   identity: string
+  /**
+   * JWT `exp`(만료) 절대 시각(ms). 소켓 수명 중 exp 도달 시 서버가 소켓을 종료하는 근거(#197-B6 T6).
+   * exp 부재/비유한수는 verify 가 fail-closed(401)라 여기 도달하면 항상 유한 미래/과거 값이다.
+   */
+  expiresAtMs: number
 }
 
 /** jwtVerify 의 key 파라미터 형태(주입 JWKS getKey 또는 키). local/remote JWKS 둘 다 만족. */
@@ -82,10 +87,18 @@ export function createAccessJwtVerifier(opts: AccessJwtVerifierOptions): AccessJ
           issuer,
           audience: opts.aud,
           algorithms: ['RS256'],
+          // jose 는 exp 를 기본 미강제(iss/aud/sub/iat 만 개별 강제 · context7 /panva/jose 확인). 소켓 exp-시한
+          // 종료(#197-B6 T6)가 exp 에 의존하므로 requiredClaims 로 부재를 jose 단계에서 차단(→ classify → invalid).
+          requiredClaims: ['exp'],
         })
         const sub = typeof payload.sub === 'string' ? payload.sub.trim() : ''
         if (!sub) throw new AccessJwtError('invalid', 'Access JWT: sub(identity) 없음')
-        return { identity: sub }
+        // 이중방어: requiredClaims 통과 후에도 exp 가 유한수임을 명시 확인(예상 밖 토큰 형태가 "타이머 없음/
+        // 즉시 종료 모호"로 새지 않게 · Codex 체크포인트 P2). 실 서명 JWT 는 exp 를 수(초)로만 담는다.
+        if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) {
+          throw new AccessJwtError('invalid', 'Access JWT: exp 없음/비유한')
+        }
+        return { identity: sub, expiresAtMs: payload.exp * 1000 }
       } catch (err) {
         // sub 결손으로 여기서 던진 AccessJwtError 도 classify 가 그대로 통과시킨다(instanceof 조기 반환).
         throw classify(err)
