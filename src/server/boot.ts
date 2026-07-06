@@ -6,6 +6,7 @@ import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type RawData } from 'ws'
 import type { AppInfo } from '../shared/types'
+import { createChildEnv, type ChildEnv } from './child-env'
 import { createFleetEngine } from '../main/core/engine'
 import { createIpcApprover, type IpcApprover } from '../main/core/safety/approval-bridge'
 import { createJsonFileStore } from '../main/core/store/json-file'
@@ -63,6 +64,16 @@ const defaultClock: SocketExpiryClock = {
     return t
   },
   clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+}
+
+/**
+ * 서버 모드 자식 env 정책(#197-B6 T7) — 엔진에 주입할 ChildEnv 를 boot 의 env 로부터 만든다. allowlist
+ * 로 서버 시크릿(FLEET_*)을 제거하므로, boot 이 받은 시크릿 env 를 그대로 넘겨도 자식(CLI 세션·detect/
+ * probe·MCP·verify·git)엔 안 간다. boot 은 엔진 내부 러너/spawn 을 미노출하므로 실 자식 미수신의 권위
+ * 증명은 T3 실 spawn·T10 컨테이너 스모크·라이브 5종에 위임하고, 여기서는 정책(팩토리)만 고정한다.
+ */
+export function buildServerChildEnv(env: NodeJS.ProcessEnv): ChildEnv {
+  return createChildEnv(env)
 }
 
 /**
@@ -273,6 +284,9 @@ export async function bootServer(
     approver: ipcApprover.approver,
     runner: e2e ? resolveE2eRunner(env) : undefined,
     verifyRunner: e2e ? resolveE2eVerifyRunner(env) : undefined,
+    // 자식 env 격리(#197-B6 T7): 서버 시크릿(FLEET_*)이 CLI 세션·detect/probe·MCP·verify·git 자식에 안 새게
+    // allowlist 필터된 env 를 주입한다. boot 이 받은 env(운영=process.env)를 넘겨도 자식엔 base/provider 만 간다.
+    childEnv: buildServerChildEnv(env),
     secretCrypto,
   })
   if (e2e) seedE2eFixtures(engine)
