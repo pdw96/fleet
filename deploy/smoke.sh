@@ -174,6 +174,10 @@ FCONF="$("${COMPOSE[@]}" config 2>/dev/null || true)"
 # 서비스 블록 추출(2-space 들여쓰기 서비스 헤더 ~ 다음 서비스/최상위 키까지). python/yaml 의존 회피.
 FLEET_BLOCK="$(printf '%s\n' "$FCONF" | awk '/^  fleet:$/{f=1;next} /^  [a-zA-Z]/{f=0} /^[a-zA-Z]/{f=0} f')"
 TTYD_BLOCK="$(printf '%s\n' "$FCONF" | awk '/^  ttyd:$/{f=1;next} /^  [a-zA-Z]/{f=0} /^[a-zA-Z]/{f=0} f')"
+# canary — 블록 추출이 비어 있으면(config 실패·docker compose 출력포맷 변경으로 awk 앵커 파손) 아래 음성
+# 검사(grep -q … || ok)가 무증상 통과해 false-GREEN 이 된다. 추출 성공을 먼저 단언한다(적대리뷰 CONFIRMED#3).
+printf '%s' "$FLEET_BLOCK" | grep -q . && ok "fleet 서비스 블록 추출됨(canary)" || bad "fleet 블록 추출 실패 — 이하 불변식 검사 신뢰불가"
+printf '%s' "$TTYD_BLOCK" | grep -q . && ok "ttyd 서비스 블록 추출됨(canary)" || bad "ttyd 블록 추출 실패"
 # fleet 서비스에 published ports 없음(ports 있으면 config 에 'published:' 출력).
 printf '%s' "$FLEET_BLOCK" | grep -q 'published:' && bad "fleet 에 published ports 존재!" || ok "fleet ports 미공개"
 # fleet-data 는 fleet 블록에만(ttyd 블록엔 부재 — Phase A 약속 유지).

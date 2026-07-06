@@ -358,6 +358,19 @@ export async function bootServer(
   const wss = new WebSocketServer({ noServer: true })
 
   wss.on('connection', (socket, _req, expiresAtMs?: number) => {
+    // 소켓 error 리스너를 **모든 경로 이전에** 선부착한다 — 리스너 부재 시 Node 가 프로세스를 종료(#197 B3 ·
+    // Codex P2). 특히 아래 attach-시점-만료 early-close 도 error 없이 close 를 시도하므로, malformed 프레임/전송
+    // 오류가 그 소켓에 방출되면 크래시할 수 있다(적대리뷰 CONFIRMED#1). onGone 은 attach 후 handleSocketGone 로
+    // 교체돼 presence 정리까지 포함하고, attach 전엔 no-op 이라 조기 close 경로도 안전하다.
+    let onGone = (): void => {}
+    socket.on('error', () => {
+      onGone()
+      try {
+        socket.close()
+      } catch {
+        /* 이미 닫힘 */
+      }
+    })
     // 소켓 exp-시한 종료(#197-B6 T6): access 모드에서 검증된 JWT 의 exp 도달 시 소켓을 닫는다. attach
     // 시점에 이미 만료(exp<=now)면 소켓을 유지하지 않는다 — attach 이전에 close 해 presence(clientCount)
     // 오염·rejectAll 오발을 막는다. loopback 은 exp 무관(handshake-only B3/B4 시맨틱).
@@ -385,6 +398,7 @@ export async function bootServer(
         ipcApprover.rejectAll()
       }
     }
+    onGone = handleSocketGone // 선부착 error 리스너가 이제 presence 정리까지 포함
     // exp 타이머 무장 — 지연이 Node TIMEOUT_MAX(≈24.8일)를 넘으면 즉시 발화(1ms 클램프)하므로 clamp 후
     // 재무장(arm 재귀)한다. 장수명 Access 토큰이 접속 직후 닫혀 재접속 루프에 빠지지 않게(오버플로 방지).
     if (hasExpiry) {
@@ -400,12 +414,7 @@ export async function bootServer(
     }
     socket.on('message', (data) => binding.onMessage(rawDataToString(data)))
     socket.on('close', handleSocketGone)
-    socket.on('error', () => {
-      // 소켓 error(비정상 프레임/전송 오류) 리스너 부재 시 Node 가 프로세스를 종료(#197 B3 · Codex P2) —
-      // 바인딩 정리(+presence 전이) 후 해당 소켓만 종료(다른 연결 무영향).
-      handleSocketGone()
-      socket.close()
-    })
+    // error 리스너는 위에서 선부착됨(onGone=handleSocketGone 로 승격) — 여기서 재부착하지 않는다.
   })
 
   /** 검증 실패 — 401 상태줄 write 후 소켓 파괴 + 관측 로그 1줄(stage/reason 코드만 · 토큰/nonce 값 금지). */

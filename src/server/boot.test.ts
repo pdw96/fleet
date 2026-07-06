@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, statSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -212,6 +212,71 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
       await server.close()
     }
   })
+
+  // #197-B6 적대리뷰 CONFIRMED#4 — boot→engine childEnv 시임의 프로덕션 회귀 가드. 자동 커버리지가 없으면
+  // boot.ts 의 childEnv 주입 삭제가 CI GREEN 인 채 서버 시크릿(FLEET_*)을 자식에 재유입시킨다. 실 boot(FLEET_E2E
+  // 없음=실 엔진·실 spawn)에서 실 MCP 자식(env 덤프)을 승인 경유 띄워 FLEET_SECRET_KEY 부재를 end-to-end 단언한다.
+  it('boot→engine 시임: 서버 시크릿(FLEET_*)이 실 MCP 자식에 전달되지 않는다(프로덕션 경로)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-seam-'))
+    const envFile = join(dir, 'env.json')
+    const server = await bootServer({
+      FLEET_PORT: '0',
+      FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-seam-data-')),
+      FLEET_SECRET_KEY: 'seam-server-secret', // 자식이 상속하면 여기서 보임 — 격리되면 부재
+    })
+    const socket = await connect(server.port)
+    try {
+      await nextFrame(socket) // hello
+      // setServers — 승인 push 가 먼저 오므로 res 를 바로 await 하지 않는다. env 파일 경로는 spec.env 로 주입(소스에
+      // 절대경로 리터럴 없음 — skills:lint 회피). 자식은 자기 env 를 JSON 덤프 후 즉시 종료.
+      socket.send(
+        JSON.stringify({
+          t: 'req',
+          id: 1,
+          ch: 'fleet:mcp:setServers',
+          args: [
+            [
+              {
+                name: 'seamdump',
+                command: 'node',
+                args: [
+                  '-e',
+                  'require("fs").writeFileSync(process.env.SEAM_ENVFILE,JSON.stringify(process.env));process.exit(0)',
+                ],
+                env: { SEAM_ENVFILE: envFile },
+              },
+            ],
+          ],
+        }),
+      )
+      // 승인 요청 push 수신 → 승인.
+      let approvalId: string | undefined
+      for (let i = 0; i < 6 && !approvalId; i++) {
+        const f = await nextFrame(socket)
+        if (f.t === 'push' && f.ch === 'fleet:approval:request') {
+          approvalId = (f.event as { id: string }).id
+        }
+      }
+      expect(approvalId).toBeDefined()
+      socket.send(
+        JSON.stringify({ t: 'req', id: 2, ch: 'fleet:approval:respond', args: [approvalId, true] }),
+      )
+      // setServers res(id 1)까지 드레인(승인 res·상태 프레임 인터리브).
+      for (let i = 0; i < 8; i++) {
+        const f = await nextFrame(socket)
+        if (f.t === 'res' && f.id === 1) break
+      }
+      // 실 MCP 자식이 덤프한 env — 프로덕션 boot→engine→childEnv(base)→자식 경로 end-to-end.
+      const env = JSON.parse(readFileSync(envFile, 'utf8')) as Record<string, string>
+      expect(env.SEAM_ENVFILE).toBe(envFile) // spec.env escape hatch 전달
+      expect(env.FLEET_SECRET_KEY).toBeUndefined() // 서버 시크릿 미전달(격리 완결)
+      expect(env.PATH).toBeDefined() // base 통과
+    } finally {
+      socket.close()
+      await server.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 25_000)
 
   it('FLEET_WORKSPACE_ROOT 미존재 경로 → 부팅 거부(fail-fast)', async () => {
     // workspaceRoot 검증은 store 생성 이후라 FLEET_DATA_DIR 누락 시 던지기 전에 레포 루트에

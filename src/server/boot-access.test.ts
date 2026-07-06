@@ -528,6 +528,43 @@ describe('access 모드 소켓 exp-시한 종료(#197-B6 T6)', () => {
     }
   })
 
+  it('attach-시점-만료 early-close 소켓의 전송 오류가 서버를 죽이지 않는다(적대리뷰 CONFIRMED#1)', async () => {
+    // early-close 경로도 connection 핸들러 최상단의 error 리스너를 받아야 한다 — 없으면 CLOSING 중 malformed
+    // 프레임(receiverOnError)이 리스너 부재로 unhandledException → 프로세스 종료(self-DoS).
+    const start = Date.now()
+    const exp = Math.floor(start / 1000) + 2
+    const fc = fakeClock(exp * 1000 + 5000) // attach 시점 이미 만료
+    const server = await bootAccess({ deps: { clock: fc.clock } })
+    try {
+      const ws = makeWs(server.port, {
+        nonce: await getNonce(server.port, { token: await sign({ exp }) }),
+        origin: PUBLIC_ORIGIN,
+        token: await sign({ exp }),
+      })
+      // open 즉시(서버 early-close 진행 중) unmasked 프레임을 흘려 서버측 파서 error 를 유도(RFC 6455 위반).
+      ws.on('open', () => {
+        try {
+          const raw = (ws as unknown as { _socket?: { write(b: Buffer): void } })._socket
+          raw?.write(Buffer.from([0x81, 0x01, 0x41]))
+        } catch {
+          /* 이미 닫힘 */
+        }
+      })
+      await new Promise((r) => setTimeout(r, 200))
+      // 서버 생존 증거 — 이후 정상 접속이 성공한다(early-close 소켓 error 로 죽었다면 이 프로세스 자체가 죽어 도달 불가).
+      await expect(
+        tryWsConnect(server.port, {
+          nonce: await getNonce(server.port, { token: await sign() }),
+          origin: PUBLIC_ORIGIN,
+          token: await sign(),
+        }),
+      ).resolves.toBe('allowed')
+      ws.terminate()
+    } finally {
+      await server.close()
+    }
+  }, 15_000)
+
   it('exp 전 소켓 close → 타이머 clear(재발화·이중 close 없음)', async () => {
     const start = Date.now()
     const fc = fakeClock(start)

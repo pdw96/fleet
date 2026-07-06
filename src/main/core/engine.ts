@@ -211,7 +211,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const baseRunner: CommandRunner = childEnv
     ? (c, a, o, s) => runner(c, a, { ...o, env: o.env ?? childEnv.base() }, s)
     : runner
-  // verify/git 형제 자식도 서버 시크릿(FLEET_*)을 상속하지 않게 base env 적용(provider 키 불요). 명시 주입 우선.
+  // ⚠️ load-bearing 보안 배선(#197-B6 · 적대리뷰 CONFIRMED#2): verify/git 형제 자식도 서버 시크릿(FLEET_*)을
+  // 상속하지 않게 base env 를 적용한다(provider 키 불요·명시 주입 우선). 이 `childEnv ?` 분기를 제거하면
+  // 서버 모드에서 verify(워크스페이스 npm 스크립트)·git 훅이 FLEET_SECRET_KEY 를 재상속한다(P1 유출 재발).
+  // env 격리 자체는 createVerify/GitRunner 팩토리 실-spawn 테스트가 검증(verify/run.test.ts·git.test.ts).
   const effectiveVerifyRunner =
     opts.verifyRunner ?? (childEnv ? createVerifyRunner(() => childEnv.base()) : undefined)
   const effectiveGitRunner =
