@@ -102,14 +102,17 @@ describe('createAccessJwtVerifier — Cloudflare Access JWT 서버 자체 검증
     await expect(v.verify(await sign())).rejects.toMatchObject({ kind: 'unavailable' })
   })
 
-  // Codex 4R P2: non-200/malformed JWKS(JWKSInvalid) · undici 네트워크 실패(fetch failed·cause.code)를
-  // 401(invalid)이 아닌 503(unavailable)으로 분류해야 한다 — JWKS 장애가 "자격증명 오류"로 위장되지 않게.
+  // Codex 4R P2 + 재리뷰: JWKS 조회 단계의 모든 실패(타입 무관)를 401(invalid)이 아닌 503(unavailable)으로.
+  // jose 6.2.3 은 non-200/malformed JSON 을 base JOSEError(JWKSInvalid 아님)로 던진다(소스 실측 remote.js)
+  // — 타입 allowlist 로는 놓친다. getKey 단계 래핑(단계 기반 태깅)이 근본 방어라 어떤 에러 타입이든 잡힌다.
   const unavailableInjections: Array<{ label: string; err: () => unknown }> = [
-    { label: 'JWKSInvalid(non-200/malformed)', err: () => new joseErrors.JWKSInvalid() },
     {
-      label: 'code ERR_JWKS_INVALID',
-      err: () => Object.assign(new Error('x'), { code: 'ERR_JWKS_INVALID' }),
+      label: 'base JOSEError(non-200/malformed — 실제 jose 동작)',
+      err: () => new joseErrors.JOSEError('Expected 200 OK'),
     },
+    { label: 'JWKSInvalid', err: () => new joseErrors.JWKSInvalid() },
+    { label: 'JWKSTimeout', err: () => new joseErrors.JWKSTimeout() },
+    { label: 'generic Error(unknown)', err: () => new Error('unexpected jwks failure') },
     {
       label: 'undici fetch failed(cause.code ECONNREFUSED)',
       err: () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }),

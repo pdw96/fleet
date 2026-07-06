@@ -43,39 +43,35 @@ export interface AccessJwtVerifier {
   verify(token: string): Promise<AccessIdentity>
 }
 
-// jose 안정 에러 코드(context7 확인 — instanceof 보다 견고): JWKS 조회/형식 문제만 unavailable.
-// no-matching-key(ERR_JWKS_NO_MATCHING_KEY)는 제외 — 토큰 kid 가 JWKS 에 없음 = 토큰 무효(invalid).
-const JWKS_UNAVAILABLE_CODES = new Set(['ERR_JWKS_TIMEOUT', 'ERR_JWKS_INVALID'])
-// undici fetch 실패는 top-level message='fetch failed' + cause.code 에 실 네트워크 코드(ECONNREFUSED 등).
-const NETWORK_ERROR_CODE =
-  /^(ECONN(RESET|REFUSED)|ENOTFOUND|ENETDOWN|ENETUNREACH|EHOSTDOWN|EAI_AGAIN|UND_ERR_)/
-
 /**
- * jose 에러를 fail-closed 이원 분류로 매핑(#197 B5 · Codex 4R P2). JWKS 가용성 문제(non-200·malformed
- * JSON·타임아웃·네트워크)만 unavailable(503), 나머지(서명·클레임·alg·no-matching-key)는 invalid(401).
- * jose 는 non-200/malformed 를 JWKSInvalid(ERR_JWKS_INVALID)로, 네트워크 실패를 undici TypeError('fetch
- * failed', cause.code=E*)로 표면화한다 — instanceof·message·cause.code·안정 code 를 모두 검사해 누락 차단.
+ * fail-closed 최종 매핑(#197 B5). getKey(JWKS 조회) 단계 실패는 verifier 의 래퍼가 이미
+ * AccessJwtError('unavailable')로 태그하므로 여기서는 통과시키고, 나머지(서명·클레임·만료·alg·형식)는
+ * invalid 로 본다. 어느 쪽이든 거부(fail-closed) — 구분은 상태 코드/관측용.
  */
 function classify(err: unknown): AccessJwtError {
   if (err instanceof AccessJwtError) return err
-  const code = (err as { code?: unknown }).code
-  const causeCode = (err as { cause?: { code?: unknown } }).cause?.code
-  const message = err instanceof Error ? err.message : String(err)
-  const isUnavailable =
-    err instanceof joseErrors.JWKSTimeout ||
-    err instanceof joseErrors.JWKSInvalid ||
-    (typeof code === 'string' && JWKS_UNAVAILABLE_CODES.has(code)) ||
-    /fetch failed/i.test(message) ||
-    (typeof causeCode === 'string' && NETWORK_ERROR_CODE.test(causeCode)) ||
-    (typeof code === 'string' && NETWORK_ERROR_CODE.test(code))
-  if (isUnavailable) return new AccessJwtError('unavailable', 'Access JWKS 조회 불능')
-  return new AccessJwtError('invalid', message)
+  return new AccessJwtError('invalid', err instanceof Error ? err.message : String(err))
 }
 
 export function createAccessJwtVerifier(opts: AccessJwtVerifierOptions): AccessJwtVerifier {
   const issuer = opts.teamDomain.origin
-  const jwks: JwtKeyInput =
+  const rawJwks: JwtKeyInput =
     opts.jwks ?? createRemoteJWKSet(new URL('/cdn-cgi/access/certs', opts.teamDomain))
+
+  // JWKS 조회 단계 래퍼(단계 기반 태깅 · Codex 재리뷰 P2). jose 6.2.3 은 non-200/malformed JSON 을 base
+  // JOSEError(JWKSInvalid 아님·소스 실측 remote.js)로, 타임아웃을 JWKSTimeout 로, 네트워크 실패를 원인
+  // error 로 던진다 — 에러 타입 allowlist 로는 누락된다. 조회 단계의 실패는 전부 가용성 문제(unavailable=503)
+  // 로 태그하고, no-matching-key(토큰 kid 가 JWKS 에 없음 = 토큰 무효)만 invalid(401)로 통과시킨다. 주입
+  // JWKS(테스트)도 동일 래핑돼 이 경로가 검증된다. 서명·클레임(getKey 이후)은 jose 가 던지고 classify 가 처리.
+  const jwks: JwtKeyInput = async (protectedHeader, token) => {
+    try {
+      return typeof rawJwks === 'function' ? await rawJwks(protectedHeader, token) : rawJwks
+    } catch (err) {
+      if (err instanceof AccessJwtError) throw err
+      if (err instanceof joseErrors.JWKSNoMatchingKey) throw err // 토큰 kid 무효 → classify → invalid
+      throw new AccessJwtError('unavailable', 'Access JWKS 조회 불능')
+    }
+  }
 
   return {
     async verify(token) {
