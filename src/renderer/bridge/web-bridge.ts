@@ -13,8 +13,9 @@ export type WebBridgeWindow = Pick<Window, 'location'> & { fleet?: FleetBridge }
  * nonce 선취 지연 소켓(#197 B5) — WsFactory 동기 계약을 유지하며(ws-bridge 무변경) 즉시 WsLike 를 돌려주되,
  * 내부에서 same-origin `POST /auth/ws-nonce` 를 먼저 쳐서 실 소켓 접속을 지연시킨다:
  *   · 200 → `?nonce=<값>` 부착 접속(access 실경로).
- *   · 404 → nonce 없이 접속(loopback 하위호환 — endpoint 부재).
- *   · 그 외(401/403/네트워크/타임아웃) → onclose 발화 = 기존 백오프 재접속 합류(영구 hang 금지).
+ *   · 404/405 → nonce 없이 접속(loopback 하위호환 — endpoint 부재. loopback 은 정적 method guard 가 POST 를
+ *     405 로 자르므로 404·405 둘 다 "endpoint 없음"으로 취급).
+ *   · 그 외(401/403/503/네트워크/타임아웃) → onclose 발화 = 기존 백오프 재접속 합류(영구 hang 금지).
  * 재접속 = 팩토리 재호출 = 매번 새 nonce(단일사용 정합). 발급 중 close() 는 소켓 생성을 취소(누수 없음).
  */
 export function browserSocket(wsUrl: string, nonceUrl: string): WsLike {
@@ -58,10 +59,10 @@ export function browserSocket(wsUrl: string, nonceUrl: string): WsLike {
         } else {
           fail() // 200 인데 nonce 없음(형식 이상) → 재접속
         }
-      } else if (res.status === 404) {
-        openWith(wsUrl) // loopback — endpoint 부재
+      } else if (res.status === 404 || res.status === 405) {
+        openWith(wsUrl) // loopback — endpoint 부재(정적 method guard 405 포함)
       } else {
-        fail() // 401/403 등 → 재접속(access 서버가 발급 거부)
+        fail() // 401/403/503 등 → 재접속(access 서버가 발급 거부)
       }
     } catch {
       fail() // fetch reject/타임아웃/네트워크

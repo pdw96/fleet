@@ -103,13 +103,16 @@ describe('browserSocket — nonce 선취 지연 소켓(#197 B5 T8)', () => {
     expect(fetchFn).toHaveBeenCalledWith(NONCE, expect.objectContaining({ method: 'POST' }))
   })
 
-  it('② 404 → nonce 쿼리 없이 접속(loopback 하위호환)', async () => {
-    installFakeWebSocket()
-    vi.stubGlobal('fetch', makeFetch({ status: 404 }))
-    browserSocket(WS, NONCE)
-    await vi.waitFor(() => expect(fakeSockets).toHaveLength(1))
-    expect(fakeSockets[0]!.url).toBe('ws://x/ws')
-  })
+  it.each([404, 405])(
+    '② %s → nonce 쿼리 없이 접속(loopback endpoint 부재 — 405=정적 method guard)',
+    async (status) => {
+      installFakeWebSocket()
+      vi.stubGlobal('fetch', makeFetch({ status }))
+      browserSocket(WS, NONCE)
+      await vi.waitFor(() => expect(fakeSockets).toHaveLength(1))
+      expect(fakeSockets[0]!.url).toBe('ws://x/ws')
+    },
+  )
 
   it.each([{ status: 401 }, { status: 403 }])(
     '③ $status → onclose 발화·소켓 미생성(영구 hang 금지)',
