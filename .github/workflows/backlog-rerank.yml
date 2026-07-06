@@ -44,7 +44,7 @@ jobs:
           cat > "${{ runner.temp }}/mcp-config.json" << 'EOF'
           {"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp","headers":{"CONTEXT7_API_KEY":"${CONTEXT7_API_KEY}"}}}}
           EOF
-      - uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1
+      - uses: anthropics/claude-code-action@558b1d6cab4085c7753fe402c10bef0fbb92ac7a # v1
         env:
           # claude 가 mcp-config 의 ${CONTEXT7_API_KEY} 를 확장하도록 프로세스 env 로 전달(파일엔 평문 없음).
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
