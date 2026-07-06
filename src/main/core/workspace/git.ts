@@ -59,14 +59,21 @@ export interface Workspace {
 const GIT_TIMEOUT_MS = 120_000
 const DIFF_CAP = 60_000
 
-export const defaultGitRunner: GitRunner = {
-  run: (args, cwd, signal) =>
-    defaultRunner('git', args, { timeoutMs: GIT_TIMEOUT_MS, cwd, signal }).then((r) => ({
-      code: r.code,
-      stdout: r.stdout,
-      stderr: r.stderr,
-    })),
+/**
+ * git 러너 팩토리(#197-B6 T3). `baseEnv` 를 주면 git 자식(훅 등)에 그 env 를 적용해 서버 시크릿(FLEET_*)이
+ * 상속되지 않게 한다. **미주입이면 현행처럼 부모 env 상속**(무회귀). 서버 모드에서 engine 이 childEnv.base 주입.
+ */
+export function createGitRunner(baseEnv?: () => NodeJS.ProcessEnv): GitRunner {
+  return {
+    run: (args, cwd, signal) =>
+      defaultRunner('git', args, { timeoutMs: GIT_TIMEOUT_MS, cwd, signal, env: baseEnv?.() }).then(
+        (r) => ({ code: r.code, stdout: r.stdout, stderr: r.stderr }),
+      ),
+  }
 }
+
+/** 기본 git 러너 — env 미지정(현행 상속). 서버 격리는 createGitRunner(baseEnv) 로 주입. */
+export const defaultGitRunner: GitRunner = createGitRunner()
 
 // taskId 의 특수문자를 _로 치환해 디렉터리명으로 사용 가능하게 만든다.
 const sanitize = (id: string): string => id.replace(/[^a-zA-Z0-9_-]/g, '_')

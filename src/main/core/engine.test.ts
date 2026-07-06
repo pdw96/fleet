@@ -184,6 +184,56 @@ describe('FleetEngine', () => {
     expect(captured?.aborted).toBe(true)
   })
 
+  // #197-B6 T3 — 엔진이 spawn 하는 자식별로 childEnv 카테고리를 배선한다: detect/probe=base·CLI 세션=cliSession.
+  // 미주입이면 opts.env=undefined(데스크톱 무회귀). 카테고리 라우팅을 fake runner 로 검증(실 stripping 은
+  // child-env.test.ts·verify/git 실 spawn 테스트가 담당).
+  describe('childEnv 스레딩(#197-B6 T3)', () => {
+    const capture = () => {
+      const calls: { command: string; env: NodeJS.ProcessEnv | undefined }[] = []
+      const runner: CommandRunner = async (command, _args, opts) => {
+        calls.push({ command, env: opts.env })
+        return { code: 0, stdout: 'ok', stderr: '' }
+      }
+      return { calls, runner }
+    }
+    const childEnv = {
+      base: () => ({ CATEGORY: 'base' }),
+      cliSession: () => ({ CATEGORY: 'cli' }),
+    }
+
+    it('미주입이면 자식 runner 의 opts.env 가 undefined 다(데스크톱 무회귀 특성화)', async () => {
+      const { calls, runner } = capture()
+      await createFleetEngine({ runner }).detectClis()
+      expect(calls.length).toBeGreaterThan(0)
+      expect(calls.every((c) => c.env === undefined)).toBe(true)
+    })
+
+    it('detect 는 base 카테고리 env 를 받는다(provider 키 없음)', async () => {
+      const { calls, runner } = capture()
+      await createFleetEngine({ runner, childEnv }).detectClis()
+      expect(calls.length).toBeGreaterThan(0)
+      expect(calls.every((c) => c.env?.CATEGORY === 'base')).toBe(true)
+    })
+
+    it('probe 는 base 카테고리 env 를 받는다', async () => {
+      const { calls, runner } = capture()
+      await createFleetEngine({ runner, childEnv }).probeCli('claude')
+      expect(calls.length).toBeGreaterThan(0)
+      expect(calls.every((c) => c.env?.CATEGORY === 'base')).toBe(true)
+    })
+
+    it('CLI 세션 send 는 cliSession 카테고리 env(provider 키 포함)를 받는다', async () => {
+      const { calls, runner } = capture()
+      const engine = createFleetEngine({ runner, childEnv })
+      engine.registerCliSession('claude')
+      const room = engine.createRoom('방', ['cli:claude'])
+      engine.postUserMessage(room.id, '안녕')
+      await engine.askLlm(room.id, 'cli:claude')
+      expect(calls.length).toBeGreaterThan(0)
+      expect(calls.every((c) => c.env?.CATEGORY === 'cli')).toBe(true)
+    })
+  })
+
   it('runs a full project flow through registered CLI sessions', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-flow-'))
     try {
