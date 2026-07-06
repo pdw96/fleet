@@ -184,9 +184,9 @@ describe('FleetEngine', () => {
     expect(captured?.aborted).toBe(true)
   })
 
-  // #197-B6 T3 — 엔진이 spawn 하는 자식별로 childEnv 카테고리를 배선한다: detect/probe=base·CLI 세션=cliSession.
-  // 미주입이면 opts.env=undefined(데스크톱 무회귀). 카테고리 라우팅을 fake runner 로 검증(실 stripping 은
-  // child-env.test.ts·verify/git 실 spawn 테스트가 담당).
+  // #197-B6 T3 — 엔진이 spawn 하는 자식별로 childEnv 카테고리를 배선한다: detect=base·probe/CLI 세션=cliSession.
+  // (probe 는 실 auth 왕복이라 세션과 같은 provider env 필요 — Codex PR P2). 미주입이면 opts.env=undefined
+  // (데스크톱 무회귀). 카테고리 라우팅을 fake runner 로 검증(실 stripping 은 child-env.test.ts·factory 실 spawn 담당).
   describe('childEnv 스레딩(#197-B6 T3)', () => {
     const capture = () => {
       const calls: { command: string; env: NodeJS.ProcessEnv | undefined }[] = []
@@ -215,11 +215,11 @@ describe('FleetEngine', () => {
       expect(calls.every((c) => c.env?.CATEGORY === 'base')).toBe(true)
     })
 
-    it('probe 는 base 카테고리 env 를 받는다', async () => {
+    it('probe 는 cliSession 카테고리 env 를 받는다(실 auth 왕복 — provider 키 필요)', async () => {
       const { calls, runner } = capture()
       await createFleetEngine({ runner, childEnv }).probeCli('claude')
       expect(calls.length).toBeGreaterThan(0)
-      expect(calls.every((c) => c.env?.CATEGORY === 'base')).toBe(true)
+      expect(calls.every((c) => c.env?.CATEGORY === 'cli')).toBe(true)
     })
 
     it('CLI 세션 send 는 cliSession 카테고리 env(provider 키 포함)를 받는다', async () => {

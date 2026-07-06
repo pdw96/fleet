@@ -7,8 +7,10 @@ out
 .git
 .gitignore
 
-# 시크릿·환경파일 (이미지 baking 금지)
+# 시크릿·환경파일 (이미지 baking 금지). Docker 는 .gitignore 를 안 보므로 .env 변형(.env.local·.env.production·
+# deploy/.env.prod 등)도 명시 제외해야 빌드 컨텍스트/캐시로 유출되지 않는다(Codex PR P1). .env.example 도 빌드 불요.
 **/.env
+**/.env.*
 deploy/.env
 **/*.pem
 **/*.key

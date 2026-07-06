@@ -4,8 +4,9 @@
  *
  * 두 단계:
  *  · runtimeBaseEnv  — 전 자식 공통 최소(로케일·PATH·HOME·프록시·win32 이식 등). provider 키·FLEET_* 부재.
- *                      detect/probe·MCP stdio·verify·git 은 이것만 받는다.
- *  · cliSessionEnv   — base + provider 자격/구성 키(ANTHROPIC/OPENAI/GOOGLE 계열). **CLI 세션 실행 경로에만** 부여.
+ *                      detect(--version)·MCP stdio·verify·git 은 이것만 받는다.
+ *  · cliSessionEnv   — base + provider 자격/구성 키(ANTHROPIC/OPENAI/GOOGLE 계열). CLI 세션 실행과 **probe(실
+ *                      auth 왕복이라 세션과 같은 env 필요)** 경로에 부여.
  *                      임의 사용자 프로세스인 MCP 자식엔 provider 키가 기본 전달되면 유출 경로가 보존되므로 제외한다
  *                      (MCP 는 `spec.env` 가 명시적 per-server escape hatch).
  *

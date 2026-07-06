@@ -53,6 +53,11 @@ services:
 
   fleet:
     # 문② 오케스트레이션 서버(#197-B6). 코어 엔진 + renderer 정적 서빙 + WS 전송. 비특권 node·시크릿 env 주입만.
+    # tunnel 프로파일 — fleet 은 0.0.0.0 bind + Access 완비를 요구하므로(resolveBindHost 이중 게이트) 기본
+    # `up`(no-Access)엔 넣지 않는다. 넣으면 Access 미설정 시 부팅 거부로 실패 서비스가 보고된다(Codex PR P2).
+    # `docker compose --profile tunnel up` 이 문①(ttyd)+문②(fleet)+cloudflared 를 함께 올린다(cloudflared 와 동일 프로파일).
+    profiles:
+      - tunnel
     build:
       context: ..
       dockerfile: deploy/fleet/Dockerfile
@@ -69,6 +74,9 @@ services:
       # (resolveBindHost 이중 게이트). 미완비면 loud-fail(조용한 loopback 강등 아님).
       FLEET_HOST: ${FLEET_HOST:-0.0.0.0}
       FLEET_PORT: ${FLEET_PORT:-8791}
+      # 워크스페이스 루트 — 미설정 시 boot 이 setWorkspace 를 건너뛰어 산출물 기록/검증이 비활성(런 완주 불가)이 된다.
+      # 마운트 타깃(/workspace)과 일치시킨다(Codex PR P1).
+      FLEET_WORKSPACE_ROOT: ${FLEET_WORKSPACE_ROOT:-/workspace}
       FLEET_SECRET_KEY: ${FLEET_SECRET_KEY} # API 키 영속 암호화(AES-256-GCM env-key). 미설정 시 라이브 세션만.
       FLEET_ACCESS_TEAM_DOMAIN: ${FLEET_ACCESS_TEAM_DOMAIN} # https://<team>.cloudflareaccess.com
       FLEET_ACCESS_AUD: ${FLEET_ACCESS_AUD} # Access application audience tag

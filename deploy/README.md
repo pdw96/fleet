@@ -145,10 +145,11 @@ Fleet 오케스트레이션 UI 를 열어 역할 DAG·승인 카드·라이브 �
 서버가 spawn 하는 자식(**CLI 세션·detect/probe·MCP stdio·verify·git**)에 서버 시크릿(`FLEET_SECRET_KEY`·
 `FLEET_ACCESS_*` 등 전 `FLEET_*`)이 상속되지 않도록 **allowlist** 로 env 를 필터한다(코드층 `src/server/child-env.ts`):
 
-- **런타임 base**(전 자식) = `PATH`·`HOME`·로케일·프록시·win32 이식 등 최소. `FLEET_*` 자동 배제·`NODE_OPTIONS`
-  의도적 배제(preload 주입 벡터).
-- **CLI 세션 전용** = base + provider 자격/구성 키(`ANTHROPIC_*`·`OPENAI_*`·`GOOGLE_*` 계열). MCP·detect/probe·
-  verify/git 엔 **provider 키 부재**(MCP 는 `spec.env` 가 명시적 per-server escape hatch).
+- **런타임 base** = `PATH`·`HOME`·로케일·프록시·win32 이식 등 최소. `FLEET_*` 자동 배제·`NODE_OPTIONS`
+  의도적 배제(preload 주입 벡터). **detect(--version)·MCP stdio·verify·git** 은 이것만.
+- **CLI 세션 + probe** = base + provider 자격/구성 키(`ANTHROPIC_*`·`OPENAI_*`·`GOOGLE_*` 계열). probe(연결
+  테스트)는 실 모델 왕복으로 **인증**을 확인하므로 세션과 같은 provider env 를 받는다(안 그러면 API-키 인증 CLI 의
+  연결 테스트가 오탐). MCP 자식엔 **provider 키 부재**(임의 사용자 프로세스라 `spec.env` 가 명시적 per-server escape hatch).
 
 > **⚠️ 워크스페이스 명령 격리 경계 (env ≠ 파일 격리).** 위 allowlist 는 **서버 env 시크릿(FLEET_\*)** 이 자식에
 > 안 새게 한다. 그러나 `verify` 스크립트(워크스페이스 `npm` 스크립트)·`git` 훅은 컨테이너 사용자(uid node)와

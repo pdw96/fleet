@@ -108,7 +108,7 @@ export interface FleetEngineOptions {
   gitRunner?: GitRunner
   /**
    * 자식 env 격리(#197-B6). 주입 시 엔진이 spawn 하는 전 자식에 카테고리별 env 를 적용한다:
-   * detect/probe·verify·git = `base()`(런타임 최소), CLI 세션 실행 = `cliSession()`(base + provider 키).
+   * detect·verify·git = `base()`(런타임 최소), CLI 세션 실행·**probe(실 auth 왕복)** = `cliSession()`(base + provider 키).
    * **미주입이면 현행처럼 부모 env 를 상속**(데스크톱 무회귀). 서버 모드에서 boot 이 createChildEnv(env) 주입.
    * 코어 순수성 유지를 위해 구조적 인라인 타입만 받는다(server 의 child-env 모듈 import 금지).
    */
@@ -524,7 +524,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const existing = activeProbes.get(adapterId)
       if (existing) return existing.promise
       const controller = new AbortController()
-      const promise = probeCliAuth(adapter, baseRunner, controller.signal).finally(() => {
+      // probe 는 detect(--version)와 달리 실 모델 왕복으로 **인증**을 확인하므로, 실제 CLI 세션과 동일한
+      // cliSession env(base + provider 키)로 돌려야 한다. base 로 돌리면 API-키 인증 CLI 사용자의 연결 테스트가
+      // 세션은 성공하는데 probe 만 auth 오탐하는 비대칭이 생긴다(Codex PR P2). probe 대상은 신뢰 바이너리(등록
+      // 어댑터)라 provider 키 노출은 CLI 세션과 동급 — 신규 유출 아님.
+      const promise = probeCliAuth(adapter, cliRunner, controller.signal).finally(() => {
         activeProbes.delete(adapterId)
       })
       activeProbes.set(adapterId, { promise, controller })

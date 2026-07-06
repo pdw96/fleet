@@ -43,7 +43,10 @@ trap cleanup EXIT
 cleanup
 
 log "1) 이미지 빌드 (compose — .env 의 버전 build-arg 를 반영해 실제 배포될 이미지를 검증)"
-COMPOSE=(docker compose -f "$SCRIPT_DIR/docker-compose.yml")
+# --profile tunnel — fleet(문②)·cloudflared 가 tunnel 프로파일이라, 이게 없으면 `compose config` 가 fleet 을
+# 제외해 아래 fleet 불변식 검사(섹션 12)가 빈 블록으로 무증상 통과한다(canary 로도 잡히나 애초에 포함시킨다).
+# ttyd(무프로파일)는 항상 활성이라 영향 없다.
+COMPOSE=(docker compose -f "$SCRIPT_DIR/docker-compose.yml" --profile tunnel)
 [ -f "$SCRIPT_DIR/.env" ] && COMPOSE+=(--env-file "$SCRIPT_DIR/.env")
 "${COMPOSE[@]}" build ttyd
 IMAGES="$("${COMPOSE[@]}" config --images 2>/dev/null || true)"
