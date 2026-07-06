@@ -62,6 +62,11 @@ COPY --chown=node:node --from=builder /build/out ./out
 ENV FLEET_DATA_DIR=/app/fleet-data
 RUN mkdir -p /app/fleet-data /workspace && chown node:node /app/fleet-data /workspace
 
+# 바인드 마운트된 /workspace 는 호스트 소유(uid 1000 과 다름)라, 서버(node)가 그 안에서 git 을 돌리면
+# git 2.35.2+ 의 "dubious ownership" 안전검사가 checkpoint/add 를 거부한다. 단일 사용자 컨테이너라 워크스페이스
+# 를 신뢰 경로로 등록한다(라이브 검증에서 적발 — Codex 리뷰와 별개 실배포 버그). system config = HOME/볼륨과 무관.
+RUN git config --system --add safe.directory /workspace
+
 USER node
 # 문서용 — 실제 공개 없음(compose ports: 없음 · cloudflared 내부망만 도달). 기본 포트 8791(FLEET_PORT).
 EXPOSE 8791
