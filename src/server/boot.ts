@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs'
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,10 +9,24 @@ import { createFleetEngine } from '../main/core/engine'
 import { createIpcApprover } from '../main/core/safety/approval-bridge'
 import { createJsonFileStore } from '../main/core/store/json-file'
 import { isE2EActive, resolveE2eRunner, resolveE2eVerifyRunner, seedE2eFixtures } from '../main/e2e'
+import { AccessJwtError, createAccessJwtVerifier, type AccessJwtVerifier } from './access-jwt'
 import { createEnvKeyCrypto } from './env-key-crypto'
 import { createHandlers } from './handlers'
+import { resolveSecurityConfig, type SecurityConfig } from './security-config'
 import { createStaticHandler } from './static'
+import { createNonceStore, type NonceStore } from './ws-nonce'
 import { createWsHost, type WsHost } from './ws-host'
+
+/** 테스트 전용 주입(운영 env 표면 0) — 실 JWKS/네트워크 없이 secured 통합 검증. */
+export interface BootDeps {
+  /** access 모드 JWKS getKey 주입(미주입 시 createRemoteJWKSet — 프로덕션). */
+  accessJwks?: AccessJwtVerifierOptionsJwks
+  /** 보안 거부 관측 훅(단계·사유 코드만 — 토큰/nonce 값 금지). 미주입 시 서버 로그 1줄. */
+  onSecurityReject?: (stage: SecurityRejectStage, reason: string) => void
+}
+
+type AccessJwtVerifierOptionsJwks = Parameters<typeof createAccessJwtVerifier>[0]['jwks']
+type SecurityRejectStage = 'nonce' | 'upgrade'
 
 /**
  * fleet-server 조립(#197 B3) — main/index.ts buildEngine+registerIpc 의 서버 대응물.
@@ -36,6 +50,88 @@ function isAllowedOrigin(origin: string | undefined): boolean {
     return LOOPBACK_HOSTS.has(host)
   } catch {
     return false // 파싱 불가 Origin 거부
+  }
+}
+
+/**
+ * Origin 정책(HTTP nonce endpoint·WS upgrade 공통 — 판정 함수 단일화로 drift 차단, #197 B5).
+ *   · loopback: 기존 isAllowedOrigin 승계(부재 허용·loopback 오리진만).
+ *   · access: publicOrigin 정확 문자열 일치 — 부재·scheme/포트/서브도메인 차이·`Origin: null` 전부 거부.
+ */
+function makeOriginAllowed(config: SecurityConfig): (origin: string | undefined) => boolean {
+  if (config.mode === 'loopback') return isAllowedOrigin
+  const { publicOrigin } = config
+  return (origin) => origin === publicOrigin
+}
+
+/** Cf-Access-Jwt-Assertion 헤더 우선 → CF_Authorization 쿠키 폴백. 값 내 `=`·다중 쿠키 안전 파싱. */
+function extractAccessToken(req: IncomingMessage): string | undefined {
+  const header = req.headers['cf-access-jwt-assertion']
+  if (typeof header === 'string' && header.length > 0) return header
+  const cookie = req.headers.cookie
+  if (typeof cookie === 'string') {
+    for (const part of cookie.split(';')) {
+      const eq = part.indexOf('=')
+      if (eq === -1) continue
+      if (part.slice(0, eq).trim() === 'CF_Authorization') {
+        // 첫 `=` 만 name/value 구분 — 값 내 `=`(있다면) 보존.
+        return part.slice(eq + 1).trim()
+      }
+    }
+  }
+  return undefined
+}
+
+const TEXT = 'text/plain; charset=utf-8'
+/** nonce endpoint 응답은 성패 무관 `Cache-Control: no-store`(발급 nonce·인증 상태 캐시 금지). */
+function endStatus(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, { 'cache-control': 'no-store', 'content-type': TEXT })
+  res.end(body)
+}
+
+/** access 모드 nonce 발급: Origin exact(403) → JWT verify(401/503) → issue → 200 {nonce}. */
+async function handleNonceRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: {
+    publicOrigin: string
+    originAllowed: (origin: string | undefined) => boolean
+    verifier: AccessJwtVerifier
+    nonceStore: NonceStore
+    onReject: (stage: SecurityRejectStage, reason: string) => void
+  },
+): Promise<void> {
+  if (req.method !== 'POST') {
+    endStatus(res, 405, 'method not allowed') // POST 외 전부 405(GET/HEAD/OPTIONS)
+    return
+  }
+  if (!ctx.originAllowed(req.headers.origin)) {
+    ctx.onReject('nonce', 'origin')
+    endStatus(res, 403, 'forbidden')
+    return
+  }
+  try {
+    const { identity } = await ctx.verifier.verify(extractAccessToken(req) ?? '')
+    // Origin exact 통과 = req.headers.origin === publicOrigin. 바인딩 권위값으로 publicOrigin 저장.
+    const nonce = ctx.nonceStore.issue(identity, ctx.publicOrigin)
+    res.writeHead(200, {
+      'cache-control': 'no-store',
+      'content-type': 'application/json; charset=utf-8',
+    })
+    res.end(JSON.stringify({ nonce }))
+  } catch (err) {
+    const unavailable = err instanceof AccessJwtError && err.kind === 'unavailable'
+    ctx.onReject('nonce', unavailable ? 'jwks' : 'jwt')
+    endStatus(res, unavailable ? 503 : 401, unavailable ? 'service unavailable' : 'unauthorized')
+  }
+}
+
+/** 요청 경로가 nonce 발급 endpoint 인지(malformed URL 은 false — 정적 핸들러로 위임). */
+function isNonceRequest(req: IncomingMessage): boolean {
+  try {
+    return new URL(req.url ?? '/', 'http://local').pathname === '/auth/ws-nonce'
+  } catch {
+    return false
   }
 }
 
@@ -80,7 +176,12 @@ function rawDataToString(data: RawData): string {
   return Buffer.from(data).toString('utf8')
 }
 
-export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer> {
+export async function bootServer(
+  env: NodeJS.ProcessEnv,
+  deps: BootDeps = {},
+): Promise<RunningServer> {
+  // 보안 모드 판정 — 부분 설정은 여기서 fail-fast(store mkdir 등 모든 부수효과 이전).
+  const securityConfig = resolveSecurityConfig(env)
   const host = resolveBindHost(env)
   const port = resolvePort(env)
   const e2e = isE2EActive(env)
@@ -140,13 +241,46 @@ export async function bootServer(env: NodeJS.ProcessEnv): Promise<RunningServer>
   })
   wsHost = createWsHost({ handlers, eventCursor: () => store.eventCursor() })
 
+  // 보안 컨텍스트(#197 B5) — access 검증기는 부팅 1회 생성(요청마다 createRemoteJWKSet 재생성은
+  // 캐시/cooldown 무효화). nonceStore·originAllowed 는 HTTP nonce endpoint·WS upgrade(T7) 공유.
+  const onSecurityReject: (stage: SecurityRejectStage, reason: string) => void =
+    deps.onSecurityReject ??
+    ((stage, reason) => console.warn(`fleet-server: 보안 거부 stage=${stage} reason=${reason}`))
+  const originAllowed = makeOriginAllowed(securityConfig)
+  const nonceStore = createNonceStore()
+  const accessVerifier: AccessJwtVerifier | null =
+    securityConfig.mode === 'access'
+      ? createAccessJwtVerifier({
+          teamDomain: securityConfig.teamDomain,
+          aud: securityConfig.aud,
+          jwks: deps.accessJwks,
+        })
+      : null
+
   // `?.trim() || 기본값` — FLEET_HOST/FLEET_WORKSPACE_ROOT/FLEET_PORT 와 동일 패턴. `??` 는 빈
   // 문자열에서 폴백하지 않아, env 템플레이팅으로 FLEET_STATIC_DIR='' 가 되면 staticDir 가 CWD 로
   // 해소되고 createStaticHandler('') 가 저장소/앱 루트 파일을 그대로 서빙한다(정보 노출 · #197 B3
   // Codex P2). trim 후 빈 문자열/공백만도 미설정으로 취급해 renderer 폴백을 강제한다.
   const staticDir =
     env['FLEET_STATIC_DIR']?.trim() || join(dirname(fileURLToPath(import.meta.url)), '../renderer')
-  const httpServer = createServer(createStaticHandler(staticDir))
+  const staticHandler = createStaticHandler(staticDir)
+  const httpServer = createServer((req, res) => {
+    // access 모드에서만 nonce 발급 endpoint 를 정적 서빙 앞에 가로챈다. loopback 은 endpoint 부재 —
+    // /auth/ws-nonce POST 는 정적 핸들러 method guard 로 405(T1 특성화 핀).
+    if (securityConfig.mode === 'access' && accessVerifier && isNonceRequest(req)) {
+      void handleNonceRequest(req, res, {
+        publicOrigin: securityConfig.publicOrigin,
+        originAllowed,
+        verifier: accessVerifier,
+        nonceStore,
+        onReject: onSecurityReject,
+      }).catch(() => {
+        // 드문 이중 writeHead 등이 floating promise 밖으로 새 unhandledRejection 되지 않게(static.ts 동형).
+      })
+      return
+    }
+    staticHandler(req, res)
+  })
   const wss = new WebSocketServer({
     server: httpServer,
     verifyClient: ({ origin }: { origin: string }) => isAllowedOrigin(origin),
