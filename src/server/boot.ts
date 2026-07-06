@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
@@ -216,6 +216,12 @@ export async function bootServer(
     throw new Error(`FLEET_WORKSPACE_ROOT 가 디렉터리가 아님: ${workspaceRoot}`)
   }
   const dataDir = resolve(env['FLEET_DATA_DIR'] ?? 'fleet-data')
+  // 세션/이벤트/암호문이 담기는 데이터 디렉터리를 store 생성보다 **먼저** 0700 으로 잠근다(#197-B6 T5) —
+  // 동일 호스트 타 사용자의 접근 차단. createJsonFileStore 가 recursive mkdir 로 부모를 기본 mode 로 만들기
+  // 전에 선생성해야 하고, 기존 디렉터리는 recursive mkdir 이 mode 를 안 바꾸므로 chmod 로 보정한다.
+  // win32 는 POSIX mode 가 무의미하므로 스킵(CI linux 가 mode 를 강제 커버).
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') chmodSync(dataDir, 0o700)
   const store = createJsonFileStore(join(dataDir, 'fleet'))
 
   // wsHost 는 engine 콜백보다 늦게 만들어진다 — 브로드캐스트는 조립 완료 후에만 유효(부팅 중 이벤트 무해 drop).
