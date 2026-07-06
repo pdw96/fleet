@@ -26,6 +26,13 @@ export interface RunOpts {
    * UTF-8 로 인코딩되어 한 번에 write 후 stdin 을 닫는다.
    */
   stdinInput?: string
+  /**
+   * 자식 프로세스 환경변수. **미지정이면 현행처럼 `process.env` 를 전량 상속**한다(데스크톱·기존
+   * 호출 무회귀 특성화 핀). 지정하면 자식 env 는 이 값으로 **완전 대체**된다(부분 병합 아님 — Node
+   * spawn 시맨틱). 서버 모드(#197-B6)에서 childEnv 가 allowlist 로 필터한 env 를 주입해 `FLEET_*`
+   * 서버 시크릿이 자식(CLI 세션·detect/probe·verify·git)에 새지 않게 한다.
+   */
+  env?: NodeJS.ProcessEnv
 }
 
 /**
@@ -108,7 +115,13 @@ export const defaultRunner: CommandRunner = async (command, args, opts, onStdout
       resolve({ ...extra, stdout, stderr })
     }
 
-    const child = spawn(resolved, args, { windowsHide: true, cwd })
+    // env 미지정 시 옵션 객체에 `env` 키 자체를 넣지 않는다(조건부 스프레드) — `env: undefined` 를
+    // 직접 넘기면 cross-spawn 이 상속 처리를 미묘하게 바꿀 수 있어, 미지정 경로 spawn 을 이전과 정확히 동일하게 보존.
+    const child = spawn(resolved, args, {
+      windowsHide: true,
+      cwd,
+      ...(opts.env ? { env: opts.env } : {}),
+    })
 
     // 종료가 트리거됐을 때(취소/타임아웃/overflow) 트리 킬 확인과 stdout close 를 둘 다 본 뒤 종결한다.
     const finishWhenTerminated = () => {
