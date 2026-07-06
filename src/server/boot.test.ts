@@ -4,6 +4,9 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import WebSocket, { type RawData } from 'ws'
 import { bootServer, resolveBindHost, resolvePort, type RunningServer } from './boot'
+import type { SecurityConfig } from './security-config'
+import type { IpcApprover } from '../main/core/safety/approval-bridge'
+import type { ApprovalRequest } from '../shared/types'
 import type { ServerFrame } from '../shared/transport/protocol'
 
 /** ws `RawData`(Buffer|ArrayBuffer|Buffer[])를 텍스트 프레임 문자열로 정규화(no-base-to-string 회피). */
@@ -13,16 +16,39 @@ function rawDataToString(data: RawData): string {
   return Buffer.from(data).toString('utf8')
 }
 
-describe('resolveBindHost — B5 전 loopback 강제(#197 B3 완료 조건)', () => {
-  it.each([undefined, '', '127.0.0.1', '::1', 'localhost'])('loopback(%s) 허용', (v) => {
-    expect(['127.0.0.1', '::1', 'localhost']).toContain(resolveBindHost({ FLEET_HOST: v }))
+describe('resolveBindHost — access 모드에서만 non-loopback 개방(#197 B5 T10)', () => {
+  const LOOPBACK: SecurityConfig = { mode: 'loopback' }
+  const ACCESS: SecurityConfig = {
+    mode: 'access',
+    teamDomain: new URL('https://team.cloudflareaccess.com'),
+    aud: 'aud-tag',
+    publicOrigin: 'https://fleet.example.com',
+  }
+
+  it.each([undefined, '', '127.0.0.1', '::1', 'localhost'])('loopback host(%s) 항상 허용', (v) => {
+    expect(['127.0.0.1', '::1', 'localhost']).toContain(
+      resolveBindHost({ FLEET_HOST: v }, LOOPBACK),
+    )
+    expect(['127.0.0.1', '::1', 'localhost']).toContain(resolveBindHost({ FLEET_HOST: v }, ACCESS))
   })
+
   it.each(['0.0.0.0', '::', '0:0:0:0:0:0:0:0', '192.168.0.10', 'fleet.example.com', '10.0.0.1'])(
-    'non-loopback(%s) → throw — 어떤 env 로도 안 열림',
+    'loopback 모드 + non-loopback(%s) → throw(보안 미설정 시 loopback 고정)',
     (v) => {
-      expect(() => resolveBindHost({ FLEET_HOST: v })).toThrow(/loopback/i)
+      expect(() => resolveBindHost({ FLEET_HOST: v }, LOOPBACK)).toThrow(/loopback/i)
     },
   )
+
+  it.each(['0.0.0.0', '::', '192.168.0.10', 'fleet.example.com'])(
+    'access 모드 + non-loopback(%s) → 허용',
+    (v) => {
+      expect(resolveBindHost({ FLEET_HOST: v }, ACCESS)).toBe(v)
+    },
+  )
+
+  it('access 모드 + FLEET_HOST 미설정 → 기본 127.0.0.1(개방은 명시 opt-in 이중 게이트)', () => {
+    expect(resolveBindHost({}, ACCESS)).toBe('127.0.0.1')
+  })
 })
 
 describe('resolvePort', () => {
@@ -194,6 +220,104 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
         await expect(tryConnect(server.port, `http://127.0.0.1:${server.port}`)).resolves.toBe(
           'allowed',
         )
+      } finally {
+        await server.close()
+      }
+    })
+  })
+
+  describe('B5 loopback 특성화 핀 — 보안층 도입 전 하위호환 동결(#197 B5 T1)', () => {
+    // 신규 구현 없음 — 현행 그대로 통과해야 하는 특성화 테스트. 이후 태스크(T6·T7·T10)가 이를 깨면
+    // loopback 하위호환 위반이 즉시 RED 로 드러난다. boot() 헬퍼는 보안 env 를 설정하지 않으므로 loopback.
+
+    it('보안 env 전부 부재 → nonce/JWT 없이 WS 접속·hello 수신(loopback 무회귀)', async () => {
+      const server = await boot()
+      const socket = await connect(server.port)
+      try {
+        const hello = await nextFrame(socket)
+        expect(hello.t).toBe('hello') // nonce 쿼리·JWT 헤더 없이도 접속·hello 성공
+      } finally {
+        socket.close()
+        await server.close()
+      }
+    })
+
+    it('loopback: POST /auth/ws-nonce → nonce endpoint 부재(405 — 정적 핸들러 method guard)', async () => {
+      // nonce 발급 endpoint 는 access 모드에서만 배선된다(T6). loopback 은 라우팅에 잡히지 않고 정적
+      // 핸들러의 method guard 가 POST 를 405 로 자른다 — 이것이 loopback 의 최종 불변식이다. 계획 원문은
+      // 404 를 적었으나 access-only 배선이라 loopback 에 nonce 경로 특수처리를 넣지 않는 것이 최소 diff·
+      // 정합(정적 method guard 405). T6 는 access 배선만 추가하므로 이 405 는 그대로 유지된다.
+      const server = await boot()
+      try {
+        const res = await fetch(`http://127.0.0.1:${server.port}/auth/ws-nonce`, { method: 'POST' })
+        expect(res.status).toBe(405)
+        expect(await res.text()).not.toContain('nonce') // 발급 응답 아님(경로 존재 비노출)
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('FLEET_ACCESS_* 빈 문자열만 존재 → loopback 유지(부분설정 오검출 없음)', async () => {
+      // 빈 문자열 env = 미설정 동치(T3 resolveSecurityConfig `?.trim() ||` 관례의 boot 레벨 특성화):
+      // 현행 boot 는 이 var 들을 읽지 않아 WS 접속이 정상(loopback). T3/T6 이후에도 loopback 이라 동일 GREEN.
+      const server = await bootServer({
+        FLEET_PORT: '0',
+        FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-b5-data-')),
+        FLEET_E2E: '1',
+        FLEET_ACCESS_TEAM_DOMAIN: '',
+        FLEET_ACCESS_AUD: '',
+        FLEET_PUBLIC_ORIGIN: '',
+      })
+      const socket = await connect(server.port)
+      try {
+        const hello = await nextFrame(socket)
+        expect(hello.t).toBe('hello')
+      } finally {
+        socket.close()
+        await server.close()
+      }
+    })
+
+    // 적대 리뷰 확정(P3 · test-coverage 렌즈): loopback 은 presence-0 전이에서 rejectAll 을 발화하지
+    // 않고 타임아웃 시맨틱을 유지한다(invariant #4 — boot.ts handleSocketGone 의 `mode === 'access'`
+    // 가드). access ②③(boot-access.test.ts)의 정반대 대칭 핀이 없으면 그 가드 제거 회귀가 무신호로
+    // 샌다(loopback 이 클라 이탈 시 승인을 조기 거부 = B3/B4 parity 파괴). 이 핀이 동결한다.
+    it('loopback: 클라 전원 이탈 → 승인 pending 유지(rejectAll 미발화 — access 대칭)', async () => {
+      const destructiveReq = (id: string): ApprovalRequest => ({
+        id,
+        kind: 'file-write',
+        summary: 's',
+        target: 't',
+        risk: 'destructive',
+        ts: 1,
+      })
+      const waitFor = async (pred: () => boolean): Promise<void> => {
+        const start = Date.now()
+        while (!pred()) {
+          if (Date.now() - start > 4000) throw new Error('waitFor 타임아웃')
+          await new Promise((r) => setTimeout(r, 10))
+        }
+      }
+      let approver!: IpcApprover
+      const server = await bootServer(
+        {
+          FLEET_PORT: '0',
+          FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-b5-data-')),
+          FLEET_E2E: '1',
+        },
+        { onApprover: (a) => (approver = a) },
+      )
+      const socket = await connect(server.port)
+      try {
+        await nextFrame(socket) // hello 소비
+        await waitFor(() => server.clientCount() === 1)
+        const p = approver.approver(destructiveReq('x')) // hasWindow true → pending
+        expect(approver.pendingCount()).toBe(1)
+        socket.close()
+        await waitFor(() => server.clientCount() === 0) // 클라 전원 이탈
+        expect(approver.pendingCount()).toBe(1) // loopback → rejectAll 미발화·pending 생존
+        approver.resolve('x', true) // 정리(타임아웃 대기 없이)
+        await expect(p).resolves.toBe(true)
       } finally {
         await server.close()
       }

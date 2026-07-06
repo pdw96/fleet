@@ -3,10 +3,23 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 /**
- * renderer 번들 정적 서빙(#197 B3). WS 와 같은 http 서버에 얹는다(upgrade 는 ws 가 가로챔).
+ * renderer 번들 정적 서빙(#197 B3·B5). WS 와 같은 http 서버에 얹는다(upgrade 는 ws 가 가로챔).
  * 보안: 요청 경로를 rootDir 기준으로 해소한 뒤 relative 검사로 루트 밖 접근을 404 로 자른다
- * (decodeURIComponent 후 검사라 %2e%2e 우회 불가·404 로 존재 비노출). 캐싱/CSP 헤더는 B5 몫.
+ * (decodeURIComponent 후 검사라 %2e%2e 우회 불가·404 로 존재 비노출). 전 응답에 CSP·보안 헤더(#197 B5).
+ *
+ * 무인증 서빙(명시 결정): non-loopback 개방(access) 후에도 renderer 번들은 JWT 없이 서빙된다 — 의도적
+ * 수용. 번들은 비밀이 아니고, 실배포는 터널 앞단 Cloudflare Access(MFA)가 HTML 자체를 게이팅하며, 직접
+ * LAN bind 는 운영자 명시 opt-in 이다. 인증은 WS upgrade(nonce+JWT)·nonce endpoint 가 담당(오케스트레이션).
  */
+// 체크포인트 4-R 확정 CSP — 데스크톱 index.html 메타 상위집합. connect-src 'self' 는 CSP3 에서 same-origin
+// ws/wss 포함(B4 리뷰 REFUTED·라이브 재확인 Task 11). Referrer-Policy 는 ?nonce= URL 이 Referer 로 새는 것
+// 방지 정합. 문자열은 static.test.ts 와 전체 일치 고정(약화 회귀 무신호 차단).
+const SECURITY_HEADERS: Record<string, string> = {
+  'content-security-policy':
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+}
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -27,7 +40,8 @@ export function createStaticHandler(rootDir: string) {
     return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
   }
   const send = (res: ServerResponse, status: number, body: Buffer | string, type: string): void => {
-    res.writeHead(status, { 'content-type': type })
+    // 단일 지점 — 전 응답(200·404·405·SPA 폴백)에 CSP·보안 헤더를 균일 부착(누락 표면 0).
+    res.writeHead(status, { 'content-type': type, ...SECURITY_HEADERS })
     res.end(body)
   }
 

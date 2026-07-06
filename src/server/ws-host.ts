@@ -16,7 +16,8 @@ import type { HandlerTable } from './handlers'
  *  - req 디스패치: 핸들러 await → ok/err res. 에러는 message 만(스택 미노출 — 프로토콜 계약).
  *  - 미지 채널(desktop 전용 포함)은 명시 에러 res — 무응답이면 클라 pending 이 영구 hang 한다.
  *  - 신뢰 경계: decodeClientFrame 위반 프레임은 무시(id 신뢰 불가 → correlation res 불가).
- *  - presence: clientCount() — B5 전 loopback 한정의 임시 presence(approver hasWindow 대체).
+ *  - presence: clientCount() = attach 된(=검증 통과, #197 B5) 소켓 수. approver hasWindow·access 모드
+ *    presence-0 rejectAll 의 소스. 검증 실패 소켓은 boot 이 attach 전에 파괴 → presence 오염 없음.
  */
 export interface WsSocket {
   send(data: string): void

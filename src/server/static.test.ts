@@ -71,3 +71,28 @@ describe('정적 서빙(#197 B3)', () => {
     expect((await fetch(`${base}/`, { method: 'POST' })).status).toBe(405)
   })
 })
+
+describe('보안 헤더(#197 B5 T9)', () => {
+  // 체크포인트 4-R 확정 최종 문자열 — 계획·테스트 일치 고정. 전체 일치 단언(부분 아님)이라 약화 회귀
+  // (지시자 삭제·완화)가 무신호로 새지 않는다. unsafe-eval 부재는 전체 일치에 내포.
+  const CSP =
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+  function assertHeaders(res: Response): void {
+    expect(res.headers.get('content-security-policy')).toBe(CSP)
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+  }
+
+  it('200 자산 응답에 보안 헤더 전량', async () => {
+    assertHeaders(await fetch(`${base}/assets/app.js`))
+  })
+  it('200 SPA 폴백(index) 응답에 보안 헤더 전량', async () => {
+    assertHeaders(await fetch(`${base}/rooms`))
+  })
+  it('404 응답에 보안 헤더 전량', async () => {
+    assertHeaders(await fetch(`${base}/assets/nope.js`))
+  })
+  it('405 응답에 보안 헤더 전량', async () => {
+    assertHeaders(await fetch(`${base}/`, { method: 'POST' }))
+  })
+})
