@@ -37,6 +37,7 @@ import { createCliSession } from './session/cli-session'
 import { anySignal } from './session/abort'
 import { createSessionManager, type SessionManager } from './session/manager'
 import { createMcpHost } from './mcp/host'
+import { createDefaultSpawn } from './mcp/stdio'
 import type { McpHost } from './mcp/types'
 import { createToolRegistry } from './tools/registry'
 import { createWorkspaceReadTools } from './tools/workspace-tools'
@@ -229,7 +230,14 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   })
   // MCP 호스트: 외부 MCP 서버의 도구를 FleetTool 로 노출한다(setMcpServers 로 연결).
   // gate 를 주입해 새 서버 spawn(임의 로컬 프로세스 실행)이 승인 게이트를 통과하게 한다(안전 우선).
-  const mcpHost = opts.mcpHost ?? createMcpHost({ onAudit: appendAudit, gate })
+  // MCP 자식은 임의 사용자 구성 프로세스라 base env 만 준다(#197-B6 T4 — provider 키는 spec.env 로만).
+  const mcpHost =
+    opts.mcpHost ??
+    createMcpHost({
+      onAudit: appendAudit,
+      gate,
+      spawn: childEnv ? createDefaultSpawn(() => childEnv.base()) : undefined,
+    })
   // 워크스페이스는 런타임에 바꿀 수 있다(렌더러에서 선택). null 이면 파일 기록/검증 비활성.
   let workspaceDir: string | null = opts.workspaceDir ?? null
   // 진행 중 실행: projectId → AbortController. project.created 에서 등록, project.done 에서 해제.

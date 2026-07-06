@@ -232,6 +232,54 @@ describe('FleetEngine', () => {
       expect(calls.length).toBeGreaterThan(0)
       expect(calls.every((c) => c.env?.CATEGORY === 'cli')).toBe(true)
     })
+
+    // #197-B6 T4 — MCP stdio 자식은 base 카테고리(provider 키 없음)만 받아야 한다. 실 spawn 으로 자식이
+    // 자기 env 를 파일에 덤프하게 해, 엔진이 childEnv.base 를 MCP spawn 에 배선했는지(잘못된 cliSession
+    // 배선·미배선 모두 감지) 검증한다. spec.env(escape hatch)는 병합돼 도달.
+    it('MCP 자식은 base 카테고리 env 를 받는다(provider 키·FLEET_* 미상속) — 실 spawn 통합', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'fleet-mcpenv-'))
+      const envFile = join(dir, 'env.json')
+      const win =
+        process.platform === 'win32'
+          ? {
+              SystemRoot: process.env.SystemRoot,
+              PATHEXT: process.env.PATHEXT,
+              ComSpec: process.env.ComSpec,
+            }
+          : {}
+      const mcpChildEnv = {
+        base: (): NodeJS.ProcessEnv => ({ PATH: process.env.PATH, T4_MARK: 'base', ...win }),
+        cliSession: (): NodeJS.ProcessEnv => ({
+          PATH: process.env.PATH,
+          ANTHROPIC_API_KEY: 'should-not-reach-mcp',
+          ...win,
+        }),
+      }
+      process.env.FLEET_SECRET_KEY = 'server-secret'
+      const engine = createFleetEngine({ childEnv: mcpChildEnv, approver: async () => true })
+      try {
+        await engine.setMcpServers([
+          {
+            name: 'envdump',
+            command: 'node',
+            args: [
+              '-e',
+              'require("fs").writeFileSync(process.env.T4_ENVFILE,JSON.stringify(process.env));process.exit(0)',
+            ],
+            env: { T4_ENVFILE: envFile },
+          },
+        ])
+        const env = JSON.parse(readFileSync(envFile, 'utf8')) as Record<string, string>
+        expect(env.T4_MARK).toBe('base') // base 카테고리 적용
+        expect(env.T4_ENVFILE).toBe(envFile) // spec.env(escape hatch) 병합
+        expect(env.FLEET_SECRET_KEY).toBeUndefined() // 서버 시크릿 미상속
+        expect(env.ANTHROPIC_API_KEY).toBeUndefined() // base 이므로 provider 키 없음(cliSession 오배선 감지)
+      } finally {
+        delete process.env.FLEET_SECRET_KEY
+        await engine.dispose()
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }, 20_000)
   })
 
   it('runs a full project flow through registered CLI sessions', async () => {
