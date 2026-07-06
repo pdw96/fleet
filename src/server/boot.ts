@@ -147,13 +147,19 @@ function parseNonceParam(url: string | undefined): string | null {
   }
 }
 
-export function resolveBindHost(env: NodeJS.ProcessEnv): string {
+/**
+ * bind 호스트 해소(#197 B5) — non-loopback 은 access 모드에서만 허용(노출 확대 = 보안층 완비 시에만).
+ * FLEET_HOST 미설정 = 127.0.0.1 기본(access 여도 개방은 명시 opt-in 이중 게이트: 보안 env + FLEET_HOST).
+ * revert 시 즉시 loopback 고정 복귀(이 함수 하나가 "문 열기"의 전부).
+ */
+export function resolveBindHost(env: NodeJS.ProcessEnv, config: SecurityConfig): string {
   const raw = env['FLEET_HOST']?.trim()
   if (!raw) return '127.0.0.1'
-  if (!LOOPBACK_HOSTS.has(raw)) {
-    throw new Error(`non-loopback bind 거부(B5 보안층 전 loopback 고정): ${raw}`)
+  if (LOOPBACK_HOSTS.has(raw)) return raw
+  if (config.mode !== 'access') {
+    throw new Error(`non-loopback bind 거부(보안 미설정 시 loopback 고정): ${raw}`)
   }
-  return raw
+  return raw // access 모드 — 미인증 접속은 upgrade 파이프라인(nonce+JWT+Origin)이 여전히 거부(열린 문 방어)
 }
 
 export function resolvePort(env: NodeJS.ProcessEnv): number {
@@ -178,6 +184,10 @@ function readOwnVersion(): string {
 
 export interface RunningServer {
   port: number
+  /** 실 bind 호스트(index.ts 기동 로그 — loopback 은 127.0.0.1 접두 포맷 계약 보존). */
+  host: string
+  /** 보안 모드 — 기동 로그 표기. */
+  mode: SecurityConfig['mode']
   /** 현재 attach 된(검증 통과) 클라이언트 수 — access presence 소스·health 관측. */
   clientCount(): number
   close(): Promise<void>
@@ -196,7 +206,7 @@ export async function bootServer(
 ): Promise<RunningServer> {
   // 보안 모드 판정 — 부분 설정은 여기서 fail-fast(store mkdir 등 모든 부수효과 이전).
   const securityConfig = resolveSecurityConfig(env)
-  const host = resolveBindHost(env)
+  const host = resolveBindHost(env, securityConfig)
   const port = resolvePort(env)
   const e2e = isE2EActive(env)
   // 워크스페이스 검증(dialog 대신 env 경로): 미존재/비디렉터리는 fail-fast — store 생성(mkdirSync
@@ -394,6 +404,8 @@ export async function bootServer(
 
   return {
     port: (httpServer.address() as AddressInfo).port,
+    host,
+    mode: securityConfig.mode,
     clientCount: () => wsHost?.clientCount() ?? 0,
     close: async () => {
       // 종료 시 outstanding 승인 전원 즉시 reject(dispose 전) — 어떤 클라도 응답 못 함(멱등·mode 무관 안전).

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import WebSocket, { type RawData } from 'ws'
 import { bootServer, resolveBindHost, resolvePort, type RunningServer } from './boot'
+import type { SecurityConfig } from './security-config'
 import type { ServerFrame } from '../shared/transport/protocol'
 
 /** ws `RawData`(Buffer|ArrayBuffer|Buffer[])를 텍스트 프레임 문자열로 정규화(no-base-to-string 회피). */
@@ -13,16 +14,39 @@ function rawDataToString(data: RawData): string {
   return Buffer.from(data).toString('utf8')
 }
 
-describe('resolveBindHost — B5 전 loopback 강제(#197 B3 완료 조건)', () => {
-  it.each([undefined, '', '127.0.0.1', '::1', 'localhost'])('loopback(%s) 허용', (v) => {
-    expect(['127.0.0.1', '::1', 'localhost']).toContain(resolveBindHost({ FLEET_HOST: v }))
+describe('resolveBindHost — access 모드에서만 non-loopback 개방(#197 B5 T10)', () => {
+  const LOOPBACK: SecurityConfig = { mode: 'loopback' }
+  const ACCESS: SecurityConfig = {
+    mode: 'access',
+    teamDomain: new URL('https://team.cloudflareaccess.com'),
+    aud: 'aud-tag',
+    publicOrigin: 'https://fleet.example.com',
+  }
+
+  it.each([undefined, '', '127.0.0.1', '::1', 'localhost'])('loopback host(%s) 항상 허용', (v) => {
+    expect(['127.0.0.1', '::1', 'localhost']).toContain(
+      resolveBindHost({ FLEET_HOST: v }, LOOPBACK),
+    )
+    expect(['127.0.0.1', '::1', 'localhost']).toContain(resolveBindHost({ FLEET_HOST: v }, ACCESS))
   })
+
   it.each(['0.0.0.0', '::', '0:0:0:0:0:0:0:0', '192.168.0.10', 'fleet.example.com', '10.0.0.1'])(
-    'non-loopback(%s) → throw — 어떤 env 로도 안 열림',
+    'loopback 모드 + non-loopback(%s) → throw(보안 미설정 시 loopback 고정)',
     (v) => {
-      expect(() => resolveBindHost({ FLEET_HOST: v })).toThrow(/loopback/i)
+      expect(() => resolveBindHost({ FLEET_HOST: v }, LOOPBACK)).toThrow(/loopback/i)
     },
   )
+
+  it.each(['0.0.0.0', '::', '192.168.0.10', 'fleet.example.com'])(
+    'access 모드 + non-loopback(%s) → 허용',
+    (v) => {
+      expect(resolveBindHost({ FLEET_HOST: v }, ACCESS)).toBe(v)
+    },
+  )
+
+  it('access 모드 + FLEET_HOST 미설정 → 기본 127.0.0.1(개방은 명시 opt-in 이중 게이트)', () => {
+    expect(resolveBindHost({}, ACCESS)).toBe('127.0.0.1')
+  })
 })
 
 describe('resolvePort', () => {

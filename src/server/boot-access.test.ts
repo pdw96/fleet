@@ -525,3 +525,41 @@ describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)
     }
   })
 })
+
+describe('access 모드 bind 게이트 개방(#197 B5 T10)', () => {
+  it('access + FLEET_HOST=0.0.0.0 → 부팅 성공 · host=0.0.0.0 · mode=access', async () => {
+    const server = await bootAccess({ env: { FLEET_HOST: '0.0.0.0' } })
+    try {
+      expect(server.host).toBe('0.0.0.0')
+      expect(server.mode).toBe('access')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('access + 0.0.0.0 로 열어도 미인증 접속(nonce 부재)은 여전히 거부(열린 문을 upgrade 파이프라인이 지킴)', async () => {
+    const server = await bootAccess({ env: { FLEET_HOST: '0.0.0.0' } })
+    try {
+      // 서버는 전 인터페이스에 bind 됐지만 접속 검증은 loopback 주소로 도달해도 동일하게 적용된다.
+      await expect(
+        tryWsConnect(server.port, { origin: PUBLIC_ORIGIN, token: await sign() }),
+      ).resolves.toBe('rejected')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('loopback 모드는 host=127.0.0.1·mode=loopback(기동 로그 파서 계약)', async () => {
+    const server = await bootServer({
+      FLEET_PORT: '0',
+      FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-b5-loop-')),
+      FLEET_E2E: '1',
+    })
+    try {
+      expect(server.host).toBe('127.0.0.1')
+      expect(server.mode).toBe('loopback')
+    } finally {
+      await server.close()
+    }
+  })
+})

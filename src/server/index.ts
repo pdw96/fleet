@@ -9,7 +9,9 @@ import { bootServer } from './boot'
  */
 const running = bootServer(process.env)
 running
-  .then((s) => console.log(`fleet-server: http://127.0.0.1:${s.port} (loopback 고정 — B5 전)`))
+  // 기동 로그 — loopback 은 `fleet-server: http://127.0.0.1:PORT` 접두 포맷 불변(e2e/web-server.ts:35
+  // 파서 regex 계약). access 는 실 bind 호스트 표기(파서 대상 아님·loopback e2e 만 파싱).
+  .then((s) => console.log(`fleet-server: http://${s.host}:${s.port} (mode: ${s.mode})`))
   .catch((err) => {
     console.error('fleet-server 기동 실패:', err instanceof Error ? err.message : err)
     process.exitCode = 1
