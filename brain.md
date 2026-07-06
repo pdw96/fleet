@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 86 files · 218 import wires · 44 IPC channels · 생성 2026-07-06T16:34 UTC
+> 86 files · 218 import wires · 44 IPC channels · 생성 2026-07-06T17:19 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -38,7 +38,7 @@
 - **server/access-jwt**
   - →의존: — · ←피의존: server/boot · 109줄
 - **server/child-env**
-  - →의존: — · ←피의존: server/boot · 130줄
+  - →의존: — · ←피의존: server/boot · 131줄
 - **server/index**
   - →의존: server/boot · ←피의존: — · 33줄
 - **server/security-config**
@@ -134,7 +134,7 @@
 
 ### engine · core — 여러 AI(구독형 CLI와 API)를 한곳에서 등록·관리하고, 채팅과 프로젝트 작업을 진행시키는 앱의 중앙 관제실 역할을 하는 모듈이다.
 - **engine** — 앱의 모든 핵심 기능을 한곳에 모아 화면 쪽에 단일 창구로 내주는 '중앙 관제실' 부품 _AI 세션 등록·삭제, 채팅 주고받기, 프로젝트 작업 실행과 취소, 외부 도구 연결 같은 기능을 묶어 화면(IPC) 쪽에서 부르기 쉬운 하나의 입구로 제공한다. 앱을 다시 켜도 저장해 둔 AI 세션을 다시 살려내고, API 키는 OS 암호화로 안전하게 보관·복원한다._
-  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/stdio, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, +15 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 896줄
+  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/stdio, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, +15 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 900줄
 
 ### session · core — 여러 AI(구독형 CLI와 API)를 똑같은 방식으로 다룰 수 있게 감싸서, 작업방이 AI의 종류를 신경 쓰지 않고 '말 걸고-답받기'만 하면 되도록 통일해 주는 모듈.
 - **session/cli-session** — 클로드·코덱스·제미니 같은 설치형 AI 프로그램을 실제로 실행해 대화를 주고받는 일꾼 _프롬프트를 명령어 형태로 만들어 해당 AI 프로그램을 돌리고 결과 글을 받아 깔끔하게 정리해 돌려준다. 매번 새 프로그램을 띄우는 '독립 실행', AI 자체 기능으로 대화를 이어가는 '대화 유지', 지정한 폴더의 파일을 직접 고치는 '편집'의 세 가지 방식을 지원하며, 가능하면 답을 한 글자씩 실시간으로 흘려보내고 같은 세션의 동시 요청은 순서대로 줄 세운다._
