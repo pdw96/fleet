@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 85 files · 216 import wires · 44 IPC channels · 생성 2026-07-06T11:13 UTC
+> 85 files · 216 import wires · 44 IPC channels · 생성 2026-07-06T11:18 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -36,7 +36,7 @@
 - **server/env-key-crypto**
   - →의존: secret/types · ←피의존: server/boot · 47줄
 - **server/access-jwt**
-  - →의존: — · ←피의존: server/boot · 99줄
+  - →의존: — · ←피의존: server/boot · 100줄
 - **server/index**
   - →의존: server/boot · ←피의존: — · 33줄
 - **server/security-config**
