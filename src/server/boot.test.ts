@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest'
 import WebSocket, { type RawData } from 'ws'
 import { bootServer, resolveBindHost, resolvePort, type RunningServer } from './boot'
 import type { SecurityConfig } from './security-config'
+import type { IpcApprover } from '../main/core/safety/approval-bridge'
+import type { ApprovalRequest } from '../shared/types'
 import type { ServerFrame } from '../shared/transport/protocol'
 
 /** ws `RawData`(Buffer|ArrayBuffer|Buffer[])를 텍스트 프레임 문자열로 정규화(no-base-to-string 회피). */
@@ -272,6 +274,51 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
         expect(hello.t).toBe('hello')
       } finally {
         socket.close()
+        await server.close()
+      }
+    })
+
+    // 적대 리뷰 확정(P3 · test-coverage 렌즈): loopback 은 presence-0 전이에서 rejectAll 을 발화하지
+    // 않고 타임아웃 시맨틱을 유지한다(invariant #4 — boot.ts handleSocketGone 의 `mode === 'access'`
+    // 가드). access ②③(boot-access.test.ts)의 정반대 대칭 핀이 없으면 그 가드 제거 회귀가 무신호로
+    // 샌다(loopback 이 클라 이탈 시 승인을 조기 거부 = B3/B4 parity 파괴). 이 핀이 동결한다.
+    it('loopback: 클라 전원 이탈 → 승인 pending 유지(rejectAll 미발화 — access 대칭)', async () => {
+      const destructiveReq = (id: string): ApprovalRequest => ({
+        id,
+        kind: 'file-write',
+        summary: 's',
+        target: 't',
+        risk: 'destructive',
+        ts: 1,
+      })
+      const waitFor = async (pred: () => boolean): Promise<void> => {
+        const start = Date.now()
+        while (!pred()) {
+          if (Date.now() - start > 4000) throw new Error('waitFor 타임아웃')
+          await new Promise((r) => setTimeout(r, 10))
+        }
+      }
+      let approver!: IpcApprover
+      const server = await bootServer(
+        {
+          FLEET_PORT: '0',
+          FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-b5-data-')),
+          FLEET_E2E: '1',
+        },
+        { onApprover: (a) => (approver = a) },
+      )
+      const socket = await connect(server.port)
+      try {
+        await nextFrame(socket) // hello 소비
+        await waitFor(() => server.clientCount() === 1)
+        const p = approver.approver(destructiveReq('x')) // hasWindow true → pending
+        expect(approver.pendingCount()).toBe(1)
+        socket.close()
+        await waitFor(() => server.clientCount() === 0) // 클라 전원 이탈
+        expect(approver.pendingCount()).toBe(1) // loopback → rejectAll 미발화·pending 생존
+        approver.resolve('x', true) // 정리(타임아웃 대기 없이)
+        await expect(p).resolves.toBe(true)
+      } finally {
         await server.close()
       }
     })
