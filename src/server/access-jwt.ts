@@ -43,19 +43,33 @@ export interface AccessJwtVerifier {
   verify(token: string): Promise<AccessIdentity>
 }
 
-/** jose 에러를 fail-closed 이원 분류로 매핑. JWKS 가용성 문제만 unavailable, 나머지는 invalid. */
+// jose 안정 에러 코드(context7 확인 — instanceof 보다 견고): JWKS 조회/형식 문제만 unavailable.
+// no-matching-key(ERR_JWKS_NO_MATCHING_KEY)는 제외 — 토큰 kid 가 JWKS 에 없음 = 토큰 무효(invalid).
+const JWKS_UNAVAILABLE_CODES = new Set(['ERR_JWKS_TIMEOUT', 'ERR_JWKS_INVALID'])
+// undici fetch 실패는 top-level message='fetch failed' + cause.code 에 실 네트워크 코드(ECONNREFUSED 등).
+const NETWORK_ERROR_CODE =
+  /^(ECONN(RESET|REFUSED)|ENOTFOUND|ENETDOWN|ENETUNREACH|EHOSTDOWN|EAI_AGAIN|UND_ERR_)/
+
+/**
+ * jose 에러를 fail-closed 이원 분류로 매핑(#197 B5 · Codex 4R P2). JWKS 가용성 문제(non-200·malformed
+ * JSON·타임아웃·네트워크)만 unavailable(503), 나머지(서명·클레임·alg·no-matching-key)는 invalid(401).
+ * jose 는 non-200/malformed 를 JWKSInvalid(ERR_JWKS_INVALID)로, 네트워크 실패를 undici TypeError('fetch
+ * failed', cause.code=E*)로 표면화한다 — instanceof·message·cause.code·안정 code 를 모두 검사해 누락 차단.
+ */
 function classify(err: unknown): AccessJwtError {
   if (err instanceof AccessJwtError) return err
-  // JWKS 조회/형식 문제 = 서버측 가용성(원격 인증서 endpoint 도달 불능/malformed). no-matching-key 는
-  // 제외 — 토큰의 kid 가 JWKS 에 없음 = 토큰 무효(invalid)이지 가용성 문제 아님.
-  if (err instanceof joseErrors.JWKSTimeout || err instanceof joseErrors.JWKSInvalid) {
-    return new AccessJwtError('unavailable', 'Access JWKS 조회 불능')
-  }
-  // 원격 fetch 실패를 jose 가 원인 error 로 표면화하는 경우(TypeError: fetch failed·DNS/conn refused).
-  if (err instanceof Error && /fetch failed|ENOTFOUND|ECONNREFUSED|EAI_AGAIN/i.test(err.message)) {
-    return new AccessJwtError('unavailable', 'Access JWKS 페치 실패')
-  }
-  return new AccessJwtError('invalid', err instanceof Error ? err.message : String(err))
+  const code = (err as { code?: unknown }).code
+  const causeCode = (err as { cause?: { code?: unknown } }).cause?.code
+  const message = err instanceof Error ? err.message : String(err)
+  const isUnavailable =
+    err instanceof joseErrors.JWKSTimeout ||
+    err instanceof joseErrors.JWKSInvalid ||
+    (typeof code === 'string' && JWKS_UNAVAILABLE_CODES.has(code)) ||
+    /fetch failed/i.test(message) ||
+    (typeof causeCode === 'string' && NETWORK_ERROR_CODE.test(causeCode)) ||
+    (typeof code === 'string' && NETWORK_ERROR_CODE.test(code))
+  if (isUnavailable) return new AccessJwtError('unavailable', 'Access JWKS 조회 불능')
+  return new AccessJwtError('invalid', message)
 }
 
 export function createAccessJwtVerifier(opts: AccessJwtVerifierOptions): AccessJwtVerifier {

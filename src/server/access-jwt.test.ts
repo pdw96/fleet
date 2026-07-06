@@ -101,4 +101,46 @@ describe('createAccessJwtVerifier — Cloudflare Access JWT 서버 자체 검증
     // 잘 형성된 유효 토큰 → jwtVerify 가 getKey(JWKS) 단계까지 도달 → 주입된 타임아웃이 표면화.
     await expect(v.verify(await sign())).rejects.toMatchObject({ kind: 'unavailable' })
   })
+
+  // Codex 4R P2: non-200/malformed JWKS(JWKSInvalid) · undici 네트워크 실패(fetch failed·cause.code)를
+  // 401(invalid)이 아닌 503(unavailable)으로 분류해야 한다 — JWKS 장애가 "자격증명 오류"로 위장되지 않게.
+  const unavailableInjections: Array<{ label: string; err: () => unknown }> = [
+    { label: 'JWKSInvalid(non-200/malformed)', err: () => new joseErrors.JWKSInvalid() },
+    {
+      label: 'code ERR_JWKS_INVALID',
+      err: () => Object.assign(new Error('x'), { code: 'ERR_JWKS_INVALID' }),
+    },
+    {
+      label: 'undici fetch failed(cause.code ECONNREFUSED)',
+      err: () => Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }),
+    },
+    {
+      label: 'cause.code ENOTFOUND',
+      err: () => Object.assign(new TypeError('boom'), { cause: { code: 'ENOTFOUND' } }),
+    },
+  ]
+  it.each(unavailableInjections)(
+    'JWKS 장애 분류: $label → kind=unavailable(503)',
+    async ({ err }) => {
+      const v = createAccessJwtVerifier({
+        teamDomain: TEAM_DOMAIN,
+        aud: AUD,
+        jwks: () => {
+          throw err()
+        },
+      })
+      await expect(v.verify(await sign())).rejects.toMatchObject({ kind: 'unavailable' })
+    },
+  )
+
+  it('no-matching-key(ERR_JWKS_NO_MATCHING_KEY) → invalid(401·토큰 kid 무효, 가용성 아님)', async () => {
+    const v = createAccessJwtVerifier({
+      teamDomain: TEAM_DOMAIN,
+      aud: AUD,
+      jwks: () => {
+        throw new joseErrors.JWKSNoMatchingKey()
+      },
+    })
+    await expect(v.verify(await sign())).rejects.toMatchObject({ kind: 'invalid' })
+  })
 })
