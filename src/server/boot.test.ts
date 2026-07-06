@@ -200,6 +200,59 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
     })
   })
 
+  describe('B5 loopback 특성화 핀 — 보안층 도입 전 하위호환 동결(#197 B5 T1)', () => {
+    // 신규 구현 없음 — 현행 그대로 통과해야 하는 특성화 테스트. 이후 태스크(T6·T7·T10)가 이를 깨면
+    // loopback 하위호환 위반이 즉시 RED 로 드러난다. boot() 헬퍼는 보안 env 를 설정하지 않으므로 loopback.
+
+    it('보안 env 전부 부재 → nonce/JWT 없이 WS 접속·hello 수신(loopback 무회귀)', async () => {
+      const server = await boot()
+      const socket = await connect(server.port)
+      try {
+        const hello = await nextFrame(socket)
+        expect(hello.t).toBe('hello') // nonce 쿼리·JWT 헤더 없이도 접속·hello 성공
+      } finally {
+        socket.close()
+        await server.close()
+      }
+    })
+
+    it('loopback: POST /auth/ws-nonce → nonce endpoint 부재(405 — 정적 핸들러 method guard)', async () => {
+      // nonce 발급 endpoint 는 access 모드에서만 배선된다(T6). loopback 은 라우팅에 잡히지 않고 정적
+      // 핸들러의 method guard 가 POST 를 405 로 자른다 — 이것이 loopback 의 최종 불변식이다. 계획 원문은
+      // 404 를 적었으나 access-only 배선이라 loopback 에 nonce 경로 특수처리를 넣지 않는 것이 최소 diff·
+      // 정합(정적 method guard 405). T6 는 access 배선만 추가하므로 이 405 는 그대로 유지된다.
+      const server = await boot()
+      try {
+        const res = await fetch(`http://127.0.0.1:${server.port}/auth/ws-nonce`, { method: 'POST' })
+        expect(res.status).toBe(405)
+        expect(await res.text()).not.toContain('nonce') // 발급 응답 아님(경로 존재 비노출)
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('FLEET_ACCESS_* 빈 문자열만 존재 → loopback 유지(부분설정 오검출 없음)', async () => {
+      // 빈 문자열 env = 미설정 동치(T3 resolveSecurityConfig `?.trim() ||` 관례의 boot 레벨 특성화):
+      // 현행 boot 는 이 var 들을 읽지 않아 WS 접속이 정상(loopback). T3/T6 이후에도 loopback 이라 동일 GREEN.
+      const server = await bootServer({
+        FLEET_PORT: '0',
+        FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-b5-data-')),
+        FLEET_E2E: '1',
+        FLEET_ACCESS_TEAM_DOMAIN: '',
+        FLEET_ACCESS_AUD: '',
+        FLEET_PUBLIC_ORIGIN: '',
+      })
+      const socket = await connect(server.port)
+      try {
+        const hello = await nextFrame(socket)
+        expect(hello.t).toBe('hello')
+      } finally {
+        socket.close()
+        await server.close()
+      }
+    })
+  })
+
   describe('소켓 error 핸들러 — 프로세스 생존(#197 B3 · Codex P2)', () => {
     it('비정상(unmasked) 프레임 → 서버측 소켓 error 가 발생해도 서버는 생존, 이후 접속도 정상', async () => {
       const server = await boot()
