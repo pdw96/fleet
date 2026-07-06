@@ -1,0 +1,35 @@
+# Docker 빌드 컨텍스트 제외 (deploy/fleet/Dockerfile 의 build context = repo 루트).
+# ⚠️ node_modules 제외는 필수 — 빼지 않으면 builder 의 `COPY . .` 가 호스트(win32) node_modules 로
+# 컨테이너의 신선한 Linux `npm ci` 산출물을 덮어써 네이티브 모듈이 깨진다.
+
+node_modules
+out
+.git
+.gitignore
+
+# 시크릿·환경파일 (이미지 baking 금지). Docker 는 .gitignore 를 안 보므로 .env 변형(.env.local·.env.production·
+# deploy/.env.prod 등)도 명시 제외해야 빌드 컨텍스트/캐시로 유출되지 않는다(Codex PR P1). .env.example 도 빌드 불요.
+**/.env
+**/.env.*
+deploy/.env
+**/*.pem
+**/*.key
+
+# 배포 런타임 데이터/워크스페이스
+deploy/workspace
+fleet-data
+
+# dev/에이전트 산물 — 빌드 불요
+.claude
+.dogfood
+docs
+*.md
+!README.md
+fleet-brain.html
+*.png
+coverage
+.vscode
+.idea
+
+# worktree 잔여
+.fleet-wt-*

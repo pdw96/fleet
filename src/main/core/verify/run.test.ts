@@ -4,15 +4,49 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   allPassed,
+  createVerifyRunner,
   defaultVerifyRunner,
   isNoOpScript,
   npmVerifyCommands,
   runAllVerifications,
   runVerification,
   summarizeFailure,
+  type VerifyCommand,
   type VerifyRunner,
 } from './run'
 import * as detect from '../cli/detect'
+
+// #197-B6 T3 — verify 러너가 서버 시크릿(FLEET_*)을 워크스페이스 검증 자식(npm 스크립트)에 상속하지 않게
+// base env 를 적용한다. baseEnv 미주입이면 현행 상속(무회귀). 실 spawn(node 가 env 출력)으로 검증.
+describe('createVerifyRunner env 격리(#197-B6 T3)', () => {
+  const ENVDUMP =
+    'process.stdout.write((process.env.FLEET_SECRET_KEY??"MISSING")+":"+(process.env.T3V_MARK??"MISSING"))'
+  const cmd: VerifyCommand = { kind: 'test', command: 'node', args: ['-e', ENVDUMP] }
+
+  it('base env 를 적용해 FLEET_SECRET_KEY 를 자식에서 제거한다', async () => {
+    process.env.FLEET_SECRET_KEY = 'server-secret'
+    try {
+      const runner = createVerifyRunner(() => ({ PATH: process.env.PATH, T3V_MARK: 'base' }))
+      const res = await runner(cmd, 10_000)
+      expect(res.code).toBe(0)
+      expect(res.stdout).toBe('MISSING:base')
+    } finally {
+      delete process.env.FLEET_SECRET_KEY
+    }
+  }, 15_000)
+
+  it('baseEnv 미주입이면 현행처럼 부모 env 를 상속한다(무회귀 특성화)', async () => {
+    process.env.T3V_MARK = 'inherited'
+    try {
+      const runner = createVerifyRunner()
+      const res = await runner(cmd, 10_000)
+      expect(res.code).toBe(0)
+      expect(res.stdout).toBe('MISSING:inherited')
+    } finally {
+      delete process.env.T3V_MARK
+    }
+  }, 15_000)
+})
 
 describe('summarizeFailure', () => {
   it('extracts the first error-like line', () => {

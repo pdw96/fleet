@@ -217,6 +217,48 @@ describe('defaultRunner (integration)', () => {
     const res = await p
     expect(res.spawnError).toBe('ABORTED')
   }, 15_000)
+
+  // #197-B6 T1: RunOpts.env — 미지정이면 현행처럼 부모 env 를 전량 상속한다(서버 격리 도입 후에도
+  // 데스크톱/기존 호출이 안 깨지게 하는 특성화 핀). 서버 모드에서만 childEnv 가 opts.env 를 주입한다.
+  it('inherits the parent env when opts.env is unset (characterization pin)', async () => {
+    process.env.FLEET_T1_MARKER = 'inherited'
+    try {
+      const res = await defaultRunner(
+        'node',
+        ['-e', 'process.stdout.write(process.env.FLEET_T1_MARKER ?? "MISSING")'],
+        { timeoutMs: 10_000 },
+      )
+      expect(res.code).toBe(0)
+      expect(res.stdout).toBe('inherited')
+    } finally {
+      delete process.env.FLEET_T1_MARKER
+    }
+  }, 15_000)
+
+  // #197-B6 T1: opts.env 가 주어지면 자식은 그 env 로 완전 대체된다(부분 병합 아님) — 부모에만 있던
+  // 변수는 자식에서 사라져야 격리(FLEET_* strip)가 성립한다. win32 에서 node 가 뜨도록 플랫폼 필수만 포함.
+  it('replaces the child env entirely when opts.env is provided (no partial merge)', async () => {
+    process.env.FLEET_T1_PARENT_ONLY = 'parent'
+    const childEnv: NodeJS.ProcessEnv = { PATH: process.env.PATH, FLEET_T1_MARKER: 'override' }
+    if (process.platform === 'win32') {
+      childEnv.SystemRoot = process.env.SystemRoot
+      childEnv.PATHEXT = process.env.PATHEXT
+    }
+    try {
+      const res = await defaultRunner(
+        'node',
+        [
+          '-e',
+          'process.stdout.write((process.env.FLEET_T1_MARKER ?? "MISSING")+":"+(process.env.FLEET_T1_PARENT_ONLY ?? "MISSING"))',
+        ],
+        { timeoutMs: 10_000, env: childEnv },
+      )
+      expect(res.code).toBe(0)
+      expect(res.stdout).toBe('override:MISSING')
+    } finally {
+      delete process.env.FLEET_T1_PARENT_ONLY
+    }
+  }, 15_000)
 })
 
 describe.skipIf(process.platform !== 'win32')(

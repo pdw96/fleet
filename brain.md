@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 85 files · 216 import wires · 44 IPC channels · 생성 2026-07-06T11:40 UTC
+> 86 files · 218 import wires · 44 IPC channels · 생성 2026-07-06T17:19 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -13,7 +13,7 @@
 - **바깥 세계 runtime** — 앱 밖의 실제 대상 — 설치된 AI CLI(클로드/코덱스/제미니), AI 회사 API, 외부 도구(MCP) 서버.
 
 ## 한눈에
-- **허브**(많이 연결): shared/types(48) · engine(28) · main/index(13) · server/boot(13) · orchestrator/orchestrator(12) · providers/types(11)
+- **허브**(많이 연결): shared/types(48) · engine(29) · server/boot(14) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
 - **진입점**: main/e2e · main/index · preload/index · renderer/main
 - **레지스트리**(확장점, 분기 대신 등록): cli/registry · providers/registry · tools/registry
 - **승인 게이트**(위험작업 차단): safety/approval
@@ -28,7 +28,7 @@
 
 ### other · other
 - **server/boot**
-  - →의존: engine, main/e2e, safety/approval-bridge, server/access-jwt, server/env-key-crypto, server/handlers, server/security-config, server/static, server/ws-host, server/ws-nonce, +2 · ←피의존: server/index · 420줄
+  - →의존: engine, main/e2e, safety/approval-bridge, server/access-jwt, server/child-env, server/env-key-crypto, server/handlers, server/security-config, server/static, server/ws-host, +3 · ←피의존: server/index · 511줄
 - **server/handlers**
   - →의존: engine, safety/approval-bridge, shared/transport/channels, shared/types, workspace/set-workspace · ←피의존: server/boot, server/ws-host · 136줄
 - **server/ws-host**
@@ -36,7 +36,9 @@
 - **server/env-key-crypto**
   - →의존: secret/types · ←피의존: server/boot · 47줄
 - **server/access-jwt**
-  - →의존: — · ←피의존: server/boot · 96줄
+  - →의존: — · ←피의존: server/boot · 109줄
+- **server/child-env**
+  - →의존: — · ←피의존: server/boot · 131줄
 - **server/index**
   - →의존: server/boot · ←피의존: — · 33줄
 - **server/security-config**
@@ -132,7 +134,7 @@
 
 ### engine · core — 여러 AI(구독형 CLI와 API)를 한곳에서 등록·관리하고, 채팅과 프로젝트 작업을 진행시키는 앱의 중앙 관제실 역할을 하는 모듈이다.
 - **engine** — 앱의 모든 핵심 기능을 한곳에 모아 화면 쪽에 단일 창구로 내주는 '중앙 관제실' 부품 _AI 세션 등록·삭제, 채팅 주고받기, 프로젝트 작업 실행과 취소, 외부 도구 연결 같은 기능을 묶어 화면(IPC) 쪽에서 부르기 쉬운 하나의 입구로 제공한다. 앱을 다시 켜도 저장해 둔 AI 세션을 다시 살려내고, API 키는 OS 암호화로 안전하게 보관·복원한다._
-  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, providers/resilient, +14 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 858줄
+  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/stdio, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, +15 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 900줄
 
 ### session · core — 여러 AI(구독형 CLI와 API)를 똑같은 방식으로 다룰 수 있게 감싸서, 작업방이 AI의 종류를 신경 쓰지 않고 '말 걸고-답받기'만 하면 되도록 통일해 주는 모듈.
 - **session/cli-session** — 클로드·코덱스·제미니 같은 설치형 AI 프로그램을 실제로 실행해 대화를 주고받는 일꾼 _프롬프트를 명령어 형태로 만들어 해당 AI 프로그램을 돌리고 결과 글을 받아 깔끔하게 정리해 돌려준다. 매번 새 프로그램을 띄우는 '독립 실행', AI 자체 기능으로 대화를 이어가는 '대화 유지', 지정한 폴더의 파일을 직접 고치는 '편집'의 세 가지 방식을 지원하며, 가능하면 답을 한 글자씩 실시간으로 흘려보내고 같은 세션의 동시 요청은 순서대로 줄 세운다._
@@ -152,7 +154,7 @@
 - **mcp/host** — 여러 도구 서버를 한꺼번에 켜고 끄고 정리하는 총괄 관리자 부품 _서버 목록을 받아 새것은 연결하고 빠진 것은 닫으며, 새 서버를 실행하기 전에는 사용자 승인(ApprovalGate)을 먼저 받는다. 같은 이름의 도구가 겹치면 먼저 등록된 쪽만 노출하고, 서버가 죽거나 도구 목록이 바뀌면 상태를 다시 계산한다._
   - →의존: mcp/client, mcp/stdio, mcp/types, mcp/wrap, shared/types, tools/types · ←피의존: engine · 325줄
 - **mcp/stdio** — 도구 서버 프로그램을 실제로 실행하고 글자를 주고받게 연결하는 부품 _외부 프로그램을 자식 프로세스로 띄우고, 들어오는 글자를 줄바꿈 단위로 잘라 하나의 메시지로 묶어 전달한다. 깨진 메시지 한 줄은 버려서 연결 전체가 무너지지 않게 하고, 종료 통지는 정확히 한 번만 가도록 모은다._
-  - →의존: mcp/types, process/kill-tree, shared/types · ←피의존: mcp/host · 92줄
+  - →의존: mcp/types, process/kill-tree, shared/types · ←피의존: engine, mcp/host · 102줄
 - **mcp/wrap** — 외부 도구 하나를 Fleet 안에서 쓸 수 있는 표준 도구로 포장하는 부품 _도구 이름을 'mcp__서버명__도구명' 형식으로 바꾸고 규칙에 안 맞는 글자는 정리하며, 모든 외부 도구를 '위험(승인 필요)'으로 분류한다. 도구 실행 결과는 글자로 합치되 64KB를 넘으면 잘라서 화면이 폭주하지 않게 한다._
   - →의존: mcp/types, shared/types, tools/types · ←피의존: mcp/host · 112줄
 - **mcp/client** — 외부 도구 서버 한 곳과 대화를 주고받는 통신 담당 부품 _요청에 번호표를 붙여 보내고 같은 번호의 답이 오면 짝지어 돌려준다. 30초가 지나거나 사용자가 취소하면 대기를 정리하고 서버에도 '취소' 통보를 보내며, 연결이 끊기면 기다리던 요청을 모두 실패 처리한다._
@@ -160,7 +162,7 @@
 
 ### cli · core — 클로드·코덱스·제미니 같은 명령어형 AI 프로그램(CLI)이 컴퓨터에 깔려 있는지 확인하고, 그 프로그램을 실제로 실행해 답변 글자만 깔끔하게 뽑아내며, 각 프로그램의 사용법(명령어 종류)을 한곳에 정리해 두는 모듈이다.
 - **cli/detect** — AI 명령어 프로그램을 실제로 실행하고, 깔려 있는지·어느 버전인지 확인하는 부품 _사람이 터미널에 명령어를 치듯 클로드·코덱스·제미니 프로그램을 대신 실행해 그 결과(출력 글자)를 받아온다. '--version'을 물어 설치 여부와 버전을 알아내고, 응답이 너무 오래 걸리거나(시간초과) 사용자가 중간에 취소하면 그 프로그램과 거기서 또 생긴 자식 프로그램들까지 끝까지 종료시킨 뒤 마무리한다. 여러 AI를 한꺼번에 동시 점검하는 기능도 있다._
-  - →의존: process/kill-tree, shared/types · ←피의존: cli/authHint, cli/probe, engine, main/e2e, session/cli-session, verify/run, workspace/git · 354줄
+  - →의존: process/kill-tree, shared/types · ←피의존: cli/authHint, cli/probe, engine, main/e2e, session/cli-session, verify/run, workspace/git · 367줄
 - **cli/probe**
   - →의존: cli/authHint, cli/detect, session/cli-session, shared/types · ←피의존: engine, main/e2e · 69줄
 - **cli/authHint**
@@ -184,7 +186,7 @@
 
 ### workspace · core — AI들이 작업방에서 코드를 고칠 때, 시작 시점을 기록해 두고 무엇이 바뀌었는지 보여주거나 통째로 되돌릴 수 있게 해주는 안전장치 모듈.
 - **workspace/git** — AI가 코드를 고치기 전 상태를 저장해 두고, 바뀐 내용을 모아 보여주거나 처음으로 되돌리는 작업 기록 관리원 _작업방을 버전 관리 저장소(git)로 만들어 '시작 사진'을 찍어두고, AI가 무엇을 바꿨는지 변경 목록과 그 내용(diff)을 모아 보여주거나, 마음에 안 들면 시작 사진 시점으로 통째로 되돌립니다. 사용자가 미리 만들어둔 작업은 시작 때 따로 보존해 지워지지 않게 하고, 여러 AI가 동시에 저장소를 건드려 생기는 잠금 충돌은 잠깐 기다렸다 다시 시도하며, 변경 내용이 너무 길면 6만 자에서 잘라 보여줍니다._
-  - →의존: cli/detect, workspace/ignored-baseline · ←피의존: engine, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/ignored-baseline · 239줄
+  - →의존: cli/detect, workspace/ignored-baseline · ←피의존: engine, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/ignored-baseline · 246줄
 - **workspace/ignored-baseline**
   - →의존: safety/approval, workspace/git · ←피의존: orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/git · 616줄
 - **workspace/set-workspace**
@@ -212,7 +214,7 @@
 
 ### verify · core — AI가 고친 코드가 정말 멀쩡한지, 타입 검사·문법 검사·테스트 같은 점검 명령을 실제로 돌려보고 합격/불합격 결과를 정리해 주는 '코드 자동 검사 담당' 부품 모음.
 - **verify/run** — 고친 코드가 제대로 됐는지 점검 명령을 실제로 돌려 합격·불합격을 가려내는 자동 검사 부품. _타입 검사·문법 검사·테스트 같은 점검 명령을 컴퓨터에서 실제로 실행하고, 끝난 결과(성공했는지, 화면에 뜬 글, 걸린 시간)를 모아 합격/불합격으로 정리한다. 실패하면 출력에서 'error'·'fail' 같은 단어가 든 대표 한 줄을 뽑아 무엇이 잘못됐는지 요약해 주고, 사용자가 도중에 멈추라고 하면(취소) 돌던 검사를 중단시키며, 너무 오래 걸리면(2분 기본) 시간 초과로 끊는다._
-  - →의존: cli/detect, shared/types · ←피의존: engine, main/e2e · 174줄
+  - →의존: cli/detect, shared/types · ←피의존: engine, main/e2e · 186줄
 
 ### secret · core — 사용자의 API 키 같은 비밀 정보를 컴퓨터에 안전하게 잠그고(암호화) 다시 푸는(복호화) 방법을 정해두는 규칙 모음이다.
 - **secret/types** — 비밀 정보를 안전하게 잠그고 푸는 기능이 갖춰야 할 약속(규칙표)을 적어둔 설계도 _API 키 같은 중요한 비밀을 다룰 때 '잠금이 가능한지 확인', '평문을 암호로 잠그기', '암호를 다시 평문으로 풀기' 이 세 가지 기능을 반드시 제공하도록 정해둔 약속이다. 실제 잠금 작업은 운영체제(윈도우·맥·리눅스)의 금고 기능에 맡기고, 이 파일은 그 기능이 따라야 할 형식만 명시한다._
