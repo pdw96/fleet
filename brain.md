@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 86 files · 219 import wires · 44 IPC channels · 생성 2026-07-07T06:22 UTC
+> 86 files · 219 import wires · 44 IPC channels · 생성 2026-07-07T11:11 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -162,7 +162,7 @@
 
 ### cli · core — 클로드·코덱스·제미니 같은 명령어형 AI 프로그램(CLI)이 컴퓨터에 깔려 있는지 확인하고, 그 프로그램을 실제로 실행해 답변 글자만 깔끔하게 뽑아내며, 각 프로그램의 사용법(명령어 종류)을 한곳에 정리해 두는 모듈이다.
 - **cli/detect** — AI 명령어 프로그램을 실제로 실행하고, 깔려 있는지·어느 버전인지 확인하는 부품 _사람이 터미널에 명령어를 치듯 클로드·코덱스·제미니 프로그램을 대신 실행해 그 결과(출력 글자)를 받아온다. '--version'을 물어 설치 여부와 버전을 알아내고, 응답이 너무 오래 걸리거나(시간초과) 사용자가 중간에 취소하면 그 프로그램과 거기서 또 생긴 자식 프로그램들까지 끝까지 종료시킨 뒤 마무리한다. 여러 AI를 한꺼번에 동시 점검하는 기능도 있다._
-  - →의존: process/kill-tree, shared/types · ←피의존: cli/authHint, cli/probe, engine, main/e2e, session/cli-session, verify/run, workspace/git · 367줄
+  - →의존: process/kill-tree, shared/types · ←피의존: cli/authHint, cli/probe, engine, main/e2e, session/cli-session, verify/run, workspace/git · 371줄
 - **cli/probe**
   - →의존: cli/authHint, cli/detect, session/cli-session, shared/types · ←피의존: engine, main/e2e · 69줄
 - **cli/authHint**
