@@ -655,6 +655,8 @@ describe('access 모드 소켓 exp-시한 종료(#197-B6 T6)', () => {
 })
 
 describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)', () => {
+  // expiresAt 는 approver 가 읽는 clock(access boot 기본 = 실 Date.now)에서 파생(픽스처 시계 규율 #216 C1)
+  // — 소값이면 즉시 만료돼 pending 드레인. 여기선 rejectAll/재인증 승인 검증이라 만료 안 하도록 미래값.
   const destructiveReq = (id: string): ApprovalRequest => ({
     id,
     kind: 'file-write',
@@ -662,7 +664,7 @@ describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)
     target: 't',
     risk: 'destructive',
     ts: 1,
-    expiresAt: 61_000,
+    expiresAt: Date.now() + 60_000,
   })
 
   it('① 미검증 접속만 있는 상태 + 승인 요청 → 즉시 false(검증 실패 socket presence 미포함)', async () => {

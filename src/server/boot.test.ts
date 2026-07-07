@@ -400,6 +400,8 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
     // 가드). access ②③(boot-access.test.ts)의 정반대 대칭 핀이 없으면 그 가드 제거 회귀가 무신호로
     // 샌다(loopback 이 클라 이탈 시 승인을 조기 거부 = B3/B4 parity 파괴). 이 핀이 동결한다.
     it('loopback: 클라 전원 이탈 → 승인 pending 유지(rejectAll 미발화 — access 대칭)', async () => {
+      // expiresAt 는 approver 가 읽는 clock(boot 기본 = 실 Date.now)에서 파생(픽스처 시계 규율 #216 C1)
+      // — 소값이면 즉시 만료돼 pending 이 드레인됨(false-green 아닌 false-red). 만료 아닌 rejectAll/유지 검증이므로 미래값.
       const destructiveReq = (id: string): ApprovalRequest => ({
         id,
         kind: 'file-write',
@@ -407,7 +409,7 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
         target: 't',
         risk: 'destructive',
         ts: 1,
-        expiresAt: 61_000,
+        expiresAt: Date.now() + 60_000,
       })
       const waitFor = async (pred: () => boolean): Promise<void> => {
         const start = Date.now()
