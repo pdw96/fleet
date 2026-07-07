@@ -173,8 +173,10 @@ bubblewrap FS 샌드박스가 `bwrap: No permissions to create a new namespace` 
   (분석 역할의 파일 쓰기 차단) 상실이다(워크스페이스 무결성은 오케스트레이터 층이 별도 방어).
 - **데스크톱·베어호스트 무회귀** — 코드 기본이 `cli` 라 env 미설정 시 CLI 내부 샌드박스를 유지한다.
 
-**운영 롤백(재배포 불요):** `.env` 에 `FLEET_SANDBOX_BOUNDARY=cli` → 즉시 현행 posture 복귀(컨테이너선
-#214 이전 파손으로의 회귀일 뿐 신규 파손 아님).
+**운영 롤백(재빌드 불요):** `.env` 에 `FLEET_SANDBOX_BOUNDARY=cli` 를 설정한 뒤
+`docker compose --env-file .env --profile tunnel up -d`(`--build` 불요)로 fleet 컨테이너를 recreate 하면
+현행 posture 로 복귀한다(컨테이너선 #214 이전 파손으로의 회귀일 뿐 신규 파손 아님). ⚠️ `.env` 편집만으론
+이미 기동 중인 컨테이너의 env 가 안 바뀐다 — env 반영은 `up -d`(config-drift 감지 → recreate)가 필요하다.
 
 **부팅이 재시작 루프에 빠지면** — 오타 등 미지값이면 서버가 loud-fail 로 부팅을 거부한다(`restart:
 unless-stopped` 라 compose 가 재시작 루프를 돈다). `docker logs <fleet 컨테이너>` 에서

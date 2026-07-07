@@ -11,9 +11,10 @@ describe('deploy: FLEET_SANDBOX_BOUNDARY 배선 핀(#214 C4)', () => {
     expect(yml).toMatch(/FLEET_SANDBOX_BOUNDARY:\s*\$\{FLEET_SANDBOX_BOUNDARY:-container\}/)
   })
 
-  it('.env.example 이 FLEET_SANDBOX_BOUNDARY 를 문서화한다(유효값·미지값 거부)', () => {
+  it('.env.example 의 운영자 기본값 라인이 container 로 핀된다(값 드리프트도 RED)', () => {
     const env = readFileSync(new URL('../deploy/.env.example', import.meta.url), 'utf8')
-    expect(env).toMatch(/^FLEET_SANDBOX_BOUNDARY=/m) // 운영자 가시 기본값 라인
-    expect(env).toMatch(/container/) // container posture 언급
+    // 값 라인 exact 핀 — `/container/`(부분문자열)은 상단 주석의 "container" 에도 매치돼 기본값이 =cli 로
+    // 뒤집혀도 GREEN(무신호). 값까지 잠가 .env.example 기본값 드리프트를 RED 로 잡는다(적대리뷰 P3 반영).
+    expect(env).toMatch(/^FLEET_SANDBOX_BOUNDARY=container\s*$/m)
   })
 })
