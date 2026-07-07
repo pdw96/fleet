@@ -331,22 +331,39 @@ describe('ApprovalModal', () => {
     expect(screen.queryByText('늦은 스냅 A')).toBeNull()
   })
 
-  // #27 카운트다운 라이브 만료 — 서버 권위 expiresAt 기반·공유상수 회귀 가드
-  it('#27 카운트다운은 expiresAt 기반(60s 공유상수 아님)·라이브 만료 시 카드 자동 소멸', () => {
+  // #27 카운트다운은 expiresAt 기반(60s 공유상수 아님)·로컬 만료 시 0s 클램프하되 카드는 로컬 시계로 드롭 안 함
+  it('#27 카운트다운은 expiresAt 기반이고 로컬 만료 초과 시 0s 로 클램프하며 카드를 로컬 시계로 드롭하지 않는다', () => {
     vi.useFakeTimers()
     try {
       const t0 = Date.now()
       const { fire } = mockFleet()
       renderModal()
-      fire({ ...REQ, id: 'exp-1', expiresAt: t0 + 3000 }) // 3s 후 만료(공유상수 60s 아님)
+      fire({ ...REQ, id: 'exp-1', expiresAt: t0 + 3000 }) // 3s 후(공유상수 60s 아님)
       expect(screen.getByText('3s 후 자동 거부')).toBeTruthy()
       act(() => {
-        vi.advanceTimersByTime(3200) // 만료 초과 → 틱 prune
+        vi.advanceTimersByTime(3200) // 로컬 만료 초과
       })
-      expect(screen.queryByRole('dialog')).toBeNull() // 카드 자동 소멸
+      // 서버 권위(withdrawn)만 제거 — 로컬 시계로 드롭 금지(skew-ahead 폰 클라의 valid 카드 보존).
+      expect(screen.getByText('0s 후 자동 거부')).toBeTruthy() // 카운트다운 0s 클램프
+      expect(screen.getByRole('dialog')).toBeTruthy() // 카드 유지(서버 withdrawn 대기)
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // 적대리뷰 Codex 재리뷰 P2 — skew-ahead 클라(로컬 시계가 서버보다 앞섬)에서도 서버 유효 카드 미드롭
+  it('로컬 시계가 앞선 클라에서도 서버가 보낸(유효) 카드를 로컬 만료로 드롭하지 않고 표시한다', () => {
+    const { fire } = mockFleet()
+    renderModal()
+    // 서버는 유효하다고 브로드캐스트한 카드지만 로컬 Date.now() 기준으론 이미 만료(폰 시계가 앞섬).
+    fire({ ...REQ, id: 'skew-1', summary: 'skew 카드', expiresAt: Date.now() - 1000 })
+    expect(screen.getByText('skew 카드')).toBeTruthy() // 로컬 만료라도 드롭 안 함(서버 권위 존재)
+    expect(screen.getByText('0s 후 자동 거부')).toBeTruthy() // 카운트다운만 0s 클램프
+    // 승인 가능 — 서버 resolve 가 자기 시계로 검증(멱등·만료면 서버가 거부 강등).
+    fireEvent.pointerDown(screen.getByRole('button', { name: '승인' }))
+    fireEvent.click(screen.getByRole('button', { name: '승인' }))
+    // (respondApproval 호출됨 = 카드가 액션 가능했음)
+    expect(screen.queryByText('skew 카드')).toBeNull() // decide 후 큐 전진
   })
 
   // 적대리뷰 P3 — 비동기 카드 스왑 중 마우스 오승인 차단(pointerdown intent 가드)

@@ -18,9 +18,12 @@ const KIND_TITLE: Record<ApprovalRequest['kind'], string> = {
 }
 
 /**
- * id-keyed 비파괴 upsert(#216 C1 §C-3) — 이미 철회(tombstone)됐거나 만료(expiresAt<=now)된 요청은 부활/
- * 추가하지 않는다. tombstone 재확인을 스냅숏 apply 시점에 수행해(async resolve 후 이 함수 호출) 늦게 도착한
- * stale 스냅숏의 이미-철회 id 부활을 차단한다. 같은 id 라이브+스냅숏은 단일 카드로 병합.
+ * id-keyed 비파괴 upsert(#216 C1 §C-3) — 이미 철회(tombstone)된 요청만 부활 차단한다. tombstone 재확인을
+ * 스냅숏 apply 시점에 수행해(async resolve 후 이 함수 호출) 늦게 도착한 stale 스냅숏의 이미-철회 id 부활을
+ * 막는다. 같은 id 라이브+스냅숏은 단일 카드로 병합. **로컬 시계(Date.now)로 만료 카드를 드롭하지 않는다**
+ * (#216 Codex 재리뷰 P2): 서버 권위 expiresAt 대비 클라(폰) 시계가 앞서면 서버가 아직 유효하다고 보는 카드를
+ * 로컬이 드롭해 "외출 중 폰 승인"이 스큐 클라에서 실패한다. 존재/만료 권위는 서버(snapshot·withdrawn·resolve)에
+ * 있고, 클라의 expiresAt 사용은 카운트다운 표시 전용이다(broadcast·server list() 는 유효 카드만 보낸다).
  */
 function upsertApproval(
   prev: ApprovalRequest[],
@@ -28,7 +31,6 @@ function upsertApproval(
   tombstone: Set<string>,
 ): ApprovalRequest[] {
   if (tombstone.has(req.id)) return prev
-  if (req.expiresAt <= Date.now()) return prev
   const i = prev.findIndex((r) => r.id === req.id)
   if (i >= 0) {
     const next = [...prev]
@@ -114,17 +116,11 @@ export function ApprovalModal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nonce])
 
-  // 1s 틱 — 카운트다운 갱신 + 만료 카드 자동 소멸(서버 권위 expiresAt<=now → 미표시). 시계 skew/백그라운드
-  // 스로틀은 fail-closed(서버 만료가 권위·respond 는 멱등 no-op)·UX 열화만.
+  // 1s 틱 — 카운트다운 표시 갱신 전용(#216 Codex 재리뷰 P2). **로컬 시계로 카드를 제거하지 않는다** — 클라
+  // (폰) 시계가 서버보다 앞서면 서버가 유효하다고 보는 카드를 로컬 prune 이 드롭해 승인 불가가 되기 때문.
+  // 만료 제거 권위는 서버(withdrawn 브로드캐스트 · 재접속 reconcile). 카운트다운은 max(0,..)로 0s 클램프만.
   useEffect(() => {
-    const iv = setInterval(() => {
-      const t = Date.now()
-      setNow(t)
-      setQueue((prev) => {
-        const kept = prev.filter((r) => r.expiresAt > t)
-        return kept.length === prev.length ? prev : kept
-      })
-    }, 1000)
+    const iv = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(iv)
   }, [])
 
