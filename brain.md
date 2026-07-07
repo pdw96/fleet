@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 86 files · 220 import wires · 46 IPC channels · 생성 2026-07-07T17:00 UTC
+> 86 files · 220 import wires · 46 IPC channels · 생성 2026-07-07T17:20 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -68,7 +68,7 @@
 - **renderer/bridge/web-bridge**
   - →의존: renderer/bridge/ws-bridge, shared/types · ←피의존: renderer/main · 111줄
 - **renderer/components/ApprovalModal** — 위험한 작업을 하기 전에 사용자에게 허락을 받는 확인 창 _파일 삭제·명령 실행 같은 위험 작업이 생기면 '거부/승인' 팝업을 띄우고, 정해진 시간이 지나면 자동으로 거부합니다. 실수로 엔터를 눌러도 거부 쪽으로 떨어지게 해 위험한 작업이 잘못 승인되는 걸 막습니다._
-  - →의존: renderer/bridge/hydration, shared/types · ←피의존: renderer/App · 230줄
+  - →의존: renderer/bridge/hydration, shared/types · ←피의존: renderer/App · 255줄
 - **renderer/main** — 앱 화면을 맨 처음 켜서 빈 페이지에 띄우는 시작 부품 _웹 페이지의 빈 자리를 찾아 그 안에 위의 App 화면 전체를 그려 넣어 앱을 처음 띄웁니다. 개발 중 실수를 더 잘 잡아주는 점검 모드로 감싸 실행합니다._
   - →의존: renderer/App, renderer/bridge/hydration, renderer/bridge/web-bridge · ←피의존: — · 21줄
 - **renderer/components/UpdateBanner**
@@ -206,7 +206,7 @@
 - **safety/approval** — 호출자가 신고한 위험도를 집행하는 승인 검문소(위험도 자체는 판정하지 않음) _게이트는 무엇이 위험한지 스스로 판정하지 않는다 — 호출하는 도구가 신고한 위험도를 집행할 뿐이다. 안전(safe)으로 신고된 작업은 자동 통과시키고, 그 외(주의/파괴적)는 승인자에게 묻되 승인자가 없으면 거절하는 '안전 우선' 방식이며, 모든 요청과 결정을 기록(감사 로그)으로 남긴다. 셸·명령 위험 분류는 코어가 아니라 sub-agent CLI 경계에 위임된다(코어 내 명령 데니리스트 없음). 민감 파일 정규식(SENSITIVE_FILE)만 export 해 diff 위험판정·워크스페이스 도구가 공유한다._
   - →의존: shared/types · ←피의존: engine, mcp/types, orchestrator/diff-risk, orchestrator/orchestrator, tools/types, tools/workspace-tools, workspace/ignored-baseline · 88줄
 - **safety/approval-bridge** — 허락이 필요한 작업을 사용자 화면에 물어보고, 사용자의 예/아니오 답을 도로 전달해 주는 중개 창구 _AI 가 위험한 일을 하려 하면 그 요청을 화면(렌더러)으로 보내 사용자에게 묻고, 답이 오면 해당 요청과 짝지어 처리한다. 물어볼 창이 없으면 즉시 거절하고, 사람이 일정 시간(기본 타임아웃) 안에 답하지 않아도 자동으로 거절하는 '안전 우선' 방식이며, 같은 답이 두 번 와도 한 번만 처리한다._
-  - →의존: shared/types · ←피의존: main/index, server/boot, server/handlers · 164줄
+  - →의존: shared/types · ←피의존: main/index, server/boot, server/handlers · 165줄
 
 ### chat · core — 여러 AI가 한 채팅방에서 서로의 말을 보고 토론하도록 진행을 맡아 주는 모듈이다.
 - **chat/room** — 여러 AI가 한 채팅방에서 차례로 발언하며 토론하도록 진행을 맡는 사회자 부품 _사용자나 시스템의 글을 방에 올리고, 특정 AI를 지목해 지금까지의 대화 내용을 보여준 뒤 다음 발언을 받아 다시 방에 저장한다. 여러 AI에게 한 주제를 정해진 횟수만큼 돌아가며 토론시키는 기능도 있어, 회의의 진행자처럼 누가 언제 말할지를 정리해 준다._
