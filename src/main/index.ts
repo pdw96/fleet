@@ -45,6 +45,13 @@ function broadcastApprovalRequest(req: ApprovalRequest): void {
   }
 }
 
+// 승인 이탈(응답/만료/철회·#216 C1) tombstone 브로드캐스트 — 렌더러가 카드 제거+tombstone(bare string id).
+function broadcastApprovalWithdrawn(id: string): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('fleet:approval:withdrawn', id)
+  }
+}
+
 function broadcastUpdateEvent(event: UpdateEvent): void {
   for (const w of BrowserWindow.getAllWindows()) {
     w.webContents.send('fleet:update:event', event)
@@ -59,6 +66,9 @@ function buildEngine(): { engine: FleetEngine; ipcApprover: IpcApprover; store: 
   const ipcApprover = createIpcApprover({
     send: broadcastApprovalRequest,
     hasWindow: () => BrowserWindow.getAllWindows().length > 0,
+    // 데스크톱은 presencePolicy 미지정 = reject-immediate·60s(무회귀). onWithdraw 만 배선해 응답/만료 시
+    // 렌더러가 카드를 제거+tombstone(재제시 스냅숏과 정합 · #216 C1).
+    onWithdraw: broadcastApprovalWithdrawn,
   })
   const engine = createFleetEngine({
     store,
@@ -181,6 +191,8 @@ function registerIpc(engine: FleetEngine, ipcApprover: IpcApprover): void {
   ipcMain.handle('fleet:approval:respond', (_e, id: string, approved: boolean) => {
     ipcApprover.resolve(id, approved)
   })
+  // 대기 승인 스냅숏(#216 C1) — 마운트 하이드레이션(데스크톱은 대개 빈 목록·무회귀).
+  ipcMain.handle('fleet:approval:pending', () => ipcApprover.list())
 }
 
 // 앱 종료(quit) 진행 플래그 — 종료 중 렌더러 종료는 teardown 이므로 크래시 복구 reload 를 억제한다(crash-recovery isShuttingDown 가드).

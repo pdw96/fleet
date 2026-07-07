@@ -73,6 +73,21 @@ describe('서버 핸들러 테이블(#197 B3)', () => {
     await expect(decision).resolves.toEqual({ approved: true })
   })
 
+  it('approval:pending 이 approver 의 미만료 대기 승인 스냅숏을 반환한다(#216 C1 재하이드레이션)', async () => {
+    const { handlers, approver } = build()
+    const req: ApprovalRequest = {
+      id: 'p1',
+      kind: 'shell',
+      summary: 's',
+      target: 'rm -rf /',
+      risk: 'destructive',
+      ts: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    }
+    void approver.approver(req) // hasWindow true → pending
+    await expect(Promise.resolve(handlers['fleet:approval:pending']())).resolves.toEqual([req])
+  })
+
   it('엔진 위임 대표 경로 — registerCli → session:list 왕복', async () => {
     const { handlers } = build()
     const desc = await handlers['fleet:session:registerCli']('claude', { stateful: true })

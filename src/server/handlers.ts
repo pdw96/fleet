@@ -45,6 +45,7 @@ type ChannelMethodMap = {
   'fleet:mcp:getStatus': 'getMcpStatus'
   'fleet:events:list': 'listEvents'
   'fleet:approval:respond': 'respondApproval'
+  'fleet:approval:pending': 'listPendingApprovals'
 }
 
 // 매핑 완전성 핀 — 키 집합이 BothInvokeChannel 과 정확히 일치하지 않으면(누락/잉여) 컴파일 에러.
@@ -131,5 +132,7 @@ export function createHandlers({
     'fleet:approval:respond': (id, approved) => {
       approver.resolve(id, approved)
     },
+    // 미만료 대기 승인 스냅숏(#216 C1) — 재하이드레이션 권위. approver.list() 는 순수 필터(비파괴).
+    'fleet:approval:pending': () => approver.list(),
   } satisfies HandlerTable
 }

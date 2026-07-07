@@ -82,6 +82,14 @@ const api: FleetBridge = {
     }
   },
   respondApproval: (id, approved) => ipcRenderer.invoke('fleet:approval:respond', id, approved),
+  listPendingApprovals: () => ipcRenderer.invoke('fleet:approval:pending'),
+  onApprovalWithdrawn: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, id: string): void => callback(id)
+    ipcRenderer.on('fleet:approval:withdrawn', listener)
+    return () => {
+      ipcRenderer.removeListener('fleet:approval:withdrawn', listener)
+    }
+  },
   getUpdateState: () => ipcRenderer.invoke('fleet:update:getState'),
   checkForUpdate: () => ipcRenderer.invoke('fleet:update:check'),
   downloadUpdate: () => ipcRenderer.invoke('fleet:update:download'),

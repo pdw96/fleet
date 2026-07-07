@@ -623,6 +623,16 @@ export interface FleetBridge {
   onApprovalRequest(callback: (req: ApprovalRequest) => void): () => void
   /** 승인 모달 결정 회신(메인이 id 로 상관). */
   respondApproval(id: string, approved: boolean): Promise<void>
+  /**
+   * 미만료 대기 승인 스냅숏(재하이드레이션 · #216 C1). 후접속/재접속 클라가 브로드캐스트를 놓친
+   * 대기 승인 카드를 재제시한다(hold 정책 하 "외출 중 폰 승인" 완료정의). 데스크톱은 대개 빈 목록.
+   */
+  listPendingApprovals(): Promise<ApprovalRequest[]>
+  /**
+   * 승인 이탈(응답/만료/철회/취소·rejectAll) 통지 구독 — payload = bare string id(해제 함수 반환).
+   * 렌더러가 카드를 제거하고 tombstone 에 기록한다(늦은 스냅숏의 이미-철회 id 부활 차단 · #216 C1).
+   */
+  onApprovalWithdrawn(callback: (id: string) => void): () => void
 
   // 자동 업데이트
   /** 업데이트 상태 스냅샷(배너 마운트 하이드레이트). */
