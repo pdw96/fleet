@@ -366,4 +366,45 @@ describe('ApprovalModal', () => {
     fireEvent.click(screen.getByRole('button', { name: '승인' }))
     expect(respondApproval).toHaveBeenCalledWith('B', true)
   })
+
+  // 적대리뷰 Codex 재리뷰 P2 — 키보드 활성화도 카드 스왑 오승인 차단(onKeyDown intent 가드)
+  it('키보드(Enter) 활성화도 카드 스왑 시 조준하지 않은 카드를 오승인하지 않는다', () => {
+    const { fire, withdraw, respondApproval } = mockFleet()
+    renderModal()
+    fire({ ...REQ, id: 'A', summary: 'A작업' })
+    fire({ ...REQ, id: 'B', summary: 'B작업' })
+    const approve = screen.getByRole('button', { name: '승인' })
+    fireEvent.keyDown(approve, { key: 'Enter' }) // A 조준(키보드)
+    withdraw('A') // A 철회 → B 가 current 로 스왑
+    fireEvent.click(approve) // Enter 의 네이티브 click — intent(A) ≠ current(B) → 무시
+    expect(respondApproval).not.toHaveBeenCalled() // B 오승인 없음
+    expect(screen.getByText('B작업')).toBeTruthy()
+  })
+
+  // 적대리뷰 Codex 재리뷰 P2 — pre-hello 재접속 조회 실패 시 제한 재시도로 스냅숏 하이드레이트
+  it('listPendingApprovals reject 시 제한 재시도로 스냅숏을 결국 재제시한다', async () => {
+    vi.useFakeTimers()
+    try {
+      const t0 = Date.now()
+      const listPending = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('pre-hello close'))
+        .mockResolvedValueOnce([
+          { ...REQ, id: 'retry-1', summary: '재시도 카드', expiresAt: t0 + 60_000 },
+        ])
+      mockFleet({ listPendingApprovals: listPending })
+      renderModal()
+      await act(async () => {
+        await Promise.resolve() // 첫 호출 reject flush
+      })
+      expect(listPending).toHaveBeenCalledTimes(1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500) // 재시도 backoff(400ms) 경과 + 마이크로태스크 flush
+      })
+      expect(listPending).toHaveBeenCalledTimes(2)
+      expect(screen.getByText('재시도 카드')).toBeTruthy() // 재시도 성공 → 하이드레이트
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

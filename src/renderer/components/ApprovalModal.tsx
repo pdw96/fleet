@@ -76,26 +76,39 @@ export function ApprovalModal() {
   // 데스크톱은 bridge=null → nonce 영구 0 → 마운트 1회(대개 빈 목록·무회귀). tombstone 재확인은 upsert 안(apply 시점).
   useEffect(() => {
     let cancelled = false
+    let retries = 0
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
     // 하이드레이션 시작 시점(이 nonce 렌더)의 큐 id — reconcile 대상. 이후 라이브 추가(onApprovalRequest)는
     // 이 집합 밖이라 보존된다(§C-3 live-race 가드 — 하이드레이션 창 중 생성된 카드의 drop-hang 방지).
     const preHydrationIds = new Set(queue.map((r) => r.id))
-    void window.fleet
-      .listPendingApprovals()
-      .then((pending) => {
-        if (cancelled) return
-        const snapshotIds = new Set(pending.map((r) => r.id))
-        setQueue((prev) => {
-          // reconcile(#216 적대리뷰 Codex P2): 하이드레이션 前 존재했으나 권위 스냅숏에 없는 카드를 제거 —
-          // 재접속 중 놓친 withdrawn·타세션 해소를 정리(로컬 expiresAt·TTL 까지 유령 카드 잔존 방지). 라이브
-          // -fresh(preHydrationIds 밖)는 보존해 drop-race 를 피한다. 스냅숏 카드는 이어서 upsert.
-          let next = prev.filter((r) => snapshotIds.has(r.id) || !preHydrationIds.has(r.id))
-          for (const req of pending) next = upsertApproval(next, req, tombstone.current)
-          return next
+    const fetchSnapshot = (): void => {
+      window.fleet
+        .listPendingApprovals()
+        .then((pending) => {
+          if (cancelled) return
+          const snapshotIds = new Set(pending.map((r) => r.id))
+          setQueue((prev) => {
+            // reconcile(#216 적대리뷰 Codex P2): 하이드레이션 前 존재했으나 권위 스냅숏에 없는 카드를 제거 —
+            // 재접속 중 놓친 withdrawn·타세션 해소를 정리(로컬 expiresAt·TTL 까지 유령 카드 잔존 방지). 라이브
+            // -fresh(preHydrationIds 밖)는 보존해 drop-race 를 피한다. 스냅숏 카드는 이어서 upsert.
+            let next = prev.filter((r) => snapshotIds.has(r.id) || !preHydrationIds.has(r.id))
+            for (const req of pending) next = upsertApproval(next, req, tombstone.current)
+            return next
+          })
         })
-      })
-      .catch(() => undefined) // 조회 실패는 흡수·reconcile 스킵(fail-safe — 라이브 구독이 이후 카드 유지).
+        .catch(() => {
+          // pre-hello 재접속 등으로 조회가 reject 되면(소켓 조기 종료) 제한 재시도(#216 Codex 재리뷰 P2) —
+          // HydrationProvider 가 그 재접속을 '최초 접속'으로 오분류해 nonce 를 못 올리는 창에서 held 승인이
+          // 재제시되지 않던 갭 보완. 소진 시 다음 nonce 전환·라이브 구독이 이후 카드를 채운다(fail-safe).
+          if (cancelled || retries >= 3) return
+          retries += 1
+          retryTimer = setTimeout(fetchSnapshot, 400 * retries)
+        })
+    }
+    fetchSnapshot()
     return () => {
       cancelled = true
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
     }
     // queue 는 의도적 deps 제외 — nonce 전환 시점의 pre-hydration id 스냅숏만 필요(라이브 추가 보호).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -118,6 +131,16 @@ export function ApprovalModal() {
   const current = queue[0]
   // 카운트다운 = 서버 권위 expiresAt 기준(공유 상수 APPROVAL_TIMEOUT_MS 소비 제거 — 카운트다운=실제 만료 정합).
   const remaining = current ? Math.max(0, Math.ceil((current.expiresAt - now) / 1000)) : 0
+
+  // 결정 의도 스냅숏(#216 적대리뷰 P3·Codex P2) — pointerdown/keydown 시 조준한 카드 id 를 기록. 마우스·
+  // 키보드(Enter/Space) 활성화가 커밋(click)되기 전 비동기 스왑(withdrawn/만료/reconcile)이 일어나면 decide
+  // 가 intent≠current 로 무시해 사용자가 읽지 않은 카드의 우발 결정을 막는다.
+  const captureIntent = (): void => {
+    if (current) pointerIntent.current = current.id
+  }
+  const captureIntentKey = (e: { key: string }): void => {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') captureIntent()
+  }
 
   const decide = (approved: boolean): void => {
     if (!current) return
@@ -209,14 +232,16 @@ export function ApprovalModal() {
           <button
             ref={rejectRef}
             className="btn btn-danger"
-            onPointerDown={() => (pointerIntent.current = current.id)}
+            onPointerDown={captureIntent}
+            onKeyDown={captureIntentKey}
             onClick={() => decide(false)}
           >
             거부
           </button>
           <button
             className="btn"
-            onPointerDown={() => (pointerIntent.current = current.id)}
+            onPointerDown={captureIntent}
+            onKeyDown={captureIntentKey}
             onClick={() => decide(true)}
           >
             승인

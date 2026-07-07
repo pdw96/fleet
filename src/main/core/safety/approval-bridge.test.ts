@@ -164,6 +164,14 @@ describe('createIpcApprover — hold 정책(서버 원격 승인)', () => {
     expect(await p).toEqual({ approved: true })
   })
 
+  it('#P1c 비-boolean truthy approved("false")는 만료 전이라도 승인으로 뒤집히지 않는다(리터럴 true 협착)', async () => {
+    const clock = fakeClock()
+    const { a } = holdApprover(clock)
+    const p = a.approver(req('x', 60_000)) // 만료 전
+    a.resolve('x', 'false' as unknown as boolean) // WS 프레임이 검증 없이 실어보낸 문자열 truthy
+    expect(await p).toEqual({ approved: false }) // truthy && (expiresAt>now) 가 boolean true 로 새는 것 차단
+  })
+
   // #4 TTL 만료 3연쇄
   it('#4 만료 → resolve {approved:false} · list 제거 · late resolve no-op · onWithdraw 1회', async () => {
     const clock = fakeClock()
