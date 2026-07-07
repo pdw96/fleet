@@ -2,25 +2,53 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest } from '../../shared/types'
+import { HydrationContext } from '../bridge/hydration'
 import { ApprovalModal } from './ApprovalModal'
 
-function mockFleet(overrides: { respondApproval?: ReturnType<typeof vi.fn> } = {}) {
-  let handler: ((req: ApprovalRequest) => void) | undefined
+function mockFleet(
+  overrides: {
+    respondApproval?: ReturnType<typeof vi.fn>
+    pending?: ApprovalRequest[]
+    listPendingApprovals?: ReturnType<typeof vi.fn>
+  } = {},
+) {
+  let reqHandler: ((req: ApprovalRequest) => void) | undefined
+  let withdrawHandler: ((id: string) => void) | undefined
   const respondApproval = overrides.respondApproval ?? vi.fn().mockResolvedValue(undefined)
+  const listPendingApprovals =
+    overrides.listPendingApprovals ?? vi.fn().mockResolvedValue(overrides.pending ?? [])
   const fleet = {
     onApprovalRequest: vi.fn((cb: (req: ApprovalRequest) => void) => {
-      handler = cb
+      reqHandler = cb
       return () => {
-        handler = undefined
+        reqHandler = undefined
       }
     }),
+    onApprovalWithdrawn: vi.fn((cb: (id: string) => void) => {
+      withdrawHandler = cb
+      return () => {
+        withdrawHandler = undefined
+      }
+    }),
+    listPendingApprovals,
     respondApproval,
   }
   ;(window as unknown as { fleet: unknown }).fleet = fleet
   return {
-    fire: (req: ApprovalRequest) => act(() => handler?.(req)),
+    fire: (req: ApprovalRequest) => act(() => reqHandler?.(req)),
+    withdraw: (id: string) => act(() => withdrawHandler?.(id)),
     respondApproval,
+    listPendingApprovals,
   }
+}
+
+/** HydrationContext 로 nonce 를 제어(재접속 재하이드레이션 구동). 미지정 nonce=0(마운트). */
+function renderModal(nonce = 0) {
+  return render(
+    <HydrationContext.Provider value={{ nonce, connection: null }}>
+      <ApprovalModal />
+    </HydrationContext.Provider>,
+  )
 }
 
 const REQ: ApprovalRequest = {
@@ -30,7 +58,8 @@ const REQ: ApprovalRequest = {
   target: '/ws/config/.env',
   risk: 'destructive',
   ts: 1,
-  expiresAt: 61_000,
+  // 미래값 — 새 컴포넌트는 expiresAt<=now 를 만료로 필터한다(서버 권위 카운트다운).
+  expiresAt: Date.now() + 60_000,
 }
 
 afterEach(() => {
@@ -80,7 +109,7 @@ describe('ApprovalModal', () => {
       target: 'src/a.ts, src/b.ts',
       risk: 'caution',
       ts: 2,
-      expiresAt: 62_000,
+      expiresAt: Date.now() + 60_000,
     })
     expect(screen.getByText('변경 적용 승인')).toBeTruthy()
     expect(screen.getByText('src/a.ts, src/b.ts')).toBeTruthy()
@@ -205,5 +234,83 @@ describe('ApprovalModal', () => {
     expect(respondApproval).toHaveBeenCalledWith('req-1', true)
     await act(async () => {})
     expect(screen.queryByRole('dialog')).toBeNull() // 큐 전진 — reject 가 decide 를 깨지 않음
+  })
+
+  // ── C1(#216 C-7) — 재하이드레이션·tombstone·서버 권위 카운트다운 ──
+
+  // #24 후접속 snapshot 카드
+  it('#24 마운트 시 listPendingApprovals 스냅숏 조회 → 카드 재제시', async () => {
+    mockFleet({ pending: [{ ...REQ, id: 'snap-1', summary: '스냅숏 승인' }] })
+    renderModal()
+    expect(await screen.findByText('스냅숏 승인')).toBeTruthy()
+  })
+
+  it('#24b 재접속(nonce+1) 전환 시 재하이드레이트(listPendingApprovals 재조회)', async () => {
+    const { listPendingApprovals } = mockFleet({
+      pending: [{ ...REQ, id: 'snap-1', summary: '스냅숏' }],
+    })
+    const view = renderModal(0)
+    await act(async () => {})
+    expect(listPendingApprovals).toHaveBeenCalledTimes(1) // 마운트(nonce 0)
+    await act(async () => {
+      view.rerender(
+        <HydrationContext.Provider value={{ nonce: 1, connection: null }}>
+          <ApprovalModal />
+        </HydrationContext.Provider>,
+      )
+    })
+    expect(listPendingApprovals).toHaveBeenCalledTimes(2) // nonce 전환 → 재조회
+  })
+
+  // #25 live+snapshot upsert dedupe (비파괴)
+  it('#25 같은 id 라이브+스냅숏 → 단일 카드(dedupe)·스냅숏 없는 라이브 카드 보존(비파괴)', async () => {
+    const A = { ...REQ, id: 'A', summary: 'A카드' }
+    const B = { ...REQ, id: 'B', summary: 'B카드' }
+    const { fire } = mockFleet({ pending: [A, B] })
+    renderModal()
+    fire(A) // 라이브 A (스냅숏에도 있음 — dedupe)
+    fire({ ...REQ, id: 'C', summary: 'C카드' }) // 스냅숏에 없는 라이브 — 보존
+    await act(async () => {}) // 마운트 hydration([A,B]) flush
+    // A(단일)·C·B = 3장. A 가 중복이면 "대기 중 3건". 단일이므로 current(A) 외 "대기 중 2건".
+    expect(screen.getByText('A카드')).toBeTruthy()
+    expect(screen.getByText('대기 중 2건')).toBeTruthy()
+  })
+
+  // #26 tombstone 인터리브 — 지연 스냅숏 resolve 중 withdrawn → 부활 차단(apply 시점 재확인)
+  it('#26 지연 스냅숏 resolve 전 withdrawn(id) → 늦은 스냅숏의 동일 id 미부활', async () => {
+    let resolveSnap!: (v: ApprovalRequest[]) => void
+    const snapPromise = new Promise<ApprovalRequest[]>((r) => {
+      resolveSnap = r
+    })
+    const { withdraw } = mockFleet({
+      listPendingApprovals: vi.fn().mockReturnValue(snapPromise),
+    })
+    renderModal() // 마운트 → listPendingApprovals(pending)
+    withdraw('late-A') // 스냅숏 도착 전 A 철회 → tombstone 기록
+    await act(async () => {
+      resolveSnap([{ ...REQ, id: 'late-A', summary: '늦은 스냅 A' }]) // 늦은 스냅숏 도착
+      await snapPromise
+    })
+    // apply 시점 tombstone 재확인 → late-A 미부활 → 표시 카드 없음.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByText('늦은 스냅 A')).toBeNull()
+  })
+
+  // #27 카운트다운 라이브 만료 — 서버 권위 expiresAt 기반·공유상수 회귀 가드
+  it('#27 카운트다운은 expiresAt 기반(60s 공유상수 아님)·라이브 만료 시 카드 자동 소멸', () => {
+    vi.useFakeTimers()
+    try {
+      const t0 = Date.now()
+      const { fire } = mockFleet()
+      renderModal()
+      fire({ ...REQ, id: 'exp-1', expiresAt: t0 + 3000 }) // 3s 후 만료(공유상수 60s 아님)
+      expect(screen.getByText('3s 후 자동 거부')).toBeTruthy()
+      act(() => {
+        vi.advanceTimersByTime(3200) // 만료 초과 → 틱 prune
+      })
+      expect(screen.queryByRole('dialog')).toBeNull() // 카드 자동 소멸
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -18,6 +18,8 @@ function mockFleet(runtime: 'electron' | 'web') {
     onUpdateEvent: vi.fn(() => () => {}),
     getUpdateState: vi.fn().mockResolvedValue({ kind: 'idle' }),
     onApprovalRequest: vi.fn(() => () => {}),
+    onApprovalWithdrawn: vi.fn(() => () => {}),
+    listPendingApprovals: vi.fn().mockResolvedValue([]),
     getUpdaterChannel: vi.fn().mockResolvedValue('stable'),
     getMcpStatus: vi.fn().mockResolvedValue([]),
     detectClis: vi.fn().mockResolvedValue([]),
