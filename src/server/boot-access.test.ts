@@ -654,35 +654,21 @@ describe('access 모드 소켓 exp-시한 종료(#197-B6 T6)', () => {
   })
 })
 
-describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)', () => {
-  // expiresAt 는 approver 가 읽는 clock(access boot 기본 = 실 Date.now)에서 파생(픽스처 시계 규율 #216 C1)
-  // — 소값이면 즉시 만료돼 pending 드레인. 여기선 rejectAll/재인증 승인 검증이라 만료 안 하도록 미래값.
-  const destructiveReq = (id: string): ApprovalRequest => ({
+describe('access 모드 승인 hold(#216 C1 · C-6 supersede — presence-0 rejectAll 제거)', () => {
+  // expiresAt 는 approver 가 읽는 clock 에서 파생(픽스처 시계 규율 #216 C1). 주입 fakeClock 은 start=실 Date.now
+  // 로 시작하므로 Date.now()+delta 파생이 정합(delay≈delta). 만료 아닌 유지/승인 검증엔 넉넉한 미래값.
+  const destructiveReq = (id: string, expiresAt = Date.now() + 60_000): ApprovalRequest => ({
     id,
     kind: 'file-write',
     summary: 's',
     target: 't',
     risk: 'destructive',
     ts: 1,
-    expiresAt: Date.now() + 60_000,
+    expiresAt,
   })
 
-  it('① 미검증 접속만 있는 상태 + 승인 요청 → 즉시 false(검증 실패 socket presence 미포함)', async () => {
-    let approver!: IpcApprover
-    const server = await bootAccess({ deps: { onApprover: (a) => (approver = a) } })
-    try {
-      await expect(
-        tryWsConnect(server.port, { origin: PUBLIC_ORIGIN, token: await sign() }),
-      ).resolves.toBe('rejected') // nonce 부재 → attach 미도달
-      expect(server.clientCount()).toBe(0)
-      await expect(approver.approver(destructiveReq('x'))).resolves.toEqual({ approved: false }) // hasWindow false
-      expect(approver.pendingCount()).toBe(0)
-    } finally {
-      await server.close()
-    }
-  })
-
-  it('② 인증 클라 1 · pending 중 disconnect → 타임아웃 없이 즉시 reject', async () => {
+  // #18 access presence-0 pending 유지(hold — 예전 rejectAll 대체)
+  it('#18 인증 클라 1 · pending 중 disconnect(presence 0 전이) → rejectAll 미호출·pending 유지', async () => {
     let approver!: IpcApprover
     const server = await bootAccess({ deps: { onApprover: (a) => (approver = a) } })
     try {
@@ -692,38 +678,104 @@ describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)
         token: await sign(),
       })
       await waitFor(() => server.clientCount() === 1)
-      const p = approver.approver(destructiveReq('x')) // hasWindow true → pending
+      const p = approver.approver(destructiveReq('x'))
       expect(approver.pendingCount()).toBe(1)
-      ws.close() // 인증 클라 0 전이 → rejectAll
-      await expect(p).resolves.toEqual({ approved: false }) // 60s 타임아웃 전 즉시 해소 = rejectAll
+      ws.close() // 인증 클라 0 전이 — 예전엔 rejectAll, 이제 hold(유지)
+      await waitFor(() => server.clientCount() === 0)
+      await new Promise((r) => setTimeout(r, 50)) // 안정화
+      expect(approver.pendingCount()).toBe(1) // hold: rejectAll 미발화·유지
+      approver.resolve('x', true) // 정리(60s 만료 대기 없이)
+      await expect(p).resolves.toEqual({ approved: true })
     } finally {
       await server.close()
     }
   })
 
-  it('③ 인증 클라 2 중 1 이탈 → pending 유지(0 되는 순간에만)', async () => {
+  // #19 미검증 소켓 배제 — 미검증만 존재해도 승인은 held·미검증 소켓엔 노출/승인 불가(attach 미도달)
+  it('#19 미검증 접속만 → 승인 hold(즉시거부 아님)·미검증 소켓은 attach 안 돼 broadcast/respond 도달 불가', async () => {
     let approver!: IpcApprover
     const server = await bootAccess({ deps: { onApprover: (a) => (approver = a) } })
     try {
-      const ws1 = await connectLive(server.port, {
-        nonce: await getNonce(server.port, { token: await sign() }),
+      await expect(
+        tryWsConnect(server.port, { origin: PUBLIC_ORIGIN, token: await sign() }),
+      ).resolves.toBe('rejected') // nonce 부재 → attach 미도달(presence 미포함)
+      expect(server.clientCount()).toBe(0)
+      const p = approver.approver(destructiveReq('x'))
+      // hold: presence=0(미검증만)이어도 자동거부/자동승인 없음 = held. 미검증 소켓은 attach 안 돼
+      // wsHost.broadcast/dispatch 대상이 아니므로 이 카드를 보거나 승인할 수 없다(비인증 노출 0).
+      expect(approver.pendingCount()).toBe(1)
+      approver.resolve('x', false) // 정리
+      await expect(p).resolves.toEqual({ approved: false })
+    } finally {
+      await server.close()
+    }
+  })
+
+  // #20 JWT 만료 후 유지 + 재인증 승인(완료정의 "외출 중 폰 승인" 양성경로)
+  it('#20 JWT exp 소켓 close(presence 0) 후에도 pending 유지·신규 인증 세션이 held 카드 정상 승인', async () => {
+    const start = Date.now()
+    const fc = fakeClock(start)
+    let approver!: IpcApprover
+    const server = await bootAccess({
+      deps: { clock: fc.clock, onApprover: (a) => (approver = a) },
+    })
+    try {
+      const exp = Math.floor(start / 1000) + 100
+      await connectLive(server.port, {
+        nonce: await getNonce(server.port, { token: await sign({ exp }) }),
         origin: PUBLIC_ORIGIN,
-        token: await sign(),
+        token: await sign({ exp }),
       })
+      await waitFor(() => server.clientCount() === 1)
+      const p = approver.approver(destructiveReq('x', start + 300_000)) // 만료 넉넉히(외출)
+      expect(approver.pendingCount()).toBe(1)
+      fc.advanceTo(exp * 1000 + 1) // JWT exp 도달 → 소켓 close → presence 0
+      await waitFor(() => server.clientCount() === 0)
+      expect(approver.pendingCount()).toBe(1) // hold: 유지(rejectAll 없음)
+      // 재접속(신규 인증 세션·귀가) → held 카드 승인
       const ws2 = await connectLive(server.port, {
         nonce: await getNonce(server.port, { token: await sign() }),
         origin: PUBLIC_ORIGIN,
         token: await sign(),
       })
-      await waitFor(() => server.clientCount() === 2)
-      const p = approver.approver(destructiveReq('x'))
-      expect(approver.pendingCount()).toBe(1)
-      ws1.close()
-      await waitFor(() => server.clientCount() === 1) // ws1 close 서버측 처리 확인
-      expect(approver.pendingCount()).toBe(1) // 유지(0 아님 → rejectAll 미발화)
-      approver.resolve('x', true) // 정리
+      await waitFor(() => server.clientCount() === 1)
+      approver.resolve('x', true)
       await expect(p).resolves.toEqual({ approved: true })
       ws2.close()
+    } finally {
+      await server.close()
+    }
+  })
+
+  // #23 만료→withdrawn 통합 — approver 타이머를 boot clock 으로 라우팅해 통합 만료 시 broadcast
+  it('#23 통합 만료(주입 clock advanceTo) → fleet:approval:withdrawn 브로드캐스트 + resolve false', async () => {
+    const start = Date.now()
+    const fc = fakeClock(start)
+    let approver!: IpcApprover
+    const server = await bootAccess({
+      deps: { clock: fc.clock, onApprover: (a) => (approver = a) },
+    })
+    try {
+      const ws = await connectLive(server.port, {
+        nonce: await getNonce(server.port, { token: await sign() }),
+        origin: PUBLIC_ORIGIN,
+        token: await sign(),
+      })
+      await waitFor(() => server.clientCount() === 1)
+      const withdrawn: string[] = []
+      ws.on('message', (raw: WebSocket.RawData) => {
+        const s = Array.isArray(raw)
+          ? Buffer.concat(raw).toString('utf8')
+          : Buffer.from(raw as ArrayBuffer | Buffer).toString('utf8')
+        if (s.includes('fleet:approval:withdrawn') && s.includes('appr-exp')) withdrawn.push(s)
+      })
+      const p = approver.approver(destructiveReq('appr-exp', start + 10_000))
+      expect(approver.pendingCount()).toBe(1)
+      fc.advanceTo(start + 10_001) // 만료 → approver 타이머 발화 → resolve false + onWithdraw broadcast
+      await expect(p).resolves.toEqual({ approved: false })
+      await waitFor(() => withdrawn.length === 1) // 인증 소켓이 withdrawn 프레임 수신
+      expect(approver.pendingCount()).toBe(0)
+      ws.close()
     } finally {
       await server.close()
     }

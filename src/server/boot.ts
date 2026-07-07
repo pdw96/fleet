@@ -6,6 +6,7 @@ import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type RawData } from 'ws'
 import type { AppInfo } from '../shared/types'
+import { APPROVAL_MAX_PENDING } from '../shared/types'
 import { createChildEnv, type ChildEnv } from './child-env'
 import { createFleetEngine } from '../main/core/engine'
 import { containerCliAdapters, createCliRegistry } from '../main/core/cli/registry'
@@ -227,6 +228,28 @@ export function resolveSandboxBoundary(env: NodeJS.ProcessEnv): SandboxBoundary 
   )
 }
 
+/** 승인 보류 TTL(#216 C1) — 미설정 기본·유효 범위. env 설정자=배포자=운영자라 crash 는 공격 벡터 아님. */
+const DEFAULT_SERVER_APPROVAL_TTL_MS = 600_000 // 10분(hold-with-expiry 기본)
+const APPROVAL_TTL_MIN_MS = 5_000 // 5초
+const APPROVAL_TTL_MAX_MS = 1_800_000 // 30분
+
+/**
+ * FLEET_APPROVAL_TTL_MS 파싱(#216 C1 §C-4) — fail-fast. 미설정→기본 600000. 설정 시 유한 양의 정수(ms)·
+ * [5000, 1800000] 범위 밖이면 **throw**(조용한 clamp 대신 오설정을 시끄럽게 — B3 fail-closed 정신·운영자
+ * 무성 놀람 방지). 모든 부수효과(store mkdir 등) 이전에 호출한다.
+ */
+function resolveApprovalTtlMs(env: NodeJS.ProcessEnv): number {
+  const raw = env['FLEET_APPROVAL_TTL_MS']?.trim()
+  if (!raw) return DEFAULT_SERVER_APPROVAL_TTL_MS
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < APPROVAL_TTL_MIN_MS || n > APPROVAL_TTL_MAX_MS) {
+    throw new Error(
+      `FLEET_APPROVAL_TTL_MS 는 [${APPROVAL_TTL_MIN_MS}, ${APPROVAL_TTL_MAX_MS}] 범위의 정수 ms 여야 함(받음: ${raw})`,
+    )
+  }
+  return n
+}
+
 /** 번들(out/server)·소스(src/server) 양쪽에서 레포/설치 루트의 package.json version 을 읽는다. */
 function readOwnVersion(): string {
   try {
@@ -265,6 +288,8 @@ export async function bootServer(
   const sandboxBoundary = resolveSandboxBoundary(env)
   const host = resolveBindHost(env, securityConfig)
   const port = resolvePort(env)
+  // 승인 보류 TTL(#216 C1) — 오설정이면 여기서 fail-fast(모든 부수효과 이전).
+  const approvalTtlMs = resolveApprovalTtlMs(env)
   const e2e = isE2EActive(env)
   // 워크스페이스 검증(dialog 대신 env 경로): 미존재/비디렉터리는 fail-fast — store 생성(mkdirSync
   // 부수효과) 이전에 순수 검증부터 끝낸다. 실제 적용(setWorkspace)은 engine 생성 후로 미룬다.
@@ -283,11 +308,23 @@ export async function bootServer(
 
   // wsHost 는 engine 콜백보다 늦게 만들어진다 — 브로드캐스트는 조립 완료 후에만 유효(부팅 중 이벤트 무해 drop).
   let wsHost: WsHost | null = null
+  // 주입 clock(테스트 결정론) — 소켓 exp 타이머와 **동일 clock 을 approver 만료 타이머에도** 라우팅해
+  // 통합 만료를 결정론화한다(#216 C1 §C-2·§3-23). 원래 348행 정의를 approver 조립 위로 끌어올림.
+  const clock = deps.clock ?? defaultClock
   const ipcApprover = createIpcApprover({
     send: (req) => wsHost?.broadcast('fleet:approval:request', req),
-    // presence: 접속(검증 통과) 클라이언트 존재 = 응답 가능. access 모드는 인증 클라 0 전이 시 rejectAll 이
-    // outstanding 을 즉시 거둔다(#197 B5 · 체크포인트 2 §4). loopback 은 타임아웃 시맨틱 유지.
+    // presence: 접속(검증 통과) 클라이언트 존재 = 응답 가능. hold 정책이라 presence=0 이어도 거부하지 않고
+    // 보류(스냅숏이 다음 접속에 재제시·TTL 만료/취소 abort 만이 종착 — #216 C1 §C-1·C-6). hasWindow 는
+    // hold 에서 미참조이나 계약상 유지(정책 전환 시 무회귀).
     hasWindow: () => (wsHost?.clientCount() ?? 0) > 0,
+    presencePolicy: 'hold',
+    // 승인 이탈(응답/만료/철회/취소) tombstone 브로드캐스트(bare string id) — attach(인증 통과) 소켓만 도달.
+    onWithdraw: (id) => wsHost?.broadcast('fleet:approval:withdrawn', id),
+    // 만료 타이머·list 필터를 소켓 exp 와 동일 clock 으로(§C-2 통합 결정론). arrow 래퍼로 this-binding 안전.
+    now: () => clock.now(),
+    setTimer: (fn, ms) => clock.setTimeout(fn, ms),
+    clearTimer: (h) => clock.clearTimeout(h),
+    maxPending: APPROVAL_MAX_PENDING,
   })
   deps.onApprover?.(ipcApprover) // 테스트 관측(운영 no-op)
   // 키 부재/형식 오류는 fail-open 이 아니라 "라이브 세션만 유지·디스크 미영속" 강등 — 운영자가
@@ -303,6 +340,8 @@ export async function bootServer(
     onOrchestratorEvent: (e) => wsHost?.broadcast('fleet:orchestrator:event', e),
     onChatStream: (e) => wsHost?.broadcast('fleet:chat:stream', e),
     approver: ipcApprover.approver,
+    // hold 정책 TTL(#216 C1) — gate 가 expiresAt=ts+ttlMs 로 스탬프. FLEET_APPROVAL_TTL_MS(fail-fast 파싱).
+    approvalTtlMs,
     runner: e2e ? resolveE2eRunner(env) : undefined,
     verifyRunner: e2e ? resolveE2eVerifyRunner(env) : undefined,
     // 자식 env 격리(#197-B6 T7): 서버 시크릿(FLEET_*)이 CLI 세션·detect/probe·MCP·verify·git 자식에 안 새게
@@ -345,7 +384,7 @@ export async function bootServer(
     deps.onSecurityReject ??
     ((stage, reason) => console.warn(`fleet-server: 보안 거부 stage=${stage} reason=${reason}`))
   const originAllowed = makeOriginAllowed(securityConfig)
-  const clock = deps.clock ?? defaultClock
+  // (clock 은 approver 조립 위로 이동됨 — #216 C1 §C-2. 여기선 재선언하지 않는다.)
   const nonceStore = createNonceStore()
   const accessVerifier: AccessJwtVerifier | null =
     securityConfig.mode === 'access'
@@ -411,9 +450,11 @@ export async function bootServer(
       close: () => socket.close(),
     })
     let expTimer: unknown
-    // close·error 공통 정리 — 인증 클라이언트가 0 이 되는 순간(access 한정) outstanding 승인 즉시 reject.
-    // 검증 통과 소켓만 attach 되므로 clientCount = 인증 클라 수(presence 오염 없음). loopback 은 타임아웃
-    // 시맨틱 유지(rejectAll 미호출 — B3/B4 하위호환·T1 핀). rejectAll 은 pending 0 이면 no-op(멱등).
+    // close·error 공통 정리 — 소켓 이탈 시 exp 타이머를 clear 하고 binding 을 닫는다.
+    // **#216 C1(C-6 supersede)**: access presence-0 전이 시 rejectAll 을 **제거**한다 — hold 정책 하에서
+    // 인증 클라 0(외출)이어도 승인을 거두지 않고 보류해야 "외출 중 폰 승인" 완료정의가 성립한다. fail-closed
+    // 종착은 이제 **TTL 만료 거부 + 취소 abort 두 경로**(C3 취소 그래프 관통 GREEN 이 선행 안전 게이트). 인가
+    // 경계는 불변(응답=attach 인증 소켓만·B5 무변경). 종료 drain rejectAll 은 close() 가 관장(아래).
     // exp 타이머는 여기서 반드시 clear — 닫힌 소켓이 만료 시각까지 타이머 클로저를 붙들거나 이중 close 하지 않게.
     const handleSocketGone = (): void => {
       if (expTimer !== undefined) {
@@ -421,9 +462,6 @@ export async function bootServer(
         expTimer = undefined
       }
       binding.onClose()
-      if (securityConfig.mode === 'access' && wsHost!.clientCount() === 0) {
-        ipcApprover.rejectAll()
-      }
     }
     onGone = handleSocketGone // 선부착 error 리스너가 이제 presence 정리까지 포함
     // exp 타이머 무장 — 지연이 Node TIMEOUT_MAX(≈24.8일)를 넘으면 즉시 발화(1ms 클램프)하므로 clamp 후

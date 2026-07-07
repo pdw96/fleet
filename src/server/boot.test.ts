@@ -68,6 +68,33 @@ describe('resolvePort', () => {
   })
 })
 
+describe('FLEET_APPROVAL_TTL_MS fail-fast(#216 C1 §C-4 · #22)', () => {
+  const baseEnv = (): NodeJS.ProcessEnv => ({
+    FLEET_PORT: '0',
+    FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-c1-ttl-')),
+    FLEET_E2E: '1',
+  })
+  // 유한 양의 정수 아니거나 [5000,1800000] 밖 → boot throw(조용한 clamp 아님 · 부수효과 이전 fail-fast).
+  it.each(['abc', 'NaN', '0', '-1', '4999', '1800001', '60000.5'])(
+    '오설정/범위밖("%s") → boot throw',
+    async (v) => {
+      await expect(bootServer({ ...baseEnv(), FLEET_APPROVAL_TTL_MS: v })).rejects.toThrow(
+        /FLEET_APPROVAL_TTL_MS/,
+      )
+    },
+  )
+  it.each(['5000', '600000', '1800000'])('정상값("%s") → boot 성공', async (v) => {
+    const server = await bootServer({ ...baseEnv(), FLEET_APPROVAL_TTL_MS: v })
+    await server.close()
+  })
+  it('미설정/빈값 → 기본(boot 성공)', async () => {
+    const s1 = await bootServer(baseEnv())
+    await s1.close()
+    const s2 = await bootServer({ ...baseEnv(), FLEET_APPROVAL_TTL_MS: '  ' })
+    await s2.close()
+  })
+})
+
 describe('resolveSandboxBoundary — 환경-인지 샌드박스 경계(#214 C1)', () => {
   // 미설정/빈/공백 = cli 기본 → 데스크톱·베어호스트 서버 무회귀(현행 CLI 내부 샌드박스 유지).
   it.each([undefined, '', '   '])('미설정/빈/공백(%o) → cli 기본', (v) => {
@@ -441,6 +468,38 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
       } finally {
         await server.close()
       }
+    })
+  })
+
+  describe('close() drain rejectAll(#216 C1 · #21)', () => {
+    const drainReq = (id: string): ApprovalRequest => ({
+      id,
+      kind: 'file-write',
+      summary: 's',
+      target: 't',
+      risk: 'destructive',
+      ts: 1,
+      expiresAt: Date.now() + 300_000, // 만료 아닌 drain 검증 → 넉넉한 미래값
+    })
+    it('#21 close() → 대기 승인 전원 거부(hold·mode 무관)·in-flight 응답 멱등 no-op', async () => {
+      let approver!: IpcApprover
+      const server = await bootServer(
+        {
+          FLEET_PORT: '0',
+          FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-c1-drain-')),
+          FLEET_E2E: '1',
+        },
+        { onApprover: (a) => (approver = a) },
+      )
+      // hold 정책 — presence 0 이어도 보류(client 불요). close() 만이 drain rejectAll.
+      const p1 = approver.approver(drainReq('a'))
+      const p2 = approver.approver(drainReq('b'))
+      expect(approver.pendingCount()).toBe(2)
+      await server.close() // close() → ipcApprover.rejectAll()(C1 유지 — 종료 fail-closed 종단)
+      await expect(p1).resolves.toEqual({ approved: false })
+      await expect(p2).resolves.toEqual({ approved: false })
+      approver.resolve('a', true) // in-flight 응답 — 이미 해소·멱등 no-op(throw 없음)
+      expect(approver.pendingCount()).toBe(0)
     })
   })
 
