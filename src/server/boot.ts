@@ -8,6 +8,7 @@ import { WebSocketServer, type RawData } from 'ws'
 import type { AppInfo } from '../shared/types'
 import { createChildEnv, type ChildEnv } from './child-env'
 import { createFleetEngine } from '../main/core/engine'
+import { containerCliAdapters, createCliRegistry } from '../main/core/cli/registry'
 import { createIpcApprover, type IpcApprover } from '../main/core/safety/approval-bridge'
 import { createJsonFileStore } from '../main/core/store/json-file'
 import { isE2EActive, resolveE2eRunner, resolveE2eVerifyRunner, seedE2eFixtures } from '../main/e2e'
@@ -208,6 +209,24 @@ export function resolvePort(env: NodeJS.ProcessEnv): number {
   return port
 }
 
+/** 샌드박스 경계 posture(#214 C1) — 코어엔 미노출(엔진은 registry 데이터만 받는다). 주입 배선은 T3. */
+export type SandboxBoundary = 'cli' | 'container'
+
+/**
+ * CLI 내부 샌드박스를 컨테이너 경계로 대체할지 판정(#214 · ADR-0010). **명시 opt-in 만** — 자동 감지
+ * 금지(감지 오판 방향이 보안 완화). 미설정 = `cli`(현행 유지 → 데스크톱·베어호스트 무회귀). 그 외 값은
+ * **부팅 거부(loud fail)** — resolveBindHost 이중 게이트 관례와 동일(조용한 강등 금지). trim 후 소문자
+ * exact 만(대문자·유사값은 오타 개연 → throw). 형제 파싱 관례(`?.trim()`)를 따른다(FLEET_DATA_DIR 예외 제외).
+ */
+export function resolveSandboxBoundary(env: NodeJS.ProcessEnv): SandboxBoundary {
+  const raw = env['FLEET_SANDBOX_BOUNDARY']?.trim()
+  if (!raw) return 'cli'
+  if (raw === 'cli' || raw === 'container') return raw
+  throw new Error(
+    `FLEET_SANDBOX_BOUNDARY 값이 유효하지 않음: "${raw}" (유효값: cli | container · 미설정=cli)`,
+  )
+}
+
 /** 번들(out/server)·소스(src/server) 양쪽에서 레포/설치 루트의 package.json version 을 읽는다. */
 function readOwnVersion(): string {
   try {
@@ -242,6 +261,8 @@ export async function bootServer(
 ): Promise<RunningServer> {
   // 보안 모드 판정 — 부분 설정은 여기서 fail-fast(store mkdir 등 모든 부수효과 이전).
   const securityConfig = resolveSecurityConfig(env)
+  // 샌드박스 경계 판정(#214 C1) — 미지값이면 여기서 loud-fail(모든 부수효과 이전).
+  const sandboxBoundary = resolveSandboxBoundary(env)
   const host = resolveBindHost(env, securityConfig)
   const port = resolvePort(env)
   const e2e = isE2EActive(env)
@@ -287,6 +308,12 @@ export async function bootServer(
     // 자식 env 격리(#197-B6 T7): 서버 시크릿(FLEET_*)이 CLI 세션·detect/probe·MCP·verify·git 자식에 안 새게
     // allowlist 필터된 env 를 주입한다. boot 이 받은 env(운영=process.env)를 넘겨도 자식엔 base/provider 만 간다.
     childEnv: buildServerChildEnv(env),
+    // 샌드박스 경계 주입(#214 C3 · ADR-0010) — container 모드에서만 container-posture 어댑터로 시드한
+    // registry 를 넘긴다(codex danger-full-access + skip). cli/미설정은 undefined → 엔진이 기본 시드
+    // (createCliRegistry())로 폴백(데스크톱·베어호스트 바이트 동일). **이 줄이 삭제되면 컨테이너에서 codex
+    // 가 다시 bwrap(user namespace)로 깨진다(전 테스트 GREEN 무신호) — boot-sandbox-seam.test 가 핀한다.**
+    cliRegistry:
+      sandboxBoundary === 'container' ? createCliRegistry(containerCliAdapters()) : undefined,
     secretCrypto,
   })
   if (e2e) seedE2eFixtures(engine)
