@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 86 files · 218 import wires · 44 IPC channels · 생성 2026-07-06T17:19 UTC
+> 86 files · 219 import wires · 44 IPC channels · 생성 2026-07-07T06:22 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -13,7 +13,7 @@
 - **바깥 세계 runtime** — 앱 밖의 실제 대상 — 설치된 AI CLI(클로드/코덱스/제미니), AI 회사 API, 외부 도구(MCP) 서버.
 
 ## 한눈에
-- **허브**(많이 연결): shared/types(48) · engine(29) · server/boot(14) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
+- **허브**(많이 연결): shared/types(48) · engine(29) · server/boot(15) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
 - **진입점**: main/e2e · main/index · preload/index · renderer/main
 - **레지스트리**(확장점, 분기 대신 등록): cli/registry · providers/registry · tools/registry
 - **승인 게이트**(위험작업 차단): safety/approval
@@ -28,7 +28,7 @@
 
 ### other · other
 - **server/boot**
-  - →의존: engine, main/e2e, safety/approval-bridge, server/access-jwt, server/child-env, server/env-key-crypto, server/handlers, server/security-config, server/static, server/ws-host, +3 · ←피의존: server/index · 511줄
+  - →의존: cli/registry, engine, main/e2e, safety/approval-bridge, server/access-jwt, server/child-env, server/env-key-crypto, server/handlers, server/security-config, server/static, +4 · ←피의존: server/index · 538줄
 - **server/handlers**
   - →의존: engine, safety/approval-bridge, shared/transport/channels, shared/types, workspace/set-workspace · ←피의존: server/boot, server/ws-host · 136줄
 - **server/ws-host**
@@ -168,7 +168,7 @@
 - **cli/authHint**
   - →의존: cli/detect, shared/types · ←피의존: cli/probe, session/cli-session · 46줄
 - **cli/registry** — 각 AI 프로그램을 어떻게 부르고 어떤 명령어로 실행하는지 적어 둔 사용설명 목록이자 보관함 _클로드·코덱스·제미니 각각의 실행 명령어 이름, 버전 확인법, 프롬프트 전달 방식, 대화 이어가기·파일 직접 수정에 필요한 옵션을 한곳에 카드처럼 정리해 둔다. 새로운 AI를 나중에 목록에 추가하거나 이름으로 꺼내 쓸 수 있게 해 주는 보관함 역할도 한다._
-  - →의존: shared/cliAuthInstallMeta, shared/types · ←피의존: engine · 125줄
+  - →의존: shared/cliAuthInstallMeta, shared/types · ←피의존: engine, server/boot · 212줄
 - **cli/output** — AI가 쏟아낸 잡다한 출력에서 사람에게 보여줄 답변 글자만 골라내는 부품 _코덱스 같은 프로그램은 답변 말고도 시작 안내·생각 과정·토큰 사용량 같은 군더더기를 줄줄이 함께 뱉는데, 이 부품이 그중 진짜 답변 글자만 추려낸다. 또 답변이 한 글자씩 흘러나올 때(스트리밍) 각 줄에서 새로 추가된 글자 조각만 뽑아 화면에 실시간으로 이어 붙일 수 있게 하고, 대화를 이어가기 위한 세션 식별 번호도 찾아낸다._
   - →의존: shared/types · ←피의존: session/cli-session · 130줄
 
