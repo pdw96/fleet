@@ -1,0 +1,52 @@
+name: _artifact-roundtrip-check
+# 임시 라이브 검증: #205(upload-artifact v7.0.1) → #204(download-artifact v8.0.1) 라운드트립.
+# backlog-rerank.yml 의 rerank→post 결합(name:cloud-report 업로드 → path:report 다운로드 →
+# report/cloud-report.md 읽기)을 동일 SHA 로 재현해 v7↔v8 호환·경로 추출 동작을 실측한다.
+# 검증 후 즉시 제거(머지하지 않음). paths 필터로 이 파일 변경 시에만 트리거.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/_artifact-roundtrip-check.yml'
+permissions:
+  contents: read
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create canary artifact
+        run: echo "roundtrip-canary-${GITHUB_SHA}" > cloud-report.md
+      - name: Upload (upload-artifact@v7.0.1 — #205 SHA)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cloud-report
+          path: cloud-report.md
+          if-no-files-found: error
+  download:
+    needs: upload
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download (download-artifact@v8.0.1 — #204 SHA)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cloud-report
+          path: report
+      - name: Assert roundtrip (v7→v8, report/cloud-report.md 경로 보존)
+        run: |
+          REPORT="report/cloud-report.md"
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::download@v8 이 upload@v7 아티팩트를 report/ 로 추출하지 못함(경로 회귀)"
+            exit 1
+          fi
+          got="$(cat "$REPORT")"
+          echo "다운로드 내용: ${got}"
+          case "${got}" in
+            "roundtrip-canary-${GITHUB_SHA}")
+              echo "✓ upload@v7 → download@v8 라운드트립 OK · report/cloud-report.md 경로+내용 보존"
+              ;;
+            *)
+              echo "::error::내용 불일치(기대 roundtrip-canary-${GITHUB_SHA}): ${got}"
+              exit 1
+              ;;
+          esac
