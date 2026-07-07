@@ -65,7 +65,10 @@ export function createApprovalGate(opts: GateOptions = {}): ApprovalGate {
         decision = 'approved'
       } else if (opts.approver) {
         const o = await opts.approver(req, { signal: callOpts?.signal })
-        decision = o.approved ? 'approved' : 'rejected'
+        // fail-closed 최후방어선(#216 적대리뷰 P3): `=== true` 로 협착 — 비-boolean truthy(예: WS 프레임이
+        // 문자열 "false" 를 실어보내는 등)가 거부를 승인으로 뒤집지 못하게. decodeClientFrame 은 args 내용을
+        // 검증하지 않으므로(protocol) 승인 결정의 단일 초크포인트에서 boolean 을 강제한다.
+        decision = o.approved === true ? 'approved' : 'rejected'
         reason = o.reason
       } else {
         decision = 'rejected'

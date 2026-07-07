@@ -659,6 +659,54 @@ describe('runProject', () => {
     expect(ws.commits).toHaveLength(0)
   })
 
+  it('verify-fix apply-diff 승인 hold 중 signal abort → 즉시 거부·verify-fix 미keep(:936 signal·#216 §C-5·적대리뷰 P3)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const ipc = createIpcApprover({ send: vi.fn(), hasWindow: () => false, presencePolicy: 'hold' })
+    const gate = createApprovalGate({ autoApprove: ['safe', 'caution'], approver: ipc.approver })
+    const controller = new AbortController()
+    // collectDiff[0]=작업 경로(src/a.ts·비민감→게이트 스킵·keep) · [1]=verify-fix(.env·민감 destructive→hold gate).
+    const ws = fakeWorkspace([
+      { files: ['src/a.ts'], patch: '+a', truncated: false },
+      { files: ['.env'], patch: '+secret', truncated: false },
+    ])
+    const runP = runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 1,
+      gate,
+      signal: controller.signal,
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: false,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'x',
+          analysis: 'x',
+          durationMs: 1,
+        },
+      ],
+    })
+    // verify-fix apply-diff 승인 대기까지 도달(:936 미배선이면 abort 무해 → 영구 hang).
+    await vi.waitFor(() => expect(ipc.pendingCount()).toBe(1), { timeout: 2000 })
+    controller.abort() // :936 signal → approver {approved:false} → gate 'rejected'
+    await runP
+    expect(ipc.pendingCount()).toBe(0) // verify-fix 승인이 abort 로 즉시 해소(TTL hang 없음)
+    expect(ws.commits.some((c) => c.includes('verify-fix'))).toBe(false) // verify-fix 미keep(revert)
+  })
+
   it('continues dependent tasks when the dependency is accepted-with-warnings (#162 no cascade)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

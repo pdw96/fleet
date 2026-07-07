@@ -786,13 +786,13 @@ describe('runToolLoop — 취소 그래프 관통(#216 C1 §C-5·§3-14·15)', (
     expect(ipc.pendingCount()).toBe(1) // hold: 승인 대기 (:174 미배선이면 abort 무해 → 영구 hang)
     controller.abort()
     // :174 signal → 승인 approver {approved:false} → gate 'rejected' → tool_result "승인 거부됨"
-    // → 다음 이터레이션 상단 aborted break → for 종료 → ToolLoopExceededError(방어심층 fallback).
-    await expect(run).rejects.toThrow()
+    // → 다음 이터레이션 상단 aborted break → AbortError 종착(max-iteration 오분류 아님 · 적대리뷰 P3).
+    await expect(run).rejects.toThrow(expect.objectContaining({ name: 'AbortError' }))
     expect(ipc.pendingCount()).toBe(0) // 승인이 abort 로 해소됨(TTL hang 없음)
     expect(calls).toHaveLength(1) // 이터레이션 break: 두 번째 provider.chat 없음
   })
 
-  it('진입 시 이미 aborted → provider.chat 미호출(이터레이션 상단 break)', async () => {
+  it('진입 시 이미 aborted → provider.chat 미호출·AbortError(이터레이션 상단 break)', async () => {
     const { provider, calls } = scriptedProvider([
       { text: '끝', toolCalls: [], finishReason: 'stop' },
     ])
@@ -805,7 +805,7 @@ describe('runToolLoop — 취소 그래프 관통(#216 C1 §C-5·§3-14·15)', (
         { signal: controller.signal },
         { registry: createToolRegistry([dangerTool]), gate: approveAll },
       ),
-    ).rejects.toThrow()
+    ).rejects.toThrow(expect.objectContaining({ name: 'AbortError' }))
     expect(calls).toHaveLength(0) // 진입 aborted → 첫 provider.chat 도 없음
   })
 })

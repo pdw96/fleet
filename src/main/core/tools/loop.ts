@@ -228,6 +228,14 @@ export async function runToolLoop(
     turns.push({ role: 'user', content: results })
   }
 
+  // 취소로 이터레이션이 중단된 경우(위 방어심층 break) — max-iteration 오분류 대신 표준 취소 신호로
+  // 종착한다(#216 적대리뷰 P3). provider.chat 이 abort 를 던지는 정상 취소 경로와 동일한 AbortError 정체성
+  // 이라, 상위(api-session·streamedAsk)가 취소를 'max 반복 초과' 자원-오류로 오표시하지 않는다.
+  if (opts.signal?.aborted) {
+    const err = new Error('요청이 취소되었습니다.')
+    err.name = 'AbortError'
+    throw err
+  }
   // 가장 비싼 경로 — 그때까지 누적한 usage 를 에러에 실어 호출자가 집계하게 한다(미집계 방지).
   throw new ToolLoopExceededError(max, usageAcc)
 }

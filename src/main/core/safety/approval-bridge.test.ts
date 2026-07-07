@@ -129,6 +129,16 @@ describe('createIpcApprover — hold 정책(서버 원격 승인)', () => {
     expect(a.pendingCount()).toBe(1)
   })
 
+  // #3b list() 순수 필터 — 타이머 제거와 독립(불변식 ⑥·적대리뷰 P3 사문화 해소)
+  it('#3b list() 는 expiresAt<=now 인데 타이머 미발화(잔존) pending 을 순수 필터로 제외한다', () => {
+    const clock = fakeClock() // now=0
+    const { a } = holdApprover(clock)
+    void a.approver(req('past', 0)) // expiresAt=0 == now → delay 0 타이머 등록만(advance 전 미발화)
+    expect(a.pendingCount()).toBe(1) // 타이머 미발화 → 맵에 잔존
+    // 순수 필터: expiresAt(0) > now(0) 이 false → 제외. 필터가 없으면 만료 카드가 재하이드레이트에 노출된다.
+    expect(a.list()).toEqual([])
+  })
+
   // #4 TTL 만료 3연쇄
   it('#4 만료 → resolve {approved:false} · list 제거 · late resolve no-op · onWithdraw 1회', async () => {
     const clock = fakeClock()
@@ -317,20 +327,37 @@ describe('createIpcApprover — 취소 signal 배선(불변식 ②·리스너 �
     expect(a.pendingCount()).toBe(0)
   })
 
-  // #13 리스너 정리 전경로
-  it('#13 정상 resolve/만료/rejectAll 각각 후 리스너 잔존 0·정상 resolve 후 abort 재해소 0', async () => {
+  // #13 리스너 정리 전경로(resolve/만료/rejectAll 각각) — 적대리뷰 P3: 이전엔 resolve 경로만 검증했음
+  it('#13 resolve/만료/rejectAll 각 해소 후 removeEventListener·해소 후 abort 재해소·재withdraw 0', async () => {
     const clock = fakeClock()
     const withdrawn: string[] = []
     const { a } = holdApprover(clock, { onWithdraw: (id) => withdrawn.push(id) })
-    // 정상 resolve 후 abort → 재해소·재withdraw 없음
-    const ctrl = new AbortController()
-    const remove = vi.spyOn(ctrl.signal, 'removeEventListener')
-    const p = a.approver(req('1', 999_999), { signal: ctrl.signal })
-    a.resolve('1', true)
-    expect(await p).toEqual({ approved: true })
-    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function)) // 리스너 정리
-    ctrl.abort() // 정리됐으므로 재해소 없음
-    expect(withdrawn).toEqual(['1']) // resolve 시 1회만
+    // (1) 정상 resolve
+    const c1 = new AbortController()
+    const r1 = vi.spyOn(c1.signal, 'removeEventListener')
+    const p1 = a.approver(req('r', 999_999), { signal: c1.signal })
+    a.resolve('r', true)
+    expect(await p1).toEqual({ approved: true })
+    expect(r1).toHaveBeenCalledWith('abort', expect.any(Function))
+    c1.abort() // 정리됐으므로 재해소·재withdraw 없음
+    // (2) 만료
+    const c2 = new AbortController()
+    const r2 = vi.spyOn(c2.signal, 'removeEventListener')
+    const p2 = a.approver(req('e', 5_000), { signal: c2.signal })
+    clock.advance(5_000)
+    expect(await p2).toEqual({ approved: false })
+    expect(r2).toHaveBeenCalledWith('abort', expect.any(Function))
+    c2.abort()
+    // (3) rejectAll
+    const c3 = new AbortController()
+    const r3 = vi.spyOn(c3.signal, 'removeEventListener')
+    const p3 = a.approver(req('z', 999_999), { signal: c3.signal })
+    a.rejectAll()
+    expect(await p3).toEqual({ approved: false })
+    expect(r3).toHaveBeenCalledWith('abort', expect.any(Function))
+    c3.abort()
+    // 각 id onWithdraw 정확히 1회(해소 후 abort 재발화 없음)
+    expect(withdrawn.sort()).toEqual(['e', 'r', 'z'])
   })
 })
 

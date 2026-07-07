@@ -766,7 +766,9 @@ describe('access 모드 승인 hold(#216 C1 · C-6 supersede — presence-0 reje
       ws.on('message', (raw: WebSocket.RawData) => {
         const s = Array.isArray(raw)
           ? Buffer.concat(raw).toString('utf8')
-          : Buffer.from(raw as ArrayBuffer | Buffer).toString('utf8')
+          : Buffer.isBuffer(raw)
+            ? raw.toString('utf8')
+            : Buffer.from(raw).toString('utf8')
         if (s.includes('fleet:approval:withdrawn') && s.includes('appr-exp')) withdrawn.push(s)
       })
       const p = approver.approver(destructiveReq('appr-exp', start + 10_000))

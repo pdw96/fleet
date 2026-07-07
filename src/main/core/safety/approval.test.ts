@@ -100,4 +100,15 @@ describe('createApprovalGate', () => {
     expect(decided).toHaveLength(1)
     expect(decided[0]).toMatchObject({ decision: 'rejected', reason: 'pending-cap' })
   })
+
+  // ── C1(#216) 적대리뷰 P3 — fail-closed 최후방어선(boolean 협착) ──
+  it('비-boolean truthy approved(예: WS 프레임 문자열 "false")는 승인으로 뒤집히지 않고 거부된다', async () => {
+    const gate = createApprovalGate({
+      // decodeClientFrame 이 args 를 검증 안 하므로 문자열/객체 truthy 가 흘러들 수 있다(위협 모델).
+      approver: async () => ({ approved: 'false' as unknown as boolean }),
+    })
+    expect(
+      await gate.request({ kind: 'shell', summary: '', target: 'x', risk: 'destructive' }),
+    ).toBe('rejected')
+  })
 })
