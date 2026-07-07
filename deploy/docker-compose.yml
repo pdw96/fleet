@@ -81,6 +81,9 @@ services:
       FLEET_ACCESS_TEAM_DOMAIN: ${FLEET_ACCESS_TEAM_DOMAIN} # https://<team>.cloudflareaccess.com
       FLEET_ACCESS_AUD: ${FLEET_ACCESS_AUD} # Access application audience tag
       FLEET_PUBLIC_ORIGIN: ${FLEET_PUBLIC_ORIGIN} # https://fleet.<domain>
+      # 승인 보류 TTL(#216 C1) — presence=0(외출) 승인이 시한부로 보류되는 시간(ms). 미설정=600000(10분).
+      # 유효 [5000, 1800000](5초~30분)·범위 밖이면 boot fail-fast. "외출 중 폰 승인"은 응답 여유를 위해 상향 가능.
+      FLEET_APPROVAL_TTL_MS: ${FLEET_APPROVAL_TTL_MS:-600000}
       # CLI 내부 샌드박스 posture(#214 · ADR-0010) — 컨테이너 배포 기본 = container(codex danger-full-access
       # + --skip-git-repo-check: 비특권 컨테이너의 bwrap user-namespace 실패 회피). 운영자 override 허용
       # (=cli 롤백). 미지값 = 부팅 거부(loud fail) — 조용한 강등 아님. 코드 기본은 cli(데스크톱/베어호스트).
