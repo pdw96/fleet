@@ -2,8 +2,13 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentRole, ChatStreamEvent, OrchestratorEvent } from '../../shared/types'
-import { MAX_REPLAN_ROUNDS, MAX_CONCURRENCY } from '../../shared/types'
+import type {
+  AgentRole,
+  ApprovalRequest,
+  ChatStreamEvent,
+  OrchestratorEvent,
+} from '../../shared/types'
+import { APPROVAL_TIMEOUT_MS, MAX_REPLAN_ROUNDS, MAX_CONCURRENCY } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine, clampConcurrency } from './engine'
 import type { McpHost } from './mcp/types'
@@ -283,6 +288,36 @@ describe('FleetEngine', () => {
         rmSync(dir, { recursive: true, force: true })
       }
     }, 20_000)
+  })
+
+  describe('승인 TTL seam(#216 C1 · approvalTtlMs → gate expiresAt)', () => {
+    // gate.request 는 MCP spawn 승인(shell/destructive)에서 발화한다. capturing approver 가 거부(spawn 없음)하며
+    // 스탬프된 expiresAt-ts 를 관측한다(gate 는 동일 now() 로 ts·expiresAt 를 찍으므로 차이=ttlMs 정확).
+    const captureTtl = async (approvalTtlMs?: number): Promise<number> => {
+      let captured: ApprovalRequest | undefined
+      const engine = createFleetEngine({
+        approver: async (req) => {
+          captured = req
+          return { approved: false }
+        },
+        approvalTtlMs,
+      })
+      try {
+        await engine.setMcpServers([{ name: 'srv', command: 'x' }])
+      } finally {
+        await engine.dispose()
+      }
+      if (!captured) throw new Error('gate.request 가 발화하지 않음')
+      return captured.expiresAt - captured.ts
+    }
+
+    it('approvalTtlMs 주입 → expiresAt = ts + ttlMs', async () => {
+      expect(await captureTtl(123_456)).toBe(123_456)
+    })
+
+    it('approvalTtlMs 미주입 → 기본 60s(APPROVAL_TIMEOUT_MS)', async () => {
+      expect(await captureTtl()).toBe(APPROVAL_TIMEOUT_MS)
+    })
   })
 
   it('runs a full project flow through registered CLI sessions', async () => {

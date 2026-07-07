@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { LlmConnectionKind, OrchestratorEvent } from '../../../shared/types'
+import { createApprovalGate } from '../safety/approval'
+import { createIpcApprover } from '../safety/approval-bridge'
 import { createSessionManager } from '../session/manager'
 import type { LlmSession } from '../session/types'
 import { createMemoryStore } from '../store/memory'
@@ -620,6 +622,41 @@ describe('runProject', () => {
     expect(result.tasks[0].status).toBe('failed') // destructive 미승인 = hard-fail (accept-with-warnings 아님)
     expect(ws.commits).toHaveLength(0) // keep 없음
     expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
+  })
+
+  it('apply-diff 승인 hold 중 signal abort → 즉시 거부·rollback(:353 signal 관통·#216 §C-5)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE')) // apply-diff 거부로 미도달
+    // 실 gate + 실 approver('hold') — apply-diff 승인이 보류(abort/TTL 만 종착).
+    const ipc = createIpcApprover({ send: vi.fn(), hasWindow: () => false, presencePolicy: 'hold' })
+    const gate = createApprovalGate({ autoApprove: ['safe'], approver: ipc.approver })
+    const controller = new AbortController()
+    // 민감 파일(.env) → destructive → apply-diff 게이트 발화.
+    const ws = fakeWorkspace([{ files: ['.env'], patch: '+secret', truncated: false }])
+    const runP = runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 1,
+      gate,
+      signal: controller.signal,
+    })
+    // apply-diff 승인 대기까지 도달(:353 미배선이면 abort 무해 → 영구 hang).
+    await vi.waitFor(() => expect(ipc.pendingCount()).toBe(1), { timeout: 2000 })
+    controller.abort() // :353 signal → approver {approved:false} → gate 'rejected'
+    const result = await runP
+    expect(ipc.pendingCount()).toBe(0) // 승인이 abort 로 즉시 해소(TTL hang 없음)
+    expect(result.tasks[0].status).toBe('failed') // apply-diff 거부 → rollback + failed
+    expect(ws.commits).toHaveLength(0)
   })
 
   it('continues dependent tasks when the dependency is accepted-with-warnings (#162 no cascade)', async () => {

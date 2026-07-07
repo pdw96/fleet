@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { McpServerSpec } from '../../../shared/types'
+import { createApprovalGate } from '../safety/approval'
+import { createIpcApprover } from '../safety/approval-bridge'
 import { createMcpHost } from './host'
 import type { SpawnFn } from './types'
 
@@ -235,6 +237,8 @@ describe('createMcpHost', () => {
     await host.setServers([{ name: 'srv', command: 'node', args: ['s.js'] }])
     expect(request).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'shell', risk: 'destructive', target: 'node s.js' }),
+      // #216 C1: dispose signal 관통(2번째 인자). dispose 중 held approval 즉시 해소용.
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
 
@@ -247,6 +251,7 @@ describe('createMcpHost', () => {
     ])
     expect(request).toHaveBeenCalledWith(
       expect.objectContaining({ target: 'node s.js (cwd: /tmp/work) (env: SECRET)' }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
   })
 
@@ -326,6 +331,23 @@ describe('createMcpHost', () => {
     await Promise.all([p, d])
     expect(spawns).toEqual([]) // dispose 후라 spawn 안 함(좀비 방지)
     expect(host.tools()).toHaveLength(0)
+  })
+
+  it('held spawn 승인 중 dispose → release 없이 즉시 종료(disposeController abort · #216 스펙수정 #2)', async () => {
+    const { spawn, spawns } = fakeSpawn(echoReply)
+    // 실 gate + 실 approver('hold') — presence=0 이어도 spawn 승인이 보류된다(abort/TTL 만 종착).
+    const ipc = createIpcApprover({ send: vi.fn(), hasWindow: () => false, presencePolicy: 'hold' })
+    const gate = createApprovalGate({ autoApprove: ['safe'], approver: ipc.approver })
+    const host = createMcpHost({ spawn, gate })
+    const p = host.setServers([{ name: 'srv', command: 'x' }]) // gate(hold)에서 멈춤
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(ipc.pendingCount()).toBe(1) // spawn 승인 대기(hold)
+    // release 없이 dispose — disposeController.abort() 가 approver 를 {approved:false} 로 풀어 즉시 종착.
+    // (#216 스펙수정 #2 전엔 gate.request 가 signal 없이 호출돼 hold 가 TTL 까지 안 풀려 여기서 hang.)
+    await host.dispose()
+    await p
+    expect(spawns).toEqual([]) // 승인 거부(abort) → spawn 안 함
+    expect(ipc.pendingCount()).toBe(0) // held approval 해소됨(rejected)
   })
 
   it('dispose 는 진행 중 연결을 기다리기 전에 이미 연결된 자식을 먼저 닫는다', async () => {

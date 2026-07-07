@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { APPROVAL_MAX_PENDING, type ApprovalRequest } from '../../../shared/types'
+import { createApprovalGate } from './approval'
 import { createIpcApprover } from './approval-bridge'
 
 /**
@@ -330,5 +331,42 @@ describe('createIpcApprover — 취소 signal 배선(불변식 ②·리스너 �
     expect(remove).toHaveBeenCalledWith('abort', expect.any(Function)) // 리스너 정리
     ctrl.abort() // 정리됐으므로 재해소 없음
     expect(withdrawn).toEqual(['1']) // resolve 시 1회만
+  })
+})
+
+describe('취소 그래프 통합 관통 — 실 gate + 실 approver(hold) + signal (P1-1·§3-14)', () => {
+  // #14 3-seam end-to-end (mock-arg 확인 금지)
+  it('#14 gate.request(partial,{signal}) → pending → abort → gate "rejected"·approver {approved:false}·onWithdraw 1회·리스너 정리', async () => {
+    const clock = fakeClock()
+    const withdrawn: string[] = []
+    const ipc = createIpcApprover({
+      send: vi.fn(),
+      hasWindow: () => false, // presence=0 이어도 hold → 대기
+      presencePolicy: 'hold',
+      onWithdraw: (id) => withdrawn.push(id),
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    })
+    const gate = createApprovalGate({ approver: ipc.approver, now: clock.now, ttlMs: 600_000 })
+    const controller = new AbortController()
+    const remove = vi.spyOn(controller.signal, 'removeEventListener')
+    let decision: string | undefined
+    const p = gate
+      .request(
+        { kind: 'shell', summary: '', target: 'x', risk: 'destructive' },
+        { signal: controller.signal },
+      )
+      .then((d) => (decision = d))
+    await Promise.resolve()
+    expect(ipc.pendingCount()).toBe(1) // pending (hold)
+    controller.abort()
+    await p
+    // approver 는 throw/reject 가 아니라 {approved:false} 로 해소 → gate 는 'rejected' 결정 반환(예외 아님)
+    expect(decision).toBe('rejected')
+    expect(ipc.pendingCount()).toBe(0)
+    expect(withdrawn).toEqual([expect.any(String)]) // onWithdraw 1회(id=gate 생성 UUID)
+    expect(withdrawn).toHaveLength(1)
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function)) // 리스너 정리
   })
 })
