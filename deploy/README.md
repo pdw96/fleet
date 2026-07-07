@@ -159,6 +159,36 @@ Fleet 오케스트레이션 UI 를 열어 역할 DAG·승인 카드·라이브 �
 > / per-run worktree)는 Phase C** 다. 즉 B6 의 보장은 "서버 env 시크릿 격리"이지 "워크스페이스 명령의 cli-auth
 > 파일 접근 차단"이 아니다.
 
+### CLI 샌드박스 경계 — 컨테이너 unsandboxed posture (#214 · ADR-0010)
+
+비특권 컨테이너(uid 1000)는 **중첩 user namespace 생성을 불허**해, codex 가 파일 작업 시 만드는
+bubblewrap FS 샌드박스가 `bwrap: No permissions to create a new namespace` 로 깨진다(런이 "변경 0개"로
+실패). Fleet 은 **컨테이너를 유일한 샌드박스 경계로 신뢰**하고 컨테이너 모드에서 CLI 내부 샌드박스를 끈다:
+
+- **`FLEET_SANDBOX_BOUNDARY`** ∈ `cli`(코드 기본) | `container`(compose 기본). **명시 opt-in 만** —
+  자동 감지 없음(오판 방향이 보안 완화라). 그 외 값은 **부팅 거부(loud fail)**.
+- `container` = codex 를 `danger-full-access`(no-sandbox) + `--skip-git-repo-check`(신뢰-디렉터리 검사
+  통과)로 돌린다(headless·session·edit 전 경로 · CODEX_VERSION 0.142.5 실측 verdict). claude/gemini 는
+  내부 샌드박스가 opt-in 이라 무조정. headless 의 read-only 상실은 보안 경계가 아니라 **역할 규율**
+  (분석 역할의 파일 쓰기 차단) 상실이다(워크스페이스 무결성은 오케스트레이터 층이 별도 방어).
+- **데스크톱·베어호스트 무회귀** — 코드 기본이 `cli` 라 env 미설정 시 CLI 내부 샌드박스를 유지한다.
+
+**운영 롤백(재배포 불요):** `.env` 에 `FLEET_SANDBOX_BOUNDARY=cli` → 즉시 현행 posture 복귀(컨테이너선
+#214 이전 파손으로의 회귀일 뿐 신규 파손 아님).
+
+**부팅이 재시작 루프에 빠지면** — 오타 등 미지값이면 서버가 loud-fail 로 부팅을 거부한다(`restart:
+unless-stopped` 라 compose 가 재시작 루프를 돈다). `docker logs <fleet 컨테이너>` 에서
+`FLEET_SANDBOX_BOUNDARY` 메시지를 확인하고 값을 `cli`/`container` 로 교정한다.
+
+**문 ①(ttyd 인터랙티브 codex)** — cli-auth 볼륨이 `/home/node` 를 덮어 이미지에 구운 `~/.codex/config.toml`
+을 마스킹하므로, 터미널에서 직접 codex 로 파일을 편집하려면 셸 안에서 `~/.codex/config.toml` 에
+`sandbox_mode = "danger-full-access"` 를 수동 설정한다(문 ② fleet-server 자동 적용과 별개 · entrypoint
+시드는 후속 이슈).
+
+**CODEX_VERSION 상향 시** — 위 플래그(특히 resume 의 `--config sandbox_mode` 라우트·trust-dir 스코프)는
+핀 버전 컨테이너 실측 verdict 다(#214 T0). 버전을 올리면 컨테이너 안에서 재실측하고 `containerCliAdapters`
+(`src/main/core/cli/registry.ts`)를 갱신한다.
+
 ### 단일 인스턴스 전제
 
 - **`fleet-data` 는 서버(문 ②) 전용** — 데스크톱 Electron `userData` 와 **공유 금지**. JSON store 를 두 프로세스가
