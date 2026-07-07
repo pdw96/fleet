@@ -313,4 +313,22 @@ describe('ApprovalModal', () => {
       vi.useRealTimers()
     }
   })
+
+  // 적대리뷰 P3 — 비동기 카드 스왑 중 마우스 오승인 차단(pointerdown intent 가드)
+  it('withdrawn 로 카드가 스왑되면 조준하지 않은 다음 카드를 클릭이 오승인하지 않는다', () => {
+    const { fire, withdraw, respondApproval } = mockFleet()
+    renderModal()
+    fire({ ...REQ, id: 'A', summary: 'A작업' })
+    fire({ ...REQ, id: 'B', summary: 'B작업' })
+    const approve = screen.getByRole('button', { name: '승인' })
+    fireEvent.pointerDown(approve) // A 조준(current=A)
+    withdraw('A') // A 철회 → B 가 current 로 스왑
+    fireEvent.click(approve) // 클릭 — intent(A) ≠ current(B) → 무시
+    expect(respondApproval).not.toHaveBeenCalled() // B 오승인 없음
+    expect(screen.getByText('B작업')).toBeTruthy() // B 미결정·유지
+    // 재조준하면 B 정상 결정
+    fireEvent.pointerDown(screen.getByRole('button', { name: '승인' }))
+    fireEvent.click(screen.getByRole('button', { name: '승인' }))
+    expect(respondApproval).toHaveBeenCalledWith('B', true)
+  })
 })

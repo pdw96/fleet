@@ -49,6 +49,9 @@ export function ApprovalModal() {
   const [now, setNow] = useState(() => Date.now())
   // 철회된 id 집합(id=randomUUID 무재사용 → 영속 안전). 늦은 스냅숏의 이미-철회 id 부활 차단.
   const tombstone = useRef<Set<string>>(new Set())
+  // 마우스 오승인 가드(#216 적대리뷰 P3): pointerdown 시 조준한 카드 id 스냅숏. 비동기 스왑(withdrawn/만료
+  // prune)으로 눌렀다 뗀 사이 current 가 바뀌면 클릭을 무시 — 사용자가 읽지 않은 카드의 우발 결정 차단.
+  const pointerIntent = useRef<string | null>(null)
   const rejectRef = useRef<HTMLButtonElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
 
@@ -109,6 +112,11 @@ export function ApprovalModal() {
 
   const decide = (approved: boolean): void => {
     if (!current) return
+    // 마우스 결정 가드: pointerdown 시 조준한 id 와 현재 카드가 다르면(비동기 스왑) 이 클릭을 무시한다.
+    // 키보드(Escape)·프로그램 호출은 pointerIntent 미설정(null)이라 가드를 우회해 현재 카드에 작용(안전 방향).
+    const intent = pointerIntent.current
+    pointerIntent.current = null
+    if (intent !== null && intent !== current.id) return
     // 회신 유실(전송 단절)은 조용히 흡수 — main/server 의 승인 만료(fail-closed 자동 거부)가 권위라
     // 렌더러가 재시도하지 않는다. respond 는 이미 해소된 id 에 멱등 no-op.
     void window.fleet.respondApproval(current.id, approved).catch(() => undefined)
@@ -189,10 +197,19 @@ export function ApprovalModal() {
         </p>
         <div className="modal-actions">
           <span className="modal-countdown">{remaining}s 후 자동 거부</span>
-          <button ref={rejectRef} className="btn btn-danger" onClick={() => decide(false)}>
+          <button
+            ref={rejectRef}
+            className="btn btn-danger"
+            onPointerDown={() => (pointerIntent.current = current.id)}
+            onClick={() => decide(false)}
+          >
             거부
           </button>
-          <button className="btn" onClick={() => decide(true)}>
+          <button
+            className="btn"
+            onPointerDown={() => (pointerIntent.current = current.id)}
+            onClick={() => decide(true)}
+          >
             승인
           </button>
         </div>

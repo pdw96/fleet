@@ -762,20 +762,31 @@ describe('access 모드 승인 hold(#216 C1 · C-6 supersede — presence-0 reje
         token: await sign(),
       })
       await waitFor(() => server.clientCount() === 1)
-      const withdrawn: string[] = []
+      // 프레임을 파싱해 withdrawn push 프레임의 event payload 를 수집한다 — substring 매칭이 아니라 실제
+      // wire shape 를 핀해, event 를 {id} 객체로 래핑하는 회귀를 잡는다(스펙 §C-3 bare string 규약·적대리뷰 P3).
+      const withdrawn: unknown[] = []
       ws.on('message', (raw: WebSocket.RawData) => {
         const s = Array.isArray(raw)
           ? Buffer.concat(raw).toString('utf8')
           : Buffer.isBuffer(raw)
             ? raw.toString('utf8')
             : Buffer.from(raw).toString('utf8')
-        if (s.includes('fleet:approval:withdrawn') && s.includes('appr-exp')) withdrawn.push(s)
+        let frame: { ch?: string; event?: unknown }
+        try {
+          frame = JSON.parse(s) as { ch?: string; event?: unknown }
+        } catch {
+          return
+        }
+        if (frame.ch === 'fleet:approval:withdrawn') withdrawn.push(frame.event)
       })
       const p = approver.approver(destructiveReq('appr-exp', start + 10_000))
       expect(approver.pendingCount()).toBe(1)
       fc.advanceTo(start + 10_001) // 만료 → approver 타이머 발화 → resolve false + onWithdraw broadcast
       await expect(p).resolves.toEqual({ approved: false })
       await waitFor(() => withdrawn.length === 1) // 인증 소켓이 withdrawn 프레임 수신
+      // wire = bare string id(객체 래핑 금지 — 렌더러 onApprovalWithdrawn 콜백이 payload 직수신).
+      expect(typeof withdrawn[0]).toBe('string')
+      expect(withdrawn[0]).toBe('appr-exp')
       expect(approver.pendingCount()).toBe(0)
       ws.close()
     } finally {
