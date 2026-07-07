@@ -26,24 +26,36 @@ export type VerifyRunner = (
 ) => Promise<VerifyExecResult>
 
 /**
- * 기본 실행기: CLI 탐지·편집과 동일한 cross-spawn 기반 `defaultRunner`(`cli/detect`)에 위임한다.
- * raw `child_process.execFile('npm', …)` 은 Windows 에서 npm/eslint 가 `.cmd` 배치 셰임이라
- * ENOENT(셰임 미해석)·Node 20+ 의 `.cmd` 직접 spawn 차단(EINVAL)으로 깨졌다(win32 에서 verify
- * 가 항상 실패). `defaultRunner` 는 (a) PATHEXT 로 셰임을 해석하고 cmd.exe 경유 시 인자를 안전
- * 이스케이프하며, (b) 워크스페이스(custom cwd)에서 PATH-only 절대경로로 실행해 cwd-셰도(악성
- * `npm.cmd`)를 차단하고(#158), (c) timeout/abort/overflow 종료(트리 킬)를 단일 구현으로 공유한다.
- * `CommandResult` 는 `VerifyExecResult` 와 구조가 동일하다(code·stdout·stderr·spawnError).
+ * verify 러너 팩토리(#197-B6 T3). CLI 탐지·편집과 동일한 cross-spawn 기반 `defaultRunner`(`cli/detect`)에
+ * 위임한다 — raw `child_process.execFile('npm', …)` 은 Windows 에서 npm/eslint 가 `.cmd` 배치 셰임이라
+ * ENOENT/EINVAL 로 깨지므로(win32 verify 상시 실패), `defaultRunner` 가 (a) PATHEXT 셰임 해석 + cmd.exe
+ * 인자 이스케이프, (b) PATH-only 절대경로 실행으로 cwd-셰도 차단(#158), (c) timeout/abort/overflow 트리
+ * 킬을 단일 구현으로 공유한다(`CommandResult` 구조는 `VerifyExecResult` 와 동일).
+ *
+ * `baseEnv` 를 주면 검증 자식(워크스페이스 npm 스크립트)에 그 env 를 적용해 서버 시크릿(FLEET_*)이
+ * 상속되지 않게 한다. **미주입이면 현행처럼 부모 env 를 상속**(무회귀). 서버 모드에서 boot/engine 이
+ * childEnv.base 를 주입한다. verify 는 provider 키가 불필요하므로 base 만.
  */
-export const defaultVerifyRunner: VerifyRunner = (cmd, timeoutMs, signal) => {
-  // 이미 abort 된 신호면 위임 전에 단락한다 — defaultRunner 의 pre-abort 가드는 win32+cwd 경로
-  // 에만 있어 POSIX 에선 자식이 먼저 spawn 된다(이전 execFile 은 전 플랫폼에서 pre-aborted 면
-  // 자식 미시작). cancelRun 으로 한 단계가 abort 되면 runAllVerifications 가 같은 신호로 호출하는
-  // 나머지 lint/test 가 잠깐 npm 을 띄우지 않게 한다(전 플랫폼 일관; Codex P2).
-  if (signal?.aborted) {
-    return Promise.resolve({ code: null, stdout: '', stderr: '', spawnError: 'ABORTED' })
+export function createVerifyRunner(baseEnv?: () => NodeJS.ProcessEnv): VerifyRunner {
+  return (cmd, timeoutMs, signal) => {
+    // 이미 abort 된 신호면 위임 전에 단락한다 — defaultRunner 의 pre-abort 가드는 win32+cwd 경로
+    // 에만 있어 POSIX 에선 자식이 먼저 spawn 된다(이전 execFile 은 전 플랫폼에서 pre-aborted 면
+    // 자식 미시작). cancelRun 으로 한 단계가 abort 되면 runAllVerifications 가 같은 신호로 호출하는
+    // 나머지 lint/test 가 잠깐 npm 을 띄우지 않게 한다(전 플랫폼 일관; Codex P2).
+    if (signal?.aborted) {
+      return Promise.resolve({ code: null, stdout: '', stderr: '', spawnError: 'ABORTED' })
+    }
+    return defaultRunner(cmd.command, cmd.args, {
+      timeoutMs,
+      cwd: cmd.cwd,
+      signal,
+      env: baseEnv?.(),
+    })
   }
-  return defaultRunner(cmd.command, cmd.args, { timeoutMs, cwd: cmd.cwd, signal })
 }
+
+/** 기본 verify 러너 — env 미지정(현행 상속). 서버 격리는 createVerifyRunner(baseEnv) 로 주입. */
+export const defaultVerifyRunner: VerifyRunner = createVerifyRunner()
 
 /** 실패 출력에서 대표 에러 라인 추출 (간단 분석, 요구사항 5). */
 export function summarizeFailure(stdout: string, stderr: string): string {

@@ -37,13 +37,19 @@ import { createCliSession } from './session/cli-session'
 import { anySignal } from './session/abort'
 import { createSessionManager, type SessionManager } from './session/manager'
 import { createMcpHost } from './mcp/host'
+import { createDefaultSpawn } from './mcp/stdio'
 import type { McpHost } from './mcp/types'
 import { createToolRegistry } from './tools/registry'
 import { createWorkspaceReadTools } from './tools/workspace-tools'
 import { createMemoryStore } from './store/memory'
 import type { Store } from './store/types'
-import { npmVerifyCommands, runAllVerifications, type VerifyRunner } from './verify/run'
-import { createWorkspace, type GitRunner } from './workspace/git'
+import {
+  createVerifyRunner,
+  npmVerifyCommands,
+  runAllVerifications,
+  type VerifyRunner,
+} from './verify/run'
+import { createGitRunner, createWorkspace, type GitRunner } from './workspace/git'
 import type { SecretCrypto } from './secret/types'
 
 /**
@@ -100,6 +106,13 @@ export interface FleetEngineOptions {
   verifyRunner?: VerifyRunner
   /** git 실행기 주입(테스트용). 기본은 child_process 기반 defaultGitRunner. */
   gitRunner?: GitRunner
+  /**
+   * 자식 env 격리(#197-B6). 주입 시 엔진이 spawn 하는 전 자식에 카테고리별 env 를 적용한다:
+   * detect·verify·git = `base()`(런타임 최소), CLI 세션 실행·**probe(실 auth 왕복)** = `cliSession()`(base + provider 키).
+   * **미주입이면 현행처럼 부모 env 를 상속**(데스크톱 무회귀). 서버 모드에서 boot 이 createChildEnv(env) 주입.
+   * 코어 순수성 유지를 위해 구조적 인라인 타입만 받는다(server 의 child-env 모듈 import 금지).
+   */
+  childEnv?: { base(): NodeJS.ProcessEnv; cliSession(): NodeJS.ProcessEnv }
   /** MCP 호스트 주입(테스트용). 기본은 stdio 기반 createMcpHost. */
   mcpHost?: McpHost
   /** 시크릿(apiKey) 암복호화 백엔드. 미주입 시 API 세션 미영속(현행 동작). main 이 safeStorage 어댑터 주입. */
@@ -188,6 +201,24 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   // 주입이 없으면 타임아웃·재시도를 갖춘 기본 HTTP 를 쓴다(네트워크 무한 대기/일시 오류 방어).
   const http = opts.http ?? createResilientHttp(defaultHttp, { timeoutMs: LLM_HTTP_TIMEOUT_MS })
   const runner = opts.runner ?? defaultRunner
+  // 자식 env 격리(#197-B6): 주입된 childEnv 로 카테고리별 env 를 적용한 러너를 파생한다. 미주입이면 래핑
+  // 없이 현행 runner(부모 env 상속). 호출자가 명시 opts.env 를 넘긴 경우(미래)는 존중(`o.env ??`).
+  // 4번째 인자(onStdout)를 반드시 전파해야 CLI 세션 스트리밍이 유지된다.
+  const childEnv = opts.childEnv
+  const cliRunner: CommandRunner = childEnv
+    ? (c, a, o, s) => runner(c, a, { ...o, env: o.env ?? childEnv.cliSession() }, s)
+    : runner
+  const baseRunner: CommandRunner = childEnv
+    ? (c, a, o, s) => runner(c, a, { ...o, env: o.env ?? childEnv.base() }, s)
+    : runner
+  // ⚠️ load-bearing 보안 배선(#197-B6 · 적대리뷰 CONFIRMED#2): verify/git 형제 자식도 서버 시크릿(FLEET_*)을
+  // 상속하지 않게 base env 를 적용한다(provider 키 불요·명시 주입 우선). 이 `childEnv ?` 분기를 제거하면
+  // 서버 모드에서 verify(워크스페이스 npm 스크립트)·git 훅이 FLEET_SECRET_KEY 를 재상속한다(P1 유출 재발).
+  // env 격리 자체는 createVerify/GitRunner 팩토리 실-spawn 테스트가 검증(verify/run.test.ts·git.test.ts).
+  const effectiveVerifyRunner =
+    opts.verifyRunner ?? (childEnv ? createVerifyRunner(() => childEnv.base()) : undefined)
+  const effectiveGitRunner =
+    opts.gitRunner ?? (childEnv ? createGitRunner(() => childEnv.base()) : undefined)
   // Task 4(영속 register)·Task 5(복원 decrypt)에서 사용된다.
   const secretCrypto = opts.secretCrypto ?? NOOP_CRYPTO
 
@@ -202,19 +233,26 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   })
   // MCP 호스트: 외부 MCP 서버의 도구를 FleetTool 로 노출한다(setMcpServers 로 연결).
   // gate 를 주입해 새 서버 spawn(임의 로컬 프로세스 실행)이 승인 게이트를 통과하게 한다(안전 우선).
-  const mcpHost = opts.mcpHost ?? createMcpHost({ onAudit: appendAudit, gate })
+  // MCP 자식은 임의 사용자 구성 프로세스라 base env 만 준다(#197-B6 T4 — provider 키는 spec.env 로만).
+  const mcpHost =
+    opts.mcpHost ??
+    createMcpHost({
+      onAudit: appendAudit,
+      gate,
+      spawn: childEnv ? createDefaultSpawn(() => childEnv.base()) : undefined,
+    })
   // 워크스페이스는 런타임에 바꿀 수 있다(렌더러에서 선택). null 이면 파일 기록/검증 비활성.
   let workspaceDir: string | null = opts.workspaceDir ?? null
   // 진행 중 실행: projectId → AbortController. project.created 에서 등록, project.done 에서 해제.
   const activeRuns = new Map<string, AbortController>()
   const currentWorkspace = () =>
-    workspaceDir ? createWorkspace(workspaceDir, opts.gitRunner) : undefined
+    workspaceDir ? createWorkspace(workspaceDir, effectiveGitRunner) : undefined
   const currentVerify = (signal?: AbortSignal) => {
     const dir = workspaceDir
     return dir
       ? () =>
           runAllVerifications(npmVerifyCommands(dir), {
-            runner: opts.verifyRunner,
+            runner: effectiveVerifyRunner,
             timeoutMs: VERIFY_TIMEOUT_MS,
             signal,
           })
@@ -356,7 +394,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       capabilities: input.capabilities ?? seedCapabilities(input.adapterId),
     }
     sessions.add(
-      createCliSession(descriptor, adapter, runner, undefined, { stateful: input.stateful }),
+      createCliSession(descriptor, adapter, cliRunner, undefined, { stateful: input.stateful }),
     )
     return descriptor
   }
@@ -476,7 +514,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
 
   return {
     detectClis() {
-      return detectAll(cliRegistry.list(), runner)
+      return detectAll(cliRegistry.list(), baseRunner)
     },
 
     probeCli(adapterId) {
@@ -486,7 +524,11 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const existing = activeProbes.get(adapterId)
       if (existing) return existing.promise
       const controller = new AbortController()
-      const promise = probeCliAuth(adapter, runner, controller.signal).finally(() => {
+      // probe 는 detect(--version)와 달리 실 모델 왕복으로 **인증**을 확인하므로, 실제 CLI 세션과 동일한
+      // cliSession env(base + provider 키)로 돌려야 한다. base 로 돌리면 API-키 인증 CLI 사용자의 연결 테스트가
+      // 세션은 성공하는데 probe 만 auth 오탐하는 비대칭이 생긴다(Codex PR P2). probe 대상은 신뢰 바이너리(등록
+      // 어댑터)라 provider 키 노출은 CLI 세션과 동급 — 신규 유출 아님.
+      const promise = probeCliAuth(adapter, cliRunner, controller.signal).finally(() => {
         activeProbes.delete(adapterId)
       })
       activeProbes.set(adapterId, { promise, controller })
@@ -666,7 +708,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const makeEditSession =
         mc > 1 && editAdapter != null
           ? // 편집 세션은 항상 stateless(cli-session.ts:34-35) — stateful 옵션 불필요.
-            () => createCliSession(implDescriptor!, editAdapter, runner)
+            () => createCliSession(implDescriptor!, editAdapter, cliRunner)
           : undefined
 
       // 이 실행 전용 취소 컨트롤러. project.created 에서 projectId 와 상관시켜 등록한다.

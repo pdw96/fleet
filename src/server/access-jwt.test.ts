@@ -24,14 +24,15 @@ async function sign(
     sub?: string | null
     iss?: string
     aud?: string
-    exp?: string | number
+    exp?: string | number | null
     nbf?: number
   } = {},
 ): Promise<string> {
   let b = new SignJWT({}).setProtectedHeader({ alg: 'RS256', kid: KID })
   if (opts.sub !== null) b = b.setSubject(opts.sub ?? 'user-abc-123')
   b = b.setIssuer(opts.iss ?? ISSUER).setAudience(opts.aud ?? AUD)
-  b = b.setExpirationTime(opts.exp ?? '2h')
+  // exp: null → exp 클레임 생략(T6 fail-closed 검증용). 그 외 기본 '2h'.
+  if (opts.exp !== null) b = b.setExpirationTime(opts.exp ?? '2h')
   if (opts.nbf !== undefined) b = b.setNotBefore(opts.nbf)
   return b.sign(opts.key ?? privateKey)
 }
@@ -52,8 +53,26 @@ beforeAll(async () => {
 
 describe('createAccessJwtVerifier — Cloudflare Access JWT 서버 자체 검증(#197 B5 T4)', () => {
   it('유효 토큰 → { identity: sub }', async () => {
-    await expect(verifier.verify(await sign({ sub: 'user-abc-123' }))).resolves.toEqual({
+    // #197-B6 T6: 반환에 expiresAtMs 가 추가돼 exact-equal 이 깨지므로 toMatchObject 로 완화(테스트 더블 핀).
+    await expect(verifier.verify(await sign({ sub: 'user-abc-123' }))).resolves.toMatchObject({
       identity: 'user-abc-123',
+    })
+  })
+
+  // #197-B6 T6 — 소켓 exp-시한 종료의 기반: verifier 가 expiresAtMs 를 반환하고, exp 부재/비유한수는
+  // fail-closed(401). jose 는 exp 를 기본 미강제(context7 확인)라 requiredClaims:['exp']+수동 체크 이중방어.
+  describe('exp fail-closed + expiresAtMs(#197-B6 T6)', () => {
+    it('유효 미래 exp → { identity, expiresAtMs } (exp*1000)', async () => {
+      const exp = nowSec() + 3600
+      const res = await verifier.verify(await sign({ exp }))
+      expect(res.identity).toBe('user-abc-123')
+      expect(res.expiresAtMs).toBe(exp * 1000)
+    })
+
+    it('exp 부재 토큰 → AccessJwtError kind=invalid(requiredClaims + 수동 체크)', async () => {
+      await expect(verifier.verify(await sign({ exp: null }))).rejects.toMatchObject({
+        kind: 'invalid',
+      })
     })
   })
 

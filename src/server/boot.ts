@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
@@ -6,7 +6,9 @@ import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type RawData } from 'ws'
 import type { AppInfo } from '../shared/types'
+import { createChildEnv, type ChildEnv } from './child-env'
 import { createFleetEngine } from '../main/core/engine'
+import { containerCliAdapters, createCliRegistry } from '../main/core/cli/registry'
 import { createIpcApprover, type IpcApprover } from '../main/core/safety/approval-bridge'
 import { createJsonFileStore } from '../main/core/store/json-file'
 import { isE2EActive, resolveE2eRunner, resolveE2eVerifyRunner, seedE2eFixtures } from '../main/e2e'
@@ -18,6 +20,16 @@ import { createStaticHandler } from './static'
 import { createNonceStore, type NonceStore } from './ws-nonce'
 import { createWsHost, type WsHost } from './ws-host'
 
+/**
+ * 소켓 exp-시한 종료(#197-B6 T6)용 시계 — 주입 가능(테스트 결정론). 핸들은 불투명(setTimeout 반환을
+ * clearTimeout 에 그대로 전달). 미주입 시 실 Date.now + globalThis.setTimeout(unref) 를 쓴다.
+ */
+export interface SocketExpiryClock {
+  now(): number
+  setTimeout(fn: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+
 /** 테스트 전용 주입(운영 env 표면 0) — 실 JWKS/네트워크 없이 secured 통합 검증. */
 export interface BootDeps {
   /** access 모드 JWKS getKey 주입(미주입 시 createRemoteJWKSet — 프로덕션). */
@@ -26,6 +38,8 @@ export interface BootDeps {
   onSecurityReject?: (stage: SecurityRejectStage, reason: string) => void
   /** 승인 presence 검증용 approver 핸들 노출(테스트 — in-flight 승인 주입/관측). */
   onApprover?: (approver: IpcApprover) => void
+  /** 소켓 exp 타이머 구동 시계(테스트 — 주입 clock 으로 만료 결정론 검증). 미주입 시 실 타이머. */
+  clock?: SocketExpiryClock
 }
 
 type AccessJwtVerifierOptionsJwks = Parameters<typeof createAccessJwtVerifier>[0]['jwks']
@@ -39,6 +53,29 @@ type SecurityRejectStage = 'nonce' | 'upgrade'
  */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 const DEFAULT_PORT = 8791
+/** Node setTimeout 최대 지연(2^31-1 ms ≈ 24.8일). 초과 지연은 즉시 발화(1ms 클램프)하므로 재무장한다. */
+const TIMEOUT_MAX = 2_147_483_647
+
+/** 기본 소켓 exp 시계 — 실 Date.now + globalThis 타이머(unref 로 프로세스 미붙듦). */
+const defaultClock: SocketExpiryClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => {
+    const t = setTimeout(fn, ms)
+    t.unref?.()
+    return t
+  },
+  clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+}
+
+/**
+ * 서버 모드 자식 env 정책(#197-B6 T7) — 엔진에 주입할 ChildEnv 를 boot 의 env 로부터 만든다. allowlist
+ * 로 서버 시크릿(FLEET_*)을 제거하므로, boot 이 받은 시크릿 env 를 그대로 넘겨도 자식(CLI 세션·detect/
+ * probe·MCP·verify·git)엔 안 간다. boot 은 엔진 내부 러너/spawn 을 미노출하므로 실 자식 미수신의 권위
+ * 증명은 T3 실 spawn·T10 컨테이너 스모크·라이브 5종에 위임하고, 여기서는 정책(팩토리)만 고정한다.
+ */
+export function buildServerChildEnv(env: NodeJS.ProcessEnv): ChildEnv {
+  return createChildEnv(env)
+}
 
 /**
  * CSWSH 방어(#197 B3 · Codex P1): 브라우저는 WS 핸드셰이크에 SOP/CORS 를 적용하지 않으므로 사용자가
@@ -172,6 +209,24 @@ export function resolvePort(env: NodeJS.ProcessEnv): number {
   return port
 }
 
+/** 샌드박스 경계 posture(#214 C1) — 코어엔 미노출(엔진은 registry 데이터만 받는다). 주입 배선은 T3. */
+export type SandboxBoundary = 'cli' | 'container'
+
+/**
+ * CLI 내부 샌드박스를 컨테이너 경계로 대체할지 판정(#214 · ADR-0010). **명시 opt-in 만** — 자동 감지
+ * 금지(감지 오판 방향이 보안 완화). 미설정 = `cli`(현행 유지 → 데스크톱·베어호스트 무회귀). 그 외 값은
+ * **부팅 거부(loud fail)** — resolveBindHost 이중 게이트 관례와 동일(조용한 강등 금지). trim 후 소문자
+ * exact 만(대문자·유사값은 오타 개연 → throw). 형제 파싱 관례(`?.trim()`)를 따른다(FLEET_DATA_DIR 예외 제외).
+ */
+export function resolveSandboxBoundary(env: NodeJS.ProcessEnv): SandboxBoundary {
+  const raw = env['FLEET_SANDBOX_BOUNDARY']?.trim()
+  if (!raw) return 'cli'
+  if (raw === 'cli' || raw === 'container') return raw
+  throw new Error(
+    `FLEET_SANDBOX_BOUNDARY 값이 유효하지 않음: "${raw}" (유효값: cli | container · 미설정=cli)`,
+  )
+}
+
 /** 번들(out/server)·소스(src/server) 양쪽에서 레포/설치 루트의 package.json version 을 읽는다. */
 function readOwnVersion(): string {
   try {
@@ -206,6 +261,8 @@ export async function bootServer(
 ): Promise<RunningServer> {
   // 보안 모드 판정 — 부분 설정은 여기서 fail-fast(store mkdir 등 모든 부수효과 이전).
   const securityConfig = resolveSecurityConfig(env)
+  // 샌드박스 경계 판정(#214 C1) — 미지값이면 여기서 loud-fail(모든 부수효과 이전).
+  const sandboxBoundary = resolveSandboxBoundary(env)
   const host = resolveBindHost(env, securityConfig)
   const port = resolvePort(env)
   const e2e = isE2EActive(env)
@@ -216,6 +273,12 @@ export async function bootServer(
     throw new Error(`FLEET_WORKSPACE_ROOT 가 디렉터리가 아님: ${workspaceRoot}`)
   }
   const dataDir = resolve(env['FLEET_DATA_DIR'] ?? 'fleet-data')
+  // 세션/이벤트/암호문이 담기는 데이터 디렉터리를 store 생성보다 **먼저** 0700 으로 잠근다(#197-B6 T5) —
+  // 동일 호스트 타 사용자의 접근 차단. createJsonFileStore 가 recursive mkdir 로 부모를 기본 mode 로 만들기
+  // 전에 선생성해야 하고, 기존 디렉터리는 recursive mkdir 이 mode 를 안 바꾸므로 chmod 로 보정한다.
+  // win32 는 POSIX mode 가 무의미하므로 스킵(CI linux 가 mode 를 강제 커버).
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') chmodSync(dataDir, 0o700)
   const store = createJsonFileStore(join(dataDir, 'fleet'))
 
   // wsHost 는 engine 콜백보다 늦게 만들어진다 — 브로드캐스트는 조립 완료 후에만 유효(부팅 중 이벤트 무해 drop).
@@ -242,6 +305,15 @@ export async function bootServer(
     approver: ipcApprover.approver,
     runner: e2e ? resolveE2eRunner(env) : undefined,
     verifyRunner: e2e ? resolveE2eVerifyRunner(env) : undefined,
+    // 자식 env 격리(#197-B6 T7): 서버 시크릿(FLEET_*)이 CLI 세션·detect/probe·MCP·verify·git 자식에 안 새게
+    // allowlist 필터된 env 를 주입한다. boot 이 받은 env(운영=process.env)를 넘겨도 자식엔 base/provider 만 간다.
+    childEnv: buildServerChildEnv(env),
+    // 샌드박스 경계 주입(#214 C3 · ADR-0010) — container 모드에서만 container-posture 어댑터로 시드한
+    // registry 를 넘긴다(codex danger-full-access + skip). cli/미설정은 undefined → 엔진이 기본 시드
+    // (createCliRegistry())로 폴백(데스크톱·베어호스트 바이트 동일). **이 줄이 삭제되면 컨테이너에서 codex
+    // 가 다시 bwrap(user namespace)로 깨진다(전 테스트 GREEN 무신호) — boot-sandbox-seam.test 가 핀한다.**
+    cliRegistry:
+      sandboxBoundary === 'container' ? createCliRegistry(containerCliAdapters()) : undefined,
     secretCrypto,
   })
   if (e2e) seedE2eFixtures(engine)
@@ -273,6 +345,7 @@ export async function bootServer(
     deps.onSecurityReject ??
     ((stage, reason) => console.warn(`fleet-server: 보안 거부 stage=${stage} reason=${reason}`))
   const originAllowed = makeOriginAllowed(securityConfig)
+  const clock = deps.clock ?? defaultClock
   const nonceStore = createNonceStore()
   const accessVerifier: AccessJwtVerifier | null =
     securityConfig.mode === 'access'
@@ -311,28 +384,64 @@ export async function bootServer(
   // 직접 받아 nonce 선소모→Origin→JWT→바인딩 순으로 게이팅한 소켓만 handleUpgrade→attach 한다.
   const wss = new WebSocketServer({ noServer: true })
 
-  wss.on('connection', (socket) => {
+  wss.on('connection', (socket, _req, expiresAtMs?: number) => {
+    // 소켓 error 리스너를 **모든 경로 이전에** 선부착한다 — 리스너 부재 시 Node 가 프로세스를 종료(#197 B3 ·
+    // Codex P2). 특히 아래 attach-시점-만료 early-close 도 error 없이 close 를 시도하므로, malformed 프레임/전송
+    // 오류가 그 소켓에 방출되면 크래시할 수 있다(적대리뷰 CONFIRMED#1). onGone 은 attach 후 handleSocketGone 로
+    // 교체돼 presence 정리까지 포함하고, attach 전엔 no-op 이라 조기 close 경로도 안전하다.
+    let onGone = (): void => {}
+    socket.on('error', () => {
+      onGone()
+      try {
+        socket.close()
+      } catch {
+        /* 이미 닫힘 */
+      }
+    })
+    // 소켓 exp-시한 종료(#197-B6 T6): access 모드에서 검증된 JWT 의 exp 도달 시 소켓을 닫는다. attach
+    // 시점에 이미 만료(exp<=now)면 소켓을 유지하지 않는다 — attach 이전에 close 해 presence(clientCount)
+    // 오염·rejectAll 오발을 막는다. loopback 은 exp 무관(handshake-only B3/B4 시맨틱).
+    const hasExpiry = securityConfig.mode === 'access' && expiresAtMs !== undefined
+    if (hasExpiry && expiresAtMs - clock.now() <= 0) {
+      socket.close()
+      return
+    }
     const binding = wsHost!.attach({
       send: (data) => socket.send(data),
       close: () => socket.close(),
     })
+    let expTimer: unknown
     // close·error 공통 정리 — 인증 클라이언트가 0 이 되는 순간(access 한정) outstanding 승인 즉시 reject.
     // 검증 통과 소켓만 attach 되므로 clientCount = 인증 클라 수(presence 오염 없음). loopback 은 타임아웃
     // 시맨틱 유지(rejectAll 미호출 — B3/B4 하위호환·T1 핀). rejectAll 은 pending 0 이면 no-op(멱등).
+    // exp 타이머는 여기서 반드시 clear — 닫힌 소켓이 만료 시각까지 타이머 클로저를 붙들거나 이중 close 하지 않게.
     const handleSocketGone = (): void => {
+      if (expTimer !== undefined) {
+        clock.clearTimeout(expTimer)
+        expTimer = undefined
+      }
       binding.onClose()
       if (securityConfig.mode === 'access' && wsHost!.clientCount() === 0) {
         ipcApprover.rejectAll()
       }
     }
+    onGone = handleSocketGone // 선부착 error 리스너가 이제 presence 정리까지 포함
+    // exp 타이머 무장 — 지연이 Node TIMEOUT_MAX(≈24.8일)를 넘으면 즉시 발화(1ms 클램프)하므로 clamp 후
+    // 재무장(arm 재귀)한다. 장수명 Access 토큰이 접속 직후 닫혀 재접속 루프에 빠지지 않게(오버플로 방지).
+    if (hasExpiry) {
+      const arm = (): void => {
+        const remaining = expiresAtMs - clock.now()
+        if (remaining <= 0) {
+          socket.close()
+          return
+        }
+        expTimer = clock.setTimeout(arm, Math.min(remaining, TIMEOUT_MAX))
+      }
+      arm()
+    }
     socket.on('message', (data) => binding.onMessage(rawDataToString(data)))
     socket.on('close', handleSocketGone)
-    socket.on('error', () => {
-      // 소켓 error(비정상 프레임/전송 오류) 리스너 부재 시 Node 가 프로세스를 종료(#197 B3 · Codex P2) —
-      // 바인딩 정리(+presence 전이) 후 해당 소켓만 종료(다른 연결 무영향).
-      handleSocketGone()
-      socket.close()
-    })
+    // error 리스너는 위에서 선부착됨(onGone=handleSocketGone 로 승격) — 여기서 재부착하지 않는다.
   })
 
   /** 검증 실패 — 401 상태줄 write 후 소켓 파괴 + 관측 로그 1줄(stage/reason 코드만 · 토큰/nonce 값 금지). */
@@ -346,8 +455,14 @@ export async function bootServer(
     socket.destroy()
   }
 
-  const acceptUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+  // expiresAtMs: access 모드에서 검증된 JWT exp(ms) — connection 핸들러의 소켓 exp 타이머 근거(#197-B6 T6).
+  const acceptUpgrade = (
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    expiresAtMs?: number,
+  ): void => {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, expiresAtMs))
   }
 
   async function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
@@ -369,8 +484,11 @@ export async function bootServer(
     if (!record) return rejectUpgrade(socket, 'nonce-invalid')
     if (!originAllowed(origin)) return rejectUpgrade(socket, 'origin')
     let identity: string
+    let expiresAtMs: number
     try {
-      identity = (await accessVerifier!.verify(extractAccessToken(req) ?? '')).identity
+      const verified = await accessVerifier!.verify(extractAccessToken(req) ?? '')
+      identity = verified.identity
+      expiresAtMs = verified.expiresAtMs // exp 부재/비유한수는 verify 가 이미 fail-closed(여기 도달=유한값)
     } catch {
       return rejectUpgrade(socket, 'jwt')
     }
@@ -379,7 +497,7 @@ export async function bootServer(
       return rejectUpgrade(socket, 'binding')
     }
     if (socket.destroyed) return // async 검증 도중 파괴됐으면 중단
-    acceptUpgrade(req, socket, head)
+    acceptUpgrade(req, socket, head, expiresAtMs)
   }
 
   httpServer.on('upgrade', (req, socket, head) => {

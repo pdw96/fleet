@@ -1,9 +1,16 @@
-import { mkdtempSync } from 'node:fs'
+import { chmodSync, mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import WebSocket, { type RawData } from 'ws'
-import { bootServer, resolveBindHost, resolvePort, type RunningServer } from './boot'
+import {
+  bootServer,
+  buildServerChildEnv,
+  resolveBindHost,
+  resolvePort,
+  resolveSandboxBoundary,
+  type RunningServer,
+} from './boot'
 import type { SecurityConfig } from './security-config'
 import type { IpcApprover } from '../main/core/safety/approval-bridge'
 import type { ApprovalRequest } from '../shared/types'
@@ -58,6 +65,116 @@ describe('resolvePort', () => {
   })
   it.each(['abc', '-1', '65536', '3.5'])('위반(%s) → throw', (v) => {
     expect(() => resolvePort({ FLEET_PORT: v })).toThrow()
+  })
+})
+
+describe('resolveSandboxBoundary — 환경-인지 샌드박스 경계(#214 C1)', () => {
+  // 미설정/빈/공백 = cli 기본 → 데스크톱·베어호스트 서버 무회귀(현행 CLI 내부 샌드박스 유지).
+  it.each([undefined, '', '   '])('미설정/빈/공백(%o) → cli 기본', (v) => {
+    expect(resolveSandboxBoundary({ FLEET_SANDBOX_BOUNDARY: v })).toBe('cli')
+  })
+  it('키 자체 부재 → cli', () => {
+    expect(resolveSandboxBoundary({})).toBe('cli')
+  })
+  // trim 후 소문자 exact 만 유효값. 공백 감싼 값은 trim 통과.
+  it.each(['cli', 'container', ' container ', ' cli '])('유효값(%o) → trim 후 정상', (v) => {
+    expect(resolveSandboxBoundary({ FLEET_SANDBOX_BOUNDARY: v })).toBe(v.trim())
+  })
+  // 그 외 전부 loud-fail(조용한 강등 금지). 대문자·유사값 포함 — 소문자 exact 아님 → throw.
+  // 메시지에 env 이름 + 수신값(진단) 포함.
+  it.each(['CONTAINER', 'Container', 'CLI', 'docker', '1', 'true', 'both', 'container-mode'])(
+    '미지값(%s) → throw(env 이름·수신값 포함)',
+    (v) => {
+      expect(() => resolveSandboxBoundary({ FLEET_SANDBOX_BOUNDARY: v })).toThrow(
+        /FLEET_SANDBOX_BOUNDARY/,
+      )
+      expect(() => resolveSandboxBoundary({ FLEET_SANDBOX_BOUNDARY: v })).toThrow(
+        new RegExp(v.trim()),
+      )
+    },
+  )
+})
+
+describe('resolveSandboxBoundary fail-fast — 부수효과 이전 부팅 거부(#214 C1)', () => {
+  it('미지값 → 부팅 거부 + dataDir 미생성(mkdirSync 이전 throw)', async () => {
+    // 중첩 미존재 경로 — throw 가 mkdirSync 보다 앞서면 이 경로가 만들어지지 않는다.
+    const dataDir = join(mkdtempSync(join(tmpdir(), 'fleet-214-')), 'sub', 'data')
+    await expect(
+      bootServer({ FLEET_SANDBOX_BOUNDARY: 'bogus', FLEET_DATA_DIR: dataDir, FLEET_PORT: '0' }),
+    ).rejects.toThrow(/FLEET_SANDBOX_BOUNDARY/)
+    expect(statSync(dataDir, { throwIfNoEntry: false })).toBeUndefined()
+  })
+})
+
+describe('buildServerChildEnv — boot 자식 env 정책(#197-B6 T7)', () => {
+  // boot 이 엔진에 주입하는 childEnv 팩토리. boot 은 엔진 runner/mcp spawn 을 미노출하므로 여기서 정책만
+  // 고정하고(서버 시크릿 FLEET_* 를 자식 base·cliSession 에서 제거), 실 자식 미수신의 권위 증명은 T3 실
+  // spawn·T10 컨테이너 스모크·라이브 5종에 위임한다(정직 프레이밍).
+  const env = {
+    FLEET_SECRET_KEY: 's',
+    FLEET_ACCESS_AUD: 'a',
+    FLEET_PUBLIC_ORIGIN: 'o',
+    PATH: '/b',
+    ANTHROPIC_API_KEY: 'k',
+  }
+
+  it('base()·cliSession() 이 서버 시크릿(FLEET_*)을 제거한다', () => {
+    const ce = buildServerChildEnv(env)
+    expect(ce.base().FLEET_SECRET_KEY).toBeUndefined()
+    expect(ce.base().FLEET_ACCESS_AUD).toBeUndefined()
+    expect(ce.cliSession().FLEET_SECRET_KEY).toBeUndefined()
+    expect(ce.cliSession().FLEET_PUBLIC_ORIGIN).toBeUndefined()
+  })
+
+  it('base 는 provider 키 없이·cliSession 은 provider 키 포함·둘 다 PATH 통과', () => {
+    const ce = buildServerChildEnv(env)
+    expect(ce.base().PATH).toBe('/b')
+    expect(ce.base().ANTHROPIC_API_KEY).toBeUndefined()
+    expect(ce.cliSession().PATH).toBe('/b')
+    expect(ce.cliSession().ANTHROPIC_API_KEY).toBe('k')
+  })
+})
+
+describe('fleet-data 0700(#197-B6 T5)', () => {
+  const bootWithData = (dataDir: string) =>
+    bootServer({ FLEET_PORT: '0', FLEET_DATA_DIR: dataDir, FLEET_E2E: '1' })
+
+  it.skipIf(process.platform === 'win32')(
+    '신규 dataDir 을 0700 으로 생성한다(createJsonFileStore 이전 선생성)',
+    async () => {
+      // 중첩 미존재 경로 — recursive 생성 + 정확 0700 강제(기본 umask mode 아님) 검증.
+      const dataDir = join(mkdtempSync(join(tmpdir(), 'fleet-t5-')), 'sub', 'data')
+      const server = await bootWithData(dataDir)
+      try {
+        expect(statSync(dataDir).mode & 0o777).toBe(0o700)
+      } finally {
+        await server.close()
+      }
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    '기존 느슨한 권한 dataDir 을 0700 으로 보정한다(recursive mkdir 은 기존 mode 미변경)',
+    async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), 'fleet-t5-loose-'))
+      chmodSync(dataDir, 0o755)
+      const server = await bootWithData(dataDir)
+      try {
+        expect(statSync(dataDir).mode & 0o777).toBe(0o700)
+      } finally {
+        await server.close()
+      }
+    },
+  )
+
+  it('win32 에서도 부팅에 성공한다(chmod no-op — POSIX 조건 가드)', async () => {
+    const dataDir = join(mkdtempSync(join(tmpdir(), 'fleet-t5-win-')), 'data')
+    const server = await bootWithData(dataDir)
+    try {
+      expect(server.port).toBeGreaterThan(0)
+    } finally {
+      await server.close()
+    }
   })
 })
 

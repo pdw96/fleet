@@ -1,15 +1,19 @@
-# Fleet 웹터미널 스택 (Phase A · #195)
+# Fleet 배포 스택 (Phase A #195 · Phase B #197)
 
 > **Part of #193** (v3 터널 셀프호스트). 설계 근거: `docs/fleet-saas-infra-plan-v3.html` §4·§7·§8·§10 ·
 > `docs/adr/0008-saas-전환-v3-터널-셀프호스트-채택.md`.
 
-**"어디서든 브라우저로 `claude` 를 친다"** 를 **Fleet 코드 변경 0** 으로 먼저 가동하는 스택이다.
-컨테이너에서 `claude`/`codex`/`gemini` 를 데스크톱과 똑같이 라이브 대화하고, 폰 화면이 꺼지거나 탭을
-닫아도 tmux 세션이 살아있어 재접속하면 이어서 본다. 동시에 터널·인증·컨테이너 운영을 실전 검증해
-Phase B(전송층 IPC→WS)의 기반 unknown 을 줄인다.
+**두 개의 문**을 셀프호스트로 연다:
 
-이 스택은 **문 ① 웹터미널** 만이다. **문 ② Fleet 오케스트레이션**(fleet-server·전송층·승인 카드)은
-Phase B 이며 이 디렉터리에 `fleet` 서비스로 추가된다.
+- **문 ① 웹터미널**(Phase A · #195) — "어디서든 브라우저로 `claude` 를 친다". 컨테이너에서
+  `claude`/`codex`/`gemini` 를 데스크톱과 똑같이 라이브 대화하고, 폰 화면이 꺼지거나 탭을 닫아도 tmux
+  세션이 살아있어 재접속하면 이어서 본다.
+- **문 ② Fleet 오케스트레이션**(Phase B · #197 — `fleet` 서비스) — 브라우저에서 Fleet 오케스트레이션
+  UI(역할 DAG·승인 카드·라이브 진행)를 연다. 코어 엔진·renderer·승인 게이트는 데스크톱과 동일하고
+  **전송층만** Electron IPC→WebSocket 으로 교체했다. 헤드리스 `fleet-server` 로 구동한다.
+
+두 문은 같은 워크스페이스·같은 cli-auth 로그인을 공유하되, `fleet-data`(서버 store·이벤트·암호문)는
+**문 ②에만** 마운트된다. 자세한 문 ② 설정은 「문 ② Fleet 오케스트레이션 서버」 절 참조.
 
 ---
 
@@ -17,21 +21,24 @@ Phase B 이며 이 디렉터리에 `fleet` 서비스로 추가된다.
 
 ```
 deploy/
-  docker-compose.yml          ttyd + cloudflared(tunnel 프로파일)
+  docker-compose.yml          ttyd + fleet + cloudflared(tunnel 프로파일)
   .env.example                환경 변수 (→ .env 로 복사)
-  webterminal/
+  webterminal/                문 ① 웹터미널
     Dockerfile                node:24-bookworm-slim + CLI 3종(고정) + git + ttyd + tmux, 비특권 node
     entrypoint.sh             tmux eager-start + ttyd(-W -O) exec
     tmux.conf                 세션 영속·모바일 사용성 (/etc/tmux.conf 로 탑재)
+  fleet/                      문 ② 오케스트레이션 서버 (#197-B6)
+    Dockerfile                멀티스테이지(빌드→런타임) · CLI 3종(고정) + git + 서버 번들, 비특권 node
   cloudflared/
     config.example.yml        로컬 관리 터널 예시(대안 — 기본은 토큰 기반)
-  smoke.sh                    로컬 불변식 검증(터널/폰/로그인 불요)
+  smoke.sh                    로컬 불변식 검증(터널/폰/로그인 불요 · 두 문 모두)
 ```
 
-| 서비스        | 이미지                          | 역할                         | 마운트                          |
-| ------------- | ------------------------------- | ---------------------------- | ------------------------------- |
-| `ttyd`        | 로컬 빌드 `fleet-webterminal`   | 웹터미널(PTY→WebSocket)+tmux | **workspace + cli-auth 만**     |
-| `cloudflared` | `cloudflare/cloudflared:2026.6.1` | 터널 사이드카(토큰·무상태)   | **없음**(볼륨·소켓 모두 미마운트) |
+| 서비스        | 이미지                          | 역할                                | 마운트                                   |
+| ------------- | ------------------------------- | ----------------------------------- | ---------------------------------------- |
+| `ttyd`        | 로컬 빌드 `fleet-webterminal`   | 문 ① 웹터미널(PTY→WebSocket)+tmux   | **workspace + cli-auth 만**              |
+| `fleet`       | 로컬 빌드 `fleet-server`        | 문 ② 오케스트레이션 서버(엔진+WS+정적) | **fleet-data + cli-auth + workspace**    |
+| `cloudflared` | `cloudflare/cloudflared:2026.6.1` | 터널 사이드카(토큰·무상태)          | **없음**(볼륨·소켓 모두 미마운트)         |
 
 ---
 
@@ -114,6 +121,97 @@ _(#195 완료항목: 마운트 범위 문서화)_
 
 ---
 
+## 문 ② Fleet 오케스트레이션 서버 (Phase B · #197-B6) <a id="fleet-server"></a>
+
+`fleet` 서비스 = 코어 엔진 + renderer 정적 서빙 + WebSocket 전송층을 헤드리스로 구동한다. 폰/브라우저에서
+Fleet 오케스트레이션 UI 를 열어 역할 DAG·승인 카드·라이브 진행을 본다.
+
+### 설정
+
+1. **`.env`** — 문 ② access 3종 + 시크릿을 채운다(`.env.example` 참조):
+   - `FLEET_ACCESS_TEAM_DOMAIN=https://<team>.cloudflareaccess.com` · `FLEET_ACCESS_AUD=<Access 앱 audience tag>`
+     · `FLEET_PUBLIC_ORIGIN=https://fleet.<도메인>` — **셋 다 있어야** `FLEET_HOST=0.0.0.0` 부팅이 통과한다
+     (미완비면 loud-fail — 조용한 loopback 강등이 아니라 명시적 부팅 거부 = 이중 게이트).
+   - `FLEET_SECRET_KEY=<base64 32B>` — API 키 디스크 영속 암호화(AES-256-GCM env-key). 미설정 시 API 키는
+     영속되지 않는다(라이브 세션만 유지 · 구독 CLI 는 cli-auth 볼륨이라 무영향). ⚠️ 시크릿 — 커밋 금지.
+2. **터널 ingress** — 대시보드 > Networks > Tunnels > (터널) > **Public Hostname** 추가: Subdomain=`fleet`(예),
+   Service=**`http://fleet:8791`**(compose 서비스명 — `localhost` 아님). 그리고 **Access > Applications** 에
+   `fleet.<도메인>` 을 Self-hosted 앱으로 추가 + 본인 이메일 Include + **MFA 필수**.
+   `FLEET_ACCESS_AUD` 는 그 앱 상세의 **Application Audience (AUD) Tag** 다.
+3. **기동** — `docker compose --env-file .env --profile tunnel up -d --build` (문 ①·②·터널 함께).
+
+### 자식 프로세스 시크릿 격리 (#197-B6)
+
+서버가 spawn 하는 자식(**CLI 세션·detect/probe·MCP stdio·verify·git**)에 서버 시크릿(`FLEET_SECRET_KEY`·
+`FLEET_ACCESS_*` 등 전 `FLEET_*`)이 상속되지 않도록 **allowlist** 로 env 를 필터한다(코드층 `src/server/child-env.ts`):
+
+- **런타임 base** = `PATH`·`HOME`·로케일·프록시·win32 이식 등 최소. `FLEET_*` 자동 배제·`NODE_OPTIONS`
+  의도적 배제(preload 주입 벡터). **detect(--version)·MCP stdio·verify·git** 은 이것만.
+- **CLI 세션 + probe** = base + provider 자격/구성 키(`ANTHROPIC_*`·`OPENAI_*`·`GOOGLE_*` 계열). probe(연결
+  테스트)는 실 모델 왕복으로 **인증**을 확인하므로 세션과 같은 provider env 를 받는다(안 그러면 API-키 인증 CLI 의
+  연결 테스트가 오탐). MCP 자식엔 **provider 키 부재**(임의 사용자 프로세스라 `spec.env` 가 명시적 per-server escape hatch).
+
+> **⚠️ 워크스페이스 명령 격리 경계 (env ≠ 파일 격리).** 위 allowlist 는 **서버 env 시크릿(FLEET_\*)** 이 자식에
+> 안 새게 한다. 그러나 `verify` 스크립트(워크스페이스 `npm` 스크립트)·`git` 훅은 컨테이너 사용자(uid node)와
+> **같은 파일시스템 뷰**로 실행되므로 `HOME`(cli-auth 마운트 `/home/node`) 하위 자격파일을 **절대경로/`getpwuid`
+> 로 읽을 수 있다** — env 필터로는 안 닫힌다. Phase B 위협모델(**단일 사용자·단일 인스턴스**)에선 워크스페이스와
+> cli-auth 가 **동일 주체**라 자기 자격 읽기는 신규 exfil 이 아니나, **완전한 파일 격리(별도 uid / RO cli-auth 마운트
+> / per-run worktree)는 Phase C** 다. 즉 B6 의 보장은 "서버 env 시크릿 격리"이지 "워크스페이스 명령의 cli-auth
+> 파일 접근 차단"이 아니다.
+
+### CLI 샌드박스 경계 — 컨테이너 unsandboxed posture (#214 · ADR-0010)
+
+비특권 컨테이너(uid 1000)는 **중첩 user namespace 생성을 불허**해, codex 가 파일 작업 시 만드는
+bubblewrap FS 샌드박스가 `bwrap: No permissions to create a new namespace` 로 깨진다(런이 "변경 0개"로
+실패). Fleet 은 **컨테이너를 유일한 샌드박스 경계로 신뢰**하고 컨테이너 모드에서 CLI 내부 샌드박스를 끈다:
+
+- **`FLEET_SANDBOX_BOUNDARY`** ∈ `cli`(코드 기본) | `container`(compose 기본). **명시 opt-in 만** —
+  자동 감지 없음(오판 방향이 보안 완화라). 그 외 값은 **부팅 거부(loud fail)**.
+- `container` = codex 를 `danger-full-access`(no-sandbox) + `--skip-git-repo-check`(신뢰-디렉터리 검사
+  통과)로 돌린다(headless·session·edit 전 경로 · CODEX_VERSION 0.142.5 실측 verdict). claude/gemini 는
+  내부 샌드박스가 opt-in 이라 무조정. headless 의 read-only 상실은 보안 경계가 아니라 **역할 규율**
+  (분석 역할의 파일 쓰기 차단) 상실이다(워크스페이스 무결성은 오케스트레이터 층이 별도 방어).
+- **데스크톱·베어호스트 무회귀** — 코드 기본이 `cli` 라 env 미설정 시 CLI 내부 샌드박스를 유지한다.
+
+**운영 롤백(재빌드 불요):** `.env` 에 `FLEET_SANDBOX_BOUNDARY=cli` 를 설정한 뒤
+`docker compose --env-file .env --profile tunnel up -d`(`--build` 불요)로 fleet 컨테이너를 recreate 하면
+현행 posture 로 복귀한다(컨테이너선 #214 이전 파손으로의 회귀일 뿐 신규 파손 아님). ⚠️ `.env` 편집만으론
+이미 기동 중인 컨테이너의 env 가 안 바뀐다 — env 반영은 `up -d`(config-drift 감지 → recreate)가 필요하다.
+
+**부팅이 재시작 루프에 빠지면** — 오타 등 미지값이면 서버가 loud-fail 로 부팅을 거부한다(`restart:
+unless-stopped` 라 compose 가 재시작 루프를 돈다). `docker logs <fleet 컨테이너>` 에서
+`FLEET_SANDBOX_BOUNDARY` 메시지를 확인하고 값을 `cli`/`container` 로 교정한다.
+
+**문 ①(ttyd 인터랙티브 codex)** — cli-auth 볼륨이 `/home/node` 를 덮어 이미지에 구운 `~/.codex/config.toml`
+을 마스킹하므로, 터미널에서 직접 codex 로 파일을 편집하려면 셸 안에서 `~/.codex/config.toml` 에
+`sandbox_mode = "danger-full-access"` 를 수동 설정한다(문 ② fleet-server 자동 적용과 별개 · entrypoint
+시드는 후속 이슈).
+
+**CODEX_VERSION 상향 시** — 위 플래그(특히 resume 의 `--config sandbox_mode` 라우트·trust-dir 스코프)는
+핀 버전 컨테이너 실측 verdict 다(#214 T0). 버전을 올리면 컨테이너 안에서 재실측하고 `containerCliAdapters`
+(`src/main/core/cli/registry.ts`)를 갱신한다.
+
+### 단일 인스턴스 전제
+
+- **`fleet-data` 는 서버(문 ②) 전용** — 데스크톱 Electron `userData` 와 **공유 금지**. JSON store 를 두 프로세스가
+  동시에 쓰면 손상된다(파일 store 는 단일 writer 전제).
+- **workspace root 하나 = Fleet 인스턴스 하나.** 다중 인스턴스·다중 사용자는 Phase B 전체 비범위.
+- **"런 중 workspace 변경 거부" 는 UI 가드일 뿐** — 진짜 per-run 격리(worktree)는 **Phase C**. 현재는 한 워크스페이스를
+  순차 런이 공유한다.
+
+### 잔여 리스크 (문서화)
+
+- **cli-auth RW 공유** — 문 ①·② 가 같은 `cli-auth` 볼륨을 RW 로 공유한다(#195 실측: 동시 사용 간섭 미관측).
+  refresh 로테이션 경합(특히 gemini `oauth_creds.json` 토큰 갱신마다 rewrite)은 이론적 잔여 — 신호 시 문 ② 쪽만
+  RO 마운트 또는 세션별 사본으로 분리(v3 §7 후속).
+- **소켓 수명 중 토큰 만료** — access 모드는 handshake 시 검증한 JWT 의 `exp` 를 소켓에 기록해 **만료 시각에 서버가
+  소켓을 닫는다**(#197-B6 · #209 이관). 주기 JWKS 재검증 대신 exp-시한 종료를 택한 이유: Access 는 세션 철회를
+  토큰 만료로 표현하고, 만료 전 키 롤오버는 다음 handshake 가 흡수한다. **관리자가 토큰 만료 전 세션을 revoke 하면
+  그 소켓엔 즉시 반영되지 않는다**(다음 handshake 에서 차단) — 이 잔여는 수용한다. 클라이언트는 재접속(nonce
+  재발급 → 신선한 CF 쿠키/JWT)으로 자동 복구한다.
+
+---
+
 ## 결정 기록 ① — ttyd vs code-server <a id="ttyd-vs-code-server"></a>
 
 _(#195 완료항목)_ **채택: ttyd + tmux.** 기준별 비교:
@@ -180,22 +278,36 @@ _(#195 완료항목 — 방법론. 실제 측정은 구독 로그인이 있는 �
 bash deploy/smoke.sh
 ```
 
-검증: (1) CLI 3종+ttyd+tmux 존재, (2) 비특권 uid=1000, (3) ttyd HTTP 200 서빙, (4) tmux 세션이
+검증 — **문 ①**: (1) CLI 3종+ttyd+tmux 존재, (2) 비특권 uid=1000, (3) ttyd HTTP 200 서빙, (4) tmux 세션이
 클라이언트 0 에서도 생존, (5) 마운트 = workspace+cli-auth 만·Docker 소켓·fleet-data 미마운트.
-`SMOKE_PORT=nnnn` 로 로컬 포트 변경 가능.
+**문 ②**(#197-B6): (10) fleet 이미지 비특권·이미지 env 시크릿 부재·CLI 3종/git/curl 존재, (11) 컨테이너
+기동(loopback)·정적 200·**fleet-data 0700**·uid 1000, (12) compose 불변식(fleet ports 미공개·fleet-data 는
+fleet 서비스만·docker.sock 미마운트), (13) 컨테이너 브라우저 런-완주는 라이브 5종 위임(명시).
+`SMOKE_PORT=nnnn` 로 로컬 포트 변경 가능. **Linux/WSL2 에서 실행**(win32 Git Bash 는 경로 마운트 미지원).
 
 ---
 
 ## 라이브 완료 체크리스트 <a id="live-checklist"></a>
 
-이 스택으로 사용자가 라이브 환경에서 마무리할 항목(#195 완료 정의 중 실측이 필요한 것):
+사용자가 라이브 환경에서 마무리할 항목:
+
+**문 ① 웹터미널(#195):**
 
 - [ ] 폰 브라우저에서 `terminal.<도메인>` 접속(Access 인증) → `claude` 대화 성공
 - [ ] 탭 닫기/화면 끄기 후 재접속 시 tmux 세션 그대로 복귀(진행 중 화면 유지)
 - [ ] CLI 로그인 볼륨 동시 세션 간섭 실측 → **#195 코멘트**에 기록 (위 절차)
 
-_(제공됨: 이미지·compose·터널/Access 설정·결정 기록·로컬 스모크. 위 3개는 실제 Cloudflare 계정·구독
-로그인·폰이 있어야 하므로 사용자 환경에서 수행한다.)_
+**문 ② Fleet 오케스트레이션(#197-B6 · #193 게이트 ④):**
+
+- [ ] 터널 실배포 → 폰 브라우저에서 `fleet.<도메인>` 접속(Access 실로그인) → 오케스트레이션 UI 로드
+- [ ] 세션 등록(CLI/API) → 라이브 목록 반영
+- [ ] 목표 입력 → 런 완주(역할 DAG 진행·산출물 검증까지)
+- [ ] 승인 카드 fail-closed — 인증 클라 0 전이(탭 닫기) 시 outstanding 승인이 즉시 거부됨
+- [ ] 재접속 복구 — 탭 닫기/토큰 만료 후 재접속 시 nonce 재발급으로 자동 복구·스냅샷 재하이드레이션
+
+_(제공됨: 이미지·compose·터널/Access 설정·자식 격리·결정 기록·로컬 스모크. 위 라이브 항목은 실제
+Cloudflare 계정·구독 로그인·폰이 있어야 하므로 사용자 환경에서 수행한다. 컨테이너 브라우저 런-완주 스모크는
+host 네트워킹+playwright 가 필요해 이 라이브 5종이 실경로를 대체한다 — 사일런트 캡 아님.)_
 
 ---
 

@@ -453,6 +453,207 @@ describe('access 모드 upgrade 파이프라인(#197 B5 T7 · 게이트 ⑤)', (
   })
 })
 
+// ── T6: 소켓 exp-시한 종료 하네스(주입 clock ⟂ jose 실clock) ────────────────────
+// jose 는 실 Date.now 로 exp 를 검증하므로 토큰 exp 는 실시간 미래로 서명한다. 소켓 종료 타이머만 주입
+// clock 이 결정론으로 구동한다(setTimeout 실스케줄 없이 advanceTo 로 발화). 핸들 = 타이머 객체.
+function fakeClock(startMs: number) {
+  let current = startMs
+  const timers: Array<{ fn: () => void; at: number; cleared: boolean }> = []
+  const clock = {
+    now: () => current,
+    setTimeout: (fn: () => void, ms: number) => {
+      const t = { fn, at: current + ms, cleared: false }
+      timers.push(t)
+      return t
+    },
+    clearTimeout: (h: unknown) => {
+      if (h && typeof h === 'object' && 'cleared' in h) (h as { cleared: boolean }).cleared = true
+    },
+  }
+  const advanceTo = (ms: number): void => {
+    current = ms
+    for (;;) {
+      const due = timers.find((t) => !t.cleared && t.at <= current)
+      if (!due) break
+      due.cleared = true
+      due.fn() // 재무장(re-arm) 시 새 timer 가 push 되어 루프가 재수집
+    }
+  }
+  return { clock, advanceTo, activeCount: () => timers.filter((t) => !t.cleared).length }
+}
+
+describe('access 모드 소켓 exp-시한 종료(#197-B6 T6)', () => {
+  // 유효 미래 exp: 주입 clock now()=start 기준 delay=expiresAtMs-start(양수). jose 는 실 Date.now 로 통과.
+  const futureExpSec = (start: number, aheadSec: number) => Math.floor(start / 1000) + aheadSec
+
+  it('미래 exp → 만료 시각 도달 시 서버가 소켓을 닫는다', async () => {
+    const start = Date.now()
+    const fc = fakeClock(start)
+    const server = await bootAccess({ deps: { clock: fc.clock } })
+    try {
+      const exp = futureExpSec(start, 100)
+      const ws = await connectLive(server.port, {
+        nonce: await getNonce(server.port, { token: await sign({ exp }) }),
+        origin: PUBLIC_ORIGIN,
+        token: await sign({ exp }),
+      })
+      await waitFor(() => server.clientCount() === 1)
+      fc.advanceTo(exp * 1000 + 1) // exp 초과 → 타이머 발화 → socket.close()
+      await waitFor(() => server.clientCount() === 0)
+      expect(server.clientCount()).toBe(0)
+      ws.terminate()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('attach 시점 이미 만료(exp<=now) → 소켓 미유지(presence 오염 없음)', async () => {
+    // jose 통과를 위해 exp 는 실시간 아주 근접 미래(2s)로 서명하되, 주입 clock now() 를 그 exp 이후로
+    // 세팅해 attach 시점 delay<=0 을 만든다(연결은 되나 attach 이전 close).
+    const start = Date.now()
+    const exp = Math.floor(start / 1000) + 2
+    const fc = fakeClock(exp * 1000 + 5000) // now() 를 exp 이후로
+    const server = await bootAccess({ deps: { clock: fc.clock } })
+    try {
+      await tryWsConnect(server.port, {
+        nonce: await getNonce(server.port, { token: await sign({ exp }) }),
+        origin: PUBLIC_ORIGIN,
+        token: await sign({ exp }),
+      })
+      // attach 이전 close 라 presence 미증가. 잠깐 안정화 후 0 확인.
+      await new Promise((r) => setTimeout(r, 50))
+      expect(server.clientCount()).toBe(0)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('attach-시점-만료 early-close 소켓의 전송 오류가 서버를 죽이지 않는다(적대리뷰 CONFIRMED#1)', async () => {
+    // early-close 경로도 connection 핸들러 최상단의 error 리스너를 받아야 한다 — 없으면 CLOSING 중 malformed
+    // 프레임(receiverOnError)이 리스너 부재로 unhandledException → 프로세스 종료(self-DoS).
+    const start = Date.now()
+    const exp = Math.floor(start / 1000) + 2
+    const fc = fakeClock(exp * 1000 + 5000) // attach 시점 이미 만료
+    const server = await bootAccess({ deps: { clock: fc.clock } })
+    try {
+      const ws = makeWs(server.port, {
+        nonce: await getNonce(server.port, { token: await sign({ exp }) }),
+        origin: PUBLIC_ORIGIN,
+        token: await sign({ exp }),
+      })
+      // open 즉시(서버 early-close 진행 중) unmasked 프레임을 흘려 서버측 파서 error 를 유도(RFC 6455 위반).
+      ws.on('open', () => {
+        try {
+          const raw = (ws as unknown as { _socket?: { write(b: Buffer): void } })._socket
+          raw?.write(Buffer.from([0x81, 0x01, 0x41]))
+        } catch {
+          /* 이미 닫힘 */
+        }
+      })
+      await new Promise((r) => setTimeout(r, 200))
+      // 서버 생존 증거 — 이후 정상 접속이 성공한다(early-close 소켓 error 로 죽었다면 이 프로세스 자체가 죽어 도달 불가).
+      await expect(
+        tryWsConnect(server.port, {
+          nonce: await getNonce(server.port, { token: await sign() }),
+          origin: PUBLIC_ORIGIN,
+          token: await sign(),
+        }),
+      ).resolves.toBe('allowed')
+      ws.terminate()
+    } finally {
+      await server.close()
+    }
+  }, 15_000)
+
+  it('exp 전 소켓 close → 타이머 clear(재발화·이중 close 없음)', async () => {
+    const start = Date.now()
+    const fc = fakeClock(start)
+    const server = await bootAccess({ deps: { clock: fc.clock } })
+    try {
+      const exp = futureExpSec(start, 100)
+      const ws = await connectLive(server.port, {
+        nonce: await getNonce(server.port, { token: await sign({ exp }) }),
+        origin: PUBLIC_ORIGIN,
+        token: await sign({ exp }),
+      })
+      await waitFor(() => server.clientCount() === 1)
+      ws.close() // exp 전 클라 종료 → handleSocketGone 이 타이머 clear
+      await waitFor(() => server.clientCount() === 0)
+      expect(fc.activeCount()).toBe(0) // 타이머 잔류 없음
+      fc.advanceTo(exp * 1000 + 1) // 발화해도 재close 없음(clear 됨)
+      expect(server.clientCount()).toBe(0)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('exp - now > TIMEOUT_MAX → 즉시 close 없이 clamp+re-arm(장수명 토큰)', async () => {
+    const start = Date.now()
+    const fc = fakeClock(start)
+    const server = await bootAccess({ deps: { clock: fc.clock } })
+    try {
+      const exp = futureExpSec(start, 30 * 24 * 3600) // 30일(=delay>TIMEOUT_MAX 2147483647ms)
+      const ws = await connectLive(server.port, {
+        nonce: await getNonce(server.port, { token: await sign({ exp }) }),
+        origin: PUBLIC_ORIGIN,
+        token: await sign({ exp }),
+      })
+      await waitFor(() => server.clientCount() === 1)
+      fc.advanceTo(start + 2_147_483_647) // TIMEOUT_MAX 도달 → 첫 타이머 발화하나 remaining>0 → re-arm
+      await new Promise((r) => setTimeout(r, 30))
+      expect(server.clientCount()).toBe(1) // 즉시 close 아님(오버플로 버그면 여기서 0)
+      fc.advanceTo(exp * 1000 + 1) // 실 exp 도달 → close
+      await waitFor(() => server.clientCount() === 0)
+      expect(server.clientCount()).toBe(0)
+      ws.terminate()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('서버 close 시 live 소켓 exp 타이머가 잔류하지 않는다', async () => {
+    const start = Date.now()
+    const fc = fakeClock(start)
+    const server = await bootAccess({ deps: { clock: fc.clock } })
+    const exp = futureExpSec(start, 100)
+    const ws = await connectLive(server.port, {
+      nonce: await getNonce(server.port, { token: await sign({ exp }) }),
+      origin: PUBLIC_ORIGIN,
+      token: await sign({ exp }),
+    })
+    await waitFor(() => server.clientCount() === 1)
+    await server.close() // terminate → close 이벤트 → handleSocketGone → 타이머 clear
+    await waitFor(() => fc.activeCount() === 0) // close 이벤트 전파는 비동기 — 잔류 없음까지 대기
+    expect(fc.activeCount()).toBe(0)
+    ws.terminate()
+  })
+
+  it('loopback 모드는 exp 타이머를 걸지 않는다(access 한정)', async () => {
+    const start = Date.now()
+    const fc = fakeClock(start)
+    const server = await bootServer(
+      {
+        FLEET_PORT: '0',
+        FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-t6-loop-')),
+        FLEET_E2E: '1',
+      },
+      { clock: fc.clock },
+    )
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`)
+      await new Promise<void>((res, rej) => {
+        ws.once('open', () => res())
+        ws.once('error', rej)
+      })
+      await waitFor(() => server.clientCount() === 1)
+      expect(fc.activeCount()).toBe(0) // exp 타이머 미설정
+      ws.close()
+    } finally {
+      await server.close()
+    }
+  })
+})
+
 describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)', () => {
   const destructiveReq = (id: string): ApprovalRequest => ({
     id,

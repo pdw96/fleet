@@ -1,6 +1,84 @@
 import { describe, expect, it } from 'vitest'
-import { createStdioTransport } from './stdio'
+import type { McpServerSpec } from '../../../shared/types'
+import { createDefaultSpawn, createStdioTransport } from './stdio'
 import type { McpChild } from './types'
+
+// #197-B6 T4 — MCP stdio 자식은 임의 사용자 구성 프로세스라 서버 시크릿(FLEET_*)·provider 키가 기본
+// 전달되면 유출 경로가 된다. createDefaultSpawn(baseEnv) 는 base(런타임 최소·provider 키 없음)만 적용하고,
+// provider 키가 필요한 서버는 spec.env(명시 escape hatch)로만 넣는다. 실 spawn(node 가 env JSON 출력)으로 검증.
+describe('createDefaultSpawn env 격리(#197-B6 T4)', () => {
+  const dumpSpec = (env?: Record<string, string>): McpServerSpec => ({
+    name: 'envdump',
+    command: 'node',
+    args: ['-e', 'process.stdout.write(JSON.stringify(process.env));process.exit(0)'],
+    env,
+  })
+  const winEssentials = (): NodeJS.ProcessEnv =>
+    process.platform === 'win32'
+      ? {
+          SystemRoot: process.env.SystemRoot,
+          PATHEXT: process.env.PATHEXT,
+          ComSpec: process.env.ComSpec,
+        }
+      : {}
+
+  const captureEnv = (spawnFn: ReturnType<typeof createDefaultSpawn>, spec: McpServerSpec) =>
+    new Promise<Record<string, string>>((resolve, reject) => {
+      const child = spawnFn(spec)
+      let out = ''
+      child.onStdout((c) => {
+        out += c
+      })
+      child.onClose((err) => {
+        if (err) reject(err)
+        else resolve(JSON.parse(out || '{}') as Record<string, string>)
+      })
+    })
+
+  it('base env 를 적용해 FLEET_SECRET_KEY·provider 키를 MCP 자식에서 제거한다', async () => {
+    process.env.FLEET_SECRET_KEY = 'server-secret'
+    process.env.ANTHROPIC_API_KEY = 'parent-key'
+    try {
+      const spawnFn = createDefaultSpawn(() => ({
+        PATH: process.env.PATH,
+        T4_MARK: 'base',
+        ...winEssentials(),
+      }))
+      const env = await captureEnv(spawnFn, dumpSpec())
+      expect(env.T4_MARK).toBe('base')
+      expect(env.FLEET_SECRET_KEY).toBeUndefined()
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined()
+    } finally {
+      delete process.env.FLEET_SECRET_KEY
+      delete process.env.ANTHROPIC_API_KEY
+    }
+  }, 15_000)
+
+  it('spec.env 는 base 뒤에 병합돼 override/추가된다(provider 키 명시 escape hatch)', async () => {
+    const spawnFn = createDefaultSpawn(() => ({
+      PATH: process.env.PATH,
+      T4_MARK: 'base',
+      ...winEssentials(),
+    }))
+    const env = await captureEnv(
+      spawnFn,
+      dumpSpec({ MY_SERVER_TOKEN: 't', ANTHROPIC_API_KEY: 'explicit' }),
+    )
+    expect(env.MY_SERVER_TOKEN).toBe('t')
+    expect(env.ANTHROPIC_API_KEY).toBe('explicit')
+    expect(env.T4_MARK).toBe('base')
+  }, 15_000)
+
+  it('baseEnv 미주입이면 현행처럼 부모 env 를 전량 상속한다(데스크톱 MCP 무회귀)', async () => {
+    process.env.T4_INHERIT = 'yes'
+    try {
+      const env = await captureEnv(createDefaultSpawn(), dumpSpec())
+      expect(env.T4_INHERIT).toBe('yes')
+    } finally {
+      delete process.env.T4_INHERIT
+    }
+  }, 15_000)
+})
 
 /** 테스트용 fake child — 쓰기 캡처·stdout 청크 주입·종료 발사. */
 function fakeChild() {

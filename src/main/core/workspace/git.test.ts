@@ -2,7 +2,48 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createWorkspace, type GitRunner, type GitResult } from './git'
+import { createGitRunner, createWorkspace, type GitRunner, type GitResult } from './git'
+
+// #197-B6 T3 — git 러너가 서버 시크릿(FLEET_*)을 git 자식(훅 등)에 상속하지 않게 base env 를 적용한다.
+// git `!`-alias 는 자식 env 에서 셸 명령을 실행하므로(bundled sh), env 노출을 실 spawn 으로 검증한다.
+describe('createGitRunner env 격리(#197-B6 T3)', () => {
+  const dumpArgs = [
+    '-c',
+    'alias.dumpenv=!printf %s "${FLEET_SECRET_KEY:-MISSING}:${T3G_MARK:-MISSING}"',
+    'dumpenv',
+  ]
+  const baseEnv = (): NodeJS.ProcessEnv => {
+    const e: NodeJS.ProcessEnv = { PATH: process.env.PATH, T3G_MARK: 'base' }
+    if (process.platform === 'win32') {
+      e.SystemRoot = process.env.SystemRoot
+      e.PATHEXT = process.env.PATHEXT
+      e.ComSpec = process.env.ComSpec
+    }
+    return e
+  }
+
+  it('base env 를 적용해 FLEET_SECRET_KEY 를 git 자식에서 제거한다', async () => {
+    process.env.FLEET_SECRET_KEY = 'server-secret'
+    try {
+      const res = await createGitRunner(baseEnv).run(dumpArgs, tmpdir())
+      expect(res.code).toBe(0)
+      expect(res.stdout).toBe('MISSING:base')
+    } finally {
+      delete process.env.FLEET_SECRET_KEY
+    }
+  }, 15_000)
+
+  it('baseEnv 미주입이면 부모 env 를 상속한다(무회귀 특성화)', async () => {
+    process.env.T3G_MARK = 'inherited'
+    try {
+      const res = await createGitRunner().run(dumpArgs, tmpdir())
+      expect(res.code).toBe(0)
+      expect(res.stdout).toBe('MISSING:inherited')
+    } finally {
+      delete process.env.T3G_MARK
+    }
+  }, 15_000)
+})
 
 function fakeGit(): {
   runner: GitRunner

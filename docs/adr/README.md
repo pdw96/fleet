@@ -16,3 +16,5 @@
 | [0006](0006-coderabbit-advisory-채택.md) | Accepted | CodeRabbit 을 advisory 보조 리뷰어로 채택한다(비-required) |
 | [0007](0007-클라우드-스킬-계약강제-human-gated-write.md) | Accepted | 클라우드 자동화 스킬은 계약을 기계 강제하고 write 는 human-gated 로 둔다 |
 | [0008](0008-saas-전환-v3-터널-셀프호스트-채택.md) | Accepted | SaaS 전환의 첫 단계로 v3 터널 셀프호스트(컨테이너+터널)를 채택한다 |
+| [0009](0009-b6-자식-소켓-격리-경계.md) | Accepted | B6 격리는 서버 env 시크릿(allowlist)·토큰 수명(소켓 exp)까지, cli-auth 파일 격리는 Phase C |
+| [0010](0010-컨테이너-샌드박스-경계-cli-unsandboxed.md) | Accepted | 컨테이너 배포는 컨테이너를 유일 샌드박스 경계로 신뢰하고 CLI 내부 샌드박스를 끈다(명시 opt-in·미지값 loud fail) |
