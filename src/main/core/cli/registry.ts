@@ -105,6 +105,93 @@ export const DEFAULT_CLI_ADAPTERS: readonly CliAdapter[] = [
   },
 ]
 
+/**
+ * 컨테이너 posture CLI 어댑터(#214 · ADR-0010) — "컨테이너 = 유일한 샌드박스 경계, CLI unsandboxed".
+ * 비특권 컨테이너(uid 1000)는 중첩 user namespace 를 불허해 codex 의 bubblewrap FS 샌드박스
+ * (`-s read-only`/`workspace-write`)가 `bwrap: No permissions to create a new namespace` 로 깨진다.
+ * 컨테이너 모드에선 codex 를 `danger-full-access`(no-sandbox)로 돌리고, `codex exec` 전 경로 공통
+ * 게이트인 신뢰-디렉터리 검사를 `--skip-git-repo-check` 로 통과시킨다(서버 프로세스 cwd = `/app` 비-git).
+ *
+ * args 는 학습 지식이 아니라 **핀 버전(CODEX_VERSION 0.142.5) 컨테이너 실측 verdict**(T0 · #214 코멘트
+ * 4900663228)다:
+ *   - `codex exec resume` 는 `--sandbox` 를 미수용(clap `unexpected argument`, exit 2) → `--config
+ *     sandbox_mode="danger-full-access"` 라우트(openai/codex#26602 선례). `sandbox_mode` 키는
+ *     `--strict-config` 에서도 인식.
+ *   - trust-dir 검사는 headless·edit·session(start/resume) 전부 발화 → `--skip-git-repo-check` 를
+ *     codex 4경로 전부에.
+ *   - `{sessionId}`(positional) 뒤에 `extraArgs()`(`--model` 등)가 트레일해도 clap 수용(T0⑥) →
+ *     `cli-session.ts` 무변경으로 유효.
+ *
+ * headless 의 read-only 상실은 보안 경계가 아니라 **역할 규율**(분석 역할의 파일 쓰기 차단) 상실이다 —
+ * 컨테이너 안 잔여 리스크로 ADR-0010 에 기록(워크스페이스 무결성은 ignored-baseline 등 오케스트레이터
+ * 층이 별도 방어). claude/gemini 는 내부 샌드박스가 opt-in 이고 Fleet 이 켜지 않으므로 **무조정**(차단
+ * 실측 시에만 별도 조정 — #214 T8).
+ *
+ * codex 만 비파괴 diff-spread(args 배열을 통째로 선언 — 문자열 치환 금지, 기본 어댑터와 나란히 두어
+ * 드리프트를 한 파일에서 보이게 한다). 명시 opt-in(`FLEET_SANDBOX_BOUNDARY=container`)일 때만 boot 이
+ * 이 시드로 registry 를 만들어 엔진에 주입한다(boot.ts). 데스크톱·베어호스트는 기본 시드
+ * (`DEFAULT_CLI_ADAPTERS`) 무변경. 런타임 `registry.register()` 확장분은 변환하지 않는다(주입 시점
+ * 시드만 — seam 테스트가 핀).
+ */
+export function containerCliAdapters(
+  base: readonly CliAdapter[] = DEFAULT_CLI_ADAPTERS,
+): readonly CliAdapter[] {
+  return base.map((adapter) => {
+    if (adapter.id !== 'codex') return adapter // claude/gemini 무조정 — 내부 샌드박스 opt-in·Fleet 미사용
+    return {
+      ...adapter,
+      headless: {
+        ...adapter.headless!,
+        args: [
+          'exec',
+          '--json',
+          '--sandbox',
+          'danger-full-access',
+          '--config',
+          'approval_policy="never"',
+          '--skip-git-repo-check',
+        ],
+      },
+      session: {
+        ...adapter.session!,
+        startArgs: [
+          'exec',
+          '--json',
+          '--sandbox',
+          'danger-full-access',
+          '--config',
+          'approval_policy="never"',
+          '--skip-git-repo-check',
+        ],
+        // resume 은 `--sandbox` 미수용 → `--config sandbox_mode` 라우트. `{sessionId}` 마지막 positional 유지.
+        resumeArgs: [
+          'exec',
+          'resume',
+          '--json',
+          '--config',
+          'sandbox_mode="danger-full-access"',
+          '--config',
+          'approval_policy="never"',
+          '--skip-git-repo-check',
+          '{sessionId}',
+        ],
+      },
+      edit: {
+        ...adapter.edit!,
+        args: [
+          'exec',
+          '--json',
+          '-C',
+          '{workspace}',
+          '-s',
+          'danger-full-access',
+          '--skip-git-repo-check',
+        ],
+      },
+    }
+  })
+}
+
 export interface CliRegistry {
   list(): CliAdapter[]
   register(adapter: CliAdapter): void
