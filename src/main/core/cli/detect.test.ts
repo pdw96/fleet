@@ -37,8 +37,9 @@ describe('parseVersion', () => {
 })
 
 describe('defaultResolver', () => {
-  // 비동기 which 는 {nothrow} 를 무시하고 not-found 시 reject 한다 → defaultResolver 가
-  // PathResolver 계약(null = not-found)을 지키도록 null 로 정규화함을 실측 단언.
+  // 비동기 which 는 not-found 시 reject 한다(defaultResolver 는 {nothrow} 를 넘기지 않음 — which@7 의
+  // async 는 nothrow 시 null 반환이나 미지정 시 reject) → defaultResolver 가 PathResolver 계약
+  // (null = not-found)을 지키도록 null 로 정규화함을 실측 단언.
   it('not-found 명령은 throw 하지 않고 null 로 정규화', async () => {
     await expect(defaultResolver('fleet-no-such-binary-zzz123')).resolves.toBeNull()
   })
@@ -68,8 +69,8 @@ describe('resolveCommandPath', () => {
     expect(r).toEqual({})
   })
   it('cwd 히트(절대경로지만 cwd 내부) → pathShadowRisk true (Windows which cwd-first 방어)', async () => {
-    // which@2 는 Windows 에서 PATH 보다 cwd 를 먼저 검색해 cwd shadow 를 절대경로로 반환한다 →
-    // path.isAbsolute 만으로는 못 잡으므로 cwd 히트도 위험으로 플래그해야 한다.
+    // which 는 Windows 에서 PATH 보다 cwd 를 먼저 검색해 cwd shadow 를 절대경로로 반환한다(which@7 도
+    // isWindows 시 cwd prepend) → path.isAbsolute 만으로는 못 잡으므로 cwd 히트도 위험으로 플래그해야 한다.
     const inCwd = join(process.cwd(), 'claude')
     const r = await resolveCommandPath('claude', async () => inCwd)
     expect(r).toEqual({ resolvedPath: inCwd, pathShadowRisk: true })

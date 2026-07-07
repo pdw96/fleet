@@ -213,10 +213,13 @@ export function parseVersion(output: string): string | undefined {
 export type PathResolver = (command: string) => Promise<string | null>
 
 /**
- * 기본 경로 해석기: cross-spawn 이 쓰는 which@2 재사용 — 표시 경로 = 실제 실행 경로.
- * ⚠ which 의 *비동기* API 는 `{nothrow}` 옵션을 무시하고 not-found 시 ENOENT 로 reject 한다
- * (nothrow 는 whichSync 전용). 따라서 여기서 명시적으로 catch→null 정규화해 PathResolver
- * 계약(null = not-found)을 지킨다. resolveCommandPath 의 try/catch 는 커스텀 resolver 용 심층방어.
+ * 기본 경로 해석기: which 로 표시용 실행 경로를 해석한다. 실행 자체는 cross-spawn(중첩 which@2)이
+ * 하지만 둘 다 동일한 node-which PATH+PATHEXT 규칙이고, cwd-셰도 가드(#158)가 spawn 에 절대경로를
+ * 넘겨 cross-spawn 이 재해석하지 않으므로 표시 경로 = 실제 실행 경로가 유지된다.
+ * ⚠ which 의 *비동기* API 는 not-found 시 ENOENT 로 reject 한다 — 여기서는 `{nothrow}` 를 넘기지
+ * 않는다(which@7 의 async 는 nothrow 를 주면 null 을 반환하지만, 미지정 시 기존대로 reject). 따라서
+ * 명시적으로 catch→null 정규화해 PathResolver 계약(null = not-found)을 지킨다.
+ * resolveCommandPath 의 try/catch 는 커스텀 resolver 용 심층방어.
  */
 export const defaultResolver: PathResolver = async (command) => {
   try {
@@ -233,8 +236,8 @@ const RESOLVE_TIMEOUT_MS = 2000
 /**
  * 해석된 경로가 PATH shadow 위험인지 판정.
  * - 비절대(상대/CWD PATH 엔트리)면 위험.
- * - 절대라도 **cwd 내부**면 위험: which@2 는 Windows(및 cygwin/msys)에서 PATH 보다 cwd 를 먼저
- *   검색해 cwd shadow 를 절대경로로 반환하므로(which.js 'windows always checks the cwd first'),
+ * - 절대라도 **cwd 내부**면 위험: which 는 Windows(및 cygwin/msys)에서 PATH 보다 cwd 를 먼저
+ *   검색해 cwd shadow 를 절대경로로 반환하므로(which@7 도 isWindows 시 후보 앞에 cwd 를 prepend),
  *   path.isAbsolute 만으로는 cwd shadow 를 놓친다. dirname 이 cwd 면 위험으로 본다(전 플랫폼).
  */
 function isShadowRisk(resolved: string): boolean {
@@ -248,8 +251,9 @@ function isShadowRisk(resolved: string): boolean {
 export const isWindowsLike =
   process.platform === 'win32' || process.env.OSTYPE === 'cygwin' || process.env.OSTYPE === 'msys'
 
-/** PATH 전체 매치 해석기(테스트 주입 가능). 기본은 which({all}) — cross-spawn 과 동일 계열. */
-export type AllResolver = (command: string) => Promise<string[]>
+/** PATH 전체 매치 해석기(테스트 주입 가능). 기본은 which({all}) — cross-spawn 과 동일 계열.
+ *  which@7({all}) 은 `readonly string[]` 를 반환하므로(@types/which@3) 결과는 읽기 전용으로 소비한다. */
+export type AllResolver = (command: string) => Promise<readonly string[]>
 const defaultAllResolver: AllResolver = (command) => which(command, { all: true })
 
 /** childDir 이 baseDir(자신 포함)의 서브트리 안인지. win32 는 대소문자 무시. */
@@ -279,10 +283,10 @@ export async function resolvePathOnly(
   if (path.isAbsolute(command)) return command
   const cwd = path.resolve(process.cwd()) // which cwd 스냅샷과 일치시키려 await 전 캡처
   const exclude = excludeDir != null ? path.resolve(excludeDir) : null
-  let matches: string[] | null
+  let matches: readonly string[] | null
   try {
     matches = await Promise.race([
-      resolver(command).catch(() => [] as string[]), // 비동기 which 는 not-found 시 reject → [] 정규화
+      resolver(command).catch(() => []), // 비동기 which 는 not-found 시 reject → [] 정규화
       new Promise<null>((r) => {
         setTimeout(() => r(null), timeoutMs).unref?.()
       }),
