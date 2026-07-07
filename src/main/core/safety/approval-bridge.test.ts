@@ -9,6 +9,7 @@ const req = (id: string): ApprovalRequest => ({
   target: 't',
   risk: 'destructive',
   ts: 1,
+  expiresAt: 61_000,
 })
 
 afterEach(() => {
@@ -19,7 +20,7 @@ describe('createIpcApprover', () => {
   it('rejects immediately when no window is available, without sending', async () => {
     const send = vi.fn()
     const a = createIpcApprover({ send, hasWindow: () => false })
-    expect(await a.approver(req('1'))).toBe(false)
+    expect(await a.approver(req('1'))).toEqual({ approved: false })
     expect(send).not.toHaveBeenCalled()
   })
 
@@ -30,7 +31,7 @@ describe('createIpcApprover', () => {
     expect(send).toHaveBeenCalledTimes(1)
     expect(a.pendingCount()).toBe(1)
     a.resolve('1', true)
-    expect(await p).toBe(true)
+    expect(await p).toEqual({ approved: true })
     expect(a.pendingCount()).toBe(0)
   })
 
@@ -38,7 +39,7 @@ describe('createIpcApprover', () => {
     const a = createIpcApprover({ send: vi.fn(), hasWindow: () => true })
     const p = a.approver(req('1'))
     a.resolve('1', false)
-    expect(await p).toBe(false)
+    expect(await p).toEqual({ approved: false })
   })
 
   it('auto-rejects after the timeout elapses', async () => {
@@ -46,7 +47,7 @@ describe('createIpcApprover', () => {
     const a = createIpcApprover({ send: vi.fn(), hasWindow: () => true, timeoutMs: 1000 })
     const p = a.approver(req('1'))
     vi.advanceTimersByTime(1000)
-    expect(await p).toBe(false)
+    expect(await p).toEqual({ approved: false })
     expect(a.pendingCount()).toBe(0)
   })
 
@@ -56,7 +57,7 @@ describe('createIpcApprover', () => {
     const p = a.approver(req('1'))
     a.resolve('1', true)
     a.resolve('1', false) // 이미 해소 — 무시
-    expect(await p).toBe(true)
+    expect(await p).toEqual({ approved: true })
   })
 
   it('handles multiple concurrent requests independently', async () => {
@@ -66,8 +67,8 @@ describe('createIpcApprover', () => {
     expect(a.pendingCount()).toBe(2)
     a.resolve('b', false)
     a.resolve('a', true)
-    expect(await p1).toBe(true)
-    expect(await p2).toBe(false)
+    expect(await p1).toEqual({ approved: true })
+    expect(await p2).toEqual({ approved: false })
     expect(a.pendingCount()).toBe(0)
   })
 
@@ -80,8 +81,8 @@ describe('createIpcApprover', () => {
       const p2 = a.approver(req('b'))
       expect(a.pendingCount()).toBe(2)
       a.rejectAll()
-      expect(await p1).toBe(false)
-      expect(await p2).toBe(false)
+      expect(await p1).toEqual({ approved: false })
+      expect(await p2).toEqual({ approved: false })
       expect(a.pendingCount()).toBe(0)
     })
 
@@ -90,7 +91,7 @@ describe('createIpcApprover', () => {
       const p = a.approver(req('1'))
       a.rejectAll()
       a.resolve('1', true) // 이미 해소·삭제 — 무시(재해소 없음)
-      expect(await p).toBe(false)
+      expect(await p).toEqual({ approved: false })
       expect(a.pendingCount()).toBe(0)
     })
 
@@ -109,7 +110,7 @@ describe('createIpcApprover', () => {
         return v
       })
       a.rejectAll()
-      expect(await p).toBe(false)
+      expect(await p).toEqual({ approved: false })
       expect(resolvedCount).toBe(1)
       // 타이머가 clear 되지 않았다면 여기서 timeout 콜백이 재발화 시도(pending.delete 후라 무해하나
       // 타이머 자체가 남으면 리소스 누수) — clear 를 단언하기 위해 진행 후 재해소 0 확인.

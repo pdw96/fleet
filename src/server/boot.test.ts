@@ -407,6 +407,7 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
         target: 't',
         risk: 'destructive',
         ts: 1,
+        expiresAt: 61_000,
       })
       const waitFor = async (pred: () => boolean): Promise<void> => {
         const start = Date.now()
@@ -434,7 +435,7 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
         await waitFor(() => server.clientCount() === 0) // 클라 전원 이탈
         expect(approver.pendingCount()).toBe(1) // loopback → rejectAll 미발화·pending 생존
         approver.resolve('x', true) // 정리(타임아웃 대기 없이)
-        await expect(p).resolves.toBe(true)
+        await expect(p).resolves.toEqual({ approved: true })
       } finally {
         await server.close()
       }

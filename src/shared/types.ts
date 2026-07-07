@@ -333,12 +333,30 @@ export interface ApprovalRequest {
   target: string
   risk: RiskLevel
   ts: number
+  /**
+   * 서버 권위 자동거부 시각(ms epoch) = ts + ttlMs (#216 C1). 렌더러 카운트다운·approver 만료
+   * 타이머의 단일 출처(카운트다운=실제 만료 불일치 원천 차단). gate 가 요청 생성 시 스탬프한다.
+   */
+  expiresAt: number
 }
 
 export type ApprovalDecision = 'approved' | 'rejected'
 
+/**
+ * approver 결정 + (거부 시) 감사 사유(#216 C1). approver 는 boolean 대신 이 결과를 반환하고, 감사는
+ * gate 가 단일 책임으로 `approval.decided` 에 실어(reason 배관). abort/만료/거부는 예외가 아니라
+ * `{approved:false}` 로 해소한다(예외 기반 rejection 은 비계약 — §C-3·§C-5).
+ */
+export type ApprovalOutcome = { approved: boolean; reason?: string }
+
 /** destructive 승인 무응답 시 자동 거부까지의 시간(메인 측 권위 + 렌더러 카운트다운 공용). */
 export const APPROVAL_TIMEOUT_MS = 60_000
+
+/**
+ * 동시 대기(pending) 승인 상한(#216 C1). approver enqueue 시 `pending.size >= max` 면 즉시 거부 +
+ * 감사(reason:'pending-cap'). 공격자 다량 tool-call 로부터 메모리·UI 카드 무한 적재 차단.
+ */
+export const APPROVAL_MAX_PENDING = 64
 
 // ── 감사 로그 (요구사항 6) ────────────────────────────────────────────────
 export interface FleetEvent {

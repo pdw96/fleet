@@ -1,5 +1,5 @@
 import { APPROVAL_TIMEOUT_MS } from '../../../shared/types'
-import type { ApprovalRequest } from '../../../shared/types'
+import type { ApprovalOutcome, ApprovalRequest } from '../../../shared/types'
 
 export interface IpcApproverOptions {
   /** 렌더러로 승인 요청 방출(브로드캐스트). */
@@ -11,8 +11,8 @@ export interface IpcApproverOptions {
 }
 
 export interface IpcApprover {
-  /** ApprovalGate.approver 로 주입할 콜백. */
-  approver: (req: ApprovalRequest) => Promise<boolean>
+  /** ApprovalGate.approver 로 주입할 콜백. `ApprovalOutcome` 반환(#216 C1 — boolean 아님). */
+  approver: (req: ApprovalRequest) => Promise<ApprovalOutcome>
   /** 렌더러 회신을 해소한다. 미존재/이미 해소 id 는 무시(idempotent). */
   resolve: (id: string, approved: boolean) => void
   /**
@@ -26,7 +26,7 @@ export interface IpcApprover {
 }
 
 interface Pending {
-  resolve: (approved: boolean) => void
+  resolve: (outcome: ApprovalOutcome) => void
   timer: ReturnType<typeof setTimeout>
 }
 
@@ -40,12 +40,12 @@ export function createIpcApprover(opts: IpcApproverOptions): IpcApprover {
 
   return {
     approver(req) {
-      if (!opts.hasWindow()) return Promise.resolve(false)
-      return new Promise<boolean>((resolve) => {
+      if (!opts.hasWindow()) return Promise.resolve({ approved: false })
+      return new Promise<ApprovalOutcome>((resolve) => {
         const timer = setTimeout(() => {
           if (!pending.has(req.id)) return
           pending.delete(req.id)
-          resolve(false)
+          resolve({ approved: false })
         }, timeoutMs)
         // 대기 타이머가 프로세스 종료를 막지 않도록 unref(있을 때만 — fake timer 호환).
         if (typeof timer === 'object' && timer && 'unref' in timer) {
@@ -61,7 +61,7 @@ export function createIpcApprover(opts: IpcApproverOptions): IpcApprover {
       if (!p) return
       clearTimeout(p.timer)
       pending.delete(id)
-      p.resolve(approved)
+      p.resolve({ approved })
     },
 
     rejectAll() {
@@ -70,7 +70,7 @@ export function createIpcApprover(opts: IpcApproverOptions): IpcApprover {
       pending.clear()
       for (const p of outstanding) {
         clearTimeout(p.timer)
-        p.resolve(false)
+        p.resolve({ approved: false })
       }
     },
 

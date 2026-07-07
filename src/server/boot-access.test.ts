@@ -662,6 +662,7 @@ describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)
     target: 't',
     risk: 'destructive',
     ts: 1,
+    expiresAt: 61_000,
   })
 
   it('① 미검증 접속만 있는 상태 + 승인 요청 → 즉시 false(검증 실패 socket presence 미포함)', async () => {
@@ -672,7 +673,7 @@ describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)
         tryWsConnect(server.port, { origin: PUBLIC_ORIGIN, token: await sign() }),
       ).resolves.toBe('rejected') // nonce 부재 → attach 미도달
       expect(server.clientCount()).toBe(0)
-      await expect(approver.approver(destructiveReq('x'))).resolves.toBe(false) // hasWindow false
+      await expect(approver.approver(destructiveReq('x'))).resolves.toEqual({ approved: false }) // hasWindow false
       expect(approver.pendingCount()).toBe(0)
     } finally {
       await server.close()
@@ -692,7 +693,7 @@ describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)
       const p = approver.approver(destructiveReq('x')) // hasWindow true → pending
       expect(approver.pendingCount()).toBe(1)
       ws.close() // 인증 클라 0 전이 → rejectAll
-      await expect(p).resolves.toBe(false) // 60s 타임아웃 전 즉시 해소 = rejectAll
+      await expect(p).resolves.toEqual({ approved: false }) // 60s 타임아웃 전 즉시 해소 = rejectAll
     } finally {
       await server.close()
     }
@@ -719,7 +720,7 @@ describe('access 모드 승인 presence fail-closed(#197 B5 T7 · 게이트 ④)
       await waitFor(() => server.clientCount() === 1) // ws1 close 서버측 처리 확인
       expect(approver.pendingCount()).toBe(1) // 유지(0 아님 → rejectAll 미발화)
       approver.resolve('x', true) // 정리
-      await expect(p).resolves.toBe(true)
+      await expect(p).resolves.toEqual({ approved: true })
       ws2.close()
     } finally {
       await server.close()

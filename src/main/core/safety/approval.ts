@@ -1,17 +1,35 @@
 import { randomUUID } from 'node:crypto'
-import type { ApprovalDecision, ApprovalRequest, RiskLevel } from '../../../shared/types'
+import {
+  APPROVAL_TIMEOUT_MS,
+  type ApprovalDecision,
+  type ApprovalOutcome,
+  type ApprovalRequest,
+  type RiskLevel,
+} from '../../../shared/types'
 
 export const SENSITIVE_FILE = /(^|[/\\])\.env(\.|$)|\.(env|pem|key|p12|pfx)$|(^|[/\\])\.ssh[/\\]/i
 
 export interface ApprovalGate {
-  request(req: Omit<ApprovalRequest, 'id' | 'ts'>): Promise<ApprovalDecision>
+  /**
+   * 승인 요청. gate 가 id·ts·expiresAt 를 스탬프한다(#216 C1). `callOpts.signal` 은 approver 까지
+   * 관통해 취소(cancelRun/cancelChat) 시 대기 중 승인이 즉시 해소되게 한다(§C-5).
+   */
+  request(
+    req: Omit<ApprovalRequest, 'id' | 'ts' | 'expiresAt'>,
+    callOpts?: { signal?: AbortSignal },
+  ): Promise<ApprovalDecision>
 }
 
 export interface GateOptions {
   /** 자동 승인할 위험도 (기본 ['safe']) */
   autoApprove?: RiskLevel[]
-  /** 그 외 위험도에 대한 승인 요청 (없으면 거부 = 안전 기본값) */
-  approver?: (req: ApprovalRequest) => Promise<boolean>
+  /**
+   * 그 외 위험도에 대한 승인 요청 (없으면 거부 = 안전 기본값). `ApprovalOutcome` 를 반환하고
+   * (boolean 아님), gate 가 `o.reason` 을 approval.decided 감사에 실는다(#216 C1 · reason 단일 책임).
+   */
+  approver?: (req: ApprovalRequest, opts?: { signal?: AbortSignal }) => Promise<ApprovalOutcome>
+  /** 승인 무응답 자동거부까지(ms) — `expiresAt = ts + ttlMs`. 기본 APPROVAL_TIMEOUT_MS(60s). */
+  ttlMs?: number
   idGen?: () => string
   now?: () => number
   onEvent?: (type: string, data: Record<string, unknown>) => void
@@ -28,10 +46,12 @@ export function createApprovalGate(opts: GateOptions = {}): ApprovalGate {
   const autoApprove = new Set<RiskLevel>(opts.autoApprove ?? ['safe'])
   const idGen = opts.idGen ?? (() => randomUUID())
   const now = opts.now ?? (() => Date.now())
+  const ttlMs = opts.ttlMs ?? APPROVAL_TIMEOUT_MS
 
   return {
-    async request(partial) {
-      const req: ApprovalRequest = { ...partial, id: idGen(), ts: now() }
+    async request(partial, callOpts) {
+      const ts = now()
+      const req: ApprovalRequest = { ...partial, id: idGen(), ts, expiresAt: ts + ttlMs }
       opts.onEvent?.('approval.requested', {
         id: req.id,
         kind: req.kind,
@@ -40,15 +60,24 @@ export function createApprovalGate(opts: GateOptions = {}): ApprovalGate {
       })
 
       let decision: ApprovalDecision
+      let reason: string | undefined
       if (autoApprove.has(req.risk)) {
         decision = 'approved'
       } else if (opts.approver) {
-        decision = (await opts.approver(req)) ? 'approved' : 'rejected'
+        const o = await opts.approver(req, { signal: callOpts?.signal })
+        decision = o.approved ? 'approved' : 'rejected'
+        reason = o.reason
       } else {
         decision = 'rejected'
       }
 
-      opts.onEvent?.('approval.decided', { id: req.id, decision, risk: req.risk })
+      opts.onEvent?.('approval.decided', {
+        id: req.id,
+        decision,
+        risk: req.risk,
+        // reason 은 approver 가 실었을 때만 방출(auto-approve·무approver 경로는 없음 — reason 단일 책임).
+        ...(reason !== undefined ? { reason } : {}),
+      })
       return decision
     },
   }

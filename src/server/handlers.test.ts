@@ -66,10 +66,11 @@ describe('서버 핸들러 테이블(#197 B3)', () => {
       target: 'rm -rf /',
       risk: 'destructive',
       ts: Date.now(),
+      expiresAt: Date.now() + 60_000,
     })
     expect(sent).toHaveLength(1)
     await handlers['fleet:approval:respond'](sent[0].id, true)
-    await expect(decision).resolves.toBe(true)
+    await expect(decision).resolves.toEqual({ approved: true })
   })
 
   it('엔진 위임 대표 경로 — registerCli → session:list 왕복', async () => {

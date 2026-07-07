@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AgentRole,
   ApiProviderConfig,
+  ApprovalOutcome,
   ApprovalRequest,
   ChatActivity,
   ChatMessage,
@@ -100,8 +101,11 @@ export interface FleetEngineOptions {
   onChatStream?: (e: ChatStreamEvent) => void
   /** 산출물 기록·검증의 워크스페이스 루트. 미지정 시 파일 기록/검증 비활성(기존 동작 보존). */
   workspaceDir?: string
-  /** 위험(destructive) 작업 승인 콜백. 미지정 시 위험 작업은 거부된다(안전 기본값). */
-  approver?: (req: ApprovalRequest) => Promise<boolean>
+  /**
+   * 위험(destructive) 작업 승인 콜백. 미지정 시 위험 작업은 거부된다(안전 기본값). `ApprovalOutcome`
+   * 를 반환한다(#216 C1 — boolean 아님·reason 배관). signal 은 취소 그래프 관통에 쓰인다(§C-5).
+   */
+  approver?: (req: ApprovalRequest, opts?: { signal?: AbortSignal }) => Promise<ApprovalOutcome>
   /** 검증 실행기 주입(테스트용). 기본은 child_process 기반. */
   verifyRunner?: VerifyRunner
   /** git 실행기 주입(테스트용). 기본은 child_process 기반 defaultGitRunner. */

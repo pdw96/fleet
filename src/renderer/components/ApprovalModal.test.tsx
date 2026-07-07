@@ -30,6 +30,7 @@ const REQ: ApprovalRequest = {
   target: '/ws/config/.env',
   risk: 'destructive',
   ts: 1,
+  expiresAt: 61_000,
 }
 
 afterEach(() => {
@@ -79,6 +80,7 @@ describe('ApprovalModal', () => {
       target: 'src/a.ts, src/b.ts',
       risk: 'caution',
       ts: 2,
+      expiresAt: 62_000,
     })
     expect(screen.getByText('변경 적용 승인')).toBeTruthy()
     expect(screen.getByText('src/a.ts, src/b.ts')).toBeTruthy()

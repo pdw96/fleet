@@ -256,7 +256,10 @@ describe('FleetEngine', () => {
         }),
       }
       process.env.FLEET_SECRET_KEY = 'server-secret'
-      const engine = createFleetEngine({ childEnv: mcpChildEnv, approver: async () => true })
+      const engine = createFleetEngine({
+        childEnv: mcpChildEnv,
+        approver: async () => ({ approved: true }),
+      })
       try {
         await engine.setMcpServers([
           {
