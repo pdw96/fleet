@@ -77,6 +77,7 @@ const BINDINGS: readonly {
   { method: 'getMcpStatus', channel: 'fleet:mcp:getStatus', args: [] },
   { method: 'listEvents', channel: 'fleet:events:list', args: [] },
   { method: 'respondApproval', channel: 'fleet:approval:respond', args: ['appr-1', true] },
+  { method: 'listPendingApprovals', channel: 'fleet:approval:pending', args: [] },
 ]
 
 describe('FleetBridge 메서드 ↔ 채널/인자 바인딩', () => {

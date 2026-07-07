@@ -350,12 +350,17 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           const gateTarget =
             [trackedPart, ...dr.reasons].filter(Boolean).join(' · ') || dr.reasons.join('; ')
           const decision = opts.gate
-            ? await opts.gate.request({
-                kind: 'apply-diff',
-                summary: `${task.title} 변경 적용`,
-                target: gateTarget,
-                risk: 'destructive',
-              })
+            ? await opts.gate.request(
+                {
+                  kind: 'apply-diff',
+                  summary: `${task.title} 변경 적용`,
+                  target: gateTarget,
+                  risk: 'destructive',
+                },
+                // signal 관통(#216 C1 §C-5) — apply-diff 는 run 중 가장 흔한 destructive 승인.
+                // hold 정책 하에서 cancelRun abort 가 승인 대기를 즉시 해소해 TTL(최대 30분) hang 을 막는다.
+                { signal: opts.signal },
+              )
             : 'rejected'
           if (decision !== 'approved') {
             const { note } = await rollbackWithIgnored(ws, base, ignoredBaseline)
@@ -920,12 +925,16 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
           const vfGateTarget =
             [vfTrackedPart, ...dr.reasons].filter(Boolean).join(' · ') || dr.reasons.join('; ')
           const decision = opts.gate
-            ? await opts.gate.request({
-                kind: 'apply-diff',
-                summary: `verify-fix r${round} 변경 적용`,
-                target: vfGateTarget,
-                risk: 'destructive',
-              })
+            ? await opts.gate.request(
+                {
+                  kind: 'apply-diff',
+                  summary: `verify-fix r${round} 변경 적용`,
+                  target: vfGateTarget,
+                  risk: 'destructive',
+                },
+                // signal 관통(#216 C1 §C-5) — cancelRun abort 시 verify-fix 승인 대기도 즉시 해소.
+                { signal: opts.signal },
+              )
             : 'rejected'
           if (decision !== 'approved') {
             const { note } = await rollbackWithIgnored(opts.workspace, base, vfBaseline ?? null)

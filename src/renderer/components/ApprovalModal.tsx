@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { APPROVAL_TIMEOUT_MS } from '../../shared/types'
 import type { ApprovalRequest, RiskLevel } from '../../shared/types'
+import { useHydration } from '../bridge/hydration'
 
 const RISK_LABEL: Record<RiskLevel, string> = {
   safe: '안전',
@@ -17,41 +17,139 @@ const KIND_TITLE: Record<ApprovalRequest['kind'], string> = {
   'tool-call': '도구 호출 승인',
 }
 
-/** destructive 작업 승인 모달. App 레벨에 상시 마운트되어 메인의 승인 요청을 큐로 순차 처리한다. */
+/**
+ * id-keyed 비파괴 upsert(#216 C1 §C-3) — 이미 철회(tombstone)된 요청만 부활 차단한다. tombstone 재확인을
+ * 스냅숏 apply 시점에 수행해(async resolve 후 이 함수 호출) 늦게 도착한 stale 스냅숏의 이미-철회 id 부활을
+ * 막는다. 같은 id 라이브+스냅숏은 단일 카드로 병합. **로컬 시계(Date.now)로 만료 카드를 드롭하지 않는다**
+ * (#216 Codex 재리뷰 P2): 서버 권위 expiresAt 대비 클라(폰) 시계가 앞서면 서버가 아직 유효하다고 보는 카드를
+ * 로컬이 드롭해 "외출 중 폰 승인"이 스큐 클라에서 실패한다. 존재/만료 권위는 서버(snapshot·withdrawn·resolve)에
+ * 있고, 클라의 expiresAt 사용은 카운트다운 표시 전용이다(broadcast·server list() 는 유효 카드만 보낸다).
+ */
+function upsertApproval(
+  prev: ApprovalRequest[],
+  req: ApprovalRequest,
+  tombstone: Set<string>,
+): ApprovalRequest[] {
+  if (tombstone.has(req.id)) return prev
+  const i = prev.findIndex((r) => r.id === req.id)
+  if (i >= 0) {
+    const next = [...prev]
+    next[i] = req
+    return next
+  }
+  return [...prev, req]
+}
+
+/**
+ * destructive 작업 승인 모달(#216 C1 — id-keyed·재하이드레이션·tombstone). App 레벨 상시 마운트.
+ * 라이브 요청(onApprovalRequest)과 재접속 스냅숏(listPendingApprovals)을 id 로 병합(비파괴 upsert)하고,
+ * 이탈 통지(onApprovalWithdrawn)로 카드를 제거+tombstone 한다. 카운트다운·자동 소멸은 서버 권위 expiresAt 기준.
+ */
 export function ApprovalModal() {
+  const { nonce } = useHydration()
   const [queue, setQueue] = useState<ApprovalRequest[]>([])
-  const [remaining, setRemaining] = useState(0)
+  const [now, setNow] = useState(() => Date.now())
+  // 철회된 id 집합(id=randomUUID 무재사용 → 영속 안전). 늦은 스냅숏의 이미-철회 id 부활 차단.
+  const tombstone = useRef<Set<string>>(new Set())
+  // 마우스 오승인 가드(#216 적대리뷰 P3): pointerdown 시 조준한 카드 id 스냅숏. 비동기 스왑(withdrawn/만료
+  // prune)으로 눌렀다 뗀 사이 current 가 바뀌면 클릭을 무시 — 사용자가 읽지 않은 카드의 우발 결정 차단.
+  const pointerIntent = useRef<string | null>(null)
   const rejectRef = useRef<HTMLButtonElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
 
-  // 승인 요청 구독 — 마운트 1회. 들어온 요청을 큐 뒤에 적재.
+  // 라이브 승인 요청 구독 — 마운트 1회. id-keyed upsert(tombstone/만료 가드).
   useEffect(() => {
-    const unsub = window.fleet.onApprovalRequest((req) => setQueue((prev) => [...prev, req]))
+    const unsub = window.fleet.onApprovalRequest((req) =>
+      setQueue((prev) => upsertApproval(prev, req, tombstone.current)),
+    )
     return unsub
   }, [])
 
+  // 승인 이탈(응답/만료/철회/취소·rejectAll) 통지 — id 제거 + tombstone 기록. 마운트 1회.
+  useEffect(() => {
+    const unsub = window.fleet.onApprovalWithdrawn((id) => {
+      tombstone.current.add(id)
+      setQueue((prev) => prev.filter((r) => r.id !== id))
+    })
+    return unsub
+  }, [])
+
+  // 재하이드레이션(마운트 nonce=0 + 재접속 hello 마다 nonce+1) — listPendingApprovals 스냅숏 upsert(비파괴).
+  // 데스크톱은 bridge=null → nonce 영구 0 → 마운트 1회(대개 빈 목록·무회귀). tombstone 재확인은 upsert 안(apply 시점).
+  useEffect(() => {
+    let cancelled = false
+    let retries = 0
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    // 하이드레이션 시작 시점(이 nonce 렌더)의 큐 id — reconcile 대상. 이후 라이브 추가(onApprovalRequest)는
+    // 이 집합 밖이라 보존된다(§C-3 live-race 가드 — 하이드레이션 창 중 생성된 카드의 drop-hang 방지).
+    const preHydrationIds = new Set(queue.map((r) => r.id))
+    const fetchSnapshot = (): void => {
+      window.fleet
+        .listPendingApprovals()
+        .then((pending) => {
+          if (cancelled) return
+          const snapshotIds = new Set(pending.map((r) => r.id))
+          setQueue((prev) => {
+            // reconcile(#216 적대리뷰 Codex P2): 하이드레이션 前 존재했으나 권위 스냅숏에 없는 카드를 제거 —
+            // 재접속 중 놓친 withdrawn·타세션 해소를 정리(로컬 expiresAt·TTL 까지 유령 카드 잔존 방지). 라이브
+            // -fresh(preHydrationIds 밖)는 보존해 drop-race 를 피한다. 스냅숏 카드는 이어서 upsert.
+            let next = prev.filter((r) => snapshotIds.has(r.id) || !preHydrationIds.has(r.id))
+            for (const req of pending) next = upsertApproval(next, req, tombstone.current)
+            return next
+          })
+        })
+        .catch(() => {
+          // pre-hello 재접속 등으로 조회가 reject 되면(소켓 조기 종료) 제한 재시도(#216 Codex 재리뷰 P2) —
+          // HydrationProvider 가 그 재접속을 '최초 접속'으로 오분류해 nonce 를 못 올리는 창에서 held 승인이
+          // 재제시되지 않던 갭 보완. 소진 시 다음 nonce 전환·라이브 구독이 이후 카드를 채운다(fail-safe).
+          if (cancelled || retries >= 3) return
+          retries += 1
+          retryTimer = setTimeout(fetchSnapshot, 400 * retries)
+        })
+    }
+    fetchSnapshot()
+    return () => {
+      cancelled = true
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+    }
+    // queue 는 의도적 deps 제외 — nonce 전환 시점의 pre-hydration id 스냅숏만 필요(라이브 추가 보호).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonce])
+
+  // 1s 틱 — 카운트다운 표시 갱신 전용(#216 Codex 재리뷰 P2). **로컬 시계로 카드를 제거하지 않는다** — 클라
+  // (폰) 시계가 서버보다 앞서면 서버가 유효하다고 보는 카드를 로컬 prune 이 드롭해 승인 불가가 되기 때문.
+  // 만료 제거 권위는 서버(withdrawn 브로드캐스트 · 재접속 reconcile). 카운트다운은 max(0,..)로 0s 클램프만.
+  useEffect(() => {
+    const iv = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(iv)
+  }, [])
+
   const current = queue[0]
+  // 카운트다운 = 서버 권위 expiresAt 기준(공유 상수 APPROVAL_TIMEOUT_MS 소비 제거 — 카운트다운=실제 만료 정합).
+  const remaining = current ? Math.max(0, Math.ceil((current.expiresAt - now) / 1000)) : 0
+
+  // 결정 의도 스냅숏(#216 적대리뷰 P3·Codex P2) — pointerdown/keydown 시 조준한 카드 id 를 기록. 마우스·
+  // 키보드(Enter/Space) 활성화가 커밋(click)되기 전 비동기 스왑(withdrawn/만료/reconcile)이 일어나면 decide
+  // 가 intent≠current 로 무시해 사용자가 읽지 않은 카드의 우발 결정을 막는다.
+  const captureIntent = (): void => {
+    if (current) pointerIntent.current = current.id
+  }
+  const captureIntentKey = (e: { key: string }): void => {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') captureIntent()
+  }
 
   const decide = (approved: boolean): void => {
     if (!current) return
-    // 회신 유실(전송 단절)은 조용히 흡수 — main/server 의 승인 타임아웃(fail-closed 자동 거부)이 권위라
-    // 렌더러가 재시도하지 않는다(#197 B4 reject audit).
+    // 마우스 결정 가드: pointerdown 시 조준한 id 와 현재 카드가 다르면(비동기 스왑) 이 클릭을 무시한다.
+    // 키보드(Escape)·프로그램 호출은 pointerIntent 미설정(null)이라 가드를 우회해 현재 카드에 작용(안전 방향).
+    const intent = pointerIntent.current
+    pointerIntent.current = null
+    if (intent !== null && intent !== current.id) return
+    // 회신 유실(전송 단절)은 조용히 흡수 — main/server 의 승인 만료(fail-closed 자동 거부)가 권위라
+    // 렌더러가 재시도하지 않는다. respond 는 이미 해소된 id 에 멱등 no-op.
     void window.fleet.respondApproval(current.id, approved).catch(() => undefined)
-    setQueue((prev) => prev.slice(1))
+    setQueue((prev) => prev.filter((r) => r.id !== current.id))
   }
-
-  // 현재 요청 전환 시 카운트다운 리셋(시각 표시 전용 — 실제 자동 거부는 메인 측 권위).
-  useEffect(() => {
-    if (!current) return
-    // 의도적 동기 setState: 요청 전환 시 표시용 카운트다운을 즉시 리셋(요청당 1회 추가 렌더·무해, [current?.id] 라
-    // 자기 재발화 없음). 실제 자동거부는 메인 권위. 룰은 켜 두고 이 site 만 명시 억제.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setRemaining(Math.ceil(APPROVAL_TIMEOUT_MS / 1000))
-    const iv = setInterval(() => setRemaining((r) => (r > 0 ? r - 1 : 0)), 1000)
-    return () => clearInterval(iv)
-    // current?.id(요청 신원) 전환에만 카운트다운 리셋 — current 객체 변화가 아닌 id 변화 기준이 의도.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.id])
 
   // 모달 열림·큐 전진(다음 요청)마다 거부 버튼에 초기 포커스 — Enter 가 거부로 떨어져 destructive 오승인 방지.
   useEffect(() => {
@@ -127,10 +225,21 @@ export function ApprovalModal() {
         </p>
         <div className="modal-actions">
           <span className="modal-countdown">{remaining}s 후 자동 거부</span>
-          <button ref={rejectRef} className="btn btn-danger" onClick={() => decide(false)}>
+          <button
+            ref={rejectRef}
+            className="btn btn-danger"
+            onPointerDown={captureIntent}
+            onKeyDown={captureIntentKey}
+            onClick={() => decide(false)}
+          >
             거부
           </button>
-          <button className="btn" onClick={() => decide(true)}>
+          <button
+            className="btn"
+            onPointerDown={captureIntent}
+            onKeyDown={captureIntentKey}
+            onClick={() => decide(true)}
+          >
             승인
           </button>
         </div>

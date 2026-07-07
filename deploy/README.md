@@ -182,6 +182,12 @@ bubblewrap FS 샌드박스가 `bwrap: No permissions to create a new namespace` 
 unless-stopped` 라 compose 가 재시작 루프를 돈다). `docker logs <fleet 컨테이너>` 에서
 `FLEET_SANDBOX_BOUNDARY` 메시지를 확인하고 값을 `cli`/`container` 로 교정한다.
 
+**`FLEET_APPROVAL_TTL_MS`(#216 C1)** — presence=0(외출·접속 클라 0) 승인이 시한부로 보류되는 시간(ms).
+미설정=`600000`(10분), 유효 `[5000, 1800000]`(5초~30분), 범위 밖·비수치는 부팅 거부(loud fail — `docker logs`
+에서 `FLEET_APPROVAL_TTL_MS` 메시지). "외출 중 폰 승인"은 응답 여유를 위해 상향 권장(예 `1800000`=30분).
+fail-closed 종착은 **만료 거부 + 취소 abort 두 경로**뿐이며 자동 승인은 없다. presence=0 에서도 인가 경계는
+불변(응답은 Access 인증 소켓만 · B5 층 무변경).
+
 **문 ①(ttyd 인터랙티브 codex)** — cli-auth 볼륨이 `/home/node` 를 덮어 이미지에 구운 `~/.codex/config.toml`
 을 마스킹하므로, 터미널에서 직접 codex 로 파일을 편집하려면 셸 안에서 `~/.codex/config.toml` 에
 `sandbox_mode = "danger-full-access"` 를 수동 설정한다(문 ② fleet-server 자동 적용과 별개 · entrypoint
@@ -302,7 +308,9 @@ fleet 서비스만·docker.sock 미마운트), (13) 컨테이너 브라우저 �
 - [ ] 터널 실배포 → 폰 브라우저에서 `fleet.<도메인>` 접속(Access 실로그인) → 오케스트레이션 UI 로드
 - [ ] 세션 등록(CLI/API) → 라이브 목록 반영
 - [ ] 목표 입력 → 런 완주(역할 DAG 진행·산출물 검증까지)
-- [ ] 승인 카드 fail-closed — 인증 클라 0 전이(탭 닫기) 시 outstanding 승인이 즉시 거부됨
+- [ ] **승인 보류(#216 C1) — "외출 중 폰 승인"**: 위험 작업 승인 요청 → (PC 탭 닫아 인증 클라 0 전이) →
+      승인이 즉시 거부되지 않고 **`FLEET_APPROVAL_TTL_MS`(기본 10분)까지 보류** → 폰 재접속 → 스냅숏 카드
+      **재제시**(`listPendingApprovals`) → 폰에서 승인 → PC 런이 이어서 실행 → 만료/취소 시 카드 소멸(withdrawn)
 - [ ] 재접속 복구 — 탭 닫기/토큰 만료 후 재접속 시 nonce 재발급으로 자동 복구·스냅샷 재하이드레이션
 
 _(제공됨: 이미지·compose·터널/Access 설정·자식 격리·결정 기록·로컬 스모크. 위 라이브 항목은 실제

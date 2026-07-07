@@ -333,12 +333,30 @@ export interface ApprovalRequest {
   target: string
   risk: RiskLevel
   ts: number
+  /**
+   * 서버 권위 자동거부 시각(ms epoch) = ts + ttlMs (#216 C1). 렌더러 카운트다운·approver 만료
+   * 타이머의 단일 출처(카운트다운=실제 만료 불일치 원천 차단). gate 가 요청 생성 시 스탬프한다.
+   */
+  expiresAt: number
 }
 
 export type ApprovalDecision = 'approved' | 'rejected'
 
+/**
+ * approver 결정 + (거부 시) 감사 사유(#216 C1). approver 는 boolean 대신 이 결과를 반환하고, 감사는
+ * gate 가 단일 책임으로 `approval.decided` 에 실어(reason 배관). abort/만료/거부는 예외가 아니라
+ * `{approved:false}` 로 해소한다(예외 기반 rejection 은 비계약 — §C-3·§C-5).
+ */
+export type ApprovalOutcome = { approved: boolean; reason?: string }
+
 /** destructive 승인 무응답 시 자동 거부까지의 시간(메인 측 권위 + 렌더러 카운트다운 공용). */
 export const APPROVAL_TIMEOUT_MS = 60_000
+
+/**
+ * 동시 대기(pending) 승인 상한(#216 C1). approver enqueue 시 `pending.size >= max` 면 즉시 거부 +
+ * 감사(reason:'pending-cap'). 공격자 다량 tool-call 로부터 메모리·UI 카드 무한 적재 차단.
+ */
+export const APPROVAL_MAX_PENDING = 64
 
 // ── 감사 로그 (요구사항 6) ────────────────────────────────────────────────
 export interface FleetEvent {
@@ -605,6 +623,16 @@ export interface FleetBridge {
   onApprovalRequest(callback: (req: ApprovalRequest) => void): () => void
   /** 승인 모달 결정 회신(메인이 id 로 상관). */
   respondApproval(id: string, approved: boolean): Promise<void>
+  /**
+   * 미만료 대기 승인 스냅숏(재하이드레이션 · #216 C1). 후접속/재접속 클라가 브로드캐스트를 놓친
+   * 대기 승인 카드를 재제시한다(hold 정책 하 "외출 중 폰 승인" 완료정의). 데스크톱은 대개 빈 목록.
+   */
+  listPendingApprovals(): Promise<ApprovalRequest[]>
+  /**
+   * 승인 이탈(응답/만료/철회/취소·rejectAll) 통지 구독 — payload = bare string id(해제 함수 반환).
+   * 렌더러가 카드를 제거하고 tombstone 에 기록한다(늦은 스냅숏의 이미-철회 id 부활 차단 · #216 C1).
+   */
+  onApprovalWithdrawn(callback: (id: string) => void): () => void
 
   // 자동 업데이트
   /** 업데이트 상태 스냅샷(배너 마운트 하이드레이트). */

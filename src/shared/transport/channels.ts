@@ -77,6 +77,8 @@ export const CHANNELS = {
   // ── 감사 / 승인 ──
   'fleet:events:list': { kind: 'invoke', scope: 'both' },
   'fleet:approval:respond': { kind: 'invoke', scope: 'both' },
+  // 대기 승인 스냅숏(재하이드레이션 · #216 C1) — 후접속/재접속 클라가 놓친 카드 재제시.
+  'fleet:approval:pending': { kind: 'invoke', scope: 'both' },
 
   // ── 자동 업데이트(Electron 전용) ──
   'fleet:update:getState': { kind: 'invoke', scope: 'desktop' },
@@ -91,6 +93,8 @@ export const CHANNELS = {
   'fleet:orchestrator:event': { kind: 'push', scope: 'both' },
   'fleet:chat:stream': { kind: 'push', scope: 'both' },
   'fleet:approval:request': { kind: 'push', scope: 'both' },
+  // 승인 이탈(응답/만료/철회/취소) tombstone 브로드캐스트(bare string id · #216 C1).
+  'fleet:approval:withdrawn': { kind: 'push', scope: 'both' },
   'fleet:update:event': { kind: 'push', scope: 'desktop' },
 } as const satisfies Record<string, ChannelDecl>
 

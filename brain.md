@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 86 files · 219 import wires · 44 IPC channels · 생성 2026-07-07T11:11 UTC
+> 86 files · 220 import wires · 46 IPC channels · 생성 2026-07-07T17:35 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -19,7 +19,7 @@
 - **승인 게이트**(위험작업 차단): safety/approval
 
 ## 런타임 배선 (import 로는 안 보이는 연결)
-- renderer/App, renderer/bridge/web-bridge, renderer/bridge/ws-bridge, renderer/components/AddAiWizard, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, renderer/main →(window.fleet)→ preload/index.ts → main/index.ts (44 IPC channels) → engine
+- renderer/App, renderer/bridge/web-bridge, renderer/bridge/ws-bridge, renderer/components/AddAiWizard, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, renderer/main →(window.fleet)→ preload/index.ts → main/index.ts (46 IPC channels) → engine
 - session/cli-session → claude · codex · gemini
 - session/api-session → Anthropic · OpenAI · Google
 - mcp/stdio → MCP servers
@@ -28,9 +28,9 @@
 
 ### other · other
 - **server/boot**
-  - →의존: cli/registry, engine, main/e2e, safety/approval-bridge, server/access-jwt, server/child-env, server/env-key-crypto, server/handlers, server/security-config, server/static, +4 · ←피의존: server/index · 538줄
+  - →의존: cli/registry, engine, main/e2e, safety/approval-bridge, server/access-jwt, server/child-env, server/env-key-crypto, server/handlers, server/security-config, server/static, +4 · ←피의존: server/index · 576줄
 - **server/handlers**
-  - →의존: engine, safety/approval-bridge, shared/transport/channels, shared/types, workspace/set-workspace · ←피의존: server/boot, server/ws-host · 136줄
+  - →의존: engine, safety/approval-bridge, shared/transport/channels, shared/types, workspace/set-workspace · ←피의존: server/boot, server/ws-host · 139줄
 - **server/ws-host**
   - →의존: server/handlers, shared/transport/channels, shared/transport/protocol · ←피의존: server/boot · 99줄
 - **server/env-key-crypto**
@@ -52,9 +52,9 @@
 - **renderer/App** — 앱 화면의 큰 틀과 위쪽 탭 메뉴를 그리는 부품 _맨 위 'FLEET' 제목과 세션·프로젝트·채팅 세 탭을 보여주고, 누른 탭에 맞는 화면을 갈아끼웁니다. 현재 등록된 AI 세션 개수와 위험 작업 승인 창도 항상 켜 둡니다._
   - →의존: renderer/bridge/hydration, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, shared/types · ←피의존: renderer/main · 118줄
 - **renderer/bridge/hydration**
-  - →의존: renderer/bridge/ws-bridge, shared/transport/protocol · ←피의존: renderer/App, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/main · 109줄
+  - →의존: renderer/bridge/ws-bridge, shared/transport/protocol · ←피의존: renderer/App, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/main · 109줄
 - **renderer/bridge/ws-bridge**
-  - →의존: shared/cliAuthInstallMeta, shared/transport/protocol, shared/types · ←피의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/bridge/web-bridge · 422줄
+  - →의존: shared/cliAuthInstallMeta, shared/transport/protocol, shared/types · ←피의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/bridge/web-bridge · 425줄
 - **renderer/components/ProjectPanel** — 목표를 적으면 여러 AI가 역할을 나눠 작업하게 시키는 프로젝트 실행 화면 _원하는 목표와 역할 배정 방식을 입력해 '실행'을 누르면 AI들이 계획·작업·검증을 진행하고, 그 과정을 진행 로그와 작업 보드로 실시간 보여주며 도중에 취소할 수도 있습니다._
   - →의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/components/elicitation, renderer/ui, shared/types · ←피의존: renderer/App · 653줄
 - **renderer/components/AddAiWizard**
@@ -67,10 +67,10 @@
   - →의존: renderer/bridge/hydration, renderer/ui, shared/types · ←피의존: renderer/App · 517줄
 - **renderer/bridge/web-bridge**
   - →의존: renderer/bridge/ws-bridge, shared/types · ←피의존: renderer/main · 111줄
+- **renderer/components/ApprovalModal** — 위험한 작업을 하기 전에 사용자에게 허락을 받는 확인 창 _파일 삭제·명령 실행 같은 위험 작업이 생기면 '거부/승인' 팝업을 띄우고, 정해진 시간이 지나면 자동으로 거부합니다. 실수로 엔터를 눌러도 거부 쪽으로 떨어지게 해 위험한 작업이 잘못 승인되는 걸 막습니다._
+  - →의존: renderer/bridge/hydration, shared/types · ←피의존: renderer/App · 251줄
 - **renderer/main** — 앱 화면을 맨 처음 켜서 빈 페이지에 띄우는 시작 부품 _웹 페이지의 빈 자리를 찾아 그 안에 위의 App 화면 전체를 그려 넣어 앱을 처음 띄웁니다. 개발 중 실수를 더 잘 잡아주는 점검 모드로 감싸 실행합니다._
   - →의존: renderer/App, renderer/bridge/hydration, renderer/bridge/web-bridge · ←피의존: — · 21줄
-- **renderer/components/ApprovalModal** — 위험한 작업을 하기 전에 사용자에게 허락을 받는 확인 창 _파일 삭제·명령 실행 같은 위험 작업이 생기면 '거부/승인' 팝업을 띄우고, 정해진 시간이 지나면 자동으로 거부합니다. 실수로 엔터를 눌러도 거부 쪽으로 떨어지게 해 위험한 작업이 잘못 승인되는 걸 막습니다._
-  - →의존: shared/types · ←피의존: renderer/App · 142줄
 - **renderer/components/UpdateBanner**
   - →의존: shared/types · ←피의존: renderer/App · 81줄
 - **renderer/components/authBanners**
@@ -82,11 +82,11 @@
 
 ### preload · preload — 화면(앱 창)과 앱의 두뇌(본체)를 안전하게 이어주는 다리로, 화면이 본체에 일을 시키고 결과를 돌려받게 해 주는 창구 역할을 한다.
 - **preload/index** — 앱 화면과 본체 사이를 안전하게 잇는 단 하나의 통로(창구) 부품 _화면 쪽 코드는 본체에 직접 손대지 못하고, 이 파일이 미리 정해 둔 'fleet'이라는 안내 데스크를 통해서만 요청을 전달한다. 마치 은행 창구처럼, 손님(화면)이 정해진 양식으로만 요청하고 직원(본체)이 처리해 결과를 돌려주는 구조라 안전하다._
-  - →의존: shared/types · ←피의존: — · 103줄
+  - →의존: shared/types · ←피의존: — · 111줄
 
 ### main · main — Fleet 앱의 본체(메인 프로세스)를 켜고, 창과 보안 빗장을 설치하며, 화면과 AI 엔진을 안전하게 연결하는 시동·관문 묶음이다.
 - **main/index** — 앱에 시동을 걸어 창을 띄우고 화면과 AI 엔진을 이어주는 '시동·교환대' _앱이 준비되면 AI 엔진을 만들고, 화면(창)을 띄우며, 화면이 보내는 모든 요청(세션 등록·채팅·프로젝트 실행·승인 응답 등)을 엔진의 해당 기능으로 연결하는 전화 교환대 역할을 한다. 창을 만들 때 보안 빗장 두 개(이동 차단·권한 차단)를 걸고, 앱을 끌 때는 켜져 있던 AI 프로그램들을 깔끔히 정리한 뒤 종료해 '좀비' 프로세스가 남지 않게 한다._
-  - →의존: engine, main/auto-update, main/crash-recovery, main/e2e, main/external-links, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, +3 · ←피의존: — · 281줄
+  - →의존: engine, main/auto-update, main/crash-recovery, main/e2e, main/external-links, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, +3 · ←피의존: — · 293줄
 - **main/e2e** — 자동 테스트할 때만 켜지는 '연습용 가짜 AI' 장치 _진짜 AI를 부르는 대신 미리 정해둔 답을 흉내 내, 화면 자동검사(Playwright)가 흔들림 없이 돌아가게 한다. 가짜 AI 둘과 토론방 하나, 임시 작업폴더를 미리 깔아두며, 일부러 '응답 중' 상태에서 멈춰 탭을 옮겼다 돌아와도 진행 표시가 살아있는지 확인하게 해준다. FLEET_E2E 라는 스위치가 정확히 '1'일 때만 작동하고 평소엔 절대 끼어들지 않는다._
   - →의존: cli/detect, cli/probe, engine, verify/run · ←피의존: main/index, server/boot · 103줄
 - **main/external-links**
@@ -120,7 +120,7 @@
 
 ### orchestrator · core — 여러 AI에게 역할을 나눠주고, 목표를 작은 작업들로 쪼개 차례로 시키고, 서로 검토·수정·요약까지 마치도록 전체 흐름을 지휘하는 '작업 진행 본부' 모듈이다.
 - **orchestrator/orchestrator** — 목표 하나를 받아 계획·구현·검토·검증·요약까지 전 과정을 지휘하는 작업 총괄 지휘자 _목표를 작은 작업들로 쪼갠 뒤, 각 작업을 구현 AI가 실제 파일을 고치게 하고 다른 AI가 그 변경을 교차 검토해 통과할 때까지 반복하며, 위험한 변경은 승인을 받고 최종에는 테스트로 검증하고 실패하면 자동으로 고치게 합니다. 한 작업이 실패해도 전체가 멈추지 않게 격리하고, 사용자가 취소하면 진행 중 변경을 되돌리고 중단합니다._
-  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1071줄
+  - →의존: orchestrator/assignment, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/plan, orchestrator/review, safety/approval, session/manager, shared/types, store/types, workspace/git, +1 · ←피의존: engine · 1080줄
 - **orchestrator/diff-risk** — AI가 바꾼 코드가 위험한 변경인지 판정하는 위험 신호등 _AI가 고친 내용을 보고 비밀번호 같은 민감한 파일을 건드렸거나, 파일을 너무 많이 지웠거나, 변경 내용이 너무 길어 끝이 잘려 확인이 불가능하면 '위험'으로 표시하고 그 이유를 함께 알려 줍니다. 의심스러우면 안전하게 '위험' 쪽으로 분류합니다._
   - →의존: safety/approval, shared/types, workspace/git, workspace/ignored-baseline · ←피의존: orchestrator/orchestrator · 37줄
 - **orchestrator/plan** — 큰 목표를 실행 가능한 작은 작업 목록으로 쪼개 주는 계획 분해기 _기획 담당 AI에게 목표를 4~8개의 작업으로 나눠 달라고 요청하고, AI가 돌려준 응답이 형식이 조금 어긋나도 너그럽게 읽어내 작업 목록으로 정리합니다. 검증(테스트·빌드)이 실패하면 그 실패 내용을 다시 AI에게 알려 부족한 부분만 채울 '추가 보정 작업'도 뽑아냅니다._
@@ -134,7 +134,7 @@
 
 ### engine · core — 여러 AI(구독형 CLI와 API)를 한곳에서 등록·관리하고, 채팅과 프로젝트 작업을 진행시키는 앱의 중앙 관제실 역할을 하는 모듈이다.
 - **engine** — 앱의 모든 핵심 기능을 한곳에 모아 화면 쪽에 단일 창구로 내주는 '중앙 관제실' 부품 _AI 세션 등록·삭제, 채팅 주고받기, 프로젝트 작업 실행과 취소, 외부 도구 연결 같은 기능을 묶어 화면(IPC) 쪽에서 부르기 쉬운 하나의 입구로 제공한다. 앱을 다시 켜도 저장해 둔 AI 세션을 다시 살려내고, API 키는 OS 암호화로 안전하게 보관·복원한다._
-  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/stdio, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, +15 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 900줄
+  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/stdio, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, +15 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 910줄
 
 ### session · core — 여러 AI(구독형 CLI와 API)를 똑같은 방식으로 다룰 수 있게 감싸서, 작업방이 AI의 종류를 신경 쓰지 않고 '말 걸고-답받기'만 하면 되도록 통일해 주는 모듈.
 - **session/cli-session** — 클로드·코덱스·제미니 같은 설치형 AI 프로그램을 실제로 실행해 대화를 주고받는 일꾼 _프롬프트를 명령어 형태로 만들어 해당 AI 프로그램을 돌리고 결과 글을 받아 깔끔하게 정리해 돌려준다. 매번 새 프로그램을 띄우는 '독립 실행', AI 자체 기능으로 대화를 이어가는 '대화 유지', 지정한 폴더의 파일을 직접 고치는 '편집'의 세 가지 방식을 지원하며, 가능하면 답을 한 글자씩 실시간으로 흘려보내고 같은 세션의 동시 요청은 순서대로 줄 세운다._
@@ -152,7 +152,7 @@
 - **mcp/types** — 이 모듈의 부품들이 공유하는 약속(설계도) 모음 파일 _자식 프로세스, 통신 통로, 도구 정보, 서버 관리자 등이 각각 어떤 기능을 갖춰야 하는지 형태만 정의해 둔다. 실제 동작 코드는 없고, 부품들이 서로 같은 규격으로 끼워 맞춰지도록 하는 인터페이스다._
   - →의존: safety/approval, shared/types, tools/types · ←피의존: engine, mcp/client, mcp/host, mcp/stdio, mcp/wrap · 111줄
 - **mcp/host** — 여러 도구 서버를 한꺼번에 켜고 끄고 정리하는 총괄 관리자 부품 _서버 목록을 받아 새것은 연결하고 빠진 것은 닫으며, 새 서버를 실행하기 전에는 사용자 승인(ApprovalGate)을 먼저 받는다. 같은 이름의 도구가 겹치면 먼저 등록된 쪽만 노출하고, 서버가 죽거나 도구 목록이 바뀌면 상태를 다시 계산한다._
-  - →의존: mcp/client, mcp/stdio, mcp/types, mcp/wrap, shared/types, tools/types · ←피의존: engine · 325줄
+  - →의존: mcp/client, mcp/stdio, mcp/types, mcp/wrap, shared/types, tools/types · ←피의존: engine · 336줄
 - **mcp/stdio** — 도구 서버 프로그램을 실제로 실행하고 글자를 주고받게 연결하는 부품 _외부 프로그램을 자식 프로세스로 띄우고, 들어오는 글자를 줄바꿈 단위로 잘라 하나의 메시지로 묶어 전달한다. 깨진 메시지 한 줄은 버려서 연결 전체가 무너지지 않게 하고, 종료 통지는 정확히 한 번만 가도록 모은다._
   - →의존: mcp/types, process/kill-tree, shared/types · ←피의존: engine, mcp/host · 102줄
 - **mcp/wrap** — 외부 도구 하나를 Fleet 안에서 쓸 수 있는 표준 도구로 포장하는 부품 _도구 이름을 'mcp__서버명__도구명' 형식으로 바꾸고 규칙에 안 맞는 글자는 정리하며, 모든 외부 도구를 '위험(승인 필요)'으로 분류한다. 도구 실행 결과는 글자로 합치되 64KB를 넘으면 잘라서 화면이 폭주하지 않게 한다._
@@ -176,7 +176,7 @@
 - **tools/types** — 도구가 어떤 모양과 기능을 갖춰야 하는지 정해두는 규격서(설계도) _도구라면 반드시 가져야 할 것들(AI에게 보여줄 설명, 위험도 판정, 실제 실행 함수)과 도구 명부·진행 관리자가 주고받을 정보의 형태를 약속으로 정의한다. 실제 동작 코드는 없고, 다른 파일들이 따라야 할 틀만 담는다._
   - →의존: providers/types, safety/approval, shared/types · ←피의존: mcp/host, mcp/types, mcp/wrap, session/api-session, tools/loop, tools/registry, tools/workspace-tools · 42줄
 - **tools/loop** — AI가 도구를 쓰겠다고 하면 실제로 실행해주고 그 결과를 다시 AI에게 돌려주길 반복하는 진행 관리자 _AI가 '이 도구를 써 달라'고 하면 승인을 받은 뒤 도구를 실행하고 결과를 다시 AI에게 전달하는 일을 도구 호출이 끝날 때까지 되풀이한다. 무한 반복을 막으려 최대 8번으로 제한하고, 그동안 쓴 비용(토큰)을 합산하며, 알 수 없는 도구나 승인 거부·실행 오류는 오류로 표시해 돌려준다._
-  - →의존: providers/types, tools/context, tools/types · ←피의존: session/api-session · 225줄
+  - →의존: providers/types, tools/context, tools/types · ←피의존: session/api-session · 242줄
 - **tools/workspace-tools** — 작업 폴더 안의 파일을 읽고 찾아보게 해주는 안전한 읽기 전용 도구 4종 세트 _파일 읽기·폴더 목록·내용 검색(grep)·파일 찾기(glob) 네 가지 도구를 만들며, 모두 지정한 작업 폴더 밖으로는 절대 나가지 못하게 막고 비밀번호 같은 민감 파일은 건너뛴다. 너무 큰 파일이나 많은 결과는 일부만 보여주고, 위험할 수 있는 검색 패턴은 미리 거부해 앱이 멈추지 않게 보호한다._
   - →의존: safety/approval, tools/types, workspace/path-guard · ←피의존: engine · 367줄
 - **tools/context** — 대화 기록이 너무 길어지지 않게 오래된 도구 결과를 짧은 표식으로 줄여주는 정리 담당 _AI에게 보내는 대화가 정해진 분량을 넘으면, 예전에 받았던 도구 실행 결과 내용을 '이전 도구 결과 정리됨'이라는 짧은 문구로 바꿔 자리를 비운다. 최근 결과 몇 개와 방금 막 만든 결과는 그대로 보존하고, 글자 수를 대략 세어(영어는 4글자에 한 토막, 한글·한자는 글자마다 한 토막으로 넉넉히) 한도 초과를 미리 막는다._
@@ -204,9 +204,9 @@
 
 ### safety · core — AI 가 위험한 작업(파일 삭제, 강제 푸시 등)을 하려 할 때 자동으로 위험도를 판별하고, 위험하면 사람에게 "정말 해도 되나요?" 허락을 받아내는 안전장치 모듈.
 - **safety/approval** — 호출자가 신고한 위험도를 집행하는 승인 검문소(위험도 자체는 판정하지 않음) _게이트는 무엇이 위험한지 스스로 판정하지 않는다 — 호출하는 도구가 신고한 위험도를 집행할 뿐이다. 안전(safe)으로 신고된 작업은 자동 통과시키고, 그 외(주의/파괴적)는 승인자에게 묻되 승인자가 없으면 거절하는 '안전 우선' 방식이며, 모든 요청과 결정을 기록(감사 로그)으로 남긴다. 셸·명령 위험 분류는 코어가 아니라 sub-agent CLI 경계에 위임된다(코어 내 명령 데니리스트 없음). 민감 파일 정규식(SENSITIVE_FILE)만 export 해 diff 위험판정·워크스페이스 도구가 공유한다._
-  - →의존: shared/types · ←피의존: engine, mcp/types, orchestrator/diff-risk, orchestrator/orchestrator, tools/types, tools/workspace-tools, workspace/ignored-baseline · 56줄
+  - →의존: shared/types · ←피의존: engine, mcp/types, orchestrator/diff-risk, orchestrator/orchestrator, tools/types, tools/workspace-tools, workspace/ignored-baseline · 88줄
 - **safety/approval-bridge** — 허락이 필요한 작업을 사용자 화면에 물어보고, 사용자의 예/아니오 답을 도로 전달해 주는 중개 창구 _AI 가 위험한 일을 하려 하면 그 요청을 화면(렌더러)으로 보내 사용자에게 묻고, 답이 오면 해당 요청과 짝지어 처리한다. 물어볼 창이 없으면 즉시 거절하고, 사람이 일정 시간(기본 타임아웃) 안에 답하지 않아도 자동으로 거절하는 '안전 우선' 방식이며, 같은 답이 두 번 와도 한 번만 처리한다._
-  - →의존: shared/types · ←피의존: main/index, server/boot, server/handlers · 82줄
+  - →의존: shared/types · ←피의존: main/index, server/boot, server/handlers · 165줄
 
 ### chat · core — 여러 AI가 한 채팅방에서 서로의 말을 보고 토론하도록 진행을 맡아 주는 모듈이다.
 - **chat/room** — 여러 AI가 한 채팅방에서 차례로 발언하며 토론하도록 진행을 맡는 사회자 부품 _사용자나 시스템의 글을 방에 올리고, 특정 AI를 지목해 지금까지의 대화 내용을 보여준 뒤 다음 발언을 받아 다시 방에 저장한다. 여러 AI에게 한 주제를 정해진 횟수만큼 돌아가며 토론시키는 기능도 있어, 회의의 진행자처럼 누가 언제 말할지를 정리해 준다._
@@ -226,15 +226,15 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +38 · 627줄
+  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +38 · 655줄
 - **shared/cliAuthInstallMeta**
   - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/bridge/ws-bridge, renderer/components/AddAiWizard · 42줄
 - **shared/transport/channels**
-  - →의존: — · ←피의존: server/handlers, server/ws-host, shared/transport/fixtures · 139줄
+  - →의존: — · ←피의존: server/handlers, server/ws-host, shared/transport/fixtures · 143줄
 - **shared/transport/protocol**
   - →의존: — · ←피의존: renderer/bridge/hydration, renderer/bridge/ws-bridge, server/ws-host · 156줄
 - **shared/transport/fixtures**
-  - →의존: shared/transport/channels · ←피의존: — · 99줄
+  - →의존: shared/transport/channels · ←피의존: — · 113줄
 
 ---
 _이 파일은 자동 생성물이다. 코드 변경 후 `npm run brain` 으로 갱신. 설명은 `scripts/brain/descriptions.json` 에서 손볼 수 있다._

@@ -108,6 +108,10 @@ export async function runToolLoop(
   let usageAcc: TokenUsage | undefined
 
   for (let iter = 0; iter < max; iter++) {
+    // 방어심층(#216 C1 §C-5): 취소(cancelRun/cancelChat)된 뒤엔 다음 provider.chat 왕복을 시작하지
+    // 않는다. 승인 대기가 abort 로 'rejected' 해소된 직후 max(8) 왕복 churn 을 막는다(provider.chat 이
+    // abort 를 삼키는 어댑터 방어 — 정상 어댑터는 chatOpts.signal 로 이미 throw).
+    if (opts.signal?.aborted) break
     // provider 분기 없이 capability 플래그만 본다: native(anthropic)는 wire 위임, 그 외는 client-side
     // 가지치기. 둘 다 chat 직전에 적용해 매 라운드 누적을 경계한다. loop 가 contextManagement 소유권을
     // 가진다(caller opts 값은 무시) — native 는 서버가 context 를 직접 관리하므로 local turns 가 무제한
@@ -171,12 +175,17 @@ export async function runToolLoop(
       const risk = tool.classify(call.input)
       audit('tool.requested', { name: call.name, risk })
       const argPreview = previewInput(call.input)
-      const decision = await deps.gate.request({
-        kind: 'tool-call',
-        summary: argPreview ? `도구 호출: ${call.name} ${argPreview}` : `도구 호출: ${call.name}`,
-        target: argPreview || call.name,
-        risk,
-      })
+      // signal 을 gate.request 로 관통(#216 C1 §C-5) — 승인 대기가 hold 정책이면 cancelRun/cancelChat
+      // abort 시 TTL(최대 30분) 대신 즉시 'rejected' 로 해소된다(취소 그래프 = 승인 대기 해소 그래프).
+      const decision = await deps.gate.request(
+        {
+          kind: 'tool-call',
+          summary: argPreview ? `도구 호출: ${call.name} ${argPreview}` : `도구 호출: ${call.name}`,
+          target: argPreview || call.name,
+          risk,
+        },
+        { signal: opts.signal },
+      )
       if (decision !== 'approved') {
         audit('tool.failed', { name: call.name, reason: 'rejected' })
         onToolStep?.({ id: stepId, name: call.name, phase: 'error', summary: '승인 거부됨' })
@@ -219,6 +228,14 @@ export async function runToolLoop(
     turns.push({ role: 'user', content: results })
   }
 
+  // 취소로 이터레이션이 중단된 경우(위 방어심층 break) — max-iteration 오분류 대신 표준 취소 신호로
+  // 종착한다(#216 적대리뷰 P3). provider.chat 이 abort 를 던지는 정상 취소 경로와 동일한 AbortError 정체성
+  // 이라, 상위(api-session·streamedAsk)가 취소를 'max 반복 초과' 자원-오류로 오표시하지 않는다.
+  if (opts.signal?.aborted) {
+    const err = new Error('요청이 취소되었습니다.')
+    err.name = 'AbortError'
+    throw err
+  }
   // 가장 비싼 경로 — 그때까지 누적한 usage 를 에러에 실어 호출자가 집계하게 한다(미집계 방지).
   throw new ToolLoopExceededError(max, usageAcc)
 }

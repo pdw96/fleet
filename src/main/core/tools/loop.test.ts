@@ -11,6 +11,8 @@ import type {
   ToolUseBlock,
 } from '../providers/types'
 import type { ApprovalGate } from '../safety/approval'
+import { createApprovalGate } from '../safety/approval'
+import { createIpcApprover } from '../safety/approval-bridge'
 import { createToolRegistry } from './registry'
 import { runToolLoop } from './loop'
 import type { FleetTool } from './types'
@@ -748,5 +750,62 @@ describe('runToolLoop', () => {
       },
     )
     expect((turns[0][0].content as ToolResultBlock[])[0].content).toBe(PRUNE_STUB) // 도구 예산 포함으로 정리됨
+  })
+})
+
+describe('runToolLoop — 취소 그래프 관통(#216 C1 §C-5·§3-14·15)', () => {
+  const dangerTool: FleetTool = {
+    definition: { name: 'danger', description: 'd', parameters: { type: 'object' } },
+    classify: () => 'destructive', // autoApprove(['safe']) 밖 → approver 로 라우팅
+    async execute() {
+      return 'done'
+    },
+  }
+
+  it('승인 hold 중 opts.signal abort → 승인 즉시 거부로 해소(:174 signal) + 다음 provider.chat 왕복 없음(이터레이션 break)', async () => {
+    // 실 gate + 실 approver('hold') — presence=0 이어도 승인이 보류된다(TTL 만료/abort 만이 종착).
+    const ipc = createIpcApprover({
+      send: vi.fn(),
+      hasWindow: () => false,
+      presencePolicy: 'hold',
+    })
+    const gate = createApprovalGate({ autoApprove: ['safe'], approver: ipc.approver })
+    const { provider, calls } = scriptedProvider([
+      { text: '', toolCalls: [toolUse('t1', 'danger', {})], finishReason: 'tool_use' },
+      { text: '끝', toolCalls: [], finishReason: 'stop' },
+    ])
+    const controller = new AbortController()
+    const run = runToolLoop(
+      provider,
+      [{ role: 'user', content: 'go' }],
+      { signal: controller.signal },
+      { registry: createToolRegistry([dangerTool]), gate },
+    )
+    // 루프가 승인 await 에 도달하도록 마이크로태스크 양보.
+    for (let i = 0; i < 5; i++) await Promise.resolve()
+    expect(ipc.pendingCount()).toBe(1) // hold: 승인 대기 (:174 미배선이면 abort 무해 → 영구 hang)
+    controller.abort()
+    // :174 signal → 승인 approver {approved:false} → gate 'rejected' → tool_result "승인 거부됨"
+    // → 다음 이터레이션 상단 aborted break → AbortError 종착(max-iteration 오분류 아님 · 적대리뷰 P3).
+    await expect(run).rejects.toThrow(expect.objectContaining({ name: 'AbortError' }))
+    expect(ipc.pendingCount()).toBe(0) // 승인이 abort 로 해소됨(TTL hang 없음)
+    expect(calls).toHaveLength(1) // 이터레이션 break: 두 번째 provider.chat 없음
+  })
+
+  it('진입 시 이미 aborted → provider.chat 미호출·AbortError(이터레이션 상단 break)', async () => {
+    const { provider, calls } = scriptedProvider([
+      { text: '끝', toolCalls: [], finishReason: 'stop' },
+    ])
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      runToolLoop(
+        provider,
+        [{ role: 'user', content: 'go' }],
+        { signal: controller.signal },
+        { registry: createToolRegistry([dangerTool]), gate: approveAll },
+      ),
+    ).rejects.toThrow(expect.objectContaining({ name: 'AbortError' }))
+    expect(calls).toHaveLength(0) // 진입 aborted → 첫 provider.chat 도 없음
   })
 })

@@ -95,4 +95,18 @@ export const CHANNEL_FIXTURES = {
   // ── 감사 / 승인 ──
   'fleet:events:list': { args: [], result: [] },
   'fleet:approval:respond': { args: ['appr-1', true], result: undefined },
+  'fleet:approval:pending': {
+    args: [],
+    result: [
+      {
+        id: 'appr-1',
+        kind: 'tool-call',
+        summary: '도구 호출: danger',
+        target: 'danger',
+        risk: 'destructive',
+        ts: 0,
+        expiresAt: 600_000,
+      },
+    ],
+  },
 } as const satisfies Record<BothInvokeChannel, ChannelFixture>

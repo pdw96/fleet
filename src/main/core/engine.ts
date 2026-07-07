@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AgentRole,
   ApiProviderConfig,
+  ApprovalOutcome,
   ApprovalRequest,
   ChatActivity,
   ChatMessage,
@@ -100,8 +101,16 @@ export interface FleetEngineOptions {
   onChatStream?: (e: ChatStreamEvent) => void
   /** 산출물 기록·검증의 워크스페이스 루트. 미지정 시 파일 기록/검증 비활성(기존 동작 보존). */
   workspaceDir?: string
-  /** 위험(destructive) 작업 승인 콜백. 미지정 시 위험 작업은 거부된다(안전 기본값). */
-  approver?: (req: ApprovalRequest) => Promise<boolean>
+  /**
+   * 위험(destructive) 작업 승인 콜백. 미지정 시 위험 작업은 거부된다(안전 기본값). `ApprovalOutcome`
+   * 를 반환한다(#216 C1 — boolean 아님·reason 배관). signal 은 취소 그래프 관통에 쓰인다(§C-5).
+   */
+  approver?: (req: ApprovalRequest, opts?: { signal?: AbortSignal }) => Promise<ApprovalOutcome>
+  /**
+   * 승인 무응답 자동거부까지(ms · #216 C1). gate 가 `expiresAt = ts + ttlMs` 로 스탬프한다. 미지정 시
+   * gate 기본(APPROVAL_TIMEOUT_MS=60s). 서버(boot)가 hold 정책 하에서 env(FLEET_APPROVAL_TTL_MS)로 상향.
+   */
+  approvalTtlMs?: number
   /** 검증 실행기 주입(테스트용). 기본은 child_process 기반. */
   verifyRunner?: VerifyRunner
   /** git 실행기 주입(테스트용). 기본은 child_process 기반 defaultGitRunner. */
@@ -229,6 +238,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const gate = createApprovalGate({
     autoApprove: ['safe', 'caution'],
     approver: opts.approver,
+    ttlMs: opts.approvalTtlMs,
     onEvent: appendAudit,
   })
   // MCP 호스트: 외부 MCP 서버의 도구를 FleetTool 로 노출한다(setMcpServers 로 연결).

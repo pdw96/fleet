@@ -52,6 +52,10 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
   const refreshChains = new Map<string, Promise<void>>()
   // dispose 후 큐에 남은/진행 중 setServers 가 새 자식을 spawn 하지 않도록 막는 플래그.
   let disposed = false
+  // dispose 중 진행 중인 spawn 승인 대기(hold 정책)를 즉시 해소하기 위한 컨트롤러(#216 C1 스펙수정 #2).
+  // dispose() 시작 시 abort → gate.request 의 approver 가 즉시 {approved:false} 로 해소돼 doSetServers 가
+  // 풀리고 queue 가 종착한다 → `await host.dispose()` 가 held approval TTL(최대 30분)까지 매달리지 않는다.
+  const disposeController = new AbortController()
 
   /**
    * 연결된 서버들의 노출 도구를 전역 유일로 재계산하고 status 를 갱신한다(서버 간 sanitize 충돌 표면화).
@@ -238,12 +242,16 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
       const cmd = commandLine(spec)
       // 안전 우선(AGENTS.md): 임의 로컬 프로세스 실행은 ApprovalGate 를 통과한다(destructive).
       if (gate) {
-        const decision = await gate.request({
-          kind: 'shell',
-          summary: `MCP 서버 실행: ${spec.name}`,
-          target: cmd,
-          risk: 'destructive',
-        })
+        const decision = await gate.request(
+          {
+            kind: 'shell',
+            summary: `MCP 서버 실행: ${spec.name}`,
+            target: cmd,
+            risk: 'destructive',
+          },
+          // dispose signal 관통(#216 C1 스펙수정 #2) — hold 정책 하에서 dispose 중 대기 승인을 즉시 해소.
+          { signal: disposeController.signal },
+        )
         if (decision !== 'approved') {
           entries.set(spec.name, {
             spec,
@@ -308,6 +316,9 @@ export function createMcpHost(opts: McpHostOptions = {}): McpHost {
     },
     async dispose() {
       disposed = true
+      // 진행 중인 spawn 승인 대기(hold)를 abort 로 즉시 해소(#216 C1 스펙수정 #2) — 아래 `await queue` 가
+      // held approval TTL 까지 매달리지 않게. abort 는 approver 를 {approved:false} 로 풀어 doSetServers 종착.
+      disposeController.abort()
       // 1) 이미 연결된 자식 + connect() 진행 중(아직 entries 에 없는) 자식을 먼저 즉시 닫는다 — 다른
       //    연결이 initialize/tools/list 에서 멈춰 있어도 (will-quit fire-and-forget) 기존 서버가 종료
       //    전까지 살아남지 않도록. in-flight close 는 멈춘 요청의 pending 을 reject 해 아래 queue 도 푼다.
