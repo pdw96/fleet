@@ -8,6 +8,7 @@ import {
   buildServerChildEnv,
   resolveBindHost,
   resolvePort,
+  resolveSandboxBoundary,
   type RunningServer,
 } from './boot'
 import type { SecurityConfig } from './security-config'
@@ -64,6 +65,44 @@ describe('resolvePort', () => {
   })
   it.each(['abc', '-1', '65536', '3.5'])('위반(%s) → throw', (v) => {
     expect(() => resolvePort({ FLEET_PORT: v })).toThrow()
+  })
+})
+
+describe('resolveSandboxBoundary — 환경-인지 샌드박스 경계(#214 C1)', () => {
+  // 미설정/빈/공백 = cli 기본 → 데스크톱·베어호스트 서버 무회귀(현행 CLI 내부 샌드박스 유지).
+  it.each([undefined, '', '   '])('미설정/빈/공백(%o) → cli 기본', (v) => {
+    expect(resolveSandboxBoundary({ FLEET_SANDBOX_BOUNDARY: v })).toBe('cli')
+  })
+  it('키 자체 부재 → cli', () => {
+    expect(resolveSandboxBoundary({})).toBe('cli')
+  })
+  // trim 후 소문자 exact 만 유효값. 공백 감싼 값은 trim 통과.
+  it.each(['cli', 'container', ' container ', ' cli '])('유효값(%o) → trim 후 정상', (v) => {
+    expect(resolveSandboxBoundary({ FLEET_SANDBOX_BOUNDARY: v })).toBe(v.trim())
+  })
+  // 그 외 전부 loud-fail(조용한 강등 금지). 대문자·유사값 포함 — 소문자 exact 아님 → throw.
+  // 메시지에 env 이름 + 수신값(진단) 포함.
+  it.each(['CONTAINER', 'Container', 'CLI', 'docker', '1', 'true', 'both', 'container-mode'])(
+    '미지값(%s) → throw(env 이름·수신값 포함)',
+    (v) => {
+      expect(() => resolveSandboxBoundary({ FLEET_SANDBOX_BOUNDARY: v })).toThrow(
+        /FLEET_SANDBOX_BOUNDARY/,
+      )
+      expect(() => resolveSandboxBoundary({ FLEET_SANDBOX_BOUNDARY: v })).toThrow(
+        new RegExp(v.trim()),
+      )
+    },
+  )
+})
+
+describe('resolveSandboxBoundary fail-fast — 부수효과 이전 부팅 거부(#214 C1)', () => {
+  it('미지값 → 부팅 거부 + dataDir 미생성(mkdirSync 이전 throw)', async () => {
+    // 중첩 미존재 경로 — throw 가 mkdirSync 보다 앞서면 이 경로가 만들어지지 않는다.
+    const dataDir = join(mkdtempSync(join(tmpdir(), 'fleet-214-')), 'sub', 'data')
+    await expect(
+      bootServer({ FLEET_SANDBOX_BOUNDARY: 'bogus', FLEET_DATA_DIR: dataDir, FLEET_PORT: '0' }),
+    ).rejects.toThrow(/FLEET_SANDBOX_BOUNDARY/)
+    expect(statSync(dataDir, { throwIfNoEntry: false })).toBeUndefined()
   })
 })
 
