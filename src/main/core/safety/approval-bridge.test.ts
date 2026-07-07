@@ -22,6 +22,10 @@ function fakeClock(start = 0) {
     clearTimer: (h: unknown): void => {
       timers.delete(h as number)
     },
+    /** now 만 밀고 타이머는 발화하지 않는다 — "만료됐으나 타이머 미발화" 창(스케줄링 지연) 재현용. */
+    setNow: (ms: number): void => {
+      t = ms
+    },
     /** 시간을 ms 만큼 진행하고 만료된 타이머를 due 순서로 발화한다. */
     advance: (ms: number): void => {
       t += ms
@@ -76,7 +80,8 @@ describe('createIpcApprover — reject-immediate 회귀(데스크톱 무회귀)'
 
   it('#1b 창 있으면 enqueue·resolve 왕복(기존 동작 보존)', async () => {
     const a = createIpcApprover({ send: vi.fn(), hasWindow: () => true })
-    const p = a.approver(req('1'))
+    // 기본 approver(실 Date.now) — 만료 전 승인이 강등되지 않도록 expiresAt 을 실clock 미래값으로(P1 강등 경계).
+    const p = a.approver(req('1', Date.now() + 60_000))
     expect(a.pendingCount()).toBe(1)
     a.resolve('1', true)
     expect(await p).toEqual({ approved: true })
@@ -137,6 +142,26 @@ describe('createIpcApprover — hold 정책(서버 원격 승인)', () => {
     expect(a.pendingCount()).toBe(1) // 타이머 미발화 → 맵에 잔존
     // 순수 필터: expiresAt(0) > now(0) 이 false → 제외. 필터가 없으면 만료 카드가 재하이드레이트에 노출된다.
     expect(a.list()).toEqual([])
+  })
+
+  // #P1 만료 데드라인 지난 late resolve(true) 강등(Codex 적대리뷰 P1 · fail-closed)
+  it('#P1 만료 후(타이머 미발화 창) late resolve(true) 는 거부로 강등된다', async () => {
+    const clock = fakeClock()
+    const { a } = holdApprover(clock)
+    const p = a.approver(req('x', 5_000)) // expiresAt=5000
+    clock.setNow(6_000) // now 을 만료 후로(타이머 미발화 — event-loop/스케줄링 지연 창)
+    a.resolve('x', true) // late approve — 데드라인 초과 → 거부 강등
+    expect(await p).toEqual({ approved: false })
+    expect(a.pendingCount()).toBe(0)
+  })
+
+  it('#P1b 만료 前 resolve(true) 는 정상 승인(강등 없음·경계 확인)', async () => {
+    const clock = fakeClock()
+    const { a } = holdApprover(clock)
+    const p = a.approver(req('x', 5_000))
+    clock.setNow(4_999) // 만료 전(expiresAt > now)
+    a.resolve('x', true)
+    expect(await p).toEqual({ approved: true })
   })
 
   // #4 TTL 만료 3연쇄

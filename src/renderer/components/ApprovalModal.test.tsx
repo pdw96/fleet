@@ -276,6 +276,41 @@ describe('ApprovalModal', () => {
     expect(screen.getByText('대기 중 2건')).toBeTruthy()
   })
 
+  // #P2 재접속 reconcile — 스냅숏에 없는 pre-hydration 카드 제거·하이드레이션 중 라이브-fresh 보존(Codex P2)
+  it('#P2 재접속 시 권위 스냅숏에 없는 pre-hydration 카드는 제거하고 하이드레이션 중 라이브-fresh 는 보존한다', async () => {
+    let resolveSnap!: (v: ApprovalRequest[]) => void
+    const listPending = vi
+      .fn()
+      .mockResolvedValueOnce([{ ...REQ, id: 'stale', summary: 'stale카드' }]) // 마운트 스냅숏
+      .mockReturnValueOnce(
+        new Promise<ApprovalRequest[]>((r) => {
+          resolveSnap = r
+        }),
+      ) // 재접속 스냅숏(지연)
+    const { fire } = mockFleet({ listPendingApprovals: listPending })
+    const view = renderModal(0)
+    await act(async () => {})
+    expect(screen.getByText('stale카드')).toBeTruthy() // 마운트 하이드레이션
+
+    // 재접속(nonce+1) → 하이드레이션 in-flight(preHydrationIds={stale} 포착).
+    await act(async () => {
+      view.rerender(
+        <HydrationContext.Provider value={{ nonce: 1, connection: null }}>
+          <ApprovalModal />
+        </HydrationContext.Provider>,
+      )
+    })
+    // 하이드레이션 in-flight 중 라이브 fresh 도착(preHydrationIds 밖 → 보호 대상).
+    fire({ ...REQ, id: 'fresh', summary: 'fresh카드' })
+    // 지연 스냅숏 resolve([]) — stale 이 사라진 권위 목록(offline 중 해소).
+    await act(async () => {
+      resolveSnap([])
+      await Promise.resolve()
+    })
+    expect(screen.queryByText('stale카드')).toBeNull() // reconcile: 스냅숏 부재 pre-hydration 제거
+    expect(screen.getByText('fresh카드')).toBeTruthy() // live-race 가드: 보존
+  })
+
   // #26 tombstone 인터리브 — 지연 스냅숏 resolve 중 withdrawn → 부활 차단(apply 시점 재확인)
   it('#26 지연 스냅숏 resolve 전 withdrawn(id) → 늦은 스냅숏의 동일 id 미부활', async () => {
     let resolveSnap!: (v: ApprovalRequest[]) => void

@@ -76,20 +76,29 @@ export function ApprovalModal() {
   // 데스크톱은 bridge=null → nonce 영구 0 → 마운트 1회(대개 빈 목록·무회귀). tombstone 재확인은 upsert 안(apply 시점).
   useEffect(() => {
     let cancelled = false
+    // 하이드레이션 시작 시점(이 nonce 렌더)의 큐 id — reconcile 대상. 이후 라이브 추가(onApprovalRequest)는
+    // 이 집합 밖이라 보존된다(§C-3 live-race 가드 — 하이드레이션 창 중 생성된 카드의 drop-hang 방지).
+    const preHydrationIds = new Set(queue.map((r) => r.id))
     void window.fleet
       .listPendingApprovals()
       .then((pending) => {
         if (cancelled) return
+        const snapshotIds = new Set(pending.map((r) => r.id))
         setQueue((prev) => {
-          let next = prev
+          // reconcile(#216 적대리뷰 Codex P2): 하이드레이션 前 존재했으나 권위 스냅숏에 없는 카드를 제거 —
+          // 재접속 중 놓친 withdrawn·타세션 해소를 정리(로컬 expiresAt·TTL 까지 유령 카드 잔존 방지). 라이브
+          // -fresh(preHydrationIds 밖)는 보존해 drop-race 를 피한다. 스냅숏 카드는 이어서 upsert.
+          let next = prev.filter((r) => snapshotIds.has(r.id) || !preHydrationIds.has(r.id))
           for (const req of pending) next = upsertApproval(next, req, tombstone.current)
           return next
         })
       })
-      .catch(() => undefined) // 스냅숏 조회 실패는 조용히 흡수 — 라이브 구독이 이후 카드를 채운다.
+      .catch(() => undefined) // 조회 실패는 흡수·reconcile 스킵(fail-safe — 라이브 구독이 이후 카드 유지).
     return () => {
       cancelled = true
     }
+    // queue 는 의도적 deps 제외 — nonce 전환 시점의 pre-hydration id 스냅숏만 필요(라이브 추가 보호).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nonce])
 
   // 1s 틱 — 카운트다운 갱신 + 만료 카드 자동 소멸(서버 권위 expiresAt<=now → 미표시). 시계 skew/백그라운드

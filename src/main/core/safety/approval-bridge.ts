@@ -134,7 +134,13 @@ export function createIpcApprover(opts: IpcApproverOptions): IpcApprover {
     },
 
     resolve(id, approved) {
-      pending.get(id)?.settle({ approved })
+      const p = pending.get(id)
+      if (!p) return
+      // fail-closed 만료 강등(#216 적대리뷰 Codex P1): 만료 데드라인(req.expiresAt)을 지난 late approved:true
+      // 회신이 destructive 를 승인하지 못하게 한다. 만료 타이머가 event-loop 지연·타이머 스케줄링·주입 clock
+      // 으로 아직 발화하지 않은 창에서, expiresAt 서버 권위를 resolve 경로에서도 재확인한다(list() 의
+      // `expiresAt > now` 규율과 동일 — 경계 now===expiresAt 은 만료로 본다). 거부(false)는 무조건 통과.
+      p.settle({ approved: approved && p.req.expiresAt > now() })
     },
 
     rejectAll() {
