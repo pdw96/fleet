@@ -45,4 +45,26 @@ test.describe('C1 승인 보류(#216) — hold → 리로드 재하이드레이�
     await page.getByRole('button', { name: '거부' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
   })
+
+  // 사용자 폰 흐름을 실 UI 클릭으로 재현(세션 탭 04-MCP 섹션 → 적용 버튼 → 승인 카드 → 리로드 → 승인).
+  test('UI 실클릭: MCP 적용 버튼 → 승인 카드 hold → 리로드 스냅숏 재제시 → 승인 카드 소멸', async ({
+    page,
+  }) => {
+    await page.goto(server.url)
+    await page.getByText('FLEET').first().waitFor()
+    // 세션 탭이 기본 — "04 — MCP" 섹션의 JSON 텍스트박스에 입력하고 "MCP 적용" 클릭.
+    await page
+      .locator('#mcp-servers')
+      .fill('[{"name":"c1-ui-test","command":"echo","args":["hi"]}]')
+    await page.getByRole('button', { name: 'MCP 적용' }).click()
+    // spawn 은 destructive shell 승인 게이트를 통과해야 하고 hold 라 승인 카드가 뜬다.
+    await expect(page.getByText('MCP 서버 실행: c1-ui-test')).toBeVisible({ timeout: 10_000 })
+    // 리로드 = 새 마운트 → listPendingApprovals 스냅숏으로 held 카드 재제시.
+    await page.reload()
+    await page.getByText('FLEET').first().waitFor()
+    await expect(page.getByText('MCP 서버 실행: c1-ui-test')).toBeVisible({ timeout: 10_000 })
+    // 승인 클릭(pointerdown+click) → respondApproval → 서버 resolve → withdrawn → 카드 소멸.
+    await page.getByRole('button', { name: '승인' }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+  })
 })
