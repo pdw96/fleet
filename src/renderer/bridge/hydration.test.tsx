@@ -4,12 +4,22 @@ import { describe, expect, it, vi } from 'vitest'
 import type { WsBridge } from './ws-bridge'
 import { ConnectionBanner, HydrationProvider, useHydration } from './hydration'
 
-/** onEventCursor/onConnectionState 만 구동하는 페이크 브리지. */
+/** onEventCursor/onConnectionState/onServerDraining 를 구동하는 페이크 브리지. */
 function fakeBridge() {
   let cursorCb: ((c: { maxEventSeq: number; minRetainedEventSeq: number }) => void) | undefined
   let stateCb: ((s: 'connecting' | 'connected' | 'reconnecting' | 'closed') => void) | undefined
+  let drainCb: ((e: { reason: string }) => void) | undefined
   const bridge = {
-    fleet: { onOrchestratorEvent: vi.fn(() => () => {}) },
+    fleet: {
+      onOrchestratorEvent: vi.fn(() => () => {}),
+      // #216 C3 — HydrationProvider effect 가 구독. 미제공 시 런타임 "not a function"(CD2 blast radius).
+      onServerDraining: vi.fn((cb: (e: { reason: string }) => void) => {
+        drainCb = cb
+        return () => {
+          drainCb = undefined
+        }
+      }),
+    },
     onEventCursor: vi.fn((cb) => {
       cursorCb = cb
       return () => {
@@ -32,6 +42,7 @@ function fakeBridge() {
       act(() => cursorCb?.({ maxEventSeq: max, minRetainedEventSeq: min })),
     setState: (s: 'connecting' | 'connected' | 'reconnecting' | 'closed') =>
       act(() => stateCb?.(s)),
+    draining: () => act(() => drainCb?.({ reason: 'shutdown' })),
   }
 }
 
@@ -128,5 +139,56 @@ describe('ConnectionBanner(#197 B4)', () => {
     const text = screen.getByRole('status').textContent ?? ''
     expect(text).toContain('유실')
     expect(text).toContain('스냅숏')
+  })
+})
+
+describe('ConnectionBanner draining(#216 C3 T6)', () => {
+  it('draining push → "서버 종료 중" 배너', () => {
+    const f = fakeBridge()
+    render(
+      <HydrationProvider bridge={f.bridge}>
+        <ConnectionBanner />
+      </HydrationProvider>,
+    )
+    f.draining()
+    expect(screen.getByRole('status').textContent).toContain('서버 종료 중')
+  })
+
+  it('reconnecting 이 draining 보다 우선(소켓 이미 이탈)', () => {
+    const f = fakeBridge()
+    render(
+      <HydrationProvider bridge={f.bridge}>
+        <ConnectionBanner />
+      </HydrationProvider>,
+    )
+    f.draining()
+    f.setState('reconnecting')
+    expect(screen.getByRole('status').textContent).toContain('재접속 중')
+  })
+
+  it('재접속 hello(nonce+1) 후 draining 리셋 — 재배포 후 건강한 새 연결에 영구 배너 방지(F4)', () => {
+    const f = fakeBridge()
+    render(
+      <HydrationProvider bridge={f.bridge}>
+        <ConnectionBanner />
+      </HydrationProvider>,
+    )
+    f.hello(10) // 최초 hello(cursor 시드·nonce 0)
+    f.draining()
+    expect(screen.getByRole('status').textContent).toContain('서버 종료 중')
+    // 구서버 종료 → 소켓 닫힘 → 신서버 재접속 → 재접속 hello(nonce+1) → draining 리셋.
+    f.setState('reconnecting')
+    f.setState('connected')
+    f.hello(20)
+    expect(screen.getByRole('status').textContent ?? '').not.toContain('서버 종료 중')
+  })
+
+  it('데스크톱(bridge=null)엔 draining 배너 없음(구독 없음)', () => {
+    render(
+      <HydrationProvider bridge={null}>
+        <ConnectionBanner />
+      </HydrationProvider>,
+    )
+    expect(screen.queryByRole('status')).toBeNull()
   })
 })

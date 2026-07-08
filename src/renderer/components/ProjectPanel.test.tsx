@@ -874,7 +874,7 @@ describe('ProjectPanel', () => {
 
 function renderWithNonce(nonce: number, ui: ReactElement) {
   return render(
-    <HydrationContext.Provider value={{ nonce, connection: 'connected' }}>
+    <HydrationContext.Provider value={{ nonce, connection: 'connected', draining: false }}>
       {ui}
     </HydrationContext.Provider>,
   )
@@ -893,7 +893,7 @@ describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)'
     await act(async () => {})
     expect(screen.getByRole('button', { name: '실행 중…' })).toBeTruthy()
     rerender(
-      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected', draining: false }}>
         <ProjectPanel sessions={[SESSION]} />
       </HydrationContext.Provider>,
     )
@@ -915,7 +915,7 @@ describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)'
     const { rerender } = renderWithNonce(0, <ProjectPanel sessions={[SESSION]} />)
     await act(async () => {})
     rerender(
-      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected', draining: false }}>
         <ProjectPanel sessions={[SESSION]} />
       </HydrationContext.Provider>,
     )

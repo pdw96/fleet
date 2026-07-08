@@ -344,7 +344,7 @@ describe('ChatPanel — 진행 상태 복원(단일 소스 오브 트루스)', (
 
 function renderWithNonce(ui: ReactElement, nonce: number) {
   return render(
-    <HydrationContext.Provider value={{ nonce, connection: 'connected' }}>
+    <HydrationContext.Provider value={{ nonce, connection: 'connected', draining: false }}>
       {ui}
     </HydrationContext.Provider>,
   )
@@ -364,7 +364,7 @@ describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)'
     expect(screen.getByRole('button', { name: 'AI 토론 중…' })).toBeTruthy()
     // 재접속(nonce+1) → 스냅샷 재조회 → busy 해제(replace)
     rerender(
-      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected', draining: false }}>
         <ChatPanel sessions={SESSIONS} />
       </HydrationContext.Provider>,
     )
@@ -385,7 +385,7 @@ describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)'
     expect(screen.getByText(/응답 대기 중/)).toBeTruthy()
     // 재접속: 스냅샷에 st1 없음(끊긴 사이 end 유실) → 말풍선 제거
     rerender(
-      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected', draining: false }}>
         <ChatPanel sessions={SESSIONS} />
       </HydrationContext.Provider>,
     )
@@ -405,7 +405,7 @@ describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)'
     const { rerender } = renderWithNonce(<ChatPanel sessions={SESSIONS} />, 0)
     await act(async () => {})
     rerender(
-      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected' }}>
+      <HydrationContext.Provider value={{ nonce: 1, connection: 'connected', draining: false }}>
         <ChatPanel sessions={SESSIONS} />
       </HydrationContext.Provider>,
     )
