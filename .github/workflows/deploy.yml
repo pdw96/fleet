@@ -20,11 +20,12 @@ on:
       - 'fleet-brain.html'
   workflow_dispatch:
 
-# 큐잉(cancel-in-progress: false) — mid-publish 취소 시 latest 쌍(fleet-server/webterminal) 불일치 방지(Codex PR P1).
-# master-tip 가드가 stale run 의 latest 이동을 이미 막으므로, tip run 이 취소 없이 두 latest push 를 원자 완주한다.
-# deploy 는 빈도 낮아 큐잉 부담 적다.
+# concurrency group 을 커밋별(github.sha)로 — 단일 group + pending 슬롯 1개면 연속 머지 시 중간 커밋이
+# 대체·skip 되어 그 sha-<12> 가 미발행된다(Codex PR P2 · "각 커밋 sha 항상 발행" 계약 위반). 커밋별 독립
+# group 이라 취소·skip 없이 각자 발행. latest 는 master-tip 가드 + sha 이미지 promote 라 동시 run 에서도 tip
+# run 만 이동하고 동일 digest → 스큐 없음. (같은 커밋 재실행만 같은 group = 직렬.)
 concurrency:
-  group: deploy-ghcr
+  group: deploy-ghcr-${{ github.sha }}
   cancel-in-progress: false
 
 # GHCR 발행만 — packages:write. gh api(master tip 조회)는 contents:read. 그 외 none.
@@ -71,9 +72,18 @@ jobs:
           # ① sha 태그 쌍을 세트로 발행(Codex PR P1/P2) — 재실행이 floating base/apt/npm 변경분으로 sha-<12> 를
           #    덮어써 "immutable 롤백 핀" 을 깨거나, 부분 발행(한 서비스만)으로 쌍 불일치 나는 것 방지.
           #    둘 다 존재=정상 rerun skip · 정확히 하나만=부분 발행 loud-fail(수동 정리) · 둘 다 부재=이번 빌드로 push.
+          # manifest inspect 를 존재 여부로 쓰되, 일시 에러(네트워크·auth)를 "부재" 로 오인해 immutable 을
+          # 덮어쓰지 않게 not-found(404)와 기타 에러를 구분한다(Codex PR P2 · 기타 에러 = fail-closed).
           have=0
           for svc in server webterminal; do
-            docker manifest inspect "ghcr.io/$O/fleet-$svc:sha-$SHORT" >/dev/null 2>&1 && have=$((have + 1))
+            if docker manifest inspect "ghcr.io/$O/fleet-$svc:sha-$SHORT" >/dev/null 2>/tmp/mi_err; then
+              have=$((have + 1))
+            elif grep -qiE 'not found|manifest unknown|no such manifest|does not exist' /tmp/mi_err; then
+              : # 진짜 부재(404) — 발행 대상
+            else
+              echo "::error::manifest inspect 실패(부재 아님 — 네트워크/auth?): $(cat /tmp/mi_err)"
+              exit 1
+            fi
           done
           if [ "$have" -eq 1 ]; then
             echo "::error::sha-$SHORT 가 한 서비스만 발행됨(부분 발행) — 쌍 불일치 위험. 두 sha 태그 삭제 후 재발행."

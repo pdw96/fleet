@@ -348,8 +348,10 @@ _(#222 · Part of #98)_ master 머지 → GitHub Actions(`.github/workflows/depl
    ```
    PAT 는 만료를 짧게 두고 주기 로테이션한다. read-only 라 유출돼도 push 불가(기밀만).
 2. **`.env`** — 서버는 `GHCR_TAG` 로 pull 태그를 고른다(로컬 빌드용 `IMAGE_TAG` 와 분리 — `IMAGE_TAG=local` 을
-   복사해도 GHCR pull 은 `GHCR_TAG` 를 쓴다). 기본 `latest`, 프로덕션은 **`GHCR_TAG=sha-<N>` 단일 핀 권장**(두
-   이미지 동일 커밋 세트 보장 — 크로스이미지 스큐·latest 회귀 방지). access 3종+`FLEET_SECRET_KEY` 도 완비해야 fleet 이 부팅한다(아래 ⚠️).
+   복사해도 GHCR pull 은 `GHCR_TAG` 를 쓴다). 기본 `latest`, 프로덕션은 **`GHCR_TAG=sha-<N>` 단일 핀 강권장**(두
+   이미지 동일 커밋 세트 보장 — 크로스이미지 스큐·latest 회귀 방지). ⚠️ `:latest` 는 서비스별 순차 promote 라
+   **일시적 부분 스큐 창**이 있다(Codex PR P2 — `fleet-server:latest` 갱신 후 `fleet-webterminal:latest` 전 실패
+   시 혼합) → sha 핀이 스큐 없이 안전. access 3종+`FLEET_SECRET_KEY` 도 완비해야 fleet 이 부팅한다(아래 ⚠️).
 3. **갱신(cron)** — 기본 권장(단순·투명·데몬 없음):
    ```
    */5 * * * * /path/to/deploy/pull-deploy.sh >> ~/fleet-deploy.log 2>&1
