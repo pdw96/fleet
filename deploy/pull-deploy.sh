@@ -41,6 +41,8 @@ echo "[pull-deploy] 현재 이미지:"
 "${COMPOSE[@]}" images 2>/dev/null || true
 
 "${COMPOSE[@]}" pull || fail "GHCR pull(네트워크/인증 — docker login ghcr.io 만료? GHCR_TAG 부재?)"
-"${COMPOSE[@]}" up -d --wait || fail "up/healthcheck(--wait GREEN 실패 — access env 완비? 롤백: GHCR_TAG=sha-<이전> 후 재실행)"
+# --wait-timeout: never-healthy(access env 누락 crash-loop) 시 --wait 무한 hang → flock 영구 점유 → 후속
+# cron */5 전부 skip(배포 스타베이션) 방지. 초과 시 fail() 로 exit → 락 해제 → 다음 cron 재시도.
+"${COMPOSE[@]}" up -d --wait --wait-timeout 300 || fail "up/healthcheck(--wait 300s 초과 — access env 완비? 롤백: GHCR_TAG=sha-<이전> 후 재실행)"
 docker image prune -f || true # dangling 만 회수(-a 금지: 이전 :sha 롤백 보존). 실패는 비치명.
 echo "[pull-deploy] OK: 갱신 완료."

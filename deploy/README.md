@@ -340,9 +340,10 @@ _(#222 · Part of #98)_ master 머지 → GitHub Actions(`.github/workflows/depl
 
 **요구**: Docker + **Docker Compose 2.24+**(override 의 `!reset`) · 아웃바운드망만(인바운드 0 유지).
 
-1. **GHCR 인증**(1회) — fine-grained PAT `read:packages` 만:
+1. **GHCR 인증**(1회) — **classic PAT** `read:packages`(GHCR 는 fine-grained PAT 를 docker login 에 미지원 —
+   classic 전용):
    ```bash
-   echo "<PAT>" | docker login ghcr.io -u <github-user> --password-stdin
+   echo "<classic-PAT>" | docker login ghcr.io -u <github-user> --password-stdin
    chmod 600 ~/.docker/config.json     # 자격 파일 권한 조임
    ```
    PAT 는 만료를 짧게 두고 주기 로테이션한다. read-only 라 유출돼도 push 불가(기밀만).

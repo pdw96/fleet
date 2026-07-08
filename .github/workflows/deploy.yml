@@ -35,6 +35,8 @@ jobs:
   build-and-publish:
     name: build · smoke · publish (GHCR)
     runs-on: ubuntu-latest
+    # heavy Docker 빌드(2 이미지·apt·CLI 3종·ttyd fetch) — 네트워크 스톨 시 러너 기본 360min 매달림 방지(fail-fast).
+    timeout-minutes: 30
     env:
       HUSKY: 0
     steps:
