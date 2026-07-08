@@ -653,7 +653,14 @@ export async function bootServer(
       ipcApprover.rejectAll()
       for (const c of wss.clients) c.terminate()
       wss.close()
-      await new Promise<void>((r) => httpServer.close(() => r()))
+      // httpServer.close() 는 리스너만 닫고 기존 커넥션 완료를 대기한다. 정적 자산 서빙으로 생긴 HTTP
+      // keep-alive(브라우저 idle·keepAliveTimeout 기본 5s)·close-창 late-upgrade 소켓은 스스로 끝날 때까지
+      // close() 를 pending 시켜 clean 종료를 지연(최악 백스톱 발화로 exit(1) 강등)한다 — closeAllConnections 로
+      // 전 커넥션을 강제 종료해 즉시 close 완료(#216 C3 · 자체 적대리뷰 P3). WS 소켓은 이미 terminate 됨(멱등).
+      await new Promise<void>((r) => {
+        httpServer.close(() => r())
+        httpServer.closeAllConnections()
+      })
       await engine.dispose()
     })())
 

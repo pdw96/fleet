@@ -56,6 +56,18 @@ describe('installShutdownHandlers(#216 C3 T4)', () => {
     expect(h.exits).toEqual([1])
   })
 
+  it('teardown hang: shutdown 미해소 시 백스톱 fn 발화 → exit(1)(최후 강제 종료)', async () => {
+    // shutdown 이 영구 pending(teardown hang) → shutdown-handlers 는 스스로 종료 못 함. 백스톱 fn 이 유일 종착.
+    const s = fakeServer(() => new Promise<void>(() => {}))
+    const h = harness(Promise.resolve(s))
+    h.fire('SIGTERM')
+    await tick()
+    expect(h.exits).toEqual([]) // shutdown hang → 아직 미종료
+    expect(h.backstops).toHaveLength(1)
+    h.backstops[0].fn() // 백스톱 발화(setTimeout 콜백에 대응) — teardown hang 최후 안전망
+    expect(h.exits).toEqual([1])
+  })
+
   it('2차 시그널: 재-SIGTERM → 즉시 exit(1)(shutdown 재호출 없음)', async () => {
     let shutdownCalls = 0
     const s = fakeServer(() => {

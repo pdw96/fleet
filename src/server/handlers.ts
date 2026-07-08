@@ -70,7 +70,9 @@ export interface HandlerDeps {
   /**
    * graceful drain 게이트(#216 C3) — true 면 `fleet:project:run` 이 신규 런을 거부(fail-closed). **비옵셔널**:
    * 옵셔널이면 배선 누락 시 게이트가 무력화돼도 무신호이므로, 타입-레벨로 boot 배선을 강제한다(호출부가
-   * `() => draining` 을 반드시 넘긴다). 호출 시 예외/undefined 도 throw→런 거부로 귀결(fail-closed 방향).
+   * `() => draining` 을 반드시 넘긴다 — 누락 시 컴파일 에러). 호출 impl 이 예외를 던지면 throw 가 게이트 밖으로
+   * 전파돼 런 거부로 귀결(fail-closed). 반환 타입이 `boolean`(비옵셔널)이라 undefined 는 타입상 미도달 —
+   * 런타임 falsy fail-open 여지는 배선 강제로 원천 차단된다(옵셔널 체이닝 금지).
    */
   isDraining: () => boolean
 }

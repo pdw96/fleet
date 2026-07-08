@@ -67,12 +67,14 @@ describe('waitForRunDrain(#216 C3 T1)', () => {
     expect(() => waitForRunDrain(() => busy, fc.clock, 1_000, pollMs)).toThrow()
   })
 
-  it('cap==poll 동시 발화 → 단일 settled 래치 1회 · 좀비 재스케줄 0', async () => {
+  it('cap==poll 동시 발화 → 단일 settled 래치 1회 해소 · 좀비 재스케줄 0', async () => {
     const fc = fakeClock(0)
     const p = waitForRunDrain(() => busy, fc.clock, 250, 250) // cap==poll 동시각
     fc.advanceTo(250)
-    const r = await p
-    expect(['drained', 'timeout']).toContain(r) // 어느 쪽이든 1회 해소
+    // busy 유지(activeProjectIds 비지 않음)라 'drained' 는 정당하게 불가 — 반드시 'timeout'(spurious-drain 회귀
+    // 차단). fakeClock 은 삽입 순서 첫 매치를 발화하고 waitForRunDrain 이 capH 를 pollH 보다 먼저 삽입하므로 tie 는
+    // 항상 cap 승. settled 래치가 형제 poll 을 clear → 이중 해소 없음(activeCount 0 · 추가 전진서 재-resolve 0).
+    await expect(p).resolves.toBe('timeout')
     expect(fc.activeCount()).toBe(0)
     fc.advanceTo(10_000) // 추가 전진 — 재-resolve·좀비 재스케줄 없음
     expect(fc.activeCount()).toBe(0)
