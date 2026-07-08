@@ -592,3 +592,60 @@ describe('다중 pending 내비', () => {
     expect(respondApproval).not.toHaveBeenCalled()
   })
 })
+
+describe('포커스 트랩(미니칩 존재·Codex 체크포인트 2 P2)', () => {
+  const two = (fire: (r: ApprovalRequest) => void) => {
+    fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
+    fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+  }
+
+  it('#11 포커스가 모달 밖으로 샜을 때 Tab → 거부 복귀(첫 칩 아님)', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire) // 미니칩 버튼이 액션 버튼보다 DOM 앞
+    const reject = screen.getByRole('button', { name: '거부' })
+    const bg = document.createElement('button')
+    document.body.appendChild(bg)
+    act(() => bg.focus())
+    fireEvent.keyDown(bg, { key: 'Tab' })
+    expect(document.activeElement).toBe(reject) // 첫 미니칩 아니라 거부
+    bg.remove()
+  })
+
+  it('#12 미니칩 상태서도 Escape=거부·거부-우선 초기 포커스 유지', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '거부' })) // 초기 포커스
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(respondApproval).toHaveBeenCalledWith('A', false)
+  })
+
+  it('#13 칩 포함 상태서 Tab/Shift+Tab 이 모달 밖 탈출 안 함', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const card = screen.getByRole('dialog').querySelector('.modal-card') as HTMLElement
+    const buttons = Array.from(card.querySelectorAll('button'))
+    const first = buttons[0]
+    const last = buttons[buttons.length - 1]
+    last.focus()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' })
+    expect(document.activeElement).toBe(first) // last→first 순환(탈출 없음)
+    first.focus()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last) // first→last 순환
+  })
+
+  it('#14 미니칩 focus 중 Enter 는 이동만·respondApproval 미호출', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const chipB = screen.getByRole('button', { name: /shell 실행.*위험.*2\/2/ })
+    chipB.focus()
+    fireEvent.keyDown(chipB, { key: 'Enter' }) // dialog 트랩은 Enter no-op
+    fireEvent.click(chipB) // Enter 의 네이티브 click = FOCUS(이동)
+    expect(respondApproval).not.toHaveBeenCalled()
+    expect(screen.getByText('2 / 2')).toBeTruthy() // B 로 이동됨(위치 갱신)
+  })
+})

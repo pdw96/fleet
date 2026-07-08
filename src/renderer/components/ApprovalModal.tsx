@@ -249,7 +249,9 @@ export function ApprovalModal() {
       const active = document.activeElement
       if (!card.contains(active)) {
         e.preventDefault()
-        first.focus() // 포커스가 모달 밖으로 샜으면 내부(첫 버튼)로 복귀
+        // 이탈 복귀는 항상 거부(rejectRef) — 미니칩/내비가 액션 버튼보다 DOM 앞이라 첫 focusable 이
+        // 칩일 수 있어, DOM 순서 무관하게 거부-우선 안전을 고정한다(#216 Codex 체크포인트 2 P2).
+        rejectRef.current?.focus()
       } else if (e.shiftKey && active === first) {
         e.preventDefault()
         last.focus()
@@ -292,26 +294,6 @@ export function ApprovalModal() {
         <p className="modal-target" id="approval-target">
           {current.target}
         </p>
-        <div className="modal-actions">
-          <span className="modal-countdown">{remaining} 후 자동 거부</span>
-          <button
-            ref={rejectRef}
-            className="btn btn-danger"
-            onPointerDown={captureIntent}
-            onKeyDown={captureIntentKey}
-            onClick={() => decide(false)}
-          >
-            거부
-          </button>
-          <button
-            className="btn"
-            onPointerDown={captureIntent}
-            onKeyDown={captureIntentKey}
-            onClick={() => decide(true)}
-          >
-            승인
-          </button>
-        </div>
         {queue.length > 1 && (
           <div className="modal-nav" role="group" aria-label="대기 중 승인 이동">
             <div className="modal-chips">
@@ -336,6 +318,26 @@ export function ApprovalModal() {
             </span>
           </div>
         )}
+        <div className="modal-actions">
+          <span className="modal-countdown">{remaining} 후 자동 거부</span>
+          <button
+            ref={rejectRef}
+            className="btn btn-danger"
+            onPointerDown={captureIntent}
+            onKeyDown={captureIntentKey}
+            onClick={() => decide(false)}
+          >
+            거부
+          </button>
+          <button
+            className="btn"
+            onPointerDown={captureIntent}
+            onKeyDown={captureIntentKey}
+            onClick={() => decide(true)}
+          >
+            승인
+          </button>
+        </div>
       </div>
     </div>
   )
