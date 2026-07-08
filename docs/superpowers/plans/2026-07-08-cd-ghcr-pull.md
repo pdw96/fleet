@@ -62,6 +62,7 @@
   9. **[계약] paths-ignore ⊆ (.dockerignore ∪ {README.md}) 의미매핑** ← C: paths-ignore 각 항목이 `.dockerignore` 제외에 대응하거나 README.md 명시 예외. 미대응 항목 = FAIL(fail-open 사전 차단). 역방향(불필요 빌드)은 미검사 = fail-safe.
   10. **[공급망] checkout SHA 균일 핀**: deploy.yml checkout이 `actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0`(ci.yml·release.yml 실측 동일) + `persist-credentials: false`.
   11. **override 파일 핀**: `docker-compose.ghcr.yml`에 fleet·ttyd 각 `build:\s*!reset` + `ghcr.io/…/fleet-{server,webterminal}` image + `GHCR_TAG`.
+  12. **[race] latest master-tip 가드 핀** ← Codex 계획리뷰 P1: `:latest` push가 `github.sha == master tip` 조건(`gh api …/commits/master` 비교) **뒤**에 위치 — 무조건 latest push(가드 없는 `docker push …:latest`)면 RED. 옛 workflow 재실행/stale dispatch가 `:latest`를 뒤로 이동시키는 회귀를 정적으로 차단. (`:sha-` push는 가드 밖 = 항상.)
 - **검증**: `npx vitest run scripts/deploy-cd-pin.test.ts` → T1/T2 전 RED, 후 GREEN. `scanWorkflowPins`(액션 SHA 핀)는 skills:lint가 자동 강제하므로 이 파일에서 중복 안 함(단 #10 checkout SHA 균일은 별개 계약이라 유지).
 - **ripple**: 신규 테스트 파일. 소비처 0. coverage floor 무영향.
 
@@ -77,12 +78,20 @@
     2. **GHCR 로그인**(raw·서드파티 액션 0 ← A 결정③): `echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin` (`env: GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}` — argv 미노출·GHA 마스킹).
     3. **smoke 게이트**: `bash deploy/smoke.sh` (13종 불변식+시크릿 미baking L144-149 재사용). exit 1 → 이후 스텝 스킵(fail-closed).
     4. **이미지 원자 선점검** ← A: `docker image inspect fleet-server:local fleet-webterminal:local >/dev/null` (한 번에 **둘 다** — 부분 push 방지).
-    5. **태그+push**(sha 먼저·둘 다 → latest 둘 다 ← C 순서):
+    5. **태그+push**(sha는 항상·둘 다 → latest는 **master-tip일 때만**·둘 다 ← C 순서 + **Codex 계획리뷰 P1**):
        ```bash
-       SHORT="${GITHUB_SHA::12}"; OWNER="${{ github.repository_owner }}"; O="${OWNER,,}"
+       SHORT="${GITHUB_SHA::12}"; O="${OWNER,,}"   # OWNER=${{ github.repository_owner }}
+       # ① immutable sha 태그 — 항상 발행
        for svc in server webterminal; do docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:sha-$SHORT"; docker push "ghcr.io/$O/fleet-$svc:sha-$SHORT"; done
-       for svc in server webterminal; do docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:latest";   docker push "ghcr.io/$O/fleet-$svc:latest";   done
+       # ② mutable latest — GITHUB_SHA == master tip 일 때만(옛 재실행/stale dispatch의 :latest 회귀 방지)
+       TIP=$(gh api "repos/${{ github.repository }}/commits/master" --jq '.sha')   # GH_TOKEN=GITHUB_TOKEN(contents:read)
+       if [ "$TIP" = "$GITHUB_SHA" ]; then
+         for svc in server webterminal; do docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:latest"; docker push "ghcr.io/$O/fleet-$svc:latest"; done
+       else
+         echo "::warning::GITHUB_SHA($GITHUB_SHA) != master tip($TIP) — :latest 미이동(sha 태그만). 롤백은 GHCR_TAG=sha-<N>로 명시."
+       fi
        ```
+       (master-tip 가드 = 발행측 회귀 원천 차단. 정상 머지는 TIP==SHA라 latest 이동, 옛 재실행/dispatch는 sha만. gh CLI는 ubuntu-latest 사전설치, `contents:read`로 commits API 충분.)
 - **Dockerfile LABEL** ← B/C (양 파일): `LABEL org.opencontainers.image.source="https://github.com/pdw96/fleet"` — GHCR 패키지↔레포 자동 링크·private-inherit 가시성(첫-발행 갭 완화). 빌드 라벨이라 smoke step2/10 불변식 무영향.
 - **검증**: 사전 = `npx vitest run scripts/deploy-cd-pin.test.ts`(T0) · `npm run skills:lint`(액션 SHA 핀) · `npm run format:check`. 권위(라이브) = **master 머지/`workflow_dispatch` → Actions 로그 4태그 push + `gh api /users/pdw96/packages/container/fleet-server/versions`로 `latest`·`sha-<12>` 확인** ← B 관측 명령.
 - **fail 방향**: smoke·login·inspect·push 실패 전부 push 이전/중 잡 실패 → GHCR `:latest` 무변경 → 서버 직전 이미지 유지(fail-closed). concurrency 경합 → 최신만.
@@ -184,7 +193,7 @@
 | # | 결함(judge) | 반영 |
 | --- | --- | --- |
 | ① | 크로스이미지 일관성(4태그 비원자 push+서버 비원자 pull → server@N+webterminal@N-1 스큐) [Codex] | **GHCR_TAG=sha-<N> 단일 핀 권장**(T4) — A 인프라로 해결. push는 sha 먼저·둘 다(T1) |
-| ② | `:latest` 회귀 pull(옛 SHA dispatch가 latest 덮어씀) [Codex] | 서버 sha 핀 권장(T4) · `:sha` immutable 관례 명시 |
+| ② | `:latest` 회귀 pull(옛 SHA 재실행/dispatch가 latest 덮어씀) [Codex judge + **계획리뷰 P1**] | **발행측 master-tip 가드**(T1: latest는 `github.sha==master tip`일 때만·아니면 sha만+`::warning`) + T0#12 정적 핀 + 서버 sha 핀 권장(T4). 롤백은 `GHCR_TAG=sha-`(latest 변경 아님) |
 | ③ | 갭① 부정확(smoke 머지-후만·Dockerfile 깨는 PR은 CI green 통과) [공백] | README 프레임 정직화 + workflow_run 후속(T4) |
 | ④ | up --wait가 런타임 시크릿(FLEET_ACCESS_*·SECRET_KEY)에 의존 [Codex] | README 분리 진단 명시(T4) |
 | ⑤ | GHCR retention 부재(무한 스토리지) [공백] | README 경고 + 후속 keep-last-N cleanup 워크플로(T6 후속, MVP 밖) |
@@ -219,7 +228,7 @@
 
 | 파일 | 종류 | 요지 |
 | --- | --- | --- |
-| `scripts/deploy-cd-pin.test.ts` | 신규 | 계약·보안·race 핀 11종(권한·stdin·역필터·순서·actor-ban·SHA regex·4-way·paths매핑·checkout SHA·override) |
+| `scripts/deploy-cd-pin.test.ts` | 신규 | 계약·보안·race 핀 12종(권한·stdin·역필터·순서·actor-ban·SHA regex·4-way·paths매핑·checkout SHA·override·**latest master-tip 가드**) |
 | `.github/workflows/deploy.yml` | 신규 | paths-ignore 역필터·concurrency·packages:write·checkout(SHA핀)·raw GHCR login·smoke 게이트·원자 선점검·4태그(sha먼저) |
 | `deploy/fleet/Dockerfile` | +1줄 | `LABEL org.opencontainers.image.source` |
 | `deploy/webterminal/Dockerfile` | +1줄 | 동일 LABEL |
