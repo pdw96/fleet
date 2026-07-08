@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest } from '../../shared/types'
 import { HydrationContext } from '../bridge/hydration'
-import { ApprovalModal } from './ApprovalModal'
+import { ApprovalModal, formatCountdown } from './ApprovalModal'
 
 function mockFleet(
   overrides: {
@@ -339,12 +339,12 @@ describe('ApprovalModal', () => {
       const { fire } = mockFleet()
       renderModal()
       fire({ ...REQ, id: 'exp-1', expiresAt: t0 + 3000 }) // 3s 후(공유상수 60s 아님)
-      expect(screen.getByText('3s 후 자동 거부')).toBeTruthy()
+      expect(screen.getByText('0:03 후 자동 거부')).toBeTruthy()
       act(() => {
         vi.advanceTimersByTime(3200) // 로컬 만료 초과
       })
       // 서버 권위(withdrawn)만 제거 — 로컬 시계로 드롭 금지(skew-ahead 폰 클라의 valid 카드 보존).
-      expect(screen.getByText('0s 후 자동 거부')).toBeTruthy() // 카운트다운 0s 클램프
+      expect(screen.getByText('0:00 후 자동 거부')).toBeTruthy() // 카운트다운 0s 클램프
       expect(screen.getByRole('dialog')).toBeTruthy() // 카드 유지(서버 withdrawn 대기)
     } finally {
       vi.useRealTimers()
@@ -358,7 +358,7 @@ describe('ApprovalModal', () => {
     // 서버는 유효하다고 브로드캐스트한 카드지만 로컬 Date.now() 기준으론 이미 만료(폰 시계가 앞섬).
     fire({ ...REQ, id: 'skew-1', summary: 'skew 카드', expiresAt: Date.now() - 1000 })
     expect(screen.getByText('skew 카드')).toBeTruthy() // 로컬 만료라도 드롭 안 함(서버 권위 존재)
-    expect(screen.getByText('0s 후 자동 거부')).toBeTruthy() // 카운트다운만 0s 클램프
+    expect(screen.getByText('0:00 후 자동 거부')).toBeTruthy() // 카운트다운만 0:00 클램프
     // 승인 가능 — 서버 resolve 가 자기 시계로 검증(멱등·만료면 서버가 거부 강등).
     fireEvent.pointerDown(screen.getByRole('button', { name: '승인' }))
     fireEvent.click(screen.getByRole('button', { name: '승인' }))
@@ -423,5 +423,17 @@ describe('ApprovalModal', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('formatCountdown', () => {
+  it('남은 ms 를 m:ss 로(ceil 초·0 클램프)', () => {
+    expect(formatCountdown(600_000)).toBe('10:00')
+    expect(formatCountdown(573_000)).toBe('9:33')
+    expect(formatCountdown(65_000)).toBe('1:05')
+    expect(formatCountdown(5_000)).toBe('0:05')
+    expect(formatCountdown(1)).toBe('0:01') // ceil — 0 초과는 최소 0:01
+    expect(formatCountdown(0)).toBe('0:00')
+    expect(formatCountdown(-1_000)).toBe('0:00')
   })
 })

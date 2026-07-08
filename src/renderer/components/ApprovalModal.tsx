@@ -18,6 +18,17 @@ const KIND_TITLE: Record<ApprovalRequest['kind'], string> = {
 }
 
 /**
+ * 남은 ms → "m:ss"(예 573000→"9:33", 5000→"0:05", 0/음수→"0:00"). ceil 초·max(0) 클램프.
+ * 서버 권위 카운트다운 표시 전용(#216 C2 §C-4) — 로컬 만료로 카드를 제거하지 않는다(skew 계약).
+ */
+export function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+/**
  * id-keyed 비파괴 upsert(#216 C1 §C-3) — 이미 철회(tombstone)된 요청만 부활 차단한다. tombstone 재확인을
  * 스냅숏 apply 시점에 수행해(async resolve 후 이 함수 호출) 늦게 도착한 stale 스냅숏의 이미-철회 id 부활을
  * 막는다. 같은 id 라이브+스냅숏은 단일 카드로 병합. **로컬 시계(Date.now)로 만료 카드를 드롭하지 않는다**
@@ -125,8 +136,8 @@ export function ApprovalModal() {
   }, [])
 
   const current = queue[0]
-  // 카운트다운 = 서버 권위 expiresAt 기준(공유 상수 APPROVAL_TIMEOUT_MS 소비 제거 — 카운트다운=실제 만료 정합).
-  const remaining = current ? Math.max(0, Math.ceil((current.expiresAt - now) / 1000)) : 0
+  // 카운트다운 = 서버 권위 expiresAt 기준 mm:ss(공유 상수 APPROVAL_TIMEOUT_MS 소비 제거 — 카운트다운=실제 만료 정합).
+  const remaining = current ? formatCountdown(current.expiresAt - now) : '0:00'
 
   // 결정 의도 스냅숏(#216 적대리뷰 P3·Codex P2) — pointerdown/keydown 시 조준한 카드 id 를 기록. 마우스·
   // 키보드(Enter/Space) 활성화가 커밋(click)되기 전 비동기 스왑(withdrawn/만료/reconcile)이 일어나면 decide
@@ -224,7 +235,7 @@ export function ApprovalModal() {
           {current.target}
         </p>
         <div className="modal-actions">
-          <span className="modal-countdown">{remaining}s 후 자동 거부</span>
+          <span className="modal-countdown">{remaining} 후 자동 거부</span>
           <button
             ref={rejectRef}
             className="btn btn-danger"
