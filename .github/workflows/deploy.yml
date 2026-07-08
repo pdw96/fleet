@@ -14,7 +14,6 @@ on:
       - '**/*.md'
       - '.claude/**'
       - '.dogfood/**'
-      - '**/*.png'
       - 'coverage/**'
       - '.vscode/**'
       - '.idea/**'
@@ -69,21 +68,31 @@ jobs:
         run: |
           SHORT="${GITHUB_SHA::12}"
           O="${GITHUB_REPOSITORY_OWNER,,}"
-          # ① immutable sha 태그 — 이미 존재하면 skip(재실행이 floating base/apt/npm 변경분으로 sha-<12> 를
-          #    덮어써 "immutable 롤백 핀" 계약을 깨는 것 방지 — Codex PR P1). 부재일 때만 push = 진짜 불변.
+          # ① sha 태그 쌍을 세트로 발행(Codex PR P1/P2) — 재실행이 floating base/apt/npm 변경분으로 sha-<12> 를
+          #    덮어써 "immutable 롤백 핀" 을 깨거나, 부분 발행(한 서비스만)으로 쌍 불일치 나는 것 방지.
+          #    둘 다 존재=정상 rerun skip · 정확히 하나만=부분 발행 loud-fail(수동 정리) · 둘 다 부재=이번 빌드로 push.
+          have=0
           for svc in server webterminal; do
-            if docker manifest inspect "ghcr.io/$O/fleet-$svc:sha-$SHORT" >/dev/null 2>&1; then
-              echo "ghcr.io/$O/fleet-$svc:sha-$SHORT 이미 존재 — skip(immutable 유지)"
-            else
+            docker manifest inspect "ghcr.io/$O/fleet-$svc:sha-$SHORT" >/dev/null 2>&1 && have=$((have + 1))
+          done
+          if [ "$have" -eq 1 ]; then
+            echo "::error::sha-$SHORT 가 한 서비스만 발행됨(부분 발행) — 쌍 불일치 위험. 두 sha 태그 삭제 후 재발행."
+            exit 1
+          elif [ "$have" -eq 0 ]; then
+            for svc in server webterminal; do
               docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:sha-$SHORT"
               docker push "ghcr.io/$O/fleet-$svc:sha-$SHORT"
-            fi
-          done
-          # ② mutable latest — GITHUB_SHA == master tip 일 때만
+            done
+          else
+            echo "sha-$SHORT 쌍 이미 존재 — skip push(immutable 유지)"
+          fi
+          # ② latest 는 master tip 일 때만, sha 이미지에서 promote(로컬 재빌드가 아니라 — latest ≡ sha-<commit>
+          #    digest 보장 → 재현·롤백 일관 · Codex PR P1). skip 케이스도 원격 sha 를 pull 해 re-tag.
           TIP="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" --jq '.sha')"
           if [ "$TIP" = "$GITHUB_SHA" ]; then
             for svc in server webterminal; do
-              docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:latest"
+              docker pull "ghcr.io/$O/fleet-$svc:sha-$SHORT"
+              docker tag "ghcr.io/$O/fleet-$svc:sha-$SHORT" "ghcr.io/$O/fleet-$svc:latest"
               docker push "ghcr.io/$O/fleet-$svc:latest"
             done
           else

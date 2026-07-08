@@ -354,7 +354,9 @@ _(#222 · Part of #98)_ master 머지 → GitHub Actions(`.github/workflows/depl
    ```
    */5 * * * * /path/to/deploy/pull-deploy.sh >> ~/fleet-deploy.log 2>&1
    ```
-   `pull-deploy.sh` = flock(겹침 방지) → Compose 2.24 가드 → `pull` → `up -d --wait` → dangling prune.
+   `pull-deploy.sh` = flock(겹침 방지) → **git ff-only(compose/override 갱신)** → Compose 2.24 가드 → `pull` →
+   `up -d --wait` → dangling prune. ⚠️ 서버는 이 레포를 **clone** 해 두어야 compose/override 변경(env·volume·
+   healthcheck·profile)이 이미지와 함께 반영된다(Codex PR P2 — 비-git이면 git 갱신 skip → compose 수동 동기화).
    (watchtower 옵션: fleet/ttyd 라벨만 감시하게 설정 가능하나, cron 이 "무엇이 언제 갱신됐는지" 로그로 더 투명하다.)
 
 > ⚠️ **런타임 시크릿 전제.** `up --wait` 의 healthcheck GREEN 은 이미지 무결과 **별개**로 서버 `.env` 의

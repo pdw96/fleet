@@ -18,7 +18,6 @@ const PATHS_IGNORE_SAFE: Record<string, string> = {
   '**/*.md': '*.md',
   '.claude/**': '.claude',
   '.dogfood/**': '.dogfood',
-  '**/*.png': '*.png',
   'coverage/**': 'coverage',
   '.vscode/**': '.vscode',
   '.idea/**': '.idea',
@@ -108,10 +107,9 @@ describe('deploy: GHCR CD 발행 정책 핀(#222)', () => {
     // smoke 폴백은 base 의 :local 태그를 쓴다(smoke.sh 는 별도 파일 — base basename 일치로 대리 확인).
   })
 
-  // ⑨ [계약] paths-ignore 각 항목이 알려진 안전집합에 속함(신규 미매핑 항목 = fail-open 차단). 단 재귀글롭
-  // (**/*.md·**/*.png)은 .dockerignore 루트글롭(*.md·*.png)보다 넓으므로, 실제 안전성은 '런타임 이미지=out/
-  // 만(src 하위 번들 png/md 미포함)'에 의존한다(그 근거가 무너지면 재귀 정렬로 강화 · 자가 적대리뷰 P3).
-  // ⚠️ 재귀 .dockerignore 정렬(**/*.png)은 금지 — src 번들 에셋을 빌드 컨텍스트에서 빼 vite 번들이 깨진다.
+  // ⑨ [계약] paths-ignore 각 항목이 알려진 안전집합에 속함(신규 미매핑 항목 = fail-open 차단). `**/*.png` 는
+  // Codex PR P2 로 제거됨 — src 하위 png 가 vite 번들(out/renderer)에 들어가면 stale 인데 .dockerignore 루트
+  // `*.png` 로는 안 잡히기 때문(재귀↔루트 글롭 비대칭). 남은 `**/*.md` 는 런타임 이미지(out/)에 미포함이라 안전.
   it('paths-ignore 각 항목이 안전집합에 속함(신규 미매핑 항목=fail-open 차단)', () => {
     const wf = workflow()
     const di = dockerignore()
