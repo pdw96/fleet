@@ -52,6 +52,15 @@ function broadcastApprovalWithdrawn(id: string): void {
   }
 }
 
+// graceful drain 통지(#216 C3) — 데스크톱은 will-quit 즉시 종료라 실효 inert(ConnectionBanner web 전용·
+// HydrationProvider bridge=null 미구독)이나, ipc-parity(subscribe==send)가 preload onServerDraining 에
+// 대응하는 send 를 강제하므로 계약상 방출한다(웹 서버는 boot shutdown 이 실 통지 · 무해).
+function broadcastServerDraining(): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('fleet:server:draining', { reason: 'shutdown' })
+  }
+}
+
 function broadcastUpdateEvent(event: UpdateEvent): void {
   for (const w of BrowserWindow.getAllWindows()) {
     w.webContents.send('fleet:update:event', event)
@@ -247,6 +256,7 @@ void app.whenReady().then(() => {
     if (isQuitting) return
     e.preventDefault()
     isQuitting = true
+    broadcastServerDraining() // 종료 통지(데스크톱 inert·ipc-parity subscribe==send 계약)
     const done = (): void => app.quit() // isQuitting 가드로 재진입은 무해(기본 종료 진행)
     void engine.dispose().finally(done)
     setTimeout(done, 3000) // dispose 가 지연/멈춰도 종료 보장(연결 자식은 dispose 동기 1단계에서 이미 정리)

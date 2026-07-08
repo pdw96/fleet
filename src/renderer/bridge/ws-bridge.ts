@@ -382,6 +382,7 @@ export function createWsBridge(opts: WsBridgeOptions): WsBridge {
     respondApproval: (id, approved) => invoke<void>('fleet:approval:respond', id, approved),
     listPendingApprovals: () => invoke<ApprovalRequest[]>('fleet:approval:pending'),
     onApprovalWithdrawn: (callback) => subscribe('fleet:approval:withdrawn', callback),
+    onServerDraining: (callback) => subscribe('fleet:server:draining', callback),
 
     // 자동 업데이트 — Electron 전용(server 미등록). 웹에선 no-op/idle 스텁(reject 아님).
     getUpdateState: () => Promise.resolve<UpdateEvent>({ kind: 'unsupported' }),

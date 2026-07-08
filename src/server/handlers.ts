@@ -67,6 +67,14 @@ export interface HandlerDeps {
   appInfo: AppInfo
   /** FLEET_WORKSPACE_ROOT(정규화) — workspace:set 의 허용 루트. null = 경로 설정 미지원. */
   workspaceRoot: string | null
+  /**
+   * graceful drain 게이트(#216 C3) — true 면 `fleet:project:run` 이 신규 런을 거부(fail-closed). **비옵셔널**:
+   * 옵셔널이면 배선 누락 시 게이트가 무력화돼도 무신호이므로, 타입-레벨로 boot 배선을 강제한다(호출부가
+   * `() => draining` 을 반드시 넘긴다 — 누락 시 컴파일 에러). 호출 impl 이 예외를 던지면 throw 가 게이트 밖으로
+   * 전파돼 런 거부로 귀결(fail-closed). 반환 타입이 `boolean`(비옵셔널)이라 undefined 는 타입상 미도달 —
+   * 런타임 falsy fail-open 여지는 배선 강제로 원천 차단된다(옵셔널 체이닝 금지).
+   */
+  isDraining: () => boolean
 }
 
 export function createHandlers({
@@ -74,6 +82,7 @@ export function createHandlers({
   approver,
   appInfo,
   workspaceRoot,
+  isDraining,
 }: HandlerDeps): HandlerTable {
   return {
     'fleet:app:info': () => appInfo,
@@ -95,7 +104,13 @@ export function createHandlers({
     'fleet:project:events': (projectId) => engine.listProjectEvents(projectId),
     'fleet:project:lastActive:get': () => engine.getLastActiveProject(),
     'fleet:project:lastActive:set': (projectId) => engine.setLastActiveProject(projectId),
-    'fleet:project:run': (req) => engine.runProjectFlow(req),
+    // graceful drain(#216 C3): 종료 중이면 신규 런을 거부한다. **동기** 체크라 isDraining 체크와
+    // runProjectFlow 호출 사이에 await 이 없어(레이스 0) admission 통과 런은 대기 대상, 이후 도착 런은 거부.
+    // throw 는 runProjectFlow 호출 이전 전파 → ws-host dispatch catch 가 err frame 으로 변환(런 미시작).
+    'fleet:project:run': (req) => {
+      if (isDraining()) throw new Error('서버 종료 중 — 새 실행을 받지 않습니다')
+      return engine.runProjectFlow(req)
+    },
     'fleet:project:cancel': (projectId) => engine.cancelRun(projectId),
     'fleet:project:activity': () => engine.getRunActivity(),
     'fleet:workspace:get': () => engine.getWorkspace(),

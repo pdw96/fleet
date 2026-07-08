@@ -633,6 +633,11 @@ export interface FleetBridge {
    * 렌더러가 카드를 제거하고 tombstone 에 기록한다(늦은 스냅숏의 이미-철회 id 부활 차단 · #216 C1).
    */
   onApprovalWithdrawn(callback: (id: string) => void): () => void
+  /**
+   * graceful drain 통지 구독(#216 C3) — 서버 종료 시작 시 「곧 재접속」 배너용. payload = 정적
+   * `{reason:'shutdown'}`(민감 필드 금지). 웹 전용 실효(데스크톱은 bridge=null 로 미구독·inert). 해제 함수 반환.
+   */
+  onServerDraining(callback: (event: { reason: string }) => void): () => void
 
   // 자동 업데이트
   /** 업데이트 상태 스냅샷(배너 마운트 하이드레이트). */

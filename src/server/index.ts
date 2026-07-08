@@ -1,11 +1,11 @@
 import { bootServer } from './boot'
+import { installShutdownHandlers } from './shutdown-handlers'
 
 /**
- * fleet-server 엔트리(#197 B3) — 조립·검증 로직은 전부 boot.ts(테스트 가능)에 있고 여기는
- * 부수효과(기동·시그널 종료)만 둔다. 종료 모양(dispose 후 종료 + 3초 백스톱)은
- * main/index.ts will-quit 와 유사하나 완전히 동형은 아니다: `running` 은 시그널 도달 시점에
- * 아직 pending 이거나 이미 reject 된 상태일 수 있는 비동기 promise라서, 핸들러가 그 reject
- * 분기까지 반드시 처리해야 한다(미처리 시 기동 실패 후 시그널 → unhandled rejection 크래시).
+ * fleet-server 엔트리(#197 B3 · #216 C3) — 조립·검증·종료 로직은 전부 boot.ts/shutdown-handlers.ts
+ * (테스트 가능)에 있고 여기는 부수효과(기동·시그널 배선)만 둔다. graceful drain 종료(신규 런 거부 →
+ * 통지 → 진행 런 대기 상한 → close)는 shutdown-handlers.ts 가 결정론 검증한다. `running` 은 시그널 도달
+ * 시점에 pending/reject 일 수 있어(핸들러가 즉시 설치돼 그 상태까지 다뤄야 함) 순수 함수에 Promise 를 넘긴다.
  */
 const running = bootServer(process.env)
 running
@@ -17,16 +17,9 @@ running
     process.exitCode = 1
   })
 
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
-    void running
-      .then((s) => s.close())
-      .then(
-        () => process.exit(0),
-        // boot 실패(running reject)/close 실패 — 이미 상단 .catch 가 로깅·exitCode 설정을 했으니
-        // 여기서는 unhandled rejection 으로 새는 것만 막고 종료 코드 1로 정리한다.
-        () => process.exit(1),
-      )
-    setTimeout(() => process.exit(1), 3000).unref()
-  })
-}
+// SIGINT/SIGTERM graceful drain 종료(#216 C3) — 순수 로직은 shutdown-handlers.ts, 여기선 실 부수효과만 주입.
+installShutdownHandlers(running, {
+  onSignal: (signal, handler) => process.on(signal, handler),
+  exit: (code) => process.exit(code),
+  setBackstop: (fn, ms) => void setTimeout(fn, ms).unref(),
+})

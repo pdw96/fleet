@@ -14,9 +14,19 @@ export interface HydrationState {
   nonce: number
   /** 웹 전송 상태(데스크톱=null — 배너 미표시). */
   connection: ConnectionState | null
+  /**
+   * 서버 graceful drain 중(#216 C3) — onServerDraining push 로 true. 「곧 재접속」 배너용. 재접속 hello
+   * (nonce+1)에서 false 리셋한다 — drain 은 단일 종료 세대 신호이고 신서버 재접속은 종료 상태를 계승하지 않는다
+   * (미리셋 시 재배포 후 건강한 새 연결에 배너 영구 표시 = C3 목표 훼손 · F4).
+   */
+  draining: boolean
 }
 
-export const HydrationContext = createContext<HydrationState>({ nonce: 0, connection: null })
+export const HydrationContext = createContext<HydrationState>({
+  nonce: 0,
+  connection: null,
+  draining: false,
+})
 
 export function useHydration(): HydrationState {
   return useContext(HydrationContext)
@@ -32,6 +42,7 @@ export function HydrationProvider({
   const [state, setState] = useState<HydrationState>({
     nonce: 0,
     connection: bridge ? bridge.connectionState() : null,
+    draining: false,
   })
 
   useEffect(() => {
@@ -55,13 +66,20 @@ export function HydrationProvider({
         )
       }
       cursor = Math.max(cursor, hello.maxEventSeq)
-      setState((s) => ({ ...s, nonce: s.nonce + 1 }))
+      // 재접속 hello — 재하이드레이션 세대 전진 + draining 리셋(신서버 접속은 구서버 종료 상태 미계승 · F4).
+      setState((s) => ({ ...s, nonce: s.nonce + 1, draining: false }))
     })
     const offState = bridge.onConnectionState((c) => setState((s) => ({ ...s, connection: c })))
+    // 서버 graceful drain 통지(#216 C3) — 종료 시작 시 「곧 재접속」 배너. 소켓이 닫히면 자연히 reconnecting
+    // 배너로 전이하고, 신서버 재접속 hello 가 draining 을 리셋한다.
+    const offDraining = bridge.fleet.onServerDraining(() =>
+      setState((s) => ({ ...s, draining: true })),
+    )
     return () => {
       offLive()
       offCursor()
       offState()
+      offDraining()
     }
   }, [bridge])
 
@@ -70,7 +88,7 @@ export function HydrationProvider({
 
 /** 전송 상태 배너(웹 전용) — App 상시 마운트. 재접속 완료 후엔 스냅숏 권위 통지를 잠시 띄운다. */
 export function ConnectionBanner() {
-  const { connection, nonce } = useHydration()
+  const { connection, nonce, draining } = useHydration()
   const [showRecovered, setShowRecovered] = useState(false)
 
   useEffect(() => {
@@ -94,6 +112,15 @@ export function ConnectionBanner() {
     return (
       <div className="update-banner update-banner-error" role="status">
         서버 연결이 종료되었습니다 — 페이지를 새로고침하세요.
+      </div>
+    )
+  }
+  // 서버 graceful drain 중(#216 C3) — 연결은 아직 살아 있으나 곧 닫힌다. 소켓이 닫히면 위 reconnecting
+  // 배너로 전이하고, 신서버 재접속 hello 가 draining 을 리셋한다(그때 아래 showRecovered 가 대신 표시).
+  if (draining) {
+    return (
+      <div className="update-banner" role="status">
+        서버 종료 중 — 곧 재접속됩니다.
       </div>
     )
   }

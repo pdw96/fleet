@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type RawData } from 'ws'
-import type { AppInfo } from '../shared/types'
+import type { AppInfo, RunActivity } from '../shared/types'
 import { APPROVAL_MAX_PENDING } from '../shared/types'
 import { createChildEnv, type ChildEnv } from './child-env'
 import { createFleetEngine } from '../main/core/engine'
@@ -250,6 +250,72 @@ function resolveApprovalTtlMs(env: NodeJS.ProcessEnv): number {
   return n
 }
 
+/**
+ * graceful drain 상한(#216 C3) — SIGTERM 시 진행 런 완료 대기 상한(ms). 미설정 기본·유효 범위. 조율 계약:
+ * `drainTimeoutMs + 3s ≤ stop_grace_period`(컨테이너가 grace 만료 시 SIGKILL 로 절단 — ADR-0011). MAX 를 120s
+ * 로 조여 "무한정 대기" 오설정을 막는다(실 런은 분 단위라 상한 내 완주는 드물고, 상한은 «거의 끝난 런의 착지» 유예).
+ */
+const DEFAULT_DRAIN_TIMEOUT_MS = 25_000 // 25초(기본 stop_grace_period 30s 안쪽·teardown 3s 여유)
+const DRAIN_TIMEOUT_MIN_MS = 1_000 // 1초(사실상 no-grace)
+const DRAIN_TIMEOUT_MAX_MS = 120_000 // 2분(grace 를 함께 올릴 때만 유효)
+
+/**
+ * FLEET_DRAIN_TIMEOUT_MS 파싱(#216 C3 §3.3) — fail-fast. 미설정→기본 25000. 설정 시 유한 정수(ms)·
+ * [1000, 120000] 범위 밖이면 **throw**(조용한 clamp 금지 — resolveApprovalTtlMs·resolveSandboxBoundary 동형).
+ * 모든 부수효과(store mkdir 등) 이전에 호출한다.
+ */
+export function resolveDrainTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env['FLEET_DRAIN_TIMEOUT_MS']?.trim()
+  if (!raw) return DEFAULT_DRAIN_TIMEOUT_MS
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < DRAIN_TIMEOUT_MIN_MS || n > DRAIN_TIMEOUT_MAX_MS) {
+    throw new Error(
+      `FLEET_DRAIN_TIMEOUT_MS 는 [${DRAIN_TIMEOUT_MIN_MS}, ${DRAIN_TIMEOUT_MAX_MS}] 범위의 정수 ms 여야 함(받음: ${raw})`,
+    )
+  }
+  return n
+}
+
+/** 드레인 폴링 간격(ms · #216 C3 §3.4) — waitForRunDrain 재귀 poll 주기. shutdown 호출부 상수. */
+const DRAIN_POLL_MS = 250
+
+/**
+ * 진행 런(activeRuns) 이 빌 때까지 주입 clock 으로 상한 폴링하는 **순수** 함수(#216 C3 §3.4). 순수라 fake
+ * getActivity + fakeClock 으로 단위 검증(bootServer 통합은 e2e hang 러너 signal 미honor 로 결정론 불가 · §5).
+ *   · 초기 무런 → 즉시 `'drained'`(타이머 무장 0).
+ *   · 아니면 단일 `settled` 래치로 poll(재귀)·cap 을 경쟁시키고, 먼저 발화한 쪽이 resolve 와 동시에 형제
+ *     타이머를 clearTimeout(재-resolve·좀비 재스케줄 금지 — 타이머 누수 0 · §4-6).
+ *   · `'timeout'` 반환도 호출자(shutdown)가 이후 close()→dispose(force abort) 진행.
+ * pollMs<=0 은 재귀 폭주라 진입부 throw(fail-fast · §3.4 ">0 강제").
+ */
+export function waitForRunDrain(
+  getActivity: () => RunActivity,
+  clock: SocketExpiryClock,
+  capMs: number,
+  pollMs: number,
+): Promise<'drained' | 'timeout'> {
+  if (pollMs <= 0) throw new Error(`waitForRunDrain: pollMs 는 양수여야 함(받음: ${pollMs})`)
+  if (getActivity().activeProjectIds.length === 0) return Promise.resolve('drained')
+  return new Promise((resolve) => {
+    let settled = false
+    let pollH: unknown
+    // settle 은 timer 콜백/poll 에서만 호출돼 항상 capH 할당 후 실행(closure 참조 안전 · approval-bridge 동형).
+    const settle = (r: 'drained' | 'timeout'): void => {
+      if (settled) return
+      settled = true
+      clock.clearTimeout(capH)
+      clock.clearTimeout(pollH)
+      resolve(r)
+    }
+    const capH = clock.setTimeout(() => settle('timeout'), capMs)
+    const poll = (): void => {
+      if (getActivity().activeProjectIds.length === 0) return settle('drained')
+      pollH = clock.setTimeout(poll, pollMs) // 재무장(activeCount 잔여는 settle 이 정리)
+    }
+    pollH = clock.setTimeout(poll, pollMs)
+  })
+}
+
 /** 번들(out/server)·소스(src/server) 양쪽에서 레포/설치 루트의 package.json version 을 읽는다. */
 function readOwnVersion(): string {
   try {
@@ -268,6 +334,18 @@ export interface RunningServer {
   mode: SecurityConfig['mode']
   /** 현재 attach 된(검증 통과) 클라이언트 수 — access presence 소스·health 관측. */
   clientCount(): number
+  /**
+   * 해소된 드레인 상한(ms · #216 C3) — index.ts 백스톱 사이징(`drainTimeoutMs + 3000`)용. shutdown 내부
+   * waitForRunDrain 에 넘기는 cap 과 **동일 const**(divergence 방지 — 노출값<cap 이면 드레인 도중 exit(1)).
+   */
+  drainTimeoutMs: number
+  /**
+   * graceful drain 종료(#216 C3): memo-gate → draining on(신규 런 거부) → (broadcast T5) → waitForRunDrain
+   * (상한 대기) → close(). idempotent(2회 호출 = 동일 promise). 내부 cap 은 드레인 대기만 상한하며 teardown
+   * hang 은 index.ts 백스톱/컨테이너 SIGKILL 이 종착(dispose 무타임아웃 · ADR-0003).
+   */
+  shutdown(): Promise<void>
+  /** 하드 teardown(idempotent · promise-memo) — rejectAll → terminate → close WS/HTTP → dispose. */
   close(): Promise<void>
 }
 
@@ -290,6 +368,9 @@ export async function bootServer(
   const port = resolvePort(env)
   // 승인 보류 TTL(#216 C1) — 오설정이면 여기서 fail-fast(모든 부수효과 이전).
   const approvalTtlMs = resolveApprovalTtlMs(env)
+  // graceful drain 상한(#216 C3) — 오설정이면 여기서 fail-fast. RunningServer.drainTimeoutMs 와 shutdown 내부
+  // waitForRunDrain cap 이 이 단일 const 를 공유한다(divergence 0).
+  const drainTimeoutMs = resolveDrainTimeoutMs(env)
   const e2e = isE2EActive(env)
   // 워크스페이스 검증(dialog 대신 env 경로): 미존재/비디렉터리는 fail-fast — store 생성(mkdirSync
   // 부수효과) 이전에 순수 검증부터 끝낸다. 실제 적용(setWorkspace)은 engine 생성 후로 미룬다.
@@ -308,6 +389,9 @@ export async function bootServer(
 
   // wsHost 는 engine 콜백보다 늦게 만들어진다 — 브로드캐스트는 조립 완료 후에만 유효(부팅 중 이벤트 무해 drop).
   let wsHost: WsHost | null = null
+  // graceful drain 게이트(#216 C3) — shutdown() 이 동기로 true 로 뒤집으면 fleet:project:run 핸들러가
+  // 신규 런을 거부한다(handlers isDraining 비옵셔널로 주입). 여기선 선언만(shutdown 조립은 아래 return).
+  let draining = false
   // 주입 clock(테스트 결정론) — 소켓 exp 타이머와 **동일 clock 을 approver 만료 타이머에도** 라우팅해
   // 통합 만료를 결정론화한다(#216 C1 §C-2·§3-23). 원래 348행 정의를 approver 조립 위로 끌어올림.
   const clock = deps.clock ?? defaultClock
@@ -375,6 +459,8 @@ export async function bootServer(
     approver: ipcApprover,
     appInfo,
     workspaceRoot: workspaceRoot ? resolve(workspaceRoot) : null,
+    // 클로저 draining 을 읽는 게이트 — shutdown() 이 true 로 뒤집으면 신규 런 거부(#216 C3).
+    isDraining: () => draining,
   })
   wsHost = createWsHost({ handlers, eventCursor: () => store.eventCursor() })
 
@@ -558,18 +644,51 @@ export async function bootServer(
     httpServer.listen(port, host, resolveListen)
   })
 
+  // 하드 teardown(#216 C3 promise-memo) — 동시/중복 close 는 동일 promise 를 await 한다(closed flag 는 teardown
+  // 미완인데 조기 resolve 될 여지 → promise-memo 로 완료까지 공유). rejectAll·terminate 는 이미 멱등.
+  let closePromise: Promise<void> | null = null
+  const close = (): Promise<void> =>
+    (closePromise ??= (async () => {
+      // 종료 시 outstanding 승인 전원 즉시 reject(dispose 전) — 어떤 클라도 응답 못 함(멱등·mode 무관 안전).
+      ipcApprover.rejectAll()
+      for (const c of wss.clients) c.terminate()
+      wss.close()
+      // httpServer.close() 는 리스너만 닫고 기존 커넥션 완료를 대기한다. 정적 자산 서빙으로 생긴 HTTP
+      // keep-alive(브라우저 idle·keepAliveTimeout 기본 5s)·close-창 late-upgrade 소켓은 스스로 끝날 때까지
+      // close() 를 pending 시켜 clean 종료를 지연(최악 백스톱 발화로 exit(1) 강등)한다 — closeAllConnections 로
+      // 전 커넥션을 강제 종료해 즉시 close 완료(#216 C3 · 자체 적대리뷰 P3). WS 소켓은 이미 terminate 됨(멱등).
+      await new Promise<void>((r) => {
+        httpServer.close(() => r())
+        httpServer.closeAllConnections()
+      })
+      await engine.dispose()
+    })())
+
+  // graceful drain 종료(#216 C3) — memo-gate → draining → (broadcast T5) → waitForRunDrain → close.
+  let shutdownPromise: Promise<void> | null = null
+  const shutdown = (): Promise<void> => {
+    // ⓪ memo-gate: draining/wait/close 이전 첫 평가(멱등 — 중복 SIGTERM/SIGINT 에 동일 promise·broadcast/close 1회).
+    if (shutdownPromise) return shutdownPromise
+    // ① 동기 set — 이후 fleet:project:run 은 isDraining 게이트가 거부(체크와 호출 사이 await 0 = 레이스 0).
+    draining = true
+    shutdownPromise = (async () => {
+      // ② 클라 통지(best-effort) — attach(인증 통과) 소켓만 도달·safeSend 격리. 정적 페이로드(민감값 0).
+      wsHost?.broadcast('fleet:server:draining', { reason: 'shutdown' })
+      // ③ 진행 런(activeRuns) 완료 대기(상한). drainTimeoutMs 는 RunningServer 노출값과 동일 const(divergence 0).
+      await waitForRunDrain(() => engine.getRunActivity(), clock, drainTimeoutMs, DRAIN_POLL_MS)
+      // ④ 하드 teardown(timeout=force → dispose 가 잔여 런 abort → 오케스트레이터 revert · rejectAll fail-closed 종단).
+      await close()
+    })()
+    return shutdownPromise
+  }
+
   return {
     port: (httpServer.address() as AddressInfo).port,
     host,
     mode: securityConfig.mode,
     clientCount: () => wsHost?.clientCount() ?? 0,
-    close: async () => {
-      // 종료 시 outstanding 승인 전원 즉시 reject(dispose 전) — 어떤 클라도 응답 못 함(멱등·mode 무관 안전).
-      ipcApprover.rejectAll()
-      for (const c of wss.clients) c.terminate()
-      wss.close()
-      await new Promise<void>((r) => httpServer.close(() => r()))
-      await engine.dispose()
-    },
+    drainTimeoutMs,
+    shutdown,
+    close,
   }
 }

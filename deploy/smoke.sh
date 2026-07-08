@@ -188,6 +188,9 @@ printf '%s' "$FLEET_BLOCK" | grep -q 'source: fleet-data' && ok "fleet-data 는 
 printf '%s' "$TTYD_BLOCK" | grep -q 'fleet-data' && bad "ttyd 에 fleet-data 마운트됨 (Phase A 금지!)" || ok "ttyd 에 fleet-data 미마운트"
 # fleet 서비스에 docker.sock 미마운트.
 printf '%s' "$FLEET_BLOCK" | grep -qi 'docker.sock' && bad "fleet 에 Docker 소켓 마운트!" || ok "fleet Docker 소켓 미마운트"
+# graceful drain(#216 C3) — stop_grace_period 는 load-bearing: 미설정 시 Docker 기본 10s SIGKILL 이 25s 드레인을
+# 절단(진행 런·pending 승인 정리 소실). 지우면 조용히 깨지므로 canary 로 가드한다.
+printf '%s' "$FLEET_BLOCK" | grep -q 'stop_grace_period' && ok "fleet stop_grace_period 설정(드레인 유예)" || bad "fleet stop_grace_period 누락 — 10s SIGKILL 이 드레인 절단!"
 
 # ─────────────────── override(docker-compose.ghcr.yml) 병합 canary (#222 CD) ───────────────────
 # 서버측 pull override 가 base 의 build: 를 !reset 으로 제거해 "로컬 빌드 없이 GHCR pull" 이 되는지
@@ -202,6 +205,8 @@ printf '%s' "$GHCR_FLEET" | grep -q . && ok "override fleet 블록 추출(canary
 printf '%s' "$GHCR_TTYD" | grep -q . && ok "override ttyd 블록 추출(canary)" || bad "override ttyd 블록 추출 실패"
 printf '%s' "$GHCR_FLEET" | grep -q 'image: ghcr.io/pdw96/fleet-server' && ok "fleet image=GHCR" || bad "fleet image 가 GHCR 아님"
 printf '%s' "$GHCR_FLEET" | grep -q 'build:' && bad "fleet 에 build: 잔존(!reset 미적용 — 서버 로컬 빌드 시도)" || ok "fleet build: 제거됨(!reset)"
+# stop_grace_period 상속(#216 C3) — override 는 build/image 만 덮으므로 base 30s 유지(드리프트 0). 소실 시 드레인 절단.
+printf '%s' "$GHCR_FLEET" | grep -q 'stop_grace_period' && ok "override fleet stop_grace_period 상속" || bad "override 에서 stop_grace_period 소실 — 드레인 절단!"
 printf '%s' "$GHCR_TTYD" | grep -q 'image: ghcr.io/pdw96/fleet-webterminal' && ok "ttyd image=GHCR" || bad "ttyd image 가 GHCR 아님"
 printf '%s' "$GHCR_TTYD" | grep -q 'build:' && bad "ttyd 에 build: 잔존(!reset 미적용)" || ok "ttyd build: 제거됨(!reset)"
 

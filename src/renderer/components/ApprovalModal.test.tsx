@@ -48,7 +48,7 @@ function mockFleet(
 /** HydrationContext 로 nonce 를 제어(재접속 재하이드레이션 구동). 미지정 nonce=0(마운트). */
 function renderModal(nonce = 0) {
   return render(
-    <HydrationContext.Provider value={{ nonce, connection: null }}>
+    <HydrationContext.Provider value={{ nonce, connection: null, draining: false }}>
       <ApprovalModal />
     </HydrationContext.Provider>,
   )
@@ -267,7 +267,7 @@ describe('ApprovalModal', () => {
     expect(listPendingApprovals).toHaveBeenCalledTimes(1) // 마운트(nonce 0)
     await act(async () => {
       view.rerender(
-        <HydrationContext.Provider value={{ nonce: 1, connection: null }}>
+        <HydrationContext.Provider value={{ nonce: 1, connection: null, draining: false }}>
           <ApprovalModal />
         </HydrationContext.Provider>,
       )
@@ -308,7 +308,7 @@ describe('ApprovalModal', () => {
     // 재접속(nonce+1) → 하이드레이션 in-flight(preHydrationIds={stale} 포착).
     await act(async () => {
       view.rerender(
-        <HydrationContext.Provider value={{ nonce: 1, connection: null }}>
+        <HydrationContext.Provider value={{ nonce: 1, connection: null, draining: false }}>
           <ApprovalModal />
         </HydrationContext.Provider>,
       )
