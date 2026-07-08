@@ -69,6 +69,10 @@ services:
     image: fleet-server:${IMAGE_TAG:-local}
     restart: unless-stopped
     init: true # tini = PID1 → 좀비 수거·시그널 전달
+    # graceful drain 유예(#216 C3) — docker stop/재배포 시 SIGTERM 후 이 시간까지 서버가 드레인(진행 런 완주
+    # 대기·pending 승인 정리)한 뒤 SIGKILL. 미설정(Docker 기본 10s)이면 드레인(기본 25s)이 절단되므로 필수.
+    # 조율 계약(ADR-0011): FLEET_STOP_GRACE ≥ FLEET_DRAIN_TIMEOUT_MS/1000 + 3(둘을 함께 올려야 상한 honor).
+    stop_grace_period: ${FLEET_STOP_GRACE:-30s}
     environment:
       # access 모드 필수 — FLEET_HOST=0.0.0.0(컨테이너 내부망 도달)은 access env 완비 시에만 부팅 통과
       # (resolveBindHost 이중 게이트). 미완비면 loud-fail(조용한 loopback 강등 아님).
@@ -84,6 +88,9 @@ services:
       # 승인 보류 TTL(#216 C1) — presence=0(외출) 승인이 시한부로 보류되는 시간(ms). 미설정=600000(10분).
       # 유효 [5000, 1800000](5초~30분)·범위 밖이면 boot fail-fast. "외출 중 폰 승인"은 응답 여유를 위해 상향 가능.
       FLEET_APPROVAL_TTL_MS: ${FLEET_APPROVAL_TTL_MS:-600000}
+      # graceful drain 상한(#216 C3) — 진행 런 착지 유예(ms)·stop_grace_period 안쪽 유지. 미설정=25000.
+      # 유효 [1000, 120000]·범위 밖이면 boot fail-fast. 상한 상향 시 stop_grace_period 도 함께(ADR-0011).
+      FLEET_DRAIN_TIMEOUT_MS: ${FLEET_DRAIN_TIMEOUT_MS:-25000}
       # CLI 내부 샌드박스 posture(#214 · ADR-0010) — 컨테이너 배포 기본 = container(codex danger-full-access
       # + --skip-git-repo-check: 비특권 컨테이너의 bwrap user-namespace 실패 회피). 운영자 override 허용
       # (=cli 롤백). 미지값 = 부팅 거부(loud fail) — 조용한 강등 아님. 코드 기본은 cli(데스크톱/베어호스트).
