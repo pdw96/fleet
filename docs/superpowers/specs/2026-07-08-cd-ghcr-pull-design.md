@@ -45,7 +45,7 @@ GHCR에 발행하면 갭①이 닫히고, 24/7 서버가 그 이미지를 pull�
 ## 3. 아키텍처
 
 ```
-master 머지 (paths: src/**, deploy/**, package*.json)  또는  workflow_dispatch
+master 머지 (paths-ignore: docs/**·**/*.md·.claude/** 등 런타임 무관만)  또는  workflow_dispatch
   └─ .github/workflows/deploy.yml   [ubuntu-latest 클라우드 러너]
        1. checkout (SHA 핀 · persist-credentials:false)
        2. GHCR 로그인 (GITHUB_TOKEN, packages:write)
@@ -70,9 +70,16 @@ pull만 한다(인바운드 0). 둘을 잇는 유일한 매개는 **GHCR의 이�
 
 ### ① GHCR 빌드/푸시 워크플로 — `.github/workflows/deploy.yml`
 
-- **트리거**: `on.push.branches: [master]` + `on.push.paths: [src/**, deploy/**, package.json,
-  package-lock.json, .github/workflows/deploy.yml]` + `workflow_dispatch`(수동 재발행).
-  path-filter로 문서-only 머지는 스킵(무의미한 이미지 빌드 회피).
+- **트리거**: `on.push.branches: [master]` + `on.push.paths-ignore`(**역필터**) + `workflow_dispatch`(수동 재발행).
+  **allowlist가 아니라 역필터인 이유(Codex 스펙 리뷰 P1)**: `deploy/fleet/Dockerfile`이 `COPY . .`로 **전체
+  레포**를 빌드 컨텍스트에 넣고 `npm run build`를 돌리므로, 이미지 입력은 `src/**`보다 훨씬 넓다 — 루트
+  빌드 설정(`vite.server.config.ts`·`electron.vite.config.*`·`tsconfig*.json`·`.npmrc`·`.dockerignore` 등)이
+  이미지를 바꾼다. allowlist는 그런 파일을 빠뜨리면 **재빌드를 안 해 fail-open**(서버가 stale `:latest` 유지).
+  대신 `.dockerignore`가 빌드 컨텍스트에서 빼거나 런타임에 무관한 경로만 `paths-ignore`로 스킵한다:
+  `docs/**`·`**/*.md`·`.claude/**`·`.dogfood/**`·`**/*.png`·`coverage/**`·`.vscode/**`·`.idea/**`·`fleet-brain.html`.
+  나머지(빌드 설정 전부)는 트리거를 탄다 = **fail-safe(애매하면 빌드)**. 새 파일은 스킵 목록에 없으면 기본
+  트리거라 drift 방향도 안전. (`README.md`는 `.dockerignore` `!README.md`로 이미지에 포함되나 런타임 무관
+  = 문서 레이어일 뿐 → `**/*.md` 스킵 허용.)
 - **concurrency**: `group: deploy-ghcr`, `cancel-in-progress: true`(최신 머지만 발행 — stale 이미지 push 방지).
 - **permissions**: `contents: read` + `packages: write`(GHCR 발행). 그 외 none.
 - **잡**(ubuntu-latest, `HUSKY: 0`):
@@ -119,8 +126,9 @@ pull만 한다(인바운드 0). 둘을 잇는 유일한 매개는 **GHCR의 이�
 
 ## 5. 핵심 설계 결정
 
-1. **트리거 = master push + path-filter**(태그 기반 아님). 사용자 의도 "머지→라이브 자동"에 정합. 문서-only
-   머지는 path-filter로 제외해 무의미한 빌드 회피. `workflow_dispatch`로 수동 재발행 보강.
+1. **트리거 = master push + `paths-ignore` 역필터**(태그·allowlist 아님). fleet 이미지가 `COPY . .`로 전체
+   레포를 빌드하므로 allowlist는 루트 빌드 파일을 빠뜨려 **fail-open**(Codex 스펙 리뷰 P1). `.dockerignore`
+   정합 역필터로 docs-only만 스킵 = **fail-safe**. `workflow_dispatch`로 수동 강제 발행 보강.
 2. **서버 갱신 = cron+compose 기본, watchtower 옵션**. watchtower는 편의 데몬이나, solo pre-1.0에선
    cron+`compose pull`이 더 단순·투명(무엇이 언제 갱신되는지 로그로 명확). watchtower는 원하는 이에게 문서로.
 3. **태깅 = `:latest` + `:sha-<short>`**. `:latest`는 cron pull이 추적, `:sha-<short>`는 immutable 추적·롤백 핀.
