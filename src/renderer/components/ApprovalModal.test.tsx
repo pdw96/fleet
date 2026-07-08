@@ -677,6 +677,7 @@ describe('반응형 CSS(회귀 가드)', () => {
     expect(css).toContain('.modal-chips') // 미니칩 스트립
     expect(css).toMatch(/flex-wrap: *wrap/) // 모바일 액션 줄바꿈(카운트다운↑·버튼 풀폭·적대리뷰 F4)
     expect(css).toMatch(/position: *sticky/) // 액션 바닥 고정(오버플로 시 스크롤아웃 방지·적대리뷰 F5/F6)
+    expect(css).toMatch(/max-height: *90dvh/) // content-driven·dvh(라이브 폰 오프스크린 버그 회귀 가드)
     expect(css).toMatch(/@keyframes sheetUp/) // 시트 슬라이드(reduced-motion 서 무애니)
   })
 })

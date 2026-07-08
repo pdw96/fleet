@@ -69,10 +69,12 @@ test.describe('C1 승인 보류(#216) — hold → 리로드 재하이드레이�
   })
 
   // C2(#216) 폰 뷰포트 — 실 chromium 이 ≤640px 미디어쿼리를 적용하므로(jsdom 미검) 바텀시트 앵커·
-  // 풀폭·mm:ss 카운트다운·엄지 버튼 조작을 실측한다.
-  test('C2 폰 뷰포트: 승인 카드가 바텀시트로 앵커·mm:ss 카운트다운·거부 버튼 소멸', async ({
+  // 풀폭·mm:ss·엄지 버튼을 실측한다. reduced-motion 으로 sheetUp 애니메이션(시작 프레임=오프스크린)을 꺼
+  // 최종 정지 레이아웃을 결정론 측정한다.
+  test('C2 폰 뷰포트: 승인 카드가 바텀시트로 뷰포트 내 앵커·엄지 버튼 가시·mm:ss·소멸', async ({
     page,
   }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto(server.url)
     await page.getByText('FLEET').first().waitFor()
@@ -86,23 +88,29 @@ test.describe('C1 승인 보류(#216) — hold → 리로드 재하이드레이�
     const dialog = page.getByRole('dialog')
     await expect(page.getByText('MCP 서버 실행: c2-phone')).toBeVisible({ timeout: 10_000 })
 
-    // 바텀시트 앵커: 카드가 좌측 끝·풀폭·하단 고정(≤640px). jsdom 은 레이아웃 미평가라 여기서만 검증.
+    // 바텀시트 = 좌측끝·풀폭·**뷰포트 안**·하단 밀착. 라이브 폰 실측서 grid place-items:end + height:80vh 가
+    // 카드를 뷰포트 아래로 오프스크린시키던 버그의 회귀 가드 — position:fixed bottom:0 + content-driven
+    // max-height:dvh 로 뷰포트 내 하단 앵커를 단언한다(jsdom 미레이아웃이라 여기서만 검증).
     const box = await dialog.locator('.modal-card').boundingBox()
     expect(box).not.toBeNull()
     if (box) {
-      expect(box.x).toBeLessThanOrEqual(1) // 좌측 끝(풀폭 stretch)
+      expect(box.x).toBeLessThanOrEqual(1) // 좌측 끝(풀폭)
       expect(box.width).toBeGreaterThanOrEqual(388) // 뷰포트(390) 폭
-      expect(box.y + box.height).toBeGreaterThanOrEqual(842) // 하단 앵커(엄지존)
+      expect(box.y).toBeGreaterThanOrEqual(0) // 상단이 뷰포트 안(오프스크린 위 아님)
+      expect(box.y + box.height).toBeGreaterThanOrEqual(840) // 하단 밀착(엄지존)
+      expect(box.y + box.height).toBeLessThanOrEqual(846) // **뷰포트 안**(오프스크린 아래 아님·핵심 회귀 가드)
     }
 
     // 서버 권위 mm:ss 카운트다운(Ns 아님).
     await expect(page.getByText(/\d+:\d{2} 후 자동 거부/)).toBeVisible()
 
-    // 엄지 버튼 = 풀폭(flex:1·flex-wrap 로 카운트다운 윗줄 분리). F4 회귀 가드 — nowrap 이면 카운트다운이
-    // 같은 줄을 차지해 버튼이 min-content(~40px)로 압축된다. 390px 뷰포트서 각 버튼 ≈165px 여야 함.
+    // 엄지 버튼 = 풀폭(flex:1·flex-wrap·F4) + **뷰포트 안 가시**(오프스크린 아님).
     const rejectBox = await dialog.getByRole('button', { name: '거부' }).boundingBox()
     expect(rejectBox).not.toBeNull()
-    if (rejectBox) expect(rejectBox.width).toBeGreaterThanOrEqual(140)
+    if (rejectBox) {
+      expect(rejectBox.width).toBeGreaterThanOrEqual(140) // 풀폭(≈165 @390)
+      expect(rejectBox.y + rejectBox.height).toBeLessThanOrEqual(844) // 버튼이 뷰포트 안(엄지 도달)
+    }
 
     // 엄지 버튼(거부) 조작 → 서버 resolve → withdrawn → 카드 소멸.
     await page.getByRole('button', { name: '거부' }).click()

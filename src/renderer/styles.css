@@ -1086,21 +1086,29 @@ code.id {
   color: var(--faint);
 }
 
-/* 폰 — 바텀시트(Tall·엄지 조작·큰 타입)(#216 C2 §C-3). 데스크톱(>640px)은 중앙 모달 유지(무회귀). */
+/* 폰 — 바텀시트(#216 C2 §C-3·라이브 폰 실측 반영). 데스크톱(>640px)은 중앙 모달 유지(무회귀).
+   카드를 grid place-items 대신 **position:fixed 로 뷰포트 하단에 직접 앵커** — grid `place-items:end`
+   + `height:80vh` 조합이 카드를 뷰포트 아래로 오프스크린시키던 라이브 버그를 결정론적으로 해소.
+   높이는 **content-driven max-height dvh**(짧은 승인=콘텐츠 높이로 하단 밀착·빈 여백 없음·긴 승인=캡까지
+   스크롤·주소창 포함 vh 대신 dvh 로 실제 가시 높이 대응). */
 @media (max-width: 640px) {
   .modal-overlay {
-    place-items: end stretch;
     padding: 0;
   }
   .modal-card {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: 100%;
     max-width: none;
-    height: 80vh;
+    max-height: 90vh;
+    max-height: 90dvh;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
     border-radius: 18px 18px 0 0;
-    padding: 16px 18px 24px;
+    padding: 16px 18px 22px;
     animation: sheetUp 0.24s ease both;
   }
   .modal-card .panel-title {
@@ -1110,9 +1118,9 @@ code.id {
     font-size: 15px;
   }
   .modal-actions {
-    position: sticky; /* 내용이 80vh 초과·스크롤돼도 버튼/카운트다운을 시트 바닥 엄지존에 고정(적대리뷰 F5/F6) */
+    position: sticky; /* 내용이 캡 초과·스크롤돼도 버튼/카운트다운을 시트 바닥 엄지존에 고정(적대리뷰 F5/F6) */
     bottom: 0;
-    margin-top: auto; /* 내용 짧을 땐 시트 바닥으로 밀기 */
+    margin-top: 14px; /* content-driven 카드라 auto 불요 — 본문 아래 여백만 */
     flex-wrap: wrap; /* nowrap 이면 flex-basis:100% 미줄바꿈 → 카운트다운 윗줄·버튼 아랫줄 풀폭 위해 필수(적대리뷰 F4) */
     gap: 12px;
     padding-top: 12px;
