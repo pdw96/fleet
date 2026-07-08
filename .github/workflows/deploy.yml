@@ -21,10 +21,12 @@ on:
       - 'fleet-brain.html'
   workflow_dispatch:
 
-# 연속 머지 시 최신만 발행(stale 이미지 push 방지).
+# 큐잉(cancel-in-progress: false) — mid-publish 취소 시 latest 쌍(fleet-server/webterminal) 불일치 방지(Codex PR P1).
+# master-tip 가드가 stale run 의 latest 이동을 이미 막으므로, tip run 이 취소 없이 두 latest push 를 원자 완주한다.
+# deploy 는 빈도 낮아 큐잉 부담 적다.
 concurrency:
   group: deploy-ghcr
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # GHCR 발행만 — packages:write. gh api(master tip 조회)는 contents:read. 그 외 none.
 permissions:
@@ -67,10 +69,15 @@ jobs:
         run: |
           SHORT="${GITHUB_SHA::12}"
           O="${GITHUB_REPOSITORY_OWNER,,}"
-          # ① immutable sha 태그 — 항상 발행(가드 밖)
+          # ① immutable sha 태그 — 이미 존재하면 skip(재실행이 floating base/apt/npm 변경분으로 sha-<12> 를
+          #    덮어써 "immutable 롤백 핀" 계약을 깨는 것 방지 — Codex PR P1). 부재일 때만 push = 진짜 불변.
           for svc in server webterminal; do
-            docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:sha-$SHORT"
-            docker push "ghcr.io/$O/fleet-$svc:sha-$SHORT"
+            if docker manifest inspect "ghcr.io/$O/fleet-$svc:sha-$SHORT" >/dev/null 2>&1; then
+              echo "ghcr.io/$O/fleet-$svc:sha-$SHORT 이미 존재 — skip(immutable 유지)"
+            else
+              docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:sha-$SHORT"
+              docker push "ghcr.io/$O/fleet-$svc:sha-$SHORT"
+            fi
           done
           # ② mutable latest — GITHUB_SHA == master tip 일 때만
           TIP="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" --jq '.sha')"

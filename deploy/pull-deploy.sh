@@ -3,7 +3,9 @@
 #   cron 예: */5 * * * * /path/to/deploy/pull-deploy.sh >> ~/fleet-deploy.log 2>&1
 #
 # 절차: flock(겹침 방지) → Compose 2.24+ 가드(!reset) → pull → up -d --wait → dangling prune.
-# fail-safe: pull/up 실패 시 set -e loud abort + logs, 이전 컨테이너는 계속 가동(무중단). 자동 승격 없음.
+# 실패 처리: pull 실패 = 이전 컨테이너 계속 가동(무중단 — recreate 전). up/healthcheck 실패 = compose 가 이미
+#   새(깨진) 이미지로 recreate 한 뒤라 이전 컨테이너가 없다(Codex PR P1) → fail() 이 loud abort + logs, 운영자가
+#   롤백(GHCR_TAG=sha-<이전> 재실행). 자동 롤백은 비목표(계획 §2 · blue-green 미도입).
 # ⚠️ up --wait GREEN 은 서버 .env 의 FLEET_ACCESS_*·FLEET_SECRET_KEY 완비를 전제(resolveBindHost 이중게이트).
 #    access env 누락 타임아웃은 "배포 실패" 가 아니라 config 갭 — README 「런타임 시크릿 전제」 참조.
 #    롤백 = GHCR_TAG=sha-<이전12> 후 재실행(:latest 를 되돌리는 게 아니라 sha 핀으로 명시 복귀).

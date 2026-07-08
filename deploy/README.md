@@ -338,7 +338,7 @@ _(#222 · Part of #98)_ master 머지 → GitHub Actions(`.github/workflows/depl
 
 ### 서버 (pull — 서버 마련 후)
 
-**요구**: Docker + **Docker Compose 2.24+**(override 의 `!reset`) · 아웃바운드망만(인바운드 0 유지).
+**요구**: Docker + **Docker Compose 2.24+**(override 의 `!reset`) · 아웃바운드망만(인바운드 0 유지) · **amd64(x86_64) 호스트**(아래 「아키텍처」 ⚠️).
 
 1. **GHCR 인증**(1회) — **classic PAT** `read:packages`(GHCR 는 fine-grained PAT 를 docker login 에 미지원 —
    classic 전용):
@@ -363,7 +363,9 @@ _(#222 · Part of #98)_ master 머지 → GitHub Actions(`.github/workflows/depl
 
 ### 롤백
 
-`latest` 를 되돌리지 않는다 — **이전 커밋의 immutable `sha` 태그로 명시 핀**한다:
+⚠️ **`up --wait` 실패 = 새(깨진) 이미지가 이미 recreate 된 상태**다(compose 는 healthy 확인 전에 컨테이너를
+교체한다 · Codex PR P1). 이전 컨테이너로 자동 복귀하지 않으므로 즉시 롤백한다. `latest` 를 되돌리지 않고 —
+**이전 커밋의 immutable `sha` 태그로 명시 핀**한다:
 
 ```bash
 export GHCR_TAG=sha-<이전12hex>
@@ -375,6 +377,9 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.ghcr.yml 
 
 - **서버 권장(미정)** — 저가 VPS(상시·고정 IP·백업 용이) 또는 홈서버/미니PC(비용 0·전기만). 둘 다 인바운드 0
   (아웃바운드 pull + 아웃바운드 터널)이면 충분하다.
+- **아키텍처** — ⚠️ 발행 이미지는 **amd64(x86_64) 전용**이다(클라우드 러너 `ubuntu-latest`=x64 빌드). arm64 호스트
+  (일부 미니PC·arm VPS)는 `docker compose pull` 이 no matching manifest 로 실패한다(Codex PR P2) → **amd64 호스트를
+  쓰거나**, arm64 는 buildx 멀티아치 발행 후속(서버 아키텍처 확정 후). Dockerfile 자체는 arm64 빌드 가능(ttyd arm64 SHA 포함).
 - **첫 발행** — `GITHUB_TOKEN`(packages:write)이 미존재 private 패키지를 최초 생성할 때 403 이 날 수 있다(패키지가
   아직 레포 권한 상속 전). Dockerfile 의 `org.opencontainers.image.source` 라벨이 패키지↔레포 자동 링크를 의도하나,
   첫 머지 후 GHCR UI 에서 패키지 가시성·레포 링크를 1회 확인하라(안 되면 수동 부트스트랩).
