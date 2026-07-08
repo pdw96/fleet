@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 86 files · 220 import wires · 46 IPC channels · 생성 2026-07-08T09:00 UTC
+> 87 files · 222 import wires · 47 IPC channels · 생성 2026-07-08T18:12 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -13,13 +13,13 @@
 - **바깥 세계 runtime** — 앱 밖의 실제 대상 — 설치된 AI CLI(클로드/코덱스/제미니), AI 회사 API, 외부 도구(MCP) 서버.
 
 ## 한눈에
-- **허브**(많이 연결): shared/types(48) · engine(29) · server/boot(15) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
+- **허브**(많이 연결): shared/types(48) · engine(29) · server/boot(16) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
 - **진입점**: main/e2e · main/index · preload/index · renderer/main
 - **레지스트리**(확장점, 분기 대신 등록): cli/registry · providers/registry · tools/registry
 - **승인 게이트**(위험작업 차단): safety/approval
 
 ## 런타임 배선 (import 로는 안 보이는 연결)
-- renderer/App, renderer/bridge/web-bridge, renderer/bridge/ws-bridge, renderer/components/AddAiWizard, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, renderer/main →(window.fleet)→ preload/index.ts → main/index.ts (46 IPC channels) → engine
+- renderer/App, renderer/bridge/web-bridge, renderer/bridge/ws-bridge, renderer/components/AddAiWizard, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, renderer/main →(window.fleet)→ preload/index.ts → main/index.ts (47 IPC channels) → engine
 - session/cli-session → claude · codex · gemini
 - session/api-session → Anthropic · OpenAI · Google
 - mcp/stdio → MCP servers
@@ -28,19 +28,21 @@
 
 ### other · other
 - **server/boot**
-  - →의존: cli/registry, engine, main/e2e, safety/approval-bridge, server/access-jwt, server/child-env, server/env-key-crypto, server/handlers, server/security-config, server/static, +4 · ←피의존: server/index · 576줄
+  - →의존: cli/registry, engine, main/e2e, safety/approval-bridge, server/access-jwt, server/child-env, server/env-key-crypto, server/handlers, server/security-config, server/static, +4 · ←피의존: server/index, server/shutdown-handlers · 688줄
 - **server/handlers**
-  - →의존: engine, safety/approval-bridge, shared/transport/channels, shared/types, workspace/set-workspace · ←피의존: server/boot, server/ws-host · 139줄
+  - →의존: engine, safety/approval-bridge, shared/transport/channels, shared/types, workspace/set-workspace · ←피의존: server/boot, server/ws-host · 152줄
 - **server/ws-host**
   - →의존: server/handlers, shared/transport/channels, shared/transport/protocol · ←피의존: server/boot · 99줄
 - **server/env-key-crypto**
   - →의존: secret/types · ←피의존: server/boot · 47줄
+- **server/index**
+  - →의존: server/boot, server/shutdown-handlers · ←피의존: — · 26줄
+- **server/shutdown-handlers**
+  - →의존: server/boot · ←피의존: server/index · 49줄
 - **server/access-jwt**
   - →의존: — · ←피의존: server/boot · 109줄
 - **server/child-env**
   - →의존: — · ←피의존: server/boot · 131줄
-- **server/index**
-  - →의존: server/boot · ←피의존: — · 33줄
 - **server/security-config**
   - →의존: — · ←피의존: server/boot · 50줄
 - **server/static**
@@ -52,9 +54,9 @@
 - **renderer/App** — 앱 화면의 큰 틀과 위쪽 탭 메뉴를 그리는 부품 _맨 위 'FLEET' 제목과 세션·프로젝트·채팅 세 탭을 보여주고, 누른 탭에 맞는 화면을 갈아끼웁니다. 현재 등록된 AI 세션 개수와 위험 작업 승인 창도 항상 켜 둡니다._
   - →의존: renderer/bridge/hydration, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/components/UpdateBanner, shared/types · ←피의존: renderer/main · 118줄
 - **renderer/bridge/hydration**
-  - →의존: renderer/bridge/ws-bridge, shared/transport/protocol · ←피의존: renderer/App, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/main · 109줄
+  - →의존: renderer/bridge/ws-bridge, shared/transport/protocol · ←피의존: renderer/App, renderer/components/ApprovalModal, renderer/components/ChatPanel, renderer/components/ProjectPanel, renderer/components/SessionsPanel, renderer/main · 136줄
 - **renderer/bridge/ws-bridge**
-  - →의존: shared/cliAuthInstallMeta, shared/transport/protocol, shared/types · ←피의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/bridge/web-bridge · 425줄
+  - →의존: shared/cliAuthInstallMeta, shared/transport/protocol, shared/types · ←피의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/bridge/web-bridge · 426줄
 - **renderer/components/ProjectPanel** — 목표를 적으면 여러 AI가 역할을 나눠 작업하게 시키는 프로젝트 실행 화면 _원하는 목표와 역할 배정 방식을 입력해 '실행'을 누르면 AI들이 계획·작업·검증을 진행하고, 그 과정을 진행 로그와 작업 보드로 실시간 보여주며 도중에 취소할 수도 있습니다._
   - →의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/components/elicitation, renderer/ui, shared/types · ←피의존: renderer/App · 653줄
 - **renderer/components/AddAiWizard**
@@ -82,11 +84,11 @@
 
 ### preload · preload — 화면(앱 창)과 앱의 두뇌(본체)를 안전하게 이어주는 다리로, 화면이 본체에 일을 시키고 결과를 돌려받게 해 주는 창구 역할을 한다.
 - **preload/index** — 앱 화면과 본체 사이를 안전하게 잇는 단 하나의 통로(창구) 부품 _화면 쪽 코드는 본체에 직접 손대지 못하고, 이 파일이 미리 정해 둔 'fleet'이라는 안내 데스크를 통해서만 요청을 전달한다. 마치 은행 창구처럼, 손님(화면)이 정해진 양식으로만 요청하고 직원(본체)이 처리해 결과를 돌려주는 구조라 안전하다._
-  - →의존: shared/types · ←피의존: — · 111줄
+  - →의존: shared/types · ←피의존: — · 119줄
 
 ### main · main — Fleet 앱의 본체(메인 프로세스)를 켜고, 창과 보안 빗장을 설치하며, 화면과 AI 엔진을 안전하게 연결하는 시동·관문 묶음이다.
 - **main/index** — 앱에 시동을 걸어 창을 띄우고 화면과 AI 엔진을 이어주는 '시동·교환대' _앱이 준비되면 AI 엔진을 만들고, 화면(창)을 띄우며, 화면이 보내는 모든 요청(세션 등록·채팅·프로젝트 실행·승인 응답 등)을 엔진의 해당 기능으로 연결하는 전화 교환대 역할을 한다. 창을 만들 때 보안 빗장 두 개(이동 차단·권한 차단)를 걸고, 앱을 끌 때는 켜져 있던 AI 프로그램들을 깔끔히 정리한 뒤 종료해 '좀비' 프로세스가 남지 않게 한다._
-  - →의존: engine, main/auto-update, main/crash-recovery, main/e2e, main/external-links, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, +3 · ←피의존: — · 293줄
+  - →의존: engine, main/auto-update, main/crash-recovery, main/e2e, main/external-links, main/permission-guards, main/secret-crypto, main/window-guards, safety/approval-bridge, shared/types, +3 · ←피의존: — · 303줄
 - **main/e2e** — 자동 테스트할 때만 켜지는 '연습용 가짜 AI' 장치 _진짜 AI를 부르는 대신 미리 정해둔 답을 흉내 내, 화면 자동검사(Playwright)가 흔들림 없이 돌아가게 한다. 가짜 AI 둘과 토론방 하나, 임시 작업폴더를 미리 깔아두며, 일부러 '응답 중' 상태에서 멈춰 탭을 옮겼다 돌아와도 진행 표시가 살아있는지 확인하게 해준다. FLEET_E2E 라는 스위치가 정확히 '1'일 때만 작동하고 평소엔 절대 끼어들지 않는다._
   - →의존: cli/detect, cli/probe, engine, verify/run · ←피의존: main/index, server/boot · 103줄
 - **main/external-links**
@@ -226,11 +228,11 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +38 · 655줄
+  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +38 · 660줄
 - **shared/cliAuthInstallMeta**
   - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/bridge/ws-bridge, renderer/components/AddAiWizard · 42줄
 - **shared/transport/channels**
-  - →의존: — · ←피의존: server/handlers, server/ws-host, shared/transport/fixtures · 143줄
+  - →의존: — · ←피의존: server/handlers, server/ws-host, shared/transport/fixtures · 147줄
 - **shared/transport/protocol**
   - →의존: — · ←피의존: renderer/bridge/hydration, renderer/bridge/ws-bridge, server/ws-host · 156줄
 - **shared/transport/fixtures**
