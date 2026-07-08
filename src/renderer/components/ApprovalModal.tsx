@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import {
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import type { ApprovalRequest, RiskLevel } from '../../shared/types'
 import { useHydration } from '../bridge/hydration'
 
@@ -17,27 +23,87 @@ const KIND_TITLE: Record<ApprovalRequest['kind'], string> = {
   'tool-call': '도구 호출 승인',
 }
 
+/** 미니칩·스트립용 짧은 라벨(모달 제목 KIND_TITLE 과 별도 — 좁은 칩에 종류만 표기). */
+const KIND_LABEL: Record<ApprovalRequest['kind'], string> = {
+  'file-write': '파일 쓰기',
+  'file-delete': '파일 삭제',
+  shell: 'shell 실행',
+  'apply-diff': '변경 적용',
+  'tool-call': '도구 호출',
+}
+
 /**
- * id-keyed 비파괴 upsert(#216 C1 §C-3) — 이미 철회(tombstone)된 요청만 부활 차단한다. tombstone 재확인을
- * 스냅숏 apply 시점에 수행해(async resolve 후 이 함수 호출) 늦게 도착한 stale 스냅숏의 이미-철회 id 부활을
- * 막는다. 같은 id 라이브+스냅숏은 단일 카드로 병합. **로컬 시계(Date.now)로 만료 카드를 드롭하지 않는다**
- * (#216 Codex 재리뷰 P2): 서버 권위 expiresAt 대비 클라(폰) 시계가 앞서면 서버가 아직 유효하다고 보는 카드를
- * 로컬이 드롭해 "외출 중 폰 승인"이 스큐 클라에서 실패한다. 존재/만료 권위는 서버(snapshot·withdrawn·resolve)에
- * 있고, 클라의 expiresAt 사용은 카운트다운 표시 전용이다(broadcast·server list() 는 유효 카드만 보낸다).
+ * 남은 ms → "m:ss"(예 573000→"9:33", 5000→"0:05", 0/음수→"0:00"). ceil 초·max(0) 클램프.
+ * 서버 권위 카운트다운 표시 전용(#216 C2 §C-4) — 로컬 만료로 카드를 제거하지 않는다(skew 계약).
  */
-function upsertApproval(
-  prev: ApprovalRequest[],
-  req: ApprovalRequest,
-  tombstone: Set<string>,
-): ApprovalRequest[] {
-  if (tombstone.has(req.id)) return prev
-  const i = prev.findIndex((r) => r.id === req.id)
-  if (i >= 0) {
-    const next = [...prev]
-    next[i] = req
-    return next
+export function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+export type ApprovalState = { queue: ApprovalRequest[]; focusedId: string | null }
+export type ApprovalAction =
+  | { type: 'UPSERT'; req: ApprovalRequest }
+  | { type: 'REMOVE'; id: string }
+  | { type: 'FOCUS'; id: string }
+  | { type: 'FOCUS_DELTA'; delta: number }
+  | { type: 'HYDRATE'; pending: ApprovalRequest[]; preHydrationIds: Set<string> }
+
+/**
+ * 승인 큐+집중 카드 원자 전이(#216 C2 §C-2). `focusedId` 는 **id 로 추적**(위치 인덱스 아님) — 집중 카드보다
+ * 앞 순번 카드가 제거돼도 가리키는 카드가 조용히 바뀌지 않아, 사용자가 읽지 않은 카드의 우발 결정 위험을 상태
+ * 층에서 차단한다(C1 오조준 가드의 상태 층 보완). tombstone(이미-철회 id 부활 차단)은 순수 reducer 밖(ref)에서
+ * dispatch 전 선필터한다 — HYDRATE 는 apply 시점(async resolve 후) 필터라 늦은 stale 스냅숏의 부활도 막는다.
+ * **로컬 시계로 만료 카드를 드롭하지 않는다**(#216 skew 계약): 제거 권위는 서버(withdrawn·reconcile)이고,
+ * 클라 expiresAt 은 카운트다운 표시 전용이다.
+ */
+export function approvalReducer(state: ApprovalState, action: ApprovalAction): ApprovalState {
+  switch (action.type) {
+    case 'UPSERT': {
+      const i = state.queue.findIndex((r) => r.id === action.req.id)
+      if (i >= 0) {
+        const queue = [...state.queue]
+        queue[i] = action.req
+        return { ...state, queue } // 같은 id 갱신(비파괴)
+      }
+      return { ...state, queue: [...state.queue, action.req] } // 뒤 추가·focus 불변(얌체 점프 방지)
+    }
+    case 'REMOVE': {
+      const idx = state.queue.findIndex((r) => r.id === action.id)
+      if (idx < 0) return state
+      const queue = state.queue.filter((r) => r.id !== action.id)
+      if (state.focusedId !== action.id) return { ...state, queue } // 비집중 제거 — 집중 불변(id 추적)
+      const neighbor = queue[idx] ?? queue[idx - 1] ?? null // 다음, 없으면 이전, 없으면 null
+      return { queue, focusedId: neighbor ? neighbor.id : null }
+    }
+    case 'FOCUS':
+      return state.queue.some((r) => r.id === action.id)
+        ? { ...state, focusedId: action.id }
+        : state
+    case 'FOCUS_DELTA': {
+      if (state.queue.length === 0) return state
+      const cur = state.queue.findIndex((r) => r.id === (state.focusedId ?? state.queue[0].id))
+      const ni = Math.min(state.queue.length - 1, Math.max(0, cur + action.delta))
+      return { ...state, focusedId: state.queue[ni].id }
+    }
+    case 'HYDRATE': {
+      const snapshotIds = new Set(action.pending.map((r) => r.id))
+      // reconcile(#216 C1 §C-3·Codex P2): 스냅숏에 있거나(권위) preHydration 밖(라이브-fresh)인 카드 유지.
+      const queue = state.queue.filter(
+        (r) => snapshotIds.has(r.id) || !action.preHydrationIds.has(r.id),
+      )
+      for (const req of action.pending) {
+        const i = queue.findIndex((r) => r.id === req.id)
+        if (i >= 0) queue[i] = req
+        else queue.push(req)
+      }
+      const focusedId =
+        state.focusedId && queue.some((r) => r.id === state.focusedId) ? state.focusedId : null
+      return { queue, focusedId }
+    }
   }
-  return [...prev, req]
 }
 
 /**
@@ -47,7 +113,10 @@ function upsertApproval(
  */
 export function ApprovalModal() {
   const { nonce } = useHydration()
-  const [queue, setQueue] = useState<ApprovalRequest[]>([])
+  const [{ queue, focusedId }, dispatch] = useReducer(approvalReducer, {
+    queue: [],
+    focusedId: null,
+  })
   const [now, setNow] = useState(() => Date.now())
   // 철회된 id 집합(id=randomUUID 무재사용 → 영속 안전). 늦은 스냅숏의 이미-철회 id 부활 차단.
   const tombstone = useRef<Set<string>>(new Set())
@@ -56,22 +125,22 @@ export function ApprovalModal() {
   const pointerIntent = useRef<string | null>(null)
   const rejectRef = useRef<HTMLButtonElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
+  // 스와이프 시작 좌표(진행적 향상) — pointerup 델타로 가로 스와이프 판정.
+  const swipeStart = useRef<{ x: number; y: number } | null>(null)
 
-  // 라이브 승인 요청 구독 — 마운트 1회. id-keyed upsert(tombstone/만료 가드).
+  // 라이브 승인 요청 구독 — 마운트 1회. tombstone 선필터(이미-철회 부활 차단) 후 UPSERT.
   useEffect(() => {
-    const unsub = window.fleet.onApprovalRequest((req) =>
-      setQueue((prev) => upsertApproval(prev, req, tombstone.current)),
-    )
-    return unsub
+    return window.fleet.onApprovalRequest((req) => {
+      if (!tombstone.current.has(req.id)) dispatch({ type: 'UPSERT', req })
+    })
   }, [])
 
-  // 승인 이탈(응답/만료/철회/취소·rejectAll) 통지 — id 제거 + tombstone 기록. 마운트 1회.
+  // 승인 이탈(응답/만료/철회/취소·rejectAll) 통지 — tombstone 기록 + REMOVE. 마운트 1회.
   useEffect(() => {
-    const unsub = window.fleet.onApprovalWithdrawn((id) => {
+    return window.fleet.onApprovalWithdrawn((id) => {
       tombstone.current.add(id)
-      setQueue((prev) => prev.filter((r) => r.id !== id))
+      dispatch({ type: 'REMOVE', id })
     })
-    return unsub
   }, [])
 
   // 재하이드레이션(마운트 nonce=0 + 재접속 hello 마다 nonce+1) — listPendingApprovals 스냅숏 upsert(비파괴).
@@ -88,15 +157,10 @@ export function ApprovalModal() {
         .listPendingApprovals()
         .then((pending) => {
           if (cancelled) return
-          const snapshotIds = new Set(pending.map((r) => r.id))
-          setQueue((prev) => {
-            // reconcile(#216 적대리뷰 Codex P2): 하이드레이션 前 존재했으나 권위 스냅숏에 없는 카드를 제거 —
-            // 재접속 중 놓친 withdrawn·타세션 해소를 정리(로컬 expiresAt·TTL 까지 유령 카드 잔존 방지). 라이브
-            // -fresh(preHydrationIds 밖)는 보존해 drop-race 를 피한다. 스냅숏 카드는 이어서 upsert.
-            let next = prev.filter((r) => snapshotIds.has(r.id) || !preHydrationIds.has(r.id))
-            for (const req of pending) next = upsertApproval(next, req, tombstone.current)
-            return next
-          })
+          // apply 시점 tombstone 재확인(늦은 stale 스냅숏의 이미-철회 id 부활 차단) 후 HYDRATE.
+          // reconcile(스냅숏 부재 pre-hydration 제거·라이브-fresh 보존)은 reducer 가 수행(#216 C2 §C-2).
+          const clean = pending.filter((r) => !tombstone.current.has(r.id))
+          dispatch({ type: 'HYDRATE', pending: clean, preHydrationIds })
         })
         .catch(() => {
           // pre-hello 재접속 등으로 조회가 reject 되면(소켓 조기 종료) 제한 재시도(#216 Codex 재리뷰 P2) —
@@ -124,14 +188,19 @@ export function ApprovalModal() {
     return () => clearInterval(iv)
   }, [])
 
-  const current = queue[0]
-  // 카운트다운 = 서버 권위 expiresAt 기준(공유 상수 APPROVAL_TIMEOUT_MS 소비 제거 — 카운트다운=실제 만료 정합).
-  const remaining = current ? Math.max(0, Math.ceil((current.expiresAt - now) / 1000)) : 0
+  // 집중 카드 = focusedId 가 큐에 있으면 그 카드, 없거나 null 이면 큐 앞(FIFO 기본). position=1..N 표시.
+  const current = queue.find((r) => r.id === focusedId) ?? queue[0]
+  const position = current ? queue.findIndex((r) => r.id === current.id) + 1 : 0
+  // 카운트다운 = 서버 권위 expiresAt 기준 mm:ss(공유 상수 APPROVAL_TIMEOUT_MS 소비 제거 — 카운트다운=실제 만료 정합).
+  const remaining = current ? formatCountdown(current.expiresAt - now) : '0:00'
 
   // 결정 의도 스냅숏(#216 적대리뷰 P3·Codex P2) — pointerdown/keydown 시 조준한 카드 id 를 기록. 마우스·
   // 키보드(Enter/Space) 활성화가 커밋(click)되기 전 비동기 스왑(withdrawn/만료/reconcile)이 일어나면 decide
   // 가 intent≠current 로 무시해 사용자가 읽지 않은 카드의 우발 결정을 막는다.
-  const captureIntent = (): void => {
+  const captureIntent = (e?: ReactPointerEvent): void => {
+    // 버튼/칩서 시작한 포인터 제스처가 카드 스와이프(swipeStart)를 기록하지 않게 전파 차단(적대리뷰 F1) —
+    // 스와이프는 카드 본문에서 시작할 때만 발화하고, 액션 버튼 위 드래그가 우발 이동/결정을 만들지 않는다.
+    e?.stopPropagation()
     if (current) pointerIntent.current = current.id
   }
   const captureIntentKey = (e: { key: string }): void => {
@@ -148,7 +217,25 @@ export function ApprovalModal() {
     // 회신 유실(전송 단절)은 조용히 흡수 — main/server 의 승인 만료(fail-closed 자동 거부)가 권위라
     // 렌더러가 재시도하지 않는다. respond 는 이미 해소된 id 에 멱등 no-op.
     void window.fleet.respondApproval(current.id, approved).catch(() => undefined)
-    setQueue((prev) => prev.filter((r) => r.id !== current.id))
+    dispatch({ type: 'REMOVE', id: current.id })
+  }
+
+  // 가로 스와이프(진행적 향상·§C-1·불변식④) — **터치 전용**. 카드 본문에서 수평 임계(48px) 초과·수평
+  // 우세면 focus 이동(결정 아님). 세로 우세는 시트 스크롤 보존(무시). 데스크톱 마우스/펜은 게이트 아웃 —
+  // 경로 텍스트 선택·칩 가로 스크롤 드래그가 우발 카드 스왑을 만들지 않게(적대리뷰 F7/F8). 점·미니칩·
+  // 화살표가 전 기능 대체하므로 터치 미지원/미발화도 무해. 버튼/칩서 시작한 제스처는 stopPropagation 으로 배제.
+  const onCardPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType !== 'touch') return
+    swipeStart.current = { x: e.clientX, y: e.clientY }
+  }
+  const onCardPointerUp = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    const s = swipeStart.current
+    swipeStart.current = null
+    if (!s || e.pointerType !== 'touch') return
+    const dx = e.clientX - s.x
+    const dy = e.clientY - s.y
+    if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy)) return
+    dispatch({ type: 'FOCUS_DELTA', delta: dx < 0 ? 1 : -1 }) // 좌 스와이프=다음
   }
 
   // 모달 열림·큐 전진(다음 요청)마다 거부 버튼에 초기 포커스 — Enter 가 거부로 떨어져 destructive 오승인 방지.
@@ -167,7 +254,22 @@ export function ApprovalModal() {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         e.preventDefault()
-        decide(false) // 거부 — 자동거부 백스톱과 일관한 안전 방향
+        // Escape=명시적 키보드 거부 — 버튼 조준(pointerIntent) 후 내비(화살표/스와이프/칩)로 current 가
+        // 바뀌어 잔류 intent≠current 가 돼도 첫 Escape 가 삼켜지지 않게, 잔류 intent 를 소거하고 현재 카드를
+        // 거부한다(적대리뷰 F2). 항상 안전 방향(거부)이라 무해.
+        pointerIntent.current = null
+        decide(false)
+        return
+      }
+      // 화살표 = 집중 카드 이동(결정 아님·불변식③). 최신 큐 기준 ±1 clamp(reducer).
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        dispatch({ type: 'FOCUS_DELTA', delta: 1 })
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        dispatch({ type: 'FOCUS_DELTA', delta: -1 })
         return
       }
       if (e.key !== 'Tab') return
@@ -180,7 +282,9 @@ export function ApprovalModal() {
       const active = document.activeElement
       if (!card.contains(active)) {
         e.preventDefault()
-        first.focus() // 포커스가 모달 밖으로 샜으면 내부(첫 버튼)로 복귀
+        // 이탈 복귀는 항상 거부(rejectRef) — 미니칩/내비가 액션 버튼보다 DOM 앞이라 첫 focusable 이
+        // 칩일 수 있어, DOM 순서 무관하게 거부-우선 안전을 고정한다(#216 Codex 체크포인트 2 P2).
+        rejectRef.current?.focus()
       } else if (e.shiftKey && active === first) {
         e.preventDefault()
         last.focus()
@@ -205,7 +309,12 @@ export function ApprovalModal() {
       aria-labelledby="approval-title"
       aria-describedby="approval-summary approval-target"
     >
-      <div className="panel modal-card" ref={cardRef}>
+      <div
+        className="panel modal-card"
+        ref={cardRef}
+        onPointerDown={onCardPointerDown}
+        onPointerUp={onCardPointerUp}
+      >
         <div className="panel-head">
           <span className="eyebrow">승인 필요</span>
           <h2 className="panel-title" id="approval-title">
@@ -223,8 +332,33 @@ export function ApprovalModal() {
         <p className="modal-target" id="approval-target">
           {current.target}
         </p>
+        {queue.length > 1 && (
+          <div className="modal-nav" role="group" aria-label="대기 중 승인 이동">
+            {/* 칩 스트립서 시작한 포인터(터치 가로 스크롤 포함)가 카드 스와이프를 발화하지 않게(적대리뷰 F7). */}
+            <div className="modal-chips" onPointerDown={(e) => e.stopPropagation()}>
+              {queue.map((r, i) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={`modal-chip${r.id === current.id ? ' is-current' : ''}`}
+                  aria-current={r.id === current.id ? 'true' : undefined}
+                  aria-label={`${KIND_LABEL[r.kind]} · ${RISK_LABEL[r.risk]} (${i + 1}/${queue.length})`}
+                  onClick={() => dispatch({ type: 'FOCUS', id: r.id })}
+                >
+                  <span className="modal-chip-kind">{KIND_LABEL[r.kind]}</span>
+                  <span className="modal-chip-risk" data-risk={r.risk}>
+                    {RISK_LABEL[r.risk]}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <span className="modal-pos">
+              {position} / {queue.length}
+            </span>
+          </div>
+        )}
         <div className="modal-actions">
-          <span className="modal-countdown">{remaining}s 후 자동 거부</span>
+          <span className="modal-countdown">{remaining} 후 자동 거부</span>
           <button
             ref={rejectRef}
             className="btn btn-danger"
@@ -243,7 +377,6 @@ export function ApprovalModal() {
             승인
           </button>
         </div>
-        {queue.length > 1 && <p className="modal-pending">대기 중 {queue.length - 1}건</p>}
       </div>
     </div>
   )

@@ -1,9 +1,12 @@
 /** @vitest-environment jsdom */
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ApprovalRequest } from '../../shared/types'
+import type { ApprovalRequest, RiskLevel } from '../../shared/types'
 import { HydrationContext } from '../bridge/hydration'
-import { ApprovalModal } from './ApprovalModal'
+import { ApprovalModal, approvalReducer, formatCountdown } from './ApprovalModal'
 
 function mockFleet(
   overrides: {
@@ -60,6 +63,16 @@ const REQ: ApprovalRequest = {
   ts: 1,
   // 미래값 — 새 컴포넌트는 expiresAt<=now 를 만료로 필터한다(서버 권위 카운트다운).
   expiresAt: Date.now() + 60_000,
+}
+
+/** 종류·위험을 지정한 라이브 요청 팩토리(미니칩 라벨 검증용·미래 expiresAt). */
+function mkReq(
+  id: string,
+  summary: string,
+  kind: ApprovalRequest['kind'],
+  risk: RiskLevel,
+): ApprovalRequest {
+  return { id, kind, summary, target: `/ws/${id}`, risk, ts: 1, expiresAt: Date.now() + 60_000 }
 }
 
 afterEach(() => {
@@ -271,9 +284,9 @@ describe('ApprovalModal', () => {
     fire(A) // 라이브 A (스냅숏에도 있음 — dedupe)
     fire({ ...REQ, id: 'C', summary: 'C카드' }) // 스냅숏에 없는 라이브 — 보존
     await act(async () => {}) // 마운트 hydration([A,B]) flush
-    // A(단일)·C·B = 3장. A 가 중복이면 "대기 중 3건". 단일이므로 current(A) 외 "대기 중 2건".
+    // A(단일)·C·B = 3장. A 가 중복이면 4장(1/4). 단일이므로 3장·current(A)=위치 1/3.
     expect(screen.getByText('A카드')).toBeTruthy()
-    expect(screen.getByText('대기 중 2건')).toBeTruthy()
+    expect(screen.getByText('1 / 3')).toBeTruthy()
   })
 
   // #P2 재접속 reconcile — 스냅숏에 없는 pre-hydration 카드 제거·하이드레이션 중 라이브-fresh 보존(Codex P2)
@@ -339,12 +352,12 @@ describe('ApprovalModal', () => {
       const { fire } = mockFleet()
       renderModal()
       fire({ ...REQ, id: 'exp-1', expiresAt: t0 + 3000 }) // 3s 후(공유상수 60s 아님)
-      expect(screen.getByText('3s 후 자동 거부')).toBeTruthy()
+      expect(screen.getByText('0:03 후 자동 거부')).toBeTruthy()
       act(() => {
         vi.advanceTimersByTime(3200) // 로컬 만료 초과
       })
       // 서버 권위(withdrawn)만 제거 — 로컬 시계로 드롭 금지(skew-ahead 폰 클라의 valid 카드 보존).
-      expect(screen.getByText('0s 후 자동 거부')).toBeTruthy() // 카운트다운 0s 클램프
+      expect(screen.getByText('0:00 후 자동 거부')).toBeTruthy() // 카운트다운 0s 클램프
       expect(screen.getByRole('dialog')).toBeTruthy() // 카드 유지(서버 withdrawn 대기)
     } finally {
       vi.useRealTimers()
@@ -358,7 +371,7 @@ describe('ApprovalModal', () => {
     // 서버는 유효하다고 브로드캐스트한 카드지만 로컬 Date.now() 기준으론 이미 만료(폰 시계가 앞섬).
     fire({ ...REQ, id: 'skew-1', summary: 'skew 카드', expiresAt: Date.now() - 1000 })
     expect(screen.getByText('skew 카드')).toBeTruthy() // 로컬 만료라도 드롭 안 함(서버 권위 존재)
-    expect(screen.getByText('0s 후 자동 거부')).toBeTruthy() // 카운트다운만 0s 클램프
+    expect(screen.getByText('0:00 후 자동 거부')).toBeTruthy() // 카운트다운만 0:00 클램프
     // 승인 가능 — 서버 resolve 가 자기 시계로 검증(멱등·만료면 서버가 거부 강등).
     fireEvent.pointerDown(screen.getByRole('button', { name: '승인' }))
     fireEvent.click(screen.getByRole('button', { name: '승인' }))
@@ -423,5 +436,309 @@ describe('ApprovalModal', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('formatCountdown', () => {
+  it('남은 ms 를 m:ss 로(ceil 초·0 클램프)', () => {
+    expect(formatCountdown(600_000)).toBe('10:00')
+    expect(formatCountdown(573_000)).toBe('9:33')
+    expect(formatCountdown(65_000)).toBe('1:05')
+    expect(formatCountdown(5_000)).toBe('0:05')
+    expect(formatCountdown(1)).toBe('0:01') // ceil — 0 초과는 최소 0:01
+    expect(formatCountdown(0)).toBe('0:00')
+    expect(formatCountdown(-1_000)).toBe('0:00')
+  })
+})
+
+// 순수 reducer 유닛(#216 C2 §C-2) — queue+focusedId 원자 전이. DOM 없이 전이 자체를 고정.
+const mk = (id: string, over: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+  id,
+  kind: 'file-write',
+  summary: id,
+  target: `/ws/${id}`,
+  risk: 'destructive',
+  ts: 1,
+  expiresAt: 2_000,
+  ...over,
+})
+
+describe('approvalReducer', () => {
+  it('UPSERT 는 큐 뒤 추가·focus 불변(얌체 점프 방지)', () => {
+    const s0 = { queue: [mk('A'), mk('B')], focusedId: 'B' }
+    const s1 = approvalReducer(s0, { type: 'UPSERT', req: mk('C') })
+    expect(s1.queue.map((r) => r.id)).toEqual(['A', 'B', 'C'])
+    expect(s1.focusedId).toBe('B') // 새 라이브에도 집중 불변
+  })
+
+  it('UPSERT 는 같은 id 갱신(dedupe·비파괴)', () => {
+    const s0 = { queue: [mk('A', { summary: 'old' })], focusedId: null }
+    const s1 = approvalReducer(s0, { type: 'UPSERT', req: mk('A', { summary: 'new' }) })
+    expect(s1.queue).toHaveLength(1)
+    expect(s1.queue[0].summary).toBe('new')
+  })
+
+  it('REMOVE(집중 카드) → 이웃으로 focus(다음, 없으면 이전, 없으면 null)', () => {
+    const s1 = approvalReducer(
+      { queue: [mk('A'), mk('B'), mk('C')], focusedId: 'B' },
+      { type: 'REMOVE', id: 'B' },
+    )
+    expect(s1.queue.map((r) => r.id)).toEqual(['A', 'C'])
+    expect(s1.focusedId).toBe('C') // idx=1 자리의 다음 카드
+    const s2 = approvalReducer(
+      { queue: [mk('A'), mk('B')], focusedId: 'B' },
+      { type: 'REMOVE', id: 'B' },
+    )
+    expect(s2.focusedId).toBe('A') // 마지막이면 이전
+    const s3 = approvalReducer({ queue: [mk('A')], focusedId: 'A' }, { type: 'REMOVE', id: 'A' })
+    expect(s3.focusedId).toBeNull() // 마지막 1건이면 null
+  })
+
+  it('REMOVE(비집중 카드) → 집중 불변(id 추적 이점·조용한 스왑 없음)', () => {
+    const s1 = approvalReducer(
+      { queue: [mk('A'), mk('B'), mk('C')], focusedId: 'C' },
+      { type: 'REMOVE', id: 'A' }, // 앞 카드 제거
+    )
+    expect(s1.focusedId).toBe('C') // index 추적이면 스왑됐을 상황 — id 추적이라 불변
+  })
+
+  it('FOCUS 는 큐에 있는 id 만 채택', () => {
+    const s0 = { queue: [mk('A'), mk('B')], focusedId: 'A' }
+    expect(approvalReducer(s0, { type: 'FOCUS', id: 'B' }).focusedId).toBe('B')
+    expect(approvalReducer(s0, { type: 'FOCUS', id: 'Z' }).focusedId).toBe('A') // 없는 id 무시
+  })
+
+  it('FOCUS_DELTA 는 최신 큐 기준 ±1 클램프(순환 없음)', () => {
+    const q = [mk('A'), mk('B'), mk('C')]
+    expect(
+      approvalReducer({ queue: q, focusedId: 'A' }, { type: 'FOCUS_DELTA', delta: 1 }).focusedId,
+    ).toBe('B')
+    expect(
+      approvalReducer({ queue: q, focusedId: 'A' }, { type: 'FOCUS_DELTA', delta: -1 }).focusedId,
+    ).toBe('A') // 경계 clamp
+    expect(
+      approvalReducer({ queue: q, focusedId: 'C' }, { type: 'FOCUS_DELTA', delta: 1 }).focusedId,
+    ).toBe('C') // 경계 clamp
+    expect(
+      approvalReducer({ queue: q, focusedId: null }, { type: 'FOCUS_DELTA', delta: 1 }).focusedId,
+    ).toBe('B') // null=큐 앞 기준
+  })
+
+  it('HYDRATE reconcile — 스냅숏 부재 pre-hydration 제거·라이브-fresh 보존·스냅숏 upsert', () => {
+    const s1 = approvalReducer(
+      { queue: [mk('stale'), mk('fresh')], focusedId: 'fresh' },
+      { type: 'HYDRATE', pending: [], preHydrationIds: new Set(['stale']) },
+    )
+    expect(s1.queue.map((r) => r.id)).toEqual(['fresh']) // stale 제거·fresh(preHydration 밖) 보존
+    expect(s1.focusedId).toBe('fresh') // 여전히 큐에 있음
+    const s2 = approvalReducer(
+      { queue: [mk('stale')], focusedId: 'stale' },
+      { type: 'HYDRATE', pending: [], preHydrationIds: new Set(['stale']) },
+    )
+    expect(s2.focusedId).toBeNull() // 집중 카드가 사라지면 null 폴백(→ current=queue[0])
+  })
+})
+
+describe('다중 pending 내비', () => {
+  const three = (fire: (r: ApprovalRequest) => void) => {
+    fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
+    fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+    fire(mkReq('C', '변경 적용', 'apply-diff', 'safe'))
+  }
+
+  it('queue>1 이면 위치 텍스트·미니칩 스트립 표시', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    expect(screen.getByText('1 / 3')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /도구 호출.*주의.*1\/3/ })).toBeTruthy()
+  })
+
+  it('→ 키로 다음 카드 focus·경계 clamp', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    expect(screen.getByText('도구 호출 승인')).toBeTruthy() // A(tool-call) current
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' })
+    expect(screen.getByText('2 / 3')).toBeTruthy()
+    expect(screen.getByText('위험 작업 승인')).toBeTruthy() // B(shell) current
+  })
+
+  it('미니칩 탭으로 그 카드 focus + aria-current', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    const chipC = screen.getByRole('button', { name: /변경 적용.*안전.*3\/3/ })
+    fireEvent.click(chipC)
+    expect(screen.getByText('3 / 3')).toBeTruthy()
+    expect(chipC.getAttribute('aria-current')).toBe('true')
+  })
+
+  it('임의 순서 결정 — 2건째로 이동 후 승인 → 그 id 결정·나머지 유지', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' }) // B focus
+    const approve = screen.getByRole('button', { name: '승인' })
+    fireEvent.pointerDown(approve)
+    fireEvent.click(approve)
+    expect(respondApproval).toHaveBeenCalledWith('B', true)
+    expect(screen.getByText('2 / 2')).toBeTruthy() // A·C 남음(current=이웃 C)
+  })
+
+  it('이동≠결정 — 화살표/칩 탭은 respondApproval 미호출', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' })
+    fireEvent.click(screen.getByRole('button', { name: /변경 적용.*안전/ }))
+    expect(respondApproval).not.toHaveBeenCalled()
+  })
+
+  it('Escape 는 잔류 pointerIntent 를 무시하고 현재(내비 후) 카드를 거부한다(적대리뷰 F2)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire) // A(current)·B·C
+    // 승인 버튼 조준(intent=A)했으나 click 없이 화살표로 current→B(intent 잔류=A).
+    fireEvent.pointerDown(screen.getByRole('button', { name: '승인' }), { pointerType: 'touch' })
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' })
+    // Escape=명시적 키보드 거부 → 잔류 intent(A) 무시하고 현재 카드(B) 거부(첫 Escape 삼킴 없음).
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(respondApproval).toHaveBeenCalledWith('B', false)
+  })
+})
+
+describe('포커스 트랩(미니칩 존재·Codex 체크포인트 2 P2)', () => {
+  const two = (fire: (r: ApprovalRequest) => void) => {
+    fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
+    fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+  }
+
+  it('#11 포커스가 모달 밖으로 샜을 때 Tab → 거부 복귀(첫 칩 아님)', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire) // 미니칩 버튼이 액션 버튼보다 DOM 앞
+    const reject = screen.getByRole('button', { name: '거부' })
+    const bg = document.createElement('button')
+    document.body.appendChild(bg)
+    act(() => bg.focus())
+    fireEvent.keyDown(bg, { key: 'Tab' })
+    expect(document.activeElement).toBe(reject) // 첫 미니칩 아니라 거부
+    bg.remove()
+  })
+
+  it('#12 미니칩 상태서도 Escape=거부·거부-우선 초기 포커스 유지', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '거부' })) // 초기 포커스
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(respondApproval).toHaveBeenCalledWith('A', false)
+  })
+
+  it('#13 칩 포함 상태서 Tab/Shift+Tab 이 모달 밖 탈출 안 함', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const card = screen.getByRole('dialog').querySelector('.modal-card') as HTMLElement
+    const buttons = Array.from(card.querySelectorAll('button'))
+    const first = buttons[0]
+    const last = buttons[buttons.length - 1]
+    last.focus()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' })
+    expect(document.activeElement).toBe(first) // last→first 순환(탈출 없음)
+    first.focus()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last) // first→last 순환
+  })
+
+  it('#14 미니칩 focus 중 Enter 는 이동만·respondApproval 미호출', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const chipB = screen.getByRole('button', { name: /shell 실행.*위험.*2\/2/ })
+    chipB.focus()
+    fireEvent.keyDown(chipB, { key: 'Enter' }) // dialog 트랩은 Enter no-op
+    fireEvent.click(chipB) // Enter 의 네이티브 click = FOCUS(이동)
+    expect(respondApproval).not.toHaveBeenCalled()
+    expect(screen.getByText('2 / 2')).toBeTruthy() // B 로 이동됨(위치 갱신)
+  })
+})
+
+// jsdom 은 실 레이아웃을 계산하지 않으므로 styles.css 텍스트로 반응형 규칙 존재를 회귀 가드(#216 C2 §C-3).
+// 실 앵커·엄지 도달성은 웹 e2e(폰 뷰포트)·라이브 폰 실측으로 검증.
+describe('반응형 CSS(회귀 가드)', () => {
+  // jsdom 은 CSS ?raw 를 빈 문자열로 주므로 원본 파일을 직접 읽는다(vitest cwd=레포 루트).
+  const css = readFileSync(join(process.cwd(), 'src/renderer/styles.css'), 'utf8')
+
+  it('폰 바텀시트 미디어쿼리·미니칩·액션 줄바꿈/바닥고정·시트 애니메이션 규칙 존재', () => {
+    expect(css).toMatch(/@media \(max-width: *640px\)/) // 폰 바텀시트 분기
+    expect(css).toContain('.modal-nav') // 내비 컨테이너
+    expect(css).toContain('.modal-chips') // 미니칩 스트립
+    expect(css).toMatch(/flex-wrap: *wrap/) // 모바일 액션 줄바꿈(카운트다운↑·버튼 풀폭·적대리뷰 F4)
+    expect(css).toMatch(/position: *sticky/) // 액션 바닥 고정(오버플로 시 스크롤아웃 방지·적대리뷰 F5/F6)
+    expect(css).toMatch(/max-height: *90dvh/) // content-driven·dvh(라이브 폰 오프스크린 버그 회귀 가드)
+    expect(css).toMatch(/@keyframes sheetUp/) // 시트 슬라이드(reduced-motion 서 무애니)
+  })
+})
+
+describe('스와이프(진행적 향상)', () => {
+  const cardOf = () => screen.getByRole('dialog').querySelector('.modal-card') as HTMLElement
+  const two = (fire: (r: ApprovalRequest) => void) => {
+    fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
+    fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+  }
+
+  it('터치 가로 스와이프(임계 초과)로 focus 이동·이동만(결정 아님)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const card = cardOf()
+    fireEvent.pointerDown(card, { pointerId: 1, pointerType: 'touch', clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(card, { pointerId: 1, pointerType: 'touch', clientX: 130, clientY: 108 }) // 좌 70px
+    expect(screen.getByText('2 / 2')).toBeTruthy() // 다음(B) 로 이동
+    expect(respondApproval).not.toHaveBeenCalled()
+  })
+
+  it('터치 세로 우세 제스처는 이동 안 함(시트 스크롤 보존)', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const card = cardOf()
+    fireEvent.pointerDown(card, { pointerId: 1, pointerType: 'touch', clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(card, { pointerId: 1, pointerType: 'touch', clientX: 190, clientY: 200 }) // 세로 우세
+    expect(screen.getByText('1 / 2')).toBeTruthy() // 이동 없음
+  })
+
+  it('마우스 드래그는 스와이프 미발화(폰 전용·데스크톱 텍스트선택/칩스크롤 오발화 차단·적대리뷰 F1/F7/F8)', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const card = cardOf()
+    fireEvent.pointerDown(card, { pointerId: 1, pointerType: 'mouse', clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(card, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 104 }) // 좌 100px
+    expect(screen.getByText('1 / 2')).toBeTruthy() // 마우스는 이동 없음(pointerType 게이트)
+  })
+
+  it('버튼서 시작한 제스처는 카드 스와이프를 발화하지 않는다(stopPropagation·적대리뷰 F1)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const approve = screen.getByRole('button', { name: '승인' })
+    // 버튼 위 터치 pointerdown → captureIntent stopPropagation 으로 카드 swipeStart 미기록.
+    fireEvent.pointerDown(approve, {
+      pointerId: 1,
+      pointerType: 'touch',
+      clientX: 200,
+      clientY: 100,
+    })
+    fireEvent.pointerUp(cardOf(), {
+      pointerId: 1,
+      pointerType: 'touch',
+      clientX: 120,
+      clientY: 104,
+    })
+    expect(screen.getByText('1 / 2')).toBeTruthy() // FOCUS_DELTA 미발화(A 유지)
+    expect(respondApproval).not.toHaveBeenCalled()
   })
 })
