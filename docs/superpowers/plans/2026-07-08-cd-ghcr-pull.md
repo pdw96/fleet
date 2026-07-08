@@ -62,7 +62,7 @@
   9. **[계약] paths-ignore ⊆ (.dockerignore ∪ {README.md}) 의미매핑** ← C: paths-ignore 각 항목이 `.dockerignore` 제외에 대응하거나 README.md 명시 예외. 미대응 항목 = FAIL(fail-open 사전 차단). 역방향(불필요 빌드)은 미검사 = fail-safe.
   10. **[공급망] checkout SHA 균일 핀**: deploy.yml checkout이 `actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0`(ci.yml·release.yml 실측 동일) + `persist-credentials: false`.
   11. **override 파일 핀**: `docker-compose.ghcr.yml`에 fleet·ttyd 각 `build:\s*!reset` + `ghcr.io/…/fleet-{server,webterminal}` image + `GHCR_TAG`.
-  12. **[race] latest master-tip 가드 핀** ← Codex 계획리뷰 P1: `:latest` push가 `github.sha == master tip` 조건(`gh api …/commits/master` 비교) **뒤**에 위치 — 무조건 latest push(가드 없는 `docker push …:latest`)면 RED. 옛 workflow 재실행/stale dispatch가 `:latest`를 뒤로 이동시키는 회귀를 정적으로 차단. (`:sha-` push는 가드 밖 = 항상.)
+  12. **[race] latest master-tip 가드 핀** ← Codex 계획리뷰 P1: `:latest` push가 `github.sha == master tip` 조건(`gh api …/commits/master` 비교) **뒤**에 위치 — 무조건 latest push(가드 없는 `docker push …:latest`)면 RED. 옛 workflow 재실행/stale dispatch가 `:latest`를 뒤로 이동시키는 회귀를 정적으로 차단. (`:sha-` push는 가드 밖 = 항상.) **+ [Codex 재리뷰 P1]** 그 push 스텝에 `GH_TOKEN`(또는 `github.token`) env 존재 단언 — 없으면 `gh api`가 private 레포서 401 hard-fail(persist-credentials:false라 자동 인증 없음).
 - **검증**: `npx vitest run scripts/deploy-cd-pin.test.ts` → T1/T2 전 RED, 후 GREEN. `scanWorkflowPins`(액션 SHA 핀)는 skills:lint가 자동 강제하므로 이 파일에서 중복 안 함(단 #10 checkout SHA 균일은 별개 계약이라 유지).
 - **ripple**: 신규 테스트 파일. 소비처 0. coverage floor 무영향.
 
@@ -78,20 +78,24 @@
     2. **GHCR 로그인**(raw·서드파티 액션 0 ← A 결정③): `echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin` (`env: GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}` — argv 미노출·GHA 마스킹).
     3. **smoke 게이트**: `bash deploy/smoke.sh` (13종 불변식+시크릿 미baking L144-149 재사용). exit 1 → 이후 스텝 스킵(fail-closed).
     4. **이미지 원자 선점검** ← A: `docker image inspect fleet-server:local fleet-webterminal:local >/dev/null` (한 번에 **둘 다** — 부분 push 방지).
-    5. **태그+push**(sha는 항상·둘 다 → latest는 **master-tip일 때만**·둘 다 ← C 순서 + **Codex 계획리뷰 P1**):
-       ```bash
-       SHORT="${GITHUB_SHA::12}"; O="${OWNER,,}"   # OWNER=${{ github.repository_owner }}
-       # ① immutable sha 태그 — 항상 발행
-       for svc in server webterminal; do docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:sha-$SHORT"; docker push "ghcr.io/$O/fleet-$svc:sha-$SHORT"; done
-       # ② mutable latest — GITHUB_SHA == master tip 일 때만(옛 재실행/stale dispatch의 :latest 회귀 방지)
-       TIP=$(gh api "repos/${{ github.repository }}/commits/master" --jq '.sha')   # GH_TOKEN=GITHUB_TOKEN(contents:read)
-       if [ "$TIP" = "$GITHUB_SHA" ]; then
-         for svc in server webterminal; do docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:latest"; docker push "ghcr.io/$O/fleet-$svc:latest"; done
-       else
-         echo "::warning::GITHUB_SHA($GITHUB_SHA) != master tip($TIP) — :latest 미이동(sha 태그만). 롤백은 GHCR_TAG=sha-<N>로 명시."
-       fi
+    5. **태그+push** 스텝(sha는 항상·둘 다 → latest는 **master-tip일 때만**·둘 다 ← C 순서 + Codex 계획리뷰 P1). **`env: GH_TOKEN: ${{ github.token }}` 명시**(← Codex 재리뷰 P1 — persist-credentials:false라 `gh api`가 자동 인증 안 됨·private 레포서 미설정 시 매 deploy hard-fail):
+       ```yaml
+       - name: 태그 + push
+         env:
+           GH_TOKEN: ${{ github.token }}   # gh api 인증(contents:read) — 없으면 private 레포서 401 hard-fail
+         run: |
+           SHORT="${GITHUB_SHA::12}"; O="${GITHUB_REPOSITORY_OWNER,,}"   # 자동 env·소문자화
+           # ① immutable sha 태그 — 항상 발행(가드 밖)
+           for svc in server webterminal; do docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:sha-$SHORT"; docker push "ghcr.io/$O/fleet-$svc:sha-$SHORT"; done
+           # ② mutable latest — GITHUB_SHA == master tip 일 때만(옛 재실행/stale dispatch의 :latest 회귀 방지)
+           TIP="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" --jq '.sha')"
+           if [ "$TIP" = "$GITHUB_SHA" ]; then
+             for svc in server webterminal; do docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:latest"; docker push "ghcr.io/$O/fleet-$svc:latest"; done
+           else
+             echo "::warning::GITHUB_SHA($GITHUB_SHA) != master tip($TIP) — :latest 미이동(sha 태그만). 롤백은 GHCR_TAG=sha-<N>."
+           fi
        ```
-       (master-tip 가드 = 발행측 회귀 원천 차단. 정상 머지는 TIP==SHA라 latest 이동, 옛 재실행/dispatch는 sha만. gh CLI는 ubuntu-latest 사전설치, `contents:read`로 commits API 충분.)
+       (master-tip 가드 = 발행측 회귀 원천 차단. 정상 머지는 TIP==SHA라 latest 이동, 옛 재실행/dispatch는 sha만. gh CLI는 ubuntu-latest 사전설치. `GH_TOKEN` 명시로 gh api 인증 확정 — 401 hard-fail 회피.)
 - **Dockerfile LABEL** ← B/C (양 파일): `LABEL org.opencontainers.image.source="https://github.com/pdw96/fleet"` — GHCR 패키지↔레포 자동 링크·private-inherit 가시성(첫-발행 갭 완화). 빌드 라벨이라 smoke step2/10 불변식 무영향.
 - **검증**: 사전 = `npx vitest run scripts/deploy-cd-pin.test.ts`(T0) · `npm run skills:lint`(액션 SHA 핀) · `npm run format:check`. 권위(라이브) = **master 머지/`workflow_dispatch` → Actions 로그 4태그 push + `gh api /users/pdw96/packages/container/fleet-server/versions`로 `latest`·`sha-<12>` 확인** ← B 관측 명령.
 - **fail 방향**: smoke·login·inspect·push 실패 전부 push 이전/중 잡 실패 → GHCR `:latest` 무변경 → 서버 직전 이미지 유지(fail-closed). concurrency 경합 → 최신만.
