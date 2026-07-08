@@ -17,6 +17,15 @@ const KIND_TITLE: Record<ApprovalRequest['kind'], string> = {
   'tool-call': '도구 호출 승인',
 }
 
+/** 미니칩·스트립용 짧은 라벨(모달 제목 KIND_TITLE 과 별도 — 좁은 칩에 종류만 표기). */
+const KIND_LABEL: Record<ApprovalRequest['kind'], string> = {
+  'file-write': '파일 쓰기',
+  'file-delete': '파일 삭제',
+  shell: 'shell 실행',
+  'apply-diff': '변경 적용',
+  'tool-call': '도구 호출',
+}
+
 /**
  * 남은 ms → "m:ss"(예 573000→"9:33", 5000→"0:05", 0/음수→"0:00"). ceil 초·max(0) 클램프.
  * 서버 권위 카운트다운 표시 전용(#216 C2 §C-4) — 로컬 만료로 카드를 제거하지 않는다(skew 계약).
@@ -171,8 +180,9 @@ export function ApprovalModal() {
     return () => clearInterval(iv)
   }, [])
 
-  // 집중 카드 = focusedId 가 큐에 있으면 그 카드, 없거나 null 이면 큐 앞(FIFO 기본).
+  // 집중 카드 = focusedId 가 큐에 있으면 그 카드, 없거나 null 이면 큐 앞(FIFO 기본). position=1..N 표시.
   const current = queue.find((r) => r.id === focusedId) ?? queue[0]
+  const position = current ? queue.findIndex((r) => r.id === current.id) + 1 : 0
   // 카운트다운 = 서버 권위 expiresAt 기준 mm:ss(공유 상수 APPROVAL_TIMEOUT_MS 소비 제거 — 카운트다운=실제 만료 정합).
   const remaining = current ? formatCountdown(current.expiresAt - now) : '0:00'
 
@@ -216,6 +226,17 @@ export function ApprovalModal() {
       if (e.key === 'Escape') {
         e.preventDefault()
         decide(false) // 거부 — 자동거부 백스톱과 일관한 안전 방향
+        return
+      }
+      // 화살표 = 집중 카드 이동(결정 아님·불변식③). 최신 큐 기준 ±1 clamp(reducer).
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        dispatch({ type: 'FOCUS_DELTA', delta: 1 })
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        dispatch({ type: 'FOCUS_DELTA', delta: -1 })
         return
       }
       if (e.key !== 'Tab') return
@@ -291,7 +312,30 @@ export function ApprovalModal() {
             승인
           </button>
         </div>
-        {queue.length > 1 && <p className="modal-pending">대기 중 {queue.length - 1}건</p>}
+        {queue.length > 1 && (
+          <div className="modal-nav" role="group" aria-label="대기 중 승인 이동">
+            <div className="modal-chips">
+              {queue.map((r, i) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={`modal-chip${r.id === current.id ? ' is-current' : ''}`}
+                  aria-current={r.id === current.id ? 'true' : undefined}
+                  aria-label={`${KIND_LABEL[r.kind]} · ${RISK_LABEL[r.risk]} (${i + 1}/${queue.length})`}
+                  onClick={() => dispatch({ type: 'FOCUS', id: r.id })}
+                >
+                  <span className="modal-chip-kind">{KIND_LABEL[r.kind]}</span>
+                  <span className="modal-chip-risk" data-risk={r.risk}>
+                    {RISK_LABEL[r.risk]}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <span className="modal-pos">
+              {position} / {queue.length}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )

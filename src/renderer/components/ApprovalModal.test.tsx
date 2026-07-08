@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ApprovalRequest } from '../../shared/types'
+import type { ApprovalRequest, RiskLevel } from '../../shared/types'
 import { HydrationContext } from '../bridge/hydration'
 import { ApprovalModal, approvalReducer, formatCountdown } from './ApprovalModal'
 
@@ -60,6 +60,16 @@ const REQ: ApprovalRequest = {
   ts: 1,
   // 미래값 — 새 컴포넌트는 expiresAt<=now 를 만료로 필터한다(서버 권위 카운트다운).
   expiresAt: Date.now() + 60_000,
+}
+
+/** 종류·위험을 지정한 라이브 요청 팩토리(미니칩 라벨 검증용·미래 expiresAt). */
+function mkReq(
+  id: string,
+  summary: string,
+  kind: ApprovalRequest['kind'],
+  risk: RiskLevel,
+): ApprovalRequest {
+  return { id, kind, summary, target: `/ws/${id}`, risk, ts: 1, expiresAt: Date.now() + 60_000 }
 }
 
 afterEach(() => {
@@ -271,9 +281,9 @@ describe('ApprovalModal', () => {
     fire(A) // 라이브 A (스냅숏에도 있음 — dedupe)
     fire({ ...REQ, id: 'C', summary: 'C카드' }) // 스냅숏에 없는 라이브 — 보존
     await act(async () => {}) // 마운트 hydration([A,B]) flush
-    // A(단일)·C·B = 3장. A 가 중복이면 "대기 중 3건". 단일이므로 current(A) 외 "대기 중 2건".
+    // A(단일)·C·B = 3장. A 가 중복이면 4장(1/4). 단일이므로 3장·current(A)=위치 1/3.
     expect(screen.getByText('A카드')).toBeTruthy()
-    expect(screen.getByText('대기 중 2건')).toBeTruthy()
+    expect(screen.getByText('1 / 3')).toBeTruthy()
   })
 
   // #P2 재접속 reconcile — 스냅숏에 없는 pre-hydration 카드 제거·하이드레이션 중 라이브-fresh 보존(Codex P2)
@@ -523,5 +533,62 @@ describe('approvalReducer', () => {
       { type: 'HYDRATE', pending: [], preHydrationIds: new Set(['stale']) },
     )
     expect(s2.focusedId).toBeNull() // 집중 카드가 사라지면 null 폴백(→ current=queue[0])
+  })
+})
+
+describe('다중 pending 내비', () => {
+  const three = (fire: (r: ApprovalRequest) => void) => {
+    fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
+    fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+    fire(mkReq('C', '변경 적용', 'apply-diff', 'safe'))
+  }
+
+  it('queue>1 이면 위치 텍스트·미니칩 스트립 표시', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    expect(screen.getByText('1 / 3')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /도구 호출.*주의.*1\/3/ })).toBeTruthy()
+  })
+
+  it('→ 키로 다음 카드 focus·경계 clamp', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    expect(screen.getByText('도구 호출 승인')).toBeTruthy() // A(tool-call) current
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' })
+    expect(screen.getByText('2 / 3')).toBeTruthy()
+    expect(screen.getByText('위험 작업 승인')).toBeTruthy() // B(shell) current
+  })
+
+  it('미니칩 탭으로 그 카드 focus + aria-current', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    const chipC = screen.getByRole('button', { name: /변경 적용.*안전.*3\/3/ })
+    fireEvent.click(chipC)
+    expect(screen.getByText('3 / 3')).toBeTruthy()
+    expect(chipC.getAttribute('aria-current')).toBe('true')
+  })
+
+  it('임의 순서 결정 — 2건째로 이동 후 승인 → 그 id 결정·나머지 유지', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' }) // B focus
+    const approve = screen.getByRole('button', { name: '승인' })
+    fireEvent.pointerDown(approve)
+    fireEvent.click(approve)
+    expect(respondApproval).toHaveBeenCalledWith('B', true)
+    expect(screen.getByText('2 / 2')).toBeTruthy() // A·C 남음(current=이웃 C)
+  })
+
+  it('이동≠결정 — 화살표/칩 탭은 respondApproval 미호출', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' })
+    fireEvent.click(screen.getByRole('button', { name: /변경 적용.*안전/ }))
+    expect(respondApproval).not.toHaveBeenCalled()
   })
 })
