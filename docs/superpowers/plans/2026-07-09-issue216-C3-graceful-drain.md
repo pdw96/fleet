@@ -24,6 +24,10 @@ verify-GREEN(판사 A 결정타 평가). C의 강점(계약 조기강제·C1 hol
 - **C**: leaf 계약 엄밀 정의(타입/parity 컴파일 강제) · **C1 C-6 hold 계약 화해 명시**(drain rejectAll ≠ 소켓
   이탈 rejectAll) · `boot-drain.test.ts` 별 파일(ripple 격리) · GHCR 상속 canary.
 
+**Codex 계획리뷰(2026-07-08T17:19Z) = "진행 가능"** — P1 보완 1건 반영: T4 `installShutdownHandlers` 는
+`Promise<RunningServer>` 를 받아 boot-pending/reject 중 SIGTERM 안전 계약 보존(핸들러 즉시 설치·boot 완료 대기·
+boot-pending fallback 은 2차 시그널/SIGKILL 위임). 나머지(순서·promise-memo·CD1-3·broadcast 분리) 전부 승인.
+
 **공통 결함 3건(3초안 모두 놓침) 보강:**
 - **CD1**: §4.7 healthcheck-green-during-drain 무핀 → T3에 "드레인 대기 중 정적 라우트 200 유지" 통합 단언.
 - **CD2**: 비옵셔널 `onServerDraining`이 **모든** FleetBridge 더블을 tsc 파손 → T5에 blast radius 전수 열거.
@@ -156,11 +160,18 @@ RunningServer에 `drainTimeoutMs`·`shutdown()` 확장. close promise-memo 멱�
 **대상**: **신규 `src/server/shutdown-handlers.ts`**(순수 `installShutdownHandlers`) · `src/server/index.ts`(1회 호출) ·
 **신규 테스트 `src/server/shutdown-handlers.test.ts`**.
 
-**RED**(페이크 주입 + resolved/rejected running):
+**입력은 반드시 `Promise<RunningServer>`(Codex 계획리뷰 P1)** — 현행 index.ts 는 boot Promise 를 즉시 잡고
+시그널 핸들러도 즉시 등록해 "`running` 은 시그널 도달 시점에 pending 이거나 reject 일 수 있다"는 안전 계약을
+주석으로 명시한다(index.ts:6-9). resolved `RunningServer` 만 받으면 boot-pending 중 SIGTERM 을 놓치는 회귀 →
+seam 은 반드시 Promise 를 받아 핸들러를 즉시 설치한다.
+
+**RED**(페이크 주입 · resolved/rejected/**pending** running):
 - 정상: SIGTERM → `s.shutdown()` 호출 · resolve → `exit(0)` · `setBackstop(_, s.drainTimeoutMs + 3000)` 무장.
 - **T-teardown실패(Codex 핀 Q5)**: `shutdown()` reject(close/dispose throw) → `exit(1)`(백스톱 잔여 없이 정리).
 - **2차 시그널**: 이미 shuttingDown 중 재-SIGTERM/SIGINT → `exit(1)` 즉시(shutdown 재호출 없음).
-- **boot 실패**: `running` reject → `exit(1)`.
+- **boot reject 중 signal**: `running` reject → `exit(1)`(unhandled rejection 없이 · `.then(_, onRej)` 경로).
+- **boot-pending 중 signal(Codex P1 신규)**: `running` 미resolve 상태서 signal → 핸들러 즉시 설치·shutdown 은 boot
+  완료까지 대기(핸들 미유실). 이후 `running` resolve → shutdown 진행 / 2차 signal → `exit(1)` 즉시(로컬 fallback).
 - 백스톱 사이징 핀: `setBackstop` 지연 인자 === `s.drainTimeoutMs + 3000`.
 
 **GREEN**:
@@ -168,12 +179,22 @@ RunningServer에 `drainTimeoutMs`·`shutdown()` 확장. close promise-memo 멱�
 export function installShutdownHandlers(running: Promise<RunningServer>, deps: {
   onSignal: (sig: NodeJS.Signals, h: () => void) => void; exit: (code: number) => void
   setBackstop: (fn: () => void, ms: number) => void
-}): void   // 스펙 §3.7 로직 · shuttingDown 가드 · then(exit0, exit1).catch(exit1)
+}): void
+// 1차 signal: shuttingDown=true; running.then(
+//   (s) => { setBackstop(() => exit(1), s.drainTimeoutMs + 3000); return s.shutdown().then(() => exit(0)) },
+//   () => exit(1),                       // boot reject
+// ).catch(() => exit(1))                 // shutdown/teardown reject
+// 2차 signal: if (shuttingDown) exit(1)
 ```
 `index.ts`는 실 `process.on`/`process.exit`/`setTimeout(fn,ms).unref()`로 1회 호출(부수효과만). 기동 로그 포맷
 (index.ts:14 `fleet-server: http://…` regex 계약 `e2e/web-server.ts:35`) **무변경**.
 
-**경계**: 1차/2차 시그널 · SIGINT/SIGTERM · shutdown resolve/reject · boot reject · 백스톱 정확값(28s<30s grace).
+**boot-pending fallback 백스톱 정책(Codex P1)**: 백스톱은 `running` resolve **후** `.then` 안에서만 무장한다
+(drainTimeoutMs 는 boot resolve 전엔 미상). boot 이 hang 하면 index.ts 동기 백스톱은 없고 — 종착은 **2차 시그널
+(로컬/베어호스트 Ctrl-C)** 또는 **컨테이너 SIGKILL@stop_grace_period**. 이 계층 위임을 T8 ADR-0011 에 명문화한다
+(boot 은 통상 서브초라 실무 위험 낮음).
+
+**경계**: 1차/2차 시그널 · SIGINT/SIGTERM · shutdown resolve/reject · boot pending/reject · 백스톱 정확값(28s<30s grace).
 **컨테이너 궁극 backstop = SIGKILL@stop_grace_period**(docker stop=SIGTERM 1회 · 2차 SIGTERM 아님).
 
 **검증**: `npx vitest run src/server/shutdown-handlers.test.ts` · `npm run verify`.
@@ -261,8 +282,9 @@ DRAIN_TIMEOUT/1000 + 3" 페어링 주석**(기본 30 ≥ 28 ✓).
 **대상**: `docs/adr/0011-graceful-drain-경계.md`(신규 · 시드 명명 관례).
 
 **GREEN**: `FLEET_DRAIN_TIMEOUT_MS + 3s ≤ stop_grace_period` 페어링 · **MAX=120s 근거(5분↔30s 10배 모순 제거·A
-이식)** · 백스톱 3계층(index `drainTimeoutMs+3000`·2차 시그널·컨테이너 SIGKILL@grace) · scope 모델 한계
-('server-only-emit' 부재→main inert). 운영 런북(README 노브 표)은 C5 위임.
+이식)** · 백스톱 계층(index `drainTimeoutMs+3000`[boot resolve 후만]·2차 시그널·컨테이너 SIGKILL@grace) ·
+**boot-pending 중 signal 은 index 동기 백스톱 없이 2차 시그널/SIGKILL 에 위임(Codex 계획리뷰 P1)** · scope 모델
+한계('server-only-emit' 부재→main inert). 운영 런북(README 노브 표)은 C5 위임.
 
 **검증**: `npm run verify`(skills:lint·brain:check).
 
