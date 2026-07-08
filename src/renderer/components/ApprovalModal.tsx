@@ -1,4 +1,10 @@
-import { useEffect, useReducer, useRef, useState } from 'react'
+import {
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import type { ApprovalRequest, RiskLevel } from '../../shared/types'
 import { useHydration } from '../bridge/hydration'
 
@@ -119,6 +125,8 @@ export function ApprovalModal() {
   const pointerIntent = useRef<string | null>(null)
   const rejectRef = useRef<HTMLButtonElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
+  // 스와이프 시작 좌표(진행적 향상) — pointerup 델타로 가로 스와이프 판정.
+  const swipeStart = useRef<{ x: number; y: number } | null>(null)
 
   // 라이브 승인 요청 구독 — 마운트 1회. tombstone 선필터(이미-철회 부활 차단) 후 UPSERT.
   useEffect(() => {
@@ -209,6 +217,22 @@ export function ApprovalModal() {
     dispatch({ type: 'REMOVE', id: current.id })
   }
 
+  // 가로 스와이프(진행적 향상·§C-1·불변식④) — 카드에서 수평 임계(48px) 초과·수평 우세면 focus 이동
+  // (결정 아님). 세로 우세는 시트 스크롤 보존(무시). 점·미니칩·화살표가 완전 대체하므로 미지원/미발화도
+  // 무해. 버튼/칩 탭은 이동이 작아 임계 미달 → 스와이프와 충돌하지 않는다.
+  const onCardPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    swipeStart.current = { x: e.clientX, y: e.clientY }
+  }
+  const onCardPointerUp = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    const s = swipeStart.current
+    swipeStart.current = null
+    if (!s) return
+    const dx = e.clientX - s.x
+    const dy = e.clientY - s.y
+    if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy)) return
+    dispatch({ type: 'FOCUS_DELTA', delta: dx < 0 ? 1 : -1 }) // 좌 스와이프=다음
+  }
+
   // 모달 열림·큐 전진(다음 요청)마다 거부 버튼에 초기 포커스 — Enter 가 거부로 떨어져 destructive 오승인 방지.
   useEffect(() => {
     if (current) rejectRef.current?.focus()
@@ -276,7 +300,12 @@ export function ApprovalModal() {
       aria-labelledby="approval-title"
       aria-describedby="approval-summary approval-target"
     >
-      <div className="panel modal-card" ref={cardRef}>
+      <div
+        className="panel modal-card"
+        ref={cardRef}
+        onPointerDown={onCardPointerDown}
+        onPointerUp={onCardPointerUp}
+      >
         <div className="panel-head">
           <span className="eyebrow">승인 필요</span>
           <h2 className="panel-title" id="approval-title">

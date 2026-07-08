@@ -1,4 +1,5 @@
 /** @vitest-environment jsdom */
+/// <reference types="node" />
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { act, fireEvent, render, screen } from '@testing-library/react'
@@ -655,6 +656,7 @@ describe('포커스 트랩(미니칩 존재·Codex 체크포인트 2 P2)', () =>
 // jsdom 은 실 레이아웃을 계산하지 않으므로 styles.css 텍스트로 반응형 규칙 존재를 회귀 가드(#216 C2 §C-3).
 // 실 앵커·엄지 도달성은 웹 e2e(폰 뷰포트)·라이브 폰 실측으로 검증.
 describe('반응형 CSS(회귀 가드)', () => {
+  // jsdom 은 CSS ?raw 를 빈 문자열로 주므로 원본 파일을 직접 읽는다(vitest cwd=레포 루트).
   const css = readFileSync(join(process.cwd(), 'src/renderer/styles.css'), 'utf8')
 
   it('폰 바텀시트 미디어쿼리·미니칩 스트립·시트 애니메이션 규칙 존재', () => {
@@ -662,5 +664,32 @@ describe('반응형 CSS(회귀 가드)', () => {
     expect(css).toContain('.modal-nav') // 내비 컨테이너
     expect(css).toContain('.modal-chips') // 미니칩 스트립
     expect(css).toMatch(/@keyframes sheetUp/) // 시트 슬라이드(reduced-motion 서 무애니)
+  })
+})
+
+describe('스와이프(진행적 향상)', () => {
+  const cardOf = () => screen.getByRole('dialog').querySelector('.modal-card') as HTMLElement
+
+  it('가로 스와이프(임계 초과)로 focus 이동·이동만(결정 아님)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
+    fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+    const card = cardOf()
+    fireEvent.pointerDown(card, { pointerId: 1, clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(card, { pointerId: 1, clientX: 130, clientY: 108 }) // 좌로 70px(>임계·수평)
+    expect(screen.getByText('2 / 2')).toBeTruthy() // 다음(B) 로 이동
+    expect(respondApproval).not.toHaveBeenCalled()
+  })
+
+  it('세로 우세 제스처는 이동 안 함(시트 스크롤 보존)', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
+    fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+    const card = cardOf()
+    fireEvent.pointerDown(card, { pointerId: 1, clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(card, { pointerId: 1, clientX: 190, clientY: 200 }) // 세로 우세
+    expect(screen.getByText('1 / 2')).toBeTruthy() // 이동 없음
   })
 })
