@@ -95,6 +95,10 @@ export const CHANNELS = {
   'fleet:approval:request': { kind: 'push', scope: 'both' },
   // 승인 이탈(응답/만료/철회/취소) tombstone 브로드캐스트(bare string id · #216 C1).
   'fleet:approval:withdrawn': { kind: 'push', scope: 'both' },
+  // graceful drain 통지(#216 C3) — 서버 종료 시작 시 접속 클라에 「곧 재접속」 배너. 페이로드는 정적
+  // `{reason:'shutdown'}`(세션/토큰/nonce 등 동적·민감 필드 금지 — 확장 여지가 유출 문 되지 않게).
+  // scope='both'(웹 서버만 실 방출·데스크톱은 parity 상 will-quit inert send). ipc-parity subscribe==send 강제.
+  'fleet:server:draining': { kind: 'push', scope: 'both' },
   'fleet:update:event': { kind: 'push', scope: 'desktop' },
 } as const satisfies Record<string, ChannelDecl>
 

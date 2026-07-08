@@ -665,7 +665,8 @@ export async function bootServer(
     // ① 동기 set — 이후 fleet:project:run 은 isDraining 게이트가 거부(체크와 호출 사이 await 0 = 레이스 0).
     draining = true
     shutdownPromise = (async () => {
-      // ② broadcast(fleet:server:draining)는 T5(통지 5면)에서 이 지점에 삽입한다(코어는 broadcast 없이 3계약 성립).
+      // ② 클라 통지(best-effort) — attach(인증 통과) 소켓만 도달·safeSend 격리. 정적 페이로드(민감값 0).
+      wsHost?.broadcast('fleet:server:draining', { reason: 'shutdown' })
       // ③ 진행 런(activeRuns) 완료 대기(상한). drainTimeoutMs 는 RunningServer 노출값과 동일 const(divergence 0).
       await waitForRunDrain(() => engine.getRunActivity(), clock, drainTimeoutMs, DRAIN_POLL_MS)
       // ④ 하드 teardown(timeout=force → dispose 가 잔여 런 abort → 오케스트레이터 revert · rejectAll fail-closed 종단).

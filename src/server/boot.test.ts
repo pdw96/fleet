@@ -616,13 +616,15 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
       })
       const socket = await connect(s.port)
       let idc = 1
-      // 진행 런이 orchestrator:event push 프레임을 흘리므로, res 프레임(매칭 id)만 골라낸다(push 스킵).
+      const pushes: Array<{ ch: string; event: unknown }> = []
+      // 진행 런이 orchestrator:event push 프레임을 흘리므로, res 프레임(매칭 id)만 골라낸다. push 는 수집(T-통지 검증).
       const invoke = async (ch: string, args: unknown[] = []) => {
         const id = idc++
         socket.send(JSON.stringify({ t: 'req', id, ch, args }))
         for (;;) {
           const f = await nextFrame(socket)
-          if (f.t === 'res' && f.id === id) return f
+          if (f.t === 'push') pushes.push({ ch: f.ch, event: f.event })
+          else if (f.t === 'res' && f.id === id) return f
         }
       }
       try {
@@ -667,6 +669,10 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
         expect(rejected.ok).toBe(false)
         if (!rejected.ok) expect(rejected.error.message).toMatch(/서버 종료 중/)
         expect(done).toBe(false) // cap 미도달 → 미해소
+        // T-통지: shutdown 시작 시 fleet:server:draining push 방출(정적 payload · 위 invoke 들이 수집).
+        const drain = pushes.find((p) => p.ch === 'fleet:server:draining')
+        expect(drain).toBeDefined()
+        expect(drain?.event).toEqual({ reason: 'shutdown' })
 
         // cap 초과 → 드레인 timeout → force close(dispose abort + rejectAll).
         fc.advanceTo(START + 25_000 + 1)

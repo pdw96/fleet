@@ -90,6 +90,14 @@ const api: FleetBridge = {
       ipcRenderer.removeListener('fleet:approval:withdrawn', listener)
     }
   },
+  onServerDraining: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: { reason: string }): void =>
+      callback(event)
+    ipcRenderer.on('fleet:server:draining', listener)
+    return () => {
+      ipcRenderer.removeListener('fleet:server:draining', listener)
+    }
+  },
   getUpdateState: () => ipcRenderer.invoke('fleet:update:getState'),
   checkForUpdate: () => ipcRenderer.invoke('fleet:update:check'),
   downloadUpdate: () => ipcRenderer.invoke('fleet:update:download'),
