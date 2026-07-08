@@ -1043,10 +1043,100 @@ code.id {
   font-size: 11px;
   color: var(--faint);
 }
-.modal-pending {
-  margin: 10px 0 0;
+/* 다중 pending 미니칩 내비(#216 C2 §C-5) — 각 pending=탭 가능 칩·현재 강조·위치 텍스트. */
+.modal-nav {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.modal-chips {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.modal-chip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.modal-chip.is-current {
+  border-color: var(--signal-line);
+  color: var(--text);
+}
+.modal-chip-risk[data-risk='destructive'] {
+  color: var(--bad);
+}
+.modal-chip-risk[data-risk='caution'] {
+  color: var(--warn);
+}
+.modal-pos {
+  align-self: center;
   font-size: 11px;
   color: var(--faint);
+}
+
+/* 폰 — 바텀시트(Tall·엄지 조작·큰 타입)(#216 C2 §C-3). 데스크톱(>640px)은 중앙 모달 유지(무회귀). */
+@media (max-width: 640px) {
+  .modal-overlay {
+    place-items: end stretch;
+    padding: 0;
+  }
+  .modal-card {
+    width: 100%;
+    max-width: none;
+    height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    border-radius: 18px 18px 0 0;
+    padding: 16px 18px 24px;
+    animation: sheetUp 0.24s ease both;
+  }
+  .modal-card .panel-title {
+    font-size: 20px;
+  }
+  .modal-summary {
+    font-size: 15px;
+  }
+  .modal-actions {
+    margin-top: auto; /* 버튼을 시트 바닥 엄지존으로 고정 */
+    gap: 12px;
+  }
+  .modal-actions .btn {
+    flex: 1;
+    padding: 14px 0;
+    font-size: 15px;
+  }
+  .modal-countdown {
+    flex-basis: 100%;
+    order: -1;
+    margin: 0 0 6px;
+    text-align: center;
+  }
+}
+@keyframes sheetUp {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal-card {
+    animation: none;
+  }
 }
 
 .update-banner {

@@ -1,4 +1,6 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest, RiskLevel } from '../../shared/types'
@@ -647,5 +649,18 @@ describe('포커스 트랩(미니칩 존재·Codex 체크포인트 2 P2)', () =>
     fireEvent.click(chipB) // Enter 의 네이티브 click = FOCUS(이동)
     expect(respondApproval).not.toHaveBeenCalled()
     expect(screen.getByText('2 / 2')).toBeTruthy() // B 로 이동됨(위치 갱신)
+  })
+})
+
+// jsdom 은 실 레이아웃을 계산하지 않으므로 styles.css 텍스트로 반응형 규칙 존재를 회귀 가드(#216 C2 §C-3).
+// 실 앵커·엄지 도달성은 웹 e2e(폰 뷰포트)·라이브 폰 실측으로 검증.
+describe('반응형 CSS(회귀 가드)', () => {
+  const css = readFileSync(join(process.cwd(), 'src/renderer/styles.css'), 'utf8')
+
+  it('폰 바텀시트 미디어쿼리·미니칩 스트립·시트 애니메이션 규칙 존재', () => {
+    expect(css).toMatch(/@media \(max-width: *640px\)/) // 폰 바텀시트 분기
+    expect(css).toContain('.modal-nav') // 내비 컨테이너
+    expect(css).toContain('.modal-chips') // 미니칩 스트립
+    expect(css).toMatch(/@keyframes sheetUp/) // 시트 슬라이드(reduced-motion 서 무애니)
   })
 })
