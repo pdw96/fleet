@@ -319,6 +319,79 @@ host 네트워킹+playwright 가 필요해 이 라이브 5종이 실경로를 �
 
 ---
 
+## GHCR CD — 무인 배포 <a id="ghcr-cd"></a>
+
+_(#222 · Part of #98)_ master 머지 → GitHub Actions(`.github/workflows/deploy.yml`)가 fleet·ttyd 이미지를
+빌드하고 `deploy/smoke.sh` 게이트를 통과한 뒤 **GHCR 에 발행**한다. 24/7 서버는 그 이미지를 pull 해 recreate
+한다. 데스크톱 앱 릴리스(`release.yml`·tags `v*`)와 완전 별개다.
+
+### 발행 (클라우드 — 지금 자동)
+
+- **트리거**: `master` push(`paths-ignore` 역필터 — docs-only 머지는 스킵) + `workflow_dispatch`(수동 강제 발행).
+- **게이트**: `deploy/smoke.sh`(이미지 빌드 + 불변식 13종 + override 병합 canary). FAIL → 발행 없음 → 서버 직전 이미지 유지.
+- **태그**: `ghcr.io/pdw96/fleet-{server,webterminal}` 에 `sha-<12hex>`(**항상**) + `latest`(**GITHUB_SHA==master tip 일 때만**).
+- ⚠️ **발행 게이트 = smoke(컨테이너 불변식) only.** 코드 정합(vitest·typecheck)은 **PR CI 선행 전제**다 — smoke 는
+  머지-후에만 돌아 Dockerfile/compose 를 깨는 PR 은 CI green 으로 머지되고 발행 실패로만 사후 발현한다. (CI green
+  후로 게이트하려면 `workflow_run` 승격 — 후속.)
+- ⚠️ `latest` 는 master tip 일 때만 이동한다. 옛 workflow 재실행/stale dispatch 는 `sha-*` 만 발행하고 `latest`
+  를 건드리지 않는다(cron 이 latest 추종 시 프로덕션이 뒤로 롤백되는 것을 발행측에서 원천 차단).
+
+### 서버 (pull — 서버 마련 후)
+
+**요구**: Docker + **Docker Compose 2.24+**(override 의 `!reset`) · 아웃바운드망만(인바운드 0 유지).
+
+1. **GHCR 인증**(1회) — fine-grained PAT `read:packages` 만:
+   ```bash
+   echo "<PAT>" | docker login ghcr.io -u <github-user> --password-stdin
+   chmod 600 ~/.docker/config.json     # 자격 파일 권한 조임
+   ```
+   PAT 는 만료를 짧게 두고 주기 로테이션한다. read-only 라 유출돼도 push 불가(기밀만).
+2. **`.env`** — 서버는 `GHCR_TAG` 로 pull 태그를 고른다(로컬 빌드용 `IMAGE_TAG` 와 분리 — `IMAGE_TAG=local` 을
+   복사해도 GHCR pull 은 `GHCR_TAG` 를 쓴다). 기본 `latest`, 프로덕션은 **`GHCR_TAG=sha-<N>` 단일 핀 권장**(두
+   이미지 동일 커밋 세트 보장 — 크로스이미지 스큐·latest 회귀 방지). access 3종+`FLEET_SECRET_KEY` 도 완비해야 fleet 이 부팅한다(아래 ⚠️).
+3. **갱신(cron)** — 기본 권장(단순·투명·데몬 없음):
+   ```
+   */5 * * * * /path/to/deploy/pull-deploy.sh >> ~/fleet-deploy.log 2>&1
+   ```
+   `pull-deploy.sh` = flock(겹침 방지) → Compose 2.24 가드 → `pull` → `up -d --wait` → dangling prune.
+   (watchtower 옵션: fleet/ttyd 라벨만 감시하게 설정 가능하나, cron 이 "무엇이 언제 갱신됐는지" 로그로 더 투명하다.)
+
+> ⚠️ **런타임 시크릿 전제.** `up --wait` 의 healthcheck GREEN 은 이미지 무결과 **별개**로 서버 `.env` 의
+> `FLEET_ACCESS_*`·`FLEET_SECRET_KEY` 완비를 요구한다(`resolveBindHost` 이중게이트 · `FLEET_HOST=0.0.0.0`). access
+> env 가 없어 `--wait` 가 타임아웃하면 "배포 실패" 처럼 보이지만 실은 **config 갭**이다 — `docker logs` 확인.
+
+### 롤백
+
+`latest` 를 되돌리지 않는다 — **이전 커밋의 immutable `sha` 태그로 명시 핀**한다:
+
+```bash
+export GHCR_TAG=sha-<이전12hex>
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.ghcr.yml --profile tunnel pull
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.ghcr.yml --profile tunnel up -d --wait
+```
+
+### 서버 권장 · 첫-발행 · retention
+
+- **서버 권장(미정)** — 저가 VPS(상시·고정 IP·백업 용이) 또는 홈서버/미니PC(비용 0·전기만). 둘 다 인바운드 0
+  (아웃바운드 pull + 아웃바운드 터널)이면 충분하다.
+- **첫 발행** — `GITHUB_TOKEN`(packages:write)이 미존재 private 패키지를 최초 생성할 때 403 이 날 수 있다(패키지가
+  아직 레포 권한 상속 전). Dockerfile 의 `org.opencontainers.image.source` 라벨이 패키지↔레포 자동 링크를 의도하나,
+  첫 머지 후 GHCR UI 에서 패키지 가시성·레포 링크를 1회 확인하라(안 되면 수동 부트스트랩).
+- **retention** — 매 비-docs 머지가 새 immutable `sha-<12>` 버전을 쌓아 private 스토리지가 증가한다. 주기적으로
+  오래된 `sha` 버전을 정리하라(`gh api -X DELETE /users/pdw96/packages/container/fleet-server/versions/<id>` 또는
+  후속 keep-last-N cleanup 워크플로). `latest` + 최근 N 개 `sha` 만 유지하면 롤백 창은 보존된다.
+
+### 라이브 완료 체크리스트 (서버 마련 후)
+
+- [ ] 서버 `docker login ghcr.io`(read:packages PAT) → private 이미지 pull 성공
+- [ ] `docker-compose.ghcr.yml` override 로 서버가 **로컬 빌드 없이** GHCR 이미지로 기동(`compose config` 에 build 부재)
+- [ ] cron(또는 watchtower) → master 머지 후 새 이미지 자동 pull→recreate 관측
+- [ ] 갱신 후 터널 뒤 fleet·ttyd 정상(폰 브라우저 접속·오케스트레이션 UI 로드)
+- [ ] 롤백 실증 — `GHCR_TAG=sha-<이전>` → pull → up 으로 이전 버전 복귀
+- [ ] 첫 발행 후 GHCR 패키지 가시성·레포 링크 확인(403 시 수동 부트스트랩)
+
+---
+
 ## 운영
 
 - **버전 갱신** — `.env`(또는 Dockerfile ARG)의 `*_VERSION` 을 올린다 → 재빌드 → `bash deploy/smoke.sh`
