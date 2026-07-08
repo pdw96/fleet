@@ -67,4 +67,39 @@ test.describe('C1 승인 보류(#216) — hold → 리로드 재하이드레이�
     await page.getByRole('button', { name: '승인' }).click()
     await expect(page.getByRole('dialog')).toHaveCount(0)
   })
+
+  // C2(#216) 폰 뷰포트 — 실 chromium 이 ≤640px 미디어쿼리를 적용하므로(jsdom 미검) 바텀시트 앵커·
+  // 풀폭·mm:ss 카운트다운·엄지 버튼 조작을 실측한다.
+  test('C2 폰 뷰포트: 승인 카드가 바텀시트로 앵커·mm:ss 카운트다운·거부 버튼 소멸', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(server.url)
+    await page.getByText('FLEET').first().waitFor()
+    await page.evaluate(() => {
+      void (
+        window as unknown as { fleet: { setMcpServers: (s: unknown[]) => Promise<unknown> } }
+      ).fleet
+        .setMcpServers([{ name: 'c2-phone', command: 'nonexistent-approval-probe' }])
+        .catch(() => undefined)
+    })
+    const dialog = page.getByRole('dialog')
+    await expect(page.getByText('MCP 서버 실행: c2-phone')).toBeVisible({ timeout: 10_000 })
+
+    // 바텀시트 앵커: 카드가 좌측 끝·풀폭·하단 고정(≤640px). jsdom 은 레이아웃 미평가라 여기서만 검증.
+    const box = await dialog.locator('.modal-card').boundingBox()
+    expect(box).not.toBeNull()
+    if (box) {
+      expect(box.x).toBeLessThanOrEqual(1) // 좌측 끝(풀폭 stretch)
+      expect(box.width).toBeGreaterThanOrEqual(388) // 뷰포트(390) 폭
+      expect(box.y + box.height).toBeGreaterThanOrEqual(842) // 하단 앵커(엄지존)
+    }
+
+    // 서버 권위 mm:ss 카운트다운(Ns 아님).
+    await expect(page.getByText(/\d+:\d{2} 후 자동 거부/)).toBeVisible()
+
+    // 엄지 버튼(거부) 조작 → 서버 resolve → withdrawn → 카드 소멸.
+    await page.getByRole('button', { name: '거부' }).click()
+    await expect(dialog).toHaveCount(0)
+  })
 })
