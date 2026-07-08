@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest } from '../../shared/types'
 import { HydrationContext } from '../bridge/hydration'
-import { ApprovalModal, formatCountdown } from './ApprovalModal'
+import { ApprovalModal, approvalReducer, formatCountdown } from './ApprovalModal'
 
 function mockFleet(
   overrides: {
@@ -435,5 +435,93 @@ describe('formatCountdown', () => {
     expect(formatCountdown(1)).toBe('0:01') // ceil — 0 초과는 최소 0:01
     expect(formatCountdown(0)).toBe('0:00')
     expect(formatCountdown(-1_000)).toBe('0:00')
+  })
+})
+
+// 순수 reducer 유닛(#216 C2 §C-2) — queue+focusedId 원자 전이. DOM 없이 전이 자체를 고정.
+const mk = (id: string, over: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+  id,
+  kind: 'file-write',
+  summary: id,
+  target: `/ws/${id}`,
+  risk: 'destructive',
+  ts: 1,
+  expiresAt: 2_000,
+  ...over,
+})
+
+describe('approvalReducer', () => {
+  it('UPSERT 는 큐 뒤 추가·focus 불변(얌체 점프 방지)', () => {
+    const s0 = { queue: [mk('A'), mk('B')], focusedId: 'B' }
+    const s1 = approvalReducer(s0, { type: 'UPSERT', req: mk('C') })
+    expect(s1.queue.map((r) => r.id)).toEqual(['A', 'B', 'C'])
+    expect(s1.focusedId).toBe('B') // 새 라이브에도 집중 불변
+  })
+
+  it('UPSERT 는 같은 id 갱신(dedupe·비파괴)', () => {
+    const s0 = { queue: [mk('A', { summary: 'old' })], focusedId: null }
+    const s1 = approvalReducer(s0, { type: 'UPSERT', req: mk('A', { summary: 'new' }) })
+    expect(s1.queue).toHaveLength(1)
+    expect(s1.queue[0].summary).toBe('new')
+  })
+
+  it('REMOVE(집중 카드) → 이웃으로 focus(다음, 없으면 이전, 없으면 null)', () => {
+    const s1 = approvalReducer(
+      { queue: [mk('A'), mk('B'), mk('C')], focusedId: 'B' },
+      { type: 'REMOVE', id: 'B' },
+    )
+    expect(s1.queue.map((r) => r.id)).toEqual(['A', 'C'])
+    expect(s1.focusedId).toBe('C') // idx=1 자리의 다음 카드
+    const s2 = approvalReducer(
+      { queue: [mk('A'), mk('B')], focusedId: 'B' },
+      { type: 'REMOVE', id: 'B' },
+    )
+    expect(s2.focusedId).toBe('A') // 마지막이면 이전
+    const s3 = approvalReducer({ queue: [mk('A')], focusedId: 'A' }, { type: 'REMOVE', id: 'A' })
+    expect(s3.focusedId).toBeNull() // 마지막 1건이면 null
+  })
+
+  it('REMOVE(비집중 카드) → 집중 불변(id 추적 이점·조용한 스왑 없음)', () => {
+    const s1 = approvalReducer(
+      { queue: [mk('A'), mk('B'), mk('C')], focusedId: 'C' },
+      { type: 'REMOVE', id: 'A' }, // 앞 카드 제거
+    )
+    expect(s1.focusedId).toBe('C') // index 추적이면 스왑됐을 상황 — id 추적이라 불변
+  })
+
+  it('FOCUS 는 큐에 있는 id 만 채택', () => {
+    const s0 = { queue: [mk('A'), mk('B')], focusedId: 'A' }
+    expect(approvalReducer(s0, { type: 'FOCUS', id: 'B' }).focusedId).toBe('B')
+    expect(approvalReducer(s0, { type: 'FOCUS', id: 'Z' }).focusedId).toBe('A') // 없는 id 무시
+  })
+
+  it('FOCUS_DELTA 는 최신 큐 기준 ±1 클램프(순환 없음)', () => {
+    const q = [mk('A'), mk('B'), mk('C')]
+    expect(
+      approvalReducer({ queue: q, focusedId: 'A' }, { type: 'FOCUS_DELTA', delta: 1 }).focusedId,
+    ).toBe('B')
+    expect(
+      approvalReducer({ queue: q, focusedId: 'A' }, { type: 'FOCUS_DELTA', delta: -1 }).focusedId,
+    ).toBe('A') // 경계 clamp
+    expect(
+      approvalReducer({ queue: q, focusedId: 'C' }, { type: 'FOCUS_DELTA', delta: 1 }).focusedId,
+    ).toBe('C') // 경계 clamp
+    expect(
+      approvalReducer({ queue: q, focusedId: null }, { type: 'FOCUS_DELTA', delta: 1 }).focusedId,
+    ).toBe('B') // null=큐 앞 기준
+  })
+
+  it('HYDRATE reconcile — 스냅숏 부재 pre-hydration 제거·라이브-fresh 보존·스냅숏 upsert', () => {
+    const s1 = approvalReducer(
+      { queue: [mk('stale'), mk('fresh')], focusedId: 'fresh' },
+      { type: 'HYDRATE', pending: [], preHydrationIds: new Set(['stale']) },
+    )
+    expect(s1.queue.map((r) => r.id)).toEqual(['fresh']) // stale 제거·fresh(preHydration 밖) 보존
+    expect(s1.focusedId).toBe('fresh') // 여전히 큐에 있음
+    const s2 = approvalReducer(
+      { queue: [mk('stale')], focusedId: 'stale' },
+      { type: 'HYDRATE', pending: [], preHydrationIds: new Set(['stale']) },
+    )
+    expect(s2.focusedId).toBeNull() // 집중 카드가 사라지면 null 폴백(→ current=queue[0])
   })
 })
