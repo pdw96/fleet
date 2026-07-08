@@ -2,11 +2,13 @@ import { chmodSync, mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import type { SocketExpiryClock } from './boot'
 import WebSocket, { type RawData } from 'ws'
 import {
   bootServer,
   buildServerChildEnv,
   resolveBindHost,
+  resolveDrainTimeoutMs,
   resolvePort,
   resolveSandboxBoundary,
   type RunningServer,
@@ -93,6 +95,32 @@ describe('FLEET_APPROVAL_TTL_MS fail-fast(#216 C1 §C-4 · #22)', () => {
     const s2 = await bootServer({ ...baseEnv(), FLEET_APPROVAL_TTL_MS: '  ' })
     await s2.close()
   })
+})
+
+describe('resolveDrainTimeoutMs — graceful drain 상한 fail-fast(#216 C3)', () => {
+  // 미설정/빈/공백 = 기본 25000(현행 무회귀 — 드레인 도입 전엔 이 값이 무의미하나 계약상 기본).
+  it.each([undefined, '', '   '])('미설정/빈/공백(%o) → 기본 25000', (v) => {
+    expect(resolveDrainTimeoutMs({ FLEET_DRAIN_TIMEOUT_MS: v })).toBe(25_000)
+  })
+  it('키 자체 부재 → 25000', () => {
+    expect(resolveDrainTimeoutMs({})).toBe(25_000)
+  })
+  // 유한 정수·[1000,120000] 경계 통과(trim 후).
+  it.each(['1000', '25000', '120000', ' 30000 '])('정상값(%s) → 그대로(trim)', (v) => {
+    expect(resolveDrainTimeoutMs({ FLEET_DRAIN_TIMEOUT_MS: v })).toBe(Number(v.trim()))
+  })
+  // 조용한 clamp 금지 — 비정수·범위밖은 loud-fail(부수효과 이전). MAX 120000 핀으로 "5분 vs 30s" 모순 차단.
+  it.each(['abc', 'NaN', '0', '-1', '999', '120001', '25000.5'])(
+    '오설정/범위밖(%s) → throw(env 이름·수신값 포함)',
+    (v) => {
+      expect(() => resolveDrainTimeoutMs({ FLEET_DRAIN_TIMEOUT_MS: v })).toThrow(
+        /FLEET_DRAIN_TIMEOUT_MS/,
+      )
+      expect(() => resolveDrainTimeoutMs({ FLEET_DRAIN_TIMEOUT_MS: v })).toThrow(
+        new RegExp(v.trim()),
+      )
+    },
+  )
 })
 
 describe('resolveSandboxBoundary — 환경-인지 샌드박스 경계(#214 C1)', () => {
@@ -500,6 +528,155 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
       await expect(p2).resolves.toEqual({ approved: false })
       approver.resolve('a', true) // in-flight 응답 — 이미 해소·멱등 no-op(throw 없음)
       expect(approver.pendingCount()).toBe(0)
+    })
+  })
+
+  // ── #216 C3 graceful drain: shutdown 골격 ─────────────────────────────────
+  // 주입 fakeClock(boot-access.test.ts 동형) — 드레인 cap/poll 타이머를 advanceTo 로 결정론 발화.
+  function fakeClock(startMs: number) {
+    let current = startMs
+    const timers: Array<{ fn: () => void; at: number; cleared: boolean }> = []
+    const clock: SocketExpiryClock = {
+      now: () => current,
+      setTimeout: (fn, ms) => {
+        const t = { fn, at: current + ms, cleared: false }
+        timers.push(t)
+        return t
+      },
+      clearTimeout: (h) => {
+        if (h && typeof h === 'object' && 'cleared' in h) (h as { cleared: boolean }).cleared = true
+      },
+    }
+    const advanceTo = (ms: number): void => {
+      current = ms
+      for (;;) {
+        const due = timers.find((t) => !t.cleared && t.at <= current)
+        if (!due) break
+        due.cleared = true
+        due.fn()
+      }
+    }
+    return { clock, advanceTo }
+  }
+
+  describe('graceful drain shutdown(#216 C3 T3)', () => {
+    const drainEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+      FLEET_PORT: '0',
+      FLEET_DATA_DIR: mkdtempSync(join(tmpdir(), 'fleet-c3-')),
+      FLEET_E2E: '1',
+      ...extra,
+    })
+
+    it('RunningServer 에 shutdown·drainTimeoutMs 노출(기본 25000·env override)', async () => {
+      const s1 = await bootServer(drainEnv())
+      expect(typeof s1.shutdown).toBe('function')
+      expect(s1.drainTimeoutMs).toBe(25_000)
+      await s1.close()
+      const s2 = await bootServer(drainEnv({ FLEET_DRAIN_TIMEOUT_MS: '30000' }))
+      expect(s2.drainTimeoutMs).toBe(30_000)
+      await s2.close()
+    })
+
+    it('shutdown() 무런 → 즉시 drained → close · 멱등(동일 promise·재호출 무해)', async () => {
+      const s = await bootServer(drainEnv())
+      const p1 = s.shutdown()
+      const p2 = s.shutdown()
+      expect(p1).toBe(p2) // memo-gate — 동일 promise 공유(중복 시그널)
+      await p1
+      expect(s.clientCount()).toBe(0)
+      await s.close() // 이미 close(promise-memo) — no-op·throw 없음
+      await s.shutdown() // 이미 shutdown — 동일 promise 재반환
+    })
+
+    it('무런 + pending 승인 → shutdown 이 close→rejectAll 로 승인 철회(드레인 종단 fail-closed)', async () => {
+      let approver!: IpcApprover
+      const s = await bootServer(drainEnv(), { onApprover: (a) => (approver = a) })
+      const p = approver.approver({
+        id: 'w',
+        kind: 'file-write',
+        summary: 's',
+        target: 't',
+        risk: 'destructive',
+        ts: 1,
+        expiresAt: Date.now() + 300_000,
+      })
+      expect(approver.pendingCount()).toBe(1)
+      await s.shutdown() // 무런 → 즉시 drained → close() → rejectAll
+      await expect(p).resolves.toEqual({ approved: false })
+      expect(approver.pendingCount()).toBe(0)
+    })
+
+    it('hang 런 중 shutdown → 대기(정적 200·신규 런 거부) → cap 초과 force close → 대기 승인 철회', async () => {
+      const START = 1_000
+      const fc = fakeClock(START)
+      let approver!: IpcApprover
+      const s = await bootServer(drainEnv(), {
+        clock: fc.clock,
+        onApprover: (a) => (approver = a),
+      })
+      const socket = await connect(s.port)
+      let idc = 1
+      // 진행 런이 orchestrator:event push 프레임을 흘리므로, res 프레임(매칭 id)만 골라낸다(push 스킵).
+      const invoke = async (ch: string, args: unknown[] = []) => {
+        const id = idc++
+        socket.send(JSON.stringify({ t: 'req', id, ch, args }))
+        for (;;) {
+          const f = await nextFrame(socket)
+          if (f.t === 'res' && f.id === id) return f
+        }
+      }
+      try {
+        await nextFrame(socket) // hello 소비
+        // 활성 런 시드 — e2e hang 러너가 planTasks 에서 hang → activeRuns 비지 않음. 응답 미대기(id 고정 999).
+        socket.send(
+          JSON.stringify({ t: 'req', id: 999, ch: 'fleet:project:run', args: [{ goal: 'x' }] }),
+        )
+        // activeRuns 반영 대기(project.created 동기 방출이 dispatch 처리 후 반영).
+        const startT = Date.now()
+        for (;;) {
+          const r = await invoke('fleet:project:activity')
+          const act = (r.ok ? r.value : undefined) as { activeProjectIds: string[] } | undefined
+          if (act && act.activeProjectIds.length > 0) break
+          if (Date.now() - startT > 4000) throw new Error('활성 런 대기 타임아웃')
+          await new Promise((r) => setTimeout(r, 20))
+        }
+        // 대기 승인 1건(드레인 종단 rejectAll 대상). expiresAt 은 fakeClock now(START) 대비 큰 미래(cap 전진서 미만료).
+        const appr = approver.approver({
+          id: 'z',
+          kind: 'file-write',
+          summary: 's',
+          target: 't',
+          risk: 'destructive',
+          ts: 1,
+          expiresAt: 1_000_000,
+        })
+        expect(approver.pendingCount()).toBe(1)
+
+        // shutdown — 진행 런이 있어 waitForRunDrain 대기(fakeClock 미전진 → 미해소).
+        let done = false
+        const sp = s.shutdown().then(() => {
+          done = true
+        })
+        await Promise.resolve() // draining=true 반영 마이크로태스크
+
+        // CD1: 드레인 대기 중 정적 라우트 200 유지(httpServer listen · healthcheck-green 불변식 §4-7).
+        const health = await fetch(`http://127.0.0.1:${s.port}/`)
+        expect(health.status).toBe(200)
+        // 게이트: 드레인 중 신규 런 거부.
+        const rejected = await invoke('fleet:project:run', [{ goal: 'y' }])
+        expect(rejected.ok).toBe(false)
+        if (!rejected.ok) expect(rejected.error.message).toMatch(/서버 종료 중/)
+        expect(done).toBe(false) // cap 미도달 → 미해소
+
+        // cap 초과 → 드레인 timeout → force close(dispose abort + rejectAll).
+        fc.advanceTo(START + 25_000 + 1)
+        await sp
+        expect(done).toBe(true)
+        await expect(appr).resolves.toEqual({ approved: false }) // 대기 승인 철회(cap철회)
+      } finally {
+        socket.close()
+        await s.close()
+      }
     })
   })
 

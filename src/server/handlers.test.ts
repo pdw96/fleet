@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import type { ApprovalRequest, AppInfo } from '../shared/types'
+import { describe, expect, it, vi } from 'vitest'
+import type { ApprovalRequest, AppInfo, RunProjectRequest } from '../shared/types'
 import { invokeChannels } from '../shared/transport/channels'
 import { CHANNEL_FIXTURES } from '../shared/transport/fixtures'
 import { createFleetEngine } from '../main/core/engine'
@@ -18,7 +18,7 @@ const APP_INFO: AppInfo = {
   runtime: 'web',
 }
 
-function build(opts: { workspaceRoot?: string | null } = {}) {
+function build(opts: { workspaceRoot?: string | null; isDraining?: () => boolean } = {}) {
   const sent: ApprovalRequest[] = []
   const approver = createIpcApprover({ send: (r) => sent.push(r), hasWindow: () => true })
   const engine = createFleetEngine({ approver: approver.approver })
@@ -31,6 +31,8 @@ function build(opts: { workspaceRoot?: string | null } = {}) {
       approver,
       appInfo: APP_INFO,
       workspaceRoot: opts.workspaceRoot ?? null,
+      // 비옵셔널 계약(#216 C3 T2) — 기본 false(무회귀). 게이트 테스트가 () => true 로 덮는다.
+      isDraining: opts.isDraining ?? (() => false),
     }),
   }
 }
@@ -43,6 +45,23 @@ describe('서버 핸들러 테이블(#197 B3)', () => {
 
   it('모든 both invoke 채널에 fixture 가 존재한다(직렬화 계약 커버리지 재확인)', () => {
     expect(Object.keys(CHANNEL_FIXTURES).sort()).toEqual(invokeChannels('both'))
+  })
+
+  it('draining=true → fleet:project:run 이 throw 하고 engine.runProjectFlow 를 호출하지 않는다(fail-closed)', () => {
+    const { handlers, engine } = build({ isDraining: () => true })
+    const spy = vi.spyOn(engine, 'runProjectFlow')
+    const req: RunProjectRequest = { goal: '새 작업' }
+    // 동기 throw(runProjectFlow 호출 이전) — dispatch catch 가 err frame 으로 변환·런 미시작.
+    expect(() => handlers['fleet:project:run'](req)).toThrow(/서버 종료 중/)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('draining=false → fleet:project:run 이 engine.runProjectFlow 에 위임한다', async () => {
+    const { handlers, engine } = build({ isDraining: () => false })
+    const spy = vi.spyOn(engine, 'runProjectFlow').mockRejectedValue(new Error('stub'))
+    const req: RunProjectRequest = { goal: '새 작업' }
+    await expect(handlers['fleet:project:run'](req)).rejects.toThrow('stub')
+    expect(spy).toHaveBeenCalledWith(req)
   })
 
   it('app:info 가 runtime=web 을 스탬프한다', async () => {
