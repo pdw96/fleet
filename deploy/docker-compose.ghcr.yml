@@ -1,0 +1,20 @@
+# 서버측 pull override (#222 CD · Part of #98) — base 의 build: 를 GHCR image: 로 대체(로컬 빌드 없이 pull).
+#
+# 사용(24/7 서버):
+#   docker compose --env-file .env -f docker-compose.yml -f docker-compose.ghcr.yml --profile tunnel pull
+#   docker compose --env-file .env -f docker-compose.yml -f docker-compose.ghcr.yml --profile tunnel up -d --wait
+#   (또는 deploy/pull-deploy.sh 가 이 조합을 감싼다.)
+#
+# 요구: Docker Compose 2.24+ (`!reset` 태그). 인증: docker login ghcr.io (read:packages PAT).
+# `!reset null` 이 base 의 build: 를 완전 제거 → 서버엔 로컬 빌드 폴백이 없어 이미지 부재 시 loud-fail
+# (조용한 stray 빌드 불가 = fail-closed). base docker-compose.yml 은 무변경(smoke·로컬 dev 경로 보존).
+#
+# GHCR_TAG = 로컬 빌드용 IMAGE_TAG(:-local)와 분리된 서버 pull 태그. 기본 latest, 롤백 시 sha-<12hex>.
+# 프로덕션은 GHCR_TAG=sha-<N> 단일 핀 권장 — 두 이미지 동일 커밋 세트 보장(크로스이미지 스큐·latest 회귀 방지).
+services:
+  ttyd:
+    build: !reset null
+    image: ghcr.io/pdw96/fleet-webterminal:${GHCR_TAG:-latest}
+  fleet:
+    build: !reset null
+    image: ghcr.io/pdw96/fleet-server:${GHCR_TAG:-latest}

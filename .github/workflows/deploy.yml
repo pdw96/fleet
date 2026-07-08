@@ -1,0 +1,110 @@
+name: Deploy (GHCR)
+
+# master 머지 → fleet·ttyd 이미지 빌드 → smoke 게이트 → GHCR 발행 (#222 · Part of #98).
+# release.yml(데스크톱 Electron 앱·tags v*)과 완전 별개 — 서버 스택 CD 전용(트리거·산출물·이름 무충돌).
+# paths-ignore = 역필터(allowlist 아님): deploy/fleet/Dockerfile 이 `COPY . .` 로 전체 레포를 빌드
+# 컨텍스트에 넣어 `npm run build` 하므로 이미지 입력이 src/ 보다 넓다(vite/tsconfig/.npmrc 등 루트 빌드
+# 파일 포함). allowlist 는 그런 파일을 빠뜨리면 재빌드를 안 해 fail-open(서버가 stale :latest 유지).
+# .dockerignore 가 빌드 컨텍스트에서 빼거나 런타임 무관한 경로만 스킵 = fail-safe(애매하면 빌드).
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.claude/**'
+      - '.dogfood/**'
+      - 'coverage/**'
+      - '.vscode/**'
+      - '.idea/**'
+      - 'fleet-brain.html'
+  workflow_dispatch:
+
+# concurrency group 을 커밋별(github.sha)로 — 단일 group + pending 슬롯 1개면 연속 머지 시 중간 커밋이
+# 대체·skip 되어 그 sha-<12> 가 미발행된다(Codex PR P2 · "각 커밋 sha 항상 발행" 계약 위반). 커밋별 독립
+# group 이라 취소·skip 없이 각자 발행. latest 는 master-tip 가드 + sha 이미지 promote 라 동시 run 에서도 tip
+# run 만 이동하고 동일 digest → 스큐 없음. (같은 커밋 재실행만 같은 group = 직렬.)
+concurrency:
+  group: deploy-ghcr-${{ github.sha }}
+  cancel-in-progress: false
+
+# GHCR 발행만 — packages:write. gh api(master tip 조회)는 contents:read. 그 외 none.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    name: build · smoke · publish (GHCR)
+    runs-on: ubuntu-latest
+    # heavy Docker 빌드(2 이미지·apt·CLI 3종·ttyd fetch) — 네트워크 스톨 시 러너 기본 360min 매달림 방지(fail-fast).
+    timeout-minutes: 30
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      # GHCR 로그인 — 서드파티 액션 0(공급망 최소). --password-stdin 으로 토큰 argv/로그 유출 차단.
+      - name: GHCR 로그인
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # smoke 게이트 — 이미지 빌드 + 불변식 13종(시크릿 미baking 포함). FAIL 시 exit 1 → 이후 스텝 스킵(fail-closed).
+      - name: smoke 게이트
+        run: bash deploy/smoke.sh
+
+      # smoke 가 기대 이미지명(fleet-{server,webterminal}:local)을 둘 다 생성했는지 한 번에 확인
+      # (부분 push 방지 · 향후 IMAGE_TAG 도입으로 이름이 바뀌면 여기서 loud-fail).
+      - name: 이미지 원자 선점검
+        run: docker image inspect fleet-server:local fleet-webterminal:local >/dev/null
+
+      # sha 는 항상 발행. latest 는 GITHUB_SHA == master tip 일 때만 이동(옛 재실행/stale dispatch 의 :latest
+      # 회귀 방지 — 서버 cron 이 latest 추종 시 프로덕션이 뒤로 롤백되는 것을 발행측에서 원천 차단).
+      - name: 태그 + push (sha 항상 · latest 는 master-tip 일 때만)
+        env:
+          GH_TOKEN: ${{ github.token }} # gh api 인증(contents:read) — persist-credentials:false 라 명시 필수(없으면 private 401)
+        run: |
+          SHORT="${GITHUB_SHA::12}"
+          O="${GITHUB_REPOSITORY_OWNER,,}"
+          # ① sha 태그 쌍을 세트로 발행(Codex PR P1/P2) — 재실행이 floating base/apt/npm 변경분으로 sha-<12> 를
+          #    덮어써 "immutable 롤백 핀" 을 깨거나, 부분 발행(한 서비스만)으로 쌍 불일치 나는 것 방지.
+          #    둘 다 존재=정상 rerun skip · 정확히 하나만=부분 발행 loud-fail(수동 정리) · 둘 다 부재=이번 빌드로 push.
+          # manifest inspect 를 존재 여부로 쓰되, 일시 에러(네트워크·auth)를 "부재" 로 오인해 immutable 을
+          # 덮어쓰지 않게 not-found(404)와 기타 에러를 구분한다(Codex PR P2 · 기타 에러 = fail-closed).
+          have=0
+          for svc in server webterminal; do
+            if docker manifest inspect "ghcr.io/$O/fleet-$svc:sha-$SHORT" >/dev/null 2>/tmp/mi_err; then
+              have=$((have + 1))
+            elif grep -qiE 'not found|manifest unknown|no such manifest|does not exist' /tmp/mi_err; then
+              : # 진짜 부재(404) — 발행 대상
+            else
+              echo "::error::manifest inspect 실패(부재 아님 — 네트워크/auth?): $(cat /tmp/mi_err)"
+              exit 1
+            fi
+          done
+          if [ "$have" -eq 1 ]; then
+            echo "::error::sha-$SHORT 가 한 서비스만 발행됨(부분 발행) — 쌍 불일치 위험. 두 sha 태그 삭제 후 재발행."
+            exit 1
+          elif [ "$have" -eq 0 ]; then
+            for svc in server webterminal; do
+              docker tag "fleet-$svc:local" "ghcr.io/$O/fleet-$svc:sha-$SHORT"
+              docker push "ghcr.io/$O/fleet-$svc:sha-$SHORT"
+            done
+          else
+            echo "sha-$SHORT 쌍 이미 존재 — skip push(immutable 유지)"
+          fi
+          # ② latest 는 master tip 일 때만, sha 이미지에서 promote(로컬 재빌드가 아니라 — latest ≡ sha-<commit>
+          #    digest 보장 → 재현·롤백 일관 · Codex PR P1). skip 케이스도 원격 sha 를 pull 해 re-tag.
+          TIP="$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" --jq '.sha')"
+          if [ "$TIP" = "$GITHUB_SHA" ]; then
+            for svc in server webterminal; do
+              docker pull "ghcr.io/$O/fleet-$svc:sha-$SHORT"
+              docker tag "ghcr.io/$O/fleet-$svc:sha-$SHORT" "ghcr.io/$O/fleet-$svc:latest"
+              docker push "ghcr.io/$O/fleet-$svc:latest"
+            done
+          else
+            echo "::warning::GITHUB_SHA=$GITHUB_SHA != master tip=$TIP — :latest 미이동(sha 태그만). 롤백은 GHCR_TAG=sha-<N>."
+          fi

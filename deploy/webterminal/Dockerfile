@@ -12,6 +12,9 @@
 ARG NODE_IMAGE=node:24-bookworm-slim
 FROM ${NODE_IMAGE}
 
+# GHCR 패키지 ↔ 레포 자동 링크(#222 CD) — private-inherit 가시성·provenance. 빌드 라벨일 뿐 env/파일 무변경.
+LABEL org.opencontainers.image.source="https://github.com/pdw96/fleet"
+
 # --- CLI/도구 버전 고정 (자동 업데이트 차단; 갱신 = ARG bump → 재빌드 → 스모크 GREEN → 교체) ---
 ARG CLAUDE_VERSION=2.1.199
 ARG CODEX_VERSION=0.142.5

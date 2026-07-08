@@ -189,6 +189,22 @@ printf '%s' "$TTYD_BLOCK" | grep -q 'fleet-data' && bad "ttyd 에 fleet-data 마
 # fleet 서비스에 docker.sock 미마운트.
 printf '%s' "$FLEET_BLOCK" | grep -qi 'docker.sock' && bad "fleet 에 Docker 소켓 마운트!" || ok "fleet Docker 소켓 미마운트"
 
+# ─────────────────── override(docker-compose.ghcr.yml) 병합 canary (#222 CD) ───────────────────
+# 서버측 pull override 가 base 의 build: 를 !reset 으로 제거해 "로컬 빌드 없이 GHCR pull" 이 되는지
+# config 로 물성화 검증(서버 없이·빌드 없이). !reset 미지원(Compose <2.24) 이면 config 가 loud-fail.
+log "12b) GHCR override 병합 — build:!reset 로 서버가 로컬 빌드 없이 pull(config 물성화)"
+GHCR_YML="$SCRIPT_DIR/docker-compose.ghcr.yml"
+GHCR_CONF="$(docker compose -f "$SCRIPT_DIR/docker-compose.yml" -f "$GHCR_YML" --profile tunnel config 2>/dev/null || true)"
+printf '%s' "$GHCR_CONF" | grep -q . && ok "override 병합 config 생성(!reset 수용)" || bad "override 병합 실패 — Compose 2.24+(!reset) 필요"
+GHCR_FLEET="$(printf '%s\n' "$GHCR_CONF" | awk '/^  fleet:$/{f=1;next} /^  [a-zA-Z]/{f=0} /^[a-zA-Z]/{f=0} f')"
+GHCR_TTYD="$(printf '%s\n' "$GHCR_CONF" | awk '/^  ttyd:$/{f=1;next} /^  [a-zA-Z]/{f=0} /^[a-zA-Z]/{f=0} f')"
+printf '%s' "$GHCR_FLEET" | grep -q . && ok "override fleet 블록 추출(canary)" || bad "override fleet 블록 추출 실패 — 이하 신뢰불가"
+printf '%s' "$GHCR_TTYD" | grep -q . && ok "override ttyd 블록 추출(canary)" || bad "override ttyd 블록 추출 실패"
+printf '%s' "$GHCR_FLEET" | grep -q 'image: ghcr.io/pdw96/fleet-server' && ok "fleet image=GHCR" || bad "fleet image 가 GHCR 아님"
+printf '%s' "$GHCR_FLEET" | grep -q 'build:' && bad "fleet 에 build: 잔존(!reset 미적용 — 서버 로컬 빌드 시도)" || ok "fleet build: 제거됨(!reset)"
+printf '%s' "$GHCR_TTYD" | grep -q 'image: ghcr.io/pdw96/fleet-webterminal' && ok "ttyd image=GHCR" || bad "ttyd image 가 GHCR 아님"
+printf '%s' "$GHCR_TTYD" | grep -q 'build:' && bad "ttyd 에 build: 잔존(!reset 미적용)" || ok "ttyd build: 제거됨(!reset)"
+
 # 컨테이너 브라우저 스모크(#193 게이트 ③ — 목표 입력→런 완주): host 네트워킹 + FLEET_E2E=1 + 호스트
 # playwright(B4 웹스모크 재사용)가 필요하다. CI-이식 bash 스모크 범위를 넘어 라이브 5종(실 터널·폰 브라우저)이
 # 실경로를 덮는다 — 사일런트 캡 금지(명시 위임). README 「라이브 완료 체크리스트」 참조.
