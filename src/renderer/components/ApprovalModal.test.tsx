@@ -594,6 +594,18 @@ describe('다중 pending 내비', () => {
     fireEvent.click(screen.getByRole('button', { name: /변경 적용.*안전/ }))
     expect(respondApproval).not.toHaveBeenCalled()
   })
+
+  it('Escape 는 잔류 pointerIntent 를 무시하고 현재(내비 후) 카드를 거부한다(적대리뷰 F2)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    three(fire) // A(current)·B·C
+    // 승인 버튼 조준(intent=A)했으나 click 없이 화살표로 current→B(intent 잔류=A).
+    fireEvent.pointerDown(screen.getByRole('button', { name: '승인' }), { pointerType: 'touch' })
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'ArrowRight' })
+    // Escape=명시적 키보드 거부 → 잔류 intent(A) 무시하고 현재 카드(B) 거부(첫 Escape 삼킴 없음).
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(respondApproval).toHaveBeenCalledWith('B', false)
+  })
 })
 
 describe('포커스 트랩(미니칩 존재·Codex 체크포인트 2 P2)', () => {
@@ -659,37 +671,73 @@ describe('반응형 CSS(회귀 가드)', () => {
   // jsdom 은 CSS ?raw 를 빈 문자열로 주므로 원본 파일을 직접 읽는다(vitest cwd=레포 루트).
   const css = readFileSync(join(process.cwd(), 'src/renderer/styles.css'), 'utf8')
 
-  it('폰 바텀시트 미디어쿼리·미니칩 스트립·시트 애니메이션 규칙 존재', () => {
+  it('폰 바텀시트 미디어쿼리·미니칩·액션 줄바꿈/바닥고정·시트 애니메이션 규칙 존재', () => {
     expect(css).toMatch(/@media \(max-width: *640px\)/) // 폰 바텀시트 분기
     expect(css).toContain('.modal-nav') // 내비 컨테이너
     expect(css).toContain('.modal-chips') // 미니칩 스트립
+    expect(css).toMatch(/flex-wrap: *wrap/) // 모바일 액션 줄바꿈(카운트다운↑·버튼 풀폭·적대리뷰 F4)
+    expect(css).toMatch(/position: *sticky/) // 액션 바닥 고정(오버플로 시 스크롤아웃 방지·적대리뷰 F5/F6)
     expect(css).toMatch(/@keyframes sheetUp/) // 시트 슬라이드(reduced-motion 서 무애니)
   })
 })
 
 describe('스와이프(진행적 향상)', () => {
   const cardOf = () => screen.getByRole('dialog').querySelector('.modal-card') as HTMLElement
-
-  it('가로 스와이프(임계 초과)로 focus 이동·이동만(결정 아님)', () => {
-    const { fire, respondApproval } = mockFleet()
-    render(<ApprovalModal />)
+  const two = (fire: (r: ApprovalRequest) => void) => {
     fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
     fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+  }
+
+  it('터치 가로 스와이프(임계 초과)로 focus 이동·이동만(결정 아님)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
     const card = cardOf()
-    fireEvent.pointerDown(card, { pointerId: 1, clientX: 200, clientY: 100 })
-    fireEvent.pointerUp(card, { pointerId: 1, clientX: 130, clientY: 108 }) // 좌로 70px(>임계·수평)
+    fireEvent.pointerDown(card, { pointerId: 1, pointerType: 'touch', clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(card, { pointerId: 1, pointerType: 'touch', clientX: 130, clientY: 108 }) // 좌 70px
     expect(screen.getByText('2 / 2')).toBeTruthy() // 다음(B) 로 이동
     expect(respondApproval).not.toHaveBeenCalled()
   })
 
-  it('세로 우세 제스처는 이동 안 함(시트 스크롤 보존)', () => {
+  it('터치 세로 우세 제스처는 이동 안 함(시트 스크롤 보존)', () => {
     const { fire } = mockFleet()
     render(<ApprovalModal />)
-    fire(mkReq('A', '도구 호출', 'tool-call', 'caution'))
-    fire(mkReq('B', 'shell 실행', 'shell', 'destructive'))
+    two(fire)
     const card = cardOf()
-    fireEvent.pointerDown(card, { pointerId: 1, clientX: 200, clientY: 100 })
-    fireEvent.pointerUp(card, { pointerId: 1, clientX: 190, clientY: 200 }) // 세로 우세
+    fireEvent.pointerDown(card, { pointerId: 1, pointerType: 'touch', clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(card, { pointerId: 1, pointerType: 'touch', clientX: 190, clientY: 200 }) // 세로 우세
     expect(screen.getByText('1 / 2')).toBeTruthy() // 이동 없음
+  })
+
+  it('마우스 드래그는 스와이프 미발화(폰 전용·데스크톱 텍스트선택/칩스크롤 오발화 차단·적대리뷰 F1/F7/F8)', () => {
+    const { fire } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const card = cardOf()
+    fireEvent.pointerDown(card, { pointerId: 1, pointerType: 'mouse', clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(card, { pointerId: 1, pointerType: 'mouse', clientX: 100, clientY: 104 }) // 좌 100px
+    expect(screen.getByText('1 / 2')).toBeTruthy() // 마우스는 이동 없음(pointerType 게이트)
+  })
+
+  it('버튼서 시작한 제스처는 카드 스와이프를 발화하지 않는다(stopPropagation·적대리뷰 F1)', () => {
+    const { fire, respondApproval } = mockFleet()
+    render(<ApprovalModal />)
+    two(fire)
+    const approve = screen.getByRole('button', { name: '승인' })
+    // 버튼 위 터치 pointerdown → captureIntent stopPropagation 으로 카드 swipeStart 미기록.
+    fireEvent.pointerDown(approve, {
+      pointerId: 1,
+      pointerType: 'touch',
+      clientX: 200,
+      clientY: 100,
+    })
+    fireEvent.pointerUp(cardOf(), {
+      pointerId: 1,
+      pointerType: 'touch',
+      clientX: 120,
+      clientY: 104,
+    })
+    expect(screen.getByText('1 / 2')).toBeTruthy() // FOCUS_DELTA 미발화(A 유지)
+    expect(respondApproval).not.toHaveBeenCalled()
   })
 })

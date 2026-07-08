@@ -98,6 +98,12 @@ test.describe('C1 승인 보류(#216) — hold → 리로드 재하이드레이�
     // 서버 권위 mm:ss 카운트다운(Ns 아님).
     await expect(page.getByText(/\d+:\d{2} 후 자동 거부/)).toBeVisible()
 
+    // 엄지 버튼 = 풀폭(flex:1·flex-wrap 로 카운트다운 윗줄 분리). F4 회귀 가드 — nowrap 이면 카운트다운이
+    // 같은 줄을 차지해 버튼이 min-content(~40px)로 압축된다. 390px 뷰포트서 각 버튼 ≈165px 여야 함.
+    const rejectBox = await dialog.getByRole('button', { name: '거부' }).boundingBox()
+    expect(rejectBox).not.toBeNull()
+    if (rejectBox) expect(rejectBox.width).toBeGreaterThanOrEqual(140)
+
     // 엄지 버튼(거부) 조작 → 서버 resolve → withdrawn → 카드 소멸.
     await page.getByRole('button', { name: '거부' }).click()
     await expect(dialog).toHaveCount(0)

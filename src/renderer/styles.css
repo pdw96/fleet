@@ -1110,8 +1110,13 @@ code.id {
     font-size: 15px;
   }
   .modal-actions {
-    margin-top: auto; /* 버튼을 시트 바닥 엄지존으로 고정 */
+    position: sticky; /* 내용이 80vh 초과·스크롤돼도 버튼/카운트다운을 시트 바닥 엄지존에 고정(적대리뷰 F5/F6) */
+    bottom: 0;
+    margin-top: auto; /* 내용 짧을 땐 시트 바닥으로 밀기 */
+    flex-wrap: wrap; /* nowrap 이면 flex-basis:100% 미줄바꿈 → 카운트다운 윗줄·버튼 아랫줄 풀폭 위해 필수(적대리뷰 F4) */
     gap: 12px;
+    padding-top: 12px;
+    background: var(--surface); /* sticky 시 스크롤되는 본문이 버튼 뒤로 비치지 않게 */
   }
   .modal-actions .btn {
     flex: 1;

@@ -197,7 +197,10 @@ export function ApprovalModal() {
   // 결정 의도 스냅숏(#216 적대리뷰 P3·Codex P2) — pointerdown/keydown 시 조준한 카드 id 를 기록. 마우스·
   // 키보드(Enter/Space) 활성화가 커밋(click)되기 전 비동기 스왑(withdrawn/만료/reconcile)이 일어나면 decide
   // 가 intent≠current 로 무시해 사용자가 읽지 않은 카드의 우발 결정을 막는다.
-  const captureIntent = (): void => {
+  const captureIntent = (e?: ReactPointerEvent): void => {
+    // 버튼/칩서 시작한 포인터 제스처가 카드 스와이프(swipeStart)를 기록하지 않게 전파 차단(적대리뷰 F1) —
+    // 스와이프는 카드 본문에서 시작할 때만 발화하고, 액션 버튼 위 드래그가 우발 이동/결정을 만들지 않는다.
+    e?.stopPropagation()
     if (current) pointerIntent.current = current.id
   }
   const captureIntentKey = (e: { key: string }): void => {
@@ -217,16 +220,18 @@ export function ApprovalModal() {
     dispatch({ type: 'REMOVE', id: current.id })
   }
 
-  // 가로 스와이프(진행적 향상·§C-1·불변식④) — 카드에서 수평 임계(48px) 초과·수평 우세면 focus 이동
-  // (결정 아님). 세로 우세는 시트 스크롤 보존(무시). 점·미니칩·화살표가 완전 대체하므로 미지원/미발화도
-  // 무해. 버튼/칩 탭은 이동이 작아 임계 미달 → 스와이프와 충돌하지 않는다.
+  // 가로 스와이프(진행적 향상·§C-1·불변식④) — **터치 전용**. 카드 본문에서 수평 임계(48px) 초과·수평
+  // 우세면 focus 이동(결정 아님). 세로 우세는 시트 스크롤 보존(무시). 데스크톱 마우스/펜은 게이트 아웃 —
+  // 경로 텍스트 선택·칩 가로 스크롤 드래그가 우발 카드 스왑을 만들지 않게(적대리뷰 F7/F8). 점·미니칩·
+  // 화살표가 전 기능 대체하므로 터치 미지원/미발화도 무해. 버튼/칩서 시작한 제스처는 stopPropagation 으로 배제.
   const onCardPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType !== 'touch') return
     swipeStart.current = { x: e.clientX, y: e.clientY }
   }
   const onCardPointerUp = (e: ReactPointerEvent<HTMLDivElement>): void => {
     const s = swipeStart.current
     swipeStart.current = null
-    if (!s) return
+    if (!s || e.pointerType !== 'touch') return
     const dx = e.clientX - s.x
     const dy = e.clientY - s.y
     if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy)) return
@@ -249,7 +254,11 @@ export function ApprovalModal() {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         e.preventDefault()
-        decide(false) // 거부 — 자동거부 백스톱과 일관한 안전 방향
+        // Escape=명시적 키보드 거부 — 버튼 조준(pointerIntent) 후 내비(화살표/스와이프/칩)로 current 가
+        // 바뀌어 잔류 intent≠current 가 돼도 첫 Escape 가 삼켜지지 않게, 잔류 intent 를 소거하고 현재 카드를
+        // 거부한다(적대리뷰 F2). 항상 안전 방향(거부)이라 무해.
+        pointerIntent.current = null
+        decide(false)
         return
       }
       // 화살표 = 집중 카드 이동(결정 아님·불변식③). 최신 큐 기준 ±1 clamp(reducer).
@@ -325,7 +334,8 @@ export function ApprovalModal() {
         </p>
         {queue.length > 1 && (
           <div className="modal-nav" role="group" aria-label="대기 중 승인 이동">
-            <div className="modal-chips">
+            {/* 칩 스트립서 시작한 포인터(터치 가로 스크롤 포함)가 카드 스와이프를 발화하지 않게(적대리뷰 F7). */}
+            <div className="modal-chips" onPointerDown={(e) => e.stopPropagation()}>
               {queue.map((r, i) => (
                 <button
                   key={r.id}
