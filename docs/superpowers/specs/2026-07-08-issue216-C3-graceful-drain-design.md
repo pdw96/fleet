@@ -247,7 +247,13 @@ for (const signal of ['SIGINT','SIGTERM'] as const) {
   실 소켓 관측). `boot-access.test.ts:759-781` 형. WS 통합은 spawn 아니라 `--no-file-parallelism` 무관.
 - **T-파싱** — `resolveDrainTimeoutMs` fail-fast: `['abc','0','999','120001','25000.5']` throw · 미설정 25000 ·
   경계 1000/120000 통과.
-- **T-멱등** — `shutdown()` 2회 = broadcast 1회·close 1회. `close()` 2회 무해.
+- **T-멱등** — 중복 SIGTERM/SIGINT 에도 `shutdown()` broadcast 1회·close 1회·**동일 shutdown promise 공유**
+  (Codex 핀). `close()` 2회 무해.
+- **T-cap철회(통합·Codex 핀 Q1)** — T-상한 확장: drain cap 초과 force close 시 `close().rejectAll()` 이 pending
+  승인 전원 철회(`fleet:approval:withdrawn`/outcome `{approved:false}`) 확인 — 드레인 내 미완주 런의 대기 승인이
+  종단에서 fail-closed 철회됨을 핀.
+- **T-teardown실패(index.ts·Codex 핀 Q5)** — `waitForRunDrain` 정상 종료해도 `close()`/`dispose()` 가 reject 하면
+  index.ts 가 `exit(1)` 로 정리하고 백스톱 잔여가 없음(shutdown().then(exit0, exit1) 경로).
 - **T-parity(자동)** — bridge-parity·ipc-parity GREEN(channels/preload[on+removeListener]/ws-bridge/main[send] 정합).
 - **T-렌더러** — `ConnectionBanner` draining 배너·우선순위(reconnecting 우선)·**재접속 hello 후 draining 리셋**.
   기존 hydration 테스트 더블에 `onServerDraining` 추가(런타임 갭 방지).
