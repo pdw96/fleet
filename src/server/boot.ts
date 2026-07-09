@@ -673,6 +673,8 @@ export async function bootServer(
     draining = true
     shutdownPromise = (async () => {
       // ② 클라 통지(best-effort) — attach(인증 통과) 소켓만 도달·safeSend 격리. 정적 페이로드(민감값 0).
+      // 로그 1줄 = 운영자가 재배포 시 `docker logs` 로 드레인 시작을 관측(C5 런북 §1.3)·drain e2e 결정론 관측.
+      console.warn('[fleet] draining — 신규 런 거부·진행 런 완료 대기 후 종료(#216 C3)')
       wsHost?.broadcast('fleet:server:draining', { reason: 'shutdown' })
       // ③ 진행 런(activeRuns) 완료 대기(상한). drainTimeoutMs 는 RunningServer 노출값과 동일 const(divergence 0).
       await waitForRunDrain(() => engine.getRunActivity(), clock, drainTimeoutMs, DRAIN_POLL_MS)
