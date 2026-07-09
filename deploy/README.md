@@ -441,19 +441,26 @@ eventSeq)를 하나의 JSON 으로 원자적 write(tmp+rename)하며, 파싱 실
 > ⚠️ **백업 파일 전체를 기밀로 취급하라.** store JSON 은 `messages[]`·`events[]`·`tasks[].output` 을 **평문**으로
 > 담는다(대화·산출물). "시크릿은 키뿐이니 tar 는 아무 데나" 는 틀렸다.
 
-**볼륨 실제명은 동적으로 해소한다(하드코딩 금지).** compose 가 프로젝트명을 `name: fleet-webterminal` 로 고정하므로
-실제 named volume 명은 `fleet-webterminal_fleet-data` 다. 하지만 환경 차이에 대비해 항상 조회로 뽑아라 — 틀린
-이름을 쓰면 에러가 아니라 **빈 볼륨이 조용히 새로 생성**되어 위양성 백업/조용한 미복원이 된다:
+**볼륨 실제명은 동적으로 해소한다(하드코딩·substring 매칭 금지).** compose 가 프로젝트명을 `name: fleet-webterminal`
+로 고정하므로 실제 named volume 명은 `fleet-webterminal_fleet-data` 다. 하지만 하드코딩하면 환경 차이에서 틀린
+이름이 에러가 아니라 **빈 볼륨을 조용히 새로 생성**해 위양성 백업/조용한 미복원이 된다. ⚠️ **substring grep 도 금지** —
+호스트에 `fleet-data` 를 포함하는 볼륨이 둘 이상이면(옛 오타로 생긴 빈 볼륨·다른 compose 프로젝트) `grep` 이 엉뚱한
+볼륨을 집어 성공한 듯 잘못 백업/복원한다. **compose 라벨로 정확히 특정**하라(project+volume 라벨 = 결정론):
 
 ```bash
-docker volume ls --format '{{.Name}}' | grep fleet-data   # 예: fleet-webterminal_fleet-data
+# compose 가 named volume 에 붙이는 라벨로 정확히 1개 선택(substring 오선택 회피)
+VOL=$(docker volume ls -q \
+  --filter label=com.docker.compose.project=fleet-webterminal \
+  --filter label=com.docker.compose.volume=fleet-data)
+# 정확히 1개가 아니면 중단(0개=미기동/오프로젝트 · 2개+=중복 — 사람이 확인)
+[ "$(printf '%s\n' "$VOL" | grep -c .)" = 1 ] || { echo "fleet-data 볼륨 특정 실패(0 또는 다중): [$VOL]" >&2; exit 1; }
+echo "$VOL"   # 예: fleet-webterminal_fleet-data
 ```
 
-**백업.** helper 컨테이너로 tar(진짜 point-in-time 일관이 필요하면 `docker stop`/드레인 후 실행 — 평상시엔
-원자적 write 라 실행 중 스냅숏도 완전한 파일을 관측한다):
+**백업.** 위에서 특정한 `$VOL` 로 helper 컨테이너 tar(진짜 point-in-time 일관이 필요하면 `docker stop`/드레인 후
+실행 — 평상시엔 원자적 write 라 실행 중 스냅숏도 완전한 파일을 관측한다):
 
 ```bash
-VOL=$(docker volume ls --format '{{.Name}}' | grep -m1 fleet-data)
 docker run --rm -v "$VOL":/data:ro -v "$PWD":/backup alpine \
   tar czf /backup/fleet-data-$(date +%Y%m%d-%H%M%S).tgz -C /data ./fleet/fleet-store.json
 ```
