@@ -77,6 +77,8 @@ export interface RawWebServer {
   url: string
   sigterm(): void
   waitExit(): Promise<{ code: number | null; elapsedMs: number; stdout: string }>
+  /** 정리(멱등) — 단언이 waitExit 전에 throw 해도 자식 kill + tmp 정리가 되도록 afterAll 에서 호출한다. */
+  stop(): Promise<void>
 }
 
 /**
@@ -113,21 +115,40 @@ export async function startFleetWebServerRaw(
         rej(new Error(`조기 종료(code ${code}):\n${out}`))
       })
     })
+    // elapsedMs 앵커 = SIGTERM 시점(waitExit 호출 시점 아님). 호출 순서가 sigterm → 배너 관측 대기(최대 8s)
+    // → waitExit 라, waitExit 시점을 t0 로 잡으면 드레인 창을 과소측정해 canary(경과≥상한)가 flaky 해진다.
+    let sigtermAt = 0
     return {
       url,
-      sigterm: () => child.kill('SIGTERM'),
+      sigterm: () => {
+        sigtermAt = Date.now()
+        child.kill('SIGTERM')
+      },
       waitExit: () =>
         new Promise((res) => {
-          const t0 = Date.now()
+          const elapsed = () => (sigtermAt ? Date.now() - sigtermAt : 0)
           if (child.exitCode !== null || child.signalCode !== null) {
             rmSync(dataDir, { recursive: true, force: true })
-            res({ code: child.exitCode, elapsedMs: 0, stdout: out })
+            res({ code: child.exitCode, elapsedMs: elapsed(), stdout: out })
             return
           }
           child.once('exit', (code) => {
             rmSync(dataDir, { recursive: true, force: true })
-            res({ code, elapsedMs: Date.now() - t0, stdout: out })
+            res({ code, elapsedMs: elapsed(), stdout: out })
           })
+        }),
+      stop: () =>
+        new Promise<void>((r) => {
+          const done = () => {
+            rmSync(dataDir, { recursive: true, force: true })
+            r()
+          }
+          if (child.exitCode !== null || child.signalCode !== null) {
+            done()
+            return
+          }
+          child.once('exit', done)
+          child.kill()
         }),
     }
   } catch (err) {

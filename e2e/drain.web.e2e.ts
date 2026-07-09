@@ -14,11 +14,17 @@ test.describe('C5 graceful drain(#216 C3) — hang 런 활성 중 SIGTERM → �
     'win32 kill=강제 종료 — 드레인 미발화(실 Linux SIGTERM 필요·§2b docker 위임)',
   )
 
+  // describe 스코프 hoist — 본문이 waitExit 전에 throw 해도 afterAll 이 자식 kill + tmp 정리를 보장한다.
+  let server: RawWebServer | undefined
+  test.afterAll(async () => {
+    await server?.stop()
+  })
+
   test('hang 런 활성 → SIGTERM → draining 로그 + drain 상한 대기(경과 canary) + clean exit 0', async ({
     browser,
   }) => {
     // 짧은 drain 상한(2500ms)으로 기동 — hang 런은 abort 를 미honor 하므로 상한까지 대기 후 force close.
-    const server: RawWebServer = await startFleetWebServerRaw({ FLEET_DRAIN_TIMEOUT_MS: '2500' })
+    server = await startFleetWebServerRaw({ FLEET_DRAIN_TIMEOUT_MS: '2500' })
     const ctx = await browser.newContext()
     const page = await ctx.newPage()
     await page.goto(server.url)
