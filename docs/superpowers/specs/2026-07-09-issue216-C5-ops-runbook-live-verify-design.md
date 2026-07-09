@@ -40,11 +40,11 @@
   드롭(§1.2) → 키를 **별도 에스크로**(볼륨 백업과 다른 저장소). ⚠️ 범위 한정: `encryptedApiKey` 는 kind:'api'
   세션에만 존재 — **구독 CLI(ttyd)만 쓰는 배포는 API 세션이 없어 키 에스크로가 무의미**하고 볼륨 백업만으로 충분.
 - 복원은 **소유권·권한 보존 필수**: dir 은 uid 1000(node) 소유, 서버 부팅 시 `chmodSync(dataDir,0700)` 재강제
-  (`boot.ts:386-388`). ⚠️ 증상 정정 — root 소유로 복원(또는 fresh root-owned 마운트) 시 첫 실패는 store write
-  EACCES 가 아니라 **부팅 시 `chmodSync` EPERM**(uid 1000 이 root 소유 dir mode 변경 불가) → `bootServer` reject
-  → **컨테이너 crash-loop(loud·사일런트 아님)**. 이 loud crash 가 사일런트 손상보다 안전. `mkdirSync(recursive)`
-  는 기존 root-owned dir 의 소유/모드를 **고치지 못함**. → 복원 후 **트리 전체** `chown 1000:1000`(dataDir 루트 +
-  하위 `fleet/` 포함 — `fleet/` 는 0755 로 생성되고 0700 부모로만 보호 · `json-file.ts:27`).
+  (`boot.ts:386-388`). ⚠️ **증상 2갈래(Codex 정제)** — (a) **mount root(dataDir) 자체가 root 소유** → 부팅 시
+  `chmodSync` **EPERM → `bootServer` reject → 컨테이너 crash-loop(loud)**(store write EACCES 아님); (b) **하위
+  `fleet/`·`fleet-store.json` 만 root 소유** → boot 는 통과하나 json-file store write 가 **실패(catch+log 격리)
+  → 영속 불능**(조용). `mkdirSync(recursive)` 는 기존 root-owned dir 의 소유/모드를 **고치지 못함**. → 복원 후
+  **트리 전체** `chown 1000:1000`(dataDir 루트 + 하위 `fleet/` — 0755 로 생성·0700 부모로만 보호 · `json-file.ts:27`).
 - **pending 승인은 in-memory**(`approval.ts`/`approval-bridge.ts` store 참조 0) → 복원 서버는 pending 0 으로
   시작(데이터 손실 아님·by design). 런북이 이를 명시(부재를 손실로 오인 금지).
 - **cross-runtime 비호환**: 서버 `ev1:`(AES-GCM env-key) ↔ 데스크톱 `v1:`(safeStorage) 상호 복호 불가
@@ -123,16 +123,17 @@ tar 로 백업(**동적 해소한 정확 볼륨명**·`.tmp` 제외·`.corrupt` 
 
 지반 워크플로가 밝힌 **커밋 갭 2**를 봉인:
 
-- **e2e `approval-handoff.web.e2e.ts`(신규)** — fresh 마운트 스냅숏 재하이드레이션 + **진짜 presence 핸드오프**를
-  결정론 증명: 실 서버 번들 loopback 1회 기동(hold policy 상시) → **컨텍스트 A(PC)** `fleet.setMcpServers([{name,
+- **e2e `approval-handoff.web.e2e.ts`(신규)** — fresh 컨텍스트 마운트 스냅숏 재하이드레이션 + presence 전이
+  정황을 결정론 증명: 실 서버 번들 loopback 1회 기동(hold policy 상시) → **컨텍스트 A(PC)** `fleet.setMcpServers([{name,
   command:'nonexistent-approval-probe'}])` 로 held 승인 결정론 트리거(`mcp/host.ts:245` gate.request destructive
-  가 spawn 전에 발화 — 리퓨터 upheld) → 카드 관측 → **`browser.newContext()` A 를 완전 teardown**(단순 reload
-  아님·`clientCount→0` 단언 = **진짜 presence 전이**) → **컨텍스트 B(폰뷰 390×844)** goto(동일 URL) → App mount
-  가 `listPendingApprovals`(`handlers.ts:151`)→HYDRATE 로 카드 **재제시** → 승인 → `fleet:approval:withdrawn` →
-  카드 소멸. ⚠️ 주장 right-size: loopback 은 컨텍스트별 auth/nonce 가 없어(`boot.ts:596-601`) 재하이드레이션
-  전송/렌더 경로는 기존 reload 테스트와 동경로 — **신규의 증분 가치 = A 완전 teardown+`clientCount→0` 로 진짜
-  presence 핸드오프를 증명**하는 것(교차-Access-인증 핸드오프는 여전히 2b 전용). loopback 은 Access 불요.
-  선택: 컨텍스트 전환 후 서버권위 `expiresAt` 유지 단언.
+  가 spawn 전에 발화 — 리퓨터 upheld) → 카드 관측 → **`context.close()` A 완전 teardown**(단순 reload 아님·소켓
+  단절) → **B 접속 전 짧은 retry window** 로 held 가 `withdrawn` 없이 유지됨 확인(presence-0 생존 정황) →
+  **컨텍스트 B(폰뷰 390×844)** goto(동일 URL) → App mount 가 `listPendingApprovals`(`handlers.ts:151`)→HYDRATE 로
+  카드 **재제시** → 승인 → `fleet:approval:withdrawn` → 카드 소멸. ⚠️ **주장 right-size(Codex P2)**: black-box
+  `startFleetWebServer()` 는 자식 프로세스라 `server.clientCount()` **직접 단언 불가** → `clientCount→0` 을 쓰지
+  않고 **"A close → 서버가 재하이드레이션으로 B 에 pending 재제시"** 로 주장 한정. clientCount 직접 단언은
+  in-process `bootServer` seam + Playwright 조립이 필요(ADR-0003 경계로 미채택). 증분 가치 = **A 별도 컨텍스트
+  완전 teardown 후 fresh 컨텍스트 B 재하이드레이션**(기존 reload 는 같은 컨텍스트 내). loopback 은 Access 불요.
 - **"프로젝트 런이 승인서 멈췄다 재개"(갭 (a)) = §2b 위임(정당)** — 리퓨터 확인: 완주 러너(`e2eCompletingRunner`
   `e2e.ts:64-83`)는 텍스트만 반환·파일 쓰기 없어 diff-risk 가 destructive 로 안 뜨고 MCP 도 없음 → 픽스처 런이
   mid-flow 승인 요청하게 배선하는 비용이 큼(실 위험 파일 조작 배선 필요). → **2a 는 MCP 게이트 핸드오프로 완료
@@ -147,7 +148,13 @@ tar 로 백업(**동적 해소한 정확 볼륨명**·`.tmp` 제외·`.corrupt` 
   규율) + `clean exit 0`·유예 내 종료. **선택 1-line src**: `boot.ts:676` broadcast 옆 `console.warn('draining')`
   1줄 추가 시 docker logs 로 broadcast 관측 가능(신규 런 거부는 여전히 클라 전용) — 프로덕션 관측성 향상이라
   구현 시 채택 판단. Windows/베어호스트 불가(kill=force) 명시 → Linux/도커 전용. *운영자 회귀 게이트로 재사용.*
-  hang 런 유발 방법(FLEET_E2E 러너 중 blocking 존재 여부)은 구현 시 `e2e.ts` 러너 실측으로 확정.
+  hang 런 유발 = **기본 e2e 러너가 planTasks 에서 hang**(`e2e.ts:49,85-87`·`FLEET_E2E_RUNNER≠complete`)를 이용
+  (실측 확인). ⚠️ **`FLEET_E2E=1` 은 프로덕션 P1 격리 가드**(Codex) → drain-smoke.sh 는 **test-only canary 이며
+  운영 compose 엔 이 env 를 절대 넣지 않는다**를 스크립트 상단에 강한 주석으로. hang 런 구동은 컨테이너 `--network
+  host`(loopback 도달·B6 컨테이너-브라우저 스모크 선례) + Playwright/브라우저 UI 플로우(프로젝트→목표→실행) 재사용
+  또는 최소 WS 헬퍼 — 구현 시 복잡도 실측 후 확정. ⚠️ **ADR-0003 폴백**: drain-smoke 가 불균형하게 복잡해지면
+  (컨테이너-브라우저 조립 마찰) **런북 2b 에 정확한 수동 `docker stop` 재현 절차를 박고**(사용자가 2b 서 실행)
+  드레인 계약은 기존 vitest 단위(`waitForRunDrain`·`isDraining`)로 커버 — 이 강등은 명시(사일런트 캡 아님).
 
 #### 2b. 사용자 협업 실측 (배포 환경·#216 CLOSE 조건)
 
@@ -202,6 +209,18 @@ tar 로 백업(**동적 해소한 정확 볼륨명**·`.tmp` 제외·`.corrupt` 
 전부 코드 증거로 유지. **하드닝 반영**: 백업 전체 기밀(평문 messages/events)·키 에스크로 범위한정(API 세션 有)·
 고아 동일-id 재등록·2 skip 메시지 triage·positive 키로그 부재→라이브목록 권위·독립승인 ~0s 붕괴·grace 상향 시점.
 **잔여**: Part 1 런북 라인 인용은 랜딩 전 재확인(§완료조건 1·구현 시 실측).
+
+## Codex 스펙 체크포인트 §반영 (`#issuecomment-4921908901` → Codex "구현 착수 가능")
+
+Codex 가 §1.2 로테이션·§1.3 시크릿 2갈래·§1.1 백업·2a scope·drain-smoke 를 코드 대조로 **전부 승인**. 보완 3건 반영:
+
+- **[P2] 2a `clientCount→0` 직접 단언 불가**(black-box `startFleetWebServer()` 자식 프로세스라 `server.clientCount()`
+  미노출) → 옵션2 채택: 주장을 "A close → 서버 재하이드레이션으로 B 에 pending 재제시"로 하향. 옵션1(in-process
+  bootServer seam)은 ADR-0003 경계로 미채택.
+- **[정제] §1.1 복원 실패 2증상**: mount root root소유=chmod EPERM crash-loop(loud) / 하위 root소유=store write
+  영속실패(조용·catch+log) → §1.1 반영.
+- **[가드] drain-smoke `FLEET_E2E=1`=프로덕션 P1 격리** → test-only canary 강한 주석·운영 compose 미주입 명시.
+  console.warn 은 WS 헬퍼가 push 관측하면 불요(선택). → 2a 반영.
 
 ## 리스크
 
