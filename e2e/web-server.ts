@@ -72,3 +72,89 @@ export async function startFleetWebServer(
       }),
   }
 }
+
+export interface RawWebServer {
+  url: string
+  sigterm(): void
+  waitExit(): Promise<{ code: number | null; elapsedMs: number; stdout: string }>
+  /** 정리(멱등) — 단언이 waitExit 전에 throw 해도 자식 kill + tmp 정리가 되도록 afterAll 에서 호출한다. */
+  stop(): Promise<void>
+}
+
+/**
+ * graceful drain e2e 전용(#216 C5) — 서버 프로세스에 실 SIGTERM 을 보내고 종료 타이밍·stdout 을 관측한다.
+ * `stop()`(kill 후 즉시 정리) 대신 sigterm()+waitExit() 로 드레인 시퀀스(진행 런 대기 경과·clean exit·
+ * `[fleet] draining` 로그)를 단언한다. win32 에서 kill('SIGTERM') 은 강제 종료라 드레인이 발화하지 않으므로
+ * 호출측(drain.e2e.ts)이 win32 를 skip 한다.
+ */
+export async function startFleetWebServerRaw(
+  extraEnv: Record<string, string> = {},
+): Promise<RawWebServer> {
+  const dataDir = mkdtempSync(join(tmpdir(), 'fleet-drain-e2e-'))
+  const child = spawn(process.execPath, [resolve(__dirname, '..', 'out', 'server', 'index.mjs')], {
+    env: { ...process.env, FLEET_E2E: '1', FLEET_PORT: '0', FLEET_DATA_DIR: dataDir, ...extraEnv },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  child.stdout?.on('data', (d: Buffer) => (out += d.toString()))
+  child.stderr?.on('data', (d: Buffer) => (out += d.toString()))
+  try {
+    const url = await new Promise<string>((res, rej) => {
+      const timer = setTimeout(() => rej(new Error(`기동 타임아웃:\n${out}`)), 15_000)
+      const onData = () => {
+        const m = out.match(/fleet-server: (http:\/\/127\.0\.0\.1:\d+)/)
+        if (m) {
+          clearTimeout(timer)
+          child.stdout?.off('data', onData)
+          res(m[1])
+        }
+      }
+      child.stdout?.on('data', onData)
+      child.once('exit', (code) => {
+        clearTimeout(timer)
+        rej(new Error(`조기 종료(code ${code}):\n${out}`))
+      })
+    })
+    // elapsedMs 앵커 = SIGTERM 시점(waitExit 호출 시점 아님). 호출 순서가 sigterm → 배너 관측 대기(최대 8s)
+    // → waitExit 라, waitExit 시점을 t0 로 잡으면 드레인 창을 과소측정해 canary(경과≥상한)가 flaky 해진다.
+    let sigtermAt = 0
+    return {
+      url,
+      sigterm: () => {
+        sigtermAt = Date.now()
+        child.kill('SIGTERM')
+      },
+      waitExit: () =>
+        new Promise((res) => {
+          const elapsed = () => (sigtermAt ? Date.now() - sigtermAt : 0)
+          if (child.exitCode !== null || child.signalCode !== null) {
+            rmSync(dataDir, { recursive: true, force: true })
+            res({ code: child.exitCode, elapsedMs: elapsed(), stdout: out })
+            return
+          }
+          child.once('exit', (code) => {
+            rmSync(dataDir, { recursive: true, force: true })
+            res({ code, elapsedMs: elapsed(), stdout: out })
+          })
+        }),
+      stop: () =>
+        new Promise<void>((r) => {
+          const done = () => {
+            rmSync(dataDir, { recursive: true, force: true })
+            r()
+          }
+          if (child.exitCode !== null || child.signalCode !== null) {
+            done()
+            return
+          }
+          child.once('exit', done)
+          child.kill()
+        }),
+    }
+  } catch (err) {
+    // 기동 실패 시 orphan 프로세스·tmp 누수 방지(startFleetWebServer 와 동일 규율).
+    child.kill()
+    rmSync(dataDir, { recursive: true, force: true })
+    throw err
+  }
+}

@@ -6,8 +6,10 @@
 # 실패 처리: pull 실패 = 이전 컨테이너 계속 가동(무중단 — recreate 전). up/healthcheck 실패 = compose 가 이미
 #   새(깨진) 이미지로 recreate 한 뒤라 이전 컨테이너가 없다(Codex PR P1) → fail() 이 loud abort + logs, 운영자가
 #   롤백(GHCR_TAG=sha-<이전> 재실행). 자동 롤백은 비목표(계획 §2 · blue-green 미도입).
-# ⚠️ up --wait GREEN 은 서버 .env 의 FLEET_ACCESS_*·FLEET_SECRET_KEY 완비를 전제(resolveBindHost 이중게이트).
-#    access env 누락 타임아웃은 "배포 실패" 가 아니라 config 갭 — README 「런타임 시크릿 전제」 참조.
+# ⚠️ up --wait GREEN 은 FLEET_ACCESS_* 완비만 방증한다(FLEET_HOST=0.0.0.0 → resolveBindHost 이중게이트가 access
+#    env 없으면 throw → crash-loop → 타임아웃). 이 타임아웃은 "배포 실패" 가 아니라 config 갭 — README 참조.
+#    ⚠️ FLEET_SECRET_KEY 는 GREEN 으로 검증되지 않는다 — 미설정/오류여도 강등되어 계속 부팅·정적 200·GREEN 이지만
+#    API 키가 영속되지 않는다(조용한 강등). GREEN 이어도 `docker logs | grep 영속되지 않는다` 로 별도 확인.
 #    롤백 = GHCR_TAG=sha-<이전12> 후 재실행(:latest 를 되돌리는 게 아니라 sha 핀으로 명시 복귀).
 set -euo pipefail
 

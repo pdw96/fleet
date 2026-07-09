@@ -312,10 +312,18 @@ fleet 서비스만·docker.sock 미마운트), (13) 컨테이너 브라우저 �
       승인이 즉시 거부되지 않고 **`FLEET_APPROVAL_TTL_MS`(기본 10분)까지 보류** → 폰 재접속 → 스냅숏 카드
       **재제시**(`listPendingApprovals`) → 폰에서 승인 → PC 런이 이어서 실행 → 만료/취소 시 카드 소멸(withdrawn)
 - [ ] 재접속 복구 — 탭 닫기/토큰 만료 후 재접속 시 nonce 재발급으로 자동 복구·스냅샷 재하이드레이션
+- [ ] **graceful drain(#216 C3) — 배포 컨텍스트**: 진행 중 런이 있는 상태에서 배포 컨테이너 `docker stop` →
+      `docker logs <fleet> 2>&1 | grep '\[fleet\] draining'` 관측 → 진행 런이 상한(`FLEET_DRAIN_TIMEOUT_MS`) 안에서
+      대기/정리 → clean exit(유예 `stop_grace_period` 내). *(로컬: 프로세스급 드레인은 `e2e/drain.web.e2e.ts`
+      Linux 실행이 커버 — 이 라이브는 실 컨테이너 grace 조율까지 종단 확인.)*
 
-_(제공됨: 이미지·compose·터널/Access 설정·자식 격리·결정 기록·로컬 스모크. 위 라이브 항목은 실제
-Cloudflare 계정·구독 로그인·폰이 있어야 하므로 사용자 환경에서 수행한다. 컨테이너 브라우저 런-완주 스모크는
-host 네트워킹+playwright 가 필요해 이 라이브 5종이 실경로를 대체한다 — 사일런트 캡 아님.)_
+> **완료 정의(#216) 종단**: 위 「승인 보류」 + 「graceful drain」 라이브가 통과하면 그 결과를 #216 코멘트로
+> 기록하고 마지막 PR 이 `Closes #216`. (그때까지 C5 PR 은 `Part of #216`.)
+
+_(제공됨: 이미지·compose·터널/Access 설정·자식 격리·결정 기록·로컬 스모크·운영 런북([백업](#runbook-backup)·
+[키 로테이션](#runbook-keyrot)·[드레인 업그레이드](#runbook-upgrade))·로컬 하니스(`e2e/approval-handoff.web.e2e.ts`
+교차컨텍스트 승인 핸드오프·`e2e/drain.web.e2e.ts` 드레인). 위 라이브 항목은 실제 Cloudflare 계정·구독 로그인·폰이
+있어야 하므로 사용자 환경에서 수행한다 — 사일런트 캡 아님.)_
 
 ---
 
@@ -416,3 +424,154 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.ghcr.yml 
 - **무결성** — ttyd 정적 바이너리는 git 에 커밋된 SHA256 으로 TOFU 핀(Dockerfile `TTYD_SHA256_*`) →
   업스트림 릴리스 자산이 사후 변조되면 재빌드가 실패한다. base·cloudflared 는 태그 핀(digest 아님)
   으로 두어 재빌드 시 OS/CLI 보안 패치를 계속 받는다(느린 정적 바이너리인 ttyd 만 해시 고정이 유효).
+
+---
+
+## 운영 런북 (C5 · #216) <a id="runbook"></a>
+
+_(Phase C · #216. 아래 절차의 코드 근거는 커밋 시점 라인이며, 동작이 바뀌면 함께 갱신한다.)_
+
+### fleet-data 백업·복원 <a id="runbook-backup"></a>
+
+**무엇을 백업하나.** 서버가 영속하는 것은 **단일 파일** `<FLEET_DATA_DIR>/fleet/fleet-store.json`(컨테이너
+`/app/fleet-data/fleet/fleet-store.json`)뿐이다. 전체 상태(projects·tasks·rooms·messages·events·sessions·
+eventSeq)를 하나의 JSON 으로 원자적 write(tmp+rename)하며, 파싱 실패 시 `.corrupt` 형제가 생긴다(발견 = 과거
+손상 흔적, 조사 대상). 이 파일은 named volume **`fleet-data`** 에 있고 fleet 서비스에만 마운트된다.
+
+> ⚠️ **백업 파일 전체를 기밀로 취급하라.** store JSON 은 `messages[]`·`events[]`·`tasks[].output` 을 **평문**으로
+> 담는다(대화·산출물). "시크릿은 키뿐이니 tar 는 아무 데나" 는 틀렸다.
+
+**볼륨 실제명은 동적으로 해소한다(하드코딩 금지).** compose 가 프로젝트명을 `name: fleet-webterminal` 로 고정하므로
+실제 named volume 명은 `fleet-webterminal_fleet-data` 다. 하지만 환경 차이에 대비해 항상 조회로 뽑아라 — 틀린
+이름을 쓰면 에러가 아니라 **빈 볼륨이 조용히 새로 생성**되어 위양성 백업/조용한 미복원이 된다:
+
+```bash
+docker volume ls --format '{{.Name}}' | grep fleet-data   # 예: fleet-webterminal_fleet-data
+```
+
+**백업.** helper 컨테이너로 tar(진짜 point-in-time 일관이 필요하면 `docker stop`/드레인 후 실행 — 평상시엔
+원자적 write 라 실행 중 스냅숏도 완전한 파일을 관측한다):
+
+```bash
+VOL=$(docker volume ls --format '{{.Name}}' | grep -m1 fleet-data)
+docker run --rm -v "$VOL":/data:ro -v "$PWD":/backup alpine \
+  tar czf /backup/fleet-data-$(date +%Y%m%d-%H%M%S).tgz -C /data ./fleet/fleet-store.json
+```
+
+**키를 별도로 에스크로하라.** `fleet-store.json` 안의 API 키(`sessions[].encryptedApiKey`)는 `FLEET_SECRET_KEY`
+(AES-256-GCM)로만 복호되며, 그 키는 **env 전용이라 볼륨에 없다.** 볼륨만 백업하고 키를 잃으면 복원 후 전 API
+세션이 조용히 드롭된다(→ [키 로테이션](#runbook-keyrot)). `FLEET_SECRET_KEY` 를 볼륨 백업과 **다른 저장소**에
+보관하라. ⚠️ 범위: 이 키는 kind:'api' 세션에만 쓰인다 — **구독 CLI(ttyd)만 쓰는 배포는 API 세션이 없어 키
+에스크로가 무의미**하고 볼륨 백업만으로 충분하다.
+
+**복원(권한 보존이 핵심).** tar 를 풀고 **트리 전체**를 uid 1000(node) 소유로 되돌린다:
+
+```bash
+docker run --rm -v "$VOL":/data -v "$PWD":/backup alpine sh -c \
+  'tar xzf /backup/fleet-data-<타임스탬프>.tgz -C /data && chown -R 1000:1000 /data'
+```
+
+소유권이 틀리면 두 가지로 표면화된다(errno 를 헛짚지 말 것):
+
+- **mount root(`/app/fleet-data`)가 root 소유** → 부팅 시 서버가 `chmodSync(0700)` 를 시도하다 **EPERM →
+  bootServer reject → 컨테이너 crash-loop(loud)**. `docker logs` 에서 즉시 보인다(사일런트 손상보다 안전).
+- **하위 `fleet/`·`fleet-store.json` 만 root 소유** → 부팅은 통과하나 store write 가 실패해 **영속 불능(조용)**.
+
+`docker stop` 없이 원자적 스냅숏을 떴다면 `.tmp` 형제는 무시하고 로드 대상은 오직 `fleet-store.json` 임을 유의.
+
+**복원/백업 검증(권위 = 라이브 세션 목록).** 서버 부팅 로그에 정상 "key loaded" 표시는 **없다**(성공은 무음).
+따라서 로그 부재만으로 정상을 단정하지 말고, **오케스트레이션 UI 의 라이브 세션 목록이 기대대로 비어있지 않은지**로
+확인하라. 보조로 `docker logs <fleet> 2>&1 | grep 영속되지 않는다`(= FLEET_SECRET_KEY 미설정 신호)가 비어야 한다.
+⚠️ 단 `복호화 실패` 는 과거 로테이션으로 남은 고아 암호문(→ [키 로테이션](#runbook-keyrot))이 store 에 있으면
+정상 복원본에서도 계속 나오므로 완료기준으로 쓰지 말라 — 권위는 라이브 세션 목록이다.
+
+**주의사항.**
+
+- **pending 승인은 복원되지 않는다(by design).** 승인 보류는 서버 메모리에만 있어 재시작 시 0 으로 시작한다 —
+  이는 데이터 손실이 아니다.
+- **서버↔데스크톱 비호환.** 서버는 `ev1:`(AES-GCM env-key), 데스크톱 Electron 은 `v1:`(OS safeStorage)로 암호화
+  하므로 서로의 store 를 복원하면 API 키 복호가 실패한다. 서버 백업은 서버에만 복원하라.
+- `cli-auth` 볼륨(`/home/node` 의 구독 CLI 로그인)은 재로그인으로 복구 가능하므로 백업은 선택이다(핵심은 fleet-data).
+
+### FLEET_SECRET_KEY 키 로테이션 <a id="runbook-keyrot"></a>
+
+> ⚠️ **hard truth — 무중단 로테이션은 불가능하고, 잘못하면 API 세션이 조용히 전멸한다.** 아래를 정확히 따르라.
+
+**동작 계약(코드 근거).**
+
+- **로테이션 = 기존 API 세션 전량 복호 불가 → 조용히 드롭.** 키를 바꾸면 부팅 시 기존 암호문의 GCM 인증이 실패하고,
+  서버는 이를 catch 하여 경고만 남기고(`console.warn('… 복호화 실패(키회전/손상) …')`) 해당 세션을 건너뛴다.
+  **크래시하지 않고, UI/헬스체크에도 안 뜨며, 평문으로 폴백하지 않는다.**
+- **재암호화 경로가 없다.** 자동 마이그레이션이 없으므로 로테이션 후 **모든 API 키를 수동 재등록**해야 한다.
+  ⚠️ **재등록해도 구 암호문은 덮이지 않는다** — 오케스트레이션 UI(세션 추가)는 등록 때마다 새 세션 id
+  (`<provider>-<시각>`)를 발급하고 사용자가 id 를 지정할 수 없어, upsert 키(`api:<id>`)가 매번 달라 구 엔트리를
+  못 덮는다. 구 암호문은 **고아**로 남아 부팅마다 복호 실패로 조용히 skip 될 뿐 자동 삭제되지 않는다(→ 아래 절차 7).
+- **`ev1:` 은 포맷 버전이지 키 버전이 아니다** — 암호문에 키 식별자가 없어 **듀얼키(구/신 동시 인정) 창이 원천
+  불가**하다.
+- **CLI 세션은 영향 없다**(구독 CLI 는 저장 비밀값이 없다). 로테이션 영향 범위 = API 키 provider 한정.
+- **키 포맷.** 64자 hex **또는** 32바이트 base64. 공백 영향은 **포맷별로 다르다**: hex 는 개행/공백이 붙으면 파싱
+  실패(→ 미가용 강등), base64 는 디코더가 주변 공백을 관용해 유효할 수 있다. 혼동 방지를 위해 **두 포맷 모두
+  공백 없이** 설정하라.
+
+**절차.**
+
+```bash
+# 1) 백업 먼저(위 [백업] 절차 — 되돌릴 안전망)
+# 2) 새 키 생성(공백 없이 .env 의 FLEET_SECRET_KEY 에 붙여넣기)
+openssl rand -hex 32
+# 3) .env 교체 → 재배포(아래 [드레인-인지 업그레이드])
+# 4) 드롭된 세션 확인
+docker logs <fleet> 2>&1 | grep -E '복호화 실패|API 세션 복원 skip'
+# 5) 각 API 키를 오케스트레이션 UI 에서 재등록(새 세션으로 추가된다 — UI 가 매번 새 id 를 발급하므로 구
+#    암호문은 덮이지 않고 고아로 남는다).
+# 6) 검증: 라이브 세션 목록이 기대대로 채워졌는지 확인(권위=유일 완료기준). ⚠️ 4)의 '복호화 실패' grep 은
+#    고아 때문에 이후 재기동에서도 계속 나오는 게 정상 — grep 공백을 완료기준으로 쓰지 말 것.
+# 7) (선택) 고아 암호문 정리: 무해하나 누적된다. fleet-store.json 의 구 API 세션 sessions[] 엔트리를 수동 삭제
+#    (백업 후). UI 에는 비활성 persisted 세션 삭제 어포던스가 없다.
+```
+
+**triage(로그로 원인 구분).** 두 skip 메시지가 다르다 — `암호화 미가용` = 키가 아예 미설정/파싱 실패(예: 공백
+깨진 hex), `복호화 실패(키회전/손상)` = 키는 있으나 틀림(진짜 로테이션). 둘 다 `API 세션 복원 skip` 을 포함한다.
+
+**부수 시크릿.** `TUNNEL_TOKEN`·GHCR PAT 로테이션은 Cloudflare/GitHub 콘솔 절차다(이 문서 범위 밖) — PAT 는 만료를
+짧게 두고 주기 교체(위 [GHCR CD](#ghcr-cd) 참조).
+
+### 드레인-인지 업그레이드·롤백 <a id="runbook-upgrade"></a>
+
+**종료 시퀀스(#216 C3).** `docker stop`/재배포의 SIGTERM 을 받으면 서버는 `draining` 을 켜(신규 런 거부) →
+클라에 통지 → **진행 중 런을 상한(`FLEET_DRAIN_TIMEOUT_MS`, 기본 25s)까지 완료 대기** → force close(잔여 런
+abort·pending 승인 rejectAll). 재배포 로그로 확인:
+
+```bash
+docker logs <fleet> 2>&1 | grep '\[fleet\] draining'
+```
+
+**⚠️ grace 조율 불변식(코드가 강제하지 않음).** `FLEET_STOP_GRACE ≥ FLEET_DRAIN_TIMEOUT_MS/1000 + 3` 을
+운영자가 유지해야 한다. Docker 는 `stop_grace_period` 만료 시 SIGKILL 로 드레인을 절단하므로, drain 상한을 올리면
+`FLEET_STOP_GRACE` 도 함께 올려야 실제로 honor 된다(안 그러면 상한만 올리고 보호받는다고 착각). smoke canary 는
+`stop_grace_period` **존재**만 확인하지 산술은 검증하지 않는다. ⚠️ 이 상향은 **다음 종료부터** 유효하다 — 이번
+재배포로 정지되는 구 컨테이너는 생성 시점 grace 로 stop 된다.
+
+**⚠️ pending 승인 중 재배포는 지양.** 드레인은 런만 대기하고 pending 승인은 close 의 rejectAll 로 정리되므로,
+승인 수명이 TTL(기본 10분)에서 drain 상한으로 붕괴한다 — 런에 묶인 승인은 상한(~25s)까지 대기 후, **활성 런 없이
+떠 있던 독립 승인은 거의 즉시(~0s)** reject 된다. 승인 게이트 근처 진행 작업은 revert 될 수 있다(완주 보장 없음).
+
+**롤백은 NOT blue-green.** `up -d --wait` 는 구 컨테이너를 먼저 stop-remove 하고 신 컨테이너를 헬스 게이트하므로,
+**헬스 실패 시 구 컨테이너는 이미 사라진 상태**다(자동 복귀 없음). 즉시 이전 immutable 태그로 롤백:
+
+```bash
+export GHCR_TAG=sha-<이전12hex>   # latest 를 되돌리지 말고 immutable sha 로 명시 핀
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.ghcr.yml --profile tunnel pull
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.ghcr.yml --profile tunnel up -d --wait
+# git 로 compose/override 를 동기화했다면 그 ff 도 이전 커밋으로 되돌린다(이미지↔compose 세트 정합).
+```
+
+**⚠️ 시크릿 누락은 두 갈래(혼동 금지).** `up --wait` 는 신 컨테이너 healthy 를 요구하나 healthcheck 는 정적 200
+확인일 뿐이다:
+
+- **`FLEET_ACCESS_*` 부분/전무 + `FLEET_HOST=0.0.0.0`(compose 기본)** → 부팅 거부 → restart crash-loop → `up
+  --wait` **300s 타임아웃(loud)**. "배포 실패" 처럼 보이지만 실은 config 갭 — `docker logs` 확인.
+- **`FLEET_SECRET_KEY` 미설정/형식오류** → **크래시하지 않는다.** 강등되어 계속 부팅하고 정적 200 이라 `up --wait`
+  **GREEN(배포 "성공")** 이지만 API 키가 영속되지 않는다(**조용한 강등** — 재기동 시 전 API 세션 드롭). `up --wait`
+  GREEN 은 `FLEET_ACCESS_*` 완비만 방증하지 `FLEET_SECRET_KEY` 는 검증하지 않으므로, GREEN 이어도
+  `docker logs <fleet> 2>&1 | grep 영속되지 않는다` 로 별도 확인하라.
