@@ -229,6 +229,8 @@ export default tseslint.config(
       '.dogfood/**',
       // 라이브 하니스 기본 워크스페이스(gitignore·사용자 프로젝트/생성물) — CI 엔 없고 로컬 verify 만
       // 깨뜨리는 로컬↔CI 비대칭이라 lint 대상에서 제외(#221 서 실측).
+      // 계약: 이 경로에 git 추적 파일을 두지 말 것 — 두게 되면 blanket ignore 라 무신호 lint 사각이
+      // 되므로 이 항목을 재검토한다.
       'deploy/workspace/**',
       '*.config.*',
       '*.config.mjs',

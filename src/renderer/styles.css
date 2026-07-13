@@ -1203,8 +1203,13 @@ code.id {
     font-size: 14px;
   }
   .chip:not(.modal-card *),
-  .field-label,
   .eyebrow:not(.modal-card *) {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+  }
+  /* :not(복합) 미지원 파서는 셀렉터 리스트 전체를 드롭한다 — 무관한 .field-label 이 동반 소실되지
+     않게 별도 규칙으로 분리(자체 적대 리뷰 F3). */
+  .field-label {
     font-size: 11px;
     letter-spacing: 0.1em;
   }
@@ -1227,6 +1232,9 @@ code.id {
     gap: 6px;
     font-size: 10px;
     letter-spacing: 0.06em;
+    /* topbar 랩 시 .spacer 의 auto 마진은 같은 줄에서만 유효 — 둘째 줄로 랩된 카운터가 좌측 고아가
+       되지 않게 자체 우측 정렬(자체 적대 리뷰 F1). 같은 줄일 땐 spacer 와 중복이라 무해. */
+    margin-left: auto;
   }
   .main {
     padding: 14px;
@@ -1289,5 +1297,8 @@ code.id {
   .wizard label {
     display: block;
     margin: 8px 0;
+    /* stateful 체크박스 라벨 등 비버튼 탭 표면도 44px 계약에 포함(자체 적대 리뷰 F2 — 라벨 전체가
+       클릭 표면이라 높이 확보만으로 충분). */
+    min-height: 44px;
   }
 }
