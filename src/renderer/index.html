@@ -2,7 +2,13 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: 노치/홈바 기기서 safe-area env() 활성(#221 §6 — CSS 는 additive 패턴만).
+         interactive-widget=resizes-content: 소프트 키보드가 layout viewport 를 줄여 입력창 가시
+         (Chrome 108+/FF 132+ — iOS 는 미지원·무시라 무해, §4 알려진 한계). -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"

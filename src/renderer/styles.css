@@ -157,6 +157,7 @@ body::after {
   position: relative;
   z-index: 1;
   height: 100vh;
+  height: 100dvh; /* 모바일 주소창 수축 대응 — 데스크톱은 dvh≡vh(no-op), 미지원 파서는 위 vh 폴백(#221 §6) */
   display: flex;
   flex-direction: column;
 }
@@ -165,7 +166,9 @@ body::after {
   display: flex;
   align-items: center;
   gap: 28px;
-  padding: 16px 26px;
+  /* safe-area 는 additive(max)만 — env 미지원/inset 0(데스크톱)이면 기존값 유지(치환 금지·#221 §6) */
+  padding: max(16px, env(safe-area-inset-top)) max(26px, env(safe-area-inset-right)) 16px
+    max(26px, env(safe-area-inset-left));
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent);
   animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
@@ -285,7 +288,9 @@ body::after {
 }
 
 .footer {
-  padding: 9px 26px;
+  /* safe-area additive — 홈 인디케이터(하단)·노치 좌우 대응, 데스크톱(env=0)은 기존값(#221 §6) */
+  padding: 9px max(26px, env(safe-area-inset-right)) max(9px, env(safe-area-inset-bottom))
+    max(26px, env(safe-area-inset-left));
   border-top: 1px solid var(--line);
   font-size: 10.5px;
   letter-spacing: 0.08em;
@@ -629,6 +634,7 @@ code.id {
   grid-template-columns: 232px 1fr;
   gap: 18px;
   height: calc(100vh - 160px);
+  height: calc(100dvh - 160px); /* dvh 병기 — 데스크톱 no-op·미지원 파서는 위 vh 폴백(#221 §6) */
   min-height: 460px;
 }
 .rooms {
@@ -934,6 +940,7 @@ code.id {
 }
 .summary {
   white-space: pre-wrap;
+  overflow-wrap: break-word; /* LLM 요약의 긴 경로/URL 이 패널을 뚫는 전 뷰포트 결함 수정(#221 §6) */
   font-size: 13px;
   line-height: 1.65;
   color: var(--text);
@@ -1124,6 +1131,9 @@ code.id {
     flex-wrap: wrap; /* nowrap 이면 flex-basis:100% 미줄바꿈 → 카운트다운 윗줄·버튼 아랫줄 풀폭 위해 필수(적대리뷰 F4) */
     gap: 12px;
     padding-top: 12px;
+    /* viewport-fit=cover 도입(#221)으로 시트가 홈 인디케이터 영역까지 내려간다 — 버튼을 그 위로.
+       additive(max·env=0 이면 0=현행 기하 불변 — approval-hold e2e 절대값 단언 보존). */
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
     background: var(--surface); /* sticky 시 스크롤되는 본문이 버튼 뒤로 비치지 않게 */
   }
   .modal-actions .btn {
@@ -1155,7 +1165,8 @@ code.id {
 .update-banner {
   position: fixed;
   left: 50%;
-  bottom: 48px;
+  /* additive safe-area — viewport-fit=cover 시 홈 인디케이터 위로, 데스크톱(env=0)은 48px 그대로(#221 §6) */
+  bottom: calc(48px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   display: flex;
   gap: 12px;
