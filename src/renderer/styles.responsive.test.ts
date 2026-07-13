@@ -161,6 +161,15 @@ describe('#221 PR2 — 패널 1열 스택·칩 스트립·폼 핀(셀렉터 결�
     expect(shell).toMatch(/\.rooms\s*\{[^}]*overflow-x: *auto/)
   })
 
+  it('.chat 높이의 safe-area 차감식 — env()=0 인 Playwright 가 못 보는 실기기 보정 핀(CodeRabbit)', () => {
+    const chatInShell = ruleBlocks(shell, '.chat')
+    const heightDecl = chatInShell.find((b) => b.includes('height: calc('))
+    expect(heightDecl, '.chat 높이 calc 재선언 존재').toBeDefined()
+    // 상·하단 additive 초과분을 각각 max(0px, env - 기본값) 으로 차감 — env=0 이면 현행 기하 불변.
+    expect(heightDecl).toMatch(/max\(0px,\s*env\(safe-area-inset-top\) - 10px\)/)
+    expect(heightDecl).toMatch(/max\(0px,\s*env\(safe-area-inset-bottom\) - 7px\)/)
+  })
+
   it('G11 .grid-2 폰 1열(elicitation·manual 역할 배정)', () => {
     expect(shell).toMatch(/\.grid-2\s*\{[^}]*grid-template-columns: *1fr/)
   })
