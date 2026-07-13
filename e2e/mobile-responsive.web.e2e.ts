@@ -151,8 +151,8 @@ test.describe('#221 모바일 반응형(PR1 셸) — 390×844', () => {
       expect(box, `내비 [${tab}]`).not.toBeNull()
       if (box) expect(box.height, `내비 [${tab}] 높이`).toBeGreaterThanOrEqual(44)
     }
-    // G4: 위저드 bare 버튼(클래스 없는 button = AddAiWizard 표면 — 스타일 훅 부재의 실측 표본).
-    const bareButtons = page.locator('.main button:not([class])')
+    // G4: 위저드 bare 버튼(.wizard 래퍼 스코프 — 다른 표면의 무클래스 버튼 혼입 차단·CodeRabbit).
+    const bareButtons = page.locator('.wizard button:not([class])')
     const bareCount = await bareButtons.count()
     expect(bareCount, '위저드 bare 버튼 표본 존재').toBeGreaterThan(0)
     // 실측 실행 횟수 단언 — invisible/box 부재 무음 skip 으로 루프가 공허해지는 미래 변경을 적발
@@ -174,18 +174,24 @@ test.describe('#221 모바일 반응형(PR1 셸) — 390×844', () => {
     if (btnBox) expect(btnBox.height, '.btn 높이').toBeGreaterThanOrEqual(44)
   })
 
-  test('G5 폼 필드 computed 16px(iOS 자동 줌 방지) — #mcp-servers·.field 표본', async ({
+  test('G5 폼 필드 computed 16px(iOS 자동 줌 방지) — .field + 위저드 bare input 실경로', async ({
     page,
   }) => {
     await openApp(page, server.url, 390, 844)
-    const sizes = await page.evaluate(() => {
-      const targets = [
-        document.querySelector('#mcp-servers'),
-        document.querySelector('.main .field'),
-      ]
-      return targets.map((t) => (t ? getComputedStyle(t).fontSize : 'missing'))
+    // 표본 1: .field(#mcp-servers — 세션 탭 유일 .field 라 두 셀렉터는 같은 노드였다: 자체 적대 리뷰 P2-1).
+    const fieldSize = await page.evaluate(() => {
+      const t = document.querySelector('#mcp-servers')
+      return t ? getComputedStyle(t).fontSize : 'missing'
     })
-    for (const s of sizes) expect(s, '폼 필드 computed font-size').toBe('16px')
+    expect(fieldSize, '.field(#mcp-servers) computed font-size').toBe('16px')
+    // 표본 2: 위저드 bare input — 요소 셀렉터(input) 규칙의 존재 이유. 초기 스텝엔 input 이 없어
+    // 실경로(프로바이더→API 키)로 진입해 측정한다(요소 규칙 축소 회귀를 e2e 층에서도 적발).
+    await page.locator('.wizard button:not([class])').first().click() // 프로바이더 선택
+    await page.getByRole('button', { name: 'API 키', exact: true }).click()
+    const bareInput = page.locator('.wizard input').first()
+    await bareInput.waitFor()
+    const bareSize = await bareInput.evaluate((el) => getComputedStyle(el).fontSize)
+    expect(bareSize, '위저드 bare input computed font-size').toBe('16px')
   })
 })
 

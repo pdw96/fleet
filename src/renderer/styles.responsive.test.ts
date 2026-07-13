@@ -62,15 +62,31 @@ describe('#221 §6 열거 예외 — 전 뷰포트 diff 의 데스크톱 no-op �
     expect(css).toMatch(/height: calc\(100vh - 160px\);\s*\n\s*height: calc\(100dvh - 160px\);/)
   })
 
-  it('G6② safe-area 는 additive 패턴만 — max()/calc() 밖 치환 사용 0건·출현 ≥4(vacuous 방지)', () => {
-    // 선언(;) 단위 검사 — 라인 단위는 다값 shorthand 내 env 단독을 놓친다(자체 적대 리뷰 P3-4).
+  it('G6② safe-area 는 additive 패턴만 — 모든 env() 출현 각각이 max()/calc() 내부·출현 ≥4', () => {
+    // env 출현 **각각**의 부모 함수를 괄호 스코프로 판정 — 선언/라인 정규식은 다중 env 중 하나만
+    // additive 여도 통과한다(자체 적대 리뷰 P3-4 + CodeRabbit).
+    const insideAdditive = (decl: string, envIdx: number): boolean => {
+      let depth = 0
+      for (let j = envIdx - 1; j >= 0; j--) {
+        const ch = decl[j]
+        if (ch === ')') depth++
+        else if (ch === '(') {
+          if (depth === 0) return /(max|calc)$/.test(decl.slice(Math.max(0, j - 4), j))
+          depth--
+        }
+      }
+      return false
+    }
     const decls = css.split(';').filter((d) => d.includes('env(safe-area-inset'))
     expect(decls.length).toBeGreaterThanOrEqual(4)
     for (const d of decls) {
-      // 치환(padding: env(...))이 아니라 max(기존값, env)/calc(기존값 + env) 안에서만 사용
-      expect(d).toMatch(/(max|calc)\((?:[^()]|\([^()]*\))*env\(safe-area-inset/)
-      // env 가 선언 값의 첫 토큰(단독 치환)이 아니어야 한다
-      expect(d).not.toMatch(/: *env\(safe-area-inset/)
+      for (
+        let i = d.indexOf('env(safe-area-inset');
+        i !== -1;
+        i = d.indexOf('env(safe-area-inset', i + 1)
+      ) {
+        expect(insideAdditive(d, i), `additive 밖 env 사용: ${d.trim()}`).toBe(true)
+      }
     }
   })
 
@@ -123,8 +139,12 @@ describe('#221 ≤640px 셸 블록 — 폰 분기 규칙 존재 핀(미감 수�
     expect(bannerInShell.some((b) => b.includes('max-width'))).toBe(true)
   })
 
-  it('.wizard 스타일 훅 — 위저드 bare 컨트롤의 폰 스타일 존재(스펙 §5 래퍼 1곳)', () => {
-    expect(shell).toContain('.wizard')
+  it('.wizard 스타일 훅 — 규칙별 결합 핀(폭 100%·버튼/라벨 44px — 대체 충족 차단)', () => {
+    expect(shell).toMatch(
+      /\.wizard input:not\(\[type='checkbox'\]\),\s*\.wizard select\s*\{[^}]*width: *100%/,
+    )
+    expect(shell).toMatch(/\.wizard button\s*\{[^}]*min-height: *44px/)
+    expect(shell).toMatch(/\.wizard label\s*\{[^}]*min-height: *44px/)
   })
 })
 

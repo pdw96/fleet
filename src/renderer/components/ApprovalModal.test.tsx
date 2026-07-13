@@ -696,9 +696,10 @@ describe('반응형 CSS(회귀 가드)', () => {
     expect(c2Block).not.toBe('') // 폰 바텀시트 분기(C2 블록 실존)
     expect(css).toContain('.modal-nav {') // 내비 컨테이너(기본 규칙 — 블록 밖·셀렉터 여는 중괄호까지 핀)
     expect(css).toContain('.modal-chips {') // 미니칩 스트립(기본 규칙 — 동일)
-    expect(c2Block).toMatch(/flex-wrap: *wrap/) // 모바일 액션 줄바꿈(카운트다운↑·버튼 풀폭·적대리뷰 F4)
-    expect(c2Block).toMatch(/position: *sticky/) // 액션 바닥 고정(오버플로 시 스크롤아웃 방지·적대리뷰 F5/F6)
-    expect(c2Block).toMatch(/max-height: *90dvh/) // content-driven·dvh(라이브 폰 오프스크린 버그 회귀 가드)
+    // 규칙-정밀 스코프(CodeRabbit) — 블록 내 무관 규칙이 계약을 대체 충족하지 못하게 셀렉터와 결합.
+    expect(c2Block).toMatch(/\.modal-actions\s*\{[^}]*flex-wrap: *wrap/) // 액션 줄바꿈(적대리뷰 F4)
+    expect(c2Block).toMatch(/\.modal-actions\s*\{[^}]*position: *sticky/) // 바닥 고정(적대리뷰 F5/F6)
+    expect(c2Block).toMatch(/\.modal-card\s*\{[^}]*max-height: *90dvh/) // content-driven·dvh(오프스크린 회귀 가드)
     expect(css).toMatch(/@keyframes sheetUp/) // 시트 슬라이드(reduced-motion 서 무애니 — 블록 밖 무해 keyframes)
   })
 })
