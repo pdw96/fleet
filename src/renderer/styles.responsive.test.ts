@@ -151,8 +151,10 @@ describe('#221 ≤640px 셸 블록 — 폰 분기 규칙 존재 핀(미감 수�
 })
 
 describe('#221 PR2 — 패널 1열 스택·칩 스트립·폼 핀(셀렉터 결합)', () => {
-  it('G9 .chat/.project-layout 폰 1열(232px 사이드바 해제)', () => {
+  it('G9 .chat/.project-layout 폰 1열(232px 사이드바 해제) + rows auto 1fr(본문 높이 계약)', () => {
     expect(shell).toMatch(/\.chat,\s*\.project-layout\s*\{[^}]*grid-template-columns: *1fr/)
+    // load-bearing 선언(암묵 auto 행 = 본문 높이 붕괴)인데 무핀이던 갭(자체 적대 리뷰 P2-1).
+    expect(shell).toMatch(/\.chat,\s*\.project-layout\s*\{[^}]*grid-template-rows: *auto 1fr/)
   })
 
   it('.rooms 가로 칩 스트립(overflow-x auto — C2 .modal-chips 선례)', () => {

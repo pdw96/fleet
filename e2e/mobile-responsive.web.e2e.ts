@@ -151,6 +151,10 @@ test.describe('#221 모바일 반응형(PR1 셸) — 390×844', () => {
     const rooms = page.locator('.chat .rooms')
     const overflow = await rooms.evaluate((el) => el.scrollWidth - el.clientWidth)
     expect(overflow, '.rooms 가로 오버플로 실존(스트립 스크롤 표면)').toBeGreaterThan(0)
+    // 프로그램적 scrollLeft 는 overflow:hidden 에서도 동작 — 사용자 스크롤 가능성은 computed 로
+    // 이중화(자체 적대 리뷰 P3-2: auto→hidden 회귀는 행동 단언만으론 GREEN).
+    const overflowX = await rooms.evaluate((el) => getComputedStyle(el).overflowX)
+    expect(overflowX, '.rooms overflow-x(사용자 스크롤 가능성)').toBe('auto')
     // 실 스크롤 → 마지막 칩이 뷰포트/스트립 안에 들어와 클릭 가능해진다.
     await rooms.evaluate((el) => {
       el.scrollLeft = el.scrollWidth
@@ -335,8 +339,27 @@ test.describe('#221 PR2 — complete 러너(프로젝트 스트립·요약 오�
       await page.getByPlaceholder(/사용자 인증/).fill(`모바일-스트립-프로젝트-${i} 목표`)
       await page.getByRole('button', { name: '오케스트레이션 실행' }).click()
       await expect(page.getByText('최종 요약 / 누락 점검')).toBeVisible({ timeout: 45_000 })
-      await expect(page.getByRole('button', { name: '오케스트레이션 실행' })).toBeEnabled()
+      // stale 요약 조기 매치여도 여기가 완주까지 재시도(런 중 라벨='실행 중…' — 자체 리뷰 P3-3):
+      // 대기 예산을 명시해 기본 10s 로 전가되지 않게 한다.
+      await expect(page.getByRole('button', { name: '오케스트레이션 실행' })).toBeEnabled({
+        timeout: 45_000,
+      })
     }
+    // G8(e2e 층): 요약 표시 상태에서 긴 무공백 토큰을 주입해도 .main 가로 스크롤 0
+    // (완주 러너 요약이 짧아 주입으로 대체 — 계획 §1 G8 주석 의무. .summary overflow-wrap 이 방어).
+    // **칩 클릭보다 먼저** — 다른 칩 선택은 setSummary('') 로 .summary 를 unmount 시켜 주입이
+    // 무음 skip 되는 결정론적 vacuous 였다(자체 적대 리뷰 P1-1). 부재는 throw = 게이트 파손 신호.
+    await page.evaluate(() => {
+      const s = document.querySelector('.summary')
+      if (!s) throw new Error('.summary 부재 — G8 주입 게이트 파손(요약 미표시 상태)')
+      s.textContent += ' /very/long/unbroken/path/' + 'x'.repeat(600)
+    })
+    const o = await page.evaluate(() => {
+      const main = document.querySelector('.main')
+      if (!main) throw new Error('.main 부재')
+      return main.scrollWidth - main.clientWidth
+    })
+    expect(o, '긴 토큰 주입 후 .main 가로 오버플로').toBeLessThanOrEqual(0)
     // '새 프로젝트' 선택 버튼도 .room-btn — 항목 3 + 선택 버튼 1 = 4(스트립 오버플로에도 기여).
     await expect(page.locator('.project-layout .room-btn')).toHaveCount(4)
     const rooms = page.locator('.project-layout .rooms')
@@ -347,21 +370,11 @@ test.describe('#221 PR2 — complete 러너(프로젝트 스트립·요약 오�
     })
     const last = page.locator('.project-layout .room-btn').last()
     // 런 완주 후 .main 이 요약까지 세로 스크롤된 상태 — 스트립까지 스크롤 복귀가 정상 도달 경로.
+    // scrollIntoViewIfNeeded 는 양축 스크롤이라 **가로 조작성 증명 권위는 G10(채팅)** — 여기는
+    // 도달성(overflow 실존 + 클릭 가능)만 계약(자체 적대 리뷰 P3-1).
     await last.scrollIntoViewIfNeeded()
     expectInViewport(await last.boundingBox(), 390, 844, '마지막 프로젝트 칩')
     await last.click()
     await expect(last).toHaveAttribute('data-active', 'true')
-    // G8(e2e 층): 요약 표시 상태에서 긴 무공백 토큰을 주입해도 .main 가로 스크롤 0
-    // (완주 러너 요약이 짧아 주입으로 대체 — 계획 §1 G8 주석 의무. .summary overflow-wrap 이 방어).
-    await page.evaluate(() => {
-      const s = document.querySelector('.summary')
-      if (s) s.textContent += ' /very/long/unbroken/path/' + 'x'.repeat(600)
-    })
-    const o = await page.evaluate(() => {
-      const main = document.querySelector('.main')
-      if (!main) throw new Error('.main 부재')
-      return main.scrollWidth - main.clientWidth
-    })
-    expect(o, '긴 토큰 주입 후 .main 가로 오버플로').toBeLessThanOrEqual(0)
   })
 })

@@ -1315,6 +1315,15 @@ code.id {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr; /* 스트립(auto) + 본문(잔여) — 암묵 auto 행은 본문 높이를 붕괴시킨다 */
   }
+  .chat {
+    /* base 상수 160px 은 데스크톱 크롬 기준 — 폰 safe-area additive(topbar top·footer bottom)가
+       붙으면 크롬이 커져 composer 가 폴드 아래로 밀린다(자체 적대 리뷰 P2-1 — Playwright 는 env()=0
+       이라 못 잡는 실기기 한정 표면). additive 로 늘어난 만큼만 정확히 차감: env=0 이면 현행과 동일. */
+    height: calc(
+      100dvh - 160px - max(0px, env(safe-area-inset-top) - 10px) -
+        max(0px, env(safe-area-inset-bottom) - 7px)
+    );
+  }
   .rooms {
     display: flex;
     align-items: center;
@@ -1325,8 +1334,9 @@ code.id {
     flex: 0 0 auto; /* 비버튼 자식(eyebrow·방 생성 .row)도 스트립 안 공존(R4 — 계약 우선 초안 적발) */
   }
   .rooms .field {
-    min-width: 140px; /* 방 생성 입력이 스트립 안에서 입력 가능한 최소 폭 */
-    width: auto;
+    /* width:auto 는 input 고유폭(size 기본·16px 폰트서 ~190px)이라 스트립을 과점유 — 명시 고정
+       (자체 적대 리뷰 P3-2). */
+    width: 140px;
   }
   .room-btn {
     width: auto; /* 기본 width:100%(세로 목록) 해제 — 칩 폭은 내용 기반 */
@@ -1338,6 +1348,9 @@ code.id {
     grid-template-columns: 1fr; /* elicitation·manual 역할 배정 2열 → 1열 */
   }
   .line-item {
-    flex-wrap: wrap; /* 칩·배지·삭제 버튼 겹침 방지(인라인 style 승격 — JSX 무변) */
+    /* 칩·배지·삭제 버튼 겹침 방지. 주의: SessionsPanel 세션 목록의 인라인 flexWrap(전 뷰포트)이
+       존치돼 지배 규칙이 갈라져 있다(자체 적대 리뷰 P3-3) — 폰 wrap 정책을 바꿀 땐 그 인라인을
+       함께 정리할 것(JSX 무변 계약이라 이번 PR 은 CSS 만). */
+    flex-wrap: wrap;
   }
 }
