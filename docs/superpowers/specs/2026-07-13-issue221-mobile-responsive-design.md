@@ -1,7 +1,7 @@
 # #221 웹모드 렌더러 전체 모바일 반응형 — 설계 스펙
 
 - **이슈**: #221 (tier:next · area:renderer · enhancement)
-- **날짜**: 2026-07-13 (r2 — 로컬 fleet-refuter 4렌즈 사전검증 반영: P1×1·P2×8·P3 다수 흡수)
+- **날짜**: 2026-07-13 (r3 — r2: 로컬 fleet-refuter 4렌즈 P1×1·P2×8 반영 / r3: Codex 체크포인트 1R 3건 반영 — 위저드 PR1 이동·`.rooms` e2e 하드 계약·키보드 실측 필수화)
 - **선행**: #216 C2(승인 카드 바텀시트 — PR #220)가 유일한 폰 분기. 본 작업은 그 패턴을 앱 전체로 확장.
 - **전략 결정(사용자 승인)**: CSS-only 미디어쿼리 · 2-PR 분할 · 채팅 탭 포함.
 
@@ -104,6 +104,10 @@ v3(#193) 목표 "어디서든 브라우저로"는 승인 카드만이 아니라 
   - `.field`·`input`·`select`·`textarea` font-size 16px(iOS 자동 줌 방지 — computed 기준).
   - `.row { flex-wrap: wrap }` + 인라인 고정폭 필드에 `max-width: 100%`(인라인 width를 이기는 별개 속성).
   - `.update-banner` 폭 제약(`max-width: calc(100vw - 24px)` 급) — ConnectionBanner 공유 표면.
+- **AddAiWizard 최소 모바일 스타일(PR2→PR1 이동 — Codex 1R)**: `.wizard` 래퍼(§5) + ≤640px에서
+  `.wizard` 하위 bare input/button/label 폭 100%·터치 타깃 44px·간격 정돈. 근거: 세션 탭의 첫
+  인터랙티브 표면이 위저드라, 이를 PR2로 미루면 PR1의 "세션 탭 가로 스크롤 0·터치 타깃" e2e
+  게이트가 위저드 제외 시 false-green·포함 시 즉시 fail — 게이트 정직성을 위해 PR1에 포함.
 - **e2e 하네스(신설)**: `e2e/mobile-responsive.web.e2e.ts`(playwright testDir=`./e2e` — `tests/e2e/` 아님)
   — 뷰포트 390×844·reduced-motion 에뮬·측정 전 `document.fonts.ready` 대기(폰트 스왑 폭 변동 흡수).
   단언: ① 3탭 각각 **`.main.scrollWidth <= .main.clientWidth`**(패널 오버플로는 `.main`이 트랩하므로
@@ -122,16 +126,17 @@ v3(#193) 목표 "어디서든 브라우저로"는 승인 카드만이 아니라 
   `.chat` height → dvh 기반 재계산(키보드 한계는 §4 명시 — Android는 `interactive-widget`으로 대응).
 - **프로젝트 패널**: `.grid-2` → 1열(사용처 = ProjectPanel elicitation·manual 역할 배정 — 전역 규칙로 처리).
   진행 로그(`.log`)·요약(`pre.summary`)의 가로 오버플로 정돈.
-- **세션 패널**: `.line-item` 랩 정돈(칩·배지·삭제 버튼 겹침 방지).
-- **AddAiWizard**: `.wizard` 래퍼(§5 — SessionsPanel 마운트 1곳) 하위 bare input/button/label을
-  ≤640px에서 width 100%·터치 타깃·간격 정돈.
+- **세션 패널**: `.line-item` 랩 정돈(칩·배지·삭제 버튼 겹침 방지). 위저드는 PR1에서 완료(§7 PR1).
 - **CLI/MCP 설정 폼**(SessionsPanel 03/04 섹션): `.field`·textarea 폭 100%·라벨 줄바꿈.
-- **e2e 확장**: PR1의 `.main` 단언을 채팅/프로젝트 탭에 활성화 + 패널별 단언 — 칩 스트립 가로 스크롤
-  동작(시드 룸이 1개라 vacuous — **테스트에서 UI 경로로 방 3개+ 추가 생성 후 단언**)·프로젝트 폼 입력
-  가능·채팅 입력창 뷰포트내 앵커.
+- **e2e 확장**: PR1의 `.main` 단언을 채팅/프로젝트 탭에 활성화 + 패널별 단언 — 프로젝트 폼 입력
+  가능·채팅 입력창 뷰포트내 앵커. **칩 스트립 하드 계약(Codex 1R)**: UI 경로로 방 3개+ 추가 생성 후
+  `.rooms.scrollWidth > .rooms.clientWidth` 단언(오버플로 실존 — 시드 룸 1개의 vacuous 방지) →
+  스트립을 스크롤해 **마지막 룸 버튼이 도달·클릭 가능**함을 단언(담김만이 아니라 조작성 증명).
 - **완료 정의**: verify green + e2e 전량 green + **라이브 폰 실측 = 이슈 완료정의**(실 CF Access
   터널에서 세션 개시·프로젝트 런 모니터·설정이 가로 스크롤 없이 조작 가능 + **키보드 연 상태에서
-  채팅 입력** — C2에서 로컬 e2e가 못 잡은 실레이아웃 버그 선례로 필수 관문).
+  채팅 입력 — 필수·생략 불가**(로컬 Playwright Chromium은 iOS 키보드 동작 미커버) — C2에서 로컬
+  e2e가 못 잡은 실레이아웃 버그 선례로 필수 관문. **실측한 모바일 브라우저/OS 버전을 PR 본문에
+  기록**(Codex 1R)).
 
 ## 8. 검증 계약 (공통)
 
@@ -172,3 +177,4 @@ v3(#193) 목표 "어디서든 브라우저로"는 승인 카드만이 아니라 
 | e2e 검증 격차 | 골격 생존·단언① P1 | `.main` 스크롤박스 단언 교체·경로 `e2e/` 정정·fonts.ready·룸 다수 시드 |
 | 모바일 웹 기술 정합 | 생존(조건부) | 키보드×dvh 한계 명시+`interactive-widget`·C2 바텀시트 safe-area·min-width 44·랜드스케이프 한계 |
 | 스코프·계약 공백 | 생존(조건부) | 스크롤 아키텍처 §2 등재·`pre.summary` word-break·타이포 스케일 포함·ConnectionBanner 등재·`.ask-btn`/`button.chip`·`.grid-2` 귀속 정정 |
+| **Codex 체크포인트 1R** | 차단 없음·정정 3 | 위저드 모바일 스타일 PR2→PR1(세션 탭 게이트 정직성)·`.rooms` 스트립 하드 계약(scrollWidth>clientWidth+마지막 칩 클릭)·키보드 실측 필수화+브라우저 버전 기록 |
