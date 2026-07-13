@@ -1306,4 +1306,38 @@ code.id {
        (Codex PR 1R P2 — .summary 와 동종 결함의 위저드 국소판). */
     overflow-wrap: anywhere;
   }
+
+  /* ── PR2: 패널 1열 스택 + 룸/프로젝트 칩 스트립 ─────────────────────────
+     232px 사이드바 그리드는 390px 에서 본문을 짜부라뜨린다(오버플로 없는 조작 불능 — RED 정직성
+     실측). 사이드바를 위 행의 가로 칩 스트립으로 전환(C2 .modal-chips 선례 — iOS 모멘텀 기본). */
+  .chat,
+  .project-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr; /* 스트립(auto) + 본문(잔여) — 암묵 auto 행은 본문 높이를 붕괴시킨다 */
+  }
+  .rooms {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow-x: auto;
+  }
+  .rooms > * {
+    flex: 0 0 auto; /* 비버튼 자식(eyebrow·방 생성 .row)도 스트립 안 공존(R4 — 계약 우선 초안 적발) */
+  }
+  .rooms .field {
+    min-width: 140px; /* 방 생성 입력이 스트립 안에서 입력 가능한 최소 폭 */
+    width: auto;
+  }
+  .room-btn {
+    width: auto; /* 기본 width:100%(세로 목록) 해제 — 칩 폭은 내용 기반 */
+    max-width: 220px; /* 긴 제목은 기존 ellipsis 로 절단 */
+  }
+
+  /* 프로젝트 폼·세션 패널·로그 정돈 */
+  .grid-2 {
+    grid-template-columns: 1fr; /* elicitation·manual 역할 배정 2열 → 1열 */
+  }
+  .line-item {
+    flex-wrap: wrap; /* 칩·배지·삭제 버튼 겹침 방지(인라인 style 승격 — JSX 무변) */
+  }
 }

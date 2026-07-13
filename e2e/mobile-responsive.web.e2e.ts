@@ -172,6 +172,8 @@ test.describe('#221 모바일 반응형(PR1 셸) — 390×844', () => {
     const goal = page.getByPlaceholder(/사용자 인증/)
     await goal.fill('모바일 폼 입력 계약')
     await expect(goal).toHaveValue('모바일 폼 입력 계약')
+    // 폴드 아래는 세로 스크롤로 도달하는 게 정상 계약 — 스크롤 후 뷰포트내(폭 이탈·오프스크린만 적발).
+    await goal.scrollIntoViewIfNeeded()
     expectInViewport(await goal.boundingBox(), 390, 844, 'goal 입력창')
   })
 
@@ -344,6 +346,8 @@ test.describe('#221 PR2 — complete 러너(프로젝트 스트립·요약 오�
       el.scrollLeft = el.scrollWidth
     })
     const last = page.locator('.project-layout .room-btn').last()
+    // 런 완주 후 .main 이 요약까지 세로 스크롤된 상태 — 스트립까지 스크롤 복귀가 정상 도달 경로.
+    await last.scrollIntoViewIfNeeded()
     expectInViewport(await last.boundingBox(), 390, 844, '마지막 프로젝트 칩')
     await last.click()
     await expect(last).toHaveAttribute('data-active', 'true')
