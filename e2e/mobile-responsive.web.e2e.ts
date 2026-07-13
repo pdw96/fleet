@@ -93,8 +93,8 @@ test.describe('#221 모바일 반응형(PR1 셸) — 390×844', () => {
     ['채팅', '.chat', '.chat-main'],
     ['프로젝트', '.project-layout', '.project-main'],
   ] as const) {
-    test(`G1/G9 ${tab} 탭 폰 1열 스택 + .main 가로 오버플로 0 — PR2 활성화`, async ({ page }) => {
-      test.fail(true, `PR2(#221): ${layoutSel} 232px 그리드 미수정 — 1열 전환 후 활성화`)
+    test(`G1/G9 ${tab} 탭 폰 1열 스택 + .main 가로 오버플로 0`, async ({ page }) => {
+      // PR2(#221): test.fail 해제 — 1열 전환 후 강제 활성화(계획 §3 T1).
       await openApp(page, server.url, 390, 844)
       await switchTab(page, tab)
       const o = await overflowOf(page)
@@ -134,6 +134,45 @@ test.describe('#221 모바일 반응형(PR1 셸) — 390×844', () => {
     await switchTab(page, '프로젝트')
     await expect(page.locator('.project-layout')).toHaveCount(1)
     await expect(page.locator('.project-main')).toHaveCount(1)
+  })
+
+  // G10(Codex 스펙 1R 하드 계약): 시드 방 1개는 스트립이 오버플로하지 않아 vacuous — UI 경로로
+  // 방을 늘려 오버플로 실존을 선단언한 뒤, 실 스크롤로 마지막 칩의 도달·클릭(조작성)을 증명한다.
+  test('G10 채팅 .rooms 칩 스트립 — 방 3개+ 생성→오버플로 실존→마지막 칩 도달·클릭·활성', async ({
+    page,
+  }) => {
+    await openApp(page, server.url, 390, 844)
+    await switchTab(page, '채팅')
+    for (let i = 1; i <= 3; i++) {
+      await page.getByPlaceholder('새 방 이름').fill(`모바일-긴-작업방-이름-${i}`)
+      await page.getByRole('button', { name: '+', exact: true }).click()
+      await expect(page.locator('.room-btn')).toHaveCount(1 + i) // 시드 1 + 생성분
+    }
+    const rooms = page.locator('.chat .rooms')
+    const overflow = await rooms.evaluate((el) => el.scrollWidth - el.clientWidth)
+    expect(overflow, '.rooms 가로 오버플로 실존(스트립 스크롤 표면)').toBeGreaterThan(0)
+    // 실 스크롤 → 마지막 칩이 뷰포트/스트립 안에 들어와 클릭 가능해진다.
+    await rooms.evaluate((el) => {
+      el.scrollLeft = el.scrollWidth
+    })
+    const last = page.locator('.room-btn').last()
+    const box = await last.boundingBox()
+    expectInViewport(box, 390, 844, '마지막 룸 칩')
+    await last.click()
+    await expect(last).toHaveAttribute('data-active', 'true')
+    // G12: 방 선택 상태에서 composer 입력창이 뷰포트 안(엄지 도달).
+    const composer = page.getByPlaceholder('메시지 입력 (개입/지시)')
+    expectInViewport(await composer.boundingBox(), 390, 844, 'composer 입력창')
+  })
+
+  // G11: 프로젝트 폼 조작 가능(.grid-2 1열 전환 후 goal 입력이 실제로 동작).
+  test('G11 프로젝트 goal 입력 가능(폰)', async ({ page }) => {
+    await openApp(page, server.url, 390, 844)
+    await switchTab(page, '프로젝트')
+    const goal = page.getByPlaceholder(/사용자 인증/)
+    await goal.fill('모바일 폼 입력 계약')
+    await expect(goal).toHaveValue('모바일 폼 입력 계약')
+    expectInViewport(await goal.boundingBox(), 390, 844, 'goal 입력창')
   })
 
   test('G3 내비 3탭 뷰포트내 앵커 + G4 터치 타깃 ≥44px(내비·위저드 bare 버튼·.btn 표본)', async ({
@@ -255,6 +294,70 @@ test.describe('#221 데스크톱 무회귀 가드 — 641×900(경계 최소 초
       expect(computed.fieldFont, '.field(#mcp-servers) font-size').toBe('13px')
       expect(computed.bodyFont, 'body font-size').toBe('13px')
       expect(computed.tagVisible, '.brand .tag 가시(데스크톱)').toBe(true)
+      // R1 확장(PR2): 패널 그리드의 232px 사이드바 칼럼이 >640px 에서 유지 — 1열 규칙 유출 즉시 적발.
+      await switchTab(page, '채팅')
+      const chatCols = await page
+        .locator('.chat')
+        .evaluate((el) => getComputedStyle(el).gridTemplateColumns)
+      expect(chatCols, '.chat 데스크톱 232px 칼럼').toContain('232px')
+      await switchTab(page, '프로젝트')
+      const projCols = await page
+        .locator('.project-layout')
+        .evaluate((el) => getComputedStyle(el).gridTemplateColumns)
+      expect(projCols, '.project-layout 데스크톱 232px 칼럼').toContain('232px')
     })
   }
+})
+
+// G10b(Codex 계획 1R — 생성 메커니즘 확정분): 프로젝트 목록 항목은 런 시작으로만 생긴다(채팅의
+// 무비용 방 생성 경로 부재) — `complete` 러너 서버(별도 수명주기·Codex 계획 2R 노트)에서 UI 경로로
+// 런을 순차 완주시켜 3건+ 를 만들고, 프로젝트 탭 스트립에 채팅과 동급 하드 계약을 건다.
+// src/main/e2e.ts 시드·엔진 API 무변경(isE2EActive 가드 불변).
+test.describe('#221 PR2 — complete 러너(프로젝트 스트립·요약 오버플로)', () => {
+  let csrv: RunningWebServer
+
+  test.beforeAll(async () => {
+    csrv = await startFleetWebServer({ FLEET_E2E_RUNNER: 'complete' })
+  })
+  test.afterAll(async () => {
+    await csrv?.stop()
+  })
+
+  test('G10b 프로젝트 .rooms 칩 스트립 — 런 3회 완주→오버플로 실존→마지막 칩 클릭 + G8 요약 긴 토큰', async ({
+    page,
+  }) => {
+    await openApp(page, csrv.url, 390, 844)
+    await switchTab(page, '프로젝트')
+    // 런 3회 순차 완주 — web-orchestration 패턴(각 완주·버튼 재활성 대기 후 다음 런: Codex 계획 2R).
+    for (let i = 1; i <= 3; i++) {
+      await page.getByPlaceholder(/사용자 인증/).fill(`모바일-스트립-프로젝트-${i} 목표`)
+      await page.getByRole('button', { name: '오케스트레이션 실행' }).click()
+      await expect(page.getByText('최종 요약 / 누락 점검')).toBeVisible({ timeout: 45_000 })
+      await expect(page.getByRole('button', { name: '오케스트레이션 실행' })).toBeEnabled()
+    }
+    // '새 프로젝트' 선택 버튼도 .room-btn — 항목 3 + 선택 버튼 1 = 4(스트립 오버플로에도 기여).
+    await expect(page.locator('.project-layout .room-btn')).toHaveCount(4)
+    const rooms = page.locator('.project-layout .rooms')
+    const overflow = await rooms.evaluate((el) => el.scrollWidth - el.clientWidth)
+    expect(overflow, '프로젝트 .rooms 가로 오버플로 실존').toBeGreaterThan(0)
+    await rooms.evaluate((el) => {
+      el.scrollLeft = el.scrollWidth
+    })
+    const last = page.locator('.project-layout .room-btn').last()
+    expectInViewport(await last.boundingBox(), 390, 844, '마지막 프로젝트 칩')
+    await last.click()
+    await expect(last).toHaveAttribute('data-active', 'true')
+    // G8(e2e 층): 요약 표시 상태에서 긴 무공백 토큰을 주입해도 .main 가로 스크롤 0
+    // (완주 러너 요약이 짧아 주입으로 대체 — 계획 §1 G8 주석 의무. .summary overflow-wrap 이 방어).
+    await page.evaluate(() => {
+      const s = document.querySelector('.summary')
+      if (s) s.textContent += ' /very/long/unbroken/path/' + 'x'.repeat(600)
+    })
+    const o = await page.evaluate(() => {
+      const main = document.querySelector('.main')
+      if (!main) throw new Error('.main 부재')
+      return main.scrollWidth - main.clientWidth
+    })
+    expect(o, '긴 토큰 주입 후 .main 가로 오버플로').toBeLessThanOrEqual(0)
+  })
 })

@@ -150,6 +150,24 @@ describe('#221 ≤640px 셸 블록 — 폰 분기 규칙 존재 핀(미감 수�
   })
 })
 
+describe('#221 PR2 — 패널 1열 스택·칩 스트립·폼 핀(셀렉터 결합)', () => {
+  it('G9 .chat/.project-layout 폰 1열(232px 사이드바 해제)', () => {
+    expect(shell).toMatch(/\.chat,\s*\.project-layout\s*\{[^}]*grid-template-columns: *1fr/)
+  })
+
+  it('.rooms 가로 칩 스트립(overflow-x auto — C2 .modal-chips 선례)', () => {
+    expect(shell).toMatch(/\.rooms\s*\{[^}]*overflow-x: *auto/)
+  })
+
+  it('G11 .grid-2 폰 1열(elicitation·manual 역할 배정)', () => {
+    expect(shell).toMatch(/\.grid-2\s*\{[^}]*grid-template-columns: *1fr/)
+  })
+
+  it('.line-item 랩(칩·배지·삭제 버튼 겹침 방지)', () => {
+    expect(shell).toMatch(/\.line-item\s*\{[^}]*flex-wrap: *wrap/)
+  })
+})
+
 describe('#221 R10 — reduced-motion 규율(§6-3: 640px 블록 밖 신규 추가 금지)', () => {
   it('640px 블록 밖 prefers-reduced-motion 출현 = 기존 2곳 고정(블록 안 중첩은 자유)', () => {
     // 640px 블록 전부를 제거한 나머지에서 카운트 — 전역 블록(:991)·modal-card 블록(:1149)
