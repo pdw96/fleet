@@ -1301,4 +1301,9 @@ code.id {
        클릭 표면이라 높이 확보만으로 충분). */
     min-height: 44px;
   }
+  .wizard code {
+    /* 구독 스텝의 CLI 해석 경로·로그인 명령 등 긴 무공백 토큰이 .main 을 넓히는 표면
+       (Codex PR 1R P2 — .summary 와 동종 결함의 위저드 국소판). */
+    overflow-wrap: anywhere;
+  }
 }

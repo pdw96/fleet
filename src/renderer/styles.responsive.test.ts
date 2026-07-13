@@ -145,6 +145,8 @@ describe('#221 ≤640px 셸 블록 — 폰 분기 규칙 존재 핀(미감 수�
     )
     expect(shell).toMatch(/\.wizard button\s*\{[^}]*min-height: *44px/)
     expect(shell).toMatch(/\.wizard label\s*\{[^}]*min-height: *44px/)
+    // 구독 스텝 bare <code>(CLI 경로·로그인 명령) 긴 토큰 줄바꿈(Codex PR 1R P2)
+    expect(shell).toMatch(/\.wizard code\s*\{[^}]*overflow-wrap: *anywhere/)
   })
 })
 

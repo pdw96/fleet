@@ -219,6 +219,9 @@ test.describe('#221 데스크톱 무회귀 가드 — 641×900(경계 최소 초
   ] as const) {
     test(`R1 ${w}×${h}: topbar/main/footer·타이포 유지(폰 분기 미적용)`, async ({ page }) => {
       await openApp(page, server.url, w, h)
+      // footer 는 getAppInfo() 비동기 완료 후 조건부 렌더(App.tsx) — 대기 없이 computed 를 읽으면
+      // 느린 기동에서 '.footer 부재' throw 로 flaky(Codex PR 1R P2).
+      await page.locator('.footer').waitFor()
       const computed = await page.evaluate(() => {
         const q = (sel: string) => {
           const el = document.querySelector(sel)
