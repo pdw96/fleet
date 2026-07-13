@@ -1186,3 +1186,83 @@ code.id {
   background: transparent;
   opacity: 0.75;
 }
+
+/* ── #221 모바일(≤640px) — 셸·전역·위저드. C2 승인 바텀시트 블록과 **별도 구획**(그 블록 내부 불변 —
+   ApprovalModal.test.tsx 핀·approval-hold e2e 기하 단언이 감시). 폰 분기는 전부 이 블록 안에만(§6). */
+@media (max-width: 640px) {
+  /* 타이포 스케일 — 이슈 계약 "텍스트가 작고". 미감 수치(라이브 실측 조정 대상·핀 금지). */
+  body {
+    font-size: 14px;
+  }
+  .chip,
+  .field-label,
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+  }
+
+  /* 셸 — topbar 를 좁은 폭에 수용(브랜드 캡션 숨김·간격 축소·랩 허용). */
+  .topbar {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 10px
+      max(14px, env(safe-area-inset-left));
+  }
+  .brand h1 {
+    font-size: 22px;
+  }
+  .brand .tag {
+    display: none; /* 자간 0.26em 캡션 — 폰 폭 오버플로 주범 */
+  }
+  .live {
+    gap: 6px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+  }
+  .main {
+    padding: 14px;
+  }
+  .footer {
+    padding: 7px max(14px, env(safe-area-inset-right)) max(7px, env(safe-area-inset-bottom))
+      max(14px, env(safe-area-inset-left));
+  }
+
+  /* 터치 타깃 — 계약 수치 44px(HIG). 아이콘성(좁은 텍스트) 타깃은 min-width 도 44(양방향). */
+  .nav-btn {
+    min-height: 44px;
+  }
+  .btn,
+  .btn-sm,
+  .room-btn,
+  .ask-btn,
+  button.chip,
+  .field {
+    min-height: 44px;
+  }
+  .btn-sm,
+  button.chip {
+    min-width: 44px;
+  }
+
+  /* iOS 자동 줌 방지 — 폼 필드 computed 16px(계약 수치). 위저드 bare input 도 요소 셀렉터로 커버. */
+  .field,
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /* 인라인 고정폭(width:220/160/64·minWidth:116 — R6 실측 5곳) 대응 — max-width 는 인라인 width 를
+     이기는 별개 속성. .row 랩으로 좁은 폭에서 줄바꿈. */
+  .row {
+    flex-wrap: wrap;
+  }
+  .row > * {
+    max-width: 100%;
+  }
+
+  /* ConnectionBanner 공유 표면(R5) — fixed 라 scrollWidth 단언이 못 잡아 폭 캡을 핀으로 강제. */
+  .update-banner {
+    max-width: calc(100vw - 24px);
+  }
+}
