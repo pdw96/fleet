@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 87 files · 222 import wires · 47 IPC channels · 생성 2026-07-09T06:08 UTC
+> 87 files · 222 import wires · 47 IPC channels · 생성 2026-07-13T09:03 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -62,7 +62,7 @@
 - **renderer/components/AddAiWizard**
   - →의존: renderer/bridge/errors, renderer/components/authBanners, shared/cliAuthInstallMeta, shared/types · ←피의존: renderer/components/SessionsPanel · 491줄
 - **renderer/components/SessionsPanel** — 어떤 AI를 쓸지 등록하고 설정하는 세션 관리 화면 _컴퓨터에 깔린 클로드·코덱스 같은 CLI 도구를 감지해 등록하거나, API 키를 넣어 Anthropic·OpenAI·Google AI를 추가하고, 각 AI가 잘하는 역할과 외부 도구(MCP) 연결도 지정합니다._
-  - →의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/components/AddAiWizard, shared/types · ←피의존: renderer/App · 306줄
+  - →의존: renderer/bridge/errors, renderer/bridge/hydration, renderer/components/AddAiWizard, shared/types · ←피의존: renderer/App · 310줄
 - **renderer/bridge/errors**
   - →의존: renderer/bridge/ws-bridge · ←피의존: renderer/components/AddAiWizard, renderer/components/ProjectPanel, renderer/components/SessionsPanel · 25줄
 - **renderer/components/ChatPanel** — 여러 AI와 한 작업방에서 대화하고 자동 토론을 시키는 채팅 화면 _작업방을 만들어 사용자가 메시지를 보내고 특정 AI에게 묻거나 여러 AI를 자동으로 토론시킬 수 있으며, AI 답변이 한 글자씩 실시간으로 흘러나오는 모습을 말풍선으로 보여줍니다. 탭을 떠났다 돌아와도 진행 중이던 대화가 사라지지 않게 상태를 되살립니다._
