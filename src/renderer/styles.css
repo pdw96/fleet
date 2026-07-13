@@ -1265,4 +1265,19 @@ code.id {
   .update-banner {
     max-width: calc(100vw - 24px);
   }
+
+  /* AddAiWizard(.wizard 래퍼 — SessionsPanel 마운트 1곳) — bare input/button/label 을 폰에서
+     풀폭·터치 타깃으로. 세션 탭 첫 인터랙티브 표면이라 PR1 귀속(Codex 스펙 1R — 게이트 정직성). */
+  .wizard input:not([type='checkbox']),
+  .wizard select {
+    width: 100%;
+  }
+  .wizard button {
+    min-height: 44px;
+    padding: 8px 14px;
+  }
+  .wizard label {
+    display: block;
+    margin: 8px 0;
+  }
 }
