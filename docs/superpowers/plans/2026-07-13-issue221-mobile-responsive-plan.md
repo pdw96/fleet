@@ -115,6 +115,7 @@
 
 ### T1 — e2e 계약 확장 (RED)
 - ① PR1 `test.fail()` 해제(채팅·프로젝트 `.main` — RED 실발화 확인: `.chat` 232px 강제) ② G10 하드 계약 ③ **G10b: `complete` 러너 서버에서 UI 경로로 프로젝트 3회+ 생성·완주 후 스트립 단언**(Codex 계획 1R — `src/main/e2e.ts` 무변경·엔진 API 무확대·`isE2EActive` 가드 불변. G8 e2e와 같은 `complete` 서버 인스턴스를 공유해 러닝타임 절약) ④ G11 ⑤ G12 ⑥ G8 e2e(완주 러너 — G10b와 서버 공유) ⑦ R1 확장(641·1280에서 `.chat`/`.project-layout` 232px) ⑧ R5 e2e(단절 하니스 배너 폭).
+- **구현 노트(Codex 계획 2R)**: `complete` 러너 케이스는 기본(hang) 서버와 **별도 describe/서버 수명주기**로 분리(추론 용이성) · 프로젝트 3회+ 루프는 web-orchestration 패턴대로 **각 런 완주(`done`)·버튼 재활성 대기 후 다음 런** · "시드 무확장" 제약은 UI 경로가 과도하게 느리거나 flake일 때만 구현 리뷰에서 재론.
 - **검증**: `npm run build && npx playwright test e2e/mobile-responsive.web.e2e.ts --project=web` → 신규 RED 확인.
 
 ### T2 — vitest 핀 확장 (RED)
