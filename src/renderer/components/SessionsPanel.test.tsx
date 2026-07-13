@@ -53,6 +53,15 @@ describe('SessionsPanel', () => {
     expect(screen.getByText(/AI 추가/)).toBeTruthy()
   })
 
+  it('AddAiWizard 를 .wizard 스타일 훅 래퍼로 감싼다 (#221 — bare 루트 4개의 폰 스타일 조준점)', async () => {
+    mockFleet()
+    const { container } = await renderSettled(<SessionsPanel sessions={[]} onRefresh={vi.fn()} />)
+    const wizard = container.querySelector('.wizard')
+    expect(wizard).not.toBeNull()
+    // 래퍼가 위저드 콘텐츠(진입 헤딩)를 실제로 감싼다 — 빈 껍데기 방지.
+    expect(wizard?.textContent).toMatch(/AI 추가/)
+  })
+
   it('MCP 서버 JSON 을 적용하고 상태를 표시한다', async () => {
     const status = [
       { name: 'fs', connected: true, toolCount: 2, tools: ['mcp__fs__read', 'mcp__fs__write'] },

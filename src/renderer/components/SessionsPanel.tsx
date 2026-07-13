@@ -150,7 +150,11 @@ export function SessionsPanel({ sessions, onRefresh, runtime = null }: Props) {
         </p>
       )}
 
-      <AddAiWizard onRegistered={onRefresh} />
+      {/* #221: .wizard = 스타일 훅 래퍼 — 위저드는 스텝별 bare 루트 4개라 루트 부착 대신 마운트 1곳을
+          감싼다(§5 마크업 변경 예산). 폰(≤640px) 스타일은 styles.css 셸 블록의 .wizard 규칙이 조준. */}
+      <div className="wizard">
+        <AddAiWizard onRegistered={onRefresh} />
+      </div>
 
       <section className="panel">
         <div className="panel-head">

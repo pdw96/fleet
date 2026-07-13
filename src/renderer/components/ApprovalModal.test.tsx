@@ -671,14 +671,36 @@ describe('반응형 CSS(회귀 가드)', () => {
   // jsdom 은 CSS ?raw 를 빈 문자열로 주므로 원본 파일을 직접 읽는다(vitest cwd=레포 루트).
   const css = readFileSync(join(process.cwd(), 'src/renderer/styles.css'), 'utf8')
 
+  // #221 R2: css 전문 매치는 다른 규칙(.tool-steps 등)에 이미 매치되는 공허 핀이었고, 셸 640px
+  // 블록 추가로 공허성이 심화된다 — C2 승인 블록(.modal-overlay 마커)으로 스코프를 좁힌다(강화만·완화 금지).
+  const c2Block = (() => {
+    let idx = 0
+    for (;;) {
+      const start = css.indexOf('@media (max-width: 640px)', idx)
+      if (start === -1) return ''
+      const open = css.indexOf('{', start)
+      let depth = 1
+      let i = open + 1
+      while (i < css.length && depth > 0) {
+        if (css[i] === '{') depth++
+        else if (css[i] === '}') depth--
+        i++
+      }
+      const body = css.slice(open + 1, i - 1)
+      if (body.includes('.modal-overlay')) return body
+      idx = i
+    }
+  })()
+
   it('폰 바텀시트 미디어쿼리·미니칩·액션 줄바꿈/바닥고정·시트 애니메이션 규칙 존재', () => {
-    expect(css).toMatch(/@media \(max-width: *640px\)/) // 폰 바텀시트 분기
-    expect(css).toContain('.modal-nav') // 내비 컨테이너
-    expect(css).toContain('.modal-chips') // 미니칩 스트립
-    expect(css).toMatch(/flex-wrap: *wrap/) // 모바일 액션 줄바꿈(카운트다운↑·버튼 풀폭·적대리뷰 F4)
-    expect(css).toMatch(/position: *sticky/) // 액션 바닥 고정(오버플로 시 스크롤아웃 방지·적대리뷰 F5/F6)
-    expect(css).toMatch(/max-height: *90dvh/) // content-driven·dvh(라이브 폰 오프스크린 버그 회귀 가드)
-    expect(css).toMatch(/@keyframes sheetUp/) // 시트 슬라이드(reduced-motion 서 무애니)
+    expect(c2Block).not.toBe('') // 폰 바텀시트 분기(C2 블록 실존)
+    expect(css).toContain('.modal-nav {') // 내비 컨테이너(기본 규칙 — 블록 밖·셀렉터 여는 중괄호까지 핀)
+    expect(css).toContain('.modal-chips {') // 미니칩 스트립(기본 규칙 — 동일)
+    // 규칙-정밀 스코프(CodeRabbit) — 블록 내 무관 규칙이 계약을 대체 충족하지 못하게 셀렉터와 결합.
+    expect(c2Block).toMatch(/\.modal-actions\s*\{[^}]*flex-wrap: *wrap/) // 액션 줄바꿈(적대리뷰 F4)
+    expect(c2Block).toMatch(/\.modal-actions\s*\{[^}]*position: *sticky/) // 바닥 고정(적대리뷰 F5/F6)
+    expect(c2Block).toMatch(/\.modal-card\s*\{[^}]*max-height: *90dvh/) // content-driven·dvh(오프스크린 회귀 가드)
+    expect(css).toMatch(/@keyframes sheetUp/) // 시트 슬라이드(reduced-motion 서 무애니 — 블록 밖 무해 keyframes)
   })
 })
 
