@@ -150,6 +150,35 @@ describe('#221 ≤640px 셸 블록 — 폰 분기 규칙 존재 핀(미감 수�
   })
 })
 
+describe('#221 PR2 — 패널 1열 스택·칩 스트립·폼 핀(셀렉터 결합)', () => {
+  it('G9 .chat/.project-layout 폰 1열(232px 사이드바 해제) + rows auto 1fr(본문 높이 계약)', () => {
+    expect(shell).toMatch(/\.chat,\s*\.project-layout\s*\{[^}]*grid-template-columns: *1fr/)
+    // load-bearing 선언(암묵 auto 행 = 본문 높이 붕괴)인데 무핀이던 갭(자체 적대 리뷰 P2-1).
+    expect(shell).toMatch(/\.chat,\s*\.project-layout\s*\{[^}]*grid-template-rows: *auto 1fr/)
+  })
+
+  it('.rooms 가로 칩 스트립(overflow-x auto — C2 .modal-chips 선례)', () => {
+    expect(shell).toMatch(/\.rooms\s*\{[^}]*overflow-x: *auto/)
+  })
+
+  it('.chat 높이의 safe-area 차감식 — env()=0 인 Playwright 가 못 보는 실기기 보정 핀(CodeRabbit)', () => {
+    const chatInShell = ruleBlocks(shell, '.chat')
+    const heightDecl = chatInShell.find((b) => b.includes('height: calc('))
+    expect(heightDecl, '.chat 높이 calc 재선언 존재').toBeDefined()
+    // 상·하단 additive 초과분을 각각 max(0px, env - 기본값) 으로 차감 — env=0 이면 현행 기하 불변.
+    expect(heightDecl).toMatch(/max\(0px,\s*env\(safe-area-inset-top\) - 10px\)/)
+    expect(heightDecl).toMatch(/max\(0px,\s*env\(safe-area-inset-bottom\) - 7px\)/)
+  })
+
+  it('G11 .grid-2 폰 1열(elicitation·manual 역할 배정)', () => {
+    expect(shell).toMatch(/\.grid-2\s*\{[^}]*grid-template-columns: *1fr/)
+  })
+
+  it('.line-item 랩(칩·배지·삭제 버튼 겹침 방지)', () => {
+    expect(shell).toMatch(/\.line-item\s*\{[^}]*flex-wrap: *wrap/)
+  })
+})
+
 describe('#221 R10 — reduced-motion 규율(§6-3: 640px 블록 밖 신규 추가 금지)', () => {
   it('640px 블록 밖 prefers-reduced-motion 출현 = 기존 2곳 고정(블록 안 중첩은 자유)', () => {
     // 640px 블록 전부를 제거한 나머지에서 카운트 — 전역 블록(:991)·modal-card 블록(:1149)
