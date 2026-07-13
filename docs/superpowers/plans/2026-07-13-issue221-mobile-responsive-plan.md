@@ -31,7 +31,7 @@
 - **RED 커밋 규율(이식 A)**: RED 상태로 커밋되는 e2e 케이스는 `test.fail()` 마킹(실패=정상 기계 선언
   · GREEN 전환 시 자동 경보) — GREEN 화 태스크에서 해제.
 - **사후 단언 mutation 규율(이식 B)**: 스타일 완료 후 작성돼 즉시 GREEN인 단언은 의도적 위반 삽입으로
-  RED 1회 확인 후 원복(핀 실효성 증명).
+  RED 1회 확인 후 원복(핀 실효성 증명). **위반 스캐폴딩은 커밋 금지 — 로컬 확인 후 완전 원복**(Codex 계획 1R 노트).
 - **미감 수치 시작값(이식 B)** — 핀 금지·라이브 실측 조정 대상: topbar gap 12px·topbar padding 10px
   14px·main padding 14px·body 14px·캡션(chip/field-label/eyebrow) 11px·자간 0.08~0.12em급.
   계약 수치(핀 대상)는 640px 브레이크포인트·44px·16px·dvh 병기·additive safe-area뿐.
@@ -56,7 +56,7 @@
 | **G8** | `.summary` 긴 토큰(전 뷰포트 결함 수정) | vitest 핀: `.summary`에 `overflow-wrap: break-word` + e2e(PR2): 완주 러너(`FLEET_E2E_RUNNER:'complete'`) 요약 표시 후 G1 커버(요약이 짧으면 evaluate로 긴 무공백 문자열 주입 — 주석 의무) | 1핀·2e2e |
 | **G9** | `.chat`·`.project-layout` 폰 1열 | vitest 핀(640px 블록 내 `1fr`) + e2e G1 활성화 | 2 |
 | **G10** | `.rooms` 칩 스트립 하드 계약(채팅) | e2e: UI 경로(`새 방 이름` fill + `+` 버튼(.btn.btn-sm — '만들기' 아님) 반복)로 방 3개+ 생성·개수 ≥4 선단언 → `.chat .rooms` `scrollWidth > clientWidth` → 실 스크롤 후 마지막 `.room-btn` boundingBox 뷰포트내 → 클릭 → `data-active` 전이 | 2 |
-| **G10b** | `.rooms` 칩 스트립 하드 계약(프로젝트 — 판사 공통 결함 보강) | `src/main/e2e.ts` 시드에 **프로젝트 3건+ 추가**(FLEET_E2E 가드 안·가드 완화 금지) → 프로젝트 탭에서 G10 동형 단언(런 불요). 시드 확장이 기존 e2e(project-activity 등)와 충돌하면 확장 대신 라이브 위임으로 강등하고 계획서에 기록 | 2 |
+| **G10b** | `.rooms` 칩 스트립 하드 계약(프로젝트 — 판사 공통 결함 보강 · **Codex 계획 1R 반영: 생성 메커니즘 확정**) | **UI 경로 + `complete` 러너**: mobile e2e 전용 서버를 `FLEET_E2E_RUNNER: 'complete'`(web-orchestration:70 선례)로 기동 → goal 입력+실행을 3회+ 반복(결정론 완주·hang 러너 in-flight 오염 없음) → 프로젝트 탭 `.rooms`에 G10 동형 단언. **근거**: `FleetEngine`엔 공개 `createProject`가 없고(`listProjects`/`runProjectFlow`만), `seedE2eFixtures(engine)`는 store 미접근 — 시드 확장은 엔진 표면 확대 또는 boot 배선 파급이라 기각. 스펙 파일별 독립 서버(startFleetWebServer)라 기존 e2e 무영향·`src/main/e2e.ts` 무변경. 런 3회 러닝타임이 과중하면(§6 리스크 표) 2건+지연 계약으로 완화하고 기록 | 2 |
 | **G11** | `.grid-2` 폰 1열(elicitation:395·manual:534) | vitest 핀 + e2e: goal 입력 가능(manual 경로) — elicitation은 런 중 발화라 핀+라이브 | 2 |
 | **G12** | 채팅 composer 뷰포트내 앵커 | e2e: 방 선택 후 composer boundingBox 뷰포트 사각형 안 | 2 |
 | **G13** | verify·기존 e2e 전량 무회귀 | `VERIFY` + `E2E-ALL` — 각 PR 머지 전 | 1·2 |
@@ -83,6 +83,7 @@
 
 ### T1 — vitest 계약 하네스 신설 + 기존 핀 강화 (RED)
 - **파일**: `src/renderer/styles.responsive.test.ts`(신설 — ApprovalModal.test.tsx:670 `readFileSync` 패턴·index.html도 로드) · `src/renderer/components/ApprovalModal.test.tsx`(R2 스코프 강화만·완화 금지).
+- **블록 추출 헬퍼 강건성(Codex 계획 1R 노트)**: `@media (max-width: 640px)` 블록이 T4 이후 **2개**(C2 승인 블록 + 신설 셸 블록)가 되므로, naive first-match 추출은 승인 블록만 검사하는 blind가 된다 — 블록 식별을 내부 마커 셀렉터(예: C2=`.modal-overlay`·셸=`.topbar`) 또는 전 블록 수집 후 합집합 검사로 설계.
 - **RED**: G6·G7·G8핀·R5핀·R6핀·R10 전부 FAIL 확인. R2 강화분은 즉시 GREEN → mutation 1회.
 - **검증**: `npx vitest run src/renderer/styles.responsive.test.ts src/renderer/components/ApprovalModal.test.tsx`
 
@@ -113,7 +114,7 @@
 ## 3. PR2 태스크 — 패널 3 + 폼 (`Closes #221`)
 
 ### T1 — e2e 계약 확장 (RED)
-- ① PR1 `test.fail()` 해제(채팅·프로젝트 `.main` — RED 실발화 확인: `.chat` 232px 강제) ② G10 하드 계약 ③ **G10b: `src/main/e2e.ts` 시드 프로젝트 3건+ 확장**(FLEET_E2E 가드 안·`isE2EActive` 가드 완화 금지 — AGENTS.md P1 신호. 기존 e2e 영향 시 강등·기록) ④ G11 ⑤ G12 ⑥ G8 e2e(완주 러너) ⑦ R1 확장(641·1280에서 `.chat`/`.project-layout` 232px) ⑧ R5 e2e(단절 하니스 배너 폭).
+- ① PR1 `test.fail()` 해제(채팅·프로젝트 `.main` — RED 실발화 확인: `.chat` 232px 강제) ② G10 하드 계약 ③ **G10b: `complete` 러너 서버에서 UI 경로로 프로젝트 3회+ 생성·완주 후 스트립 단언**(Codex 계획 1R — `src/main/e2e.ts` 무변경·엔진 API 무확대·`isE2EActive` 가드 불변. G8 e2e와 같은 `complete` 서버 인스턴스를 공유해 러닝타임 절약) ④ G11 ⑤ G12 ⑥ G8 e2e(완주 러너 — G10b와 서버 공유) ⑦ R1 확장(641·1280에서 `.chat`/`.project-layout` 232px) ⑧ R5 e2e(단절 하니스 배너 폭).
 - **검증**: `npm run build && npx playwright test e2e/mobile-responsive.web.e2e.ts --project=web` → 신규 RED 확인.
 
 ### T2 — vitest 핀 확장 (RED)
@@ -132,7 +133,7 @@
   기존재 — CSS 승격만·JSX 무변) / 03/04 섹션 `.field`·textarea 폭 100%·라벨 줄바꿈.
 
 ### T5 — 봉인·brain·이슈 마감
-- `E2E-ALL` → `VERIFY` → brain(시드 확장으로 src/main/e2e.ts 변경 시 재생성 필수) → PR 본문(no-op
+- `E2E-ALL` → `VERIFY` → brain(PR2는 src 변경 0 예상 — `brain:check`로 확인만) → PR 본문(no-op
   근거·브라우저/OS 버전) → 이슈에 `.summary` 표기·그래프 뷰 stale 정정 코멘트 → 라이브 실측(§5 PR2)
   → 자체 적대 리뷰 → PR open(`Closes #221`) → Codex → 사용자 확인 → squash.
 
@@ -170,7 +171,7 @@
 | 데스크톱 회귀 | R1 기계 가드(641·1280)+§6 diff 규율+기존 e2e 전량 | 640px 블록 삭제=즉시 원상(로직 diff는 래퍼 1줄) |
 | C2 표면 파손 | R2 강화·R3 표적 재실행·C2 블록 무수정 | `.modal-actions` 1줄 revert |
 | e2e flake | fonts.ready+reducedMotion 전 테스트 공통 | — |
-| 시드 확장이 기존 e2e 파손 | G10b 강등 경로 명시(라이브 위임+기록) | e2e.ts 시드 revert |
+| G10b 런 3회 러닝타임 과중 | `complete` 러너는 결정론 즉시 완주 + G8과 서버 공유 — 과중 시 2건+지연 계약 완화·기록 | mobile e2e 케이스만 조정(제품 코드 무영향) |
 | 라이브서 레이아웃 버그(C2 선례) | 각 PR 라이브 관문·미감 수치 미핀(조정 diff 최소) | 값 조정 커밋(테스트 불변) |
 | brain stale | R7 규율 | 재생성 재커밋 |
 | e2e 러닝타임 증가(판사 인지 항목) | 컨텍스트 4종(390/360/641/1280)·완주 러너 — 현 web 4파일 규모라 수용, PR2 T5에서 실측 시간 기록 | — |
