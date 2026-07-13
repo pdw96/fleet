@@ -166,7 +166,9 @@ body::after {
   display: flex;
   align-items: center;
   gap: 28px;
-  /* safe-area 는 additive(max)만 — env 미지원/inset 0(데스크톱)이면 기존값 유지(치환 금지·#221 §6) */
+  /* safe-area 는 additive(max)만 + 구선언 병기 — env 미지원 파서는 아래 선언째 드롭돼 위 폴백,
+     inset 0(데스크톱)이면 max 가 기존값(치환 금지·#221 §6 — dvh 병기와 동일 규율) */
+  padding: 16px 26px;
   padding: max(16px, env(safe-area-inset-top)) max(26px, env(safe-area-inset-right)) 16px
     max(26px, env(safe-area-inset-left));
   border-bottom: 1px solid var(--line);
@@ -288,7 +290,8 @@ body::after {
 }
 
 .footer {
-  /* safe-area additive — 홈 인디케이터(하단)·노치 좌우 대응, 데스크톱(env=0)은 기존값(#221 §6) */
+  /* safe-area additive + 구선언 병기(env 미지원 파서 폴백) — 데스크톱(env=0)은 기존값(#221 §6) */
+  padding: 9px 26px;
   padding: 9px max(26px, env(safe-area-inset-right)) max(9px, env(safe-area-inset-bottom))
     max(26px, env(safe-area-inset-left));
   border-top: 1px solid var(--line);
@@ -1165,7 +1168,9 @@ code.id {
 .update-banner {
   position: fixed;
   left: 50%;
-  /* additive safe-area — viewport-fit=cover 시 홈 인디케이터 위로, 데스크톱(env=0)은 48px 그대로(#221 §6) */
+  /* additive safe-area + 구선언 병기(env 미지원 파서 폴백) — viewport-fit=cover 시 홈 인디케이터
+     위로, 데스크톱(env=0)은 48px 그대로(#221 §6) */
+  bottom: 48px;
   bottom: calc(48px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   display: flex;
@@ -1187,16 +1192,19 @@ code.id {
   opacity: 0.75;
 }
 
-/* ── #221 모바일(≤640px) — 셸·전역·위저드. C2 승인 바텀시트 블록과 **별도 구획**(그 블록 내부 불변 —
-   ApprovalModal.test.tsx 핀·approval-hold e2e 기하 단언이 감시). 폰 분기는 전부 이 블록 안에만(§6). */
+/* ── #221 모바일(≤640px) — 셸·전역·위저드. C2 승인 바텀시트 블록과 **별도 구획**(§6 예외인
+   .modal-actions safe-area 를 빼면 그 블록 내부 불변 — ApprovalModal.test.tsx 핀·approval-hold e2e
+   기하 단언이 감시). 폰 분기는 전부 이 블록 안에만(§6). */
 @media (max-width: 640px) {
-  /* 타이포 스케일 — 이슈 계약 "텍스트가 작고". 미감 수치(라이브 실측 조정 대상·핀 금지). */
+  /* 타이포 스케일 — 이슈 계약 "텍스트가 작고". 미감 수치(라이브 실측 조정 대상·핀 금지).
+     승인 카드(C2·§4 폰 무회귀 계약) 내부는 제외 — 이 블록이 파일 말미(캐스케이드 후순위)라
+     스코프 제외 없이는 모달 eyebrow/chip 렌더가 변한다(자체 적대 리뷰 P2-1). */
   body {
     font-size: 14px;
   }
-  .chip,
+  .chip:not(.modal-card *),
   .field-label,
-  .eyebrow {
+  .eyebrow:not(.modal-card *) {
     font-size: 11px;
     letter-spacing: 0.1em;
   }
@@ -1205,6 +1213,7 @@ code.id {
   .topbar {
     flex-wrap: wrap;
     gap: 12px;
+    padding: 10px 14px;
     padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 10px
       max(14px, env(safe-area-inset-left));
   }
@@ -1223,6 +1232,7 @@ code.id {
     padding: 14px;
   }
   .footer {
+    padding: 7px 14px;
     padding: 7px max(14px, env(safe-area-inset-right)) max(7px, env(safe-area-inset-bottom))
       max(14px, env(safe-area-inset-left));
   }

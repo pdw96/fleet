@@ -5,7 +5,12 @@ import { join } from 'node:path'
 // #221 모바일 반응형 계약 핀 — jsdom 은 실 레이아웃을 계산하지 않으므로 styles.css·index.html
 // 문면으로 규칙 존재/패턴을 회귀 가드한다(선례: ApprovalModal.test.tsx «반응형 CSS(회귀 가드)»).
 // 실 레이아웃은 e2e/mobile-responsive.web.e2e.ts(폰 뷰포트)·라이브 폰 실측이 검증.
-const css = readFileSync(join(process.cwd(), 'src/renderer/styles.css'), 'utf8')
+// 주석 스트립 후 파싱 — 파서(중괄호 짝맞춤·문자열 매칭)가 주석 내 {}·리터럴 @media 문구에 깨져
+// 블록 과확장→R10 false-green 이 되는 경로 차단(자체 적대 리뷰 P3-2).
+const css = readFileSync(join(process.cwd(), 'src/renderer/styles.css'), 'utf8').replace(
+  /\/\*[\s\S]*?\*\//g,
+  '',
+)
 const html = readFileSync(join(process.cwd(), 'src/renderer/index.html'), 'utf8')
 
 /** 지정 미디어쿼리의 블록 본문 전부를 중괄호 짝맞춤으로 추출한다(640px 블록은 C2 승인·신설 셸 2개 — naive first-match 는 blind). */
@@ -58,14 +63,15 @@ describe('#221 §6 열거 예외 — 전 뷰포트 diff 의 데스크톱 no-op �
   })
 
   it('G6② safe-area 는 additive 패턴만 — max()/calc() 밖 치환 사용 0건·출현 ≥4(vacuous 방지)', () => {
-    const envLines = css.split('\n').filter((l) => l.includes('env(safe-area-inset'))
-    expect(envLines.length).toBeGreaterThanOrEqual(4)
-    for (const line of envLines) {
+    // 선언(;) 단위 검사 — 라인 단위는 다값 shorthand 내 env 단독을 놓친다(자체 적대 리뷰 P3-4).
+    const decls = css.split(';').filter((d) => d.includes('env(safe-area-inset'))
+    expect(decls.length).toBeGreaterThanOrEqual(4)
+    for (const d of decls) {
       // 치환(padding: env(...))이 아니라 max(기존값, env)/calc(기존값 + env) 안에서만 사용
-      expect(line).toMatch(/(max|calc)\([^;]*env\(safe-area-inset/)
+      expect(d).toMatch(/(max|calc)\((?:[^()]|\([^()]*\))*env\(safe-area-inset/)
+      // env 가 선언 값의 첫 토큰(단독 치환)이 아니어야 한다
+      expect(d).not.toMatch(/: *env\(safe-area-inset/)
     }
-    // 직접 치환 네거티브 핀 — env 미지원/inset 0 환경에서 기존 패딩 붕괴 방지(§6)
-    expect(css).not.toMatch(/: *env\(safe-area-inset/)
   })
 
   it('G6③ safe-area 대상 4셀렉터(.topbar·.footer·.update-banner·.modal-actions) 각각에 존재', () => {
@@ -95,15 +101,21 @@ describe('#221 ≤640px 셸 블록 — 폰 분기 규칙 존재 핀(미감 수�
     expect(shell).not.toBe('')
   })
 
-  it('터치 타깃 44px·폼 16px(iOS 자동 줌 방지) 계약 수치', () => {
-    expect(shell).toMatch(/min-height: *44px/)
-    expect(shell).toMatch(/font-size: *16px/)
+  it('터치 타깃 44px·폼 16px(iOS 자동 줌 방지) 계약 수치 — 셀렉터 결합 핀(대체 충족 차단)', () => {
+    // 존재-수준 핀은 다른 규칙이 대체 충족해 계약 셀렉터 삭제를 가린다(자체 적대 리뷰 P2-1/P3-4)
+    // — 셀렉터 그룹과 선언을 결합해 핀.
+    expect(ruleBlocks(shell, '.nav-btn').some((b) => b.includes('min-height: 44px'))).toBe(true)
+    expect(shell).toMatch(
+      /\.btn,\s*\.btn-sm,\s*\.room-btn,\s*\.ask-btn,\s*button\.chip,\s*\.field\s*\{[^}]*min-height: *44px/,
+    )
+    // 위저드 bare input 커버의 존재 이유가 요소 셀렉터다 — .field 만 남기는 축소를 적발.
+    expect(shell).toMatch(/\.field,\s*input,\s*select,\s*textarea\s*\{[^}]*font-size: *16px/)
   })
 
-  it('R6 인라인 고정폭 대응 — .row 랩 + max-width 100%(인라인 width 를 이기는 별개 속성)', () => {
+  it('R6 인라인 고정폭 대응 — .row 랩 + .row > * max-width 100%(인라인 width 를 이기는 별개 속성)', () => {
     const rowInShell = ruleBlocks(shell, '.row')
     expect(rowInShell.some((b) => b.includes('flex-wrap: wrap'))).toBe(true)
-    expect(shell).toMatch(/max-width: *100%/)
+    expect(shell).toMatch(/\.row > \*\s*\{[^}]*max-width: *100%/)
   })
 
   it('R5 .update-banner 폭 캡 — fixed 라 scrollWidth 단언이 못 잡는 표면(ConnectionBanner 공유)', () => {

@@ -122,6 +122,20 @@ test.describe('#221 모바일 반응형(PR1 셸) — 390×844', () => {
     })
   }
 
+  // PR2 활성화 케이스(test.fail)가 셀렉터 rename 시 "부재 throw = 계속 expected-fail" 로 경보가
+  // 영구 침묵하는 경로 차단(자체 적대 리뷰 P3-1) — 셀렉터 존재 자체는 항상-GREEN 계약으로 분리.
+  test('PR2 셀렉터 계약 — .chat/.chat-main·.project-layout/.project-main 존재', async ({
+    page,
+  }) => {
+    await openApp(page, server.url, 390, 844)
+    await switchTab(page, '채팅')
+    await expect(page.locator('.chat')).toHaveCount(1)
+    await expect(page.locator('.chat-main')).toHaveCount(1)
+    await switchTab(page, '프로젝트')
+    await expect(page.locator('.project-layout')).toHaveCount(1)
+    await expect(page.locator('.project-main')).toHaveCount(1)
+  })
+
   test('G3 내비 3탭 뷰포트내 앵커 + G4 터치 타깃 ≥44px(내비·위저드 bare 버튼·.btn 표본)', async ({
     page,
   }) => {
@@ -141,12 +155,18 @@ test.describe('#221 모바일 반응형(PR1 셸) — 390×844', () => {
     const bareButtons = page.locator('.main button:not([class])')
     const bareCount = await bareButtons.count()
     expect(bareCount, '위저드 bare 버튼 표본 존재').toBeGreaterThan(0)
+    // 실측 실행 횟수 단언 — invisible/box 부재 무음 skip 으로 루프가 공허해지는 미래 변경을 적발
+    // (자체 적대 리뷰 P2-3: 위저드 접힘 기본값 전환 등).
+    let measured = 0
     for (let i = 0; i < bareCount; i++) {
       const b = bareButtons.nth(i)
       if (!(await b.isVisible())) continue
       const box = await b.boundingBox()
-      if (box) expect(box.height, `위저드 bare 버튼 #${i} 높이`).toBeGreaterThanOrEqual(44)
+      if (!box) continue
+      expect(box.height, `위저드 bare 버튼 #${i} 높이`).toBeGreaterThanOrEqual(44)
+      measured++
     }
+    expect(measured, '위저드 bare 버튼 실측 수(공허 루프 방지)').toBeGreaterThan(0)
     // G4: .btn 표본(세션 카드 삭제 버튼 — FLEET_E2E 시드 세션 2개로 존재 보장).
     const btn = page.locator('.main .btn').first()
     const btnBox = await btn.boundingBox()
@@ -191,21 +211,39 @@ test.describe('#221 데스크톱 무회귀 가드 — 641×900(경계 최소 초
     [641, 900],
     [1280, 800],
   ] as const) {
-    test(`R1 ${w}×${h}: topbar gap 28px·body 13px 유지(폰 분기 미적용)`, async ({ page }) => {
+    test(`R1 ${w}×${h}: topbar/main/footer·타이포 유지(폰 분기 미적용)`, async ({ page }) => {
       await openApp(page, server.url, w, h)
       const computed = await page.evaluate(() => {
-        const topbar = document.querySelector('.topbar')
-        if (!topbar) throw new Error('.topbar 부재')
+        const q = (sel: string) => {
+          const el = document.querySelector(sel)
+          if (!el) throw new Error(`${sel} 부재`)
+          return getComputedStyle(el)
+        }
+        const topbar = q('.topbar')
+        const footer = q('.footer')
         return {
-          gap: getComputedStyle(topbar).gap,
+          gap: topbar.gap,
+          // 4변 padding — shorthand→additive 재작성의 산술 실수를 기계 핀(자체 적대 리뷰 P3-3)
+          topbarPad: [
+            topbar.paddingTop,
+            topbar.paddingRight,
+            topbar.paddingBottom,
+            topbar.paddingLeft,
+          ],
+          footerPad: [footer.paddingTop, footer.paddingBottom, footer.paddingLeft],
+          mainPad: q('.main').paddingLeft,
+          brandFont: q('.brand h1').fontSize,
+          fieldFont: q('#mcp-servers').fontSize,
           bodyFont: getComputedStyle(document.body).fontSize,
-          tagVisible: (() => {
-            const tag = document.querySelector('.brand .tag')
-            return tag ? getComputedStyle(tag).display !== 'none' : false
-          })(),
+          tagVisible: q('.brand .tag').display !== 'none',
         }
       })
       expect(computed.gap, 'topbar gap').toBe('28px')
+      expect(computed.topbarPad, 'topbar padding 4변').toEqual(['16px', '26px', '16px', '26px'])
+      expect(computed.footerPad, 'footer padding').toEqual(['9px', '9px', '26px'])
+      expect(computed.mainPad, '.main padding').toBe('26px')
+      expect(computed.brandFont, 'brand h1').toBe('27px')
+      expect(computed.fieldFont, '.field(#mcp-servers) font-size').toBe('13px')
       expect(computed.bodyFont, 'body font-size').toBe('13px')
       expect(computed.tagVisible, '.brand .tag 가시(데스크톱)').toBe(true)
     })
