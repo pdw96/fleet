@@ -227,6 +227,9 @@ export default tseslint.config(
       'node_modules/**',
       '.claude/**',
       '.dogfood/**',
+      // 라이브 하니스 기본 워크스페이스(gitignore·사용자 프로젝트/생성물) — CI 엔 없고 로컬 verify 만
+      // 깨뜨리는 로컬↔CI 비대칭이라 lint 대상에서 제외(#221 서 실측).
+      'deploy/workspace/**',
       '*.config.*',
       '*.config.mjs',
     ],
