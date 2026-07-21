@@ -29,6 +29,17 @@ updates:
       - dependency-name: '@types/node'
         update-types:
           - 'version-update:semver-major'
+      # TypeScript 메이저(7+) 차단 — 두 개의 독립 차단 요인이 동시에 성립한다(#231).
+      # (1) 발행된 모든 typescript-eslint(8.62~8.65·캐너리 포함)의 peer 가
+      #     `>=4.8.4 <6.1.0` 이라 TS7 과 공존 불가 → `npm ci` 가 ERESOLVE 로 하드 실패.
+      # (2) TS7 은 프로그래매틱 API 를 싣지 않는다(`exports["."]` → `lib/version.cjs`,
+      #     노출은 version·versionMajorMinor 뿐). `scripts/brain/extract.mjs` 가
+      #     `ts.createSourceFile`/`ts.SyntaxKind` 를 쓰므로 `brain:check` 게이트가 크래시.
+      # 해제 조건은 AND 다 — typescript-eslint peer 상한 이탈 **그리고** 안정 API(7.1+)로
+      # extract.mjs 이식 가능. 둘 중 하나만으론 부족하다.
+      - dependency-name: 'typescript'
+        update-types:
+          - 'version-update:semver-major'
 
   - package-ecosystem: 'github-actions'
     directory: '/'
