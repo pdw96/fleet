@@ -224,6 +224,21 @@ describe('scanReleaseSafety — release.yml 안전장치 약화 회귀 센서(#1
     expect(scanReleaseSafety(text)).toEqual([])
   })
 
+  it('with: 가 아닌 env: 아래의 persist-credentials:false 는 인정하지 않는다(#245 — 액션 입력은 with 에서만 읽힌다)', () => {
+    const text = [
+      'jobs:',
+      '  build:',
+      '    steps:',
+      '      - name: Checkout',
+      `        uses: actions/checkout@${SHA}`,
+      '        env:',
+      '          persist-credentials: false', // env 아래 = GitHub 이 액션 입력으로 읽지 않음 → 자격증명 잔류
+      '      - name: attest',
+      `        uses: actions/attest-build-provenance@${ATTEST}`,
+    ].join('\n')
+    expect(scanReleaseSafety(text).some((h) => h.rule === 'persist-credentials')).toBe(true)
+  })
+
   it('persist-credentials: false 뒤 인라인 주석은 통과(false-RED 방지)', () => {
     const text = good.replace(
       '          persist-credentials: false\n  build:',

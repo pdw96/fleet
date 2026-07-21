@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
+import { scanCheckoutPersistCredentials } from './skills-lint.mjs'
+
 // #222 CD: GHCR pull 파이프라인의 계약·보안·race 계약을 정적 텍스트로 핀한다. deploy.yml/override 가
 // 구현 재량으로 fail-open(allowlist 회귀)·시크릿 유출·태그 회귀로 조용히 약화돼도 무신호가 되지 않게
 // 코드보다 먼저(RED) 둔다. scripts/ 라 vitest include 로 PR마다 상시 실행(Docker 불요)·coverage floor 무영향.
@@ -12,21 +14,17 @@ const override = () => read('../deploy/docker-compose.ghcr.yml')
 const baseCompose = () => read('../deploy/docker-compose.yml')
 const dockerignore = () => read('../.dockerignore')
 
-// SHA 핀된 actions/checkout 참조 전부. 40-hex 만 매치하므로 태그/브랜치 ref 회귀는 "추출 0건" 으로 드러난다.
+// SHA 핀된 actions/checkout 참조 전부. **YAML `uses:` 키에서만** 추출한다 — 비앵커 전문 스캔은
+// `# 이전: actions/checkout@<옛SHA>` 같은 주석·run 본문 문자열을 활성 참조로 오인해 균일성 단언을
+// 오탐시키고, 반대로 비실행 텍스트가 추출 가드를 만족시킨다(scanWorkflowPins 와 동일한 앵커 규칙).
+// 스텝형(`- uses:`)·name-first(`- name:` 다음 줄 `uses:`)·따옴표 스칼라를 모두 수용한다.
+// 40-hex 만 매치하므로 태그/브랜치 ref 회귀는 "추출 0건" 으로 드러난다.
 const checkoutShas = (text: string) =>
-  [...text.matchAll(/actions\/checkout@([0-9a-f]{40})\b/g)].map((m) => m[1])
-
-// checkout 스텝 본문만 잘라낸다 — 다음 스텝(`- uses:`/`- name:`/`- run:`) 직전까지. 라인 단위로 스캔한다
-// (멀티라인 정규식은 `\s` 가 개행을 넘고 `^` 가 문자열 시작에도 걸려 스텝 경계를 잘못 잡는다).
-const STEP_HEAD = /^\s*-\s+(uses|name|run):/
-const checkoutStep = (text: string) => {
-  const lines = text.split('\n')
-  const start = lines.findIndex((l) => /^\s*-\s+uses:\s*actions\/checkout@/.test(l))
-  if (start < 0) return ''
-  let end = start + 1
-  while (end < lines.length && !STEP_HEAD.test(lines[end])) end++
-  return lines.slice(start, end).join('\n')
-}
+  text
+    .split(/\r?\n/)
+    .map((l) => /^\s*(?:-\s+)?uses:\s*['"]?actions\/checkout@([0-9a-f]{40})\b/.exec(l))
+    .filter((m) => m !== null)
+    .map((m) => m[1])
 
 // paths-ignore 항목 → .dockerignore 대응(기저 경로). 스킵되는 건 이미지 무영향뿐이어야 한다(fail-safe).
 const PATHS_IGNORE_SAFE: Record<string, string> = {
@@ -166,13 +164,14 @@ describe('deploy: GHCR CD 발행 정책 핀(#222)', () => {
     }
     expect([...all], 'checkout SHA 가 워크플로 간 불일치(균일 핀 회귀)').toHaveLength(1)
 
-    // persist-credentials 는 checkout 스텝 본문의 실제 YAML 키 라인이어야 한다. 파일 전역 매칭은
-    // 스텝에서 소실돼도 주석·타 스텝의 동일 문자열로 조용히 통과했다(기존 단언의 과소신호 결함).
-    const step = checkoutStep(sources['deploy.yml'])
+    // persist-credentials 는 checkout 스텝의 `with:` 블록 아래여야 한다 — GitHub 은 액션 입력을
+    // steps[*].with 에서만 읽으므로 env: 등 다른 키 아래 값은 무효다. 기존 파일 전역 매칭은 스텝에서
+    // 소실돼도 주석·타 스텝의 동일 문자열로 조용히 통과했다(과소신호 결함). release.yml 이 쓰는
+    // 구현을 그대로 공유해 "무엇이 안전인가" 가 두 벌로 갈라지지 않게 한다(#245).
     expect(
-      step.split('\n').some((l) => /^\s*persist-credentials:\s*false\s*(#.*)?$/.test(l)),
-      'deploy.yml checkout 스텝에 persist-credentials:false 키 부재',
-    ).toBe(true)
+      scanCheckoutPersistCredentials(sources['deploy.yml']),
+      'deploy.yml checkout 스텝의 with: 아래 persist-credentials:false 부재',
+    ).toEqual([])
   })
 
   // ⑪ override 파일 핀 — fleet·ttyd 각 build:!reset + ghcr image + GHCR_TAG.
