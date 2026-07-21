@@ -40,3 +40,18 @@ brain.tmp.json
 !.claude/agents/**/*.md
 !.claude/skills/
 !.claude/workflows/
+
+# superpowers brainstorming visual-companion scratch
+.superpowers/
+
+# 로컬 스크래치 산출물(#228 공개 노출 감사) — 전부 untracked 이고 히스토리에도 없으나 ignore 규칙이
+# 없어 `git add -A` 한 번이면 공개 히스토리에 영구 편입된다(레포는 이미 public = 되돌릴 수 없음).
+# 사전 차단 비용이 0 이라 명시 등재한다.
+# 도그푸드 세션 산출물(앱 화면 캡처·innerText 덤프 — 개인 절대경로 포함).
+.dogfood/
+# 도그푸드로 만든 게임의 화면 캡처(루트 스크래치).
+/game-*.png
+# 아키텍처 분석 문서는 레포 밖 `fleet-arch/` 보관이 원칙이다(퍼블릭 레포에 내부 구조 노출 금지).
+# docs/fleet-saas-infra-plan*.html 은 의도적 tracked 이므로 docs/*.html 일괄 제외는 쓰지 않는다.
+/docs/fleet-analysis.html
+/docs/fleet-workflow-rubric.html
