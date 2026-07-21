@@ -1,17 +1,6 @@
 ---
 name: fleet-backlog-rerank
 description: Fleet 백로그 재랭킹 — #27 차기공급원+신규 입력을 적대 검증으로 재평가해 next/later/drop 티어링. "이슈 27 재랭킹/큐레이션" 류 요청 시 사용.
-cloud-tools:
-  - Read
-  - Glob
-  - Grep
-  - Write
-  - Task
-  - Agent
-  - mcp__context7__resolve-library-id
-  - mcp__context7__query-docs
-  - Bash(gh issue view:*)
-  - Bash(gh issue list:*)
 ---
 
 # Fleet 백로그 재랭킹
@@ -37,4 +26,4 @@ cloud-tools:
 ## 주의
 
 - 컷오프 이후 변경 가능 — 라이브러리/모델/SDK 관련은 context7로 현행 교차검증.
-- 결과는 #27 코멘트 또는 추적 이슈(#135 클라우드 실행 시)에 남긴다.
+- 결과는 #27 코멘트에 남긴다.

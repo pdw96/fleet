@@ -2,14 +2,17 @@
 
 이 디렉터리는 Fleet 를 운영하는 **재사용 워크플로 자산**이다. 메타 추적 = 이슈 #135.
 
-## skills/ (포터블 실행 단위 — 로컬 `Skill` 툴 OR 클라우드 Action)
+## skills/ (포터블 실행 단위 — 로컬 `Skill` 툴)
 
 | 스킬 | 용도 | 실행 |
 |---|---|---|
-| `fleet-backlog-rerank` | 백로그 재랭킹(적대 검증) | 로컬 + 클라우드 |
-| `fleet-cutoff-gap-audit` | context7↔코드 갭 감사 | 로컬 + 클라우드 |
+| `fleet-backlog-rerank` | 백로그 재랭킹(적대 검증) | 로컬만 |
+| `fleet-cutoff-gap-audit` | context7↔코드 갭 감사 | 로컬만 |
 | `fleet-pr-review` | 다차원 적대 PR 리뷰 | 로컬만(Codex 봇 중복) |
 | `fleet-backlog-induction` | 백로그 착수 절차 래퍼 | 로컬만(L2-only) |
+| `fleet-plan-panel` | 판사 패널 계획 수립 | 로컬만 |
+
+> 클라우드(claude-code-action) 실행은 폐기됐다(ADR-0012) — 두 스킬은 로컬 `Skill` 툴로만 돈다.
 
 ## agents/ (Claude Code 커스텀 서브에이전트 — 스킬이 디스패치하는 역할 정의)
 

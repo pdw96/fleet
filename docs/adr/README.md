@@ -14,8 +14,9 @@
 | [0004](0004-adr-시스템-경량-시작.md) | Accepted | ADR 시스템을 경량으로 시작하고 구조 정합 lint 는 보류한다 |
 | [0005](0005-picker-docs-외부열기.md) | Accepted | picker 문서 외부열기는 main 매개 정적 URL handoff 로만 허용한다 |
 | [0006](0006-coderabbit-advisory-채택.md) | Accepted | CodeRabbit 을 advisory 보조 리뷰어로 채택한다(비-required) |
-| [0007](0007-클라우드-스킬-계약강제-human-gated-write.md) | Accepted | 클라우드 자동화 스킬은 계약을 기계 강제하고 write 는 human-gated 로 둔다 |
+| [0007](0007-클라우드-스킬-계약강제-human-gated-write.md) | Superseded ([0012](0012-클라우드-에이전트-워크플로-폐기-로컬-스킬-일원화.md)) | 클라우드 자동화 스킬은 계약을 기계 강제하고 write 는 human-gated 로 둔다 |
 | [0008](0008-saas-전환-v3-터널-셀프호스트-채택.md) | Accepted | SaaS 전환의 첫 단계로 v3 터널 셀프호스트(컨테이너+터널)를 채택한다 |
 | [0009](0009-b6-자식-소켓-격리-경계.md) | Accepted | B6 격리는 서버 env 시크릿(allowlist)·토큰 수명(소켓 exp)까지, cli-auth 파일 격리는 Phase C |
 | [0010](0010-컨테이너-샌드박스-경계-cli-unsandboxed.md) | Accepted | 컨테이너 배포는 컨테이너를 유일 샌드박스 경계로 신뢰하고 CLI 내부 샌드박스를 끈다(명시 opt-in·미지값 loud fail) |
 | [0011](0011-graceful-drain-경계-drainTimeout-grace-조율.md) | Accepted | graceful drain 의 drainTimeout↔stop_grace_period 조율은 코드가 아니라 문서·페어링 env·smoke canary 로 강제한다 |
+| [0012](0012-클라우드-에이전트-워크플로-폐기-로컬-스킬-일원화.md) | Accepted | 클라우드 에이전트 워크플로(claude-code-action)를 폐기하고 두 스킬을 로컬 전용으로 일원화한다(#228·ADR-0007 폐쇄) |
