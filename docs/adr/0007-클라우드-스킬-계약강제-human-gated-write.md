@@ -1,10 +1,19 @@
 ---
 adr: 7
 title: 클라우드 자동화 스킬은 계약을 기계 강제하고 write 작업은 human-gated 로 둔다
-status: Accepted
+status: Superseded
+superseded-by: 12
 date: 2026-07-01
-related: "#176, spec:2026-07-01-issue176-cloud-harness-alignment-design, memory:codex-cloud-phantom-commits"
+related: "#176, #228, spec:2026-07-01-issue176-cloud-harness-alignment-design, memory:codex-cloud-phantom-commits"
 ---
+
+> **[Superseded by ADR-0012 · 2026-07-21]** 이 ADR 의 하단 «잔여» 절이 지정한 "public 전환 시
+> 폐쇄 필수"(에이전트에서 Bash·시크릿 제거)는 미실행 상태로 레포가 public 이 됐다(#228 감사).
+> 후속 사실확인 결과 부분완화(Bash 제거)로는 폐쇄 불가임이 드러났다(`Read` 툴이 `/proc/self/environ`
+> 으로 프로세스 env 시크릿을 그대로 읽고, `INPUT_CLAUDE_CODE_OAUTH_TOKEN` 은 구조적으로 에이전트
+> 프로세스 env 에 남는다). 실행 이력도 2회/0회에 그쳐 ADR-0003(과설계 ROI 경계)에 걸린다. 따라서
+> **클라우드 워크플로 2종을 폐기**하고 두 스킬을 로컬 전용으로 일원화한다(ADR-0012). 아래 본문은
+> 당시 결정의 역사적 기록으로 보존한다.
 
 ## 맥락
 클라우드 워크플로(cutoff-gap-audit·backlog-rerank)가 참조 스킬 계약을 구조적으로 미충족했다(context7
