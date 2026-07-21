@@ -84,14 +84,31 @@ const RE_PERSIST_FALSE = /^\s*persist-credentials:\s*['"]?false['"]?\s*(?:#.*)?$
 export function scanReleaseSafety(text) {
   const hits = []
   const lines = text.split(/\r?\n/)
-  const indentOf = (l) => l.match(/^\s*/)[0].length
   // (a) attestation: uncommented `uses: actions/attest-build-provenance@<40-hex SHA>` 존재(삭제·un-pin 둘 다 적발).
   if (!lines.some((l) => RE_ATTEST.test(l)))
     hits.push({
       rule: 'attestation',
       msg: 'build provenance attestation(actions/attest-build-provenance@<40-hex SHA>) 스텝 누락/un-pin — 미서명 릴리스 위험',
     })
-  // (b) YAML 스텝(`- ...`) 블록을 들여쓰기로 잘라, checkout 스텝마다 with: 아래 persist-credentials:false 확인.
+  // (b) checkout 스텝의 자격증명 잔류 — 공유 구현에 위임(deploy.yml 핀 테스트도 같은 구현을 쓴다).
+  hits.push(...scanCheckoutPersistCredentials(text))
+  return hits
+}
+
+/**
+ * checkout 스텝 자격증명 잔류 회귀 센서(#175 → #245 에서 공유 추출).
+ * YAML 리스트 아이템(`- `)을 스텝 경계로 잡아 들여쓰기로 블록을 자른 뒤, 그 블록이 checkout 이면
+ * (uses 위치·따옴표 무관 — name-first 도) 그 스텝의 `with:` 블록 안에서만 uncommented
+ * persist-credentials:false 를 요구한다. GitHub 은 액션 입력을 steps[*].with 에서만 읽으므로
+ * env: 등 다른 키 아래 값은 무효다 — 스텝 어디든 허용하면 자격증명이 잔류해도 통과한다(Codex PR리뷰).
+ * release.yml(scanReleaseSafety)·deploy.yml(deploy-cd-pin.test.ts) 이 이 단일 구현을 공유해
+ * "무엇이 안전인가"가 두 벌로 갈라지지 않게 한다.
+ * @returns {{rule:string, line:number, msg:string}[]} 위반 목록(빈 배열 = 안전)
+ */
+export function scanCheckoutPersistCredentials(text) {
+  const hits = []
+  const lines = text.split(/\r?\n/)
+  const indentOf = (l) => l.match(/^\s*/)[0].length
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^(\s*)-\s/)
     if (!m) continue
