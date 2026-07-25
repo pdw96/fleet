@@ -355,6 +355,72 @@ describe('T2 — 배포 실패 모드 분기(실측 근거 · 조용한 폴백 �
   )
 })
 
+/**
+ * Codex PR 리뷰 P1(#257 2R) — 스펙 §W-2 는 「링크 검사 대상 한정: 디렉터리 = `isLinkSync==='dir'`,
+ * **JSON = `'regular'|'missing'`**」을 계약으로 둔다. 초안은 디렉터리만 검사하고 **레코드 파일은 검사 없이
+ * `readFileSync` 에 넘겼다**. 실제 위험 2종: ⓐFIFO 면 읽기가 **무기한 블록**(코디네이션 영역은 ttyd 셸과
+ * 같은 신뢰 도메인이라 누구나 mkfifo 할 수 있다 — §W-2-a) ⓑsymlink 면 **영역 밖 임의 JSON 이 권위**가 된다.
+ */
+describe('T2 — 레코드 파일 종류 검사(읽기 전에 · fail-closed)', () => {
+  it('area.json 자리가 디렉터리면 읽지 않고 거부한다', async () => {
+    const gitDir = fakeGitDir()
+    mkdirSync(join(gitDir, AREA_DIR_NAME, AREA_RECORD_FILE), { recursive: true })
+    const r = await openCoordinationArea({ repo: fakeRepo(gitDir), ...linuxLike })
+    expect(r.status === 'disabled' && r.reason).toBe('unsafe-path')
+  })
+
+  it.runIf(process.platform !== 'win32')(
+    'area.json 이 symlink 면 거부한다 — 영역 밖 파일이 권위가 되지 않는다(POSIX)',
+    async () => {
+      const gitDir = fakeGitDir()
+      const outside = join(mkTmp(), 'evil.json')
+      writeFileSync(
+        outside,
+        JSON.stringify({
+          schemaVersion: 1,
+          lockBackend: 'uds-abstract',
+          createdAt: 0,
+          createdBy: 'X',
+        }),
+      )
+      mkdirSync(join(gitDir, AREA_DIR_NAME), { recursive: true, mode: 0o700 })
+      symlinkSync(outside, join(gitDir, AREA_DIR_NAME, AREA_RECORD_FILE), 'file')
+
+      const r = await openCoordinationArea({ repo: fakeRepo(gitDir), ...linuxLike })
+      expect(r.status === 'disabled' && r.reason).toBe('unsafe-path')
+    },
+  )
+
+  it.runIf(process.platform !== 'win32')(
+    'area.json 이 FIFO 면 읽지 않는다 — 읽었다면 이 테스트가 영원히 매달린다(POSIX)',
+    async () => {
+      const gitDir = fakeGitDir()
+      mkdirSync(join(gitDir, AREA_DIR_NAME), { recursive: true, mode: 0o700 })
+      execFileSync('mkfifo', [join(gitDir, AREA_DIR_NAME, AREA_RECORD_FILE)])
+
+      const r = await openCoordinationArea({ repo: fakeRepo(gitDir), ...linuxLike })
+      expect(r.status === 'disabled' && r.reason).toBe('unsafe-path')
+    },
+    10_000,
+  )
+})
+
+describe('T2 — 원자적 발행: 부분 기록이 관측되지 않는다', () => {
+  it('성공 후 영역에는 area.json 만 남는다(tmp 잔재 0)', async () => {
+    const gitDir = fakeGitDir()
+    const r = await openCoordinationArea({ repo: fakeRepo(gitDir), ...linuxLike })
+    expect(readdirSync(expectOpen(r).root).sort()).toEqual([AREA_RECORD_FILE])
+  })
+
+  it('기록은 항상 완전한 JSON 이다(발행 전 이름이 노출되지 않는다)', async () => {
+    const gitDir = fakeGitDir()
+    const r = await openCoordinationArea({ repo: fakeRepo(gitDir), ...linuxLike })
+    const raw = readFileSync(join(expectOpen(r).root, AREA_RECORD_FILE), 'utf8')
+    expect(() => JSON.parse(raw) as unknown).not.toThrow()
+    expect(JSON.parse(raw)).toMatchObject({ schemaVersion: AREA_SCHEMA_VERSION })
+  })
+})
+
 describe('T2 — 링크 경유 영역 거부(경로 검사 · path-guard 관용구 승계)', () => {
   it.runIf(process.platform !== 'win32')('영역 루트가 symlink 면 열지 않는다(POSIX)', async () => {
     const base = mkTmp()

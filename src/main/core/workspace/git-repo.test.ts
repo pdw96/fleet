@@ -182,7 +182,7 @@ describe('T2/§3-T6 — `--path-format=absolute` 부재 시 상대 `.git` 오판
     // `resolve(process.cwd(), stdout)` 이면 **Fleet 자신의 .git** 을 영역으로 잡는다 — 정상 상태를 broken
     // 으로 오판하는 정도가 아니라, 남의 레포에 코디네이션 영역을 만든다.
     const root = join(mkTmp(), 'some-repo')
-    const r = await createGitRepo(root, relativeRunner('.git')).commonGitDir()
+    const r = await createGitRepo(root, relativeRunner('.git\nfalse')).commonGitDir()
 
     expect(r.status).toBe('ok')
     expect(r.status === 'ok' && r.path).toBe(join(root, '.git'))
@@ -192,15 +192,38 @@ describe('T2/§3-T6 — `--path-format=absolute` 부재 시 상대 `.git` 오판
 
   it('bare 의 상대 출력(`.`)도 root 로 해소된다', async () => {
     const root = mkTmp()
-    const r = await createGitRepo(root, relativeRunner('.')).commonGitDir()
+    const r = await createGitRepo(root, relativeRunner('.\ntrue')).commonGitDir()
     expect(r.status === 'ok' && r.path).toBe(root)
   })
 
   it('명령에 `--path-format=absolute` 를 실제로 싣는다(구형 git 의존 제거)', async () => {
-    const runner = relativeRunner('.git')
+    const runner = relativeRunner('.git\nfalse')
     await createGitRepo(mkTmp(), runner).commonGitDir()
     expect(runner.seen[0]).toContain('--path-format=absolute')
     expect(runner.seen[0]).toContain('--git-common-dir')
+  })
+
+  /**
+   * **git <2.31 은 미지 옵션을 stdout 으로 에코하고 exit 0 한다**(실측: `git rev-parse
+   * --totally-unknown-flag` → stdout `--totally-unknown-flag`, exit 0). 따라서 `--path-format=absolute`
+   * 를 모르는 git 에서는 첫 줄이 **옵션 문자열**이 되어, 그대로 해소하면 코디네이션 영역을
+   * `<root>/--path-format=absolute/fleet` 같은 **엉뚱한 경로**에 만든다.
+   *
+   * 폴백하지 않고 **fail-closed** 한다(스펙의 「폴백 경로 부재」 원칙) — 구버전 git 은 이 기능을 못 쓴다는
+   * 것이 계약이고, 조용히 다른 경로에서 도는 것보다 안 도는 편이 안전하다.
+   */
+  it('미지 옵션 에코(git <2.31)를 경로로 오인하지 않는다 — fail-closed', async () => {
+    const r = await createGitRepo(
+      mkTmp(),
+      relativeRunner('--path-format=absolute\n.git\nfalse'),
+    ).commonGitDir()
+    expect(r.status).toBe('failed')
+    expect(r.status === 'failed' && r.stderr).toMatch(/2\.31|예상 형식/)
+  })
+
+  it('두 번째 줄이 true/false 가 아니면 출력 형식 위반으로 거부한다', async () => {
+    const r = await createGitRepo(mkTmp(), relativeRunner('.git')).commonGitDir()
+    expect(r.status).toBe('failed')
   })
 
   it('빈 출력은 성공으로 취급하지 않는다(빈 문자열 → root 로 해소되는 조용한 오답 차단)', async () => {

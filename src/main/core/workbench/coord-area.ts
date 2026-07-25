@@ -1,5 +1,14 @@
-import { createHash } from 'node:crypto'
-import { chmodSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 
 import type { GitRepo } from '../workspace/git'
@@ -153,10 +162,25 @@ const errText = (err: unknown): string =>
   err instanceof Error ? err.message : `알 수 없는 오류: ${String(err)}`
 
 type RecordProbe =
-  { kind: 'missing' } | { kind: 'corrupt'; detail: string } | { kind: 'ok'; record: AreaRecord }
+  | { kind: 'missing' }
+  | { kind: 'corrupt'; detail: string }
+  | { kind: 'unsafe'; detail: string }
+  | { kind: 'ok'; record: AreaRecord }
 
-/** 레코드 1회 읽기 — 장기 핸들·watch 를 만들지 않는다(리더 규율 D-9). */
+/**
+ * 레코드 1회 읽기 — 장기 핸들·watch 를 만들지 않는다(리더 규율 D-9).
+ *
+ * **읽기 전에 파일 종류를 본다**(스펙 §W-2 「JSON = `'regular'|'missing'`」). 이 영역은 ttyd 셸·CLI
+ * 에이전트와 **같은 신뢰 도메인**이라(§W-2-a) 누구든 그 자리에 FIFO 나 symlink 를 놓을 수 있다:
+ * FIFO 면 `readFileSync` 가 **무기한 블록**되고(부팅이 영영 안 끝난다), symlink 면 **영역 밖 임의 JSON 이
+ * 권위**가 된다. 둘 다 fail-closed 로 막는다.
+ */
 const probeRecord = (path: string): RecordProbe => {
+  const kind = isLinkSync(path)
+  if (kind === 'missing') return { kind: 'missing' }
+  if (kind !== 'regular') {
+    return { kind: 'unsafe', detail: `area.json 이 정규 파일이 아님(${kind}): ${path}` }
+  }
   let raw: string
   try {
     raw = readFileSync(path, 'utf8')
@@ -219,6 +243,7 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
   }
 
   const probe = probeRecord(join(root, AREA_RECORD_FILE))
+  if (probe.kind === 'unsafe') return disabled('unsafe-path', probe.detail)
   if (probe.kind === 'corrupt') {
     return disabled('reconciliation-required', `area.json 판정 불가: ${probe.detail}`)
   }
@@ -239,20 +264,25 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
 
   try {
     mkdirSync(root, { recursive: true, mode: 0o700 })
-    if (process.platform !== 'win32') {
-      // 이미 존재하던 디렉터리의 모드까지 강제한다(umask·과거 생성분 보정).
-      chmodSync(root, 0o700)
-    }
   } catch (err) {
     // 컨테이너 실측: git 이 성공해도 `.git` 소유자가 다르면 여기서 EACCES 다("git 성공 ⇒ 쓰기 가능"은 거짓).
     return disabled('io-failure', `영역 디렉터리 생성 실패: ${errText(err)}`)
   }
 
+  // ⚠ **소유자 검사가 `chmod` 보다 먼저**여야 한다(CodeRabbit PR #257). 남의 uid 소유 디렉터리에
+  // `chmodSync` 하면 POSIX 에서 EPERM 이고, 그 예외를 io-failure 로 잡으면 **`unsafe-path` 진단이 가려진다**
+  // — fail-closed 자체는 유지되지만 「운영자가 고칠 대상을 사유로 구분한다」는 이 모듈의 설계가 깨진다.
   if (process.platform !== 'win32') {
     const uid = process.getuid?.()
     const st = statSync(root)
     if (ownerMismatch(st.uid, uid)) {
       return disabled('unsafe-path', `영역 소유자가 자신이 아님(uid ${st.uid} ≠ ${uid}): ${root}`)
+    }
+    try {
+      // 이미 존재하던 디렉터리의 모드까지 강제한다(umask·과거 생성분 보정).
+      chmodSync(root, 0o700)
+    } catch (err) {
+      return disabled('io-failure', `영역 디렉터리 권한 설정 실패: ${errText(err)}`)
     }
   }
 
@@ -266,18 +296,22 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
       createdAt: (opts.now ?? Date.now)(),
       createdBy: opts.instanceId,
     }
+    // **원자적 발행**(Codex PR #257 P1): `flag:'wx'` 는 create-only 지만 **바이트가 채워지기 전에 이름이
+    // 노출**된다 — 경합 상대가 EEXIST 를 받고 재읽기하면 빈/부분 JSON 을 보고 `reconciliation-required` 로
+    // 오판할 수 있고, 쓰기 도중 크래시는 **영구 부분 파일**을 남긴다. tmp 에 완전히 쓴 뒤 `link` 로 발행하면
+    // 「이름이 보이는 순간 내용이 완전」이 성립하고, `link` 자체가 원자적 create-only 라 경합 의미론도 유지된다.
+    // (내구 순서 fsync 계약은 §W-5 `DurableFs` = PR2 범위. 여기서는 **가시성**만 원자화한다.)
+    const tmp = join(root, `.${AREA_RECORD_FILE}.${randomBytes(8).toString('hex')}.tmp`)
     try {
-      // create-only — 동시 기동 경합에서 나중 도착자가 남의 기록을 덮지 않는다.
-      writeFileSync(join(root, AREA_RECORD_FILE), `${JSON.stringify(fresh, null, 2)}\n`, {
-        flag: 'wx',
-        mode: 0o600,
-      })
+      writeFileSync(tmp, `${JSON.stringify(fresh, null, 2)}\n`, { mode: 0o600 })
+      linkSync(tmp, join(root, AREA_RECORD_FILE))
       record = fresh
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
         return disabled('io-failure', `area.json 기록 실패: ${errText(err)}`)
       }
       const again = probeRecord(join(root, AREA_RECORD_FILE))
+      if (again.kind === 'unsafe') return disabled('unsafe-path', again.detail)
       if (again.kind !== 'ok') {
         return disabled('reconciliation-required', 'area.json 경합 후 재판정 불가')
       }
@@ -296,6 +330,14 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
           lockBackend: raced.lockBackend,
           digest: endpointDigest(commonGitDir),
         },
+      }
+    } finally {
+      // 발행 성공이든 경합 패배든 tmp 는 남기지 않는다 — 영역 디렉터리 내용이 계약이기 때문
+      // (「루트에는 area.json 만」 전수 단언). 삭제 실패는 진단 가치가 없어 삼킨다.
+      try {
+        unlinkSync(tmp)
+      } catch {
+        /* 이미 없거나 지울 수 없으면 다음 부팅이 같은 이름을 다시 쓰지 않는다(이름에 난수 포함) */
       }
     }
   }

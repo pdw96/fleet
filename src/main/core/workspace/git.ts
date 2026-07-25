@@ -164,8 +164,21 @@ export function createGitRepo(root: string, git: GitRunner = defaultGitRunner): 
       ])
       const [dirLine, bareLine] = r.stdout.split(/\r?\n/)
       const raw = dirLine?.trim() ?? ''
+      const bare = bareLine?.trim() ?? ''
       if (r.code !== 0 || raw === '') return failed(r)
-      return { status: 'ok', path: resolve(root, raw), bare: bareLine?.trim() === 'true' }
+      // ⚠ **git <2.31 은 미지 옵션을 stdout 으로 에코하고 exit 0 한다**(실측: `git rev-parse
+      // --totally-unknown-flag` → stdout `--totally-unknown-flag`, exit 0). 그 git 에서는 첫 줄이
+      // `--path-format=absolute` 가 되어, 그대로 해소하면 코디네이션 영역을 `<root>/--path-format=absolute`
+      // 같은 **엉뚱한 경로**에 만든다. 출력 형식을 검증해 **fail-closed** 한다 — 폴백 경로는 두지 않는다
+      // (구버전에서 조용히 다른 좌표계로 도는 것보다 기능이 꺼지는 편이 안전하다).
+      if (raw.startsWith('-') || (bare !== 'true' && bare !== 'false')) {
+        return {
+          status: 'failed',
+          stderr: `git rev-parse 출력이 예상 형식이 아님(git ≥2.31 필요): ${JSON.stringify(r.stdout.slice(0, 120))}`,
+          code: r.code,
+        }
+      }
+      return { status: 'ok', path: resolve(root, raw), bare: bare === 'true' }
     },
     async listWorktrees() {
       const r = await run(['worktree', 'list', '--porcelain'])
