@@ -168,6 +168,64 @@ skip 되므로). 이식 가능한 falsifier(「git 이 말한 common gitdir 이 
 경로에 영역을 만들지 않는다」)를 추가해 닫았다 — PR0 이 확정한 「선언한 회귀를 실제로 못 잡는 테스트」
 계열의 재발이다.
 
+#### PR1b 착수 전 실측 정정 (2026-07-25 · 6렌즈 감사 + Docker 실 Linux 실측)
+
+PR0·PR1a 가 확립한 「착수 전 ripple 전수 감사」를 PR1b(T3·T4·T6)에 적용했다. 6렌즈 find → 렌즈별 독립
+refuter(**60 CONFIRMED · 19 PARTIAL · 0 REFUTED**), 그리고 **하중 프리미티브는 메인 루프가 Docker
+컨테이너에서 직접 실측**했다(계획 §2 가 「doc-only」로 남긴 것을 measured 로 승격 — 실측 출력은 PR 본문 인용).
+
+**실측 확정 사실(추상 유닉스 소켓 · `--user 1000:1000` · 기본 seccomp)**
+
+| 사실 | Node 22.22.3(**필수 게이트**) | Node 24.18(프로덕션) |
+|---|---|---|
+| `listen({path:'\0name'})` | 성공 · `listening=true` | 동일 |
+| 같은 이름 재bind | `EADDRINUSE` · `setImmediate` 턴 **0** | 동일 |
+| 이름 총 107·108B | 성공 | 성공 |
+| **이름 총 109B** | **성공(107B 로 무성 절단)** | **EINVAL** |
+| **앞 107B 공유 109B 두 이름** | **EADDRINUSE = 무성 충돌** | (도달 불가 · EINVAL) |
+| `close()` 직후 | `listening` 즉시 false · 콜백 미대기 재획득 성공 | 동일 |
+| 커넥션 1개 유입 후 `close(cb)` | **cb 미발화(대기)** | 동일 |
+| `unref()` 후 | 배타성 유지(EADDRINUSE) | 동일 |
+| SIGKILL 소유자 | 즉시 재획득(턴 0) · 파일시스템 조작 무영향 | 동일 |
+| `/proc/net/unix` | `@<name>` 정확 1행 | 동일 |
+| `address()` | **입력 문자열과 동일 · `close()` 후에도 유지** | 동일 |
+| win32 | `listen('\0x')` = **EINVAL**(조용한 성공 없음) | — |
+
+| # | 계획/스펙 원문 | 실측 | 조치 |
+|---|---|---|---|
+| ⑭ | 정정 ⑦·§W-2 「초과는 EINVAL · 108 OK / 109 EINVAL」 | **런타임 메이저마다 다르다.** 필수 게이트(`.nvmrc`=22.22.3)에서 109B 는 **성공 + 107B 절단**이고, 앞 107B 를 공유하는 서로 다른 두 키는 **EADDRINUSE 로 충돌**한다(무성 이름 붕괴 — 스펙의 경로 예산 preflight 가 애초에 막으려던 바로 그 성질) | 예산 가드를 **우리 preflight 단독**으로 확정(libuv 위임 금지). 경계 테이블은 **순수 함수**로만 검증(양 OS·양 메이저 동일) — 실 소켓으로 109B 를 단언하면 **필수 게이트 RED / advisory GREEN**. 단위는 문자가 아니라 **`Buffer.byteLength`**(한글 36자=108B 실측) · 상한 상수 = 선행 NUL 포함 **108** |
+| ⑮ | 정정 ⑧ 양성 단언 ⓐ 「`server.address()` 코드포인트 0 시작」 | `address()` 는 `_pipeName`(=`listen` 인자) **에코**이며 `close()` 후에도 그대로 남는다(양 메이저 실측 + `lib/net.js` 소스: Pipe 프로토타입에 `getsockname` 미등록) → **커널 증거가 아니다**. 보유·생존 판정에 쓰면 false-GREEN | ⓐ를 **이름 유도 순수 함수 반환값**의 단언으로 강등(양 OS) · 커널 양성 증거는 ⓑ(`/proc/net/unix` 정확 1행 · Linux 게이트) **단독** 귀속 · 「`address()` 가 판정 경로에 등장하지 않음」을 소스 스캔으로 핀 |
+| ⑯ | 계획 T3 「L-2 조작화: `setImmediate` 턴 0 이 블로킹 재시도를 RED 로 만드는 **유일한** 형태」 | bind 결과는 `process.nextTick` 경유다(`setupListenHandle`). **nextTick 큐는 check 페이즈보다 먼저 드레인**되므로 nextTick·마이크로태스크 재시도 루프는 턴 0 을 **그대로 통과**한다 → 「유일한 형태」는 거짓 | **3중 조작화**: ①페이크 백엔드 **bind 시도 카운트 == 1**(주 falsifier) ②fake timers 下 `vi.getTimerCount()===0` ③턴 카운터 0(보조). ①②③을 한 `it` 에 합치지 않는다(fake timers 가 `setImmediate` 를 페이크) |
+| ⑰ | 스펙 §W-2 「108바이트 초과면 **throw**」 · Node 문서 「will throw」 | 실제 경로는 throw 가 아니라 **`'error'` 이벤트**(`handle.bind()` 수치 반환 → `nextTick(emitErrorNT)`) | 예산 위반은 **우리 preflight 의 fail-closed 반환**(`unavailable`)으로 확정 · `toThrow()` 형 단언 금지 · 어댑터는 `once('error')`·`once('listening')` 을 **`listen()` 호출 전 동기 부착**(unhandled 'error' = 프로세스 크래시) |
+| ⑱ | 계획 T4 「판정에 디스크 I/O 0 — 주입 `DurableFs`/fs 계층 호출 카운트 0」 | `DurableFs` 는 **PR2 T7 범위로 PR1b 에 존재하지 않는다**. 유일 대안 `vi.spyOn(node:fs)` 는 §1-5 금지 ∧ win32 에서 조용히 무동작(=spy 미동작 → 카운터 0 → **정의상 false-GREEN**) | 2층 재조작화: ⓐ**구조 단언** — 락 모듈이 `node:fs`·`node:fs/promises` 를 **0회 import**(스캔 + 앵커) ⓑ**행동 단언** — 페이크 백엔드 `calls[]` 로 판정 경로의 백엔드 조회 외 호출 0 + 같은 describe 에 ≥1회 호출 형제 행. `DurableFs` 참조는 T4 문안에서 **삭제**(PR2 이월) |
+| ⑲ | 계획 T4 「`server.listening===false` 판정 · 양성 통제」 | 그 2종 방어는 「`listening` 을 읽는 구현」과 「자체 `released` 불리언을 읽는 구현」을 **구분하지 못한다**(둘 다 디스크 0 · 둘 다 양성 통제 통과) → T4 가 잡겠다고 선언한 결함이 실제로 안 잡힌다 | **out-of-band 무효화 행 신설**: `release()` 를 거치지 않고 밑단 endpoint 만 무효화(페이크 `forceLose`) 후 변이 시도 → `{kind:'lost',reason:'stolen'}`. 내부 플래그 구현은 **이 행에서만** RED |
+| ⑳ | 계획 T4 「`lease-lost` fail-closed」 | `lease-lost` 는 스펙 **어떤 타입에도 없다**(산문 §W-3:278 1곳). 채택 API = `LeaseCheck = {kind:'owned'} \| {kind:'lost'; reason:'released'\|'stolen'}`(spec:346) · 소비 측 어휘는 `lease-invalid`(PR2) | 반환 타입은 **`LeaseCheck` 단일** · `lease-lost` 문자열 제거 · 실 어댑터는 `'released'` **만** 산출하고 `'stolen'` 은 **페이크 전용 경로**(PR2 T17c 가 재사용)임을 인터페이스 주석에 명시 |
+| ㉑ | 계획 T6 「역순은 **tsc 가 막고** `@ts-expect-error` 로 핀한다」 | **루트 재민팅 한 줄로 완전 무력화**된다(실측: slot 보유 중 `withRepoLock(rootCtx())` = tsc 에러 0). 콜백 인자를 무시하고 루트를 새로 만들면 서열이 타입상 합법. 게다가 `as never`·`as unknown as`·`Parameters<>`·`keyof` **4종 우회 전부 tsc·현행 eslint 통과** | **3층 분리**: ①**런타임 서열 가드가 1차 방어** — `AsyncLocalStorage`(모듈 전역 변수는 **불가** — §W-12 가 동시 bench 2 이상을 강제하므로 허위 위반을 던진다)로 현재 레벨 추적 · 역순 = `lock-order-violation` ②루트 민팅 진입점 단일 + 호출부 **exact 핀** ③타입 핀은 「스레딩 사고 방지」로 재분류. 브랜드는 **미export `unique symbol` 필수**(문자열 프로퍼티 브랜드는 `{__level:0}` 리터럴로 위조 가능 — 실측) · 위조 핀 3종 등재 |
+| ㉒ | 계획 T6 「`@ts-expect-error` 로 핀」 | `ban-ts-comment` 가 **error** 이고 **설명 ≥3자 필수**(레포 선례 정확히 1건) · 판정자는 vitest 가 아니라 `npm run typecheck`(테스트 파일이 프로그램에 포함됨 — 확인) | 모든 핀에 설명 문구 필수 · 「타입 핀의 유일 강제자는 typecheck」를 주석에 명시 |
+| ㉓ | 스펙 §3-T11 「역순 경로 부재(구조 단언) **+ 데드락 부재**」 | 계획 T6 이 **「데드락 부재」 절을 탈락**시켰고, 「구조 단언」을 `@ts-expect-error` 로만 해석했다(모듈 내부 역순 호출·raw 프리미티브 실수 export 는 무신호) | 3행 추가: ⓐ락 모듈 **export 집합 exact 동치**(raw bind 미노출 — §0 「git export 정확히 8개」 선례) ⓑraw 프리미티브 이름 전 소스 스캔(stripComments + 앵커) ⓒ**데드락 부재 관측형** = 페이크로 3키 전부 held → 합성이 턴 0 에 `held` 반환·hang 없음 |
+| ㉔ | 계획 T3 §3-T7 인용 | 스펙 원문의 **두 번째 절**(«파일시스템 어디를 지워도 보유 중인 락이 영향받지 않음»)이 탈락. 「파일 0개 증가」는 *쓰기* 를, 빠진 절은 *읽기 의존* 을 잡는다 — 영역 파일 존재를 부수 조건으로 보는 구현은 다른 단언 전부를 통과 | Linux 게이트 행 추가: 락 보유 중 `rm -rf <area>/*` → ⓐ2차 획득 여전히 `held` ⓑ보유 핸들 `revalidate()` 여전히 `owned` ⓒ`release()` 후 재획득 성공(실측 확인) |
+| ㉕ | 계획 T3 「회수 뮤텍스·`connect` 프로브 전부 소멸」 | 방향은 옳으나 **§3-T60①·§0.1 C2 가 `connect`/ECONNREFUSED 를 여전히 요구**한다(§0.1 은 「설계에 우선」인 최상위 정정 표이고 폐기 표시가 없다) | 「§3-T60①·§0.1 C2 의 `connect`/ECONNREFUSED 문안은 §W-3 축소로 폐기 · 권위는 §W-3」을 명시하고 **PR 본문 「스펙 정정」절에 등재**(리뷰어가 §0.1 을 권위로 읽어 P1 을 되짚는 것을 선차단) |
+| ㉖ | 계획 T3·T6 결정론 문안 | 2건 stale: 전역 `testTimeout: 20_000` 이 **PR1a 에 이미 랜딩**(「기본 5s / 각 it ≥15s」는 **하향**) · vitest 4.1.10 은 `--no-file-parallelism`·`fileParallelism`·projects 글롭을 **가진다**(「수단이 없다」는 반증 · 단 `poolOptions` 는 v4 에서 제거) | 명시 timeout 신설 금지(전역 20s 승계) · 병렬 제어는 **불요**로 확정 — 추상 이름공간은 net ns **전역**이라 파일 순차화가 아니라 **테스트별 이름 무작위화**가 올바른 격리 수단(§3.2 의 「mkdtemp 격리」는 pathname 시절 유물) |
+| ㉗ | 계획 T6 「자식 스크립트는 `__testing__/` 에 두고 `coverage.exclude` 에 등재」 | 레포에 **`fork(` 0건 · vitest 안에서 자식 스크립트 파일을 띄우는 선례 0건** — 유일 관용구는 **`node -e` 인라인**(13곳). `.ts` 자식은 실행 자체가 불가(`allowImportingTsExtensions` 미설정 · `type` 필드 부재) | 자식은 **`node -e` 인라인**(§3-T8 문면 자신과 일치)으로 확정 → 자식용 `coverage.exclude` 등재는 **불요**. 단 **페이크 백엔드는 두 테스트 파일이 공유**하므로 `__testing__/*.ts`(import 전용 · 실행 안 함)로 두고 `coverage.exclude` + config 객체 핀은 **그 목적으로** 존속 |
+| ㉘ | 계획 T6 「파일 배리어」 | 선례 0 · PR1a 는 경합 테스트에서 「실 동시성 대신 주입 시계」로 **정반대** 결정을 명문화했다 | 1순위 = **결정론 핸드셰이크**(자식 보유 → 부모 `held` 단언 → 자식 해제 → 부모 획득). 이것만으로도 in-process Map 구현은 RED = §3-T22 존재 이유 충족. 배리어 XOR 행은 **자기검사(자식이 실제로 배리어에 갇혔음을 관측) 먼저 GREEN** 후에만 추가(§6 R6 패턴 이식) |
+| ㉙ | 계획 §1-7 「신규 모듈 자체 statements ≥86%」 · §3.1 「구속 메트릭은 statements」 | win32 로컬 실측 = **S 93.51%(3532/3777) · B 86.68% · F 94.30%(613/650) · L 95.12%** → 완전 미커버 추가 예산은 **functions 가 구속**(≤31개). 그리고 **PR1a 가 이미 win32 에서 84.94% 로 미달**(미커버 14행 중 10행은 win32 도달 불가 · 4행은 플랫폼 무관 오류 경로) · `vitest.config.ts:23` 주석 baseline 은 pre-PR1a stale | 완료 조건을 **절대 개수**로 재기술: 실 어댑터 ≤140물리행 ∧ 미커버 stmts ≤40 ∧ 미커버 funcs ≤10 · 「≥86%」의 **측정 권위는 ubuntu(CI)** 이고 플랫폼 게이트 파일은 win32 수치에서 명시 제외 · PR 본문에 **분자/분모 절대값** 기록 |
+| ㉚ | 계획 「Linux 전용 행은 로컬 skip」 | ⓐ`it` 본문 조기 `return` 형 게이트는 skip 이 아니라 **PASSED 로 집계**(레포 7건 선례) ⓑ `coverage.thresholds` 를 단언하는 테스트가 **0건** → floor 하향이 완전 무신호(동형 config 핀 선례는 4건 존재) ⓒ레포에 **로컬 Linux 검증 절차 부재** · win32 `node_modules` 마운트는 vitest 기동 자체를 막는다(실측) | ⓐ`describe.skipIf` 만 사용 + 조기 `return` 금지를 스캔으로 강제(워크벤치 한정) ⓑ`scripts/vitest-config-pin.test.ts` 신설(커버리지 비용 0) ⓒ**레포 복사 + `npm ci`** 방식 컨테이너 하니스로 Linux 게이트 행을 실제 실행(검증 완료 — 절차를 PR 본문에 기록) |
+| ㉛ | 「이 플랫폼에서 가용한 백엔드」 판정자 | 계획·스펙 **어디에도 문장이 없다**. PR1a 는 `supportedBackends` 를 호출자 주입으로 남겼고 프로덕션 호출부는 0건 | **PR1b 에 순수 판정 함수만** 착지 — `availableLockBackends(platform)`(`ownerMismatch` 선례와 동형 「판정만 떼어 양 OS 검증」) · 호출부는 **PR7**(§1-8 무변) |
+| ㉜ | 계획 T6 L-5a 부칙(「`r` 보유 중 bench 리스 대기 금지」) | L-2 가 성립하는 한 프리미티브 층에 「대기」 상태가 없어 **관측 대상이 없다**(항진) — L-5a 는 **합성 층** 제약(재시도 루프를 `r` 임계구역 밖에 둠)이고 PR1b 엔 그 합성 소비자가 없다 | T6 에서 L-5a 를 **명시 미착지**로 선언하고 **PR5 T21 단독 귀속**으로 이월(계획:326 과 중복 제거). 「부칙」 모호 표기 제거 |
+| ㉝ | 위협 모델(§W-2-a) | 추상 네임스페이스엔 **파일 권한이 없다** — 같은 net ns 의 비특권 프로세스(Fleet 이 spawn 한 CLI 자식 = 같은 컨테이너)가 endpoint 를 선점하면 「형제 엔진 보유」와 **구분 정보가 0**(`locks/`·`owner/` 폐기 · L-1 이 다른 근거 금지) → 조용한 영구 기능 정지. 또 임의 프로세스가 connect 할 수 있고 수락된 소켓이 이벤트 루프를 ref 한다 | ⓐ어댑터에 `connection` → **즉시 `socket.destroy()`**(핸들 누수 차단) ⓑ「같은 net ns 스쿼팅은 `held` 와 구분 불가」를 **명시 비목표로 코드 주석 + PR 본문에 등재**(은폐 금지). ttyd 는 **별개 net ns**(compose `fleet-net` bridge)라 현재 범위 밖 — 향후 `network_mode: host` 전환은 이 성질을 깨므로 전망 항목으로 기록 |
+| ㉞ | 계획 T3 「`release()` 정준 링크 순서 소멸」 | 남은 하중 하나: `close()` 는 fd 를 **동기 해제**하지만 `'close'` **콜백은 커넥션이 남아 있으면 발화하지 않는다**(실측: 커넥션 1개 → 150ms 내 미발화) → `release()` 가 콜백을 await 하면 **영구 대기**(C3 드레인이 상한까지 끌려간다) | 「`release()` 는 `server.close()` 를 호출하고 `'close'` 를 **기다리지 않는다**」를 계약으로 명문화(스캔 핀) + 2행: ⓐrelease 직후 **같은 이름 즉시 재획득**(타이머 0) ⓑ커넥션 유입 중에도 release 즉시 해소 |
+| ㉟ | 계획 §3 「T10b」 · §3-T62 | T10b 부재는 정정 ②가 이미 신설로 해소. 잔여: §3-T62 의 **「benchRoot env fail-fast」 분이 계획 전체에서 미귀속**(어떤 태스크도 RED 를 만들지 않는다) · `AreaRecord` 에 슬롯 개수·durability 필드 부재 | 전자는 **PR4/PR7(레지스트리·상한) 귀속**으로 등재 · 후자는 T6 이 **슬롯 개수를 어디서도 읽지 않는다**(개수는 호출자 주입)로 경계를 닫고, `AreaRecord` 확장과 「필드 부재 v1 레코드 관용 vs fail-closed」 결정을 **PR7/T29 사전 결정 항목**으로 이월 |
+
+| ㊱ | `vitest.config.ts` 의 `coverage.all: true` 와 그 주석(「import 되지 않은 파일도 분모에」) | **vitest 4 가 `all` 을 제거했다** — `CoverageOptions` 에 필드가 없어 tsc 에러다(핀 테스트가 config 를 typecheck 프로그램에 끌어들여 발각). 즉 v4 업그레이드 이후 이 옵션은 **죽은 no-op** 이었다. 분모 완전성은 실제로 `include` 가 담당한다(실측: 아무 테스트도 import 하지 않는 코어 파일이 0% 로 보고서에 등장) | 죽은 옵션을 제거하고 주석을 v4 실제 기제로 정정 · `include` **exact 핀**이 분모 축소를 막는 유일 수단이므로 핀 테스트를 그 축으로 재작성(원래 계획했던 `all` 단언은 **죽은 옵션을 핀하는 것**이었다 — 그대로 랜딩했으면 「보호받고 있다」는 거짓 확신을 심었다) |
+
+**PR1b 확정 범위**(위 정정 반영): 신설 = `locks.ts`(프리미티브: 이름 유도·예산 preflight·`LockBackend`
+seam·실 추상 소켓 어댑터·핸들·`LeaseCheck`·`availableLockBackends`) · `lock-order.ts`(서열 합성 ·
+phantom 레벨 · ALS 런타임 가드) · `__testing__/lock-backend-fake.ts`(페이크 · import 전용) ·
+테스트 3파일 · `scripts/vitest-config-pin.test.ts` · eslint 신규 블록(`no-unsafe-type-assertion` 옵트인 —
+**신규 2파일 한정**. 워크벤치 전체로 넓히면 PR1a 코드 5건이 즉시 RED 라 무관한 수정을 끌고 온다).
+**미착지 명시**: L-5a 합성(→PR5 T21) · 슬롯 구현(→PR7 T29 · PR1b 는 키 문법 + 타입 시그니처만) ·
+boot 배선(→PR7) · `DurableFs` 카운터 층(→PR2).
+
 - **T1 ULID** — §3-T1(문법·**단사**: 검증 통과한 두 id 가 win32 case-fold 후에도 같은 경로로 정규화되지 않음).
   경계값: 25/26/27자 · 소문자 · `I/L/O/U` · `..` · `/` · 제어문자 · 전각. **거부(정규화 금지)**.
 - **T2 코디네이션 영역 + `GitRepo` 도입 2메서드**(`commonGitDir`·`listWorktrees`) — §3-T5(실 git 5형태) ·
