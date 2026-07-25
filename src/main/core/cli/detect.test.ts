@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join, delimiter } from 'node:path'
 import {
+  remainingBudgetMs,
   defaultResolver,
   defaultRunner,
   detectAll,
@@ -586,4 +587,25 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner cwd shadow 하드�
     expect(res.spawnError).toBe('ABORTED')
     expect(res.stdout).not.toContain('PATH-MARKER')
   }, 15_000)
+})
+
+/**
+ * `timeoutMs` = **호출 전체 예산**(해석 + 자식 실행) — CodeRabbit PR #257.
+ *
+ * 해석을 기다린 뒤 자식 타이머를 `timeoutMs` 로 새로 시작하면 실제 상한이 「해석 + timeoutMs」가 되어
+ * 계약과 어긋난다(해석 상한을 2s→10s 로 올리면서 그 어긋남이 커졌다). 느린 해석을 통합 테스트로
+ * 재현하려면 resolver 주입 seam 이 필요해(#251 슬라이스 범위 밖) **산술을 순수 함수로 분리해 고정**한다.
+ */
+describe('remainingBudgetMs — 해석 시간이 자식 예산에서 빠진다', () => {
+  it.each([
+    ['아직 아무것도 안 씀', 1000, 5000, 1000, 5000],
+    ['해석에 80ms', 1000, 5000, 1080, 4920],
+    ['해석이 예산을 다 씀', 1000, 5000, 6000, 0],
+    ['해석이 예산을 넘김(음수 접기)', 1000, 5000, 9999, 0],
+    ['시계 역행도 0 이하로 가지 않음', 1000, 5000, 500, 5000],
+  ])('%s', (_label, startedAt, timeoutMs, now, expected) => {
+    expect(remainingBudgetMs(startedAt as number, timeoutMs as number, now as number)).toBe(
+      expected,
+    )
+  })
 })

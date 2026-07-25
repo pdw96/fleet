@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 87 files · 222 import wires · 47 IPC channels · 생성 2026-07-25T05:29 UTC
+> 89 files · 224 import wires · 47 IPC channels · 생성 2026-07-25T11:08 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -164,7 +164,7 @@
 
 ### cli · core — 클로드·코덱스·제미니 같은 명령어형 AI 프로그램(CLI)이 컴퓨터에 깔려 있는지 확인하고, 그 프로그램을 실제로 실행해 답변 글자만 깔끔하게 뽑아내며, 각 프로그램의 사용법(명령어 종류)을 한곳에 정리해 두는 모듈이다.
 - **cli/detect** — AI 명령어 프로그램을 실제로 실행하고, 깔려 있는지·어느 버전인지 확인하는 부품 _사람이 터미널에 명령어를 치듯 클로드·코덱스·제미니 프로그램을 대신 실행해 그 결과(출력 글자)를 받아온다. '--version'을 물어 설치 여부와 버전을 알아내고, 응답이 너무 오래 걸리거나(시간초과) 사용자가 중간에 취소하면 그 프로그램과 거기서 또 생긴 자식 프로그램들까지 끝까지 종료시킨 뒤 마무리한다. 여러 AI를 한꺼번에 동시 점검하는 기능도 있다._
-  - →의존: process/kill-tree, shared/types · ←피의존: cli/authHint, cli/probe, engine, main/e2e, session/cli-session, verify/run, workspace/git · 371줄
+  - →의존: process/kill-tree, shared/types · ←피의존: cli/authHint, cli/probe, engine, main/e2e, session/cli-session, verify/run, workspace/git · 398줄
 - **cli/probe**
   - →의존: cli/authHint, cli/detect, session/cli-session, shared/types · ←피의존: engine, main/e2e · 69줄
 - **cli/authHint**
@@ -188,13 +188,13 @@
 
 ### workspace · core — AI들이 작업방에서 코드를 고칠 때, 시작 시점을 기록해 두고 무엇이 바뀌었는지 보여주거나 통째로 되돌릴 수 있게 해주는 안전장치 모듈.
 - **workspace/git** — AI가 코드를 고치기 전 상태를 저장해 두고, 바뀐 내용을 모아 보여주거나 처음으로 되돌리는 작업 기록 관리원 _작업방을 버전 관리 저장소(git)로 만들어 '시작 사진'을 찍어두고, AI가 무엇을 바꿨는지 변경 목록과 그 내용(diff)을 모아 보여주거나, 마음에 안 들면 시작 사진 시점으로 통째로 되돌립니다. 사용자가 미리 만들어둔 작업은 시작 때 따로 보존해 지워지지 않게 하고, 여러 AI가 동시에 저장소를 건드려 생기는 잠금 충돌은 잠깐 기다렸다 다시 시도하며, 변경 내용이 너무 길면 6만 자에서 잘라 보여줍니다._
-  - →의존: cli/detect, workspace/ignored-baseline · ←피의존: engine, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/ignored-baseline · 246줄
+  - →의존: cli/detect, workspace/ignored-baseline · ←피의존: engine, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workbench/coord-area, workspace/ignored-baseline · 359줄
 - **workspace/ignored-baseline**
   - →의존: safety/approval, workspace/git · ←피의존: orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/git · 616줄
+- **workspace/path-guard**
+  - →의존: — · ←피의존: tools/workspace-tools, workbench/coord-area, workspace/set-workspace · 70줄
 - **workspace/set-workspace**
   - →의존: workspace/path-guard · ←피의존: main/index, server/handlers · 36줄
-- **workspace/path-guard**
-  - →의존: — · ←피의존: tools/workspace-tools, workspace/set-workspace · 70줄
 
 ### store · core — 앱이 다루는 모든 데이터(프로젝트, 할 일, 채팅방, 대화, 기록, AI 연결 정보)를 한곳에 모아 보관하고, 컴퓨터를 껐다 켜도 그대로 남도록 파일에 저장하는 '데이터 창고'다.
 - **store/types** — 창고에 담기는 데이터들의 모양과 규칙을 미리 적어 둔 설계도 부품 _프로젝트·할 일·채팅방·저장된 AI 세션 등이 각각 어떤 항목들로 이뤄지는지 형태를 정의한 명세서다. 특히 AI 연결 정보는 구독형 CLI(클로드·코덱스 등)와 API 두 종류로 나뉘며, API 키 같은 비밀번호는 절대 그대로 적지 않고 암호로 바꾼 형태만 저장하도록 규칙을 못 박아 둔다._
@@ -225,6 +225,12 @@
 ### process · core — AI 도구를 강제로 멈출 때, 겉껍데기뿐 아니라 그 아래 딸린 자식 프로그램들까지 한꺼번에 깔끔히 종료시키는 일을 맡는 모듈.
 - **process/kill-tree** — 실행 중인 AI 프로그램과 그것이 줄줄이 띄운 하위 프로그램들을 통째로 종료시키는 부품 _작업을 취소하거나 시간 초과로 멈출 때, 윈도우에서는 시스템의 taskkill 명령(/T 트리·/F 강제)으로 부모부터 손자까지 가족 전체를 한 번에 끝낸다. 윈도우가 아니면 그냥 프로그램 하나만 끄면 충분하므로 바로 멈춘다._
   - →의존: — · ←피의존: cli/detect, mcp/stdio · 92줄
+
+### workbench · core
+- **workbench/coord-area**
+  - →의존: workspace/git, workspace/path-guard · ←피의존: — · 350줄
+- **workbench/ulid**
+  - →의존: — · ←피의존: — · 86줄
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
