@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync, type ExecFileException } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { createGitRepo, type GitResult, type GitRunner } from './git'
 
@@ -16,6 +16,13 @@ import { createGitRepo, type GitResult, type GitRunner } from './git'
  * ⚠ `ok()` **미사용**(계획 G-1 · §3-T58): `ok()` 는 index.lock 을 강제 삭제하는 레거시 헬퍼이고 그 안전
  * 근거("오케스트레이터는 순차 실행")가 bench 병렬에서 성립하지 않는다. 신규 연산은 `run` 직접 호출만 쓴다.
  */
+
+/**
+ * 실 git 스폰 다수 — vitest 기본 `testTimeout` 은 **5,000ms** 이고 이 레포엔 `testTimeout` 설정이 없다.
+ * 유휴 실측(최대 단일 연산 `submodule add` 812ms)은 넉넉하지만, 전체 스위트 병렬 실행(win32)에서는
+ * 프로세스 스폰 경합으로 5s 를 넘겨 실제로 RED 가 났다(실측). 파일 단위로 상한을 올려 그 flake 를 닫는다.
+ */
+vi.setConfig({ testTimeout: 30_000 })
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
@@ -39,6 +46,29 @@ const initRepo = (dir: string): string => {
   return dir
 }
 
+/**
+ * 실 git 을 직접 실행하는 테스트 러너.
+ *
+ * `defaultGitRunner` → `defaultRunner` 는 **win32 + custom cwd** 에서 매 호출마다 PATH-only 해석을 하고
+ * 그 상한이 `RESOLVE_TIMEOUT_MS = 2000`(캐시 없음 · `cli/detect.ts:234`)이다 — #158 의 cwd-셰도 하드닝
+ * 경로다. 전체 스위트 병렬 실행(win32)에서 이 2초 해석이 초과되면 `{code: null, stderr: ''}` 로 떨어져
+ * **여기 테스트들이 산발적으로 RED** 가 된다(실측 재현). 이 파일의 대상은 git 인자 구성·출력 파싱이지
+ * 그 하드닝이 아니므로 러너를 주입해 우회한다. **미주입(=defaultGitRunner) 경로는 전용 테스트 1건이 지킨다.**
+ */
+const execRunner: GitRunner = {
+  run: (args: string[], cwd: string): Promise<GitResult> =>
+    new Promise((resolve) => {
+      execFile(
+        'git',
+        args,
+        { cwd, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 },
+        (err: ExecFileException | null, stdout: string, stderr: string) => {
+          resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout, stderr })
+        },
+      )
+    }),
+}
+
 const mkTmp = (): string => realpathSync.native(mkdtempSync(join(tmpdir(), 'fleet-251-repo-')))
 
 describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 영역(실 git)', () => {
@@ -48,8 +78,8 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
     const linked = join(base, 'linked')
     git(main, 'worktree', 'add', '-q', '--detach', linked, 'HEAD')
 
-    const fromMain = await createGitRepo(main).commonGitDir()
-    const fromLinked = await createGitRepo(linked).commonGitDir()
+    const fromMain = await createGitRepo(main, execRunner).commonGitDir()
+    const fromLinked = await createGitRepo(linked, execRunner).commonGitDir()
 
     expect(fromMain.status).toBe('ok')
     expect(fromLinked.status).toBe('ok')
@@ -64,7 +94,7 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
     const bare = join(base, 'bare.git')
     git(base, 'init', '-q', '--bare', 'bare.git')
 
-    const r = await createGitRepo(bare).commonGitDir()
+    const r = await createGitRepo(bare, execRunner).commonGitDir()
     expect(r.status).toBe('ok')
     expect(r.status === 'ok' && r.path).toBe(bare)
     expect(r.status === 'ok' && r.bare).toBe(true)
@@ -88,7 +118,7 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
       'i',
     )
 
-    const r = await createGitRepo(work).commonGitDir()
+    const r = await createGitRepo(work, execRunner).commonGitDir()
     expect(r.status).toBe('ok')
     // 워크트리 안의 `.git` 은 **파일**(gitdir 포인터)이다 — 그 파일 경로를 영역 루트로 쓰면 mkdir 이 실패한다.
     expect(r.status === 'ok' && r.path).toBe(gitDir)
@@ -113,8 +143,8 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
       'sub',
     )
 
-    const inSub = await createGitRepo(join(super_, 'sub')).commonGitDir()
-    const inSuper = await createGitRepo(super_).commonGitDir()
+    const inSub = await createGitRepo(join(super_, 'sub'), execRunner).commonGitDir()
+    const inSuper = await createGitRepo(super_, execRunner).commonGitDir()
     expect(inSub.status).toBe('ok')
     expect(inSub.status === 'ok' && inSub.path).toBe(join(super_, '.git', 'modules', 'sub'))
     // 앵커: 서브모듈과 상위가 **다른** 영역을 갖는다(같아지면 서로의 bench 를 침범한다).
@@ -123,7 +153,7 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
 
   it('git 레포가 아니면 fail-closed(경로를 지어내지 않는다)', async () => {
     const base = mkTmp()
-    const r = await createGitRepo(base).commonGitDir()
+    const r = await createGitRepo(base, execRunner).commonGitDir()
     expect(r.status).toBe('failed')
     expect(r.status === 'failed' && r.stderr).toMatch(/not a git repository|repository/i)
   })
@@ -181,7 +211,7 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
     const linked = join(base, 'wt-detached')
     git(main, 'worktree', 'add', '-q', '--detach', linked, 'HEAD')
 
-    const r = await createGitRepo(main).listWorktrees()
+    const r = await createGitRepo(main, execRunner).listWorktrees()
     expect(r.status).toBe('ok')
     const list = r.status === 'ok' ? r.worktrees : []
     expect(list).toHaveLength(2)
@@ -199,7 +229,7 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
     const spaced = join(base, 'work tree with spaces')
     git(main, 'worktree', 'add', '-q', '--detach', spaced, 'HEAD')
 
-    const r = await createGitRepo(main).listWorktrees()
+    const r = await createGitRepo(main, execRunner).listWorktrees()
     const paths = r.status === 'ok' ? r.worktrees.map((w) => w.path) : []
     expect(paths).toContain(spaced)
   })
@@ -215,13 +245,13 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
       process.platform === 'win32' ? ['/c', 'rmdir', '/s', '/q', gone] : ['-rf', gone],
     )
 
-    const r = await createGitRepo(main).listWorktrees()
+    const r = await createGitRepo(main, execRunner).listWorktrees()
     const entry = r.status === 'ok' ? r.worktrees.find((w) => w.path === gone) : undefined
     expect(entry?.prunable).toBe(true)
   })
 
   it('레포가 아니면 fail-closed(빈 배열로 위장하지 않는다)', async () => {
-    const r = await createGitRepo(mkTmp()).listWorktrees()
+    const r = await createGitRepo(mkTmp(), execRunner).listWorktrees()
     expect(r.status).toBe('failed')
   })
 
@@ -252,7 +282,7 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
       'i',
     )
 
-    const r = await createGitRepo(work).listWorktrees()
+    const r = await createGitRepo(work, execRunner).listWorktrees()
     const first = r.status === 'ok' ? r.worktrees[0] : undefined
     expect(first?.path).toBe(gitDir) // ← 워크트리(work)가 아니다
     expect(first?.path).not.toBe(work)
@@ -261,7 +291,7 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
   it('bare 엔트리에는 HEAD·branch 행이 아예 없다(파서가 undefined 로 답한다 · 특성화)', async () => {
     const base = mkTmp()
     git(base, 'init', '-q', '--bare', 'bare.git')
-    const r = await createGitRepo(join(base, 'bare.git')).listWorktrees()
+    const r = await createGitRepo(join(base, 'bare.git'), execRunner).listWorktrees()
     const first = r.status === 'ok' ? r.worktrees[0] : undefined
     expect(first?.bare).toBe(true)
     expect(first?.head).toBeUndefined()
@@ -272,7 +302,7 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
   it('bare 레포도 자기 자신을 bare 항목으로 보고한다', async () => {
     const base = mkTmp()
     git(base, 'init', '-q', '--bare', 'bare.git')
-    const r = await createGitRepo(join(base, 'bare.git')).listWorktrees()
+    const r = await createGitRepo(join(base, 'bare.git'), execRunner).listWorktrees()
     expect(r.status).toBe('ok')
     expect(r.status === 'ok' && r.worktrees[0]?.bare).toBe(true)
   })
