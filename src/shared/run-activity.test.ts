@@ -8,8 +8,10 @@ import { hasLegacyRun, type RunActivity } from './types'
  * 두 불변식이 **같은 스냅숏의 서로 다른 필드**를 권위로 삼는다는 것이 이 계약의 요지다:
  *   - R-1 (드레인 권위): 전 스코프 런(레거시 + bench)은 `activeProjectIds` 에 나타난다.
  *     `waitForRunDrain`(boot.ts)이 이 필드만 보므로, bench 런을 빼면 SIGTERM 시 무성 절단된다.
- *   - R-2 (레거시 스코프): `workspace:set` 차단·`ProjectPanel` running 잠금은 **benchId 부재 런만** 센다.
- *     bench 런까지 세면 bench 하나가 도는 동안 메인 워크스페이스 조작이 통째로 잠긴다.
+ *   - R-2 (레거시 스코프): 레거시 잠금은 **benchId 부재 런만** 센다. bench 런까지 세면 bench 하나가
+ *     도는 동안 메인 워크스페이스 조작이 통째로 잠긴다. **현재 이 술어를 쓰는 소비자는 `workspace:set`
+ *     차단 양면(IPC·WS)뿐이다** — `ProjectPanel` running 잠금은 아직 `activeProjectIds` 를 읽으며,
+ *     bench 런은 P-BENCHID 가 봉쇄해 관측 차이가 0이므로 전환을 #253(UI 표면)으로 유예했다.
  *
  * **범위 정직성**: 이 파일은 `hasLegacyRun` 만 다룬다(R-2 측). R-1 측 반증력은 여기 있지 않다 —
  * 드레인이 실제로 bench 런을 기다리는지는 `waitForRunDrain` 을 **실행**하는 `boot-drain.test.ts` 의
