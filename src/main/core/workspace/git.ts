@@ -75,6 +75,98 @@ export function createGitRunner(baseEnv?: () => NodeJS.ProcessEnv): GitRunner {
 /** 기본 git 러너 — env 미지정(현행 상속). 서버 격리는 createGitRunner(baseEnv) 로 주입. */
 export const defaultGitRunner: GitRunner = createGitRunner()
 
+/**
+ * 레포 스코프 git 표면(#251 · 스펙 §W-6). `Workspace`(워크트리 스코프 · 체크포인트/diff/통합)와 달리
+ * **레포 전체에 하나뿐인 사실**(공통 gitdir · worktree 목록)을 답한다.
+ *
+ * 신규 표면인 이유(§0.1 C12): `Workspace` 는 worktree 경로를 **내부 유도**하고 디렉터리 인자를 받지
+ * 않아 named-branch worktree 를 재사용할 수 없다. 기존 export 는 **무변경**이고 여기에 추가만 한다.
+ *
+ * ⚠ `ok()` 를 쓰지 않는다(R-5 · §3-T58). `ok()` 의 index.lock 강제 삭제는 "오케스트레이터는 순차 실행"
+ * 이라는 전제 위에 있는데, bench 병렬에서는 그 전제가 깨진다 — 남의 라이브 락을 지우게 된다.
+ */
+export type GitRepoDirResult =
+  | { status: 'ok'; path: string; bare: boolean }
+  | { status: 'failed'; stderr: string; code: number | null }
+
+export interface WorktreeEntry {
+  path: string
+  head?: string
+  /** 정준 ref(`refs/heads/…`). detached 면 부재. */
+  branch?: string
+  detached: boolean
+  bare: boolean
+  locked: boolean
+  /** admin 레코드는 있는데 디렉터리가 없음 — **표시만** 하고 자동 정리하지 않는다. */
+  prunable: boolean
+}
+
+export type GitWorktreeListResult =
+  | { status: 'ok'; worktrees: WorktreeEntry[] }
+  | { status: 'failed'; stderr: string; code: number | null }
+
+export interface GitRepo {
+  /** `<canonical common gitdir>` — 코디네이션 영역(§W-2)의 부모. 5형태에서 동일 값으로 수렴한다. */
+  commonGitDir(): Promise<GitRepoDirResult>
+  listWorktrees(): Promise<GitWorktreeListResult>
+}
+
+/** porcelain 은 `키 값` 한 줄 + 빈 줄 구분. 값에 공백이 있을 수 있어 **첫 공백 하나로만** 자른다. */
+const parseWorktreePorcelain = (stdout: string): WorktreeEntry[] => {
+  const out: WorktreeEntry[] = []
+  let cur: WorktreeEntry | undefined
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.replace(/\r$/, '')
+    if (line === '') {
+      if (cur) out.push(cur)
+      cur = undefined
+      continue
+    }
+    const sp = line.indexOf(' ')
+    const key = sp === -1 ? line : line.slice(0, sp)
+    const value = sp === -1 ? '' : line.slice(sp + 1)
+    if (key === 'worktree') {
+      cur = { path: resolve(value), detached: false, bare: false, locked: false, prunable: false }
+      continue
+    }
+    if (!cur) continue
+    if (key === 'HEAD') cur.head = value
+    else if (key === 'branch') cur.branch = value
+    else if (key === 'detached') cur.detached = true
+    else if (key === 'bare') cur.bare = true
+    else if (key === 'locked') cur.locked = true
+    else if (key === 'prunable') cur.prunable = true
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+export function createGitRepo(root: string, git: GitRunner = defaultGitRunner): GitRepo {
+  const run = (args: string[]): Promise<GitResult> => git.run(args, root)
+  const failed = (r: GitResult): { status: 'failed'; stderr: string; code: number | null } => ({
+    status: 'failed',
+    stderr: r.stderr.trim() || `git 실패(code ${r.code})`,
+    code: r.code,
+  })
+  return {
+    async commonGitDir() {
+      // `--path-format=absolute`(git ≥2.31)가 핵심이다 — 없으면 메인 worktree 가 상대 `.git` 을,
+      // bare 가 `.` 을 돌려준다. 그럼에도 출력이 상대일 수 있는 구형 git 을 위해 **root 기준**으로
+      // 해소한다(process.cwd() 기준으로 해소하면 **남의 레포**에 영역을 만든다 — §3-T6).
+      const r = await run(['rev-parse', '--path-format=absolute', '--git-common-dir'])
+      const raw = r.stdout.trim()
+      if (r.code !== 0 || raw === '') return failed(r)
+      const bare = await run(['rev-parse', '--is-bare-repository'])
+      return { status: 'ok', path: resolve(root, raw), bare: bare.stdout.trim() === 'true' }
+    },
+    async listWorktrees() {
+      const r = await run(['worktree', 'list', '--porcelain'])
+      if (r.code !== 0) return failed(r)
+      return { status: 'ok', worktrees: parseWorktreePorcelain(r.stdout) }
+    },
+  }
+}
+
 // taskId 의 특수문자를 _로 치환해 디렉터리명으로 사용 가능하게 만든다.
 const sanitize = (id: string): string => id.replace(/[^a-zA-Z0-9_-]/g, '_')
 // worktree 디렉터리: 메인 레포 밖(임시)에 두어 collectDiff(add -A)·clean 대상에 안 잡히게 한다.
