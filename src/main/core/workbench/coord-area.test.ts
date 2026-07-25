@@ -22,6 +22,7 @@ import {
   AREA_SCHEMA_VERSION,
   endpointDigest,
   openCoordinationArea,
+  ownerMismatch,
   SUPPORTED_LOCK_BACKENDS,
 } from './coord-area'
 import { newUlid } from './ulid'
@@ -120,7 +121,7 @@ describe('T2/§3-T5 — 같은 레포의 두 worktree 가 같은 영역으로 �
     git(main, 'worktree', 'add', '-q', '--detach', linked, 'HEAD')
 
     const a = await openCoordinationArea({ repo: createGitRepo(main, execRunner), ...linuxLike })
-    const b = await openCoordinationArea({ repo: createGitRepo(linked), ...linuxLike })
+    const b = await openCoordinationArea({ repo: createGitRepo(linked, execRunner), ...linuxLike })
 
     expect(a.status).toBe('open')
     expect(b.status).toBe('open')
@@ -395,6 +396,62 @@ describe('T2/§3-T54 — git 위생 명령 후 영역 전량 생존(실 git)', (
     // 영역은 git 이 추적하지 않는다(status 를 더럽히면 사용자 diff·keep 에 섞인다).
     expect(git(main, 'status', '--porcelain')).toBe('')
   }, 60_000)
+})
+
+describe('T2 — 동시 생성 경합: create-only(`wx`) 는 남의 기록을 덮지 않는다', () => {
+  /**
+   * `now` 주입 seam 을 **스케줄링 지점**으로 써서 경합을 결정론적으로 재현한다 — `now()` 는 레코드를
+   * 조립할 때(=`wx` 쓰기 직전) 호출되므로, 그 안에서 파일을 만들면 「probe 는 없다고 봤는데 쓰기 시점엔
+   * 있다」가 정확히 성립한다. 실 동시성(두 프로세스)에 의존하면 결정론이 깨져 계획 §1 전제 2 에 걸린다.
+   */
+  const raceWith = (payload: string) => (gitDir: string) => {
+    let armed = true
+    return (): number => {
+      if (armed) {
+        armed = false
+        mkdirSync(join(gitDir, AREA_DIR_NAME), { recursive: true, mode: 0o700 })
+        writeFileSync(join(gitDir, AREA_DIR_NAME, AREA_RECORD_FILE), payload)
+      }
+      return 1
+    }
+  }
+
+  it('경합에서 진 쪽은 **먼저 쓰인 기록**을 채택한다(덮어쓰기 0)', async () => {
+    const gitDir = fakeGitDir()
+    const winner = JSON.stringify({
+      schemaVersion: AREA_SCHEMA_VERSION,
+      lockBackend: 'uds-abstract',
+      createdAt: 7,
+      createdBy: 'WINNER',
+    })
+    const r = await openCoordinationArea({
+      repo: fakeRepo(gitDir),
+      ...linuxLike,
+      now: raceWith(winner)(gitDir),
+    })
+    expect(expectOpen(r).record.createdBy).toBe('WINNER')
+    expect(readFileSync(join(gitDir, AREA_DIR_NAME, AREA_RECORD_FILE), 'utf8')).toBe(winner)
+  })
+
+  it('경합 상대가 쓴 기록이 판정 불가면 reconciliation-required(추측 금지)', async () => {
+    const gitDir = fakeGitDir()
+    const r = await openCoordinationArea({
+      repo: fakeRepo(gitDir),
+      ...linuxLike,
+      now: raceWith('{ 깨진 json')(gitDir),
+    })
+    expect(r.status === 'disabled' && r.reason).toBe('reconciliation-required')
+  })
+})
+
+describe('T2 — ownerMismatch(순수): 타 uid 소유 영역 거부 규칙', () => {
+  it.each([
+    ['같은 uid = 정상', 1000, 1000, false],
+    ['다른 uid = 거부', 0, 1000, true],
+    ['getuid 부재(win32) = 판정하지 않음', 0, undefined, false],
+  ])('%s', (_label, statUid, selfUid, expected) => {
+    expect(ownerMismatch(statUid as number, selfUid as number | undefined)).toBe(expected)
+  })
 })
 
 describe('T2 — endpointDigest: 락 이름공간 스코프 분리(§W-3 이름 유도)', () => {

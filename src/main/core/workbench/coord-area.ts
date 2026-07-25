@@ -85,6 +85,14 @@ export function endpointDigest(canonicalCommonGitDir: string): string {
   return createHash('sha256').update(canonicalCommonGitDir).digest('hex').slice(0, 32)
 }
 
+/**
+ * 소유자 판정(순수) — 실 파일시스템에서 **타 uid 소유 디렉터리를 만들려면 root 권한이 필요**해
+ * 통합 테스트로는 이 규칙을 검증할 수 없다. 판정만 떼어 두면 규칙 자체는 어느 OS 에서도 검증된다.
+ * `getuid` 부재(win32)면 판정하지 않는다 — 그 표면에서는 mode·uid 의미론이 다르다.
+ */
+export const ownerMismatch = (statUid: number, selfUid: number | undefined): boolean =>
+  selfUid !== undefined && statUid !== selfUid
+
 export interface OpenAreaOptions {
   readonly repo: GitRepo
   /** 이 플랫폼에서 실제로 bind 가능한 백엔드 집합. 빈 배열 = 기능 비활성(fail-closed). */
@@ -205,7 +213,7 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
   if (process.platform !== 'win32') {
     const uid = process.getuid?.()
     const st = statSync(root)
-    if (uid !== undefined && st.uid !== uid) {
+    if (ownerMismatch(st.uid, uid)) {
       return disabled('unsafe-path', `영역 소유자가 자신이 아님(uid ${st.uid} ≠ ${uid}): ${root}`)
     }
   }
