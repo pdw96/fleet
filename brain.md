@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 89 files · 224 import wires · 47 IPC channels · 생성 2026-07-25T11:08 UTC
+> 93 files · 229 import wires · 47 IPC channels · 생성 2026-07-25T13:25 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -210,6 +210,20 @@
 - **safety/approval-bridge** — 허락이 필요한 작업을 사용자 화면에 물어보고, 사용자의 예/아니오 답을 도로 전달해 주는 중개 창구 _AI 가 위험한 일을 하려 하면 그 요청을 화면(렌더러)으로 보내 사용자에게 묻고, 답이 오면 해당 요청과 짝지어 처리한다. 물어볼 창이 없으면 즉시 거절하고, 사람이 일정 시간(기본 타임아웃) 안에 답하지 않아도 자동으로 거절하는 '안전 우선' 방식이며, 같은 답이 두 번 와도 한 번만 처리한다._
   - →의존: shared/types · ←피의존: main/index, server/boot, server/handlers · 165줄
 
+### workbench · core
+- **workbench/locks**
+  - →의존: workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/lock-backend-uds, workbench/lock-order · 359줄
+- **workbench/coord-area**
+  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 350줄
+- **workbench/__testing__/lock-backend-fake**
+  - →의존: workbench/locks · ←피의존: — · 84줄
+- **workbench/lock-backend-uds**
+  - →의존: workbench/locks · ←피의존: — · 72줄
+- **workbench/lock-order**
+  - →의존: workbench/locks · ←피의존: — · 153줄
+- **workbench/ulid**
+  - →의존: — · ←피의존: workbench/locks · 86줄
+
 ### chat · core — 여러 AI가 한 채팅방에서 서로의 말을 보고 토론하도록 진행을 맡아 주는 모듈이다.
 - **chat/room** — 여러 AI가 한 채팅방에서 차례로 발언하며 토론하도록 진행을 맡는 사회자 부품 _사용자나 시스템의 글을 방에 올리고, 특정 AI를 지목해 지금까지의 대화 내용을 보여준 뒤 다음 발언을 받아 다시 방에 저장한다. 여러 AI에게 한 주제를 정해진 횟수만큼 돌아가며 토론시키는 기능도 있어, 회의의 진행자처럼 누가 언제 말할지를 정리해 준다._
   - →의존: session/manager, shared/types, store/types · ←피의존: engine · 155줄
@@ -225,12 +239,6 @@
 ### process · core — AI 도구를 강제로 멈출 때, 겉껍데기뿐 아니라 그 아래 딸린 자식 프로그램들까지 한꺼번에 깔끔히 종료시키는 일을 맡는 모듈.
 - **process/kill-tree** — 실행 중인 AI 프로그램과 그것이 줄줄이 띄운 하위 프로그램들을 통째로 종료시키는 부품 _작업을 취소하거나 시간 초과로 멈출 때, 윈도우에서는 시스템의 taskkill 명령(/T 트리·/F 강제)으로 부모부터 손자까지 가족 전체를 한 번에 끝낸다. 윈도우가 아니면 그냥 프로그램 하나만 끄면 충분하므로 바로 멈춘다._
   - →의존: — · ←피의존: cli/detect, mcp/stdio · 92줄
-
-### workbench · core
-- **workbench/coord-area**
-  - →의존: workspace/git, workspace/path-guard · ←피의존: — · 350줄
-- **workbench/ulid**
-  - →의존: — · ←피의존: — · 86줄
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
