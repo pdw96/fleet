@@ -445,6 +445,12 @@ export interface RunProjectRequest {
   taskTimeoutMs?: number
   /** (예약) 향후 false면 첫 실패 시 후속 작업 중단 예정. 현재는 미배선 — 항상 부분 진행한다. */
   continueOnFailure?: boolean
+  /**
+   * 이 런을 격리 실행할 Workbench(#251). 부재 = 메인 워크스페이스 레거시 런.
+   * **레지스트리 배선 전까지 어떤 값도 해소되지 않으므로 engine 이 fail-closed 거부한다** — 조용히
+   * 무시하면 격리를 기대한 요청이 메인 워크스페이스를 편집한다.
+   */
+  benchId?: string
 }
 
 // ── 채팅 토큰 스트리밍 (IPC 이벤트 채널) ─────────────────────────────────────
@@ -538,13 +544,46 @@ export interface ChatActivity {
 }
 
 /**
+ * 진행 중 실행 1건의 스코프 참조(#251 · 스펙 §W-10). `benchId` 부재 = 메인 워크스페이스를 편집하는
+ * 레거시 런, 존재 = 그 Workbench(격리 worktree) 안에서만 도는 런.
+ */
+export interface ActiveRunRef {
+  projectId: string
+  /** 이 런이 속한 Workbench. 부재면 레거시(메인 워크스페이스) 런. */
+  benchId?: string
+}
+
+/**
  * 프로젝트 실행 진행 상태 스냅샷(단일 소스 오브 트루스). 렌더러가 ProjectPanel 마운트 시 1회 조회해
  * 진행 표시(running 잠금·취소 버튼)를 복원한다 — 탭 전환으로 컴포넌트가 언마운트돼 로컬 state 가
  * 날아가도 진행 중 실행의 권위는 항상 main(activeRuns)에 있다. ChatActivity 와 동형이다.
+ *
+ * 두 필드는 **같은 런 집합의 서로 다른 투영**이며 소비자가 다르다(#251 · 스펙 §W-10 R-1/R-2):
+ * 드레인은 `activeProjectIds`(전 스코프), 레거시 잠금은 `activeRuns` 의 benchId 부재분만 본다.
  */
 export interface RunActivity {
-  /** 진행 중인 프로젝트 실행 id 목록. DESIGN.md 순차 전제상 0 또는 1건(동시 실행 가드). */
+  /**
+   * 진행 중인 **전 스코프**(레거시 + bench) 프로젝트 실행 id 목록 — SIGTERM 드레인 판정의 유일 권위
+   * (불변식 R-1). 여기서 bench 런을 빼면 종료 시 진행 중 bench 런이 무성 절단된다.
+   */
   activeProjectIds: string[]
+  /** 각 진행 런의 스코프. `activeProjectIds` 와 항상 같은 런 집합을 가리킨다. */
+  activeRuns: ActiveRunRef[]
+}
+
+/**
+ * 레거시 스코프(메인 워크스페이스) 런이 진행 중인가 — 불변식 R-2 의 단일 판정 함수.
+ * 현재 소비자는 `workspace:set` 차단 **양면뿐**이다(IPC `main/index.ts` · WS `server/handlers.ts`).
+ * `ProjectPanel` running 잠금은 아직 `activeProjectIds` 를 읽는다 — bench 런은 P-BENCHID 가 봉쇄해
+ * 관측 차이가 0이므로 전환을 #253(UI 표면)으로 유예했다. R-2 의 최종 소비자 집합은 거기서 닫힌다.
+ *
+ * `activeProjectIds.length > 0` 로 대신하면 bench 런 하나가 메인 워크스페이스 조작 전체를 잠근다.
+ * `benchId` 는 부재·명시 undefined·빈 문자열을 모두 «레거시» 로 접는다 — 와이어 JSON 왕복이 undefined
+ * 키를 소멸시키므로 앞의 둘은 동형이어야 하고, 빈 문자열은 오염 입력이라 잠금을 푸는 쪽(fail-open)이
+ * 아니라 거는 쪽으로 판정한다.
+ */
+export function hasLegacyRun(a: RunActivity): boolean {
+  return a.activeRuns.some((r) => !r.benchId)
 }
 
 // ── preload 가 노출하는 브리지 계약 ────────────────────────────────────────

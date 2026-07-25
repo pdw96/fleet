@@ -55,7 +55,9 @@ export const CHANNEL_FIXTURES = {
     result: { projectId: 'proj-1', tasks: [], summary: '완료' },
   },
   'fleet:project:cancel': { args: ['proj-1'], result: undefined },
-  'fleet:project:activity': { args: [], result: { activeProjectIds: [] } },
+  // ⚠ `ChannelFixture.result: unknown` 이라 tsc 가 shape drift 를 잡지 못하고 serialization.test 도 키
+  // parity + JSON 왕복만 본다 — RunActivity 확장 시 **수동 등재**가 필요한 무신호 지점이다(#251 PR0).
+  'fleet:project:activity': { args: [], result: { activeProjectIds: [], activeRuns: [] } },
   'fleet:workspace:get': { args: [], result: null },
   'fleet:workspace:select': { args: [], result: null },
   'fleet:workspace:set': { args: ['proj-a'], result: '/srv/workspace/proj-a' },

@@ -1,4 +1,5 @@
 import type { AppInfo, FleetBridge } from '../shared/types'
+import { hasLegacyRun } from '../shared/types'
 import type { BothInvokeChannel } from '../shared/transport/channels'
 import type { FleetEngine } from '../main/core/engine'
 import type { IpcApprover } from '../main/core/safety/approval-bridge'
@@ -122,7 +123,9 @@ export function createHandlers({
       applyWorkspaceSet(
         {
           workspaceRoot,
-          isRunActive: () => engine.getRunActivity().activeProjectIds.length > 0,
+          // 레거시(메인 워크스페이스) 런만 센다 — bench 런은 자기 worktree 안에서만 편집하므로 메인
+          // 워크스페이스 경로 변경을 잠글 이유가 없다(#251 · 스펙 §W-10 R-2). IPC 면(main/index.ts)과 동일 술어.
+          isRunActive: () => hasLegacyRun(engine.getRunActivity()),
           setWorkspace: (dir) => engine.setWorkspace(dir),
         },
         path,
