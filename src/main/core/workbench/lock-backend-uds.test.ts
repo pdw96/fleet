@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,43 +35,82 @@ const freshEndpoint = (): { endpoint: string; bare: string; digest: string } => 
 
 const children: ChildProcess[] = []
 const tmpDirs: string[] = []
+/** 실 소켓 자원 — 정리하지 않으면 이벤트 루프가 남아 워커 종료가 지연된다. */
+const sockets: { destroy(): void }[] = []
+const openFds: number[] = []
 
 afterEach(() => {
+  for (const s of sockets.splice(0)) s.destroy()
+  for (const fd of openFds.splice(0)) {
+    try {
+      closeSync(fd)
+    } catch {
+      /* 이미 닫혔으면 무시 — 정리 경로가 테스트를 실패시키지 않는다 */
+    }
+  }
   for (const c of children.splice(0)) if (c.exitCode === null) c.kill('SIGKILL')
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
+
+interface Child {
+  readonly proc: ChildProcess
+  /** 지금까지 누적된 stdout — 「아직 X 를 내지 않았다」류 관측에 쓴다. */
+  output(): string
+  /** 자식이 종료할 때까지의 전체 stdout. */
+  waitExit(): Promise<string>
+}
 
 /** 자식을 띄우고 지정 토큰이 stdout 에 나올 때까지 기다린다(조기 종료는 reject — `web-server.ts` 규율). */
 const spawnChild = (
   script: string,
   env: Record<string, string>,
   token: string,
-): Promise<ChildProcess> =>
+  stdin: 'ignore' | 'pipe' = 'ignore',
+): Promise<Child> =>
   new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['-e', script], {
+    const proc = spawn(process.execPath, ['-e', script], {
       env: { ...process.env, ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [stdin, 'pipe', 'pipe'],
     })
-    children.push(child)
+    children.push(proc)
     let out = ''
-    const onData = (d: Buffer): void => {
-      out += d.toString()
+    // 리스너는 **떼지 않는다** — 이후 관측(`output()`·`waitExit()`)이 같은 누적을 본다.
+    proc.stdout?.on('data', (d: Buffer) => (out += d.toString()))
+    const child: Child = {
+      proc,
+      output: () => out,
+      waitExit: () =>
+        new Promise((res) => {
+          if (proc.exitCode !== null) res(out)
+          else proc.once('exit', () => res(out))
+        }),
+    }
+    const onData = (): void => {
       if (out.includes(token)) {
-        child.stdout?.off('data', onData)
+        proc.stdout?.off('data', onData)
         resolve(child)
       }
     }
-    child.stdout?.on('data', onData)
-    child.once('exit', (code) =>
+    proc.stdout?.on('data', onData)
+    proc.once('exit', (code) =>
       reject(new Error(`자식이 토큰(${token}) 전에 종료: code=${code} out=${out}`)),
     )
   })
 
-const readAll = (child: ChildProcess): Promise<string> =>
-  new Promise((resolve) => {
-    let out = ''
-    child.stdout?.on('data', (d: Buffer) => (out += d.toString()))
-    child.once('exit', () => resolve(out))
+/** 자식이 토큰을 낼 때까지 기다린다(이미 나왔으면 즉시). */
+const waitFor = (child: Child, token: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (child.output().includes(token)) return resolve()
+    const onData = (): void => {
+      if (child.output().includes(token)) {
+        child.proc.stdout?.off('data', onData)
+        resolve()
+      }
+    }
+    child.proc.stdout?.on('data', onData)
+    child.proc.once('exit', (code) =>
+      reject(new Error(`자식이 토큰(${token}) 전에 종료: code=${code} out=${child.output()}`)),
+    )
   })
 
 /** 락을 잡고 계속 살아 있는 자식. */
@@ -127,6 +166,28 @@ describe.skipIf(!IS_LINUX)('실 추상 소켓 어댑터 — 획득·판정(§W-3
     expect(r.code).not.toBe('EADDRINUSE')
   })
 
+  /**
+   * L-2 는 지금까지 **페이크로만** 조작화돼 있었다(bind 카운트·타이머 0·턴 0). 실 어댑터가 같은 성질을
+   * 갖는지는 별개 사실이므로 여기서 직접 본다 — 백오프·폴링이 들어가면 이 행이 RED 다.
+   */
+  it('L-2 — 실 어댑터도 재시도·대기 없이 즉시 판정한다(check 페이즈 0회)', async () => {
+    const { endpoint } = freshEndpoint()
+    const first = await backend.bind(endpoint)
+    let turns = 0
+    let done = false
+    const tick = (): void => {
+      if (done) return
+      turns++
+      setImmediate(tick)
+    }
+    setImmediate(tick)
+    const second = await backend.bind(endpoint)
+    done = true
+    expect(second.status).toBe('in-use')
+    expect(turns).toBe(0)
+    if (first.status === 'bound') first.endpoint.close()
+  })
+
   it('close() 직후 isBound 는 false 이고 같은 이름을 즉시 재획득할 수 있다', async () => {
     const { endpoint } = freshEndpoint()
     const first = await backend.bind(endpoint)
@@ -148,6 +209,7 @@ describe.skipIf(!IS_LINUX)('실 추상 소켓 어댑터 — 획득·판정(§W-3
     if (r.status !== 'bound') throw new Error('픽스처 오류')
     await new Promise<void>((resolve, reject) => {
       const client = connect({ path: endpoint }, () => resolve())
+      sockets.push(client)
       client.once('error', reject)
     })
     r.endpoint.close()
@@ -221,8 +283,8 @@ describe.skipIf(!IS_LINUX)('§3-T8·T10·T10d — 자동 해제와 회수(실 �
     // 양성 통제 — 자식이 정말 점유 중임을 먼저 증명한다.
     expect((await backend.bind(endpoint)).status).toBe('in-use')
 
-    child.kill('SIGKILL')
-    await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    child.proc.kill('SIGKILL')
+    await child.waitExit()
 
     const after = await backend.bind(endpoint)
     expect(after.status).toBe('bound')
@@ -263,25 +325,28 @@ describe.skipIf(!IS_LINUX)('§3-T22 — 프로세스 경계 배타성', () => {
    * 자식 보유 → 부모 `held` → 자식 해제 → 부모 획득. 커널을 전혀 쓰지 않는 구현(모듈 Map)은 자식이
    * 보유 중일 때 곧바로 획득에 성공하므로 이 행에서 RED 다.
    */
-  it('결정론: 자식 보유 중 부모는 held · 자식이 놓으면 부모가 획득', async () => {
+  it('결정론: 자식 보유 중 부모는 held · 자식이 **살아 있는 채로** 놓으면 부모가 획득', async () => {
     const { endpoint, bare } = freshEndpoint()
+    // ⚠ 자식을 죽여서 검증하면 위 SIGKILL 행과 **같은 것**(프로세스 사망 = 커널 회수)을 볼 뿐이다.
+    // 여기서는 **정상 해제(`close()`)** 경로를 본다 — 자식은 해제 후에도 살아 있어야 한다.
     const script = `
 const net = require('node:net')
 const s = net.createServer()
 s.on('error', (e) => { console.log('ERR ' + e.code); process.exit(1) })
 s.listen({ path: '\\0' + process.env.FLEET_TEST_LOCK_NAME }, () => console.log('HELD'))
-process.stdin.resume()
-process.on('SIGTERM', () => { s.close(); console.log('RELEASED'); process.exit(0) })
+process.stdin.on('data', () => { s.close(); console.log('RELEASED') })
 setInterval(() => {}, 3600000)
 `
-    const child = await spawnChild(script, { FLEET_TEST_LOCK_NAME: bare }, 'HELD')
+    const child = await spawnChild(script, { FLEET_TEST_LOCK_NAME: bare }, 'HELD', 'pipe')
     expect((await backend.bind(endpoint)).status).toBe('in-use')
 
-    child.kill('SIGTERM')
-    await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    child.proc.stdin?.write('release\n')
+    await waitFor(child, 'RELEASED')
 
     const got = await backend.bind(endpoint)
     expect(got.status).toBe('bound')
+    // 자식은 여전히 살아 있다 — 해제가 사망의 부수효과가 아님을 고정한다.
+    expect(child.proc.exitCode).toBeNull()
     if (got.status === 'bound') got.endpoint.close()
   })
 
@@ -313,14 +378,16 @@ spin()
       { FLEET_TEST_LOCK_NAME: bare, FLEET_TEST_BARRIER: barrier },
       'WAITING',
     )
-    // 자기검사: 이 시점에 배리어가 없다 = 자식은 아직 bind 를 시도하지 않았다.
+    // **자기검사**: 배리어가 아직 없고(전제) 자식도 아직 결과를 내지 않았다(관측) = 자식이 실제로
+    // 배리어에 갇혀 있다. 「디렉터리가 비었다」만 보면 부모가 방금 만든 사실을 되읽는 항진이다.
     expect(readdirSync(dir)).toEqual([])
+    expect(child.output()).toContain('WAITING')
+    expect(child.output()).not.toContain('RESULT')
 
-    const childResult = readAll(child)
     // 배리어 = **존재만** 신호다(내용이 없으므로 부분 파일 노출 위험이 없어 `wx` 로 충분하다).
-    openSync(barrier, 'wx')
+    openFds.push(openSync(barrier, 'wx'))
     const mine = await backend.bind(endpoint)
-    const out = await childResult
+    const out = await child.waitExit()
 
     const parentGot = mine.status === 'bound'
     const childGot = out.includes('RESULT GOT')

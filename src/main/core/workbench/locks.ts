@@ -314,11 +314,20 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
       if (bound.isBound()) return { kind: 'owned' }
       return { kind: 'lost', reason: releasedByUs ? 'released' : 'stolen' }
     }
+    /**
+     * ⚠ **이미 잃은 리스에 대해서는 아무것도 기록하지 않는다.** 순진하게 `releasedByUs = true` 를 먼저
+     * 세우면, out-of-band 로 상실된(=`stolen`) 리스가 나중에 `release()` 를 거치는 순간 판정이
+     * **`released` 로 덮어써진다**. 그리고 서열 합성(`lock-order.ts`)의 `finally` 가 **모든 경로에서**
+     * `release()` 를 부르므로 그 덮어쓰기는 예외가 아니라 **기본 경로**가 된다 — PR2 T17c(재시도 중 탈취)가
+     * 사후에 원인을 구분하지 못하게 된다. 소유 중일 때만 「내가 놓았다」로 기록한다.
+     */
     const release = (): void => {
+      if (!bound.isBound()) return
       releasedByUs = true
-      if (bound.isBound()) bound.close()
+      bound.close()
     }
     const handle: LockHandle = { key, ownerToken, revalidate, release }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 브랜드(`BENCH_LEASE`)는 런타임 값이 없는 타입 전용 심볼이라 캐스트로만 민팅된다. 이곳이 §W-4 가 요구하는 「라이브 핸들에서만 민팅」의 유일한 forge 지점이며, 3번째 캐스트는 이 룰이 RED 로 만든다.
     const lease = { ownerToken, revalidate } as BenchLeaseToken
     return { handle, lease }
   }
@@ -347,6 +356,11 @@ export type LeaseGuardResult<T> =
  *
  * PR2 의 `withAuthority` 가 이것을 임계 구역 안에서 per-retry 로 재사용한다. 반환이 판별 유니온인 이유는
  * §W-4 와 같다 — throw 는 「판별 유니온 반환」 원칙과 충돌하고 호출자의 fail-closed 분기를 흐린다.
+ *
+ * ⚠ **보장 범위는 「변이 직전」이다**(L-6 문면 그대로). `mutate()` **실행 중**에 리스를 잃는 것은 이
+ * 함수가 관측하지 않으므로, `{kind:'ran'}` 은 「변이가 인가된 상태에서 시작됐다」는 뜻이지 「끝까지
+ * 유효했다」가 아니다. 그래서 PR2 는 rename 재시도 **매 회차마다** 이 검증을 다시 태우고(§3-T17c),
+ * 긴 변이는 그 재검증 지점 사이로 쪼개는 것이 계약이다.
  */
 export async function withLeaseGuard<T>(
   lease: BenchLeaseToken,

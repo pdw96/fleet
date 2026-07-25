@@ -169,3 +169,34 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     expect(sel).toContain("ImportExpression[source.value='electron']")
   })
 })
+
+/**
+ * #251 PR1b — 브랜드 위조 차단 룰 핀.
+ *
+ * `no-unsafe-type-assertion` 은 어떤 프리셋에도 없는 **순수 옵트인**이라, 블록이 조용히 사라져도 lint 는
+ * green 이다(현 위반 0). 그런데 이 룰이 `BenchLeaseToken`·`Held<L>` 위조 우회 4종(`as unknown as`·
+ * `as never`·`Parameters<>`·`keyof`)을 잡는 **유일한 기계 수단**이므로 블록 자체를 핀한다.
+ *
+ * ⚠ 이 블록은 기존 코어 블록의 룰 키(no-restricted-imports/globals/syntax)를 **재선언하지 않는다** —
+ * flat config 는 같은 키에 대해서만 교체가 일어나므로 #174 의 「후행 블록이 앞 보호를 유실시킨다」 함정에
+ * 해당하지 않는다(다른 키 = 순수 추가).
+ */
+describe('브랜드 위조 차단 ESLint 게이트 (#251 PR1b)', () => {
+  const brandBlock = blocks.find((c) => c.files?.includes('src/main/core/workbench/locks.ts'))
+
+  it('locks.ts·lock-order.ts 스코프 블록이 존재한다', () => {
+    expect(brandBlock?.files).toEqual([
+      'src/main/core/workbench/locks.ts',
+      'src/main/core/workbench/lock-order.ts',
+    ])
+  })
+
+  it("no-unsafe-type-assertion 이 'error' 로 켜져 있다", () => {
+    expect(brandBlock?.rules?.['@typescript-eslint/no-unsafe-type-assertion']).toBe('error')
+  })
+
+  it('코어 보호 룰 키를 재선언하지 않는다(#174 교체 함정 비해당)', () => {
+    const keys = Object.keys(brandBlock?.rules ?? {})
+    expect(keys).toEqual(['@typescript-eslint/no-unsafe-type-assertion'])
+  })
+})

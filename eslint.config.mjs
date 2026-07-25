@@ -394,6 +394,19 @@ export default tseslint.config(
       ],
     },
   },
+  // 브랜드 위조 차단(#251 PR1b · 스펙 §W-3/§W-4). `BenchLeaseToken`·`Held<L>` 은 미export
+  // `unique symbol` 브랜드로 「라이브 핸들에서만 민팅」을 표현하는데, **미export 는 위조를 막지 못한다** —
+  // `as unknown as`·`as never`·`Parameters<typeof f>[0]`·`keyof` 로 타입을 구조적으로 재획득하는 우회 4종이
+  // tsc 를 전부 통과함이 실측됐다. 이 룰만이 그 4종을 기계적으로 잡는다(어떤 프리셋에도 없는 순수 옵트인).
+  //
+  // 스코프를 **브랜드를 민팅하는 두 파일로 한정**한다: 워크벤치 전체로 넓히면 PR1a 가 랜딩시킨
+  // `coord-area.ts` 의 정당한 catch 협소화(`err as NodeJS.ErrnoException`) 등 5건이 즉시 RED 가 되어
+  // 무관한 수정을 끌고 온다(범위 확대는 별도 위생 작업). 인가된 forge 2곳은 사유를 단 인라인 disable 로
+  // 남기므로, **3번째 캐스트가 생기는 순간 lint 가 RED** 다.
+  {
+    files: ['src/main/core/workbench/locks.ts', 'src/main/core/workbench/lock-order.ts'],
+    rules: { '@typescript-eslint/no-unsafe-type-assertion': 'error' },
+  },
   // Prettier 와 충돌하는 ESLint 스타일룰 비활성 (반드시 last). 현재 스타일룰 0 이라 즉효는
   // 미미하나, 향후 stylistic 룰 추가 시 포맷 책임을 Prettier 가 단독으로 갖도록 보장하는 가드.
   eslintConfigPrettier,

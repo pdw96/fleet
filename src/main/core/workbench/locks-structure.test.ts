@@ -48,10 +48,13 @@ describe('스캔 앵커 — 대상이 실재한다(아래 「0건」 단언이 v
  * 「revalidate 는 백엔드 조회만」 + 양성 통제가 담당).
  */
 describe('T4 구조층 — 락 모듈은 파일시스템을 알지 못한다', () => {
-  it.each(LOCK_SOURCES)('%s 는 node:fs 를 import 하지 않는다', (file) => {
+  it.each(LOCK_SOURCES)('%s 는 node:fs 를 import 하지 않는다(정적·동적 양쪽)', (file) => {
     const src = source(file)
     expect(src).not.toMatch(/from 'node:fs(\/promises)?'/)
-    expect(src).not.toMatch(/require\('node:fs/)
+    expect(src).not.toMatch(/require\(\s*['"]node:fs/)
+    // ⚠ 동적 `import('node:fs')` 를 빠뜨리면 정적 가드가 그대로 우회된다 — 이 레포가 #173·#174 에서
+    // 두 번 물린 계열이다(`no-restricted-imports` 가 ImportExpression 을 미방문).
+    expect(src).not.toMatch(/import\(\s*['"]node:fs/)
   })
 
   it.each(LOCK_SOURCES)('%s 는 파일 경로 조립도 하지 않는다(node:path 부재)', (file) => {
@@ -104,9 +107,117 @@ describe('T6 구조층 — 브랜드 캐스트는 인가된 2곳뿐', () => {
     expect(productionSrc).not.toMatch(pattern)
   })
 
-  it('브랜드 민팅 캐스트는 정확히 2곳(BenchLeaseToken · Held) — 3번째가 생기면 RED', () => {
-    const casts = productionSrc.match(/\bas (?:BenchLeaseToken|Held<L>)/g) ?? []
-    expect(casts.sort()).toEqual(['as BenchLeaseToken', 'as Held<L>'])
+  /**
+   * ⚠ 매칭은 **대상 타입 기준**이어야 한다. 처음 작성한 핀은 철자 `Held<L>` 만 세어서
+   * `as Held<3>`(구체 레벨을 코드가 스스로 만들어내는 3번째 forge)와 앵글브래킷 단언 `<Held<0>>expr` 을
+   * 아예 매칭하지 못했다 — 즉 「3번째가 생기면 RED」가 거짓이었다(자체 적대 리뷰 실측).
+   */
+  it('브랜드 민팅 캐스트는 정확히 2곳 — 임의 레벨(as Held<3>)·앵글브래킷 형까지 포함해 센다', () => {
+    const casts = productionSrc.match(/\bas\s+(?:BenchLeaseToken|Held\s*<[^>]*>)/g) ?? []
+    expect(casts.map((c) => c.replace(/\s+/g, ' '))).toEqual(['as BenchLeaseToken', 'as Held<L>'])
+  })
+
+  it('앵글브래킷 형 타입 단언(<Held<0>>expr)이 프로덕션 락 소스에 0건', () => {
+    expect(productionSrc).not.toMatch(/<\s*(?:BenchLeaseToken|Held\s*<[^>]*>)\s*>\s*[{(A-Za-z]/)
+  })
+})
+
+/**
+ * **L-1 재유입 가드**(§3-T60 재작성 · 계획 정정 ㉕). 생존 판정의 유일 근거는 `listen` 결과이며,
+ * 연령·mtime·pid·`connect` 를 **어떤 경로에서도** 읽지 않는다. 어댑터가 이미 `node:net` 을 쥐고 있어
+ * `connect` 프로브 재유입은 한 줄이면 가능하고, §0.1 C2 는 (축소 전 문안이라) 아직 ECONNREFUSED 를
+ * 요구하므로 — 문면만으로는 재유입을 막지 못한다.
+ */
+describe('L-1 구조층 — 커널 배타성 외의 생존 신호가 재유입되지 않는다', () => {
+  const productionSrc = LOCK_SOURCES.map(source).join('\n')
+
+  it.each([
+    ['connect 프로브', /\bconnect\s*\(/],
+    ['ECONNREFUSED 판정', /ECONNREFUSED/],
+    ['pid 조회', /\bprocess\.pid\b/],
+    ['mtime·연령', /\bmtimeMs?\b|\bbirthtime/],
+    ['시각 기반 판정', /\bDate\.now\s*\(/],
+  ])('%s 가 프로덕션 락 소스에 0건', (_label, pattern) => {
+    expect(productionSrc).not.toMatch(pattern)
+  })
+
+  it('앵커: 유일한 생존 근거(listen 결과·listening)가 실재한다', () => {
+    expect(productionSrc).toMatch(/server\.listen\(/)
+    expect(productionSrc).toMatch(/server\.listening/)
+  })
+})
+
+/**
+ * **raw 획득 경로 봉쇄**(계획 정정 ㉓ⓑ). `locks.ts` 의 `tryAcquire`/`tryAcquireBenchLease` 는 서열
+ * 가드를 거치지 않는다 — 서열은 `lock-order.ts` 의 합성만이 집행한다. export 집합 핀은 이 구멍을 닫지
+ * 못한다(`createLockScope` 자체는 인가된 export 이고 위반은 그 반환 객체의 **메서드 호출**이다).
+ * 따라서 「누가 raw 경로를 부르는가」를 직접 고정한다.
+ */
+describe('T6 구조층 — raw 획득 경로 호출자는 서열 합성뿐', () => {
+  const srcRoot = fileURLToPath(new URL('../../..', import.meta.url))
+  const RAW_CALL = /\.tryAcquire(?:BenchLease)?\s*\(/g
+
+  const files: string[] = []
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (/\.tsx?$/.test(e.name)) files.push(p)
+    }
+  }
+  walk(srcRoot)
+
+  it('앵커: 인가된 호출부(lock-order.ts)에서 실제로 매칭된다(0건 매칭이면 아래가 vacuous)', () => {
+    expect([...source('lock-order.ts').matchAll(RAW_CALL)]).toHaveLength(3)
+  })
+
+  it('프로덕션 소스 중 raw 획득을 부르는 파일은 lock-order.ts 뿐이다', () => {
+    const callers = files
+      .filter((f) => !/\.test\.tsx?$/.test(f))
+      .filter((f) => RAW_CALL.test(stripComments(readFileSync(f, 'utf8'))))
+      .map((f) => f.slice(srcRoot.length).replace(/\\/g, '/'))
+    expect(callers).toEqual(['main/core/workbench/lock-order.ts'])
+  })
+})
+
+/**
+ * `endpointFor` 가 예산 판정을 **실제로 거치는지**. 예산 초과는 현행 성분에서 도달 불가라
+ * 행동 테스트로는 그 배선을 잡을 수 없다 — 호출 한 줄을 지워도 전 게이트가 무신호다(PR0 정정 ⑦ 계열).
+ */
+describe('예산 preflight 배선 — endpointFor 가 nameBudget 을 거친다', () => {
+  it('locks.ts 의 endpointFor 본문이 nameBudget 을 호출한다', () => {
+    const body = source('locks.ts').split('export function endpointFor')[1] ?? ''
+    expect(body.slice(0, 400)).toMatch(/nameBudget\s*\(/)
+  })
+})
+
+/**
+ * 소스 위생 — **원시 NUL 바이트 금지**. git 은 NUL 이 있는 파일을 **바이너리로 분류**하므로 PR diff 가
+ * 「Binary file not shown」이 되고 `grep`/ripgrep 도 라인을 내지 않는다. 이 레포의 리뷰(Codex·CodeRabbit)는
+ * diff 를 읽는 봇에 의존하므로, 테스트 파일 하나가 통째로 리뷰 사각으로 사라진다(실측: 이 PR 이 실제로
+ * 그 상태로 커밋됐다가 발각됐다). 제어문자는 이스케이프(`\u0000`)로 쓴다.
+ */
+describe('소스 위생 — 원시 NUL 바이트 0건(리뷰 diff 가 바이너리로 접히지 않는다)', () => {
+  const srcRoot = fileURLToPath(new URL('../../..', import.meta.url))
+  const files: string[] = []
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (/\.tsx?$/.test(e.name)) files.push(p)
+    }
+  }
+  walk(srcRoot)
+
+  it('앵커: 스캔 대상이 충분히 많다', () => {
+    expect(files.length).toBeGreaterThan(50)
+  })
+
+  it('src 전체 .ts/.tsx 에 0x00 바이트가 없다', () => {
+    const offenders = files
+      .filter((f) => readFileSync(f).includes(0))
+      .map((f) => f.slice(srcRoot.length))
+    expect(offenders).toEqual([])
   })
 })
 
@@ -209,14 +320,24 @@ describe('플랫폼 게이트는 skipIf 만 쓴다(조기 return 금지)', () =>
     expect(withSkipIf.length).toBeGreaterThan(0)
   })
 
-  it.each([
-    'locks.test.ts',
-    'lock-order.test.ts',
-    'lock-backend-uds.test.ts',
-    'locks-structure.test.ts',
-  ])('%s 에 process.platform 조기 return 형 게이트가 0건', (file) => {
-    expect(stripComments(readFileSync(join(HERE, file), 'utf8'))).not.toMatch(
-      /if\s*\(\s*process\.platform[^)]*\)\s*return/,
-    )
+  /**
+   * ⚠ 하드코딩 목록이 아니라 **디렉터리 전수**여야 한다(새 테스트 파일이 목록에 없으면 무신호).
+   * 그리고 술어는 `process.platform` 직접 참조뿐 아니라 이 파일들이 실제로 쓰는 **alias**
+   * (`const IS_LINUX = process.platform === 'linux'`)까지 덮어야 한다 — 처음 작성한 스캔은
+   * `if (!IS_LINUX) return` 형을 그대로 통과시켰다(자체 적대 리뷰 실측).
+   */
+  it.each(testFiles)('%s 에 조기 return 형 플랫폼 게이트가 0건', (file) => {
+    const src = stripComments(readFileSync(join(HERE, file), 'utf8'))
+    // 플랫폼 판정에 쓰이는 식별자 전부(직접 참조 + 이 파일에서 선언된 alias)를 술어로 삼는다.
+    const aliases = [...src.matchAll(/const\s+(\w+)\s*=\s*process\.platform\b/g)].map((m) => m[1])
+    const terms = ['process\\.platform', ...aliases]
+    for (const term of terms) {
+      expect(src).not.toMatch(new RegExp(`if\\s*\\([^)]*${term}[^)]*\\)\\s*return`))
+    }
+  })
+
+  it('앵커: 이 슬라이스가 실제로 플랫폼 alias 를 쓴다(위 스캔이 alias 축을 헛돌지 않음)', () => {
+    const udsSrc = readFileSync(join(HERE, 'lock-backend-uds.test.ts'), 'utf8')
+    expect(udsSrc).toMatch(/const\s+IS_LINUX\s*=\s*process\.platform/)
   })
 })

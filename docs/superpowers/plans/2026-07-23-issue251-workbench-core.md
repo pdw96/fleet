@@ -250,18 +250,30 @@ boot 배선(→PR7) · `DurableFs` 카운터 층(→PR2).
   읽지 않음(주입 계층 호출 0 + 양성 통제)».
   ⚠ **커버리지 대응 ⓐ 확정**(정정 ⑤) — `LockBackend` 주입 seam · 계약 테스트는 **페이크로 양 OS** ·
   실 추상 소켓 어댑터만 `describe.skipIf(process.platform !== 'linux')`. 실 어댑터를 **얇게** 유지한다.
-  ⚠ **양성 단언 필수**(정정 ⑧): `server.address()` 코드포인트 0 시작 · Linux 한정 `/proc/net/unix` 의
-  `@<name>` 정확히 1행 · 영역 스냅숏 **파일 0개 증가**.
-  ⚠ **이름 예산**(정정 ⑦): `'fleet.wb.' + digest(32 hex) + '.' + key` ≤ 107(선행 NUL 포함 총 ≤108) —
-  경계값 테이블(106/107/108/109)로 고정. 초과는 EINVAL 이며 그대로 두면 **부팅 성공 + 기능 영구 사망**이다.
-  ⚠ **L-2 조작화**: 「동일 tick 내 반환」은 `setImmediate` 턴 카운터 0 으로 관측한다(블로킹 재시도 루프
-  구현이 RED 가 되는 유일한 형태).
-  ⚠ **결정론**(§3.2 위임 이행): 실 소켓·실 fork 행은 파일 내부 순차 실행 + 각 `it` 에 **명시 timeout ≥15s**
-  (vitest 기본 5s · 레포에 `--no-file-parallelism` 스크립트 부재 — vitest 4 는 파일 단위 병렬 제어 수단이 없다).
+  ⚠ **양성 단언**(정정 ⑧ → **⑮로 재정정**): ~~`server.address()` 코드포인트 0 시작~~ — `address()` 는
+  `listen()` 인자의 에코이며 `close()` 후에도 남아 **커널 증거가 아니다**(실측). 살아있는 양성 단언 =
+  Linux 한정 `/proc/net/unix` 의 `@<name>` 정확히 1행 · 영역 스냅숏 **파일 0개 증가** · **영역 전삭제 후에도
+  보유·판정·해제 불변**(§3-T7 둘째 절 · 정정 ㉔). 이름 코드포인트 0 은 **순수 함수 반환값**으로 강등해 양 OS 검증.
+  ⚠ **이름 예산**(정정 ⑦ → **⑭로 보강**): `'fleet.wb.' + digest(32 hex) + '.' + key` ≤ 107(선행 NUL 포함
+  총 ≤108). ~~초과는 EINVAL~~ — **런타임 메이저마다 다르다**: Node 24 는 EINVAL 이지만 **필수 게이트
+  런타임(Node 22.22.3)은 성공 + 107B 무성 절단 → 서로 다른 키가 EADDRINUSE 충돌**(실측). 따라서 경계
+  테이블은 **순수 함수(`nameBudget`)로만** 검증하고 실 소켓으로 109B 를 단언하지 않는다(필수 게이트 RED).
+  단위는 문자 수가 아니라 `Buffer.byteLength`.
+  ⚠ **L-2 조작화**(→ **⑯으로 정정**): ~~턴 카운터 0 이 유일한 형태~~ — bind 결과가 `process.nextTick`
+  경유라 nextTick·마이크로태스크 재시도 루프는 턴 0 을 **그대로 통과**한다. 채택 형태 = **3중**
+  (①페이크 bind 시도 카운트 == 1 = 주 falsifier ②fake timers 下 `getTimerCount()===0` ③턴 0 = 보조) +
+  **실 어댑터 턴 0 행 별도**(페이크 전용 조작화는 실물 성질을 증명하지 않는다).
+  ⚠ **결정론**(§3.2 위임 이행 · → **㉖으로 정정**): ~~각 `it` 에 명시 timeout ≥15s(기본 5s)~~ — PR1a 가
+  전역 `testTimeout: 20_000` 을 이미 랜딩했으므로 15s 는 **하향**이다. ~~vitest 4 는 병렬 제어 수단이 없다~~
+  — `--no-file-parallelism`·`fileParallelism` 이 실재한다(다만 **불요**: 추상 이름공간이 net ns 전역이라
+  올바른 격리 수단은 파일 순차화가 아니라 **테스트별 이름 무작위화**다).
 - **T4 L-6 보유자 재검증(축소판)** — **§3-T10b 는 §3 표에 부재하므로(정정 ②) 여기서 행을 신설한다**:
-  «해제된(또는 소유권을 잃은) 리스 핸들로 변이·확인-응답 쓰기를 시도하면 `server.listening===false` 판정으로
-  `lease-lost` **fail-closed** · 그 판정에 **디스크 I/O 0**(주입 `DurableFs`/fs 계층 호출 카운트 0 단언) ·
-  **양성 통제**로 같은 스위트에 그 더블이 ≥1회 호출되는 형제 행을 둔다(seam 미배선을 GREEN 으로 위장 금지)».
+  «해제된(또는 소유권을 잃은) 리스 핸들로 변이를 시도하면 fail-closed» — 단 **정정 ⑱·⑲·⑳ 적용**:
+  ⓐ반환 어휘는 `LeaseCheck`(spec:346) **단일**(~~`lease-lost`~~ 는 스펙 타입에 없다) ⓑ「디스크 I/O 0」은
+  ~~주입 `DurableFs` 카운터~~(PR2 소유라 PR1b 에 없다)가 아니라 **구조 단언**(락 모듈이 `node:fs` 를 정적·
+  동적 어느 형태로도 import 하지 않음) + **행동 단언**(페이크 호출 계측 + 양성 통제) 2층 ⓒ**out-of-band
+  무효화 행 필수** — `release()` 를 거치지 않고 밑단 endpoint 만 무효화(`forceLose`)했을 때 `stolen` 이어야
+  「자체 released 불리언」 구현이 RED 가 된다(그 행이 없으면 T4 가 선언한 결함을 실제로 못 잡는다).
   추상 소켓에서 소유자 생존 중 endpoint 상실이 불가능하므로 이는 **in-process 오사용(해제 후 계속 변이)
   방어**이며 cross-process 방어는 커널이 담당한다.
 - **T5 인스턴스 배타 · 배포 계약 집행(서버 단일 표면 축소판 · §W-2-b)** — `open(<area>/active-instance.json,
@@ -296,7 +308,11 @@ boot 배선(→PR7) · `DurableFs` 카운터 층(→PR2).
   ⚠ **「함수 합성으로만」은 과잉 제약**(감사 L4-5) — bench 리스를 `r` 없이 획득하는 것은 스펙 자신의 정상
   상태라 중첩 합성은 정상 경로를 타입 에러로 만든다. 채택 형태 = **미export 브랜드 phantom 레벨(단조 증가)
   + raw 프리미티브 모듈 비공개**: `withRepoLock(ctx: Held<0>)` / `withBenchLease(ctx: Held<0|1>)` /
-  `trySlot(ctx: Held<0|1|2>)`. 역순은 tsc 가 막고 `@ts-expect-error` 로 핀한다.
+  `trySlot(ctx: Held<0|1|2>)`. ~~역순은 tsc 가 막는다~~ → **정정 ㉑**: 타입은 **스레딩 사고만** 막는다
+  (루트 재민팅 한 줄로 무력화됨을 실측). 1차 방어 = **`AsyncLocalStorage` 런타임 가드**, 2차 = 구조 단언
+  (**raw 획득 호출자 exact 핀** · 브랜드 캐스트 개수 핀 · export 집합), 3차 = `@ts-expect-error` 핀
+  (설명 ≥3자 필수 · 판정자는 `typecheck`). 브랜드는 **미export `unique symbol` 필수**(문자열 프로퍼티
+  브랜드는 리터럴로 위조 가능 — 실측).
   ⚠ **실 fork 결정론 부품**(레포 선례 0건 — 감사 L4-7): 배리어 = `open(...,'wx')` 원자성만 쓰는 파일 배리어 ·
   자식 준비 신호 = stdout 토큰 핸드셰이크(`e2e/web-server.ts` 선례) · 각 `it` 명시 timeout ≥15s ·
   자식 스크립트는 `__testing__/` 에 두고 `vitest.config.ts` `coverage.exclude` 에 등재(+ config 객체 단언 핀 ·

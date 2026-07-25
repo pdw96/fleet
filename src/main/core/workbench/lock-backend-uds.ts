@@ -30,7 +30,12 @@ export function createAbstractSocketBackend(): LockBackend {
         // ⚠ 리스너를 `listen()` **호출 전에 동기 부착**한다. bind 결과는 동기 throw 가 아니라
         // `process.nextTick` 의 'error'/'listening' 이벤트로 오고(`setupListenHandle`), 그 사이에
         // 'error' 리스너가 없으면 **unhandled 'error' 로 프로세스가 죽는다**.
-        server.once('error', (err: NodeJS.ErrnoException) => {
+        //
+        // ⚠ `once` 가 아니라 `on` 이다. 락 서버는 해제될 때까지 **장수**하므로 bind 성공 이후에도
+        // 런타임 오류가 올 수 있는데, `once` 면 그때 리스너가 0개라 **프로세스가 죽는다**(EventEmitter
+        // 의 'error' 규약). Promise 는 한 번만 해소되므로(이후 resolve 는 무시) 사후 오류는 판정을
+        // 바꾸지 않는다 — 보유 여부의 권위는 어디까지나 `server.listening` 이다.
+        server.on('error', (err: NodeJS.ErrnoException) => {
           // EADDRINUSE 만이 「소유자 생존」이다. 그 외 전부 fail-closed — 미지 errno 를 성공으로 읽지 않는다.
           resolve(
             err.code === 'EADDRINUSE'

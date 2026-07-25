@@ -86,9 +86,11 @@ export type AreaOpenResult =
  * 락 endpoint 이름의 레포 스코프 성분. **정준 common gitdir 로부터 유도**하므로 재시작·컨테이너 교체
  * 후에도 같은 값이고, 서로 다른 레포는 서로 다른 값을 갖는다.
  *
- * 길이가 계약인 이유: 추상 소켓 이름은 `sun_path`(108바이트) 안에 선행 NUL 포함으로 들어가야 하고
- * 초과하면 **무성 절단이 아니라 EINVAL** 이다(실측: 총 108 OK / 109 EINVAL). 32자로 고정해
- * `'fleet.wb.' + digest + '.' + key` 의 최대 길이를 컴파일 타임에 결정한다(§W-3 이름 예산).
+ * 길이가 계약인 이유: 추상 소켓 이름은 `sun_path`(108바이트) 안에 선행 NUL 포함으로 들어가야 한다.
+ * ⚠ **초과 시 동작은 런타임 메이저마다 다르다**(#251 PR1b 실측 정정): Node 24 는 `EINVAL` 이지만
+ * Node 22.22.3(=`.nvmrc` · 필수 CI 게이트)은 **성공시키고 107바이트로 무성 절단**해 앞부분을 공유하는
+ * 서로 다른 두 키를 같은 endpoint 로 붕괴시킨다. 그래서 예산 집행은 libuv 가 아니라 우리 preflight
+ * (`locks.ts` 의 `nameBudget`)가 한다. 여기서 32자로 고정하는 것은 그 예산의 상수 성분을 못 박는 일이다.
  */
 export function endpointDigest(canonicalCommonGitDir: string): string {
   return createHash('sha256').update(canonicalCommonGitDir).digest('hex').slice(0, 32)

@@ -279,3 +279,61 @@ export async function __forgeryTypePins(ordered: OrderedLocks): Promise<void> {
   // @ts-expect-error 위조 핀: 슬롯 레벨 컨텍스트를 만들어낼 공개 수단이 없다
   await ordered.trySlot({ level: 2 }, 0, () => Promise.resolve(1))
 }
+
+/**
+ * 자체 적대 리뷰가 낸 결함의 회귀 가드 (2026-07-26).
+ */
+describe('구간 종료 후 지연 작업 — 해제된 레벨을 물고 허위 위반을 던지지 않는다', () => {
+  /**
+   * `AsyncLocalStorage` 컨텍스트는 구간 **안에서 등록된** 지연 작업에 상속된다. 레벨을 숫자로만 저장하면
+   * 구간이 끝난 뒤 그 작업이 실행될 때 이미 해제된 레벨을 보고 **허위 `lock-order-violation`** 을 던진다.
+   * PR7 엔진 배선은 락 구간 안에서 후속 작업을 예약하는 것이 정상 형태이므로, 이 행이 없으면 배선 시점에
+   * 재현 어려운 오류로 나타난다.
+   */
+  it('슬롯 구간 안에서 예약한 작업이 구간 종료 후 레포 락을 획득할 수 있다', async () => {
+    const { ordered } = orderedWith(createFakeLockBackend())
+    let deferred: Promise<unknown> | undefined
+
+    await ordered.trySlot(ordered.root(), 0, () => {
+      // 구간 **안에서** 예약 → ALS 컨텍스트를 상속한다. 실행은 구간이 끝난 뒤다.
+      deferred = new Promise((resolve) =>
+        setImmediate(() =>
+          resolve(ordered.withRepoLock(ordered.root(), () => Promise.resolve('ok'))),
+        ),
+      )
+      return Promise.resolve(1)
+    })
+
+    await expect(deferred).resolves.toEqual({ status: 'ran', value: 'ok' })
+  })
+
+  it('구간이 살아 있는 동안에는 같은 컨텍스트의 지연 작업도 여전히 거부된다(가드가 무력화되지 않았다)', async () => {
+    const { ordered } = orderedWith(createFakeLockBackend())
+    await expect(
+      ordered.trySlot(ordered.root(), 0, async () => {
+        // 구간 **안에서 실행**되는 지연 작업 — 아직 레벨 3 이 유효하다.
+        await new Promise((resolve) => setImmediate(resolve))
+        return ordered.withRepoLock(ordered.root(), () => Promise.resolve(1))
+      }),
+    ).rejects.toThrow(/lock-order-violation/)
+  })
+})
+
+/**
+ * 중첩 결과의 형상 — 바깥 `ran` 이 안쪽 `held` 를 감싼다. PR7 배선이 바깥 status 만 보면
+ * 「획득 실패」를 「성공」으로 읽는 **fail-open** 이 된다. 형상을 명시 단언으로 고정해 소비자가 안쪽을
+ * 반드시 풀어보게 만든다.
+ */
+describe('중첩 LockRun — 안쪽 held 가 바깥 ran 에 가려지지 않는다', () => {
+  it('안쪽 bench 리스가 held 면 바깥은 ran(value=held) 이다', async () => {
+    const backend = createFakeLockBackend()
+    const { ordered, digest } = orderedWith(backend)
+    const benchId = newUlid()
+    occupy(backend, digest, { kind: 'bench', benchId })
+
+    const r = await ordered.withRepoLock(ordered.root(), (repoCtx) =>
+      ordered.withBenchLease(repoCtx, benchId, () => Promise.resolve('실행됨')),
+    )
+    expect(r).toEqual({ status: 'ran', value: { status: 'held' } })
+  })
+})

@@ -84,14 +84,38 @@ export interface OrderedLocks {
   ): Promise<LockRun<T>>
 }
 
-const levelStore = new AsyncLocalStorage<number>()
+/**
+ * 보유 프레임 — 레벨과 **아직 유효한가**를 함께 담는다.
+ *
+ * ⚠ 단순히 숫자만 저장하면 안 된다(자체 적대 리뷰 확정): `AsyncLocalStorage` 컨텍스트는 구간 **안에서
+ * 등록된 지연 작업**(`setTimeout`·`queueMicrotask`·이벤트 리스너)에 상속되므로, 구간이 끝난 뒤 그 작업이
+ * 실행되면 이미 해제된 레벨을 물고 있어 **허위 `lock-order-violation`** 을 던진다. 해제 시 프레임을
+ * 무효화하고 판정은 「가장 안쪽의 **유효한** 프레임」으로 하면, 지연 작업은 자연스럽게 레벨 0 을 본다.
+ * (방향은 fail-closed 쪽이었지만 정상 호출을 막는 것도 결함이다.)
+ */
+interface HeldFrame {
+  readonly level: number
+  readonly parent: HeldFrame | undefined
+  active: boolean
+}
+
+const levelStore = new AsyncLocalStorage<HeldFrame>()
+
+/** 현재 유효 보유 레벨 — 무효화된 프레임은 건너뛴다. */
+const currentLevel = (): number => {
+  let frame = levelStore.getStore()
+  while (frame && !frame.active) frame = frame.parent
+  return frame?.level ?? LOCK_LEVEL.none
+}
 
 /**
  * 브랜드는 타입에만 존재하므로(`declare const` = 런타임 값 없음) 토큰은 **캐스트로만** 만들 수 있다 —
  * phantom 브랜드 관용구의 불가피한 부분이다. 이것이 이 모듈의 **유일한 forge 지점**이며, 캐스트가
  * 2곳(여기 + `locks.ts` 의 리스 민팅)을 넘지 않는 것은 `locks-structure.test.ts` 가 exact 개수로 핀한다.
  */
-const heldToken = <L extends number>(): Held<L> => Object.freeze({}) as Held<L>
+const heldToken = <L extends number>(): Held<L> =>
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 브랜드(`HELD_LEVEL`)는 런타임 값이 없는 타입 전용 심볼이라 캐스트로만 민팅된다. 이 모듈의 유일한 forge 지점이며, 3번째 캐스트는 이 룰이 RED 로 만든다.
+  Object.freeze({}) as Held<L>
 
 export function createOrderedLocks(scope: LockScope): OrderedLocks {
   /**
@@ -107,16 +131,20 @@ export function createOrderedLocks(scope: LockScope): OrderedLocks {
     >,
     run: (lease: BenchLeaseToken | undefined) => Promise<T>,
   ): Promise<LockRun<T>> => {
-    const current = levelStore.getStore() ?? LOCK_LEVEL.none
+    const current = currentLevel()
     if (current >= target) throw new LockOrderViolationError(current, target)
 
     const got = await acquire()
     if (got.status === 'held') return { status: 'held' }
     if (got.status === 'unavailable') return { status: 'unavailable', detail: got.detail }
+    const frame: HeldFrame = { level: target, parent: levelStore.getStore(), active: true }
     try {
-      const value = await levelStore.run(target, () => run(got.lease))
+      const value = await levelStore.run(frame, () => run(got.lease))
       return { status: 'ran', value }
     } finally {
+      // 순서가 계약이다: 프레임 무효화가 **먼저**여야 구간 안에서 등록된 지연 작업이 해제된 레벨을
+      // 물고 허위 위반을 던지지 않는다.
+      frame.active = false
       got.handle.release()
     }
   }
