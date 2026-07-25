@@ -2,7 +2,7 @@ import { execFile, execFileSync, type ExecFileException } from 'node:child_proce
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { createGitRepo, type GitResult, type GitRunner } from './git'
 
@@ -28,9 +28,11 @@ const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
 
 /** 실 git 픽스처: 커밋 1개짜리 레포를 만든다(identity 미설정 머신에서도 동작하도록 -c 주입). */
-const initRepo = (dir: string): string => {
+/** `commit` 은 `worktree add HEAD` 를 쓰는 픽스처에만 필요하다 — 불필요한 스폰을 만들지 않는다. */
+const initRepo = (dir: string, commit = true): string => {
   mkdirSync(dir, { recursive: true })
   git(dir, 'init', '-q', '.')
+  if (!commit) return dir
   git(
     dir,
     '-c',
@@ -72,12 +74,19 @@ const execRunner: GitRunner = {
 const mkTmp = (): string => realpathSync.native(mkdtempSync(join(tmpdir(), 'fleet-251-repo-')))
 
 describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 영역(실 git)', () => {
-  it('메인 worktree · linked worktree 가 같은 common gitdir 로 수렴한다', async () => {
-    const base = mkTmp()
-    const main = initRepo(join(base, 'main'))
-    const linked = join(base, 'linked')
+  // 형태별 픽스처는 **읽기 전용**이라 describe 당 1회만 만든다 — 실 git 스폰을 줄이는 것이 목적이다
+  // (전체 스위트 병렬 부하가 올라가면 기존 테스트까지 산발 RED 로 밀린다 — master 대조 실측).
+  let base = ''
+  let main = ''
+  let linked = ''
+  beforeAll(() => {
+    base = mkTmp()
+    main = initRepo(join(base, 'main'))
+    linked = join(base, 'linked')
     git(main, 'worktree', 'add', '-q', '--detach', linked, 'HEAD')
+  })
 
+  it('메인 worktree · linked worktree 가 같은 common gitdir 로 수렴한다', async () => {
     const fromMain = await createGitRepo(main, execRunner).commonGitDir()
     const fromLinked = await createGitRepo(linked, execRunner).commonGitDir()
 
@@ -90,7 +99,6 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
   })
 
   it('bare 레포는 자기 디렉터리가 common gitdir 이다', async () => {
-    const base = mkTmp()
     const bare = join(base, 'bare.git')
     git(base, 'init', '-q', '--bare', 'bare.git')
 
@@ -101,7 +109,6 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
   })
 
   it('separate-git-dir 레포는 워크트리가 아니라 실제 gitdir 을 가리킨다', async () => {
-    const base = mkTmp()
     const work = join(base, 'work')
     const gitDir = join(base, 'sep-gitdir')
     git(base, 'init', '-q', `--separate-git-dir=${gitDir}`, 'work')
@@ -125,9 +132,8 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
   })
 
   it('서브모듈은 상위 레포의 modules/<name> 을 가리킨다(상위와 영역이 분리된다)', async () => {
-    const base = mkTmp()
     const sub = initRepo(join(base, 'subsrc'))
-    const super_ = initRepo(join(base, 'super'))
+    const super_ = initRepo(join(base, 'super'), false)
     git(
       super_,
       '-c',
@@ -152,8 +158,7 @@ describe('T2/§3-T5 — 코디네이션 영역 정준화: 5형태에서 동일 �
   })
 
   it('git 레포가 아니면 fail-closed(경로를 지어내지 않는다)', async () => {
-    const base = mkTmp()
-    const r = await createGitRepo(base, execRunner).commonGitDir()
+    const r = await createGitRepo(base, execRunner).commonGitDir() // base 자체는 레포가 아니다
     expect(r.status).toBe('failed')
     expect(r.status === 'failed' && r.stderr).toMatch(/not a git repository|repository/i)
   })
@@ -205,12 +210,17 @@ describe('T2/§3-T6 — `--path-format=absolute` 부재 시 상대 `.git` 오판
 })
 
 describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
-  it('메인 + linked 를 모두 열거하고 detached/branch 를 구분한다', async () => {
-    const base = mkTmp()
-    const main = initRepo(join(base, 'main'))
-    const linked = join(base, 'wt-detached')
+  let base = ''
+  let main = ''
+  let linked = ''
+  beforeAll(() => {
+    base = mkTmp()
+    main = initRepo(join(base, 'main'))
+    linked = join(base, 'wt-detached')
     git(main, 'worktree', 'add', '-q', '--detach', linked, 'HEAD')
+  })
 
+  it('메인 + linked 를 모두 열거하고 detached/branch 를 구분한다', async () => {
     const r = await createGitRepo(main, execRunner).listWorktrees()
     expect(r.status).toBe('ok')
     const list = r.status === 'ok' ? r.worktrees : []
@@ -224,8 +234,6 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
   })
 
   it('경로에 공백이 있어도 잘리지 않는다(porcelain 은 첫 공백 이후 전부가 값)', async () => {
-    const base = mkTmp()
-    const main = initRepo(join(base, 'main'))
     const spaced = join(base, 'work tree with spaces')
     git(main, 'worktree', 'add', '-q', '--detach', spaced, 'HEAD')
 
@@ -235,8 +243,6 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
   })
 
   it('prunable(디렉터리 소실) worktree 를 표시한다 — 자동 삭제는 하지 않는다', async () => {
-    const base = mkTmp()
-    const main = initRepo(join(base, 'main'))
     const gone = join(base, 'gone')
     git(main, 'worktree', 'add', '-q', '--detach', gone, 'HEAD')
     // 디렉터리만 없애면 admin 레코드는 남아 prunable 로 보고된다.
@@ -251,7 +257,7 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
   })
 
   it('레포가 아니면 fail-closed(빈 배열로 위장하지 않는다)', async () => {
-    const r = await createGitRepo(mkTmp(), execRunner).listWorktrees()
+    const r = await createGitRepo(base, execRunner).listWorktrees() // base 자체는 레포가 아니다
     expect(r.status).toBe('failed')
   })
 
@@ -265,10 +271,9 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
    * 필요하고, 그 비용은 소비자가 생기는 PR 에서 판단한다). 소비자가 생기면 이 테스트가 계약을 알려준다.
    */
   it('메인 엔트리 경로는 separate-git-dir 에서 gitdir 을 가리킨다(신뢰 금지 · 특성화)', async () => {
-    const base = mkTmp()
-    const work = join(base, 'work')
-    const gitDir = join(base, 'sep-gitdir')
-    git(base, 'init', '-q', `--separate-git-dir=${gitDir}`, 'work')
+    const work = join(base, 'wt-sep-work')
+    const gitDir = join(base, 'wt-sep-gitdir')
+    git(base, 'init', '-q', `--separate-git-dir=${gitDir}`, 'wt-sep-work')
     git(
       work,
       '-c',
@@ -289,7 +294,6 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
   })
 
   it('bare 엔트리에는 HEAD·branch 행이 아예 없다(파서가 undefined 로 답한다 · 특성화)', async () => {
-    const base = mkTmp()
     git(base, 'init', '-q', '--bare', 'bare.git')
     const r = await createGitRepo(join(base, 'bare.git'), execRunner).listWorktrees()
     const first = r.status === 'ok' ? r.worktrees[0] : undefined
@@ -319,7 +323,7 @@ describe('T2 — 무회귀: 기존 git.ts 표면 불변(계획 §5-1)', () => {
 
   it('createGitRepo 는 러너 미주입 시 defaultGitRunner 를 쓴다(주입 seam 무회귀)', async () => {
     const base = mkTmp()
-    const main = initRepo(join(base, 'main'))
+    const main = initRepo(join(base, 'main'), false)
     writeFileSync(join(main, 'x.txt'), 'x')
     const r = await createGitRepo(main).commonGitDir()
     expect(r.status).toBe('ok')

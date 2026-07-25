@@ -153,11 +153,19 @@ export function createGitRepo(root: string, git: GitRunner = defaultGitRunner): 
       // `--path-format=absolute`(git ≥2.31)가 핵심이다 — 없으면 메인 worktree 가 상대 `.git` 을,
       // bare 가 `.` 을 돌려준다. 그럼에도 출력이 상대일 수 있는 구형 git 을 위해 **root 기준**으로
       // 해소한다(process.cwd() 기준으로 해소하면 **남의 레포**에 영역을 만든다 — §3-T6).
-      const r = await run(['rev-parse', '--path-format=absolute', '--git-common-dir'])
-      const raw = r.stdout.trim()
+      // `rev-parse` 는 다중 질의를 **한 번에** 답한다(출력 = 질의 순서대로 한 줄씩) — 프로세스 스폰을
+      // 절반으로 줄인다. win32 에서 매 spawn 은 PATH 해석(2s 캡·캐시 없음 · `cli/detect.ts:234`)을
+      // 동반하므로 이 절약은 부하 상황의 신뢰도에 직접 기여한다.
+      const r = await run([
+        'rev-parse',
+        '--path-format=absolute',
+        '--git-common-dir',
+        '--is-bare-repository',
+      ])
+      const [dirLine, bareLine] = r.stdout.split(/\r?\n/)
+      const raw = dirLine?.trim() ?? ''
       if (r.code !== 0 || raw === '') return failed(r)
-      const bare = await run(['rev-parse', '--is-bare-repository'])
-      return { status: 'ok', path: resolve(root, raw), bare: bare.stdout.trim() === 'true' }
+      return { status: 'ok', path: resolve(root, raw), bare: bareLine?.trim() === 'true' }
     },
     async listWorktrees() {
       const r = await run(['worktree', 'list', '--porcelain'])

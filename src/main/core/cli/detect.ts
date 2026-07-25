@@ -229,9 +229,18 @@ export const defaultResolver: PathResolver = async (command) => {
   }
 }
 
-// 표시용 경로 해석 상한. which 의 PATH 순회(파일 stat)는 보통 즉시지만, 병든 PATH(스테일 네트워크
-// 마운트 등)에서 멈출 수 있다. 표시용 부가정보가 detectCli 를 영영 매달지 않게 race 로 상한을 건다.
-const RESOLVE_TIMEOUT_MS = 2000
+// 경로 해석 상한. which 의 PATH 순회(파일 stat)는 보통 즉시지만, 병든 PATH(스테일 네트워크 마운트 등)
+// 에서 멈출 수 있어 race 로 상한을 건다. 상한의 목적은 **호출자 예산을 병든 PATH 가 삼키지 않게** 하는
+// 것이지 「빨라야 한다」가 아니다.
+//
+// 값 근거(#251 PR1a 실측): 이 상한은 `defaultRunner` 의 win32 cwd-셰도 가드(#158)에도 쓰이고, 거기서
+// 초과하면 **실행 거부(ENOENT)** 가 된다 — 즉 표시용이 아니라 실행 성패를 가른다. 같은 머신에서
+// `resolvePathOnly('git')` 소요를 측정하니 **유휴 72~87ms** vs **CPU 부하 중 최대 7,592ms**(87배)였다.
+// 2,000ms 는 부하 상황에서 상시 초과돼 **멀쩡한 git/CLI 를 「없음」으로 오판**한다(테스트에서 산발 RED 로
+// 먼저 드러났고, 프로덕션에서는 바쁜 데스크톱의 간헐적 실행 실패로 나타난다).
+// 10s 로 올려도 원래 의도는 유지된다 — git 호출 예산 120s 의 8%이고, `Math.min(opts.timeoutMs, …)` 때문에
+// 예산이 더 작은 호출자(CLI probe 5s)는 자기 예산에 그대로 묶인다.
+const RESOLVE_TIMEOUT_MS = 10_000
 
 /**
  * 해석된 경로가 PATH shadow 위험인지 판정.
