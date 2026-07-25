@@ -85,6 +85,47 @@ export function endpointDigest(canonicalCommonGitDir: string): string {
   return createHash('sha256').update(canonicalCommonGitDir).digest('hex').slice(0, 32)
 }
 
+type RecordVerdict =
+  | { kind: 'ok'; lockBackend: LockBackendKind }
+  | { kind: 'rejected'; reason: AreaDisabledReason; detail: string }
+
+/**
+ * 레코드 수용 판정(순수) — **레코드를 얻은 모든 경로가 이 하나를 통과한다.**
+ *
+ * 경로가 둘이라는 점이 핵심이다: ①부팅 시 probe ②create-only 경합에서 진 뒤의 재읽기. ②를 검증 없이
+ * 채택하면 승자가 신버전/타 백엔드여도 이쪽은 `open` 을 반환하면서 **자기 기본 백엔드로 조정**하게 되어,
+ * 같은 영역을 보는 두 인스턴스가 서로 다른 락 규칙을 쓴다(Codex PR #257 P1 · L-4/I12 위반).
+ */
+const verifyRecord = (
+  record: AreaRecord,
+  supportedBackends: readonly LockBackendKind[],
+): RecordVerdict => {
+  if (record.schemaVersion > AREA_SCHEMA_VERSION) {
+    return {
+      kind: 'rejected',
+      reason: 'incompatible-version',
+      detail: `지원 범위 초과 schemaVersion=${record.schemaVersion} (지원 ≤${AREA_SCHEMA_VERSION}) — 더 새 버전의 Fleet 으로 열 것`,
+    }
+  }
+  if (!(SUPPORTED_LOCK_BACKENDS as readonly string[]).includes(record.lockBackend)) {
+    return {
+      kind: 'rejected',
+      reason: 'unsupported-backend',
+      detail: `알 수 없는 lockBackend=${record.lockBackend}`,
+    }
+  }
+  const lockBackend = record.lockBackend as LockBackendKind
+  if (!supportedBackends.includes(lockBackend)) {
+    // 부수효과 이전에 막는다 — 이 플랫폼에서는 어떤 endpoint 획득도 시도하지 않는다.
+    return {
+      kind: 'rejected',
+      reason: 'platform-unsupported',
+      detail: `이 플랫폼에서 ${lockBackend} 백엔드를 쓸 수 없음`,
+    }
+  }
+  return { kind: 'ok', lockBackend }
+}
+
 /**
  * 소유자 판정(순수) — 실 파일시스템에서 **타 uid 소유 디렉터리를 만들려면 root 권한이 필요**해
  * 통합 테스트로는 이 규칙을 검증할 수 없다. 판정만 떼어 두면 규칙 자체는 어느 OS 에서도 검증된다.
@@ -183,21 +224,18 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
   }
 
   // 기록이 있으면 **기록이 권위**다. 없으면 이 인스턴스가 기본 백엔드로 초기화한다.
-  const backend = probe.kind === 'ok' ? probe.record.lockBackend : DEFAULT_LOCK_BACKEND
-  if (probe.kind === 'ok' && probe.record.schemaVersion > AREA_SCHEMA_VERSION) {
-    return disabled(
-      'incompatible-version',
-      `지원 범위 초과 schemaVersion=${probe.record.schemaVersion} (지원 ≤${AREA_SCHEMA_VERSION}) — 더 새 버전의 Fleet 으로 열 것`,
-    )
-  }
-  if (!(SUPPORTED_LOCK_BACKENDS as readonly string[]).includes(backend)) {
-    return disabled('unsupported-backend', `알 수 없는 lockBackend=${backend}`)
-  }
-  const lockBackend = backend as LockBackendKind
-  if (!opts.supportedBackends.includes(lockBackend)) {
-    // 부수효과 이전에 막는다 — 이 플랫폼에서는 어떤 endpoint 획득도 시도하지 않는다.
-    return disabled('platform-unsupported', `이 플랫폼에서 ${lockBackend} 백엔드를 쓸 수 없음`)
-  }
+  const intended: AreaRecord =
+    probe.kind === 'ok'
+      ? probe.record
+      : {
+          schemaVersion: AREA_SCHEMA_VERSION,
+          lockBackend: DEFAULT_LOCK_BACKEND,
+          createdAt: 0,
+          createdBy: '',
+        }
+  const verdict = verifyRecord(intended, opts.supportedBackends)
+  if (verdict.kind === 'rejected') return disabled(verdict.reason, verdict.detail)
+  const lockBackend = verdict.lockBackend
 
   try {
     mkdirSync(root, { recursive: true, mode: 0o700 })
@@ -243,7 +281,22 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
       if (again.kind !== 'ok') {
         return disabled('reconciliation-required', 'area.json 경합 후 재판정 불가')
       }
-      record = again.record
+      // ⚠ 승자 기록은 **초기 probe 를 거치지 않았다** — 같은 검증을 다시 통과해야 한다(Codex PR #257 P1).
+      // 빠뜨리면 승자가 신버전/타 백엔드여도 이쪽은 `open` 을 반환하고 **자기 기본 백엔드로 조정**하게
+      // 되어, 같은 영역을 보는 두 인스턴스가 서로 다른 락 규칙을 쓴다(L-4/I12 가 막으려는 상태).
+      const raced = verifyRecord(again.record, opts.supportedBackends)
+      if (raced.kind === 'rejected') return disabled(raced.reason, raced.detail)
+      return {
+        status: 'open',
+        area: {
+          root,
+          commonGitDir,
+          record: again.record,
+          // 채택한 기록과 **같은 출처**여야 한다(초기 기본값을 물고 가면 위 P1 이 다시 열린다).
+          lockBackend: raced.lockBackend,
+          digest: endpointDigest(commonGitDir),
+        },
+      }
     }
   }
 

@@ -433,6 +433,71 @@ describe('T2 — 동시 생성 경합: create-only(`wx`) 는 남의 기록을 �
     expect(readFileSync(join(gitDir, AREA_DIR_NAME, AREA_RECORD_FILE), 'utf8')).toBe(winner)
   })
 
+  /**
+   * Codex PR 리뷰 P1(#257) — 경합에서 이긴 기록은 **초기 probe 를 거치지 않았으므로** 스키마·백엔드
+   * 검증을 다시 통과해야 한다. 재검증을 빠뜨리면 승자가 신버전이어도 이 인스턴스는 `open` 을 반환하고
+   * **자기 기본 백엔드로 조정**하게 되어, 같은 영역을 보는 두 인스턴스가 서로 다른 락 규칙을 쓴다
+   * (L-4/I12 가 막으려는 바로 그 상태). 초기 경로에만 검증이 있으면 이 창으로 새 나간다.
+   */
+  it.each([
+    [
+      '더 높은 schemaVersion',
+      { schemaVersion: AREA_SCHEMA_VERSION + 1, lockBackend: 'uds-abstract' },
+      'incompatible-version',
+    ],
+    [
+      '미지 백엔드',
+      { schemaVersion: AREA_SCHEMA_VERSION, lockBackend: 'npipe' },
+      'unsupported-backend',
+    ],
+  ])('경합 승자가 %s 이면 열지 않는다 — 초기 경로와 동일 판정', async (_label, rec, reason) => {
+    const gitDir = fakeGitDir()
+    const payload = JSON.stringify({ ...rec, createdAt: 7, createdBy: 'WINNER' })
+    const r = await openCoordinationArea({
+      repo: fakeRepo(gitDir),
+      ...linuxLike,
+      now: raceWith(payload)(gitDir),
+    })
+    expect(r.status).toBe('disabled')
+    expect(r.status === 'disabled' && r.reason).toBe(reason)
+    // 승자 기록은 그대로 보존한다(구 버전이 신 버전 권위를 덮지 않는다).
+    expect(readFileSync(join(gitDir, AREA_DIR_NAME, AREA_RECORD_FILE), 'utf8')).toBe(payload)
+  })
+
+  it('경합 승자의 백엔드가 이 플랫폼에서 불가하면 platform-unsupported', async () => {
+    const gitDir = fakeGitDir()
+    const payload = JSON.stringify({
+      schemaVersion: AREA_SCHEMA_VERSION,
+      lockBackend: 'uds-abstract',
+      createdAt: 7,
+      createdBy: 'WINNER',
+    })
+    const r = await openCoordinationArea({
+      repo: fakeRepo(gitDir),
+      supportedBackends: [], // win32·macOS
+      instanceId: newUlid(),
+      now: raceWith(payload)(gitDir),
+    })
+    expect(r.status === 'disabled' && r.reason).toBe('platform-unsupported')
+  })
+
+  it('채택한 기록과 반환 lockBackend 가 항상 같은 출처다(승자 기록 기준)', async () => {
+    const gitDir = fakeGitDir()
+    const payload = JSON.stringify({
+      schemaVersion: AREA_SCHEMA_VERSION,
+      lockBackend: 'uds-abstract',
+      createdAt: 7,
+      createdBy: 'WINNER',
+    })
+    const r = await openCoordinationArea({
+      repo: fakeRepo(gitDir),
+      ...linuxLike,
+      now: raceWith(payload)(gitDir),
+    })
+    const area = expectOpen(r)
+    expect(area.lockBackend).toBe(area.record.lockBackend)
+  })
+
   it('경합 상대가 쓴 기록이 판정 불가면 reconciliation-required(추측 금지)', async () => {
     const gitDir = fakeGitDir()
     const r = await openCoordinationArea({
