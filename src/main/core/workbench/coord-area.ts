@@ -125,6 +125,7 @@ const verifyRecord = (
       detail: `알 수 없는 lockBackend=${record.lockBackend}`,
     }
   }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 바로 위 `SUPPORTED_LOCK_BACKENDS.includes` 가 이미 좁힌 값이다(타입 술어가 아니라 배열 includes 라 tsc 가 좁히지 못할 뿐).
   const lockBackend = record.lockBackend as LockBackendKind
   if (!supportedBackends.includes(lockBackend)) {
     // 부수효과 이전에 막는다 — 이 플랫폼에서는 어떤 endpoint 획득도 시도하지 않는다.
@@ -187,6 +188,7 @@ const probeRecord = (path: string): RecordProbe => {
   try {
     raw = readFileSync(path, 'utf8')
   } catch (err) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(레포 전역). 이 룰의 목적은 브랜드 크레덴셜 위조 차단이며, 캐스트를 리뷰에 보이게 만드는 것 자체가 요구사항이다.
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { kind: 'missing' }
     return { kind: 'corrupt', detail: errText(err) }
   }
@@ -196,6 +198,7 @@ const probeRecord = (path: string): RecordProbe => {
   } catch (err) {
     return { kind: 'corrupt', detail: errText(err) }
   }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- `JSON.parse` 산출물(unknown)을 검사 대상 형태로 좁힌다. 바로 아래 필수 필드 검사가 실제 검증이며, 이 캐스트는 그 검사를 쓰기 위한 것이다.
   const rec = parsed as Partial<AreaRecord> | null
   if (
     !rec ||
@@ -309,6 +312,7 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
       linkSync(tmp, join(root, AREA_RECORD_FILE))
       record = fresh
     } catch (err) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(레포 전역). 이 룰의 목적은 브랜드 크레덴셜 위조 차단이며, 캐스트를 리뷰에 보이게 만드는 것 자체가 요구사항이다.
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
         return disabled('io-failure', `area.json 기록 실패: ${errText(err)}`)
       }

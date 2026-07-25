@@ -182,13 +182,14 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
  * 해당하지 않는다(다른 키 = 순수 추가).
  */
 describe('브랜드 위조 차단 ESLint 게이트 (#251 PR1b)', () => {
-  const brandBlock = blocks.find((c) => c.files?.includes('src/main/core/workbench/locks.ts'))
+  const brandBlock = blocks.find((c) => c.files?.includes('src/main/core/workbench/**/*.ts')) as
+    { files?: string[]; ignores?: string[]; rules?: Record<string, unknown> } | undefined
 
-  it('locks.ts·lock-order.ts 스코프 블록이 존재한다', () => {
-    expect(brandBlock?.files).toEqual([
-      'src/main/core/workbench/locks.ts',
-      'src/main/core/workbench/lock-order.ts',
-    ])
+  // 스코프가 **민팅 파일이 아니라 워크벤치 프로덕션 전체**여야 한다(Codex PR#259 P1): 민팅만 덮으면
+  // 크레덴셜 **소비자**(장차 `authority.ts`)가 `as unknown as BenchLeaseToken` 으로 위조 토큰을 만들 수 있다.
+  it('워크벤치 프로덕션 전체를 덮는다(소비자 포함 · 테스트만 제외)', () => {
+    expect(brandBlock?.files).toEqual(['src/main/core/workbench/**/*.ts'])
+    expect(brandBlock?.ignores).toEqual(['src/main/core/workbench/**/*.test.ts'])
   })
 
   it("no-unsafe-type-assertion 이 'error' 로 켜져 있다", () => {

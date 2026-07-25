@@ -399,12 +399,15 @@ export default tseslint.config(
   // `as unknown as`·`as never`·`Parameters<typeof f>[0]`·`keyof` 로 타입을 구조적으로 재획득하는 우회 4종이
   // tsc 를 전부 통과함이 실측됐다. 이 룰만이 그 4종을 기계적으로 잡는다(어떤 프리셋에도 없는 순수 옵트인).
   //
-  // 스코프를 **브랜드를 민팅하는 두 파일로 한정**한다: 워크벤치 전체로 넓히면 PR1a 가 랜딩시킨
-  // `coord-area.ts` 의 정당한 catch 협소화(`err as NodeJS.ErrnoException`) 등 5건이 즉시 RED 가 되어
-  // 무관한 수정을 끌고 온다(범위 확대는 별도 위생 작업). 인가된 forge 2곳은 사유를 단 인라인 disable 로
-  // 남기므로, **3번째 캐스트가 생기는 순간 lint 가 RED** 다.
+  // ⚠ 스코프는 **민팅 파일이 아니라 워크벤치 프로덕션 전체**다(Codex PR#259 P1). 민팅 2파일로 한정하면
+  // **크레덴셜 소비자가 무방비**로 남는다 — 장차 `authority.ts` 가 `as unknown as BenchLeaseToken` 으로
+  // 「`revalidate()` 가 항상 `owned` 를 답하는」 토큰을 지어내면 `withLeaseGuard` 의 변이 인가가 통째로
+  // 무력화되는데 tsc·기존 lint 는 둘 다 통과한다. 정당한 협소화(catch 의 `unknown` → `ErrnoException` 등)는
+  // 사유를 단 인라인 disable 로 남긴다 = 캐스트가 리뷰에 보이게 만드는 것이 이 룰의 목적이다.
+  // 테스트는 제외한다(출하되지 않고, 더블 구성이 정상 관용구다).
   {
-    files: ['src/main/core/workbench/locks.ts', 'src/main/core/workbench/lock-order.ts'],
+    files: ['src/main/core/workbench/**/*.ts'],
+    ignores: ['src/main/core/workbench/**/*.test.ts'],
     rules: { '@typescript-eslint/no-unsafe-type-assertion': 'error' },
   },
   // Prettier 와 충돌하는 ESLint 스타일룰 비활성 (반드시 last). 현재 스타일룰 0 이라 즉효는

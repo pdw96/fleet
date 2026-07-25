@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 93 files · 229 import wires · 47 IPC channels · 생성 2026-07-25T16:04 UTC
+> 93 files · 229 import wires · 47 IPC channels · 생성 2026-07-25T16:25 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -214,11 +214,11 @@
 - **workbench/locks**
   - →의존: workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/lock-backend-uds, workbench/lock-order · 380줄
 - **workbench/coord-area**
-  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 352줄
+  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
 - **workbench/__testing__/lock-backend-fake**
   - →의존: workbench/locks · ←피의존: — · 92줄
 - **workbench/lock-backend-uds**
-  - →의존: workbench/locks · ←피의존: — · 77줄
+  - →의존: workbench/locks · ←피의존: — · 82줄
 - **workbench/lock-order**
   - →의존: workbench/locks · ←피의존: — · 181줄
 - **workbench/ulid**

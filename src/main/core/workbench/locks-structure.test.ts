@@ -48,17 +48,31 @@ describe('스캔 앵커 — 대상이 실재한다(아래 「0건」 단언이 v
  * 「revalidate 는 백엔드 조회만」 + 양성 통제가 담당).
  */
 describe('T4 구조층 — 락 모듈은 파일시스템을 알지 못한다', () => {
-  it.each(LOCK_SOURCES)('%s 는 node:fs 를 import 하지 않는다(정적·동적 양쪽)', (file) => {
-    const src = source(file)
-    expect(src).not.toMatch(/from 'node:fs(\/promises)?'/)
-    expect(src).not.toMatch(/require\(\s*['"]node:fs/)
-    // ⚠ 동적 `import('node:fs')` 를 빠뜨리면 정적 가드가 그대로 우회된다 — 이 레포가 #173·#174 에서
-    // 두 번 물린 계열이다(`no-restricted-imports` 가 ImportExpression 을 미방문).
-    expect(src).not.toMatch(/import\(\s*['"]node:fs/)
+  // ⚠ `node:` 접두만 보면 **bare specifier**(`from 'fs'`)가 그대로 통과한다(CodeRabbit) — 두 표기는
+  // 런타임에서 동일하다. 정적 import·`require`·동적 `import()` 3형태 × 두 표기를 한 술어로 덮는다.
+  // (동적 import 누락은 이 레포가 #173·#174 에서 두 번 물린 계열이다.)
+  const fsLike = (mod: string): RegExp =>
+    new RegExp(
+      String.raw`(?:from\s*|require\(\s*|import\(\s*)['"](?:node:)?${mod}(?:/promises)?['"]`,
+    )
+
+  it.each(LOCK_SOURCES)('%s 는 fs 를 어떤 표기로도 import 하지 않는다', (file) => {
+    expect(source(file)).not.toMatch(fsLike('fs'))
   })
 
-  it.each(LOCK_SOURCES)('%s 는 파일 경로 조립도 하지 않는다(node:path 부재)', (file) => {
-    expect(source(file)).not.toMatch(/from 'node:path'/)
+  it.each(LOCK_SOURCES)('%s 는 파일 경로 조립도 하지 않는다(path 부재)', (file) => {
+    expect(source(file)).not.toMatch(fsLike('path'))
+  })
+
+  it('앵커: 이 술어가 실제 import 를 잡는다(형태별 자기검사)', () => {
+    for (const sample of [
+      "import { x } from 'fs'",
+      "import { x } from 'node:fs'",
+      "const x = require('fs')",
+      "await import('node:fs/promises')",
+    ]) {
+      expect(sample).toMatch(fsLike('fs'))
+    }
   })
 })
 
@@ -155,7 +169,14 @@ describe('L-1 구조층 — 커널 배타성 외의 생존 신호가 재유입�
  */
 describe('T6 구조층 — raw 획득 경로 호출자는 서열 합성뿐', () => {
   const srcRoot = fileURLToPath(new URL('../../..', import.meta.url))
-  const RAW_CALL = /\.tryAcquire(?:BenchLease)?\s*\(/g
+  /**
+   * ⚠ **`g` 플래그 정규식을 파일별 `test()` 에 재사용하면 안 된다**(Codex·CodeRabbit 동시 지적):
+   * `test()` 는 원본의 `lastIndex` 를 전진시켜 유지하므로, 다음 파일의 매치가 그 오프셋보다 앞에 있으면
+   * **조용히 건너뛴다** → 우회가 실재해도 GREEN. 카운트용(전역)과 판정용(비전역)을 분리한다.
+   * (같은 함정을 PR1a `ulid.ts` 가 `ULID_RE` 주석으로 이미 기록해 뒀다 — 형제 관용구를 놓쳤다.)
+   */
+  const RAW_CALL_ALL = /\.tryAcquire(?:BenchLease)?\s*\(/g
+  const RAW_CALL = /\.tryAcquire(?:BenchLease)?\s*\(/
 
   const files: string[] = []
   const walk = (dir: string): void => {
@@ -168,7 +189,7 @@ describe('T6 구조층 — raw 획득 경로 호출자는 서열 합성뿐', () 
   walk(srcRoot)
 
   it('앵커: 인가된 호출부(lock-order.ts)에서 실제로 매칭된다(0건 매칭이면 아래가 vacuous)', () => {
-    expect([...source('lock-order.ts').matchAll(RAW_CALL)]).toHaveLength(3)
+    expect([...source('lock-order.ts').matchAll(RAW_CALL_ALL)]).toHaveLength(3)
   })
 
   it('프로덕션 소스 중 raw 획득을 부르는 파일은 lock-order.ts 뿐이다', () => {
@@ -332,7 +353,8 @@ describe('플랫폼 게이트는 skipIf 만 쓴다(조기 return 금지)', () =>
     const aliases = [...src.matchAll(/const\s+(\w+)\s*=\s*process\.platform\b/g)].map((m) => m[1])
     const terms = ['process\\.platform', ...aliases]
     for (const term of terms) {
-      expect(src).not.toMatch(new RegExp(`if\\s*\\([^)]*${term}[^)]*\\)\\s*return`))
+      // ⚠ `)\s*return` 만 보면 `if (!IS_LINUX) {\n  return\n}` 형(실무에서 더 흔하다)을 놓친다(CodeRabbit).
+      expect(src).not.toMatch(new RegExp(`if\\s*\\([^)]*${term}[^)]*\\)\\s*\\{?\\s*return`))
     }
   })
 

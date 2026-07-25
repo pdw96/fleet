@@ -36,6 +36,10 @@ export function createAbstractSocketBackend(): LockBackend {
         // 의 'error' 규약). Promise 는 한 번만 해소되므로(이후 resolve 는 무시) 사후 오류는 판정을
         // 바꾸지 않는다 — 보유 여부의 권위는 어디까지나 `server.listening` 이다.
         server.on('error', (err: NodeJS.ErrnoException) => {
+          // ⚠ bind **성공 이후**의 런타임 오류에서는 Node 가 서버를 자동으로 닫지 않는다 — 그대로 두면
+          // `server.listening` 이 true 로 남아 `isBound()` 가 **쓸 수 없는 소켓을 `owned` 로** 답한다
+          // (CodeRabbit PR#259). 판정 근거를 함께 정리해 fail-closed 방향을 유지한다.
+          if (server.listening) server.close()
           // EADDRINUSE 만이 「소유자 생존」이다. 그 외 전부 fail-closed — 미지 errno 를 성공으로 읽지 않는다.
           resolve(
             err.code === 'EADDRINUSE'
@@ -68,6 +72,7 @@ export function createAbstractSocketBackend(): LockBackend {
           server.listen({ path: endpoint })
         } catch (err) {
           // 상위(`endpointFor`)가 문법·예산을 이미 걸렀으므로 여기 오면 예상 밖이다 — 삼키지 않고 값으로 보고한다.
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(레포 전역). 이 룰의 목적은 브랜드 크레덴셜 위조 차단이며, 캐스트를 리뷰에 보이게 만드는 것 자체가 요구사항이다.
           const e = err as NodeJS.ErrnoException
           resolve({ status: 'error', code: e.code, detail: e.message ?? String(err) })
         }
