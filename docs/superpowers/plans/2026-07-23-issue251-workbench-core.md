@@ -250,7 +250,7 @@ skip 되므로). 이식 가능한 falsifier(「git 이 말한 common gitdir 이 
 
 **C 이식(핵심)**: 타입 골격이 어떤 런타임보다 앞선다.
 
-- **T6 계약 사슬 골격(척추)** — **C 의 타입 배치표 전량**을 이 태스크에서 확정한다(스펙 §W-4 각주가 계획에
+- **T6b 계약 사슬 골격(척추)** — **C 의 타입 배치표 전량**을 이 태스크에서 확정한다(스펙 §W-4 각주가 계획에
   **명시 위임**한 산출물 — 미이행 시 Codex P1 확정). 브랜드 `unique symbol` 3종 **미export**.
   RED: §3-T16b(`@ts-expect-error` — 구현 전에는 에러가 없어 tsc 가 "Unused directive"로 실패 = RED) ·
   §3-T16c(eslint config **객체 단언**). ⚠ **flat config 는 rule-key 병합이 아니라 교체**다 —
@@ -380,7 +380,7 @@ skip 되므로). 이식 가능한 falsifier(「git 이 말한 common gitdir 이 
 
 | # | 위험 | 완화 | 롤백 |
 |---|---|---|---|
-| R1 | **컨테이너 UDS `listen` 불가** — 최하층 전제 | M1 을 PR1 착수 조건으로 · `AreaOpenResult{backend-unsupported}` 로 계약화 | 코드 0줄 시점 |
+| R1 | ~~컨테이너 UDS `listen` 불가~~ → **소멸**(M1·M1′ 폐기 · §2). 대체 위험 = **추상 소켓은 win32·macOS 에 부재** | 백엔드를 주입 seam 뒤에 두고 계약 테스트는 페이크로 양 OS · `AreaOpenResult{platform-unsupported}` 로 fail-closed 계약화(PR1a 착지) | 런타임 스위치 |
 | R2 | POSIX 부재 증명식이 이중 소유를 정말 배제하는가 | T4 결정론 배리어(우연 의존 금지) | fail-closed 폭 확대 감수 |
 | R3 | **커버리지 statements 여유 2.25pt + win32 코드가 분모에만** | §3.1 대응 택1 확정 · PR 마다 4수치 기록 | floor 하향 금지 — 그 PR 안에서 해소 |
 | R4 | win32 rename 재시도 4회 150ms 충분성(실측 근거 없는 상수) | 리더 규율 D-9 가 1차 방어 · `io-failure` 빈발을 관측 지표로 | 상수 1곳 조정 |

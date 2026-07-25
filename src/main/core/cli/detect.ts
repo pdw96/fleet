@@ -62,11 +62,23 @@ const KILL_GRACE_MS = 2000
  * cross-spawn 은 PATHEXT 로 셰임을 찾고, cmd.exe 경유 시 인자를 안전하게
  * 이스케이프(주입 방지)해 실행한다. POSIX 에서는 일반 spawn 과 동일하게 동작.
  */
+/**
+ * 남은 호출 예산(ms). `timeoutMs` 는 **해석 + 자식 실행 전체**의 상한이므로, 해석에 쓴 시간을 빼고
+ * 자식에게 넘긴다. 순수 함수로 둔 이유: 느린 PATH 해석을 통합 테스트로 재현하려면 resolver 주입 seam 이
+ * 필요한데(이 슬라이스 범위 밖) 산술 자체는 여기서 검증할 수 있다. 음수는 0 으로 접는다.
+ */
+export const remainingBudgetMs = (startedAt: number, timeoutMs: number, now: number): number =>
+  Math.max(0, timeoutMs - Math.max(0, now - startedAt))
+
 export const defaultRunner: CommandRunner = async (command, args, opts, onStdout) => {
   // 워크스페이스(custom cwd) Windows spawn 은 cross-spawn 이 bare 를 cmd.exe 로 넘기고 cmd.exe 가 cwd 를
   // PATH 보다 먼저 검색하므로, bare command 를 PATH-only 절대경로로 미리 해석해 cwd-셰도(워크스페이스 내
   // 악성 claude.cmd) 실행을 차단한다(#158). PATH 미발견이면 cwd 를 고의로 미조회한 보안 거부(ENOENT).
   // 가드 미적용 경로(POSIX·cwd 없음·이미 절대경로)는 await 없이 즉시 Promise 진입 → 기존 동기 spawn 타이밍 보존.
+  // **`timeoutMs` 는 호출 전체 예산**이다(해석 + 자식 실행). 해석을 기다린 뒤 자식 타이머를 `timeoutMs` 로
+  // 새로 시작하면 실제 상한이 「해석 + timeoutMs」가 되어 계약과 어긋난다(CodeRabbit PR #257 — 해석 상한을
+  // 2s→10s 로 올리면서 그 어긋남이 커졌다). 진입 시점을 기준으로 남은 예산을 계산해 자식에 넘긴다.
+  const startedAt = Date.now()
   let resolved = command
   if (isWindowsLike && opts.cwd != null && !path.isAbsolute(command)) {
     // 해석은 abort/timeout 핸들러 설치 전에 일어나므로 여기서 직접 취소를 본다(Codex P2 — started=true 인
@@ -83,8 +95,14 @@ export const defaultRunner: CommandRunner = async (command, args, opts, onStdout
     if (abs == null) return { code: null, stdout: '', stderr: '', spawnError: 'ENOENT' }
     resolved = abs
   }
+  // 해석이 예산을 다 썼으면 자식을 띄우지 않는다 — 띄워봐야 즉시 타임아웃이고, 그 사이 프로세스가
+  // 부수효과(편집 CLI 등)를 낼 수 있다.
+  const childBudgetMs = remainingBudgetMs(startedAt, opts.timeoutMs, Date.now())
+  if (childBudgetMs <= 0) return { code: null, stdout: '', stderr: '', spawnError: 'ETIMEDOUT' }
+
   return new Promise<CommandResult>((resolve) => {
-    const { timeoutMs, cwd, signal, stdinInput } = opts
+    const { cwd, signal, stdinInput } = opts
+    const timeoutMs = childBudgetMs
     const outChunks: Buffer[] = []
     const errChunks: Buffer[] = []
     let outLen = 0

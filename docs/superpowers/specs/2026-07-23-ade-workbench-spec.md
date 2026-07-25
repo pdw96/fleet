@@ -150,8 +150,11 @@ export interface Workbench {
 │   # ⚠ 소켓 디렉터리 없음 — 락 endpoint 는 **커널 네임스페이스**에 있다(§W-3):
 │   #   Linux `\0fleet.wb.<digest>.<key>` (abstract) · win32 `\\.\pipe\fleet.wb.<digest>.<key>`
 │   #   pathname 이 아니므로 사고성 삭제·경로 예산·회수 프로토콜이 전부 무관하다.
-├── locks/<key>.json                        # 락 소유 권위 레코드 · epoch (§W-3a · key='r'|benchId|slot-i)
-├── owner/<key>.json                        # 진단 미러 — authority:false(판정 사용 금지)
+├── active-instance.json                    # 인스턴스 배타(§W-2-b ①) — create-only `wx` 점유 · 마커
+│   # ⚠ **`locks/<key>.json`·`owner/<key>.json` 은 두지 않는다**(서버 단일 표면 축소 · §W-3):
+│   #   락 소유 권위 레코드의 epoch·state·netNsId 판정은 cross-ns 를 막으려 도입됐는데 cross-ns 가
+│   #   §W-2-b 로 소멸했고, 같은 ns 안에서는 커널 배타성이 완전하다. 진단 미러(owner/)도 락마다 디스크
+│   #   쓰기를 되살려 L-6 「디스크 I/O 0」·§3-T10 「락 소유 권위 레코드 부재」와 충돌한다.
 ├── authority/<benchId>.json                # 공유 권위 레코드(revision-CAS)
 ├── activity/<benchId>.json                 # 활동 신원 · 인스턴스 마커
 ├── journal/<benchId>/<txnId>.json          # 연산 WAL
@@ -1199,13 +1202,21 @@ vitest 는 파일 병렬이 기본이고 이 레포엔 win 병렬 spawn flake �
 
 ## 6. 검증 요청 포인트 (체크포인트 2 리뷰 대상)
 
+> ⚠ **이 절은 체크포인트 2 시점의 리뷰 요청 이력**이다. 이후 「서버 단일 표면 축소」(2026-07-23)로 일부
+> 문안이 폐기됐다(아래 2·3항에 표시). **구현 계약은 §1·§3 이 권위**이며, 이 절을 근거로 폐기 모델
+> (`*Sync` CAS · `connect` 프로브 · ino 재검증)을 되살리지 않는다.
+
 1. **§0.1 정정 계약 12건** — 특히 C1(ref D/F)·C2(락 프리미티브)·C5/C7(WAL 재편)·C6(published 비차단)이
    설계 안전 논증을 약화시키지 않고 **정확히 복원**하는가. 놓친 잔재가 더 있는가.
-2. **W-4 revision-CAS 의 sync 채택** — "리스는 프로세스 간 경합만 막고 in-process 인터리브는 sync 로 닫는다"가
-   옳은 경계 설정인가. `AuthorityCommit` 브랜드 토큰이 계약 4항(게이트 미해제)의 **기계적** 집행으로 충분한가
+2. **W-4 revision-CAS 의 in-process 직렬화 경계** — "리스는 프로세스 간 경합만 막고 in-process 인터리브는
+   뮤텍스로 닫는다"가 옳은 경계 설정인가. ⚠ **원문의 「sync 채택」은 폐기 문안**이다 — 살아있는 계약은
+   `readFresh` · `compareAndSwap(): Promise<CasResult>` · `withAuthority` 이며(§5 머리말), 이 항목을
+   sync 로 읽고 구현하면 폐기 API 를 재도입하게 된다(CodeRabbit PR #257 지적). `AuthorityCommit` 브랜드 토큰이 계약 4항(게이트 미해제)의 **기계적** 집행으로 충분한가
    (반환값 무시 lint 부재라는 정직한 한계 포함).
-3. **W-3 부재 증명식의 백엔드 분리** — POSIX `connect` ECONNREFUSED 를 stale 근거로 삼는 것이 설계 408행
-   "연령 삭제 금지"와 정합하는가. `link` EEXIST + ino 재검증이 이중 소유를 **구조적으로** 배제하는가.
+3. ~~**W-3 부재 증명식의 백엔드 분리** — POSIX `connect` ECONNREFUSED · `link` EEXIST + ino 재검증~~
+   **폐기 문안**(체크포인트 2 시점) — 서버 단일 표면 축소로 `connect` 프로브·ino 재검증·pathname 소켓이
+   전부 소멸했고, 부재 증명은 **커널 bind 배타성 단독**이다(§W-3). 이 절은 리뷰 이력이라 남기되
+   구현 근거로 쓰지 않는다.
 4. **W-7 worktree-less 통합**(`merge-tree --write-tree` + `commit-tree` 2-parent) — 13R 프라이빗 worktree
    모델 대비 안전 논증이 강해졌는가 약해졌는가. 2-parent 결과가 §5 완료 정의·21R 전체 스냅숏 요건을 만족하는가.
 5. **U1 절삭의 잔여 위험** — 봉쇄 없이 ③ 보수 판정만으로 "Fleet 이 잘못된 변이를 하지 않는다"가
