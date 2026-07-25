@@ -86,9 +86,11 @@ export type AreaOpenResult =
  * 락 endpoint 이름의 레포 스코프 성분. **정준 common gitdir 로부터 유도**하므로 재시작·컨테이너 교체
  * 후에도 같은 값이고, 서로 다른 레포는 서로 다른 값을 갖는다.
  *
- * 길이가 계약인 이유: 추상 소켓 이름은 `sun_path`(108바이트) 안에 선행 NUL 포함으로 들어가야 하고
- * 초과하면 **무성 절단이 아니라 EINVAL** 이다(실측: 총 108 OK / 109 EINVAL). 32자로 고정해
- * `'fleet.wb.' + digest + '.' + key` 의 최대 길이를 컴파일 타임에 결정한다(§W-3 이름 예산).
+ * 길이가 계약인 이유: 추상 소켓 이름은 `sun_path`(108바이트) 안에 선행 NUL 포함으로 들어가야 한다.
+ * ⚠ **초과 시 동작은 런타임 메이저마다 다르다**(#251 PR1b 실측 정정): Node 24 는 `EINVAL` 이지만
+ * Node 22.22.3(=`.nvmrc` · 필수 CI 게이트)은 **성공시키고 107바이트로 무성 절단**해 앞부분을 공유하는
+ * 서로 다른 두 키를 같은 endpoint 로 붕괴시킨다. 그래서 예산 집행은 libuv 가 아니라 우리 preflight
+ * (`locks.ts` 의 `nameBudget`)가 한다. 여기서 32자로 고정하는 것은 그 예산의 상수 성분을 못 박는 일이다.
  */
 export function endpointDigest(canonicalCommonGitDir: string): string {
   return createHash('sha256').update(canonicalCommonGitDir).digest('hex').slice(0, 32)
@@ -123,6 +125,7 @@ const verifyRecord = (
       detail: `알 수 없는 lockBackend=${record.lockBackend}`,
     }
   }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 바로 위 `SUPPORTED_LOCK_BACKENDS.includes` 가 이미 좁힌 값이다(타입 술어가 아니라 배열 includes 라 tsc 가 좁히지 못할 뿐).
   const lockBackend = record.lockBackend as LockBackendKind
   if (!supportedBackends.includes(lockBackend)) {
     // 부수효과 이전에 막는다 — 이 플랫폼에서는 어떤 endpoint 획득도 시도하지 않는다.
@@ -185,6 +188,7 @@ const probeRecord = (path: string): RecordProbe => {
   try {
     raw = readFileSync(path, 'utf8')
   } catch (err) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(레포 전역). 이 룰의 목적은 브랜드 크레덴셜 위조 차단이며, 캐스트를 리뷰에 보이게 만드는 것 자체가 요구사항이다.
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { kind: 'missing' }
     return { kind: 'corrupt', detail: errText(err) }
   }
@@ -194,6 +198,7 @@ const probeRecord = (path: string): RecordProbe => {
   } catch (err) {
     return { kind: 'corrupt', detail: errText(err) }
   }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- `JSON.parse` 산출물(unknown)을 검사 대상 형태로 좁힌다. 바로 아래 필수 필드 검사가 실제 검증이며, 이 캐스트는 그 검사를 쓰기 위한 것이다.
   const rec = parsed as Partial<AreaRecord> | null
   if (
     !rec ||
@@ -307,6 +312,7 @@ export async function openCoordinationArea(opts: OpenAreaOptions): Promise<AreaO
       linkSync(tmp, join(root, AREA_RECORD_FILE))
       record = fresh
     } catch (err) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(레포 전역). 이 룰의 목적은 브랜드 크레덴셜 위조 차단이며, 캐스트를 리뷰에 보이게 만드는 것 자체가 요구사항이다.
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
         return disabled('io-failure', `area.json 기록 실패: ${errText(err)}`)
       }
