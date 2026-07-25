@@ -56,7 +56,10 @@ export function createFakeLockBackend(owners: FakeNamespace = new Map()): FakeLo
     failNextBind: (code, detail = `주입 실패(${String(code)})`) => {
       nextFailure = { code, detail }
     },
-    forceLose: (endpoint) => void owners.delete(endpoint),
+    // ⚠ **탈취**를 「공실」로 모델링하지 않는다: 이름을 비우면 「아무도 안 쥔 상태」가 되어 실제 탈취
+    // (다른 소유자가 그 이름을 쥐고 있는 상태)와 다르다. 다른 신원으로 **교체**해야 보유자는 상실을
+    // 관측하면서도 이름은 여전히 점유 상태다 — PR2 T17c 가 보는 것이 바로 그 상태다.
+    forceLose: (endpoint) => void owners.set(endpoint, Symbol('탈취한 다른 소유자')),
     // 실 어댑터가 async 이므로 계약을 맞춘다(페이크는 즉시 해소 — 재시도·대기 금지가 계약이다).
     bind(endpoint: string): Promise<BindOutcome> {
       calls.push({ op: 'bind', endpoint })
