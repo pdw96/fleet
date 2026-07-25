@@ -144,7 +144,7 @@ export interface Workbench {
 
 ### W-2. 코디네이션 영역
 
-```
+```text
 <canonical common gitdir>/fleet/            # 0700(posix) · 영역 루트
 ├── area.json                               # 스키마 버전 · lockBackend · 생성 신원
 │   # ⚠ 소켓 디렉터리 없음 — 락 endpoint 는 **커널 네임스페이스**에 있다(§W-3):
@@ -247,7 +247,7 @@ readonly activeInstance: {
 **부정 판정 fail-open**(`ENOENT` 는 사망 증거가 아니다) — 은 전부 뿌리가 하나였다: **삭제 가능한 pathname 을
 소유권 증거로 삼음.** 커널 네임스페이스 endpoint 는 그 뿌리를 제거한다.
 
-```
+```text
 listen() 성공   = 소유자 부재 증명 → 획득
 EADDRINUSE      = 소유자 생존      → held(정상 대기)
 그 외 오류       = unavailable(fail-closed)
@@ -443,7 +443,7 @@ export interface BenchAuthorityStore {
 「commit → spawn → 크래시」 창이 **살아있는 자식 + 디스크 `gated`** 를 만들고, 위 gated-orphan 회수가
 **살아있는 자식을 "0줄 실행"으로 오분류해 변이**한다(리스는 원 소유자 사망으로 이미 획득 가능) = **fail-open**.
 
-```
+```text
 CAS1(activeActivity{execGate:'gated'})  →  [commit1]
   → CAS2(execGate:'running')            →  commit2   ← launcher 에 넘기는 것은 **commit2**
     → BenchLauncher(cmd, args, opts, commit2)  ← spawn 은 최종 acknowledged durability 이후
@@ -461,7 +461,7 @@ CAS1(activeActivity{execGate:'gated'})  →  [commit1]
 
 **내구 쓰기 순서 — 계약 3항** (각 단계 실패 = 즉시 `io-failure` 반환, 다음 단계 진행 금지)
 
-```
+```text
 mkdir(dir) → openExclusive(tmp) → writeAll → fsync(tmpFd) → close(tmpFd)
   → rename(tmp, target)                                  ← 여기까지 성공해야 "커밋"
   → [POSIX] openDir → fsync(dirFd) → close   ⇒ durability:'file+dir'
@@ -575,7 +575,7 @@ export interface GitRepo {
 worktree-less 프라이빗 계산**으로 축소한다(설계 대비 더 강한 무접촉 — worktree 를 아예 만들지 않으므로
 `CHERRY_PICK_HEAD`·`AUTO_MERGE`·sequencer 잔재가 **원천 부재**).
 
-```
+```text
 ① 리스 안에서 bench 자동 keep(스냅숏 커밋) → sourceSnapshot 캡처
 ② baseRef OID 캡처 → targetHeadBeforeIntegration
 ③ merge-tree --write-tree <base> <sourceSnapshot>   → resultTree (충돌 시 값으로 보고 · **ref 변이 0**)
@@ -904,7 +904,7 @@ export interface SendOptions {
 한글 title 은 ASCII-잔여 전략에서 **항상 빈 slug** 를 낸다(`'한글'.normalize('NFKD')` → 자모, ASCII strip 후 `""` — 실측).
 사용자 주 언어가 한국어이므로 이는 예외가 아니라 주류 경로다.
 
-```
+```text
 ⓐ zero-dep 한글 음역(유니코드 Hangul 분해 산술 + 자모 3표, ~25행 · 신규 의존성 0)
 ⓑ NFC 선행 → NFKD + 결합기호 제거(라틴 확장 café→cafe · 전각 ＡＢ１→ab1 · 터키어 İ)
 ⓒ 결과가 빈 문자열이면 `wb-<lowercase(ULID)>` 폴백(Crockford Base32 소문자화가 [a-z0-9] 안에서 단사 → 충돌 구조적 불가)

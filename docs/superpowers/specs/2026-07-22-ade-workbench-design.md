@@ -270,7 +270,7 @@ bench 일관 반영이다.
 
 ### 3.1 도메인
 
-```
+```text
 Workbench(런타임) { id, title, branch: 'fleet/<slug>', baseRef, path, lifecycle, createdAt }
 Persisted        { id, title, branch, baseRef, lifecycle, createdAt,
                    archivedBranch? }   // path 없음 — 유도값
