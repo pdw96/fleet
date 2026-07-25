@@ -668,35 +668,59 @@ describe('FleetEngine', () => {
    * P-BENCHID(#251 PR0) — bench 레지스트리 배선(PR7) 전까지 **어떤 benchId 도 해소되지 않는다**.
    * 조용히 무시하면 격리를 기대한 요청이 그대로 **메인 워크스페이스를 편집**하므로 fail-closed 거부한다.
    *
-   * 이 핀이 "#253/PR7 전엔 bench 런이 도달 불가"를 주장이 아니라 증명으로 만든다 — `main/index.ts:145`
-   * 와 `handlers.ts:110` 이 `RunProjectRequest` 를 무검증 통과시키므로, 유일한 초크포인트가 여기다.
+   * 이 핀이 "#253/PR7 전엔 bench 런이 도달 불가"를 주장이 아니라 증명으로 만든다 — 두 표면의
+   * `fleet:project:run` 핸들러(`main/index.ts` IPC · `server/handlers.ts` WS)가 `RunProjectRequest` 를
+   * 무검증 통과시키므로, 유일한 초크포인트가 여기다.
    *
-   * 반증력: benchId 를 무시하는 구현이면 세션 부재 에러(`등록된 LLM 세션이 없습니다`)가 대신 나므로
-   * 메시지 단언이 RED 다. 가드가 세션·워크스페이스 검사보다 **뒤**에 있어도 같은 이유로 RED.
+   * **엔진은 완전 가동 가능 상태로 만든다**(세션·워크스페이스·gitRunner 주입) — 그래야 「런 미생성」
+   * 관측(활동 스냅숏·이벤트·프로젝트 목록)이 자명한 참이 아니라 실제 반증력을 갖는다. 세션 없는 엔진이면
+   * 가드를 지워도 다른 이유로 실패해 세 관측이 전부 통과해버린다(자체 적대 리뷰 지적).
+   *
+   * 반증력: 가드를 지우면 ⓐ에러 메시지가 달라지고 ⓑ`project.created` 가 방출되며 ⓒ프로젝트가 실제로
+   * 생성된다 — 즉 세 관측이 동시에 RED. 가드가 다른 검사보다 **뒤**에 있어도 ⓐ가 RED.
    */
   it('runProjectFlow 는 benchId 를 실은 요청을 fail-closed 거부한다(레지스트리 미배선 · 런 미생성)', async () => {
-    const store = createMemoryStore(deterministic())
-    const sessions = createSessionManager()
-    const events: { type: string }[] = []
-    const engine = createFleetEngine({
-      store,
-      sessions,
-      onOrchestratorEvent: (e) => events.push(e),
-    })
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-benchid-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const sessions = createSessionManager()
+      sessions.add(hangingImplSession()) // 가드가 없으면 실제로 런이 시작될 수 있는 상태
+      const events: { type: string }[] = []
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
 
-    await expect(engine.runProjectFlow({ goal: 'g', benchId: 'b1' })).rejects.toThrow(/Workbench/)
-    // 런이 만들어지지 않았다 — 활동 스냅숏·이벤트 양쪽으로 확인(부분 착수 후 실패가 아님).
-    expect(engine.getRunActivity()).toStrictEqual({ activeProjectIds: [], activeRuns: [] })
-    expect(events).toEqual([])
-    expect(store.listProjects()).toEqual([])
+      await expect(engine.runProjectFlow({ goal: 'g', benchId: 'b1' })).rejects.toThrow(/Workbench/)
+      // 런이 만들어지지 않았다 — 활동 스냅숏·이벤트·프로젝트 목록 3면(부분 착수 후 실패가 아님).
+      expect(engine.getRunActivity()).toStrictEqual({ activeProjectIds: [], activeRuns: [] })
+      expect(events).toEqual([])
+      expect(store.listProjects()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('runProjectFlow 는 benchId 가 빈 문자열이어도 거부한다(오염 입력 fail-closed)', async () => {
-    const store = createMemoryStore(deterministic())
-    const sessions = createSessionManager()
-    const engine = createFleetEngine({ store, sessions })
-    await expect(engine.runProjectFlow({ goal: 'g', benchId: '' })).rejects.toThrow(/Workbench/)
-    expect(store.listProjects()).toEqual([])
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-benchid-empty-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const sessions = createSessionManager()
+      sessions.add(hangingImplSession())
+      const engine = createFleetEngine({
+        store,
+        sessions,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+      })
+      await expect(engine.runProjectFlow({ goal: 'g', benchId: '' })).rejects.toThrow(/Workbench/)
+      expect(store.listProjects()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('getRunActivity 는 진행 중 실행의 projectId 를 스냅샷으로 반환하고 취소 후 비운다(재마운트 복원 권위 소스)', async () => {

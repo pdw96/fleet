@@ -573,7 +573,9 @@ export interface RunActivity {
 
 /**
  * 레거시 스코프(메인 워크스페이스) 런이 진행 중인가 — 불변식 R-2 의 단일 판정 함수.
- * `workspace:set` 차단(IPC·WS 양면)과 `ProjectPanel` running 잠금이 이것만 쓴다.
+ * 현재 소비자는 `workspace:set` 차단 **양면뿐**이다(IPC `main/index.ts` · WS `server/handlers.ts`).
+ * `ProjectPanel` running 잠금은 아직 `activeProjectIds` 를 읽는다 — bench 런은 P-BENCHID 가 봉쇄해
+ * 관측 차이가 0이므로 전환을 #253(UI 표면)으로 유예했다. R-2 의 최종 소비자 집합은 거기서 닫힌다.
  *
  * `activeProjectIds.length > 0` 로 대신하면 bench 런 하나가 메인 워크스페이스 조작 전체를 잠근다.
  * `benchId` 는 부재·명시 undefined·빈 문자열을 모두 «레거시» 로 접는다 — 와이어 JSON 왕복이 undefined

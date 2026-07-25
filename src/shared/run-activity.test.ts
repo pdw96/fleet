@@ -11,7 +11,11 @@ import { hasLegacyRun, type RunActivity } from './types'
  *   - R-2 (레거시 스코프): `workspace:set` 차단·`ProjectPanel` running 잠금은 **benchId 부재 런만** 센다.
  *     bench 런까지 세면 bench 하나가 도는 동안 메인 워크스페이스 조작이 통째로 잠긴다.
  *
- * 두 불변식이 한 필드로 붕괴하지 않음을 아래 «비붕괴» 케이스가 고정한다 — 이것이 이 파일의 존재 이유다.
+ * **범위 정직성**: 이 파일은 `hasLegacyRun` 만 다룬다(R-2 측). R-1 측 반증력은 여기 있지 않다 —
+ * 드레인이 실제로 bench 런을 기다리는지는 `waitForRunDrain` 을 **실행**하는 `boot-drain.test.ts` 의
+ * «R-1» describe 가, 두 필드가 같은 집합에서 파생되는지는 `engine.test.ts` 의 `toStrictEqual` 핀이
+ * 유일하게 잡는다. 여기서 리터럴 스냅숏의 두 필드를 서로 비교하면 항진명제라 어떤 구현도 죽이지 못한다
+ * (자체 적대 리뷰 실측 — 초안의 «비붕괴» 블록이 그 함정이었고 삭제했다).
  */
 describe('hasLegacyRun (R-2 레거시 스코프 판정)', () => {
   it('진행 중 런이 없으면 false', () => {
@@ -60,31 +64,5 @@ describe('hasLegacyRun (R-2 레거시 스코프 판정)', () => {
       activeRuns: [{ projectId: 'p1', benchId: '' }],
     }
     expect(hasLegacyRun(a)).toBe(true)
-  })
-})
-
-describe('R-1 · R-2 비붕괴 (드레인 권위 ≠ 레거시 잠금)', () => {
-  /**
-   * bench 런만 도는 스냅숏에서 두 판정이 **반대 방향**이어야 한다.
-   * 하나라도 다른 필드로 구현하면(예: hasLegacyRun 이 activeProjectIds 를 보거나, 드레인이 activeRuns
-   * 의 레거시분만 보면) 이 단언 쌍 중 하나가 반드시 RED 다.
-   */
-  it('bench 런만 있는 스냅숏: 드레인은 대기(activeProjectIds 비지 않음) · 레거시 잠금은 해제', () => {
-    const a: RunActivity = {
-      activeProjectIds: ['p1'],
-      activeRuns: [{ projectId: 'p1', benchId: 'b1' }],
-    }
-    // R-1: 드레인 판정식(boot.ts:298·312)이 보는 필드 — 비어 있지 않아야 SIGTERM 이 기다린다.
-    expect(a.activeProjectIds.length).toBeGreaterThan(0)
-    // R-2: 같은 스냅숏에서 레거시 잠금은 걸리지 않는다.
-    expect(hasLegacyRun(a)).toBe(false)
-  })
-
-  it('두 필드는 같은 런 집합을 가리킨다(projectId 집합 일치)', () => {
-    const a: RunActivity = {
-      activeProjectIds: ['p1', 'p2'],
-      activeRuns: [{ projectId: 'p1', benchId: 'b1' }, { projectId: 'p2' }],
-    }
-    expect(a.activeRuns.map((r) => r.projectId).sort()).toEqual([...a.activeProjectIds].sort())
   })
 })

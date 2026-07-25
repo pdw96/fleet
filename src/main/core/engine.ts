@@ -650,7 +650,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // 조용히 무시하면 격리를 기대한 요청이 그대로 메인 워크스페이스를 편집하므로 fail-closed 로 거부한다.
       // 어떤 부수효과(프로젝트 생성·이벤트 방출)보다도 먼저 — 부분 착수 후 실패를 남기지 않는다.
       //
-      // ⚠ 같은 «미지 식별자 레지스트리 조회» 형인 probeCli(아래 unknown adapter)는 fail-soft 로 반환한다.
+      // ⚠ 같은 «미지 식별자 레지스트리 조회» 형인 probeCli(위쪽 'unknown adapter')는 fail-soft 로 반환한다.
       // 비대칭은 의도적이다: probeCli 의 반환 타입에는 진단용 error 채널이 있어 호출자가 실패를 볼 수
       // 있지만, runProjectFlow 는 RunResult 만 반환해 «격리 요청이 무시됐다» 를 실어보낼 자리가 없다.
       // 여기서 무시 = 요청자가 격리라고 믿는 채로 메인 워크스페이스가 편집되는 파괴적 발산이다.
