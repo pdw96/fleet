@@ -228,6 +228,32 @@ export function resolveSandboxBoundary(env: NodeJS.ProcessEnv): SandboxBoundary 
   )
 }
 
+/**
+ * Workbench 킬스위치 env 이름(#251 · 스펙 §W-1). 상수로 export 하는 이유: `NodeJS.ProcessEnv` 는 인덱스
+ * 시그니처라 키 오타가 **컴파일된다** — 테스트가 리터럴을 재입력하면 오타 상태로도 「미설정=비활성」이
+ * vacuous GREEN 이 된다. 호출자·테스트가 이 상수만 쓰게 해 그 무신호를 닫는다.
+ */
+export const FLEET_WORKBENCH_ENV = 'FLEET_WORKBENCH'
+
+/**
+ * Workbench(#251) 활성 여부 — **명시 opt-in `'1'` 만**. 미설정 = 데스크톱·서버 양쪽 비활성이므로
+ * 롤백이 코드 revert 가 아니라 이 스위치 하나다. `'0'` 은 오설정이 아니라 명시 off 라 통과시키고,
+ * 그 외 값(`true`/`yes`/`on` …)은 **부팅 거부** — resolveSandboxBoundary 와 동일한 «운영자 env» 관용구다
+ * (조용한 비활성 강등이면 「켰는데 안 켜짐」을 운영자가 못 본다). 모든 부수효과 이전에 호출한다.
+ *
+ * ⚠ 이 함수는 **서버 표면 전용**이다 — Workbench 는 서버(컨테이너) 표면으로 범위 축소됐고(2026-07-23),
+ * 데스크톱 Workbench 는 #255 다. `src/main/index.ts` 가 이것을 호출하지 않음을 §3-T8f 가 구조 단언한다.
+ */
+export function resolveWorkbenchEnabled(env: NodeJS.ProcessEnv): boolean {
+  const raw = env[FLEET_WORKBENCH_ENV]?.trim()
+  if (!raw) return false
+  if (raw === '1') return true
+  if (raw === '0') return false
+  throw new Error(
+    `${FLEET_WORKBENCH_ENV} 값이 유효하지 않음: "${raw}" (유효값: 1 | 0 · 미설정=비활성)`,
+  )
+}
+
 /** 승인 보류 TTL(#216 C1) — 미설정 기본·유효 범위. env 설정자=배포자=운영자라 crash 는 공격 벡터 아님. */
 const DEFAULT_SERVER_APPROVAL_TTL_MS = 600_000 // 10분(hold-with-expiry 기본)
 const APPROVAL_TTL_MIN_MS = 5_000 // 5초
@@ -371,6 +397,13 @@ export async function bootServer(
   // graceful drain 상한(#216 C3) — 오설정이면 여기서 fail-fast. RunningServer.drainTimeoutMs 와 shutdown 내부
   // waitForRunDrain cap 이 이 단일 const 를 공유한다(divergence 0).
   const drainTimeoutMs = resolveDrainTimeoutMs(env)
+  // Workbench 킬스위치(#251) — 오설정이면 여기서 fail-fast. PR0 시점의 기능은 아직 없으므로, 켠 운영자가
+  // 「켰는데 아무 일도 안 일어난다」를 조용히 겪지 않도록 기동 로그로 현 상태를 명시한다(소비는 PR1+).
+  if (resolveWorkbenchEnabled(env)) {
+    console.warn(
+      `fleet-server: ${FLEET_WORKBENCH_ENV}=1 — Workbench 표면은 아직 미구현(#251 진행 중). 현재 bench 는 생성·실행되지 않는다.`,
+    )
+  }
   const e2e = isE2EActive(env)
   // 워크스페이스 검증(dialog 대신 env 경로): 미존재/비디렉터리는 fail-fast — store 생성(mkdirSync
   // 부수효과) 이전에 순수 검증부터 끝낸다. 실제 적용(setWorkspace)은 engine 생성 후로 미룬다.

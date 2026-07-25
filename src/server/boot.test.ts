@@ -15,7 +15,7 @@ import {
 } from './boot'
 import type { SecurityConfig } from './security-config'
 import type { IpcApprover } from '../main/core/safety/approval-bridge'
-import type { ApprovalRequest } from '../shared/types'
+import type { ApprovalRequest, RunActivity } from '../shared/types'
 import type { ServerFrame } from '../shared/transport/protocol'
 
 /** ws `RawData`(Buffer|ArrayBuffer|Buffer[])를 텍스트 프레임 문자열로 정규화(no-base-to-string 회피). */
@@ -637,7 +637,8 @@ describe('bootServer 통합 — 실 ws 클라이언트(#197 B3)', () => {
         const startT = Date.now()
         for (;;) {
           const r = await invoke('fleet:project:activity')
-          const act = (r.ok ? r.value : undefined) as { activeProjectIds: string[] } | undefined
+          // 손으로 재선언한 구조 캐스트는 RunActivity 확장에 영원히 무신호라 실제 타입으로 결속한다(#251 PR0).
+          const act = (r.ok ? r.value : undefined) as RunActivity | undefined
           if (act && act.activeProjectIds.length > 0) break
           if (Date.now() - startT > 4000) throw new Error('활성 런 대기 타임아웃')
           await new Promise((r) => setTimeout(r, 20))

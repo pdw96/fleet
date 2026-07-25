@@ -646,6 +646,18 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     async runProjectFlow(input) {
+      // P-BENCHID(#251 PR0): Workbench 레지스트리가 아직 배선되지 않아 **어떤 benchId 도 해소되지 않는다**.
+      // 조용히 무시하면 격리를 기대한 요청이 그대로 메인 워크스페이스를 편집하므로 fail-closed 로 거부한다.
+      // 어떤 부수효과(프로젝트 생성·이벤트 방출)보다도 먼저 — 부분 착수 후 실패를 남기지 않는다.
+      //
+      // ⚠ 같은 «미지 식별자 레지스트리 조회» 형인 probeCli(아래 unknown adapter)는 fail-soft 로 반환한다.
+      // 비대칭은 의도적이다: probeCli 의 반환 타입에는 진단용 error 채널이 있어 호출자가 실패를 볼 수
+      // 있지만, runProjectFlow 는 RunResult 만 반환해 «격리 요청이 무시됐다» 를 실어보낼 자리가 없다.
+      // 여기서 무시 = 요청자가 격리라고 믿는 채로 메인 워크스페이스가 편집되는 파괴적 발산이다.
+      if (input.benchId !== undefined)
+        throw new Error(
+          'Workbench 실행은 아직 지원되지 않습니다(#251 진행 중). benchId 없이 다시 시도하세요.',
+        )
       // 동시 실행 권위 가드: 이미 진행 중인 실행이 있으면 거부한다 — 두 번째 실행이 같은 워크스페이스를
       // 편집하며 첫 실행의 revert 와 경합해 워크스페이스를 파괴하는 것을 막는다(DESIGN.md 순차 전제).
       // activeRuns 는 project.created(runProject 첫 await 이전 동기 방출)에서 채워지므로, 진입 시점에
@@ -784,7 +796,13 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       // activeRuns 는 project.created 에서 등록·project.done/dispose 에서 제거되는 in-flight 실행의 권위
       // 소스다(cancelRun 은 abort 만 하고 제거는 revert 후 project.done 에 맡긴다 — 정리 윈도우도 활성 유지).
       // 키(projectId) 스냅샷만 노출해 렌더러가 running·취소 버튼을 복원한다(순차 전제상 0~1건).
-      return { activeProjectIds: [...activeRuns.keys()] }
+      //
+      // `activeRuns`(#251 PR0 · 스펙 §W-10)는 같은 집합의 스코프 투영이다 — 드레인은 activeProjectIds
+      // (전 스코프 · R-1), 레거시 잠금은 hasLegacyRun(activeRuns 의 benchId 부재분 · R-2)을 본다.
+      // 현재는 P-BENCHID 가 bench 런을 원천 차단하므로 전 항목이 benchId 부재(=레거시)다. `benchId`
+      // 키는 싣지 않는다 — 와이어 JSON 왕복이 undefined 키를 지우므로 실으면 데스크톱↔웹이 비대칭이 된다.
+      const ids = [...activeRuns.keys()]
+      return { activeProjectIds: ids, activeRuns: ids.map((projectId) => ({ projectId })) }
     },
 
     getWorkspace() {

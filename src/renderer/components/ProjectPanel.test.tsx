@@ -6,6 +6,7 @@ import type {
   LlmDescriptor,
   OrchestratorEvent,
   Project,
+  RunActivity,
   RunResult,
   Task,
 } from '../../shared/types'
@@ -13,6 +14,20 @@ import type { ReactElement } from 'react'
 import { HydrationContext } from '../bridge/hydration'
 import { TransportError } from '../bridge/ws-bridge'
 import { ProjectPanel } from './ProjectPanel'
+
+/**
+ * `getRunActivity` 더블의 단일 생성기(#251 PR0). 이 파일의 목은 `(window as unknown as {fleet: unknown})`
+ * 로 타입이 소거돼 **RunActivity 확장이 tsc·vitest 어디에도 신호를 내지 않는다** — shape 를 인라인으로
+ * 하드코딩하면 목이 구 계약을 검증하는 화석이 된다. 반환 타입 주석이 그 표류를 컴파일 타임으로 끌어온다.
+ * 여기 런은 전부 레거시(benchId 부재)다 — bench 런은 P-BENCHID 가 봉쇄해 렌더러에 도달할 수 없고,
+ * benchId 스코프화(R-2)는 #253 몫이다.
+ */
+function activity(...projectIds: string[]): RunActivity {
+  return {
+    activeProjectIds: projectIds,
+    activeRuns: projectIds.map((projectId) => ({ projectId })),
+  }
+}
 
 function mockFleet(overrides: Record<string, unknown> = {}) {
   let emit: ((e: OrchestratorEvent) => void) | undefined
@@ -33,7 +48,7 @@ function mockFleet(overrides: Record<string, unknown> = {}) {
     listProjectEvents: vi.fn().mockResolvedValue([]),
     getLastActiveProject: vi.fn().mockResolvedValue(null),
     setLastActiveProject: vi.fn().mockResolvedValue(undefined),
-    getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: [] }),
+    getRunActivity: vi.fn().mockResolvedValue(activity()),
     ...overrides,
   }
   ;(window as unknown as { fleet: unknown }).fleet = fleet
@@ -691,7 +706,7 @@ describe('ProjectPanel', () => {
     const fleet = mockFleet({
       listProjects: vi.fn().mockResolvedValue([P2]),
       getLastActiveProject: vi.fn().mockResolvedValue('p2'),
-      getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }),
+      getRunActivity: vi.fn().mockResolvedValue(activity('p2')),
     })
     await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     // 스냅샷 복원으로 취소 버튼이 나타난다(run() 프로미스 없이도 — 마운트-옵저버).
@@ -717,7 +732,7 @@ describe('ProjectPanel', () => {
       getLastActiveProject: vi.fn().mockResolvedValue('p1'), // 보던(선택된) 프로젝트는 p1
       getProjectTasks: vi.fn().mockResolvedValue([]),
       listProjectEvents: vi.fn().mockResolvedValue([]),
-      getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }), // 실제 진행 중 실행은 p2
+      getRunActivity: vi.fn().mockResolvedValue(activity('p2')), // 실제 진행 중 실행은 p2
     })
     await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     const cancelBtn = await screen.findByRole('button', { name: '취소' }) // running(p2) 복원
@@ -728,13 +743,13 @@ describe('ProjectPanel', () => {
 
   // W(Next②): 스냅샷 resolve 전 도착한 라이브 종료(terminal)는 스테일 스냅샷이 되살리지 않아야 한다(라이브 우선).
   it('does not resurrect a run that ended live before the getRunActivity snapshot resolved', async () => {
-    let resolveActivity: (a: { activeProjectIds: string[] }) => void = () => {}
+    let resolveActivity: (a: RunActivity) => void = () => {}
     const fleet = mockFleet({
       listProjects: vi.fn().mockResolvedValue([P2]),
       getLastActiveProject: vi.fn().mockResolvedValue('p2'),
       getRunActivity: vi.fn(
         () =>
-          new Promise<{ activeProjectIds: string[] }>((res) => {
+          new Promise<RunActivity>((res) => {
             resolveActivity = res
           }),
       ),
@@ -747,7 +762,7 @@ describe('ProjectPanel', () => {
     })
     // 스냅샷이 늦게 진행 중(p2)을 보고해도, 이미 종료된 실행이라 되살리지 않는다.
     await act(async () => {
-      resolveActivity({ activeProjectIds: ['p2'] })
+      resolveActivity(activity('p2'))
     })
     expect(screen.queryByRole('button', { name: '취소' })).toBeNull() // 취소 버튼 안 뜸
   })
@@ -760,7 +775,7 @@ describe('ProjectPanel', () => {
       getLastActiveProject: vi.fn().mockResolvedValue('p2'),
       getProjectTasks: vi.fn().mockResolvedValue([]),
       listProjectEvents: vi.fn().mockResolvedValue([]),
-      getRunActivity: vi.fn().mockResolvedValue({ activeProjectIds: ['p2'] }),
+      getRunActivity: vi.fn().mockResolvedValue(activity('p2')),
     })
     await renderSettled(<ProjectPanel sessions={[SESSION]} />)
     await screen.findByRole('button', { name: '취소' }) // running 잠금 복원
@@ -886,8 +901,8 @@ describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)'
       listProjects: vi.fn().mockResolvedValue([P2]),
       getRunActivity: vi
         .fn()
-        .mockResolvedValueOnce({ activeProjectIds: ['p2'] }) // 최초: 진행 중
-        .mockResolvedValue({ activeProjectIds: [] }), // 재접속: 끝났음
+        .mockResolvedValueOnce(activity('p2')) // 최초: 진행 중
+        .mockResolvedValue(activity()), // 재접속: 끝났음
     })
     const { rerender } = renderWithNonce(0, <ProjectPanel sessions={[SESSION]} />)
     await act(async () => {})
@@ -903,14 +918,12 @@ describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)'
   })
 
   it('윈도우 중 라이브 project.created 는 스냅샷(빈)보다 우선한다', async () => {
-    let resolveActivity!: (a: { activeProjectIds: string[] }) => void
+    let resolveActivity!: (a: RunActivity) => void
     const fleet = mockFleet({
       getRunActivity: vi
         .fn()
-        .mockResolvedValueOnce({ activeProjectIds: [] })
-        .mockImplementationOnce(
-          () => new Promise<{ activeProjectIds: string[] }>((r) => (resolveActivity = r)),
-        ),
+        .mockResolvedValueOnce(activity())
+        .mockImplementationOnce(() => new Promise<RunActivity>((r) => (resolveActivity = r))),
     })
     const { rerender } = renderWithNonce(0, <ProjectPanel sessions={[SESSION]} />)
     await act(async () => {})
@@ -920,7 +933,7 @@ describe('재접속 재하이드레이션(#197 B4 — 스냅샷 권위 replace)'
       </HydrationContext.Provider>,
     )
     fleet.fire({ type: 'project.created', message: '', data: { projectId: 'p9', eventId: 'e9' } })
-    await act(async () => resolveActivity({ activeProjectIds: [] })) // stale 빈 스냅샷이 늦게 도착
+    await act(async () => resolveActivity(activity())) // stale 빈 스냅샷이 늦게 도착
     expect(screen.getByRole('button', { name: '실행 중…' })).toBeTruthy() // 라이브 우선 — 잠금 유지
   })
 })
