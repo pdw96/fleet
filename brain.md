@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 93 files · 229 import wires · 47 IPC channels · 생성 2026-07-25T16:25 UTC
+> 96 files · 233 import wires · 47 IPC channels · 생성 2026-07-26T06:23 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -192,9 +192,29 @@
 - **workspace/ignored-baseline**
   - →의존: safety/approval, workspace/git · ←피의존: orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/git · 616줄
 - **workspace/path-guard**
-  - →의존: — · ←피의존: tools/workspace-tools, workbench/coord-area, workspace/set-workspace · 70줄
+  - →의존: — · ←피의존: tools/workspace-tools, workbench/active-instance, workbench/coord-area, workspace/set-workspace · 70줄
 - **workspace/set-workspace**
   - →의존: workspace/path-guard · ←피의존: main/index, server/handlers · 36줄
+
+### workbench · core
+- **workbench/locks**
+  - →의존: workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/lock-backend-uds, workbench/lock-order · 398줄
+- **workbench/active-instance**
+  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 307줄
+- **workbench/coord-area**
+  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
+- **workbench/instance-marker**
+  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 94줄
+- **workbench/__testing__/lock-backend-fake**
+  - →의존: workbench/locks · ←피의존: — · 92줄
+- **workbench/instance-marker-proc**
+  - →의존: workbench/instance-marker · ←피의존: — · 49줄
+- **workbench/lock-backend-uds**
+  - →의존: workbench/locks · ←피의존: — · 82줄
+- **workbench/lock-order**
+  - →의존: workbench/locks · ←피의존: — · 181줄
+- **workbench/ulid**
+  - →의존: — · ←피의존: workbench/locks · 86줄
 
 ### store · core — 앱이 다루는 모든 데이터(프로젝트, 할 일, 채팅방, 대화, 기록, AI 연결 정보)를 한곳에 모아 보관하고, 컴퓨터를 껐다 켜도 그대로 남도록 파일에 저장하는 '데이터 창고'다.
 - **store/types** — 창고에 담기는 데이터들의 모양과 규칙을 미리 적어 둔 설계도 부품 _프로젝트·할 일·채팅방·저장된 AI 세션 등이 각각 어떤 항목들로 이뤄지는지 형태를 정의한 명세서다. 특히 AI 연결 정보는 구독형 CLI(클로드·코덱스 등)와 API 두 종류로 나뉘며, API 키 같은 비밀번호는 절대 그대로 적지 않고 암호로 바꾼 형태만 저장하도록 규칙을 못 박아 둔다._
@@ -209,20 +229,6 @@
   - →의존: shared/types · ←피의존: engine, mcp/types, orchestrator/diff-risk, orchestrator/orchestrator, tools/types, tools/workspace-tools, workspace/ignored-baseline · 88줄
 - **safety/approval-bridge** — 허락이 필요한 작업을 사용자 화면에 물어보고, 사용자의 예/아니오 답을 도로 전달해 주는 중개 창구 _AI 가 위험한 일을 하려 하면 그 요청을 화면(렌더러)으로 보내 사용자에게 묻고, 답이 오면 해당 요청과 짝지어 처리한다. 물어볼 창이 없으면 즉시 거절하고, 사람이 일정 시간(기본 타임아웃) 안에 답하지 않아도 자동으로 거절하는 '안전 우선' 방식이며, 같은 답이 두 번 와도 한 번만 처리한다._
   - →의존: shared/types · ←피의존: main/index, server/boot, server/handlers · 165줄
-
-### workbench · core
-- **workbench/locks**
-  - →의존: workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/lock-backend-uds, workbench/lock-order · 380줄
-- **workbench/coord-area**
-  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
-- **workbench/__testing__/lock-backend-fake**
-  - →의존: workbench/locks · ←피의존: — · 92줄
-- **workbench/lock-backend-uds**
-  - →의존: workbench/locks · ←피의존: — · 82줄
-- **workbench/lock-order**
-  - →의존: workbench/locks · ←피의존: — · 181줄
-- **workbench/ulid**
-  - →의존: — · ←피의존: workbench/locks · 86줄
 
 ### chat · core — 여러 AI가 한 채팅방에서 서로의 말을 보고 토론하도록 진행을 맡아 주는 모듈이다.
 - **chat/room** — 여러 AI가 한 채팅방에서 차례로 발언하며 토론하도록 진행을 맡는 사회자 부품 _사용자나 시스템의 글을 방에 올리고, 특정 AI를 지목해 지금까지의 대화 내용을 보여준 뒤 다음 발언을 받아 다시 방에 저장한다. 여러 AI에게 한 주제를 정해진 횟수만큼 돌아가며 토론시키는 기능도 있어, 회의의 진행자처럼 누가 언제 말할지를 정리해 준다._
