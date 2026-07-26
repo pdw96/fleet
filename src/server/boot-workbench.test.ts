@@ -1,6 +1,6 @@
-import { mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -140,6 +140,86 @@ describe('T8f — Workbench 는 서버 표면 전용(데스크톱 우회 활성�
       expect(bootSrc).toContain(needle)
     },
   )
+
+  /**
+   * **이름 스캔만으로는 부족하다**(#251 PR1c · 계획 정정 ㊿). 위 단언들은 env 이름 2개만 보므로,
+   * `main/index.ts` 가 Workbench 모듈을 **직접 import·호출**하는 변이는 그대로 통과한다 — 스펙 §3-T8f 가
+   * 요구한 것은 「데스크톱 경로에 Workbench **초기화 진입점**이 구조적으로 부재」다. 그래서 데스크톱
+   * 엔트리로부터의 **정적 import 그래프 전이 폐포**를 직접 계산해 그 안에 워크벤치 모듈이 0건임을 본다
+   * (텍스트 needle 보다 우회가 어렵다 — 이름을 바꿔도 경로가 남는다).
+   *
+   * PR7 이 서버 부팅을 배선해도 이 단언은 유지된다 — 그 배선의 진입점은 `server/boot.ts` 이고 데스크톱
+   * 엔트리의 폐포에 들어오지 않는다. 데스크톱 Workbench(#255)가 오면 그때 이 행을 **의도적으로** 고친다.
+   */
+  describe('데스크톱 엔트리의 정적 import 폐포', () => {
+    const resolveSpec = (fromFile: string, spec: string): string | undefined => {
+      if (!spec.startsWith('.')) return undefined
+      const base = join(dirname(fromFile), spec)
+      for (const cand of [
+        `${base}.ts`,
+        `${base}.tsx`,
+        join(base, 'index.ts'),
+        join(base, 'index.tsx'),
+      ]) {
+        if (existsSync(cand)) return cand
+      }
+      return undefined
+    }
+
+    /**
+     * ⚠ 엔트리는 **electron-vite 의 rollup input 전량**이어야 한다(자체 적대 리뷰 R6-2). `main/index.ts`
+     * 하나만 순회하면 `preload/index.ts`·`renderer/main.tsx` 가 워크벤치를 직접 import 하는 변이가
+     * 두 방어(이름 스캔·폐포)를 모두 통과한다 — 실측으로 GREEN 이었다.
+     */
+    const ENTRIES = [
+      join(SRC_ROOT, 'main', 'index.ts'),
+      join(SRC_ROOT, 'preload', 'index.ts'),
+      join(SRC_ROOT, 'renderer', 'main.tsx'),
+    ]
+
+    /** 해소 실패한 **상대** 스펙 — 조용히 드롭하면 그래프가 잘려도 「0건」이 vacuous 통과한다(R6-3). */
+    const unresolved: string[] = []
+
+    const closure = (): Set<string> => {
+      unresolved.length = 0
+      const seen = new Set<string>()
+      const queue = [...ENTRIES]
+      while (queue.length > 0) {
+        const file = queue.pop()
+        if (file === undefined || seen.has(file) || !existsSync(file)) continue
+        seen.add(file)
+        const src = stripComments(readFileSync(file, 'utf8'))
+        for (const m of src.matchAll(/(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g)) {
+          const spec = m[1] ?? ''
+          const next = resolveSpec(file, spec)
+          if (next !== undefined) queue.push(next)
+          // 자산 import(`./styles.css` 등)는 모듈 그래프가 아니다 — 확장자가 명시된 비-TS 만 면제한다.
+          else if (spec.startsWith('.') && !/\.(?:css|svg|png|jpe?g|woff2?|json)$/.test(spec)) {
+            unresolved.push(`${file} → ${spec}`)
+          }
+        }
+      }
+      return seen
+    }
+
+    it('앵커: 폐포가 세 엔트리에서 그래프를 따라가고 아무것도 조용히 버리지 않는다', () => {
+      const files = closure()
+      // 실측 기준선(현행 82 데스크톱 소스 중 대부분) — 그래프가 크게 잘리면 여기서 먼저 RED 다.
+      expect(files.size).toBeGreaterThan(50)
+      expect(unresolved).toEqual([])
+      for (const entry of ENTRIES) expect(files.has(entry)).toBe(true)
+      // 세 엔트리가 각자 실제로 도달해야 하는 대표 파일.
+      expect([...files].some((f) => f.endsWith(join('core', 'engine.ts')))).toBe(true)
+      expect([...files].some((f) => f.endsWith(join('renderer', 'App.tsx')))).toBe(true)
+    })
+
+    it('폐포에 core/workbench/** 가 0건이다(초기화 진입점 구조적 부재)', () => {
+      const hits = [...closure()]
+        .filter((f) => f.includes(join('core', 'workbench')))
+        .map((f) => f.slice(SRC_ROOT.length))
+      expect(hits).toEqual([])
+    })
+  })
 })
 
 /**

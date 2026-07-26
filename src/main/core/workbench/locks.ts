@@ -31,9 +31,10 @@ import { isUlid } from './ulid'
  * ⚠ **반대 방향의 경계가 더 중요하다**: 배타 범위는 **network namespace** 인데 레포 공유 범위는
  * **파일시스템**이다. 두 축이 어긋나면 — 같은 레포 볼륨을 마운트한 **서로 다른 net ns** 의 두 인스턴스가
  * 서로의 endpoint 를 보지 못해 **양쪽 다 획득에 성공**한다(이중 소유 = fail-open). 이 슬라이스가 그것을
- * 막지 못한다는 사실을 은폐하지 않는다 — 막는 것은 **인스턴스 배타**(§W-2-b `active-instance.json` ·
- * PR1c)이며, 그 계약이 「한 영역에 살아있는 인스턴스는 하나」를 보장해야 이 락 층의 안전 논증이 닫힌다.
- * 즉 PR1c 는 편의 기능이 아니라 **이 층의 전제**다.
+ * 막지 못한다는 사실을 은폐하지 않는다 — 「한 영역에 살아있는 인스턴스는 하나」를 만드는 것은
+ * **인스턴스 배타**(§W-2-b `active-instance.json` · PR1c)이며, 그것이 이 락 층의 **전제**다.
+ * ⚠ 단 그 전제도 **같은 net namespace 안에서만** 런타임으로 집행된다 — cross-ns 구간의 근거는 배포 계약
+ * (compose `container_name`)이고, 런타임 층은 그 구간을 차단하지 않고 증거 등급으로 기록만 한다(ADR-0013).
  */
 
 /** 락 endpoint 이름 접두 — 레포 무관 고정. */
@@ -41,6 +42,17 @@ export const ENDPOINT_PREFIX = 'fleet.wb.'
 
 /** 레포 변이 락 키(§W-3). */
 export const REPO_LOCK_KEY = 'r'
+
+/**
+ * 인스턴스 배타 키(§W-2-b · PR1c). **락 키가 아니다** — 서열(L-3) 밖이고 `LockScope` 로 획득되지 않으며,
+ * 소유자는 `active-instance.ts` 가 주입 백엔드로 **직접** bind 한다.
+ *
+ * 왜 전용 키인가(계획 정정 ㊲): 인스턴스 생존 판정은 **부팅부터 종료까지 계속 보유되는** endpoint 를
+ * 요구하는데, 락 키 3종은 전부 변이 구간에만 잡혔다 풀리는 **일시 보유**다(서열 합성의 `finally` 가 해제).
+ * 그중 하나를 생존 비콘으로 재사용하면 「락을 쥐지 않은 idle 인스턴스」가 사망으로 오판돼 회수되고
+ * (이중 인스턴스 = fail-open), 반대로 `r` 을 인스턴스 수명 내내 쥐면 모든 레포 변이가 정지한다.
+ */
+export const INSTANCE_LOCK_KEY = 'i'
 
 /**
  * 슬롯 키 인덱스 상한(배타) — §W-12 의 `WORKBENCH_MAX_ACTIVE` **절대 상한 4**.
@@ -66,11 +78,16 @@ export const ABSTRACT_NAME_MAX_BYTES = 108
 /** digest = `endpointDigest()` 산출물(32 hex) — 이름공간 스코프 성분. */
 const DIGEST_RE = /^[0-9a-f]{32}$/
 
-/** 락 키 3종(§W-3). 슬롯 개수·bench 목록을 이 모듈이 알 필요는 없다. */
+/**
+ * endpoint 키 4종. 앞 3종이 자문 락(§W-3)이고 `instance` 는 **락이 아니라 인스턴스 배타**(§W-2-b)다 —
+ * 이름 유도만 여기서 공유한다(예산 preflight 를 우회하는 두 번째 이름 조립 경로를 만들지 않기 위해).
+ * 슬롯 개수·bench 목록을 이 모듈이 알 필요는 없다.
+ */
 export type LockKeySpec =
   | { readonly kind: 'repo' }
   | { readonly kind: 'bench'; readonly benchId: string }
   | { readonly kind: 'slot'; readonly index: number }
+  | { readonly kind: 'instance' }
 
 export type EndpointResult =
   /** `endpoint` = **선행 NUL 을 포함한** 전체 소켓 이름(그대로 `listen({path})` 에 넘긴다). */
@@ -112,6 +129,8 @@ const keyOf = (spec: LockKeySpec): { key: string } | { detail: string } => {
       return Number.isInteger(spec.index) && spec.index >= 0 && spec.index < SLOT_INDEX_MAX
         ? { key: `slot-${spec.index}` }
         : { detail: `슬롯 인덱스가 [0,${SLOT_INDEX_MAX}) 정수 범위 밖: ${spec.index}` }
+    case 'instance':
+      return { key: INSTANCE_LOCK_KEY }
   }
 }
 

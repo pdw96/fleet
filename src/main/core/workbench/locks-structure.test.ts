@@ -248,10 +248,13 @@ describe('소스 위생 — 원시 NUL 바이트 0건(리뷰 diff 가 바이너�
  * 「무엇이 공개인가」를 값 export 집합으로 고정한다(타입 전용 export 는 런타임에 나타나지 않는다).
  */
 describe('T6 구조층 — 공개 표면 exact 동치', () => {
-  it('locks.ts 값 export 9개', () => {
+  // #251 PR1c: `INSTANCE_LOCK_KEY` 1개 증가(9→10). 인스턴스 배타는 **락이 아니지만** 이름 유도를
+  // `endpointFor` 와 공유한다 — 예산 preflight 를 우회하는 두 번째 이름 조립 경로를 만들지 않기 위해서다.
+  it('locks.ts 값 export 10개', () => {
     expect(Object.keys(locks).sort()).toEqual([
       'ABSTRACT_NAME_MAX_BYTES',
       'ENDPOINT_PREFIX',
+      'INSTANCE_LOCK_KEY',
       'REPO_LOCK_KEY',
       'SLOT_INDEX_MAX',
       'availableLockBackends',

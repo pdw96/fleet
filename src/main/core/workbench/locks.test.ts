@@ -11,6 +11,7 @@ import {
   type BenchLeaseToken,
   type LockHandle,
   type LockScope,
+  INSTANCE_LOCK_KEY,
   nameBudget,
   REPO_LOCK_KEY,
   SLOT_INDEX_MAX,
@@ -36,14 +37,30 @@ describe('endpointFor — 이름 유도 · 예산 preflight(순수 · 양 OS)', 
     expect(r.endpoint.slice(1)).toBe(`${ENDPOINT_PREFIX}${DIGEST}.${REPO_LOCK_KEY}`)
   })
 
-  it('키 3종이 서로 다른 endpoint 로 간다(레포·bench·슬롯)', () => {
+  /**
+   * ⚠ **인스턴스 키가 락 키와 충돌하면 안 된다**(#251 PR1c · 계획 정정 ㊲). 인스턴스 배타는 부팅부터
+   * 종료까지 endpoint 를 **계속 보유**하는데, 그 이름이 `r`(레포 변이 락)과 같으면 인스턴스가 살아 있는
+   * 동안 모든 레포 변이가 정지한다. 반대로 락 키 중 하나를 인스턴스 생존 probe 로 재사용하면 **락을 쥐지
+   * 않은 idle 인스턴스가 「사망」으로 판정**돼 회수된다(이중 인스턴스 = fail-open). 이름 분리가 그 두
+   * 오작동의 공통 전제를 없앤다.
+   */
+  it('키 4종이 서로 다른 endpoint 로 간다(레포·bench·슬롯·인스턴스)', () => {
     const id = newUlid()
     const names = [
       endpointFor(DIGEST, { kind: 'repo' }),
       endpointFor(DIGEST, { kind: 'bench', benchId: id }),
       endpointFor(DIGEST, { kind: 'slot', index: 0 }),
+      endpointFor(DIGEST, { kind: 'instance' }),
     ].map((r) => (r.status === 'ok' ? r.endpoint : r.status))
-    expect(new Set(names).size).toBe(3)
+    expect(new Set(names).size).toBe(4)
+  })
+
+  it('인스턴스 키는 INSTANCE_LOCK_KEY 이고 레포 락 키와 다르다', () => {
+    const r = endpointFor(DIGEST, { kind: 'instance' })
+    expect(r.status).toBe('ok')
+    if (r.status !== 'ok') return
+    expect(r.key).toBe(INSTANCE_LOCK_KEY)
+    expect(INSTANCE_LOCK_KEY).not.toBe(REPO_LOCK_KEY)
   })
 
   it('서로 다른 레포(digest)는 서로 다른 endpoint — 추상 이름공간은 net ns 전역이라 유일한 스코프 수단', () => {
