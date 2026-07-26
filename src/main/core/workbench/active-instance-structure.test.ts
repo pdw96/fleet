@@ -207,12 +207,14 @@ describe('마커 순수층 — instance-marker.ts 는 파일시스템을 알지 
  * 없으면 그 동치 단언이 「엉뚱한 경로끼리의 일치」가 된다.
  */
 describe('마커 실 리더 — /proc 경로 앵커', () => {
-  it.each(['/proc/sys/kernel/random/boot_id', '/proc/1/stat', '/proc/self/ns/pid'])(
-    '%s 리터럴이 실재한다',
-    (path) => {
-      expect(source('instance-marker-proc.ts')).toContain(path)
-    },
-  )
+  it.each([
+    '/proc/sys/kernel/random/boot_id',
+    '/proc/1/stat',
+    '/proc/self/ns/pid',
+    '/proc/self/ns/net',
+  ])('%s 리터럴이 실재한다', (path) => {
+    expect(source('instance-marker-proc.ts')).toContain(path)
+  })
 
   /**
    * win32 에서 POSIX 절대경로는 **현재 드라이브 상대**로 해석되므로(`/proc/x` → `C:\proc\x` · 실측)
@@ -267,9 +269,10 @@ describe('T5 구조층 — 공개 표면 exact 동치', () => {
     ])
   })
 
-  it('instance-marker-proc.ts 값 export 4개(팩토리 + 경로 상수 3)', () => {
+  it('instance-marker-proc.ts 값 export 5개(팩토리 + 경로 상수 4)', () => {
     expect(Object.keys(instanceMarkerProc).sort()).toEqual([
       'BOOT_ID_PATH',
+      'NET_NS_PATH',
       'PID1_STAT_PATH',
       'PID_NS_PATH',
       'createProcMarkerSource',

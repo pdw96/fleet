@@ -23,6 +23,12 @@ export const BOOT_ID_PATH = '/proc/sys/kernel/random/boot_id'
 export const PID1_STAT_PATH = '/proc/1/stat'
 /** PID 네임스페이스 신원. 동시 기동한 두 컨테이너를 가른다. */
 export const PID_NS_PATH = '/proc/self/ns/pid'
+/**
+ * network 네임스페이스 신원 — **배타(커널 endpoint)의 실제 스코프**와 마커 축을 일치시킨다.
+ * 실측: 같은 컨테이너의 두 프로세스는 동일(4026532388) · `--pid=container:X` 로 PID ns 만 공유하면
+ * 앞 3성분이 전부 같고 **이 값만 다르다**(4026532687) — 그 구성을 가르는 유일한 성분이다.
+ */
+export const NET_NS_PATH = '/proc/self/ns/net'
 
 export function createProcMarkerSource(): InstanceMarkerSource {
   return {
@@ -37,8 +43,9 @@ export function createProcMarkerSource(): InstanceMarkerSource {
         const bootId = readFileSync(BOOT_ID_PATH, 'utf8').trim()
         const ticks = parsePid1StartTicks(readFileSync(PID1_STAT_PATH, 'utf8'))
         const pidNsIno = String(statSync(PID_NS_PATH).ino)
+        const netNsIno = String(statSync(NET_NS_PATH).ino)
         // 파싱 실패는 빈 문자열로 넘겨 **형태 검증 한 곳**에서 걸리게 한다(사유 문자열 중복 금지).
-        return composeMarker({ bootId, pid1StartTicks: ticks ?? '', pidNsIno })
+        return composeMarker({ bootId, pid1StartTicks: ticks ?? '', pidNsIno, netNsIno })
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err)
         return { status: 'unavailable', detail: `/proc 읽기 실패: ${detail}` }

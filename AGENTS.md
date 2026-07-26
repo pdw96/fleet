@@ -120,7 +120,9 @@ Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회
 위 「아키텍처 규칙」·「함정」의 계약을 런타임/타입이 못 잡는 지점에서 보강한다:
 
 - **코어 Electron/DOM 의존성 유입** — `src/main/core/*` 에 `electron`/DOM import(순수 TS 계약 위반).
-- **`ApprovalGate` 우회** — 파일 쓰기/삭제/shell 이 게이트를 거치지 않는 경로(`core/safety/`).
+- **`ApprovalGate` 우회** — **에이전트가 유발하는** 파일 쓰기/삭제/shell 이 게이트를 거치지 않는 경로
+  (`core/safety/`). 엔진 인프라 쓰기는 명시 예외다(위 「아키텍처 규칙」의 예외 절 — 근거를 모듈 상단에
+  적지 않은 새 예외는 여전히 P1).
 - **IPC / `FleetBridge` drift** — `preload/index.ts` ↔ `shared/types.ts` 의 브리지·타입 불일치.
 - **provider / session 계약 위반** — `ApiProvider.chat()` 의 `ChatResult` 구조·`LlmSession` 하위호환 깨짐.
 - **`FLEET_E2E` 가드 완화** — E2E 픽스처·페이크 러너가 프로덕션 경로로 새는 변경.

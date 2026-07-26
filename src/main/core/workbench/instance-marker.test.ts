@@ -54,13 +54,16 @@ describe('composeMarker — 3성분 합성 · 형태 검증', () => {
     bootId: '49fe4c5b-c490-4123-b866-ee40cbe8ebd6',
     pid1StartTicks: '276512',
     pidNsIno: '4026532386',
+    netNsIno: '4026532388',
   }
 
-  it('세 성분의 sha256(콜론 구분)을 준다', () => {
+  it('네 성분의 sha256(콜론 구분)을 준다', () => {
     const got = composeMarker(ok)
     expect(got.status).toBe('ok')
     expect(got.status === 'ok' && got.marker).toBe(
-      createHash('sha256').update(`${ok.bootId}:${ok.pid1StartTicks}:${ok.pidNsIno}`).digest('hex'),
+      createHash('sha256')
+        .update(`${ok.bootId}:${ok.pid1StartTicks}:${ok.pidNsIno}:${ok.netNsIno}`)
+        .digest('hex'),
     )
   })
 
@@ -74,6 +77,7 @@ describe('composeMarker — 3성분 합성 · 형태 검증', () => {
     ['bootId', { ...ok, bootId: '00000000-0000-0000-0000-000000000000' }],
     ['pid1StartTicks', { ...ok, pid1StartTicks: '277800' }],
     ['pidNsIno', { ...ok, pidNsIno: '4026532686' }],
+    ['netNsIno', { ...ok, netNsIno: '4026532687' }],
   ])('%s 하나만 달라도 마커가 달라진다', (_label, other) => {
     const a = composeMarker(ok)
     const b = composeMarker(other)
@@ -82,9 +86,27 @@ describe('composeMarker — 3성분 합성 · 형태 검증', () => {
 
   /** 성분 경계가 흐려지면 다른 성분 조합이 같은 문자열로 붕괴한다(구분자 누락 계열 회귀). */
   it('성분 경계가 붕괴하지 않는다(구분자 누락 구현이 RED)', () => {
-    const a = composeMarker({ bootId: ok.bootId, pid1StartTicks: '11', pidNsIno: '2233' })
-    const b = composeMarker({ bootId: ok.bootId, pid1StartTicks: '1122', pidNsIno: '33' })
+    const a = composeMarker({ ...ok, pid1StartTicks: '11', pidNsIno: '2233' })
+    const b = composeMarker({ ...ok, pid1StartTicks: '1122', pidNsIno: '33' })
     expect(a.status === 'ok' && b.status === 'ok' && a.marker !== b.marker).toBe(true)
+  })
+
+  /**
+   * **배타 범위와 마커 축의 일치**(Codex PR#262 P1 · 실측). 「PID ns 공유 + net ns 분리」 구성에서는
+   * 앞 3성분이 전부 같다(pidns 4026532386 동일 · PID1 이 같으니 f22 도 동일). 그때 침입자가 자기 net ns
+   * 에서 bind 에 성공하면 **살아있는** 소유자를 `kernel-proven` 으로 회수하게 된다 — net ns 성분이
+   * 그 구성을 가르는 유일한 축이다. 반대로 같은 컨테이너(같은 net ns)의 일치는 그대로 유지돼야 한다.
+   */
+  it('PID ns 공유 + net ns 분리는 마커가 갈린다(살아있는 소유자 오판 차단)', () => {
+    const owner = composeMarker(ok)
+    const intruder = composeMarker({ ...ok, netNsIno: '4026532687' })
+    expect(
+      owner.status === 'ok' && intruder.status === 'ok' && owner.marker !== intruder.marker,
+    ).toBe(true)
+  })
+
+  it('같은 컨테이너의 두 프로세스는 같은 마커다(kernel-proven 경로 보존)', () => {
+    expect(composeMarker(ok)).toEqual(composeMarker({ ...ok }))
   })
 
   /**
@@ -100,9 +122,12 @@ describe('composeMarker — 3성분 합성 · 형태 검증', () => {
     ['ticks 빈 문자열', { ...ok, pid1StartTicks: '' }],
     ['ticks 0', { ...ok, pid1StartTicks: '0' }],
     ['ticks 비숫자', { ...ok, pid1StartTicks: '12a' }],
-    ['ino 빈 문자열', { ...ok, pidNsIno: '' }],
-    ['ino 0', { ...ok, pidNsIno: '0' }],
-    ['ino 비숫자', { ...ok, pidNsIno: '40e6' }],
+    ['pid ns ino 빈 문자열', { ...ok, pidNsIno: '' }],
+    ['pid ns ino 0', { ...ok, pidNsIno: '0' }],
+    ['pid ns ino 비숫자', { ...ok, pidNsIno: '40e6' }],
+    ['net ns ino 빈 문자열', { ...ok, netNsIno: '' }],
+    ['net ns ino 0', { ...ok, netNsIno: '0' }],
+    ['net ns ino 비숫자', { ...ok, netNsIno: '40e6' }],
   ])('%s 이면 unavailable(상수 축퇴 금지)', (_label, bad) => {
     const got = composeMarker(bad)
     expect(got.status).toBe('unavailable')

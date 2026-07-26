@@ -8,12 +8,19 @@ import { createHash } from 'node:crypto'
  * **양 OS 에서** 페이크로 실행된다(계획 §3.1 대응 ⓐ · 정정 ㊷). 마커 산출 자체가 옳은지는
  * `instance-marker-proc.test.ts` 의 「테스트가 `/proc` 를 독립 재계산해 동치 단언」 행이 본다.
  *
- * **성분이 3개인 이유**(계획 정정 ㊶ · 스펙 §0.1 C8 문면 정정): 스펙 원문의 2성분
+ * **성분이 4개인 이유**(계획 정정 ㊶ · 스펙 §0.1 C8 문면 정정): 스펙 원문의 2성분
  * `sha256(bootId:pid1StartTicks)` 는 **단사가 아니다** — `starttime` 은 USER_HZ(10ms) 해상도라 같은
  * 호스트에서 동시에 뜬 두 컨테이너가 같은 값을 갖는다(실측: 8기 병렬 기동에서 2쌍 충돌). 그러면 스펙이
  * 주장한 «마커 일치 = 같은 PID 네임스페이스» 가 거짓이 된다. PID ns inode 를 넣으면 동시 기동이 갈리고
  * (실측 4026532386 ≠ 4026532686), 같은 컨테이너 재기동은 ino 가 **재사용**되더라도 `starttime` 이 전진해
  * 갈린다(실측 276512 → 277800) — 두 축이 서로의 사각을 정확히 덮는다.
+ *
+ * **네 번째 성분(net ns ino)은 배타 범위와 마커 축을 일치시킨다**(Codex PR#262 P1 · 실측): 배타는 커널
+ * endpoint = **net namespace** 스코프인데 앞 3성분은 전부 **PID ns·부팅** 축이라, 「PID ns 공유 + net ns
+ * 분리」 구성에서 세 값이 전부 같아진다(pidns 4026532386 동일 · PID1 이 같으니 f22 도 동일). 그러면 침입자가
+ * 자기 net ns 에서 bind 에 성공한 뒤 **살아있는** 소유자를 `kernel-proven` 으로 회수한다. net ns ino 를
+ * 넣으면 같은 컨테이너(=같은 net ns · 실측 4026532388 동일)의 `kernel-proven` 은 그대로 유지되고
+ * 그 침입자만 `deployment-premise` 로 정직하게 강등된다.
  *
  * ⚠ **마커는 유일성 보장이 아니라 신원 판정 성분이다.** 「두 인스턴스는 반드시 다른 마커를 갖는다」를
  * 불변식으로 단언하지 않는다(부하 중 flaky). 마커는 **회수 증거의 등급**을 정하고, 회수 여부 자체는
@@ -36,6 +43,13 @@ export interface MarkerComponents {
   readonly bootId: string
   readonly pid1StartTicks: string
   readonly pidNsIno: string
+  /**
+   * network namespace inode. **배타의 실제 범위와 마커를 같은 축에 둔다**(Codex PR#262 P1).
+   * 없으면 「PID ns 공유 + net ns 분리」 구성에서 앞 3성분이 **전부 같아**(실측: pidns 4026532386 동일 ·
+   * PID1 이 같으니 f22 도 동일) 침입자가 자기 net ns 에서 bind 에 성공한 뒤 **살아있는** 소유자를
+   * `kernel-proven`(= 커널이 사망을 보장) 으로 회수한다 — 증거 등급이 거짓을 단언한다.
+   */
+  readonly netNsIno: string
 }
 
 export type MarkerRead =
@@ -75,18 +89,19 @@ export function parsePid1StartTicks(raw: string): string | undefined {
 }
 
 /**
- * 3성분 → 마커. **형태 검증이 여기 있는 이유**: `/proc` 파일은 `statSync().size === 0` 을 보고하므로
+ * 4성분 → 마커. **형태 검증이 여기 있는 이유**: `/proc` 파일은 `statSync().size === 0` 을 보고하므로
  * 길이 힌트로 읽는 구현은 빈 문자열을 얻고, 그것이 그대로 해시에 들어가면 **모든 인스턴스의 마커가 같아지는
  * 상수 축퇴**(fail-open)가 된다. throw 가 아니라 값으로 보고한다(판별 유니온 반환 원칙 · §W-4).
  */
 export function composeMarker(components: MarkerComponents): MarkerRead {
-  const { bootId, pid1StartTicks, pidNsIno } = components
+  const { bootId, pid1StartTicks, pidNsIno, netNsIno } = components
   if (!BOOT_ID_RE.test(bootId)) {
     return { status: 'unavailable', detail: `boot_id 형태 위반: ${JSON.stringify(bootId)}` }
   }
   for (const [label, value] of [
     ['pid1 starttime', pid1StartTicks],
     ['PID ns inode', pidNsIno],
+    ['net ns inode', netNsIno],
   ] as const) {
     if (!POSITIVE_INT_RE.test(value) || value === '0') {
       return { status: 'unavailable', detail: `${label} 형태 위반: ${JSON.stringify(value)}` }
@@ -94,7 +109,7 @@ export function composeMarker(components: MarkerComponents): MarkerRead {
   }
   // 구분자 `:` 는 성분 경계다 — 빼면 (11,2233) 과 (1122,33) 이 같은 마커로 붕괴한다.
   const marker = createHash('sha256')
-    .update(`${bootId}:${pid1StartTicks}:${pidNsIno}`)
+    .update(`${bootId}:${pid1StartTicks}:${pidNsIno}:${netNsIno}`)
     .digest('hex')
   return { status: 'ok', marker }
 }

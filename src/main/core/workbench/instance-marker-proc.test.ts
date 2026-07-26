@@ -31,6 +31,7 @@ describe.skipIf(!IS_LINUX)('실 /proc 마커 — 독립 재계산 동치(Linux)'
           readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
           rest[19],
           String(statSync('/proc/self/ns/pid').ino),
+          String(statSync('/proc/self/ns/net').ino),
         ].join(':'),
       )
       .digest('hex')
