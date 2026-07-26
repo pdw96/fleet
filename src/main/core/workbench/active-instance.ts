@@ -52,7 +52,9 @@ import { isLinkSync } from '../workspace/path-guard'
  *
  * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · CodeRabbit PR#262)
  *
- * 이 모듈의 `writeFileSync`·`linkSync`·`unlinkSync` 는 **승인 게이트 밖**이다. 대상은 사용자 워크스페이스가
+ * 이 모듈의 파일 조작은 **승인 게이트 밖**이다. 그중 정책상 실제로 쟁점이 되는 것은 **destructive 한
+ * `unlinkSync(<area>/active-instance.json)` 두 자리**(잔재 회수 · 소유 레코드 해제)뿐이다 — tmp 쓰기와
+ * `link` 발행은 create-only 라 기존 상태를 파괴하지 않는다. 대상은 사용자 워크스페이스가
  * 아니라 **코디네이션 메타데이터 한 파일**(`<area>/active-instance.json` 과 그 tmp)뿐이고, 게이트의 범위는
  * 레포 전역에서 «LLM 변이·프로세스 spawn»이다(소비자 = `engine`·`orchestrator`·`mcp/host`·`tools/loop`).
  * 엔진 인프라 쓰기는 전부 게이트 밖이라는 선례가 이미 있다 — `store/json-file.ts` · `ignored-baseline.ts` ·

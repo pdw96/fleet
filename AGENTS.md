@@ -49,8 +49,14 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
 - **확장은 레지스트리로.** 새 CLI 는 `cli/registry.ts`, 새 API provider 는 `providers/registry.ts`
   에 등록만 한다(코어 분기문 수정 금지).
   - `CliAdapter` 는 IPC 로 직렬화되므로 **함수 필드 금지** — 데이터 필드만 둔다.
-- **안전 우선.** 파일 쓰기/삭제/shell 은 `ApprovalGate` 를 통과해야 한다(`core/safety/`). 기본은
-  destructive 차단.
+- **안전 우선.** **에이전트가 유발하는** 파일 쓰기/삭제/shell 은 `ApprovalGate` 를 통과해야 한다
+  (`core/safety/`). 기본은 destructive 차단. 게이트의 소비자는 LLM 변이·툴 실행·프로세스 spawn 경로
+  (`engine.ts`·`orchestrator.ts`·`mcp/host.ts`·`tools/loop.ts`)다.
+  - **예외 = 엔진 인프라 쓰기**(엔진 자신의 상태·메타데이터). `store/json-file.ts`·
+    `workspace/ignored-baseline.ts`·`workbench/coord-area.ts`·`workbench/active-instance.ts` 가 그것이며,
+    부팅 경로라 승인자가 존재하지 않는다(§W-3 L-5 와도 방향이 충돌한다). 예외를 새로 만들 때는 **모듈
+    상단에 근거를 명시**하고, destructive 조작은 게이트가 아니라 **소유 확인·create-only 경합**으로 막는다.
+    (이 구분을 문면에 두지 않아 리뷰에서 반복 지적된 항목 — ADR-0013.)
 - **provider 계약.** `ApiProvider.chat()` 는 구조화된 `ChatResult`(text·toolCalls·finishReason·
   usage)를 반환한다. `LlmSession.send()` 는 하위호환을 위해 여전히 `string` 을 반환한다.
 
