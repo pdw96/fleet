@@ -191,6 +191,11 @@ printf '%s' "$FLEET_BLOCK" | grep -qi 'docker.sock' && bad "fleet 에 Docker 소
 # graceful drain(#216 C3) — stop_grace_period 는 load-bearing: 미설정 시 Docker 기본 10s SIGKILL 이 25s 드레인을
 # 절단(진행 런·pending 승인 정리 소실). 지우면 조용히 깨지므로 canary 로 가드한다.
 printf '%s' "$FLEET_BLOCK" | grep -q 'stop_grace_period' && ok "fleet stop_grace_period 설정(드레인 유예)" || bad "fleet stop_grace_period 누락 — 10s SIGKILL 이 드레인 절단!"
+# 인스턴스 배타의 배포층 집행(#251 §W-2-b) — container_name 이 있어야 compose 가 scale>1 을 거부한다.
+# 지우면 「한 영역에 살아있는 인스턴스는 하나」 전제가 사라지고 잔재 회수 판정(§W-16 ②)이 근거를 잃는다.
+printf '%s' "$FLEET_BLOCK" | grep -q 'container_name: fleet-server' && ok "fleet container_name 고정(인스턴스 배타 배포층)" || bad "fleet container_name 누락 — --scale 이 열려 이중 인스턴스 가능!"
+# ttyd 는 스케일 대상이 아니므로 이름을 고정하지 않는다(오배치 시 fleet 쪽 집행이 사라지는 것을 잡는다).
+printf '%s' "$TTYD_BLOCK" | grep -q 'container_name' && bad "ttyd 에 container_name — fleet 로 갈 키가 오배치됐을 수 있음" || ok "ttyd container_name 미설정"
 
 # ─────────────────── override(docker-compose.ghcr.yml) 병합 canary (#222 CD) ───────────────────
 # 서버측 pull override 가 base 의 build: 를 !reset 으로 제거해 "로컬 빌드 없이 GHCR pull" 이 되는지
@@ -209,6 +214,31 @@ printf '%s' "$GHCR_FLEET" | grep -q 'build:' && bad "fleet 에 build: 잔존(!re
 printf '%s' "$GHCR_FLEET" | grep -q 'stop_grace_period' && ok "override fleet stop_grace_period 상속" || bad "override 에서 stop_grace_period 소실 — 드레인 절단!"
 printf '%s' "$GHCR_TTYD" | grep -q 'image: ghcr.io/pdw96/fleet-webterminal' && ok "ttyd image=GHCR" || bad "ttyd image 가 GHCR 아님"
 printf '%s' "$GHCR_TTYD" | grep -q 'build:' && bad "ttyd 에 build: 잔존(!reset 미적용)" || ok "ttyd build: 제거됨(!reset)"
+# container_name 상속(#251) — 프로덕션 pull 경로는 override 병합이라, base 에만 두면 실제 배포에서
+# 인스턴스 배타의 배포층 집행이 사라진다(override 가 !reset null 로 지워도 여기서 잡힌다).
+printf '%s' "$GHCR_FLEET" | grep -q 'container_name: fleet-server' && ok "override fleet container_name 상속" || bad "override 에서 container_name 소실 — --scale 이 다시 열린다!"
+
+# ─────────────────── 인스턴스 배타 배포 계약의 **행동** 검증 (#251 §3-T8e) ───────────────────
+# 키 존재 단언만 두면 compose 버전·구성 변화로 거부가 사라져도 무신호다. `up --dry-run` 은 실측상
+# 네트워크·볼륨·컨테이너를 **하나도 만들지 않고**(부작용 0) 초 단위로 끝나므로 여기서 직접 거부를 관측한다.
+# 3층 판정: ⓐ거부 ⓑ양성 통제(scale=1 은 통과 → 구성·프로파일 자체는 정상) ⓒ음성 통제(키를 지우면 통과
+#   → 거부가 **그 키에 귀속**됨). ⓑ가 없으면 `--profile` 누락 같은 무관한 실패도 「거부」로 읽힌다.
+log "12c) 인스턴스 배타 배포 계약 — --scale fleet=2 거부(행동 · dry-run)"
+if "${COMPOSE[@]}" up --dry-run -d --scale fleet=2 >/dev/null 2>&1; then
+  bad "--scale fleet=2 가 통과했다 — container_name 집행이 작동하지 않음!"
+else
+  ok "--scale fleet=2 거부됨"
+fi
+if "${COMPOSE[@]}" up --dry-run -d --scale fleet=1 >/dev/null 2>&1; then
+  ok "--scale fleet=1 은 통과(양성 통제 — 거부가 스케일 조건에 귀속)"
+else
+  bad "--scale fleet=1 도 실패 — 위 거부는 구성 오류일 수 있어 신뢰불가"
+fi
+if printf 'services:\n  fleet:\n    container_name: !reset null\n' | docker compose -f "$SCRIPT_DIR/docker-compose.yml" -f - --profile tunnel up --dry-run -d --scale fleet=2 >/dev/null 2>&1; then
+  ok "container_name 제거 시엔 통과(음성 통제 — 거부가 그 키에 귀속)"
+else
+  bad "키를 지워도 거부됐다 — 위 거부가 container_name 때문이라는 근거 없음"
+fi
 
 # 컨테이너 브라우저 스모크(#193 게이트 ③ — 목표 입력→런 완주): host 네트워킹 + FLEET_E2E=1 + 호스트
 # playwright(B4 웹스모크 재사용)가 필요하다. CI-이식 bash 스모크 범위를 넘어 라이브 5종(실 터널·폰 브라우저)이

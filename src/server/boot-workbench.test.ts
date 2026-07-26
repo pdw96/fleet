@@ -1,6 +1,6 @@
-import { mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -140,6 +140,62 @@ describe('T8f — Workbench 는 서버 표면 전용(데스크톱 우회 활성�
       expect(bootSrc).toContain(needle)
     },
   )
+
+  /**
+   * **이름 스캔만으로는 부족하다**(#251 PR1c · 계획 정정 ㊿). 위 단언들은 env 이름 2개만 보므로,
+   * `main/index.ts` 가 Workbench 모듈을 **직접 import·호출**하는 변이는 그대로 통과한다 — 스펙 §3-T8f 가
+   * 요구한 것은 「데스크톱 경로에 Workbench **초기화 진입점**이 구조적으로 부재」다. 그래서 데스크톱
+   * 엔트리로부터의 **정적 import 그래프 전이 폐포**를 직접 계산해 그 안에 워크벤치 모듈이 0건임을 본다
+   * (텍스트 needle 보다 우회가 어렵다 — 이름을 바꿔도 경로가 남는다).
+   *
+   * PR7 이 서버 부팅을 배선해도 이 단언은 유지된다 — 그 배선의 진입점은 `server/boot.ts` 이고 데스크톱
+   * 엔트리의 폐포에 들어오지 않는다. 데스크톱 Workbench(#255)가 오면 그때 이 행을 **의도적으로** 고친다.
+   */
+  describe('데스크톱 엔트리의 정적 import 폐포', () => {
+    const resolveSpec = (fromFile: string, spec: string): string | undefined => {
+      if (!spec.startsWith('.')) return undefined
+      const base = join(dirname(fromFile), spec)
+      for (const cand of [
+        `${base}.ts`,
+        `${base}.tsx`,
+        join(base, 'index.ts'),
+        join(base, 'index.tsx'),
+      ]) {
+        if (existsSync(cand)) return cand
+      }
+      return undefined
+    }
+
+    const closure = (): Set<string> => {
+      const seen = new Set<string>()
+      const queue = [join(SRC_ROOT, 'main', 'index.ts')]
+      while (queue.length > 0) {
+        const file = queue.pop()
+        if (file === undefined || seen.has(file) || !existsSync(file)) continue
+        seen.add(file)
+        const src = stripComments(readFileSync(file, 'utf8'))
+        for (const m of src.matchAll(/(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g)) {
+          const next = resolveSpec(file, m[1] ?? '')
+          if (next !== undefined) queue.push(next)
+        }
+      }
+      return seen
+    }
+
+    it('앵커: 폐포가 실제로 그래프를 따라간다(엔트리 1개짜리면 아래가 vacuous)', () => {
+      const files = closure()
+      expect(files.size).toBeGreaterThan(20)
+      // 데스크톱이 실제로 코어 엔진에 도달한다 = 「코어를 못 보는 폐포」가 아니다.
+      expect([...files].some((f) => f.endsWith(join('core', 'engine.ts')))).toBe(true)
+    })
+
+    it('폐포에 core/workbench/** 가 0건이다(초기화 진입점 구조적 부재)', () => {
+      const hits = [...closure()]
+        .filter((f) => f.includes(join('core', 'workbench')))
+        .map((f) => f.slice(SRC_ROOT.length))
+      expect(hits).toEqual([])
+    })
+  })
 })
 
 /**

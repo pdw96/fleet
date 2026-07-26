@@ -226,6 +226,54 @@ phantom 레벨 · ALS 런타임 가드) · `__testing__/lock-backend-fake.ts`(�
 **미착지 명시**: L-5a 합성(→PR5 T21) · 슬롯 구현(→PR7 T29 · PR1b 는 키 문법 + 타입 시그니처만) ·
 boot 배선(→PR7) · `DurableFs` 카운터 층(→PR2).
 
+#### PR1c 착수 전 실측 정정 (2026-07-26 · 6렌즈 감사 + Docker 실 Linux 실측)
+
+PR0·PR1a·PR1b 가 확립한 「착수 전 ripple 전수 감사」를 PR1c(T5)에 적용했다. 6렌즈 find → 렌즈별 독립
+refuter(**28 CONFIRMED · 29 PARTIAL · 1 REFUTED**), 하중 프리미티브는 메인 루프가 Docker 컨테이너와
+실 compose 로 직접 재측정했다.
+
+**실측 확정 사실**
+
+| 측정 | 결과 |
+|---|---|
+| `link(src, name)` — 기존 이름 / dangling symlink / live symlink / FIFO / 디렉터리 | **전부 `EEXIST`**(Linux) = 순수 create-only |
+| `open(dangling symlink,'wx')` | `EEXIST` · **링크 대상은 생성되지 않음**(그러나 `readFileSync`·`writeFileSync` 는 링크를 추종) |
+| `unlink(열린 파일)` | POSIX `OK` / **win32 도 `OK`**(→ win32 실패 주입 경로 없음) · `unlink` under 0500 부모 = `EACCES` |
+| `/proc/1/stat` `statSync().size` | **0**(길이 힌트 기반 읽기는 빈 문자열) · comm = `docker run` 시 `MainThread` · compose(`init:true`)는 `docker-init` |
+| `/proc/self/ns/pid` ino (비특권 uid 1000) | 읽힘 · **동시 두 컨테이너 = 4026532386 vs 4026532686(다름)** · `docker restart` 전후 = **동일**(ino 재사용)이나 f22 는 276512→277800 전진 |
+| compose `container_name` + `up --dry-run -d --scale fleet=2`(`--profile tunnel`) | **EXIT 1** · `WARNING: … Remove the custom name to scale the service` |
+| 같은 명령 `--scale fleet=1` / `container_name` 제거 후 `--scale fleet=2` | **EXIT 0 / EXIT 0** (양성·음성 통제 성립) |
+| `up --dry-run` 부작용 | **네트워크·볼륨·컨테이너 생성 0건**(실측 확인) · `-f -`(stdin override) 지원 |
+| `config` 출력의 `container_name` | base·GHCR 병합 **양쪽 모두** fleet 블록 안 4-space 들여쓰기(기존 awk 앵커와 정합) |
+
+| # | 계획/스펙 원문 | 실측 | 조치 |
+|---|---|---|---|
+| ㊲ | §W-2-b ⓐⓑ 「커널 endpoint probe 로 생존 확인」 | **probe 대상 키가 어느 문서에도 없다.** 착지한 `LockKeySpec` 3종(`repo`·`bench`·`slot`)은 전부 변이 구간에만 잡히는 **일시 보유** 락이라 liveness 비콘이 될 수 없다 — `'r'` 로 대용하면 **락을 안 쥔 idle 인스턴스가 「사망」으로 오판**돼 회수(fail-open). 게다가 `LockScope.tryAcquire` 로 probe 하면 `locks-structure.test.ts:200` 의 raw 호출자 exact 핀이 즉시 RED | **인스턴스 endpoint 를 1급 계약으로 신설** — `LockKeySpec` 에 `{kind:'instance'}`(키 `'i'`) · `INSTANCE_LOCK_KEY` export(핀 9→10 갱신) · 인스턴스 모듈은 `LockScope` 를 쓰지 않고 **주입 `LockBackend.bind` 를 직접** 호출(서열 레벨 밖 = `lock-order` 합성 대상 아님을 주석 근거로 명시) · **`.bind(` 호출자 exact 핀 신설**(현재 무핀 — 두 번째 호출자가 무신호로 생긴다) |
+| ㊳ | 스펙 §W-2-b ①「부팅 시 `open('wx')` 로 점유」(bind 시점 문장 없음) | **순서가 미판정**이고, `wx`-먼저 구현은 승자가 bind 하기 전 창에서 패자 probe 가 성공해 **같은 컨테이너 안에서 이중 인스턴스**가 성립한다 | **`bind` 먼저 → 성공 시에만 파일 점유**로 확정. 그 결과 스펙 4분기가 재사상된다: ⓐ`bind`=in-use → `instance-active`(**파일 미접촉** = 승인 조건 ① 충족 · 마커를 읽지도 않는다) / ⓑ bind 성공 + 마커 일치 → 회수(**커널 증명**) / ⓒ bind 성공 + 마커 불일치 → 회수(**배포 전제 의존** — 증거 등급을 값으로 구분해 기록) / ⓓ 해제. T8b 의 「패자 `listen()` 0」은 **「락 키(`r`·bench·slot) bind 0건 ∧ 인스턴스 키 bind 정확히 1건」** 으로 조작화(스펙 문면 정정 등재). **모든 `blocked` 경로에서 잡은 endpoint 를 반드시 close** 하는 것도 계약(누수 시 다음 부팅이 자기 자신을 「생존」으로 오판) |
+| ㊴ | 스펙 §W-2-b 「`open('wx')` 점유」·「파일을 자기 신원으로 교체」 | ⓐ`wx` 는 **바이트 이전에 이름을 노출**해 크래시 시 「존재하는 빈 파일」이 남고, 그것이 「자동 삭제 금지」에 걸려 **크래시 1회 = 운영자 개입 없이 복구 불가**(고착이 소멸한 게 아니라 위치를 옮긴 것) ⓑ**회수는 create-only 가 아니다** — 두 회수자가 둘 다 성공 | 발행·회수 **둘 다 tmp+`link`**(coord-area.ts:304-348 형제 선례 · 실측상 `link` 는 모든 기존 이름에 EEXIST). 회수 = 종류 검증 → `unlink` → tmp+`link`, **여기서 EEXIST = 회수 경합 패배 → `instance-active`**(fail-closed · 재시도 상한 1). T8b RED 2행: ⓐ빈 상태 동시 ⓑ**잔재 상태에서 두 회수자 동시 → 정확히 하나**. T8b 문면은 `'wx'` 리터럴이 아니라 **create-only 경합 결과**로 재기술(내구성 fsync 는 PR2 `DurableFs` 소유임을 병기) |
+| ㊵ | 회수 「4분기」 열거 | `open('wx')` 는 symlink·FIFO·디렉터리를 **EEXIST 하나로만** 답해 구분 정보를 주지 않는다. FIFO 면 `readFileSync` 가 **무기한 블록**(부팅 정지), symlink 면 **영역 밖 JSON 이 권위**가 되고 회수 쓰기가 영역 밖 파일을 덮어쓴다 | **5분기**로 고친다 — ⓔ`EEXIST` ∧ (비정규 파일 | 판독 실패 | JSON 파싱 실패 | 마커 형태 위반) → **자동 삭제 금지 → `reconciliation-required`**(detail 에 고칠 대상 경로 필수). 구현은 `isLinkSync`=`'regular'` 선검사(coord-area.ts:181-186 이식)로 한 분기에 흡수. RED 3행(symlink·FIFO·디렉터리)은 POSIX 게이트(win32 는 symlink 생성이 EPERM — 실측) |
+| ㊶ | 계획 「`sha256(bootId:pid1StartTicks)` 가 인스턴스마다 달라진다」 · 스펙 「마커 일치 = 같은 PID ns」 | **단사가 아니다** — f22 는 USER_HZ(10ms) 해상도라 동시 기동한 두 컨테이너가 같은 마커를 갖는다(감사 8기 병렬에서 2쌍 충돌). 즉 스펙 문면이 거짓 | 마커 = **`sha256(bootId : pid1StartTicks : pidNsIno)` 3성분**(실측: 동시 두 컨테이너 ns ino 상이 · restart 는 ino 재사용이지만 f22 전진 → 두 축이 서로의 사각을 덮는다). 스펙 §0.1 C8 문면 정정을 PR 본문에 등재. 계약 테스트는 **「두 인스턴스는 서로 다른 마커」를 불변식으로 단언하지 않는다**(부하 중 flaky) |
+| ㊷ | 계획 T5 에 주입 seam·페이크·커버리지 대응 **0줄** | 마커 성분은 Linux 전용이므로 seam 없이 짜면 §3-T8c 4분기가 win32 로컬에서 전량 skip 되고 프로덕션 행이 **분모에만** 들어간다(정정 ⑤가 T3·T4·T6 에만 적용됐다). 또 마커를 페이크로만 검증하면 **상수 마커·필드 오프셋 오류·구분자 누락이 4분기 전부를 GREEN 통과** | 정정 ⑤의 대응 ⓐ를 T5 에 승계: `InstanceMarkerSource` **필수 주입** · 실 `/proc` 리더는 얇은 별도 파일 + `describe.skipIf(platform!=='linux')` · 판정은 페이크로 양 OS. **추가로 「산출 동치」 행 필수** — Linux 게이트 아래에서 **테스트가 `/proc` 를 독립 재계산**해 모듈 산출값과 `toBe`(상수 마커를 RED 로 만드는 유일한 형태) |
+| ㊸ | 「`/proc/1/stat` f22」 · 「`/proc` 읽기」 | ⓐ`/proc` 파일은 `statSync().size===0` → 길이 힌트 기반 읽기가 **빈 문자열** → sha256 상수 축퇴 ⓑcomm 의 괄호·공백 때문에 naive split 은 조용히 틀린 값을 주는데, **프로덕션 PID1 은 `docker-init`(공백 없음)이라 실 컨테이너로만 검증하면 naive 도 통과**(vacuous 양성 통제) ⓒwin32 에서 `/proc/x` 는 `C:\proc\x` 로 해석돼 파일-존재 기반 플랫폼 가드는 위조 가능 | 읽기는 `readFileSync(path,'utf8')` 단독 · 파싱은 **`lastIndexOf(')')` 기준 + `rest.length>=50`** · 형태 검증(boot_id = 36자 UUID 문법 · ticks = 양의 정수) 위반은 throw 아닌 **`unavailable`**(fail-closed). **적대적 comm 픽스처**(`1 (ev) (il) S …`)가 파서 테스트의 유일한 양성 통제. 플랫폼 게이트는 `process.platform!=='linux'`(locks.ts:147 대칭) — `existsSync('/proc')` 금지를 구조 스캔으로 핀 |
+| ㊹ | 계획 「§3-T8c ⓓ 는 모듈 층 `release()` 계약으로 검증」(단언 내용 공란) · 형제 선례 `release(): void` | 그대로 복사하면 **제거 실패가 조용히 삼켜져** 승인 조건 ⑤가 산문으로만 랜딩한다. 또 「무조건 unlink」 구현이 통과해 **회수당한 뒤 남의 살아있는 레코드를 지운다** | `release(): ReleaseOutcome` 판별 유니온 3종(`removed` / `removal-failed` / **`not-owned`**). RED 3행 — 특히 **not-owned 행 필수**(acquire → 테스트가 파일을 다른 신원으로 교체 → release → 파일 존속 ∧ 내용 불변 ∧ `not-owned` 보고). 실패 주입은 **POSIX 0500 부모**(실측 EACCES) + errno→결과 **순수 분류자**로 양 OS 검증(win32 는 열린 파일 unlink 도 성공해 실 조건 주입 경로가 없다 — 실측). 조건 ⑤의 **호출부 책임(종료 경로가 위장하지 않음)은 PR7 이월**로 명시 강등 |
+| ㊺ | §3-T8c 「`held` 잔재로 영구 고착되는 경로가 존재하지 않음」 | **실존 부정형이라 조작화 불가** — 산문 그대로 착지하면 어떤 구현도 통과한다(§1-2 가 요구하는 반증력이 이 행에만 비어 있다) | **온디스크 상태표 `it.each`** 로 관측형 재작성: 7종(부재 / 유효+endpoint busy / 유효+free+마커일치 / 유효+free+마커불일치 / JSON 손상 / 빈 파일 / 비정규 파일) × ⓐ결과가 3종 중 **정확히 하나** ⓑ`instance-active` 를 제외한 상태에서 **재시도가 진행 가능**(고착 fixpoint 부재) ⓒ**표 길이 == 분기 개수 exact** 앵커. 추가로 「영원히 in-use」 페이크에서 **턴 0 에 hang 없이** `blocked` + 운영자 조치가 담긴 detail 반환 |
+| ㊻ | L-1 재유입 가드·fs import 금지·`address()` 금지 구조 단언 | 전부 **하드코딩 `LOCK_SOURCES` 3파일**에만 걸려 있어 신규 모듈은 방어 밖이다. 레코드가 `acquiredAt` 을 들고 있어 「오래됐으면 회수」 한 줄이 **전 게이트를 통과**한다(디렉터리 전수로 넓혀도 현행 5패턴에 매칭 0 — 감사 실측) | `LOCK_SOURCES` 를 넓히지 않는다(coord-area 가 즉시 RED). 대신 **회수 판정을 순수 함수로 분리**하고 그 **본문 슬라이스**에 `acquiredAt`·`Date.now`·`mtime`·`pid` 0건 + 앵커를 단언(`endpointFor`↔`nameBudget` 배선 핀 동형). `acquiredAt` 은 **기록 전용 진단 필드**임을 계약 주석에 명시 |
+| ㊼ | 계획 「compose `container_name` **값 라인 exact 핀**」(선례 `deploy-sandbox-boundary-pin.test.ts`) | **서비스 스코프가 없다** — 키를 `ttyd:` 블록으로 오배치하면 평문 regex 는 GREEN 인데 `--scale fleet=2` 가 EXIT 0 이 된다(실측). 부분문자열 `/fleet-server/` 는 `image:` 값 때문에 **변경 전부터 GREEN**. GHCR override 에 `container_name: !reset null` 을 넣으면 병합 config 에서 키가 사라지는데 base 텍스트 핀은 GREEN 유지(실측) | 핀 = **fleet 서비스 블록 스코프**(`^  fleet:` ~ 다음 `^  \w`) 안에서 값까지 exact + **파일 전체 출현 정확 1개** + **블록 추출 canary** + **ttyd 블록 음성 단언** + `docker-compose.ghcr.yml` 에 `container_name` **0건**. 이름은 **보간 없는 리터럴**로 고정해 compose·smoke base·smoke override·pin **4-way 문자열 일치**(선례 `deploy-cd-pin.test.ts:109-110`) |
+| ㊽ | §3-T8e 「`--scale fleet=2` 행동 테스트 = nightly(docker)」 · 계획 §1-3 「nightly 는 존재하지 않는 게이트」 | **위임처가 레포에 없다**(유일 cron = e2e.yml electron 전용). 그런데 `up --dry-run` 은 **부작용 0·초 단위**로 3-way 판정이 가능하다(실측 표 참조) — 즉 미룰 이유가 사라졌다. 또 「exit≠0」 단독 단언은 `--profile tunnel` 누락만으로도 EXIT 1 이라 **vacuous** 이고, 거부 메시지는 `error` 가 아니라 `WARNING:` 접두다 | T8e 를 **`deploy/smoke.sh` §12 에 3-way 로 편입**: `--profile tunnel` 필수 · ⓐ`--scale fleet=2` EXIT≠0 ⓑ`--scale fleet=1` EXIT 0(양성 통제) ⓒ`-f -` stdin override 로 `container_name: !reset null` 주입 시 `--scale fleet=2` EXIT 0(음성 통제 = 거부가 **그 키에 귀속**됨을 증명). 판정은 **exit code**, 메시지는 보조. smoke 는 `set -euo pipefail` 이므로 **새 변수 캡처를 만들지 않고** 실패 기대 명령은 `if …; then bad; else ok; fi` 형만 쓴다(캡처 관용구 위반 시 FAIL 라인도 요약도 없이 조용히 abort — 실측). scripts 핀은 「smoke 에 블록이 존재」에 더해 **그 grep 패턴 리터럴이 compose 텍스트에 실제 매치됨**을 교차 단언(패턴 오타가 PR 게이트에서 무신호) |
+| ㊾ | PR0 이월 「`FLEET_WORKBENCH` compose·`.env.example`·README 등재」 · 이월 ⑫ 「e2e 스폰 env 오버라이드」 | ⓐbare `${FLEET_WORKBENCH}` 는 매 compose 호출마다 stderr 경고(형제 관용구는 전부 기본값 표기) ⓑ`e2e/web-server.ts:22,95` 는 `...extraEnv` 가 **최후 우선순위**라 오버라이드를 spread **뒤**에 넣으면 향후 `extraEnv:{…:'1'}` opt-in 이 영구 무력화 ⓒ e2e 는 vitest include 밖이라 오버라이드 삭제가 **전 게이트 무신호** | `FLEET_WORKBENCH: ${FLEET_WORKBENCH:-0}` + `.env.example` 값 라인 + `/^FLEET_WORKBENCH=0\s*$/m` exact 핀. 「컨테이너는 항상 명시 `'0'` 을 주므로 resolver 의 **미설정 분기는 데스크톱·테스트 전용**」을 주석에 남겨 사문화 오인 삭제를 막는다. e2e 오버라이드는 `FLEET_DATA_DIR` 옆(= spread **앞**) + 위치가 계약임을 주석 · 핀은 **「명시 오버라이드 수 == `...process.env` 스프레드 수(2)」** + 키 문자열이 `boot.ts` 상수값과 일치함을 **텍스트 교차 단언**(e2e 는 `src/` 를 0건 import — boot.ts import 는 Playwright 하니스에 서버 전 그래프를 적재하므로 금지) |
+| ㊿ | 계획 T5 「신규 `core/workbench/**` 는 env 이름을 **주석에도** 담을 수 없다」 · 「§3-T8f 는 PR0 에서 이미 GREEN」 | ⓐ**거짓** — PR0 스캔은 `stripComments` 를 매칭 **앞**에 적용한다(주석은 통과 · 실측). 반대로 스캔 walk 가 `__testing__` 을 제외하지 않아 **테스트 헬퍼도 같은 제약**인데 계획에 미기재 ⓑT8f 가 검증하는 것은 env 이름 2개뿐이라, `main/index.ts` 가 신설 workbench 모듈을 import·호출하는 변이가 **GREEN** 이다(스펙이 요구한 「초기화 진입점 구조적 부재」 미검증) | 문면을 「**코드(식별자·문자열 리터럴)** 에 담을 수 없다 — 주석은 허용(PR7 이월 근거를 주석에 남긴다) · `__testing__` 하위도 동일 제약」으로 정정. T8f 는 **`main/index.ts` 기준 정적 import 그래프 전이 폐포에 `core/workbench/**` 0건** 단언으로 승격(텍스트 스캔보다 우회가 어렵다). 부수: 반환 어휘는 `AreaDisabledReason` 에 **생산자 없는 멤버를 추가하지 않고**(exhaustive 소비자 0 = 무신호) 별도 판별 유니온 · eslint 캐스트는 **site 별 인라인 disable + 한국어 사유**(`eslint.config.mjs` 워크벤치 블록은 exact 핀 3개가 지키므로 손대지 않는다) · ADR 은 **0013** 소비(계획 §PR3 의 예약 번호는 랜딩 순서 원칙상 다음 번호로 밀린다) |
+
+**PR1c 확정 범위**(위 정정 반영): 신설 = `active-instance.ts`(bind-먼저 점유 · 5분기 · 순수 판정 ·
+`ReleaseOutcome`) · `instance-marker.ts`(성분 파싱·형태 검증·마커 합성 — 순수 · 양 OS) ·
+`instance-marker-proc.ts`(실 `/proc` 리더 · Linux · 얇게) · 계약/구조 테스트 · `scripts` 핀 ·
+`locks.ts` 에 `{kind:'instance'}`+`INSTANCE_LOCK_KEY`(export 핀 9→10) · compose·smoke·`.env.example`·
+README·ADR-0013 · `e2e/web-server.ts` 2곳.
+**미착지 명시**: boot 배선(부팅 시 acquire · `shutdown()` 에서 release · 조건 ⑤의 호출부 위장 금지) = **PR7** ·
+내구 fsync(`DurableFs`) = **PR2** · `--scale` 행동의 PR-게이트 실행(smoke 는 머지 후 deploy.yml) = **#254**.
+**분할점 사전 선언**(정정 ㉜ 계열 재발 방지): 산정 기준 = `git diff --numstat` 의 `src/`+`scripts/`+`deploy/`+`e2e/`
+순증(테스트 포함 · `docs/` 제외). 모듈 층(신규 3파일 + 계약/구조 테스트) 종료 시점에 순증 **>1,500** 이면
+README·ADR·e2e 핀을 **PR1c′** 로 분리한다(상한 1,900 · §1-6).
+
 - **T1 ULID** — §3-T1(문법·**단사**: 검증 통과한 두 id 가 win32 case-fold 후에도 같은 경로로 정규화되지 않음).
   경계값: 25/26/27자 · 소문자 · `I/L/O/U` · `..` · `/` · 제어문자 · 전각. **거부(정규화 금지)**.
 - **T2 코디네이션 영역 + `GitRepo` 도입 2메서드**(`commonGitDir`·`listWorktrees`) — §3-T5(실 git 5형태) ·

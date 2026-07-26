@@ -67,6 +67,14 @@ services:
         CODEX_VERSION: ${CODEX_VERSION:-0.142.5}
         GEMINI_VERSION: ${GEMINI_VERSION:-0.49.0}
     image: fleet-server:${IMAGE_TAG:-local}
+    # 인스턴스 배타의 **배포층 집행**(#251 · 스펙 §W-2-b). compose 는 container_name 이 설정된 서비스의
+    # scale>1 을 거부한다(실측: `--scale fleet=2` → exit 1 + "Remove the custom name to scale the service").
+    # 이것이 없으면 «한 코디네이션 영역에 살아있는 인스턴스는 하나» 전제가 문면으로만 존재하고(실측상
+    # `--scale fleet=3` 이 경고 없이 성공했다), 그 전제 위에 선 잔재 회수 판정(§W-16 ②)이 근거를 잃는다.
+    # ⚠ 집행 범위 = compose 경로의 두 번째 fleet 컨테이너. 같은 WORKSPACE_DIR 을 가리키는 **다른 이름의
+    # 스택**이나 호스트 직접 실행은 막지 못한다(런타임 층 = active-instance.json 이 담당).
+    # ⚠ 보간 없는 리터럴이어야 한다 — smoke(base·override)와 scripts 핀이 같은 문자열을 공유한다.
+    container_name: fleet-server
     restart: unless-stopped
     init: true # tini = PID1 → 좀비 수거·시그널 전달
     # graceful drain 유예(#216 C3) — docker stop/재배포 시 SIGTERM 후 이 시간까지 서버가 드레인(진행 런 완주
@@ -95,6 +103,10 @@ services:
       # + --skip-git-repo-check: 비특권 컨테이너의 bwrap user-namespace 실패 회피). 운영자 override 허용
       # (=cli 롤백). 미지값 = 부팅 거부(loud fail) — 조용한 강등 아님. 코드 기본은 cli(데스크톱/베어호스트).
       FLEET_SANDBOX_BOUNDARY: ${FLEET_SANDBOX_BOUNDARY:-container}
+      # Workbench 킬스위치(#251) — 작업별 격리 worktree 표면. 기본 0(비활성) · 활성은 명시 1 뿐이고
+      # 그 외 값은 부팅 거부(조용한 비활성 강등 금지). compose 는 **항상 명시값**을 주므로 코드의
+      # 「미설정=비활성」 분기는 데스크톱·테스트 전용이다(사문화로 오인해 지우지 말 것).
+      FLEET_WORKBENCH: ${FLEET_WORKBENCH:-0}
     volumes:
       # fleet-data = 서버 전용(세션/이벤트/암호문) — 이 서비스에만 마운트(ttyd 셸엔 미노출). 0700 은 서버가 런타임 강제(T5).
       - type: volume

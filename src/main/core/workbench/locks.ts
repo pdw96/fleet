@@ -43,6 +43,17 @@ export const ENDPOINT_PREFIX = 'fleet.wb.'
 export const REPO_LOCK_KEY = 'r'
 
 /**
+ * 인스턴스 배타 키(§W-2-b · PR1c). **락 키가 아니다** — 서열(L-3) 밖이고 `LockScope` 로 획득되지 않으며,
+ * 소유자는 `active-instance.ts` 가 주입 백엔드로 **직접** bind 한다.
+ *
+ * 왜 전용 키인가(계획 정정 ㊲): 인스턴스 생존 판정은 **부팅부터 종료까지 계속 보유되는** endpoint 를
+ * 요구하는데, 락 키 3종은 전부 변이 구간에만 잡혔다 풀리는 **일시 보유**다(서열 합성의 `finally` 가 해제).
+ * 그중 하나를 생존 비콘으로 재사용하면 「락을 쥐지 않은 idle 인스턴스」가 사망으로 오판돼 회수되고
+ * (이중 인스턴스 = fail-open), 반대로 `r` 을 인스턴스 수명 내내 쥐면 모든 레포 변이가 정지한다.
+ */
+export const INSTANCE_LOCK_KEY = 'i'
+
+/**
  * 슬롯 키 인덱스 상한(배타) — §W-12 의 `WORKBENCH_MAX_ACTIVE` **절대 상한 4**.
  * ⚠ 이 상수는 **키 문법의 상한**이고 실제 허용 슬롯 개수가 아니다. 개수는 `area.json` 이 소유하며
  * 이 모듈은 **어디서도 개수를 읽지 않는다**(호출자가 인덱스를 준다 — 슬롯 집행은 PR7/T29).
@@ -66,11 +77,16 @@ export const ABSTRACT_NAME_MAX_BYTES = 108
 /** digest = `endpointDigest()` 산출물(32 hex) — 이름공간 스코프 성분. */
 const DIGEST_RE = /^[0-9a-f]{32}$/
 
-/** 락 키 3종(§W-3). 슬롯 개수·bench 목록을 이 모듈이 알 필요는 없다. */
+/**
+ * endpoint 키 4종. 앞 3종이 자문 락(§W-3)이고 `instance` 는 **락이 아니라 인스턴스 배타**(§W-2-b)다 —
+ * 이름 유도만 여기서 공유한다(예산 preflight 를 우회하는 두 번째 이름 조립 경로를 만들지 않기 위해).
+ * 슬롯 개수·bench 목록을 이 모듈이 알 필요는 없다.
+ */
 export type LockKeySpec =
   | { readonly kind: 'repo' }
   | { readonly kind: 'bench'; readonly benchId: string }
   | { readonly kind: 'slot'; readonly index: number }
+  | { readonly kind: 'instance' }
 
 export type EndpointResult =
   /** `endpoint` = **선행 NUL 을 포함한** 전체 소켓 이름(그대로 `listen({path})` 에 넘긴다). */
@@ -112,6 +128,8 @@ const keyOf = (spec: LockKeySpec): { key: string } | { detail: string } => {
       return Number.isInteger(spec.index) && spec.index >= 0 && spec.index < SLOT_INDEX_MAX
         ? { key: `slot-${spec.index}` }
         : { detail: `슬롯 인덱스가 [0,${SLOT_INDEX_MAX}) 정수 범위 밖: ${spec.index}` }
+    case 'instance':
+      return { key: INSTANCE_LOCK_KEY }
   }
 }
 

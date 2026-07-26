@@ -19,7 +19,18 @@ export async function startFleetWebServer(
 ): Promise<RunningWebServer> {
   const dataDir = mkdtempSync(join(tmpdir(), 'fleet-web-e2e-'))
   const child = spawn(process.execPath, [resolve(__dirname, '..', 'out', 'server', 'index.mjs')], {
-    env: { ...process.env, FLEET_E2E: '1', FLEET_PORT: '0', FLEET_DATA_DIR: dataDir, ...extraEnv },
+    // ⚠ `FLEET_WORKBENCH: '0'` 의 **위치가 계약**이다(#251 PR1c). `...process.env` 로 호스트 셸을
+    // 상속하므로 개발자·CI 에 그 값이 export 돼 있으면 「미설정 무회귀」 스위트가 실제로는 활성
+    // 상태를 검증한다. 반대로 `...extraEnv` **뒤**로 옮기면 테스트가 의도적으로 켤 수 없게 되어
+    // 향후 활성 경로 e2e 가 조용히 비활성으로 돈다 — 그래서 spread 앞이다.
+    env: {
+      ...process.env,
+      FLEET_E2E: '1',
+      FLEET_PORT: '0',
+      FLEET_DATA_DIR: dataDir,
+      FLEET_WORKBENCH: '0',
+      ...extraEnv,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let log = ''
@@ -92,7 +103,18 @@ export async function startFleetWebServerRaw(
 ): Promise<RawWebServer> {
   const dataDir = mkdtempSync(join(tmpdir(), 'fleet-drain-e2e-'))
   const child = spawn(process.execPath, [resolve(__dirname, '..', 'out', 'server', 'index.mjs')], {
-    env: { ...process.env, FLEET_E2E: '1', FLEET_PORT: '0', FLEET_DATA_DIR: dataDir, ...extraEnv },
+    // ⚠ `FLEET_WORKBENCH: '0'` 의 **위치가 계약**이다(#251 PR1c). `...process.env` 로 호스트 셸을
+    // 상속하므로 개발자·CI 에 그 값이 export 돼 있으면 「미설정 무회귀」 스위트가 실제로는 활성
+    // 상태를 검증한다. 반대로 `...extraEnv` **뒤**로 옮기면 테스트가 의도적으로 켤 수 없게 되어
+    // 향후 활성 경로 e2e 가 조용히 비활성으로 돈다 — 그래서 spread 앞이다.
+    env: {
+      ...process.env,
+      FLEET_E2E: '1',
+      FLEET_PORT: '0',
+      FLEET_DATA_DIR: dataDir,
+      FLEET_WORKBENCH: '0',
+      ...extraEnv,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let out = ''
