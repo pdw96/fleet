@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -22,7 +23,7 @@ import {
   type InstanceClaim,
 } from './active-instance'
 import type { InstanceMarkerSource } from './instance-marker'
-import { endpointFor } from './locks'
+import { endpointFor, type LockBackend } from './locks'
 import { newUlid } from './ulid'
 import { createFakeLockBackend, type FakeNamespace } from './__testing__/lock-backend-fake'
 
@@ -112,6 +113,17 @@ describe('최초 점유 — 빈 영역', () => {
       instanceMarker: MARKER_A,
       acquiredAt: 1_700_000_000_000,
     })
+    // 공개 표면 — 상수를 돌려주는 구현이 통과하지 않도록 핸들의 세 값을 함께 고정한다(R4-7).
+    if (got.status !== 'claimed') return
+    expect(got.handle.marker).toBe(MARKER_A)
+    expect(got.handle.evidence).toBe('first-claim')
+    expect(got.handle.isHeld()).toBe(true)
+  })
+
+  /** 레코드는 소유자만 읽고 쓴다(0700 영역 안의 심층 방어 · R4-5). */
+  it.runIf(IS_POSIX)('발행된 레코드는 0600 이다', async () => {
+    await claim()
+    expect(statSync(recordPath()).mode & 0o777).toBe(0o600)
   })
 
   it('발행 후 영역 루트에는 레코드만 남는다(tmp 잔재 0 — 발행은 tmp+link 다)', async () => {
@@ -128,6 +140,45 @@ describe('최초 점유 — 빈 영역', () => {
     await claim({ backend })
     const binds = backend.calls.filter((c) => c.op === 'bind')
     expect(binds).toEqual([{ op: 'bind', endpoint: instanceEndpoint() }])
+  })
+})
+
+/**
+ * **획득 순서를 관측 가능하게 만든다**(자체 적대 리뷰 R4-1). 결과만 보면 「발행 먼저 → bind 나중」 구현도
+ * 전 스위트를 통과한다 — 그 구현은 패자가 코디네이션 영역에 tmp 를 쓰고, 영역 쓰기 불가일 때
+ * `instance-active` 대신 `io-failure` 로 오진단한다. bind 호출 **시점의 영역 스냅샷**을 보면 순서가 값이 된다.
+ */
+describe('획득 순서 — bind 가 파일 접근보다 앞선다', () => {
+  const withBindSnapshot = (inner: LockBackend, seen: string[][]): LockBackend => ({
+    kind: inner.kind,
+    bind: (endpoint) => {
+      seen.push(readdirSync(root))
+      return inner.bind(endpoint)
+    },
+  })
+
+  it('bind 시점에 영역은 아직 사전 상태다(발행 먼저 구현이면 RED)', async () => {
+    const seen: string[][] = []
+    const got = await claim({ backend: withBindSnapshot(createFakeLockBackend(ns), seen) })
+    expect(got.status).toBe('claimed')
+    expect(seen).toEqual([[]])
+  })
+
+  it('잔재가 있어도 bind 시점 영역은 손대지 않은 상태다', async () => {
+    seedStale(MARKER_B)
+    const seen: string[][] = []
+    await claim({ backend: withBindSnapshot(createFakeLockBackend(ns), seen) })
+    expect(seen).toEqual([[ACTIVE_INSTANCE_FILE]])
+  })
+
+  it('점유된 endpoint 면 영역을 끝까지 건드리지 않는다', async () => {
+    const backend = createFakeLockBackend(ns)
+    backend.occupy(instanceEndpoint())
+    const seen: string[][] = []
+    const got = await claim({ backend: withBindSnapshot(backend, seen) })
+    expect(got.status === 'blocked' && got.reason).toBe('instance-active')
+    expect(seen).toEqual([[]])
+    expect(readdirSync(root)).toEqual([])
   })
 })
 
@@ -278,9 +329,44 @@ describe('ⓔ 판정 불가 — 자동 삭제 금지', () => {
     expect(readdirSync(root)).toEqual([ACTIVE_INSTANCE_FILE])
   })
 
-  it('필수 필드 누락도 판정 불가다', async () => {
-    writeFileSync(recordPath(), JSON.stringify({ engineInstanceId: 'x' }))
+  // 두 필수 필드 중 하나만 픽스처에 있으면 나머지 검사가 무신호다(「호출 부위 수 == 매칭 수」의 필드판 · R4-6).
+  it.each([
+    ['instanceMarker 누락', { engineInstanceId: 'x' }],
+    ['engineInstanceId 누락', { instanceMarker: MARKER_A }],
+    ['둘 다 누락', {}],
+  ])('필수 필드 %s 는 판정 불가다', async (_label, rec) => {
+    writeFileSync(recordPath(), JSON.stringify(rec))
     expectReconciliation(await claim())
+  })
+
+  /**
+   * 스펙 §W-2-b 「마커 손상·판정 불가 = 자동 삭제 금지」(Codex 승인 조건 ③)의 falsifier.
+   * 형태 검사가 없으면 손상 마커가 「불일치」로 읽혀 **회수의 적극적 근거**가 된다(R3-1 · 실측 7/7 조용한 삭제).
+   */
+  it.each([
+    ['빈 문자열', ''],
+    ['짧음', 'abc'],
+    ['비-hex', 'z'.repeat(64)],
+  ])('instanceMarker 형태 위반(%s)은 삭제하지 않고 판정 불가다', async (_label, bad) => {
+    const raw = JSON.stringify({ engineInstanceId: 'OLD', instanceMarker: bad, acquiredAt: 1 })
+    writeFileSync(recordPath(), raw)
+    expectReconciliation(await claim())
+    expect(readFileSync(recordPath(), 'utf8')).toBe(raw)
+  })
+
+  /** 자기 마커의 축퇴도 fail-closed — 쓰기·읽기 두 방향이 같은 술어를 공유한다(R3-2). */
+  it('자기 마커가 형태 위반이면 marker-unavailable 로 막힌다(부수효과 0)', async () => {
+    const backend = createFakeLockBackend(ns)
+    const got = await claimActiveInstance({
+      areaRoot: root,
+      digest: DIGEST,
+      backend,
+      marker: { read: () => ({ status: 'ok', marker: '' }) },
+      instanceId: newUlid(),
+    })
+    expect(got.status === 'blocked' && got.reason).toBe('marker-unavailable')
+    expect(backend.calls).toEqual([])
+    expect(readdirSync(root)).toEqual([])
   })
 
   it('디렉터리가 그 자리에 있으면 판정 불가다', async () => {
@@ -293,13 +379,24 @@ describe('ⓔ 판정 불가 — 자동 삭제 금지', () => {
    * `open('wx')`·`link` 는 symlink·FIFO·디렉터리를 EEXIST 하나로만 답하므로 **lstat 만이 구분한다**
    * (실측 · 계획 정정 ㊵). win32 는 symlink 생성이 EPERM 이라 POSIX 게이트.
    */
+  /**
+   * ⚠ 링크 대상은 **유효한 레코드 JSON** 이어야 한다(R4-2). 비-JSON 을 쓰면 「종류로 거부」와 「추종해서
+   * 읽고 파싱 실패」가 같은 결과를 내 종류 검사가 무신호가 된다 — 실제로 막아야 하는 것은 「영역 밖의
+   * 멀쩡한 JSON 이 권위가 되는」 경우다. detail 도 걸어 거부 사유가 **종류**임을 고정한다.
+   */
   it.runIf(IS_POSIX)('symlink 는 추종하지 않고 대상도 건드리지 않는다', () => {
     const outside = join(root, 'outside.json')
-    writeFileSync(outside, 'ORIGINAL')
+    const valid = JSON.stringify({
+      engineInstanceId: 'OUTSIDE',
+      instanceMarker: MARKER_B,
+      acquiredAt: 1,
+    })
+    writeFileSync(outside, valid)
     symlinkSync(outside, recordPath())
     return claim().then((got) => {
       expectReconciliation(got)
-      expect(readFileSync(outside, 'utf8')).toBe('ORIGINAL')
+      expect(got.status === 'blocked' && got.detail).toContain('정규 파일이 아님')
+      expect(readFileSync(outside, 'utf8')).toBe(valid)
     })
   })
 
@@ -398,6 +495,28 @@ describe('부수효과 이전 판정 — 실패자는 아무것도 만지지 않
    * **endpoint 를 누수하면 다음 부팅이 자기 자신을 「생존」으로 오판한다.** blocked 로 끝나는 모든 경로가
    * 잡았던 endpoint 를 놓아야 한다 — 이 행이 없으면 판정 불가 1회가 그 뒤 모든 부팅을 ⓐ로 고착시킨다.
    */
+  /**
+   * 경합 소진(`instance-active`) 경로도 endpoint 를 놓아야 한다 — 이 단언이 없으면 그 자리의 해제를
+   * 지워도 무신호다(R2-4). `now()` 를 interleaving seam 으로 써서 매 회차 경쟁자가 먼저 발행하게 만든다.
+   */
+  it('발행 경합에 소진돼도 endpoint 를 놓는다', async () => {
+    seedStale(MARKER_B)
+    const winner = `${JSON.stringify({
+      engineInstanceId: 'WINNER',
+      instanceMarker: MARKER_A,
+      acquiredAt: 2,
+    })}\n`
+    const got = await claim({
+      now: () => {
+        writeFileSync(recordPath(), winner)
+        return 3
+      },
+    })
+    expect(got.status === 'blocked' && got.reason).toBe('instance-active')
+    unlinkSync(recordPath())
+    expect((await claim()).status).toBe('claimed')
+  })
+
   it('blocked 로 끝나면 잡았던 endpoint 를 반드시 놓는다', async () => {
     writeFileSync(recordPath(), 'corrupt')
     const first = await claim()
@@ -443,6 +562,9 @@ describe('ⓓ 해제 — ReleaseOutcome', () => {
     const outcome = got.handle.release()
     expect(outcome.status).toBe('not-owned')
     expect(readFileSync(recordPath(), 'utf8')).toBe(usurper)
+    // ⚠ **endpoint 는 놓아야 한다**(R4-4): 이 단언이 없으면 그 자리의 `close()` 를 지워도 무신호다.
+    unlinkSync(recordPath())
+    expect((await claim()).status).toBe('claimed')
   })
 
   it('파일이 이미 사라졌으면 removed 로 위장하지 않는다', async () => {
@@ -465,6 +587,21 @@ describe('ⓓ 해제 — ReleaseOutcome', () => {
     chmodSync(root, 0o700)
     expect(outcome.status).toBe('removal-failed')
     expect(outcome.status === 'removal-failed' && outcome.detail.length).toBeGreaterThan(0)
+    expect(readdirSync(root)).toEqual([ACTIVE_INSTANCE_FILE])
+    // 실패해도 endpoint 는 놓는다 — 그래야 다음 부팅이 잔재를 회수할 수 있다(R4-4).
+    unlinkSync(recordPath())
+    expect((await claim()).status).toBe('claimed')
+  })
+
+  /** 이미 해제된 핸들의 2차 호출이 **새 소유자의** 레코드를 만지지 않는다. */
+  it('두 번째 release 는 아무것도 지우지 않는다', async () => {
+    const got = await claim()
+    if (got.status !== 'claimed') throw new Error('전제 붕괴')
+    expect(got.handle.release().status).toBe('removed')
+    expect(got.handle.isHeld()).toBe(false)
+    const next = await claim()
+    expect(next.status).toBe('claimed')
+    expect(got.handle.release().status).toBe('not-owned')
     expect(readdirSync(root)).toEqual([ACTIVE_INSTANCE_FILE])
   })
 })
@@ -517,12 +654,22 @@ describe('상태표 — 어떤 온디스크 상태에서도 판정이 닫히고 
       occupied: false,
       expected: 'reconciliation-required',
     },
+    {
+      label: '마커 형태 위반',
+      seed: () =>
+        writeFileSync(
+          recordPath(),
+          JSON.stringify({ engineInstanceId: 'x', instanceMarker: 'nope', acquiredAt: 1 }),
+        ),
+      occupied: false,
+      expected: 'reconciliation-required',
+    },
   ]
 
   /** 표가 분기보다 짧으면 새 분기가 무신호로 들어온다 — 「호출 부위 수 == 매칭 수」 관용구의 응용. */
   it('표가 판정 결과 3종을 모두 덮는다(부분 표는 vacuous)', () => {
     expect(new Set(STATES.map((s) => s.expected)).size).toBe(3)
-    expect(STATES).toHaveLength(7)
+    expect(STATES).toHaveLength(8)
   })
 
   it.each(STATES)('$label → $expected', async ({ seed, occupied, expected }) => {
@@ -564,6 +711,37 @@ describe('상태표 — 어떤 온디스크 상태에서도 판정이 닫히고 
       expect(again.status).toBe('claimed')
     },
   )
+})
+
+/**
+ * **집행 범위의 경계를 값으로 고정한다**(자체 적대 리뷰 R1-01·R2-2). 페이크의 네임스페이스 Map 두 개 =
+ * 서로 다른 net namespace 다. 그 구성에서 이 모듈은 **차단하지 않는다** — 커널 endpoint 가 서로를 못 보기
+ * 때문이다. 이 행이 없으면 「런타임 층이 배포 계약의 구멍을 메운다」는 (틀린) 읽기가 문서에서 되살아난다.
+ * 그 구간의 안전은 compose `container_name` 이 지며, 여기서는 **현 거동과 증거 등급**만 못 박는다.
+ */
+describe('집행 범위 — 별개 net namespace 는 차단하지 않고 등급으로 기록한다', () => {
+  it('두 네임스페이스는 둘 다 claimed 이고 나중 쪽 증거는 deployment-premise 다', async () => {
+    const nsA = new Map<string, symbol>()
+    const nsB = new Map<string, symbol>()
+    const a = await claim({ namespace: nsA, marker: MARKER_A, instanceId: newUlid() })
+    expect(a.status).toBe('claimed')
+
+    const b = await claim({ namespace: nsB, marker: MARKER_B, instanceId: newUlid() })
+    expect(b.status).toBe('claimed')
+    // 「커널이 침묵하는 회수」임이 값에 남는다 — kernel-proven 이면 거짓을 단언하는 것이다.
+    expect(b.status === 'claimed' && b.handle.evidence).toBe('deployment-premise')
+
+    // 그리고 A 는 자기 종료 시 «내 것이 아니다» 를 알게 된다(남의 레코드를 지우지 않는다).
+    expect(a.status === 'claimed' && a.handle.release().status).toBe('not-owned')
+    expect(readdirSync(root)).toEqual([ACTIVE_INSTANCE_FILE])
+  })
+
+  it('같은 네임스페이스였다면 두 번째는 막힌다(대조군 — 경계가 net ns 에 있음을 보인다)', async () => {
+    const shared = new Map<string, symbol>()
+    expect((await claim({ namespace: shared })).status).toBe('claimed')
+    const second = await claim({ namespace: shared, marker: MARKER_B })
+    expect(second.status === 'blocked' && second.reason).toBe('instance-active')
+  })
 })
 
 describe('decideReclaim — 순수 판정(증거 등급)', () => {

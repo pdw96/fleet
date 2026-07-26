@@ -72,7 +72,8 @@ services:
     # 이것이 없으면 «한 코디네이션 영역에 살아있는 인스턴스는 하나» 전제가 문면으로만 존재하고(실측상
     # `--scale fleet=3` 이 경고 없이 성공했다), 그 전제 위에 선 잔재 회수 판정(§W-16 ②)이 근거를 잃는다.
     # ⚠ 집행 범위 = compose 경로의 두 번째 fleet 컨테이너. 같은 WORKSPACE_DIR 을 가리키는 **다른 이름의
-    # 스택**이나 호스트 직접 실행은 막지 못한다(런타임 층 = active-instance.json 이 담당).
+    # 스택**이나 호스트 직접 실행은 막지 못하며, **런타임 층도 그 구간은 차단하지 않는다**(배타 범위가
+    # network namespace 라 서로를 못 본다 — 등급으로 기록만 한다). 그 구간의 안전은 이 키 하나가 진다.
     # ⚠ 보간 없는 리터럴이어야 한다 — smoke(base·override)와 scripts 핀이 같은 문자열을 공유한다.
     container_name: fleet-server
     restart: unless-stopped

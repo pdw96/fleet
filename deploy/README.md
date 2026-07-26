@@ -207,10 +207,17 @@ fail-closed 종착은 **만료 거부 + 취소 abort 두 경로**뿐이며 자�
 - **`container_name: fleet-server` 는 이 전제의 배포층 집행**(#251 §W-2-b). compose 는 이 키가 있는 서비스의
   `scale>1` 을 거부한다(실측: `--scale fleet=2` → exit 1 + `Remove the custom name to scale the service`).
   없으면 `--scale fleet=3` 이 **경고 없이** 성공해, 같은 코디네이션 영역을 두 인스턴스가 물게 된다.
-  - **집행되는 것**: 같은 프로젝트의 `--scale` · 같은 이름을 쓰는 교차 프로젝트 · compose 밖 stray `docker run`
-    (전부 이름 충돌로 loud-fail).
-  - **집행되지 않는 것**: 같은 `WORKSPACE_DIR` 을 가리키는 **다른 이름의 스택** · 호스트 직접 실행.
-    그 층은 런타임(`<workspace>/.git/fleet/active-instance.json` 배타)이 담당한다.
+  - **집행되는 것**: 같은 프로젝트의 `--scale` · 같은 이름을 쓰는 교차 프로젝트 · `--name fleet-server` 를
+    쓰는 compose 밖 stray `docker run`(전부 이름 충돌로 loud-fail).
+  - **집행되지 않는 것**: 같은 `WORKSPACE_DIR` 을 가리키는 **다른 이름의 스택** · 이름 없이 뜬 `docker run` ·
+    호스트 직접 실행.
+    ⚠ **이 구간은 런타임 층도 차단하지 않는다.** 런타임 배타(`<workspace>/.git/fleet/active-instance.json`)의
+    범위는 **같은 network namespace** 뿐이다 — 별개 namespace 의 두 인스턴스는 서로의 커널 endpoint 를 보지
+    못해 양쪽 다 획득에 성공하고, 나중에 뜬 쪽이 앞선 레코드를 **`deployment-premise`(커널이 침묵하는 추론)**
+    등급으로 회수한다. 즉 런타임 층은 이 구간을 **차단하지 않고 등급으로 기록**할 뿐이며, 안전의 근거는
+    이 `container_name` 계약 자체다(순환을 만들지 않기 위해 방향을 명시한다 · ADR-0013).
+  - ⚠ **런타임 층은 아직 부팅에 배선되지 않았다**(#251 PR1c = 모듈 착지 · 배선은 후속 PR). 그때까지 실제로
+    집행되는 것은 **이 배포층 1층뿐**이므로, 같은 `WORKSPACE_DIR` 을 가리키는 두 번째 스택을 띄우지 않는다.
   - 재배포 시 별도 조치는 필요 없다 — compose 는 컨테이너를 라벨(project+service)로 식별하므로 이름 추가·제거가
     양방향 모두 recreate 로 흡수된다(실측). 단 호스트에 `fleet-server` 이름을 **선점한 컨테이너**가 있으면
     배포가 이름 충돌로 loud-fail 하니 그 컨테이너를 먼저 정리한다.

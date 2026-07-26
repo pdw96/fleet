@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto'
-import { linkSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { InstanceMarkerSource } from './instance-marker'
+import { isMarkerForm } from './instance-marker'
 import type { BoundEndpoint, LockBackend } from './locks'
 import { endpointFor } from './locks'
 import { isLinkSync } from '../workspace/path-guard'
@@ -12,6 +13,12 @@ import { isLinkSync } from '../workspace/path-guard'
  *
  * 이 계약은 편의 기능이 아니라 락 층(§W-3)의 **전제**다: 추상 소켓의 배타 범위는 network namespace 인데
  * 레포 공유 범위는 파일시스템이라, 인스턴스가 둘이면 두 축이 어긋나 이중 소유가 성립한다(locks.ts 상단 주석).
+ *
+ * ⚠ **집행 범위는 같은 net namespace 뿐이다**(은폐하지 않는 잔여 · 자체 적대 리뷰 R1-01). 별개 namespace 의
+ * 두 인스턴스는 서로의 endpoint 를 보지 못해 **둘 다 획득에 성공**하고, 나중 쪽이 앞선 레코드를
+ * `deployment-premise` 로 회수한다 — 이 모듈은 그 구간을 **차단하지 않고 증거 등급으로 기록**할 뿐이며,
+ * 안전의 근거는 배포 계약(compose `container_name`)이다. 그 방향을 뒤집어 「런타임이 배포 계약의 구멍을
+ * 메운다」로 읽으면 순환이 된다(ADR-0013).
  *
  * ## 획득 순서가 계약이다 (계획 정정 ㊳)
  *
@@ -77,6 +84,12 @@ export type ClaimBlockedReason =
 
 export interface InstanceHandle {
   readonly marker: string
+  /**
+   * 커널이 여전히 이 인스턴스에 배타 이름을 할당하고 있는가(로컬 조회 · 디스크 I/O 0).
+   * 형제 `LockHandle.revalidate`(locks.ts)와 같은 표면이며, PR7 의 배선이 「배타를 잃었는지」를
+   * 물어볼 수 있어야 하기 때문에 **핸들 모양이 굳기 전에** 넣는다(사후 추가 = 파괴적 변경).
+   */
+  isHeld(): boolean
   /** 이 획득이 무엇을 근거로 성립했는가. 최초 발행이면 `'first-claim'`. */
   readonly evidence: ReclaimEvidence | 'first-claim'
   release(): ReleaseOutcome
@@ -119,6 +132,13 @@ export function decideReclaim(recordedMarker: string, selfMarker: string): Recla
   return recordedMarker === selfMarker ? 'kernel-proven' : 'deployment-premise'
 }
 
+/** 레코드 크기 상한. 3필드 수백 바이트이므로 넉넉히 잡아도 64KiB 면 충분하다. */
+const MAX_RECORD_BYTES = 64 * 1024
+
+/** 회수로 우리가 지운 이전 소유자를 진단에 싣는다 — 파괴 사실을 결과값에서 숨기지 않는다(R2-5). */
+const destroyed = (reclaimedFrom: string | undefined): string =>
+  reclaimedFrom === undefined ? '' : ` (직전 레코드 ${reclaimedFrom} 를 회수로 제거한 뒤였다)`
+
 const errText = (err: unknown): string =>
   err instanceof Error ? err.message : `알 수 없는 오류: ${String(err)}`
 
@@ -129,7 +149,8 @@ const isEexist = (err: unknown): boolean =>
 type RecordProbe =
   | { kind: 'missing' }
   | { kind: 'unusable'; detail: string }
-  | { kind: 'ok'; record: ActiveInstanceRecord }
+  /** ⚠ **판정에 필요한 두 필드만** 싣는다 — `acquiredAt` 은 기록 전용이라 판정 경로에 존재하지 않는다. */
+  | { kind: 'ok'; record: Pick<ActiveInstanceRecord, 'engineInstanceId' | 'instanceMarker'> }
 
 /**
  * 레코드 1회 읽기 — **읽기 전에 파일 종류를 본다**(스펙 §W-2 「JSON = `'regular'|'missing'`」).
@@ -144,9 +165,26 @@ const probeRecord = (path: string): RecordProbe => {
   if (kind !== 'regular') {
     return { kind: 'unusable', detail: `${ACTIVE_INSTANCE_FILE} 이 정규 파일이 아님(${kind})` }
   }
+  let raw: string
+  try {
+    // 크기 상한 — 레코드는 3필드 수백 바이트다. 같은 신뢰 도메인의 사고로 거대 파일이 그 자리에 오면
+    // `readFileSync` 가 전량을 힙에 올려(실측: 400MB 파일에서 RSS +400MB) 컨테이너 한도에서는 진단을
+    // 내기 전에 OOM 킬을 당한다. FIFO 를 막으면서 이 축을 비워 두지 않는다.
+    if (statSync(path).size > MAX_RECORD_BYTES) {
+      return { kind: 'unusable', detail: `${ACTIVE_INSTANCE_FILE} 크기 상한 초과(${path})` }
+    }
+    raw = readFileSync(path, 'utf8')
+  } catch (err) {
+    // ⚠ ENOENT 는 손상이 아니라 **경합**이다(형제 `coord-area.ts` 동형). `unusable` 로 승격시키면
+    // 「존재하지 않는 파일을 고치라」는 운영자 개입 요구가 되고, 이 함수 호출부가 선언한
+    // 「경합 상대가 방금 치웠다 → 재발행」 경로가 실제로는 도달 불가가 된다(자체 적대 리뷰 R2-3).
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(레포 전역). 캐스트를 리뷰에 보이게 두는 것 자체가 이 룰의 목적이다.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { kind: 'missing' }
+    return { kind: 'unusable', detail: `${ACTIVE_INSTANCE_FILE} 판독 불가: ${errText(err)}` }
+  }
   let parsed: unknown
   try {
-    parsed = JSON.parse(readFileSync(path, 'utf8'))
+    parsed = JSON.parse(raw)
   } catch (err) {
     return { kind: 'unusable', detail: `${ACTIVE_INSTANCE_FILE} 판독 불가: ${errText(err)}` }
   }
@@ -160,16 +198,20 @@ const probeRecord = (path: string): RecordProbe => {
   ) {
     return {
       kind: 'unusable',
-      detail: `${ACTIVE_INSTANCE_FILE} 필수 필드(engineInstanceId·instanceMarker) 누락`,
+      detail: `${ACTIVE_INSTANCE_FILE} 필수 필드(engineInstanceId·instanceMarker) 누락(${path})`,
     }
   }
+  // **마커 형태 검증**(스펙 §W-2-b 「마커 손상·판정 불가 = 자동 삭제 금지」 · Codex 승인 조건 ③).
+  // 이 검사가 없으면 손상된 마커가 「불일치」로 읽혀 **회수의 적극적 근거**가 되고, 운영자가 보아야 할
+  // 손상 신호가 부팅 1회로 소멸한다(자체 적대 리뷰 R3-1 · 실측 7/7 조용한 삭제).
+  if (!isMarkerForm(rec.instanceMarker)) {
+    return { kind: 'unusable', detail: `${ACTIVE_INSTANCE_FILE} instanceMarker 형태 위반(${path})` }
+  }
+  // ⚠ `acquiredAt` 은 **싣지 않는다** — 판정 경로에 그 값이 존재하지 않는 것이 L-1 의 구조적 보장이다
+  // (기록 전용 진단 필드 · 자체 적대 리뷰 R1-06).
   return {
     kind: 'ok',
-    record: {
-      engineInstanceId: rec.engineInstanceId,
-      instanceMarker: rec.instanceMarker,
-      acquiredAt: typeof rec.acquiredAt === 'number' ? rec.acquiredAt : 0,
-    },
+    record: { engineInstanceId: rec.engineInstanceId, instanceMarker: rec.instanceMarker },
   }
 }
 
@@ -208,6 +250,14 @@ export async function claimActiveInstance(opts: ClaimOptions): Promise<InstanceC
   // ① 마커부터. 유도 불가면 어떤 부수효과도 없이 끝낸다(bind 0 · 파일 접근 0).
   const marker = opts.marker.read()
   if (marker.status !== 'ok') return blocked('marker-unavailable', marker.detail)
+  // 좁혀진 값을 여기서 고정한다 — tsc 는 중첩 함수 안까지 유니온 협소화를 옮기지 않아, 그러지 않으면
+  // 아래 클로저마다 «도달 불가능한 unavailable 분기»를 다시 써야 한다(죽은 분기 = 커버리지 구멍).
+  const selfMarker = marker.marker
+  // 주입 소스가 돌려준 값도 **같은 술어로** 검사한다(쓰기/읽기 두 방향 공유). 형태를 검증하지 않으면
+  // 상수 축퇴한 마커가 그대로 기록돼 최고 증거 등급까지 도달한다(자체 적대 리뷰 R3-2). 부수효과 0 구간이다.
+  if (!isMarkerForm(selfMarker)) {
+    return blocked('marker-unavailable', `인스턴스 마커 형태 위반: ${JSON.stringify(selfMarker)}`)
+  }
 
   const ep = endpointFor(opts.digest, { kind: 'instance' })
   if (ep.status !== 'ok') {
@@ -231,75 +281,102 @@ export async function claimActiveInstance(opts: ClaimOptions): Promise<InstanceC
   }
   const bound: BoundEndpoint = bind.endpoint
 
-  /** blocked 로 끝나는 모든 경로는 endpoint 를 놓는다 — 누수하면 다음 부팅이 자기 자신을 생존으로 오판한다. */
-  const giveUp = (reason: ClaimBlockedReason, detail: string): InstanceClaim => {
-    bound.close()
-    return blocked(reason, detail)
-  }
-
   const path = join(opts.areaRoot, ACTIVE_INSTANCE_FILE)
   const now = opts.now ?? Date.now
   const build = (): ActiveInstanceRecord => ({
     engineInstanceId: opts.instanceId,
-    instanceMarker: marker.marker,
+    instanceMarker: selfMarker,
     acquiredAt: now(),
   })
 
-  // ③ 발행. **유한 루프**(최대 2회)로 「발행 → 잔재면 판정 → 회수 → 재발행」을 한 경로에 둔다.
-  // 재시도 상한이 계약이다 — 경합 상대가 계속 이기는 상황에서 무한 루프가 되면 부팅이 끝나지 않는다.
-  let evidence: ReclaimEvidence | 'first-claim' = 'first-claim'
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const published = publish(opts.areaRoot, build())
-    if (published.kind === 'failed') {
-      return giveUp('io-failure', `레코드 발행 실패: ${published.detail}`)
-    }
-    if (published.kind === 'published') return { status: 'claimed', handle: makeHandle(evidence) }
+  /**
+   * ⚠ bind 성공 이후는 **구조적으로** 「claimed 로 나갈 때만 endpoint 를 넘긴다」로 보장한다(자체 적대
+   * 리뷰 R2-7): 반환 지점마다 `close()` 를 손으로 배치하면 ⓐ빠뜨린 분기가 무신호로 남고(실측: 4분기가
+   * 변이 무신호였다) ⓑ이 구간의 어떤 throw(주입 `now()`·`randomBytes`)도 endpoint 를 누수시킨다.
+   * 누수하면 **다음 부팅이 자기 자신을 「생존」으로 오판**해 그 영역이 영구히 `instance-active` 로 고착된다.
+   */
+  let handedOver = false
+  try {
+    // ③ 발행. **유한 루프**(최대 2회)로 「발행 → 잔재면 판정 → 회수 → 재발행」을 한 경로에 둔다.
+    // 재시도 상한이 계약이다 — 경합 상대가 계속 이기면 무한 루프가 되어 부팅이 끝나지 않는다.
+    let evidence: ReclaimEvidence | 'first-claim' = 'first-claim'
+    /** 회수로 **우리가 지운** 이전 소유자 — 이후 실패 시 그 파괴 사실을 진단에 싣기 위해 기억한다. */
+    let reclaimedFrom: string | undefined
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const published = publish(opts.areaRoot, build())
+      if (published.kind === 'failed') {
+        return blocked(
+          'io-failure',
+          `레코드 발행 실패: ${published.detail}${destroyed(reclaimedFrom)}`,
+        )
+      }
+      if (published.kind === 'published') {
+        handedOver = true
+        return { status: 'claimed', handle: makeHandle(evidence) }
+      }
 
-    // 잔재가 있다. 종류·판독·형태가 하나라도 어긋나면 **지우지 않고** 운영자에게 넘긴다.
-    const probe = probeRecord(path)
-    if (probe.kind === 'unusable') return giveUp('reconciliation-required', probe.detail)
-    // 경합 상대가 이름을 방금 치웠다 — 판정할 잔재가 없으니 그대로 다시 발행을 시도한다.
-    // ⚠ **마지막 회차에서는 잔재를 건드리지 않는다.** 그 시점에 보이는 레코드는 「죽은 인스턴스의 잔재」가
-    // 아니라 **직전 회차 사이에 다른 회수자가 방금 발행한 것**일 수 있고, 지우면 승자의 레코드를 파괴한다.
-    // 해제 측의 `not-owned` 규율(남의 것을 지우지 않는다)에 대응하는 획득 측 규율이다.
-    if (probe.kind === 'ok' && attempt === 0) {
-      evidence = decideReclaim(probe.record.instanceMarker, marker.marker)
-      try {
-        unlinkSync(path)
-      } catch (err) {
-        return giveUp('io-failure', `잔재 레코드 제거 실패: ${errText(err)}`)
+      // 잔재가 있다. 종류·판독·형태가 하나라도 어긋나면 **지우지 않고** 운영자에게 넘긴다.
+      const probe = probeRecord(path)
+      if (probe.kind === 'unusable') return blocked('reconciliation-required', probe.detail)
+      // `missing` 이면 경합 상대가 이름을 방금 치운 것이다 — 판정할 잔재가 없으니 그대로 재발행한다.
+      // ⚠ **마지막 회차에서는 잔재를 건드리지 않는다.** 그 시점에 보이는 레코드는 「죽은 인스턴스의 잔재」가
+      // 아니라 **직전 회차 사이에 다른 회수자가 방금 발행한 것**일 수 있고, 지우면 승자의 레코드를 파괴한다.
+      // 해제 측의 `not-owned` 규율(남의 것을 지우지 않는다)에 대응하는 획득 측 규율이다.
+      if (probe.kind === 'ok' && attempt === 0) {
+        evidence = decideReclaim(probe.record.instanceMarker, selfMarker)
+        try {
+          unlinkSync(path)
+          reclaimedFrom = probe.record.engineInstanceId
+        } catch (err) {
+          return blocked('io-failure', `잔재 레코드 제거 실패: ${errText(err)}`)
+        }
       }
     }
+    // 상한까지 갔다 = 매번 다른 인스턴스가 먼저 발행했다. **덮어쓰지 않는다** — create-only 가 승자를 정한다.
+    return blocked('instance-active', '레코드 발행 경합에서 밀림 — 다른 인스턴스가 먼저 발행했음')
+  } finally {
+    if (!handedOver) bound.close()
   }
-  // 상한까지 갔다 = 매번 다른 인스턴스가 먼저 발행했다. **덮어쓰지 않는다** — create-only 가 승자를 정한다.
-  return giveUp('instance-active', '레코드 발행 경합에서 밀림 — 다른 인스턴스가 먼저 발행했음')
 
   function makeHandle(evidenceOf: ReclaimEvidence | 'first-claim'): InstanceHandle {
+    /** 해제는 한 번만 유효하다 — 두 번째 호출이 남의 레코드를 만지지 않게 한다. */
+    let released = false
+    const finish = (outcome: ReleaseOutcome): ReleaseOutcome => {
+      released = true
+      bound.close()
+      return outcome
+    }
     return {
-      marker: marker.status === 'ok' ? marker.marker : '',
+      marker: selfMarker,
       evidence: evidenceOf,
+      /**
+       * 커널 상태 조회(로컬·디스크 I/O 0) — 형제 `LockHandle.revalidate`(locks.ts)와 같은 표면.
+       * 실 어댑터는 bind **성공 이후**의 런타임 오류에서 서버를 닫으므로(lock-backend-uds.ts) 「보유자는
+       * 살아있는데 이름은 공실」이 실재한다. 그 상태를 모르면 PR7 의 배선이 잃은 배타를 계속 가정하게 된다.
+       */
+      isHeld: () => !released && bound.isBound(),
       release(): ReleaseOutcome {
+        if (released) return { status: 'not-owned', detail: '이미 해제된 핸들' }
         // 소유 확인이 **먼저**다. 회수당한 뒤의 지연 종료가 새 인스턴스의 레코드를 지우면 안 된다
         // (형제 계약 locks.ts 의 「내가 여전히 소유자일 때만 조작한다」와 같은 규율).
+        // ⚠ 확인과 `unlink` 사이의 TOCTOU 창은 순수 Node 로 닫히지 않는다(레포 전역 한계 —
+        // `path-guard.ts` 상단이 같은 성질을 명문화). 이 창은 **은폐하지 않는 잔여**다.
         const current = probeRecord(path)
         if (current.kind !== 'ok' || current.record.engineInstanceId !== opts.instanceId) {
-          bound.close()
-          return {
+          return finish({
             status: 'not-owned',
             detail:
               current.kind === 'ok'
                 ? `레코드 소유자가 다름(${current.record.engineInstanceId})`
                 : `레코드 없음·판독 불가(${current.kind})`,
-          }
+          })
         }
         try {
           unlinkSync(path)
         } catch (err) {
-          bound.close()
-          return { status: 'removal-failed', detail: errText(err) }
+          return finish({ status: 'removal-failed', detail: errText(err) })
         }
-        bound.close()
-        return { status: 'removed' }
+        return finish({ status: 'removed' })
       },
     }
   }

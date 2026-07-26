@@ -51,8 +51,10 @@ describe('배포 계약 — container_name 은 fleet 서비스에만, 리터럴�
    * 병합 config 에서 키가 사라지고 `--scale fleet=2` 가 다시 통과하는데(실측), base 텍스트 핀만으로는
    * GREEN 이 유지된다. 그래서 override 쪽은 **0건**을 단언한다.
    */
-  it('GHCR override 는 container_name 을 건드리지 않는다(0건)', () => {
-    expect(read('deploy/docker-compose.ghcr.yml')).not.toMatch(/container_name/)
+  it('GHCR override 는 container_name·FLEET_WORKBENCH 를 건드리지 않는다(0건)', () => {
+    const ghcr = read('deploy/docker-compose.ghcr.yml')
+    expect(ghcr).not.toMatch(/container_name/)
+    expect(ghcr).not.toMatch(/FLEET_WORKBENCH/)
   })
 })
 
@@ -90,6 +92,29 @@ describe('배포 계약 — smoke.sh 가 그 키를 실제로 검사한다', () 
     // `--profile tunnel` 없이 돌리면 fleet 이 비활성이라 무조건 exit 1 = vacuous GREEN.
     expect(smoke).toMatch(/COMPOSE=\(docker compose[^)]*--profile tunnel\)/)
   })
+
+  /**
+   * 세 검사가 **같은 구성**을 본다는 것이 3층 판정의 전제다 — 음성 통제만 compose 명령줄을 손으로
+   * 재작성하면 그 전제가 텍스트 중복으로만 유지된다(자체 적대 리뷰 R5-6).
+   */
+  /** 주석·로그 문면에도 같은 문자열이 등장하므로 **실제 실행 라인**만 센다. */
+  const dryRunLines = (): string[] =>
+    smoke.split(/\r?\n/).filter((l) => l.includes('up --dry-run') && !l.trimStart().startsWith('#'))
+
+  it('세 검사가 모두 같은 COMPOSE 배열을 재사용한다', () => {
+    expect(dryRunLines()).toHaveLength(3)
+    for (const l of dryRunLines()) expect(l).toContain('COMPOSE[@]')
+  })
+
+  /**
+   * `up --dry-run` 을 프로파일 전체에 걸면 smoke 가 빌드도 pull 도 하지 않는 `cloudflared` 이미지의
+   * 레지스트리 해석에 의존해, 그 실패가 scale 검증보다 먼저 나서 거짓 PASS 가 된다(R5-1).
+   * 그리고 exit≠0 단독 판정은 무관한 실패도 「거부」로 읽으므로 거부 **메시지**를 함께 요구해야 한다.
+   */
+  it('행동 검사는 fleet 서비스로 스코프되고 거부 사유 문자열까지 본다', () => {
+    for (const l of dryRunLines()) expect(l).toMatch(/--scale fleet=[12] fleet\b/)
+    expect(smoke).toContain('Remove the custom name to scale')
+  })
 })
 
 describe('킬스위치 배선 — FLEET_WORKBENCH(#251)', () => {
@@ -105,6 +130,11 @@ describe('킬스위치 배선 — FLEET_WORKBENCH(#251)', () => {
 
   it('README 가 이 값을 문서화한다', () => {
     expect(read('deploy/README.md')).toMatch(/FLEET_WORKBENCH/)
+  })
+
+  /** 프로덕션 경로는 override 병합이다 — base 만 검사하면 병합 config 에서 사라져도 무신호다(R5-5). */
+  it('smoke 가 override 병합 config 에서도 킬스위치를 확인한다', () => {
+    expect(read('deploy/smoke.sh')).toMatch(/GHCR_FLEET.*FLEET_WORKBENCH:/)
   })
 })
 

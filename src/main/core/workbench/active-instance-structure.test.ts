@@ -78,7 +78,8 @@ describe('T5 구조층 — 회수 판정에 연령·pid·시각이 없다', () =
    * 유효하므로, 연령 로직이 **호출부에 인라인으로** 들어오는 경로를 두 겹으로 더 막는다:
    * ⓐ대소 비교·산술과 함께 등장하지 않는다(「오래됐으면 회수」의 문법적 형태)
    * ⓑ등장 횟수 자체를 고정한다(「호출 부위 수 == 매칭 수」 관용구 — 5번째 용례가 생기면 RED 이고
-   *   리뷰를 강제한다). 현재 5곳 = 타입 선언 · 파싱의 필드명·`typeof`·값 취득(3) · 기록.
+   *   리뷰를 강제한다). 현재 **2곳** = 타입 선언 · 기록. 자체 적대 리뷰(R1-06) 반영으로 `RecordProbe` 가
+   *   그 필드를 아예 싣지 않게 되어 판정 경로에서 값이 **구조적으로 사라졌다**(파싱 3곳 소멸).
    */
   it('acquiredAt 이 대소 비교·산술에 쓰이지 않는다', () => {
     expect(source('active-instance.ts')).not.toMatch(
@@ -86,9 +87,17 @@ describe('T5 구조층 — 회수 판정에 연령·pid·시각이 없다', () =
     )
   })
 
-  it('acquiredAt 용례가 정확히 5곳이다(새 용례는 RED 로 리뷰를 강제한다)', () => {
+  it('acquiredAt 용례가 정확히 2곳이다(새 용례는 RED 로 리뷰를 강제한다)', () => {
     const hits = source('active-instance.ts').match(/acquiredAt/g) ?? []
-    expect(hits).toHaveLength(5)
+    expect(hits).toHaveLength(2)
+  })
+
+  /** 판정 경로에 값이 **존재하지 않는다**: 읽기 결과 타입이 그 필드를 담지 않는다(구조적 보장). */
+  it('RecordProbe 는 acquiredAt 을 싣지 않는다', () => {
+    const src = source('active-instance.ts')
+    const probeType = src.slice(src.indexOf('type RecordProbe'), src.indexOf('const probeRecord'))
+    expect(probeType).toMatch(/Pick<ActiveInstanceRecord/)
+    expect(probeType).not.toMatch(/acquiredAt/)
   })
 })
 
@@ -113,10 +122,14 @@ describe('T5 구조층 — 락 서열 경로를 타지 않는다', () => {
   })
 
   /**
-   * **`.bind(` 호출자 exact 핀**(계획 정정 ㊲ — 감사가 「무핀」으로 지적한 자리). 두 번째 획득 경로가
-   * 무신호로 생기는 것을 막는다. 이름 유도를 우회한 직접 bind 도 이 핀에 걸린다.
+   * **백엔드 bind 호출자 exact 핀**(계획 정정 ㊲ — 감사가 「무핀」으로 지적한 자리). 두 번째 획득 경로가
+   * 무신호로 생기는 것을 막는다.
+   *
+   * ⚠ 술어를 `.bind(` 로 두면 **`Function.prototype.bind` 한 줄**이 이 워크벤치-로컬 테스트를 거짓 RED 로
+   * 만든다(자체 적대 리뷰 R4-3·R6-5 · 변이 실증). 계약은 「주입 백엔드를 직접 부르는가」이므로 술어를
+   * 그 대상에 귀속시키고, 「워크벤치 밖에서 `LockBackend` 를 쓰지 않는다」는 **별도 축**으로 본다.
    */
-  it('프로덕션에서 백엔드를 직접 bind 하는 파일은 정확히 2개다', () => {
+  const productionFiles = (): string[] => {
     const files: string[] = []
     const walk = (dir: string): void => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -126,14 +139,26 @@ describe('T5 구조층 — 락 서열 경로를 타지 않는다', () => {
       }
     }
     walk(SRC_ROOT)
-    const callers = files
-      .filter((f) => /\.bind\s*\(/.test(stripComments(readFileSync(f, 'utf8'))))
+    return files
+  }
+
+  it('주입 백엔드를 직접 bind 하는 파일은 정확히 2개다', () => {
+    const callers = productionFiles()
+      .filter((f) => /\bbackend\.bind\s*\(/.test(stripComments(readFileSync(f, 'utf8'))))
       .map((f) => f.slice(SRC_ROOT.length).replace(/\\/g, '/'))
       .sort()
     expect(callers).toEqual([
       'main/core/workbench/active-instance.ts',
       'main/core/workbench/locks.ts',
     ])
+  })
+
+  it('LockBackend 를 쓰는 프로덕션 파일은 워크벤치 안뿐이다(우회 경로 축)', () => {
+    const users = productionFiles()
+      .filter((f) => /\bLockBackend\b/.test(stripComments(readFileSync(f, 'utf8'))))
+      .map((f) => f.slice(SRC_ROOT.length).replace(/\\/g, '/'))
+    expect(users.length).toBeGreaterThan(0)
+    expect(users.every((f) => f.startsWith('main/core/workbench/'))).toBe(true)
   })
 })
 
@@ -200,6 +225,30 @@ describe('마커 실 리더 — /proc 경로 앵커', () => {
   })
 })
 
+/**
+ * **선언된 차단 사유가 전부 계약 테스트에서 소비되는가**(계획 ㊺ⓒ 의 실제 조작화 · 자체 적대 리뷰 R1-05).
+ * 상태표의 「표 길이 == 7」류 자기참조 앵커는 구현 분기가 늘어도 무신호다 — 사유 유니온을 소스에서 세어
+ * 테스트 소비와 대조해야 「새 분기가 생기면 RED」가 성립한다.
+ */
+describe('T5 구조층 — ClaimBlockedReason 전수 소비', () => {
+  const reasons = (): string[] => {
+    const src = source('active-instance.ts')
+    const start = src.indexOf('export type ClaimBlockedReason')
+    const body = src.slice(start, src.indexOf('export interface InstanceHandle'))
+    return [...body.matchAll(/\| '([a-z-]+)'/g)].map((m) => m[1] ?? '')
+  }
+
+  it('앵커: 사유 유니온을 소스에서 실제로 뽑는다', () => {
+    expect(reasons()).toContain('instance-active')
+    expect(reasons().length).toBeGreaterThanOrEqual(5)
+  })
+
+  it('모든 사유가 계약 테스트에 등장한다(새 사유는 테스트 없이 못 들어온다)', () => {
+    const spec = readFileSync(join(HERE, 'active-instance.test.ts'), 'utf8')
+    expect(reasons().filter((r) => !spec.includes(`'${r}'`))).toEqual([])
+  })
+})
+
 /** 공개 표면 exact 동치 — raw 프리미티브가 실수로 공개되면 계약 밖 경로가 생긴다(형제 선례 동형). */
 describe('T5 구조층 — 공개 표면 exact 동치', () => {
   it('active-instance.ts 값 export 3개', () => {
@@ -210,8 +259,12 @@ describe('T5 구조층 — 공개 표면 exact 동치', () => {
     ])
   })
 
-  it('instance-marker.ts 값 export 2개(순수 함수만)', () => {
-    expect(Object.keys(instanceMarker).sort()).toEqual(['composeMarker', 'parsePid1StartTicks'])
+  it('instance-marker.ts 값 export 3개(순수 함수·술어만)', () => {
+    expect(Object.keys(instanceMarker).sort()).toEqual([
+      'composeMarker',
+      'isMarkerForm',
+      'parsePid1StartTicks',
+    ])
   })
 
   it('instance-marker-proc.ts 값 export 4개(팩토리 + 경로 상수 3)', () => {

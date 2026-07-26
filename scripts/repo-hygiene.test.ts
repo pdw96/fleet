@@ -4,7 +4,8 @@
 //   - verify 집계: package.json `verify` 가 6 품질게이트 + brain:check 를 모두 체인
 //   - CI 정합: ci.yml quality 잡이 개별 게이트가 아니라 단일 `npm run verify` 만 실행
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join, sep } from 'node:path'
 
 const read = (p: string) => readFileSync(p, 'utf8')
 
@@ -64,5 +65,38 @@ describe('ci.yml quality 잡 — 단일 verify 진입(#175 item2 재drift 차단
     ]) {
       expect(ci, `ci.yml 이 개별 게이트 "${cmd}" 를 직접 두면 안 된다`).not.toContain(cmd)
     }
+  })
+})
+
+/**
+ * 소스 위생 — **원시 NUL 바이트 금지**(#251 PR1b 가 `src/**` 에 신설한 가드의 레포 전역 확장).
+ *
+ * git 은 NUL 이 있는 파일을 **바이너리로 분류**하므로 PR diff 가 「Binary files … differ」가 되고
+ * ripgrep 도 라인을 내지 않는다 — 이 레포의 리뷰(Codex·CodeRabbit)는 diff 를 읽는 봇에 의존하므로
+ * 파일 하나가 통째로 리뷰 사각으로 사라진다(PR1b 에서 실제로 발생). 그 가드가 `src/**` 의 `.ts/.tsx`
+ * 에만 걸려 있어 `scripts/`·`e2e/`·`deploy/` 는 무방비였다(자체 적대 리뷰 R6-4 · prettier·tsc 도 NUL 을
+ * 그대로 통과시킨다). 제어문자는 이스케이프(`\u0000`)로 쓴다.
+ */
+describe('소스 위생 — 리뷰 대상 텍스트에 원시 NUL 0건(#251 PR1c)', () => {
+  const ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github']
+  const EXT = /\.(?:ts|tsx|mjs|cjs|js|sh|ya?ml|json|md)$/
+  const files: string[] = []
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) {
+        if (e.name !== 'node_modules') walk(p)
+      } else if (EXT.test(e.name)) files.push(p)
+    }
+  }
+  for (const r of ROOTS) if (existsSync(r)) walk(r)
+
+  it('앵커: 스캔 대상이 충분히 많고 네 루트를 모두 덮는다', () => {
+    expect(files.length).toBeGreaterThan(100)
+    for (const r of ROOTS) expect(files.some((f) => f.startsWith(`${r}${sep}`))).toBe(true)
+  })
+
+  it('원시 NUL 바이트가 0건이다(리뷰 diff 가 바이너리로 접히지 않는다)', () => {
+    expect(files.filter((f) => readFileSync(f).includes(0))).toEqual([])
   })
 })

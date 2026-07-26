@@ -166,27 +166,51 @@ describe('T8f — Workbench 는 서버 표면 전용(데스크톱 우회 활성�
       return undefined
     }
 
+    /**
+     * ⚠ 엔트리는 **electron-vite 의 rollup input 전량**이어야 한다(자체 적대 리뷰 R6-2). `main/index.ts`
+     * 하나만 순회하면 `preload/index.ts`·`renderer/main.tsx` 가 워크벤치를 직접 import 하는 변이가
+     * 두 방어(이름 스캔·폐포)를 모두 통과한다 — 실측으로 GREEN 이었다.
+     */
+    const ENTRIES = [
+      join(SRC_ROOT, 'main', 'index.ts'),
+      join(SRC_ROOT, 'preload', 'index.ts'),
+      join(SRC_ROOT, 'renderer', 'main.tsx'),
+    ]
+
+    /** 해소 실패한 **상대** 스펙 — 조용히 드롭하면 그래프가 잘려도 「0건」이 vacuous 통과한다(R6-3). */
+    const unresolved: string[] = []
+
     const closure = (): Set<string> => {
+      unresolved.length = 0
       const seen = new Set<string>()
-      const queue = [join(SRC_ROOT, 'main', 'index.ts')]
+      const queue = [...ENTRIES]
       while (queue.length > 0) {
         const file = queue.pop()
         if (file === undefined || seen.has(file) || !existsSync(file)) continue
         seen.add(file)
         const src = stripComments(readFileSync(file, 'utf8'))
         for (const m of src.matchAll(/(?:from|import|require)\s*\(?\s*['"]([^'"]+)['"]/g)) {
-          const next = resolveSpec(file, m[1] ?? '')
+          const spec = m[1] ?? ''
+          const next = resolveSpec(file, spec)
           if (next !== undefined) queue.push(next)
+          // 자산 import(`./styles.css` 등)는 모듈 그래프가 아니다 — 확장자가 명시된 비-TS 만 면제한다.
+          else if (spec.startsWith('.') && !/\.(?:css|svg|png|jpe?g|woff2?|json)$/.test(spec)) {
+            unresolved.push(`${file} → ${spec}`)
+          }
         }
       }
       return seen
     }
 
-    it('앵커: 폐포가 실제로 그래프를 따라간다(엔트리 1개짜리면 아래가 vacuous)', () => {
+    it('앵커: 폐포가 세 엔트리에서 그래프를 따라가고 아무것도 조용히 버리지 않는다', () => {
       const files = closure()
-      expect(files.size).toBeGreaterThan(20)
-      // 데스크톱이 실제로 코어 엔진에 도달한다 = 「코어를 못 보는 폐포」가 아니다.
+      // 실측 기준선(현행 82 데스크톱 소스 중 대부분) — 그래프가 크게 잘리면 여기서 먼저 RED 다.
+      expect(files.size).toBeGreaterThan(50)
+      expect(unresolved).toEqual([])
+      for (const entry of ENTRIES) expect(files.has(entry)).toBe(true)
+      // 세 엔트리가 각자 실제로 도달해야 하는 대표 파일.
       expect([...files].some((f) => f.endsWith(join('core', 'engine.ts')))).toBe(true)
+      expect([...files].some((f) => f.endsWith(join('renderer', 'App.tsx')))).toBe(true)
     })
 
     it('폐포에 core/workbench/** 가 0건이다(초기화 진입점 구조적 부재)', () => {

@@ -25,6 +25,13 @@ const BOOT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 /** 0 은 «읽기 실패의 조용한 대체값» 과 구분되지 않으므로 유효값에서 뺀다. */
 const POSITIVE_INT_RE = /^\d+$/
 
+/**
+ * 마커 문자열 형태(sha256 hex 64자) 술어. **쓰기·읽기 두 방향이 이 하나를 공유한다** —
+ * 산출 측만 검증하면 「빈 문자열로 축퇴한 마커」가 레코드에 실려 돌아왔을 때 소비자가 그것을 정상으로
+ * 읽고, 스펙 §W-2-b 의 「마커 손상 = 자동 삭제 금지」가 선언만 남는다(자체 적대 리뷰 R3-1·R3-2).
+ */
+export const isMarkerForm = (value: string): boolean => /^[0-9a-f]{64}$/.test(value)
+
 export interface MarkerComponents {
   readonly bootId: string
   readonly pid1StartTicks: string
