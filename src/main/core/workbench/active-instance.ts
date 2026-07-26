@@ -50,6 +50,17 @@ import { isLinkSync } from '../workspace/path-guard'
  * 소유자가 죽었다는 커널 증명」인지 「다른 컨테이너였고 단일 인스턴스 배포 전제에 기대는 추론」인지를
  * 구분해 **기록**할 뿐이다. 연령(`acquiredAt`)·pid·mtime 은 어떤 분기 술어에도 등장하지 않는다.
  *
+ * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · CodeRabbit PR#262)
+ *
+ * 이 모듈의 `writeFileSync`·`linkSync`·`unlinkSync` 는 **승인 게이트 밖**이다. 대상은 사용자 워크스페이스가
+ * 아니라 **코디네이션 메타데이터 한 파일**(`<area>/active-instance.json` 과 그 tmp)뿐이고, 게이트의 범위는
+ * 레포 전역에서 «LLM 변이·프로세스 spawn»이다(소비자 = `engine`·`orchestrator`·`mcp/host`·`tools/loop`).
+ * 엔진 인프라 쓰기는 전부 게이트 밖이라는 선례가 이미 있다 — `store/json-file.ts` · `ignored-baseline.ts` ·
+ * 형제 `coord-area.ts`(PR1a · Codex 리뷰 통과). 게다가 이 경로는 **부팅 시점**이라 승인자가 존재하지 않고,
+ * §W-3 **L-5**(승인 대기 중 락 보유 금지)와 방향이 정면으로 충돌한다. 결정 근거는 ADR-0013.
+ * ⚠ 「남의 레코드를 지울 수 있다」는 위험은 게이트가 아니라 **소유 확인 + create-only 경합**이 막는다
+ * (해제 측 `not-owned` · 획득 측 마지막 회차 미접촉 규율).
+ *
  * ⚠ **미착지**(PR7): 부팅 시 이 함수 호출 · `shutdown()` 에서 `release()` · 「제거 실패를 성공 종료로
  * 위장하지 않는다」(승인 조건 ⑤)의 **호출부 책임**. 이 모듈은 그 판정을 값으로 돌려줄 뿐이다.
  */
