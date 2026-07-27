@@ -18,7 +18,7 @@ const stripComments = (src: string): string =>
   src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 
 /**
- * **D-9 리더 규율**(§W-4:485-486). 권위·저널 파일은 `readFileSync` 즉시-close 만 허용한다. 장기 핸들·
+ * **D-9 리더 규율**(§W-4 「리더 규율(불변식 D-9)」). 권위·저널 파일은 `readFileSync` 즉시-close 만 허용한다. 장기 핸들·
  * `createReadStream`·`watch` 는 그 자체가 **타 표면의 쓰기를 EPERM 으로 무한 차단하는 DoS 표면**이다 —
  * win32 는 대상에 열린 핸들이 하나라도 있으면 rename 이 EPERM 이고(3면 실측), 그 rename 이 곧 CAS 커밋이다.
  */
@@ -44,7 +44,7 @@ describe('D-9 리더 규율 — 권위 경로는 장기 핸들을 만들지 않�
 })
 
 /**
- * **IO 전량 주입**(§W-5:531). 권위 층이 `node:fs` 를 직접 import 하면 실패 주입이 `vi.spyOn(node:fs)` 로
+ * **IO 전량 주입**(§W-5 「IO 전량 주입이 계약」). 권위 층이 `node:fs` 를 직접 import 하면 실패 주입이 `vi.spyOn(node:fs)` 로
  * 밀려나는데, 그것은 win32 ESM 에서 조용히 skip 되어(실측 선례 `ignored-baseline.test.ts:142-149`)
  * 단계별 실패 테스트 전체가 **false-GREEN** 이 된다. 즉 이 단언이 깨지면 PR2b 의 §3-T16 이 무의미해진다.
  */
@@ -67,10 +67,30 @@ describe('authority.ts — 파일시스템을 알지 못한다', () => {
     // 대조: 실 어댑터는 fs 를 써야 하므로 같은 술어가 그 파일에서는 **매칭돼야** 한다(술어 생존 확인).
     expect(source('durable-fs.ts')).toMatch(fsLike)
   })
+
+  /**
+   * **주입 seam 방향 핀**(형제 선례 `locks-structure.test.ts` 의 「locks.ts 는 lock-backend-uds 를 import
+   * 하지 않는다」 동형 · 자체 적대 리뷰 R1-2). 위 fs 술어는 `'./durable-fs'` 를 매칭하지 않으므로,
+   * PR2b 가 편의를 위해 `import { createNodeDurableFs } from './durable-fs'` 를 넣어 기본값 주입을 만들면
+   * **전 게이트가 GREEN 인 채로** 「IO 전량 주입」이 깨진다 — 그러면 §3-T16 단계별 실패 주입이 무의미해진다.
+   */
+  it('authority.ts 는 실 어댑터를 값으로 import 하지 않는다(타입만 허용)', () => {
+    const src = stripComments(source('authority.ts'))
+    expect(src).not.toMatch(/import\s+\{[^}]*createNodeDurableFs/)
+    // `import type` 은 허용 — 런타임 방출이 0이라 주입 계약을 깨지 않는다.
+    expect(src).toMatch(/import type \{ DurabilityLevel \} from '\.\/durable-fs'/)
+  })
+
+  it('앵커: 방향 술어가 값 import 를 잡고 타입 import 는 통과시킨다', () => {
+    const valueImport = "import { createNodeDurableFs } from './durable-fs'"
+    const typeImport = "import type { DurableFs } from './durable-fs'"
+    expect(valueImport).toMatch(/import\s+\{[^}]*createNodeDurableFs/)
+    expect(typeImport).not.toMatch(/import\s+\{[^}]*createNodeDurableFs/)
+  })
 })
 
 /**
- * 브랜드 심볼은 **미export** 여야 한다(§W-4:350). export 되면 다른 모듈이 정상 문법으로 토큰을 조립할 수
+ * 브랜드 심볼은 **미export** 여야 한다(§W-4 「브랜드 심볼 미export · 민팅은 라이브 핸들에서만」). export 되면 다른 모듈이 정상 문법으로 토큰을 조립할 수
  * 있어 「CAS 성공 시에만 존재」가 무너진다 — eslint `no-unsafe-type-assertion` 은 캐스트를 잡지 캐스트
  * 없는 조립을 잡지 못한다.
  */
@@ -89,14 +109,19 @@ describe('브랜드 심볼 — 미export 가 계약이다', () => {
  * 상한을 **절대 물리행**으로 두는 이유는 백분율이 분모 이동에 따라 조용히 늘어나기 때문이다(정정 ㉙ 승계).
  */
 describe('durable-fs.ts — 실 어댑터 두께 상한', () => {
-  it('전체 물리행이 상한(240) 이내다', () => {
-    expect(source('durable-fs.ts').split('\n').length).toBeLessThanOrEqual(240)
+  // 상한은 **착지 실측 + 여유 12%** 로 잡는다(계획 정정 75 를 이 수치로 개정했다). 원안의 「≤160 물리행」은
+  // PR1b 의 어댑터(≤140)에서 외삽한 추정이었는데, 이 레포는 「왜 이렇게 했는가」를 주석으로 남기는 것이
+  // 규율이라 물리행의 절반 가까이가 주석이다 — 실측 178행 중 코드는 96행뿐이다. 그래서 **구속력 있는
+  // 수치는 코드행**이고 물리행은 보조다. 상한을 실측의 1.5배로 두면 PR2c 가 win32 rename 재시도를
+  // 얹을 때 무저항으로 부푸므로 그러지 않는다.
+  it('전체 물리행이 상한(200) 이내다', () => {
+    expect(source('durable-fs.ts').split('\n').length).toBeLessThanOrEqual(200)
   })
 
-  it('주석을 뺀 코드 행이 상한(120) 이내다 — 규칙이 어댑터로 새지 않았다', () => {
+  it('주석을 뺀 코드 행이 상한(110) 이내다 — 규칙이 어댑터로 새지 않았다', () => {
     const code = stripComments(source('durable-fs.ts'))
       .split('\n')
       .filter((l) => l.trim().length > 0)
-    expect(code.length).toBeLessThanOrEqual(120)
+    expect(code.length).toBeLessThanOrEqual(110)
   })
 })

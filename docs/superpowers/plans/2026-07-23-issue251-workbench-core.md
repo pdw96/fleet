@@ -434,17 +434,44 @@ refuter(**88 후보 · 56 CONFIRMED · 30 PARTIAL · 2 REFUTED**), 그리고 **�
 | 72 | §W-5:534-535 「내구 등급을 **`area.json`** + 레코드에 기록」 | `AreaRecord` 는 4필드(`schemaVersion`·`lockBackend`·`createdAt`·`createdBy`)이고 **`durability` 자리가 없다**. 그 확장은 정정 ㉟ 이 이미 **PR7/T29 사전 결정 항목으로 이월**했다(「필드 부재 v1 레코드 관용 vs fail-closed」 포함) | PR2 는 ⓐ`probeDurability()` **순수 판정만** 착지 ⓑ레코드 `writtenBy.durability` 에만 기록. `area.json` 기록은 **호출자(부팅)가 §1-8 로 부재**하므로 PR7 이월을 계획에 명시 |
 | 73 | §W-4:465 「`revision` 은 저장소만 배정 — `BenchAuthorityDraft = Omit<…>` 로 호출자 조작 불가」 | `Omit` 은 **객체 리터럴에만** 초과 프로퍼티 검사를 건다 — `const rec: BenchAuthorityRecord = …; tx.compareAndSwap(read, rec)` 는 구조적 서브타이핑으로 **tsc 를 그대로 통과**한다(즉 「조작 불가」는 타입이 주는 보장이 아니다) | 런타임 방어를 계약에 추가: `compareAndSwap` 이 **`revision`·`writtenBy` 키의 존재 자체를 거부**(`invariant-violation`)하고, 그 행을 §3-T13ⓒ 에 **행동 단언**으로 편입(타입 핀은 「스레딩 사고 방지」로 강등 — PR1b 정정 ㉑ 과 동형 처리) |
 | 74 | §1-6 「PR 상한 = 코드 순증 1,900행」(측정 시점 미규정) | **PR1b 의 기록이 머지 트리와 어긋난다** — PR#259 본문 「순증 1,581」 vs 머지 실측 ≈**2,430**(신설 9파일 현재 합 2,433 − PR1c 증분 ≈20 + config 수정). 차이의 원인은 **측정 시점**이다(PR1c 는 「자체 적대 리뷰 반영까지 마친 시점」에 측정해 정합) | §1-6 에 **측정 시점 명문화**: 「**머지 직전 HEAD 기준** `git diff --numstat origin/master...HEAD`」. 최초 푸시 시점 측정 **금지**(리뷰 라운드가 코드를 늘린다). §3 표의 PR1a·PR1b 칸이 서로 다른 기준의 숫자를 섞고 있음을 각주로 등재하고, 「PR1b 는 상한 내였다」를 PR2 추정 근거로 **상속하지 않는다** |
-| 75 | 계획 T7 「`DurableFs` 실 어댑터 + 등급 프로브」(플랫폼 커버리지 대응 없음) | 정정 ⑤·㉙ 이 확정한 대응 ⓐ(주입 seam + 페이크로 양 OS + 실 어댑터만 플랫폼 게이트)가 T7 에 **승계되지 않았다**. 그리고 PR2 는 앞선 PR 들과 달리 **양쪽 OS 에 각자 도달 불가 행이 생긴다**(POSIX dir fsync ↔ win32 rename EPERM 재시도) — 손실이 양방향이다 | 대응 ⓐ 를 T7 에 명시 승계 + **양방향 게이트**를 선언: POSIX 전용(dir fsync 성공 경로)과 win32 전용(rename EPERM 재시도 · mode 무시)을 각각 `describe.skipIf` 로 분리하고 **판정 로직은 전부 페이크로 양 OS**. 실 어댑터 완료 조건 = **≤160 물리행 ∧ 미커버 stmts ≤45**(PR1b 정정 ㉙ 의 절대 개수 규율 승계). 기준선 = 착수 시점 win32 로컬 실측 **S 3770/4040 · B 2450/2828 · F 663/704 · L 3318/3497** |
+| 75 | 계획 T7 「`DurableFs` 실 어댑터 + 등급 프로브」(플랫폼 커버리지 대응 없음) | 정정 ⑤·㉙ 이 확정한 대응 ⓐ(주입 seam + 페이크로 양 OS + 실 어댑터만 플랫폼 게이트)가 T7 에 **승계되지 않았다**. 그리고 PR2 는 앞선 PR 들과 달리 **양쪽 OS 에 각자 도달 불가 행이 생긴다**(POSIX dir fsync ↔ win32 rename EPERM 재시도) — 손실이 양방향이다 | 대응 ⓐ 를 T7 에 명시 승계 + **양방향 게이트**를 선언: POSIX 전용(dir fsync 성공 경로)과 win32 전용(rename EPERM 재시도 · mode 무시)을 각각 `describe.skipIf` 로 분리하고 **판정 로직은 전부 페이크로 양 OS**. 실 어댑터 완료 조건 = **전체 ≤200 물리행 ∧ 코드 ≤110행 ∧ 미커버 stmts ≤45**(PR1b 정정 ㉙ 의 절대 개수 규율 승계). 기준선 = 착수 시점 win32 로컬 실측 **S 3770/4040 · B 2450/2828 · F 663/704 · L 3318/3497**<br>⚠ **착지 시 개정(자체 적대 리뷰 R1-5·R2-1·R4-1·R5-2 가 4렌즈 독립 확인)**: 원안 「≤160 물리행」은 PR1b 어댑터(≤140)에서 외삽한 **추정**이었고 착지물(178행)이 즉시 위반이었다. 이 레포는 「왜 이렇게 했는가」를 주석으로 남기는 것이 규율이라 물리행의 절반 가까이가 주석이다(178행 중 **코드 96행**) — 그래서 **구속력 있는 수치를 코드행으로 옮기고** 물리행은 보조로 둔다. 상한은 실측 + 여유 12% 이며 회귀 가드(`authority-structure.test.ts`)와 이 표가 **같은 수치**를 쓴다 |
 
 **PR2a 확정 범위**(위 정정 반영): 신설 = `authority.ts`(§W-4 **타입 전량** + `IntegrationStage` +
 `PreCommitStep`/`PostCommitStep` · 값 구현은 PR2b) · `durable-fs.ts`(`DurableFs`+`statKind` ·
-`createNodeDurableFs` · `probeDurability`) · `__testing__/durable-fs-fake.ts` · 계약/구조 테스트 ·
+`createNodeDurableFs` · `probeDurability` · `writeAllBytes`) · ~~`__testing__/durable-fs-fake.ts`~~
+(**착지 시 취소** — 자체 적대 리뷰 R5-7·R4-7·R6-7. PR2a 의 소비자는 판정 규칙 테스트 하나뿐이라 공유
+페이크가 **파일 하나에서만 import 되는 `__testing__` 모듈**이 된다. 10 프리미티브를 전부 계측하는 로컬
+`stubFs`(20행)로 충분하고 ADR-0003 ROI 게이트에 맞는다. **PR2b 가 단계 시퀀스·실패 주입 페이크를 두
+파일에서 공유하게 되는 시점에 신설**한다 — 그때가 `coverage.exclude` 등재의 실제 근거가 생기는 지점이다) ·
+계약/구조 테스트 ·
 eslint **신규 블록**(assertNever selector · 신규 파일 한정 · `ELECTRON_DYNAMIC_IMPORT_SYNTAX` spread 재선언) ·
 `scripts/eslint-config-purity.test.ts` 핀 추가 · `locks.ts` `LockScopeOptions`·`BenchLeaseToken.identity`
 확장 + 호출부 4곳 · `src/shared/types.ts` `BenchLifecycle` 1줄.
 **미착지 명시**: `withAuthority`/CAS 구현(→PR2b) · rename 재시도·`commit-uncertain`(→PR2c) ·
 `BenchLauncher` 팩토리 런타임(→PR2c) · **spawn seam 배선 2곳 + bench-spawn eslint 가드**(→PR7 · 정정 52·64) ·
 `area.json` 등급 기록(→PR7 · 정정 72) · §3-T18b ref-앵커(→PR3 · 정정 70).
+
+**PR2a 자체 적대 리뷰 반영**(2026-07-27 · 6렌즈 → 렌즈별 독립 refuter · **62 후보 · 32 CONFIRMED ·
+24 PARTIAL · 6 REFUTED · P1 0**). 착지 코드에 반영한 것:
+
+| # | 지적 | 조치 |
+|---|---|---|
+| R1-5·R2-1·R4-1·R5-2 (4렌즈 독립) | 정정 75 의 완료 조건 「≤160 물리행」이 **착지물(178행)에서 즉시 위반**이고 회귀 가드는 240/120 이라는 다른 숫자였다 | 구속 수치를 **코드행**으로 옮기고(주석이 물리행의 절반 — 178 중 코드 96) 상한을 실측+12% 로 재산정. 정정 75 문면과 가드가 **같은 수치**(200/110)를 쓰도록 정합화 |
+| R1-12·R3-4 | `writeAllBytes` 가 `write` 0 반환 시 **무한 루프** — 리스와 뮤텍스를 쥔 채 영구 고착 | 진행 보장 가드 + 계약 테스트. ⚠ **가드를 빼고 돌려 확인한 결과 vitest 러너가 멈췄다** — 동기 루프가 이벤트 루프를 막아 `it` timeout 조차 발화하지 않는다. 즉 이 회귀는 RED 가 아니라 **hang** 이며 그 사실을 주석에 등재 |
+| R2-2·R2-8 | 테스트 스텁이 3개 메서드만 기록해 「호출 0」 단언이 «기록되는 것만 안 불렀다»만 증언 | **10 프리미티브 전부** 계측 + 인자 기록. fd 스레딩(열린 fd 를 그대로 fsync·close 하는가)·실패 시 close 누수 방지를 새 행으로 고정 |
+| R2-3·R1-7 | 신규 eslint 블록의 electron 재선언 핀이 독립 `some` 2개라 **둘 중 하나만 남아도 통과**(#173 이 보완한 약점 재유입) | 두 selector 를 각각 exact `toContain` 으로(기존 코어 블록 핀과 동형) |
+| R1-2 | `authority.ts` 가 실 어댑터를 **값 import** 해 「IO 전량 주입」을 깨도 전 게이트 GREEN(fs 술어가 `'./durable-fs'` 를 매칭하지 않는다) | 형제 선례 동형 **방향 핀** + 자기검사 앵커 추가 |
+| R1-6·R4-4 | 인라인 `import('./locks').X` 는 brain 추출기가 방문하지 않아 **의존 간선이 구조 지도에서 소멸** | top-level `import type` 으로 전환(방출은 어느 쪽이든 0) |
+| R5-3·R2-13 | 이 PR 이 스펙에 정정 블록을 넣어 **모든 `§W-4:NNN` 인용이 밀렸다** | 스펙 인용을 **행 번호 → 소절 이름**으로 전환(살아있는 문서라 행은 계속 밀린다). 코드 인용은 커밋으로 고정되므로 행 유지 |
+| R5-8·R5-9 | `DurabilityLevel`·`AuthorityCommit` 주석이 **미착지 방어를 현재형으로 진술** | 소비자가 어느 PR 에 있는지 명시 |
+| R6-8 | 스키마 상한과 기록값이 리터럴 2곳 | `schemaVersion: typeof SUPPORTED_AUTHORITY_SCHEMA` 로 결속 |
+| R5-7·R4-7·R6-7 | 계획이 PR2a 산출물로 명시한 `__testing__/durable-fs-fake.ts` 미착지 | **취소를 명시**(위 확정 범위) — 소비자 1파일이라 공유 페이크의 근거가 없다. PR2b 에서 신설 |
+
+**미반영(근거와 함께 남긴다)**: R2-9(POSIX 블록이 darwin 에서 실행 — 이 레포에 darwin CI 도 실측도 없다.
+`platform === 'win32'` 단일 분기가 darwin 을 POSIX 로 사상하는 것은 §W-5 의 의도이며 `'platform-unsupported'`
+거부는 §W-16 소관 = PR7) · R6-5(assertNever 가드가 대상 switch 0건인 채 착지 — 정정 64 가 bench-spawn 가드를
+vacuous 로 판정해 이월한 것과 대칭이라는 지적. 차이는 **소비자 도착 시점**이다: `CasResult` switch 는 PR2b 가
+즉시 만들고, spawn 우회는 PR7 까지 생기지 않는다. 그래도 비대칭이 남으므로 PR2b 착수 시 재검토 항목으로 등재).
 
 **C 이식(핵심)**: 타입 골격이 어떤 런타임보다 앞선다.
 

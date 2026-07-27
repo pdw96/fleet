@@ -256,8 +256,11 @@ describe('실패 종별 소진 강제 ESLint 게이트 (#251 PR2a)', () => {
    * 재선언」 관용구를 그대로 답습해야 하고, 그 재선언을 여기서 핀한다.
    */
   it('코어의 electron 동적 import 보호를 재선언해 유실을 막는다(#174)', () => {
-    const selectors = (syntax?.slice(1) ?? []) as { selector: string }[]
-    expect(selectors.some((s) => /ImportExpression/.test(s.selector))).toBe(true)
-    expect(selectors.some((s) => /electron/.test(s.selector))).toBe(true)
+    // 두 selector 를 **각각** exact 로 핀한다 — 「ImportExpression 이 있다」와 「electron 이 있다」를
+    // 독립 `some` 으로 보면 **둘 중 하나만 남아도** 두 조건이 서로 다른 selector 로 충족돼 통과한다.
+    // 그것은 #173 이 이미 보완한 약점이라 재유입하지 않는다(위 :32-34 와 같은 형태).
+    const selectors = ((syntax?.slice(1) ?? []) as { selector: string }[]).map((s) => s.selector)
+    expect(selectors).toContain("ImportExpression[source.value='electron']")
+    expect(selectors).toContain('ImportExpression[source.value=/^electron\\//]')
   })
 })

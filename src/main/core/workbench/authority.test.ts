@@ -26,7 +26,7 @@ describe('스키마 버전', () => {
 })
 
 describe('타입 핀 — typecheck 가 판정자다', () => {
-  it('draft 는 revision·writtenBy 를 실을 수 없다(저장소만 배정 · §W-4:465)', () => {
+  it('draft 는 revision·writtenBy 를 실을 수 없다(저장소만 배정 · §W-4 「revision 은 저장소만 배정」)', () => {
     const base = {
       schemaVersion: 1,
       identity: { commonGitDir: '/r/.git', benchRoot: '/wb', benchId: '0'.repeat(26) },
@@ -34,7 +34,7 @@ describe('타입 핀 — typecheck 가 판정자다', () => {
       sourceGeneration: 1,
     } satisfies BenchAuthorityDraft
 
-    // @ts-expect-error revision 은 draft 에 없다 — 있으면 호출자가 세대를 조작할 수 있다(§W-4:465).
+    // @ts-expect-error revision 은 draft 에 없다 — 있으면 호출자가 세대를 조작할 수 있다(§W-4 「revision 은 저장소만 배정」).
     const forged: BenchAuthorityDraft = { ...base, revision: 99 }
     expect(forged).toBeDefined()
   })
@@ -76,7 +76,7 @@ describe('타입 핀 — typecheck 가 판정자다', () => {
   })
 
   /**
-   * 브랜드는 **미export `unique symbol`** 이어야 한다(§W-4:350 · PR1b 실측: 문자열 프로퍼티 브랜드는
+   * 브랜드는 **미export `unique symbol`** 이어야 한다(§W-4 「브랜드 심볼 미export · 민팅은 라이브 핸들에서만」 · PR1b 실측: 문자열 프로퍼티 브랜드는
    * 리터럴로 위조 가능). 구조적 리터럴로 `AuthorityCommit` 을 만들 수 없음을 고정한다.
    */
   it('AuthorityCommit 은 리터럴로 위조되지 않는다', () => {

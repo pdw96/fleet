@@ -30,7 +30,11 @@ import {
  * API 는 성공한다. 그럼에도 **등급을 올리지 않는 이유**는 `probeDurability` 주석에 있다.
  */
 
-/** 내구 등급(§W-4 C3 · U4). 조용한 강등 금지 — 레코드에 기록되고 UI/런북에 노출된다. */
+/**
+ * 내구 등급(§0.1 C3 · U4). 조용한 강등 금지 — 값이 레코드에 **기록되어야** 하고 UI·런북에 노출되어야 한다.
+ * ⚠ 이 PR 시점에 그 소비자는 **셋 다 없다**: 기록자 = PR2b(`writtenBy.durability`) · `area.json` 필드 = PR7 ·
+ * UI = #253. 현재형으로 읽히지 않게 적는다(자체 적대 리뷰 R5-8).
+ */
 export type DurabilityLevel = 'file+dir' | 'file-only'
 
 /**
@@ -78,7 +82,16 @@ export function writeAllBytes(
 ): void {
   const buf = Buffer.from(data, 'utf8')
   let off = 0
-  while (off < buf.length) off += write(buf, off, buf.length - off)
+  while (off < buf.length) {
+    const n = write(buf, off, buf.length - off)
+    // **진행 보장**: `writeSync` 의 반환은 「기록된 바이트 수」일 뿐 전진을 보장하지 않는다. 0 을 받고도
+    // 루프를 계속하면 **리스와 in-process 뮤텍스를 쥔 채 임계 구역이 영구 고착**된다. 그리고 그 고착은
+    // RED 가 아니라 **hang** 이다 — 동기 루프가 이벤트 루프를 막아 vitest 의 `it` timeout 조차 발화하지
+    // 않음이 실측됐다(가드를 빼고 돌리면 러너가 멈춘다). 실패로 승격해 호출자의 `io-failure` 로 보낸다.
+    if (n <= 0)
+      throw new Error(`writeAll 이 전진하지 않았다(반환 ${n} · 남은 ${buf.length - off}B)`)
+    off += n
+  }
 }
 
 /**

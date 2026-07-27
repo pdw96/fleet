@@ -9,29 +9,46 @@ import { type DurableFs, probeDurability, writeAllBytes } from './durable-fs'
  * (게이트 분리)가 맡고, 여기서 검증하는 것은 **주입 seam 위의 판정 규칙**뿐이다(계획 §3.1 대응 ⓐ).
  */
 
-/** 호출을 기록하는 최소 스텁 — 이 파일의 판정 규칙만 겨냥한다(전체 페이크는 `__testing__/`). */
-const stubFs = (over: Partial<DurableFs> = {}): { fs: DurableFs; calls: string[] } => {
-  const calls: string[] = []
+/**
+ * **10 프리미티브 전부**를 기록하는 스텁. 일부만 기록하면 「호출 0」류 단언이 «기록되는 메서드를 부르지
+ * 않았다»만 증언해, 부작용 있는 다른 프리미티브를 부르는 구현이 통과한다(자체 적대 리뷰 R2-8).
+ * 인자도 함께 남긴다 — fd 스레딩(열린 fd 를 그대로 fsync·close 하는가)이 그것 없이는 미핀이다(R2-2).
+ */
+const stubFs = (
+  over: Partial<DurableFs> = {},
+): { fs: DurableFs; calls: string[]; log: { op: string; args: unknown[] }[] } => {
+  const log: { op: string; args: unknown[] }[] = []
   const rec =
-    <T>(name: string, fn: () => T) =>
-    (): T => {
-      calls.push(name)
-      return fn()
+    <A extends unknown[], T>(op: string, fn: (...a: A) => T) =>
+    (...args: A): T => {
+      log.push({ op, args })
+      return fn(...args)
     }
-  const fs: DurableFs = {
-    readFileUtf8: () => '',
-    statKind: () => ({ kind: 'missing', size: 0 }),
-    mkdirRecursive: () => undefined,
-    openExclusive: () => 1,
-    writeAll: () => undefined,
+  const base: DurableFs = {
+    readFileUtf8: rec('readFileUtf8', () => ''),
+    statKind: rec('statKind', () => ({ kind: 'missing', size: 0 })),
+    mkdirRecursive: rec('mkdirRecursive', () => undefined),
+    openExclusive: rec('openExclusive', () => 1),
+    writeAll: rec('writeAll', () => undefined),
     fsync: rec('fsync', () => undefined),
     close: rec('close', () => undefined),
-    rename: () => undefined,
+    rename: rec('rename', () => undefined),
     openDir: rec('openDir', () => 2),
-    unlinkIfExists: () => undefined,
-    ...over,
+    unlinkIfExists: rec('unlinkIfExists', () => undefined),
   }
-  return { fs, calls }
+  // 오버라이드도 기록을 통과시킨다 — 아니면 실패 주입 케이스만 계측에서 빠진다.
+  const fs = { ...base } as Record<string, unknown>
+  for (const [k, v] of Object.entries(over)) {
+    fs[k] = rec(k, v as (...a: unknown[]) => unknown)
+  }
+  return {
+     
+    fs: fs as unknown as DurableFs,
+    get calls() {
+      return log.map((e) => e.op)
+    },
+    log,
+  }
 }
 
 /**
@@ -72,6 +89,16 @@ describe('writeAllBytes — 부분 쓰기 재개는 바이트 오프셋이다(�
     expect(w.out().length).toBe(Buffer.byteLength(data, 'utf8'))
   })
 
+  /**
+   * **진행 보장.** `writeSync` 의 반환은 「기록된 바이트 수」일 뿐 전진을 보장하지 않는다. 가드가 없으면
+   * 이 입력에서 루프가 영원히 돌고, 그때 CAS 는 **리스와 in-process 뮤텍스를 쥔 채** 고착된다 —
+   * 실패가 RED 가 아니라 **hang** 으로 나타나므로 어떤 게이트도 신호를 내지 못한다.
+   * 짧은 timeout 을 명시하는 이유가 그것이다(전역 20s 를 기다리면 회귀 진단이 느려진다).
+   */
+  it('전진하지 않는 write(0 반환)는 hang 이 아니라 실패다', () => {
+    expect(() => writeAllBytes(() => 0, 'abc')).toThrow(/전진하지 않았다/)
+  }, 3000)
+
   it('빈 문자열이면 write 를 부르지 않는다', () => {
     let calls = 0
     writeAllBytes((_b, _o, l) => {
@@ -83,10 +110,29 @@ describe('writeAllBytes — 부분 쓰기 재개는 바이트 오프셋이다(�
 })
 
 describe('probeDurability — 등급은 프로브가 유일 권위이되 승격은 금지한다', () => {
-  it('POSIX 에서 디렉터리 fsync 가 성공하면 file+dir 이다', () => {
-    const { fs, calls } = stubFs()
+  /**
+   * 순서와 **fd 스레딩**을 함께 고정한다. 「openDir 을 불렀다」만 보면 열린 fd 를 버리고 다른 값을
+   * fsync 하는 구현(또는 close 를 빠뜨려 fd 를 새는 구현)이 통과한다 — 후자는 D-9 가 금지하는
+   * 장기 핸들을 매 부팅 1개씩 만든다.
+   */
+  it('POSIX 에서 열린 디렉터리 fd 를 fsync 하고 닫는다', () => {
+    const { fs, log } = stubFs()
     expect(probeDurability(fs, '/area', 'linux')).toBe('file+dir')
-    expect(calls).toContain('openDir')
+    expect(log.map((e) => e.op)).toEqual(['openDir', 'fsync', 'close'])
+    expect(log[0]?.args).toEqual(['/area'])
+    // openDir 이 돌려준 fd(스텁은 2)가 그대로 두 후속 호출에 실린다.
+    expect(log[1]?.args).toEqual([2])
+    expect(log[2]?.args).toEqual([2])
+  })
+
+  it('fsync 가 실패해도 fd 를 닫는다(누수 금지)', () => {
+    const { fs, log } = stubFs({
+      fsync: () => {
+        throw new Error('boom')
+      },
+    })
+    expect(probeDurability(fs, '/area', 'linux')).toBe('file-only')
+    expect(log.map((e) => e.op)).toEqual(['openDir', 'fsync', 'close'])
   })
 
   it('POSIX 에서 디렉터리 fsync 가 실패하면 file-only 로 강등한다', () => {

@@ -1,5 +1,15 @@
 import type { BenchLifecycle } from '../../../shared/types'
 import type { DurabilityLevel } from './durable-fs'
+/**
+ * `locks.ts` 가 민팅하는 리스 크레덴셜. 여기서 **재선언하지 않는다** — `unique symbol` 은 선언마다 별개
+ * 타입이라 재선언하면 라이브 핸들이 민팅한 토큰이 이 모듈의 동명 타입에 **대입되지 않는다**(계획 정정 55).
+ * 스펙 §W-4 코드블록이 3종을 다시 싣고 있으나 소유는 `locks.ts`(PR1b 랜딩)다.
+ *
+ * ⚠ **top-level `import type` 이어야 한다**(인라인 `import('./locks').X` 금지 · 자체 적대 리뷰 R1-6):
+ * brain 추출기(`scripts/brain/extract.mjs`)는 `ImportTypeNode` 를 방문하지 않아 인라인 표기면 이 간선이
+ * 구조 지도에서 **통째로 사라진다**. `verbatimModuleSyntax`(tsconfig.base.json)라 방출은 어느 쪽이든 0 이다.
+ */
+import type { BenchLeaseToken } from './locks'
 
 /**
  * 공유 권위 레코드 · revision-CAS (#251 · 스펙 §W-4) — **타입 층**(PR2a T6b).
@@ -20,7 +30,11 @@ import type { DurabilityLevel } from './durable-fs'
  * 발화하지 않기 때문이다. PR2 단독으로는 미완결임을 은폐하지 않는다.
  */
 
-/** 이 코드베이스가 읽을 수 있는 권위 레코드 스키마 상한. 초과 = `incompatible-version`(≠ invalid · I12). */
+/**
+ * 이 코드베이스가 읽을 수 있는 권위 레코드 스키마 상한. 초과 = `incompatible-version`(≠ invalid · I12).
+ * 레코드의 `schemaVersion` 은 이 값에서 **타입으로 유도**한다 — 두 곳에 리터럴을 두면 상한만 올리고
+ * 기록값은 그대로 두는(또는 그 반대) 변경이 조용히 성립한다(자체 적대 리뷰 R6-8).
+ */
 export const SUPPORTED_AUTHORITY_SCHEMA = 1
 
 /**
@@ -45,7 +59,7 @@ export type IntegrationStage = 'prepared' | 'composed' | 'published' | 'finalize
  * 진행 중인 활동 1건. `kind` 는 D1 이 정한 두 종류다 — bench 안에서 도는 것은 **오케 런**과
  * **단일 세션 대화** 둘뿐이고, 스펙이 값을 명시하지 않아 여기서 확정한다(계획 감사 L1-13).
  *
- * `execGate` 의 전이 시점이 계약이다(§W-4:446-464): `gated` 로 먼저 커밋하고, `running` 으로 두 번째
+ * `execGate` 의 전이 시점이 계약이다(§W-4 「execGate 전이 시점 = 활동 시작 순서 고정」): `gated` 로 먼저 커밋하고, `running` 으로 두 번째
  * CAS 를 커밋한 **뒤에야** spawn 한다. 순서를 뒤집으면 「commit → spawn → 크래시」 창이 **살아있는 자식 +
  * 디스크 `gated`** 를 만들고, gated-orphan 회수가 그 자식을 「0줄 실행」으로 오분류해 변이한다(fail-open).
  */
@@ -60,7 +74,7 @@ export interface BenchActivityRecord {
 }
 
 export interface BenchAuthorityRecord {
-  readonly schemaVersion: 1
+  readonly schemaVersion: typeof SUPPORTED_AUTHORITY_SCHEMA
   readonly identity: BenchAuthorityIdentity
   /**
    * 단조. 최초 1. CAS 성공마다 정확히 +1.
@@ -89,7 +103,7 @@ export interface BenchAuthorityRecord {
 }
 
 /**
- * 호출자가 제출하는 것. `revision`·`writtenBy` 는 **저장소만 배정**한다(§W-4:465).
+ * 호출자가 제출하는 것. `revision`·`writtenBy` 는 **저장소만 배정**한다(§W-4 「revision 은 저장소만 배정」).
  *
  * ⚠ **타입은 이 규칙을 완전히 강제하지 못한다**(계획 정정 73): `Omit` 의 초과 프로퍼티 검사는 객체
  * 리터럴에만 걸리므로 `const r: BenchAuthorityRecord = …; cas(read, r)` 는 구조적 서브타이핑으로 통과한다.
@@ -132,8 +146,12 @@ export interface FreshReadToken {
 declare const AUTHORITY_COMMIT: unique symbol
 
 /**
- * CAS 성공 시에만 존재하는 증거. bench CLI 를 띄우는 경로가 이것을 **인자로 요구**하므로, CAS 를
- * 건너뛰거나 실패를 무시한 채 실행하는 코드는 컴파일되지 않는다(§W-4 계약 4항 · 런처는 PR2c).
+ * CAS 성공 시에만 존재하는 증거(§W-4 계약 4항).
+ *
+ * ⚠ **이 타입 혼자서는 아무것도 강제하지 못한다.** 「CAS 를 건너뛴 코드가 컴파일되지 않는다」가 성립하려면
+ * 세 조각이 더 필요한데 **전부 미착지**다: 런처 팩토리(`createBenchLauncher(commit)`) = PR2c ·
+ * spawn 관문 배선 = PR7 · 우회 차단 eslint 가드 = PR7(계획 정정 52·64). 현재형으로 쓰면 있지도 않은
+ * 방어를 있다고 읽히게 한다(자체 적대 리뷰 R5-9).
  */
 export interface AuthorityCommit {
   readonly [AUTHORITY_COMMIT]: true
@@ -213,7 +231,7 @@ export type CasResult =
 /**
  * 임계 구역 안에서만 존재하는 핸들. 리스는 **클로저 캡처**라 인자로 다시 받지 않는다.
  *
- * 두 메서드가 store 가 아니라 여기 있는 이유(§W-4:416-420): 셋 다 store public 이면 **뮤텍스 밖에서
+ * 두 메서드가 store 가 아니라 여기 있는 이유(§W-4 「인터페이스 정정(계획 체크포인트)」): 셋 다 store public 이면 **뮤텍스 밖에서
  * `readFresh()` 를 부르는 코드가 정상 컴파일**되어 직렬화 경계가 타입이 아니라 규약으로 강등된다.
  */
 export interface AuthorityTx {
@@ -229,12 +247,5 @@ export interface BenchAuthorityStore {
    * `readFresh → 불변식 검사 → compareAndSwap 완료(내구 확정)` 전체를 하나의 임계 구역으로 실행한다.
    * **리스 = 프로세스 간, 뮤텍스 = 프로세스 안.**
    */
-  withAuthority<T>(lease: BenchLeaseTokenLike, fn: (tx: AuthorityTx) => Promise<T>): Promise<T>
+  withAuthority<T>(lease: BenchLeaseToken, fn: (tx: AuthorityTx) => Promise<T>): Promise<T>
 }
-
-/**
- * `locks.ts` 가 민팅하는 리스 크레덴셜. 여기서 **재선언하지 않는다** — `unique symbol` 은 선언마다 별개
- * 타입이라 재선언하면 라이브 핸들이 민팅한 토큰이 이 모듈의 동명 타입에 **대입되지 않는다**(계획 정정 55).
- * 스펙 §W-4 코드블록이 3종을 다시 싣고 있으나 소유는 `locks.ts`(PR1b 랜딩)다.
- */
-export type BenchLeaseTokenLike = import('./locks').BenchLeaseToken

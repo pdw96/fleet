@@ -376,7 +376,7 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
   }
 
   /**
-   * 리스 민팅 — **라이브 핸들에서만** 일어난다(§W-4:350). `revalidate` 클로저를 그대로 넘겨주므로
+   * 리스 민팅 — **라이브 핸들에서만** 일어난다(§W-4 「브랜드 심볼 미export · 민팅은 라이브 핸들에서만」). `revalidate` 클로저를 그대로 넘겨주므로
    * 크레덴셜과 핸들이 **같은 커널 endpoint 를 증언**한다(둘이 갈리면 「해제된 락의 유효한 리스」가 생긴다).
    */
   const mintLease = (

@@ -410,7 +410,7 @@ export default tseslint.config(
     ignores: ['src/main/core/workbench/**/*.test.ts'],
     rules: { '@typescript-eslint/no-unsafe-type-assertion': 'error' },
   },
-  // 실패 종별 소진 강제(#251 PR2a · 스펙 §W-4:510-511). `CasResult`/`AuthorityReadResult` 는 실패 종별이
+  // 실패 종별 소진 강제(#251 PR2a · 스펙 §W-4 「모든 CasResult 소비는 default: assertNever」). `CasResult`/`AuthorityReadResult` 는 실패 종별이
   // 10 종을 넘고 PR2b~PR2c·PR3 이 계속 늘린다. `noFallthroughCasesInSwitch` 는 **fall-through 만** 잡고
   // exhaustiveness 는 보지 않으므로, `default: assertNever(x)` 가 있어야 비로소 새 종별이 미처리 호출부를
   // **컴파일 에러**로 만든다. 「default 가 없거나 assertNever 를 부르지 않는 switch」를 `:not(:has(…))` 로

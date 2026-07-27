@@ -549,7 +549,7 @@ export interface ChatActivity {
  * 이 슬라이스에서 유일한 소비자는 **공유 권위 레코드**(`core/workbench/authority.ts`)다 — 런타임 뷰
  * `Workbench` 전체는 레지스트리(PR4)가 소유하므로 여기서 미리 만들지 않는다.
  * ⚠ 파생 표시 상태(`integration-ready`·`stale-attempt`·`partially-integrated`)는 **이 유니온에 넣지
- * 않는다**(§W-4:318-320) — 그것들은 영속되지 않는 계산값이고, 섞으면 상태 기계가 열린다.
+ * 않는다**(§W-4 「상태 어휘는 한 벌이다」) — 그것들은 영속되지 않는 계산값이고, 섞으면 상태 기계가 열린다.
  */
 export type BenchLifecycle = 'open' | 'integrated' | 'archived'
 
