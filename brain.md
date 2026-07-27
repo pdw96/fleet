@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 96 files · 233 import wires · 47 IPC channels · 생성 2026-07-26T12:53 UTC
+> 98 files · 236 import wires · 47 IPC channels · 생성 2026-07-27T06:17 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -13,7 +13,7 @@
 - **바깥 세계 runtime** — 앱 밖의 실제 대상 — 설치된 AI CLI(클로드/코덱스/제미니), AI 회사 API, 외부 도구(MCP) 서버.
 
 ## 한눈에
-- **허브**(많이 연결): shared/types(48) · engine(29) · server/boot(16) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
+- **허브**(많이 연결): shared/types(49) · engine(29) · server/boot(16) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
 - **진입점**: main/e2e · main/index · preload/index · renderer/main
 - **레지스트리**(확장점, 분기 대신 등록): cli/registry · providers/registry · tools/registry
 - **승인 게이트**(위험작업 차단): safety/approval
@@ -174,6 +174,30 @@
 - **cli/output** — AI가 쏟아낸 잡다한 출력에서 사람에게 보여줄 답변 글자만 골라내는 부품 _코덱스 같은 프로그램은 답변 말고도 시작 안내·생각 과정·토큰 사용량 같은 군더더기를 줄줄이 함께 뱉는데, 이 부품이 그중 진짜 답변 글자만 추려낸다. 또 답변이 한 글자씩 흘러나올 때(스트리밍) 각 줄에서 새로 추가된 글자 조각만 뽑아 화면에 실시간으로 이어 붙일 수 있게 하고, 대화를 이어가기 위한 세션 식별 번호도 찾아낸다._
   - →의존: shared/types · ←피의존: session/cli-session · 130줄
 
+### workbench · core
+- **workbench/locks**
+  - →의존: workbench/authority, workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/lock-backend-uds, workbench/lock-order · 428줄
+- **workbench/active-instance**
+  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
+- **workbench/authority**
+  - →의존: shared/types, workbench/durable-fs · ←피의존: workbench/locks · 241줄
+- **workbench/coord-area**
+  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
+- **workbench/instance-marker**
+  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
+- **workbench/__testing__/lock-backend-fake**
+  - →의존: workbench/locks · ←피의존: — · 92줄
+- **workbench/durable-fs**
+  - →의존: — · ←피의존: workbench/authority · 171줄
+- **workbench/instance-marker-proc**
+  - →의존: workbench/instance-marker · ←피의존: — · 56줄
+- **workbench/lock-backend-uds**
+  - →의존: workbench/locks · ←피의존: — · 82줄
+- **workbench/lock-order**
+  - →의존: workbench/locks · ←피의존: — · 181줄
+- **workbench/ulid**
+  - →의존: — · ←피의존: workbench/locks · 86줄
+
 ### tools · core — AI가 작업방 안의 파일을 직접 읽고 찾아볼 수 있게 해주는 '도구 묶음'과, 그 도구들을 안전하게 반복 사용하도록 진행을 관리하는 살림꾼 모음.
 - **tools/types** — 도구가 어떤 모양과 기능을 갖춰야 하는지 정해두는 규격서(설계도) _도구라면 반드시 가져야 할 것들(AI에게 보여줄 설명, 위험도 판정, 실제 실행 함수)과 도구 명부·진행 관리자가 주고받을 정보의 형태를 약속으로 정의한다. 실제 동작 코드는 없고, 다른 파일들이 따라야 할 틀만 담는다._
   - →의존: providers/types, safety/approval, shared/types · ←피의존: mcp/host, mcp/types, mcp/wrap, session/api-session, tools/loop, tools/registry, tools/workspace-tools · 42줄
@@ -195,26 +219,6 @@
   - →의존: — · ←피의존: tools/workspace-tools, workbench/active-instance, workbench/coord-area, workspace/set-workspace · 70줄
 - **workspace/set-workspace**
   - →의존: workspace/path-guard · ←피의존: main/index, server/handlers · 36줄
-
-### workbench · core
-- **workbench/locks**
-  - →의존: workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/lock-backend-uds, workbench/lock-order · 399줄
-- **workbench/active-instance**
-  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
-- **workbench/coord-area**
-  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
-- **workbench/instance-marker**
-  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
-- **workbench/__testing__/lock-backend-fake**
-  - →의존: workbench/locks · ←피의존: — · 92줄
-- **workbench/instance-marker-proc**
-  - →의존: workbench/instance-marker · ←피의존: — · 56줄
-- **workbench/lock-backend-uds**
-  - →의존: workbench/locks · ←피의존: — · 82줄
-- **workbench/lock-order**
-  - →의존: workbench/locks · ←피의존: — · 181줄
-- **workbench/ulid**
-  - →의존: — · ←피의존: workbench/locks · 86줄
 
 ### store · core — 앱이 다루는 모든 데이터(프로젝트, 할 일, 채팅방, 대화, 기록, AI 연결 정보)를 한곳에 모아 보관하고, 컴퓨터를 껐다 켜도 그대로 남도록 파일에 저장하는 '데이터 창고'다.
 - **store/types** — 창고에 담기는 데이터들의 모양과 규칙을 미리 적어 둔 설계도 부품 _프로젝트·할 일·채팅방·저장된 AI 세션 등이 각각 어떤 항목들로 이뤄지는지 형태를 정의한 명세서다. 특히 AI 연결 정보는 구독형 CLI(클로드·코덱스 등)와 API 두 종류로 나뉘며, API 키 같은 비밀번호는 절대 그대로 적지 않고 암호로 바꾼 형태만 저장하도록 규칙을 못 박아 둔다._
@@ -248,7 +252,7 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +38 · 699줄
+  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +39 · 709줄
 - **shared/cliAuthInstallMeta**
   - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/bridge/ws-bridge, renderer/components/AddAiWizard · 42줄
 - **shared/transport/channels**
