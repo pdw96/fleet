@@ -534,26 +534,39 @@ export function createCommandRunner(deps: { launcher?: BenchLauncher }): Command
 > 된다. `area.json` 기록은 `AreaRecord` 확장(PR7/T29)까지 **미착지**이며 PR2 는 `writtenBy.durability` 에만 쓴다.
 
 ```ts
-export type DurableWriteStep = 'mkdir'|'open-tmp'|'write'|'fsync-file'|'close-tmp'
-                             | 'rename'|'open-dir'|'fsync-dir'|'close-dir'
+// ⚠ 아래는 **PR2a 착지 계약**이다(원안 대비 정정 3점은 위 블록 참조 · 소유 = core/workbench/durable-fs.ts).
+export type PreCommitStep = 'mkdir'|'open-tmp'|'write'|'fsync-file'|'close-tmp'|'rename'
+export type PostCommitStep = 'open-dir'|'fsync-dir'|'close-dir'
+export type DurableWriteStep = PreCommitStep | PostCommitStep   // rename 경계로 분할(§W-4 정정)
+export interface PathKind { readonly kind: 'regular'|'missing'|'other'; readonly size: number }
 export interface DurableFs {
   readFileUtf8(path: string): string
-  mkdirRecursive(path: string): void
-  openExclusive(path: string): number
+  statKind(path: string): PathKind     // 신설 — 읽기 전 종류 확인(FIFO 블록·symlink 권위 탈취 방어)
+  mkdirRecursive(path: string, mode: number): void   // mode 필수(권위 디렉터리 0700)
+  openExclusive(path: string, mode: number): number  // create-only
   writeAll(fd: number, data: string): void
   fsync(fd: number): void
   close(fd: number): void
   rename(from: string, to: string): void
-  openDir(path: string): number        // POSIX 전용
+  openDir(path: string): number        // POSIX 전용 — 구현은 openSync(path,'r')
   unlinkIfExists(path: string): void
 }
-export function createBenchAuthorityStore(fs: DurableFs, opts?: {...}): BenchAuthorityStore
+/** 부분 쓰기 재개(순수 · 바이트 오프셋). 실 FS 로는 부분 쓰기를 결정론적으로 만들 수 없어 seam 으로 뺀다. */
+export function writeAllBytes(write: (b: Buffer, off: number, len: number) => number, data: string): void
+export function createNodeDurableFs(): DurableFs
+export function probeDurability(fs: DurableFs, dir: string, platform: NodeJS.Platform): DurabilityLevel
+export function createBenchAuthorityStore(fs: DurableFs, opts?: {...}): BenchAuthorityStore   // PR2b
 ```
 - **IO 전량 주입이 계약**(`GitRunner`(git.ts:29-31)·`idGen`(memory.ts:25) 선례 동형).
   **`vi.spyOn(node:fs)`/`vi.mock('node:fs')` 를 계약 테스트에 사용 금지** — win32 ESM 에서 조용히 skip 되어
   fsync 실패 주입 테스트 전체가 **false-GREEN** 이 된다(실측 선례: `ignored-baseline.test.ts:142-149,244-247`).
-- 내구 등급은 부팅 1회 실측 프로브(코디네이션 영역에서 실제 openDir+fsync 시도)로 결정하고
-  `area.json` + 레코드 `writtenBy.durability` 에 기록. UI/런북 노출(조용한 강등 금지 · U4).
+- 내구 등급은 **프로브가 유일 권위**이고 쓰기 경로가 그 값을 소비한다(판정자 이원화 금지 — 쓰기가
+  플랫폼으로 분기하고 등급은 프로브로 정하면 「갖지 않은 내구성을 레코드가 주장」/「매 CAS 가
+  `commit-uncertain`」 두 어긋남이 실재한다). 프로브 = 코디네이션 영역에서 실제 `openDir`+`fsync` 시도.
+  **단 win32 는 시도하지 않고 `'file-only'` 로 상한 고정한다** — API 는 `'r+'` 로 성공하지만 그 성공이
+  문서화된 의미론이 아니므로 등급으로 올리면 U4 「조용한 강등 금지」의 쌍대인 **조용한 승격**이 된다.
+  기록처 = 레코드 `writtenBy.durability`(PR2b). ~~`area.json`~~ 은 `AreaRecord` 확장이 **PR7/T29 이월**이라
+  이 슬라이스에서 자리가 없다. UI/런북 노출은 #253/#254.
 
 ### W-6. git 계층 — 신규 표면 `GitRepo`
 

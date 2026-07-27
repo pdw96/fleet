@@ -345,7 +345,7 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세�
       // 파일을 99→103 으로 늘리면서 워커 경쟁이 임계를 넘었다 — 같은 트리에서 `--no-file-parallelism`
       // 이면 통과하고, master 전체 병렬도 통과한다). 실패 형태는 timeout 이 아니라 **손자 미종료 단언**
       // 이므로 원인은 부하 하 `taskkill /T` 완료 지연이다. 단언의 의미는 그대로 두고 창만 넓힌다 —
-      // 손자가 정말 살아남으면 여전히 RED 다(테스트 예산 25s 안: timeout 6s + 관측 12s + 여유).
+      // 손자가 정말 살아남으면 여전히 RED 다(현행 예산: timeout 15s + 관측 12s < 테스트 45s).
       await waitUntil(() => !isAlive(grandchildPid), 12_000)
       expect(isAlive(grandchildPid)).toBe(false) // 손자까지 종료됨
     } finally {
@@ -366,8 +366,8 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세�
   }, 25_000)
 
   // overflow(ENOBUFS) 경로도 동일한 killTree(child) 를 호출한다(detect.ts) — abort/timeout 로 대표 커버.
-  // timeoutMs 는 손자(node)의 cold-start + pid 출력보다 넉넉해야 한다 — 부하 걸린 windows CI 러너에서
-  // 2s 면 timeout 이 pid 캡처 전에 발화해 false RED 가 날 수 있어 여유를 둔다.
+  // timeoutMs 는 손자(node)의 cold-start + pid 출력(위 `waitUntil` 상한 8s)보다 넉넉해야 한다 —
+  // 부하 걸린 windows 러너에서 timeout 이 pid 캡처 전에 발화하면 false RED 가 난다(2s→6s→현행 15s).
   //
   // ⚠ **6s 도 부족함이 실측됐다**(#251 PR2a): 테스트 파일이 99→103 으로 늘자 로컬 win32 전체 병렬에서
   // 이 행이 재현성 있게 RED 였다(같은 트리 `--no-file-parallelism` 은 통과 · master 전체 병렬도 통과).

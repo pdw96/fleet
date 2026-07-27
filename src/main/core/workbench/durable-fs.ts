@@ -28,6 +28,19 @@ import {
  * 요구하고(MS Learn), libuv `fs__sync_impl` 은 디렉터리 검사 없이 그 오류를 번역하며 `fs__open` 은
  * `FILE_FLAG_BACKUP_SEMANTICS` 를 무조건 세워 디렉터리 열기를 허용한다. 그래서 win32 에서도 `'r+'` 면
  * API 는 성공한다. 그럼에도 **등급을 올리지 않는 이유**는 `probeDurability` 주석에 있다.
+ *
+ * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · 형제 `active-instance.ts` 와 동형 · CodeRabbit PR#264)
+ *
+ * 이 어댑터는 `rename`·`unlinkIfExists` 로 **destructive 연산**을 노출한다. 그럼에도 승인 게이트 밖인
+ * 근거는 형제 모듈과 같다 — 게이트의 범위는 «LLM 변이·프로세스 spawn»이고(소비자 = `engine`·
+ * `orchestrator`·`mcp/host`·`tools/loop`), 엔진 인프라 쓰기는 전부 게이트 밖이라는 선례가 이미 있다
+ * (`store/json-file.ts` · `ignored-baseline.ts` · `coord-area.ts` · `active-instance.ts`). 소비 경로도
+ * **부팅·CAS 임계 구역**이라 승인자가 없고, §W-3 **L-5**(승인 대기 중 락 보유 금지)와 방향이 충돌한다.
+ *
+ * ⚠ 다만 이 파일은 **경로를 스스로 고르지 않는다** — 무엇을 rename/unlink 할지는 전적으로 호출자가 준다.
+ * 따라서 「남의 파일을 지운다」를 막는 것은 이 어댑터가 아니라 **호출자의 소유 확인 + create-only 경합**
+ * 이며(PR2b 의 `withAuthority` 가 리스 재검증 뒤에만 쓰기를 태운다), 그 책임 경계를 여기 명시해 둔다.
+ * 이 seam 자체를 게이트로 감싸면 부팅·임계 구역이 승인 대기로 잠긴다.
  */
 
 /**
