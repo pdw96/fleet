@@ -601,6 +601,33 @@ describe('리스 신원은 위조·변조에 견딘다', () => {
     expect(isMintedLease(forged)).toBe(false)
   })
 
+  /**
+   * **원장만으로는 부족하다**(Codex PR#264 2R P1). `identity` 를 얼려도 **리스 객체 자체가 mutable** 이면
+   * `Object.assign(lease, { identity: B })` 가 캐스트 없이 통과하고, 그것은 **같은 객체**라 원장에
+   * 그대로 남아 `isMintedLease` 가 true 를 답한다 — 살아있는 endpoint 는 A 인데 권위 변이는 B 로 간다.
+   */
+  it('민팅된 토큰은 제자리 변조를 허용하지 않는다', async () => {
+    const backend = createFakeLockBackend()
+    const scope = createLockScope({
+      identity: { commonGitDir: `/repo-${randomBytes(8).toString('hex')}/.git`, benchRoot: '/wb' },
+      backend,
+    })
+    const r = await scope.tryAcquireBenchLease(newUlid())
+    if (r.status !== 'acquired') throw new Error(`픽스처 오류: ${r.status}`)
+    const before = { ...r.lease.identity }
+
+    // 캐스트 0개 · 타입 에러 0개. 얼지 않았다면 조용히 성공한다(strict mode 밖에서는 무시된다).
+    try {
+      Object.assign(r.lease, {
+        identity: { commonGitDir: '/other/.git', benchRoot: '/other', benchId: newUlid() },
+      })
+    } catch {
+      /* frozen 이면 strict mode 에서 throw — 그것이 정답이다 */
+    }
+    expect(r.lease.identity).toEqual(before)
+    expect(isMintedLease(r.lease)).toBe(true)
+  })
+
   it('withLeaseGuard 는 민팅되지 않은 토큰으로 변이를 실행하지 않는다', async () => {
     const backend = createFakeLockBackend()
     const scope = createLockScope({

@@ -391,8 +391,11 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
     revalidate: () => LeaseCheck,
     benchId: string,
   ): BenchLeaseToken =>
+    // **바깥 객체까지 얼린다**(Codex PR#264 2R P1). 중첩 `identity` 만 얼리면
+    // `Object.assign(lease, { identity: B })` 가 캐스트 없이 통과하는데, 그것은 **같은 객체**라
+    // 원장에 그대로 남아 `isMintedLease` 가 true 를 답한다 — 배타는 A · 변이는 B 가 된다.
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 브랜드(`BENCH_LEASE`)는 런타임 값이 없는 타입 전용 심볼이라 캐스트로만 민팅된다. 이곳이 §W-4 가 요구하는 「라이브 핸들에서만 민팅」의 유일한 forge 지점이며, 3번째 캐스트는 이 룰이 RED 로 만든다.
-    ({
+    Object.freeze({
       identity: Object.freeze({ ...identity, benchId }),
       ownerToken,
       revalidate,

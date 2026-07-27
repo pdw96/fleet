@@ -394,15 +394,30 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세�
    */
   it('손자 기동보다 짧은 timeout 에서도 러너 계약(ETIMEDOUT)은 지켜진다', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-early-'))
+    let orphanPid = 0
     try {
+      // ⚠ **이 픽스처의 손자는 반드시 스스로 죽어야 한다**(Codex PR#264 2R P1). 이 행은 「트리 킬이
+      // 손자를 놓치는」 구간을 **일부러** 지나가므로, 손자가 `setInterval` 로 영원히 살면 매 실행이
+      // 개발자 머신·CI 러너에 `node.exe` 를 **영구히** 남긴다. 자기 종료 타이머가 1차 방어이고,
+      // PID 를 잡았으면 `finally` 가 즉시 회수한다(2층).
       writeFileSync(
         join(dir, 'sleeper.cmd'),
-        '@echo off\r\nnode -e "console.log(process.pid);setInterval(()=>{},1000)"\r\n',
+        '@echo off\r\nnode -e "console.log(process.pid);setTimeout(()=>process.exit(0),10000)"\r\n',
       )
-      const res = await defaultRunner(join(dir, 'sleeper.cmd'), [], { timeoutMs: 150 })
+      const res = await defaultRunner(join(dir, 'sleeper.cmd'), [], { timeoutMs: 150 }, (chunk) => {
+        const m = chunk.match(/\d+/)
+        if (m && !orphanPid) orphanPid = Number(m[0])
+      })
       expect(res.spawnError).toBe('ETIMEDOUT')
       expect(res.code).toBeNull()
     } finally {
+      if (orphanPid && isAlive(orphanPid)) {
+        try {
+          process.kill(orphanPid)
+        } catch {
+          /* 이미 종료 */
+        }
+      }
       rmSync(dir, { recursive: true, force: true })
     }
   }, 30_000)
