@@ -341,7 +341,12 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세�
       const res = await done
       expect(res.spawnError).toBe(expectError)
 
-      await waitUntil(() => !isAlive(grandchildPid), 5000)
+      // 관측 창이 5s 였을 때 **로컬 win32 전체 병렬 실행에서 2회 연속 RED** 가 났다(#251 PR2a 가 테스트
+      // 파일을 99→103 으로 늘리면서 워커 경쟁이 임계를 넘었다 — 같은 트리에서 `--no-file-parallelism`
+      // 이면 통과하고, master 전체 병렬도 통과한다). 실패 형태는 timeout 이 아니라 **손자 미종료 단언**
+      // 이므로 원인은 부하 하 `taskkill /T` 완료 지연이다. 단언의 의미는 그대로 두고 창만 넓힌다 —
+      // 손자가 정말 살아남으면 여전히 RED 다(현행 예산: timeout 15s + 관측 12s < 테스트 45s).
+      await waitUntil(() => !isAlive(grandchildPid), 12_000)
       expect(isAlive(grandchildPid)).toBe(false) // 손자까지 종료됨
     } finally {
       if (grandchildPid && isAlive(grandchildPid)) {
@@ -361,11 +366,61 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세�
   }, 25_000)
 
   // overflow(ENOBUFS) 경로도 동일한 killTree(child) 를 호출한다(detect.ts) — abort/timeout 로 대표 커버.
-  // timeoutMs 는 손자(node)의 cold-start + pid 출력보다 넉넉해야 한다 — 부하 걸린 windows CI 러너에서
-  // 2s 면 timeout 이 pid 캡처 전에 발화해 false RED 가 날 수 있어 6s 로(25s 테스트 예산 내) 여유를 둔다.
+  // timeoutMs 는 손자(node)의 cold-start + pid 출력(위 `waitUntil` 상한 8s)보다 넉넉해야 한다 —
+  // 부하 걸린 windows 러너에서 timeout 이 pid 캡처 전에 발화하면 false RED 가 난다(2s→6s→현행 15s).
+  //
+  // ⚠ **6s 도 부족함이 실측됐다**(#251 PR2a): 테스트 파일이 99→103 으로 늘자 로컬 win32 전체 병렬에서
+  // 이 행이 재현성 있게 RED 였다(같은 트리 `--no-file-parallelism` 은 통과 · master 전체 병렬도 통과).
+  // 실패 형태가 **손자 미종료**인 이유는 관측 창 부족이 아니다(12s 로 늘려도 실패) — timeout 이 손자의
+  // cold-start 를 앞질러 발화하면 `killTree` 가 **아직 존재하지 않는 손자**를 훑고 지나가고, 그 뒤에
+  // 태어난 손자는 어느 트리에도 속하지 않은 채 살아남는다. 즉 이 테스트가 실제로 요구하는 것은
+  // 「timeout > 손자 기동」이라는 **선행 조건**이며, 그것이 깨지면 프로덕션 계약이 아니라 픽스처가 깨진다.
   it('timeout 시에도 손자(node)까지 종료한다', async () => {
-    await expectTreeKilled({ timeoutMs: 6000 }, 'ETIMEDOUT')
-  }, 25_000)
+    await expectTreeKilled({ timeoutMs: 15_000 }, 'ETIMEDOUT')
+  }, 45_000)
+
+  /**
+   * ⚠ **덮은 것이 아니라 옮긴 것이다**(Codex PR#264 P1). 위 행의 timeout 을 올리면 「timeout 이 손자
+   * 기동을 앞지르는」 경로를 더 이상 지나지 않는데, **그 경로는 실재하는 프로덕션 상태**다 — 호출자가
+   * CLI cold-start 보다 짧은 `timeoutMs` 를 고를 수 있고, 그러면 `killTree` 1회가 아직 태어나지 않은
+   * 손자를 훑고 지나가 고아가 남는다.
+   *
+   * 이 행은 그 구간을 **계속 지나가게** 유지하되 러너 계약만 단언한다: 짧은 timeout 에서도 `ETIMEDOUT`
+   * 은 정확히 반환된다. **손자 생존은 단언하지 않는다** — 타이밍 의존이고, 무엇보다 그것을 단언하면
+   * 나중에 고쳐졌을 때 RED 가 되는 **역방향 핀**이 된다.
+   *
+   * 진짜 해소는 트리 종료 재확인·프로세스 그룹 집행이며 소유자는 이미 정해져 있다 —
+   * `killTree(child, { processGroup: true })` opt-in(#251 스펙 §W-16 · PR7 T30).
+   */
+  it('손자 기동보다 짧은 timeout 에서도 러너 계약(ETIMEDOUT)은 지켜진다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-early-'))
+    let orphanPid = 0
+    try {
+      // ⚠ **이 픽스처의 손자는 반드시 스스로 죽어야 한다**(Codex PR#264 2R P1). 이 행은 「트리 킬이
+      // 손자를 놓치는」 구간을 **일부러** 지나가므로, 손자가 `setInterval` 로 영원히 살면 매 실행이
+      // 개발자 머신·CI 러너에 `node.exe` 를 **영구히** 남긴다. 자기 종료 타이머가 1차 방어이고,
+      // PID 를 잡았으면 `finally` 가 즉시 회수한다(2층).
+      writeFileSync(
+        join(dir, 'sleeper.cmd'),
+        '@echo off\r\nnode -e "console.log(process.pid);setTimeout(()=>process.exit(0),10000)"\r\n',
+      )
+      const res = await defaultRunner(join(dir, 'sleeper.cmd'), [], { timeoutMs: 150 }, (chunk) => {
+        const m = chunk.match(/\d+/)
+        if (m && !orphanPid) orphanPid = Number(m[0])
+      })
+      expect(res.spawnError).toBe('ETIMEDOUT')
+      expect(res.code).toBeNull()
+    } finally {
+      if (orphanPid && isAlive(orphanPid)) {
+        try {
+          process.kill(orphanPid)
+        } catch {
+          /* 이미 종료 */
+        }
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30_000)
 })
 
 describe.skipIf(process.platform === 'win32')('defaultRunner (취소 시 close 대기 — POSIX)', () => {

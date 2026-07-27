@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 
 import { createFakeLockBackend, type FakeLockBackend } from './__testing__/lock-backend-fake'
+import { endpointDigest } from './coord-area'
 import { createOrderedLocks, type OrderedLocks } from './lock-order'
 import { createLockScope, endpointFor, type LockKeySpec } from './locks'
 import { newUlid } from './ulid'
@@ -19,8 +20,9 @@ import { newUlid } from './ulid'
 const orderedWith = (
   backend: FakeLockBackend,
 ): { ordered: OrderedLocks; backend: FakeLockBackend; digest: string } => {
-  const digest = randomBytes(16).toString('hex')
-  return { ordered: createOrderedLocks(createLockScope({ digest, backend })), backend, digest }
+  const commonGitDir = `/repo-${randomBytes(8).toString('hex')}/.git`
+  const scope = createLockScope({ identity: { commonGitDir, benchRoot: '/wb' }, backend })
+  return { ordered: createOrderedLocks(scope), backend, digest: endpointDigest(commonGitDir) }
 }
 
 const occupy = (backend: FakeLockBackend, digest: string, spec: LockKeySpec): void => {

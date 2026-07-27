@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 96 files · 233 import wires · 47 IPC channels · 생성 2026-07-26T12:53 UTC
+> 98 files · 237 import wires · 47 IPC channels · 생성 2026-07-27T08:16 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -13,7 +13,7 @@
 - **바깥 세계 runtime** — 앱 밖의 실제 대상 — 설치된 AI CLI(클로드/코덱스/제미니), AI 회사 API, 외부 도구(MCP) 서버.
 
 ## 한눈에
-- **허브**(많이 연결): shared/types(48) · engine(29) · server/boot(16) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
+- **허브**(많이 연결): shared/types(49) · engine(29) · server/boot(16) · main/index(13) · orchestrator/orchestrator(12) · providers/types(11)
 - **진입점**: main/e2e · main/index · preload/index · renderer/main
 - **레지스트리**(확장점, 분기 대신 등록): cli/registry · providers/registry · tools/registry
 - **승인 게이트**(위험작업 차단): safety/approval
@@ -162,6 +162,30 @@
 - **mcp/client** — 외부 도구 서버 한 곳과 대화를 주고받는 통신 담당 부품 _요청에 번호표를 붙여 보내고 같은 번호의 답이 오면 짝지어 돌려준다. 30초가 지나거나 사용자가 취소하면 대기를 정리하고 서버에도 '취소' 통보를 보내며, 연결이 끊기면 기다리던 요청을 모두 실패 처리한다._
   - →의존: mcp/types · ←피의존: mcp/host · 278줄
 
+### workbench · core
+- **workbench/locks**
+  - →의존: workbench/authority, workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/authority, workbench/lock-backend-uds, workbench/lock-order · 467줄
+- **workbench/authority**
+  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/locks · 260줄
+- **workbench/active-instance**
+  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
+- **workbench/coord-area**
+  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
+- **workbench/instance-marker**
+  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
+- **workbench/__testing__/lock-backend-fake**
+  - →의존: workbench/locks · ←피의존: — · 92줄
+- **workbench/durable-fs**
+  - →의존: — · ←피의존: workbench/authority · 203줄
+- **workbench/instance-marker-proc**
+  - →의존: workbench/instance-marker · ←피의존: — · 56줄
+- **workbench/lock-backend-uds**
+  - →의존: workbench/locks · ←피의존: — · 82줄
+- **workbench/lock-order**
+  - →의존: workbench/locks · ←피의존: — · 181줄
+- **workbench/ulid**
+  - →의존: — · ←피의존: workbench/locks · 86줄
+
 ### cli · core — 클로드·코덱스·제미니 같은 명령어형 AI 프로그램(CLI)이 컴퓨터에 깔려 있는지 확인하고, 그 프로그램을 실제로 실행해 답변 글자만 깔끔하게 뽑아내며, 각 프로그램의 사용법(명령어 종류)을 한곳에 정리해 두는 모듈이다.
 - **cli/detect** — AI 명령어 프로그램을 실제로 실행하고, 깔려 있는지·어느 버전인지 확인하는 부품 _사람이 터미널에 명령어를 치듯 클로드·코덱스·제미니 프로그램을 대신 실행해 그 결과(출력 글자)를 받아온다. '--version'을 물어 설치 여부와 버전을 알아내고, 응답이 너무 오래 걸리거나(시간초과) 사용자가 중간에 취소하면 그 프로그램과 거기서 또 생긴 자식 프로그램들까지 끝까지 종료시킨 뒤 마무리한다. 여러 AI를 한꺼번에 동시 점검하는 기능도 있다._
   - →의존: process/kill-tree, shared/types · ←피의존: cli/authHint, cli/probe, engine, main/e2e, session/cli-session, verify/run, workspace/git · 398줄
@@ -196,26 +220,6 @@
 - **workspace/set-workspace**
   - →의존: workspace/path-guard · ←피의존: main/index, server/handlers · 36줄
 
-### workbench · core
-- **workbench/locks**
-  - →의존: workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/lock-backend-uds, workbench/lock-order · 399줄
-- **workbench/active-instance**
-  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
-- **workbench/coord-area**
-  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
-- **workbench/instance-marker**
-  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
-- **workbench/__testing__/lock-backend-fake**
-  - →의존: workbench/locks · ←피의존: — · 92줄
-- **workbench/instance-marker-proc**
-  - →의존: workbench/instance-marker · ←피의존: — · 56줄
-- **workbench/lock-backend-uds**
-  - →의존: workbench/locks · ←피의존: — · 82줄
-- **workbench/lock-order**
-  - →의존: workbench/locks · ←피의존: — · 181줄
-- **workbench/ulid**
-  - →의존: — · ←피의존: workbench/locks · 86줄
-
 ### store · core — 앱이 다루는 모든 데이터(프로젝트, 할 일, 채팅방, 대화, 기록, AI 연결 정보)를 한곳에 모아 보관하고, 컴퓨터를 껐다 켜도 그대로 남도록 파일에 저장하는 '데이터 창고'다.
 - **store/types** — 창고에 담기는 데이터들의 모양과 규칙을 미리 적어 둔 설계도 부품 _프로젝트·할 일·채팅방·저장된 AI 세션 등이 각각 어떤 항목들로 이뤄지는지 형태를 정의한 명세서다. 특히 AI 연결 정보는 구독형 CLI(클로드·코덱스 등)와 API 두 종류로 나뉘며, API 키 같은 비밀번호는 절대 그대로 적지 않고 암호로 바꾼 형태만 저장하도록 규칙을 못 박아 둔다._
   - →의존: shared/types · ←피의존: chat/room, engine, main/index, orchestrator/orchestrator, store/json-file, store/memory · 167줄
@@ -248,7 +252,7 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +38 · 699줄
+  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +39 · 709줄
 - **shared/cliAuthInstallMeta**
   - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/bridge/ws-bridge, renderer/components/AddAiWizard · 42줄
 - **shared/transport/channels**

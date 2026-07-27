@@ -131,8 +131,23 @@ describe('T6 구조층 — 브랜드 캐스트는 인가된 2곳뿐', () => {
     expect(casts.map((c) => c.replace(/\s+/g, ' '))).toEqual(['as BenchLeaseToken', 'as Held<L>'])
   })
 
+  /**
+   * ⚠ 술어는 **제네릭 타입 인자와 구분**돼야 한다 — 원안은 `new WeakSet<BenchLeaseToken>()` 같은
+   * 정당한 제네릭을 캐스트로 오탐했다(Codex PR#264 P1 반영 중 실측). 앵글브래킷 단언은 표현식 **앞**에
+   * 오므로 여는 `<` 앞에 식별자·`)`·`]` 가 오면 그것은 타입 인자다.
+   */
+  const ANGLE_ASSERT =
+    /(?<![A-Za-z0-9_$)\]])<\s*(?:BenchLeaseToken|Held\s*<[^>]*>)\s*>\s*[{(A-Za-z]/
+
   it('앵글브래킷 형 타입 단언(<Held<0>>expr)이 프로덕션 락 소스에 0건', () => {
-    expect(productionSrc).not.toMatch(/<\s*(?:BenchLeaseToken|Held\s*<[^>]*>)\s*>\s*[{(A-Za-z]/)
+    expect(productionSrc).not.toMatch(ANGLE_ASSERT)
+  })
+
+  it('앵커: 술어가 단언은 잡고 제네릭 타입 인자는 통과시킨다', () => {
+    expect('const x = <Held<0>>expr').toMatch(ANGLE_ASSERT)
+    expect('return <BenchLeaseToken>obj').toMatch(ANGLE_ASSERT)
+    expect('const s = new WeakSet<BenchLeaseToken>()').not.toMatch(ANGLE_ASSERT)
+    expect('function f(): Map<BenchLeaseToken, number> { return m }').not.toMatch(ANGLE_ASSERT)
   })
 })
 
@@ -250,7 +265,7 @@ describe('소스 위생 — 원시 NUL 바이트 0건(리뷰 diff 가 바이너�
 describe('T6 구조층 — 공개 표면 exact 동치', () => {
   // #251 PR1c: `INSTANCE_LOCK_KEY` 1개 증가(9→10). 인스턴스 배타는 **락이 아니지만** 이름 유도를
   // `endpointFor` 와 공유한다 — 예산 preflight 를 우회하는 두 번째 이름 조립 경로를 만들지 않기 위해서다.
-  it('locks.ts 값 export 10개', () => {
+  it('locks.ts 값 export 11개', () => {
     expect(Object.keys(locks).sort()).toEqual([
       'ABSTRACT_NAME_MAX_BYTES',
       'ENDPOINT_PREFIX',
@@ -260,6 +275,7 @@ describe('T6 구조층 — 공개 표면 exact 동치', () => {
       'availableLockBackends',
       'createLockScope',
       'endpointFor',
+      'isMintedLease',
       'nameBudget',
       'withLeaseGuard',
     ])

@@ -410,6 +410,32 @@ export default tseslint.config(
     ignores: ['src/main/core/workbench/**/*.test.ts'],
     rules: { '@typescript-eslint/no-unsafe-type-assertion': 'error' },
   },
+  // 실패 종별 소진 강제(#251 PR2a · 스펙 §W-4 「모든 CasResult 소비는 default: assertNever」). `CasResult`/`AuthorityReadResult` 는 실패 종별이
+  // 10 종을 넘고 PR2b~PR2c·PR3 이 계속 늘린다. `noFallthroughCasesInSwitch` 는 **fall-through 만** 잡고
+  // exhaustiveness 는 보지 않으므로, `default: assertNever(x)` 가 있어야 비로소 새 종별이 미처리 호출부를
+  // **컴파일 에러**로 만든다. 「default 가 없거나 assertNever 를 부르지 않는 switch」를 `:not(:has(…))` 로
+  // 잡는다(실측: ESLint 10.7.0 에서 두 오답 모두 error · 정상형 통과).
+  //
+  // ⚠ 스코프가 두 파일뿐인 이유는 **랜딩된 `locks.ts` 의 switch 2곳이 즉시 RED** 이기 때문이다(둘 다
+  // 반환 타입으로 exhaustive 를 보장하며 `default:` 가 없다) — 무관한 파일 수정을 PR 에 끌어들이지 않는다.
+  // ⚠ `no-restricted-syntax` 는 코어 블록(:333)이 이미 쓰는 키다. flat config 는 같은 키를 **교체**하므로
+  // (tools 블록 :361 과 같은 함정 · #174) `ELECTRON_DYNAMIC_IMPORT_SYNTAX` 를 여기서 **재선언**하지 않으면
+  // 이 두 파일에서 electron 동적 import 보호가 유실된다. `scripts/eslint-config-purity.test.ts` 가 핀한다.
+  {
+    files: ['src/main/core/workbench/authority.ts', 'src/main/core/workbench/durable-fs.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
+        {
+          selector:
+            "SwitchStatement:not(:has(SwitchCase[test=null] CallExpression[callee.name='assertNever']))",
+          message:
+            '판별 유니온 소비는 `default: assertNever(x)` 로 소진을 강제해야 한다(#251 §W-4) — 새 실패 종별이 추가돼도 미처리 분기가 조용히 통과한다.',
+        },
+      ],
+    },
+  },
   // Prettier 와 충돌하는 ESLint 스타일룰 비활성 (반드시 last). 현재 스타일룰 0 이라 즉효는
   // 미미하나, 향후 stylistic 룰 추가 시 포맷 책임을 Prettier 가 단독으로 갖도록 보장하는 가드.
   eslintConfigPrettier,

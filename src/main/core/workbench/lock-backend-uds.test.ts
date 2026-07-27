@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createAbstractSocketBackend } from './lock-backend-uds'
+import { endpointDigest } from './coord-area'
 import { createLockScope, endpointFor, type LockBackend } from './locks'
 import { newUlid } from './ulid'
 
@@ -26,11 +27,19 @@ import { newUlid } from './ulid'
 
 const IS_LINUX = process.platform === 'linux'
 
-const freshEndpoint = (): { endpoint: string; bare: string; digest: string } => {
-  const digest = randomBytes(16).toString('hex')
+const freshEndpoint = (): {
+  endpoint: string
+  bare: string
+  digest: string
+  commonGitDir: string
+} => {
+  // 스코프가 digest 를 **identity 에서 유도**하므로(계획 정정 54) 픽스처도 같은 경로로 만든다 —
+  // 여기서 digest 를 따로 지어내면 테스트가 프로덕션과 다른 이름 공간을 쓰게 된다.
+  const commonGitDir = `/repo-${randomBytes(8).toString('hex')}/.git`
+  const digest = endpointDigest(commonGitDir)
   const ep = endpointFor(digest, { kind: 'repo' })
   if (ep.status !== 'ok') throw new Error('픽스처 오류')
-  return { endpoint: ep.endpoint, bare: ep.endpoint.slice(1), digest }
+  return { endpoint: ep.endpoint, bare: ep.endpoint.slice(1), digest, commonGitDir }
 }
 
 const children: ChildProcess[] = []
@@ -243,8 +252,8 @@ describe.skipIf(!IS_LINUX)('§3-T7 — 커널 endpoint 는 삭제 대상이 아�
     tmpDirs.push(area)
     writeFileSync(join(area, 'area.json'), '{}')
 
-    const { digest } = freshEndpoint()
-    const scope = createLockScope({ digest, backend })
+    const { commonGitDir } = freshEndpoint()
+    const scope = createLockScope({ identity: { commonGitDir, benchRoot: '/wb' }, backend })
     const benchId = newUlid()
     const repo = await scope.tryAcquire({ kind: 'repo' })
     const bench = await scope.tryAcquireBenchLease(benchId)
@@ -413,8 +422,10 @@ describe.skipIf(process.platform !== 'win32')('win32 — 조용한 성공 없이
   })
 
   it('스코프 층에서는 unavailable 로 관측된다(모호는 fail-closed)', async () => {
-    const digest = randomBytes(16).toString('hex')
-    const scope = createLockScope({ digest, backend: createAbstractSocketBackend() })
+    const scope = createLockScope({
+      identity: { commonGitDir: `/repo-${randomBytes(8).toString('hex')}/.git`, benchRoot: '/wb' },
+      backend: createAbstractSocketBackend(),
+    })
     expect((await scope.tryAcquire({ kind: 'repo' })).status).toBe('unavailable')
   })
 })
