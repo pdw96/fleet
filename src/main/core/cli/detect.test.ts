@@ -378,6 +378,34 @@ describe.skipIf(process.platform !== 'win32')('defaultRunner (Windows 프로세�
   it('timeout 시에도 손자(node)까지 종료한다', async () => {
     await expectTreeKilled({ timeoutMs: 15_000 }, 'ETIMEDOUT')
   }, 45_000)
+
+  /**
+   * ⚠ **덮은 것이 아니라 옮긴 것이다**(Codex PR#264 P1). 위 행의 timeout 을 올리면 「timeout 이 손자
+   * 기동을 앞지르는」 경로를 더 이상 지나지 않는데, **그 경로는 실재하는 프로덕션 상태**다 — 호출자가
+   * CLI cold-start 보다 짧은 `timeoutMs` 를 고를 수 있고, 그러면 `killTree` 1회가 아직 태어나지 않은
+   * 손자를 훑고 지나가 고아가 남는다.
+   *
+   * 이 행은 그 구간을 **계속 지나가게** 유지하되 러너 계약만 단언한다: 짧은 timeout 에서도 `ETIMEDOUT`
+   * 은 정확히 반환된다. **손자 생존은 단언하지 않는다** — 타이밍 의존이고, 무엇보다 그것을 단언하면
+   * 나중에 고쳐졌을 때 RED 가 되는 **역방향 핀**이 된다.
+   *
+   * 진짜 해소는 트리 종료 재확인·프로세스 그룹 집행이며 소유자는 이미 정해져 있다 —
+   * `killTree(child, { processGroup: true })` opt-in(#251 스펙 §W-16 · PR7 T30).
+   */
+  it('손자 기동보다 짧은 timeout 에서도 러너 계약(ETIMEDOUT)은 지켜진다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-early-'))
+    try {
+      writeFileSync(
+        join(dir, 'sleeper.cmd'),
+        '@echo off\r\nnode -e "console.log(process.pid);setInterval(()=>{},1000)"\r\n',
+      )
+      const res = await defaultRunner(join(dir, 'sleeper.cmd'), [], { timeoutMs: 150 })
+      expect(res.spawnError).toBe('ETIMEDOUT')
+      expect(res.code).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30_000)
 })
 
 describe.skipIf(process.platform === 'win32')('defaultRunner (취소 시 close 대기 — POSIX)', () => {

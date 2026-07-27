@@ -13,6 +13,7 @@ import {
   type LockHandle,
   type LockScope,
   INSTANCE_LOCK_KEY,
+  isMintedLease,
   nameBudget,
   REPO_LOCK_KEY,
   SLOT_INDEX_MAX,
@@ -539,5 +540,86 @@ describe('BenchLeaseToken.identity — 권위 CAS 가 대조에 쓰는 3쌍', ()
     expect(backend.calls).toEqual([
       { op: 'bind', endpoint: endpointOf(endpointDigest(commonGitDir), { kind: 'repo' }) },
     ])
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------------------------
+ * Codex PR#264 P1 — 리스 신원의 무결성(스냅샷 · 변조 감지)
+ * ---------------------------------------------------------------------------------------------
+ */
+
+describe('리스 신원은 위조·변조에 견딘다', () => {
+  /**
+   * `readonly` 는 **참조된 객체를 얼리지 않는다.** 호출자가 평범한 mutable 객체를 넘기면
+   * `createLockScope()` 반환 후(또는 `bind()` await 중)에 `commonGitDir` 을 바꿀 수 있고, digest 는
+   * 원본에서 유도됐으므로 **레포 B 를 가리키는 토큰이 레포 A 의 endpoint 로 뒷받침**된다.
+   */
+  it('생성 시점 identity 를 스냅샷한다(호출자가 나중에 바꿔도 불변)', async () => {
+    const backend = createFakeLockBackend()
+    const mutable = {
+      commonGitDir: `/repo-${randomBytes(8).toString('hex')}/.git`,
+      benchRoot: '/wb',
+    }
+    const original = mutable.commonGitDir
+    const scope = createLockScope({ identity: mutable, backend })
+
+    mutable.commonGitDir = '/hijacked/.git'
+    mutable.benchRoot = '/hijacked-wb'
+
+    const benchId = newUlid()
+    const r = await scope.tryAcquireBenchLease(benchId)
+    if (r.status !== 'acquired') throw new Error(`픽스처 오류: ${r.status}`)
+    expect(r.lease.identity).toEqual({ commonGitDir: original, benchRoot: '/wb', benchId })
+    // endpoint 도 같은 원본에서 유도됐음을 교차 확인(둘이 갈리면 배타와 대조가 다른 레포를 가리킨다).
+    expect(backend.calls[0]?.endpoint).toBe(
+      endpointOf(endpointDigest(original), { kind: 'bench', benchId }),
+    )
+  })
+
+  /**
+   * **스프레드 위조는 캐스트 없이 성립한다**: TypeScript 는 객체 스프레드에서 미export `unique symbol`
+   * 멤버를 보존하고, 민팅된 런타임 객체에는 브랜드 **값**이 없다. 따라서 `no-unsafe-type-assertion` 은
+   * green 이고, 복제 토큰은 A 의 살아있는 `revalidate` 를 든 채 B 를 가리킨다.
+   * 타입으로 막을 수 없으므로 **런타임 출처 확인**이 유일한 방어다.
+   */
+  it('민팅되지 않은 복제 토큰을 구별한다', async () => {
+    const backend = createFakeLockBackend()
+    const scope = createLockScope({
+      identity: { commonGitDir: `/repo-${randomBytes(8).toString('hex')}/.git`, benchRoot: '/wb' },
+      backend,
+    })
+    const r = await scope.tryAcquireBenchLease(newUlid())
+    if (r.status !== 'acquired') throw new Error(`픽스처 오류: ${r.status}`)
+
+    expect(isMintedLease(r.lease)).toBe(true)
+    // 캐스트 0개로 만들어지는 위조 — 브랜드 멤버가 스프레드로 보존된다.
+    const forged: BenchLeaseToken = {
+      ...r.lease,
+      identity: { commonGitDir: '/other/.git', benchRoot: '/other', benchId: newUlid() },
+    }
+    expect(isMintedLease(forged)).toBe(false)
+  })
+
+  it('withLeaseGuard 는 민팅되지 않은 토큰으로 변이를 실행하지 않는다', async () => {
+    const backend = createFakeLockBackend()
+    const scope = createLockScope({
+      identity: { commonGitDir: `/repo-${randomBytes(8).toString('hex')}/.git`, benchRoot: '/wb' },
+      backend,
+    })
+    const r = await scope.tryAcquireBenchLease(newUlid())
+    if (r.status !== 'acquired') throw new Error(`픽스처 오류: ${r.status}`)
+    const forged: BenchLeaseToken = {
+      ...r.lease,
+      identity: { ...r.lease.identity, benchId: newUlid() },
+    }
+
+    let ran = false
+    const out = await withLeaseGuard(forged, async () => {
+      ran = true
+      return 1
+    })
+    expect(ran).toBe(false)
+    expect(out).toEqual({ kind: 'lost', reason: 'stolen' })
   })
 })

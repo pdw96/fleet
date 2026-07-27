@@ -307,7 +307,14 @@ export interface LockScopeOptions {
  * 「락 모듈 export 집합 exact 동치」 + 「raw 획득 이름이 모듈 밖 소스에 0건」.
  */
 export function createLockScope(opts: LockScopeOptions): LockScope {
-  const digest = endpointDigest(opts.identity.commonGitDir)
+  // **생성 시점 스냅샷**(Codex PR#264 P1). `readonly` 는 참조된 객체를 얼리지 않으므로, 호출자가 평범한
+  // 객체를 넘기면 이 함수가 반환된 뒤에도(또는 `bind()` 를 await 하는 동안) 필드를 바꿀 수 있다.
+  // digest 는 원본에서 유도되는데 민팅이 변형본을 읽으면 **레포 B 토큰이 레포 A endpoint 로 뒷받침**된다.
+  const identity = Object.freeze({
+    commonGitDir: opts.identity.commonGitDir,
+    benchRoot: opts.identity.benchRoot,
+  })
+  const digest = endpointDigest(identity.commonGitDir)
   const acquire = async (
     spec: LockKeySpec,
   ): Promise<
@@ -385,7 +392,11 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
     benchId: string,
   ): BenchLeaseToken =>
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 브랜드(`BENCH_LEASE`)는 런타임 값이 없는 타입 전용 심볼이라 캐스트로만 민팅된다. 이곳이 §W-4 가 요구하는 「라이브 핸들에서만 민팅」의 유일한 forge 지점이며, 3번째 캐스트는 이 룰이 RED 로 만든다.
-    ({ identity: { ...opts.identity, benchId }, ownerToken, revalidate }) as BenchLeaseToken
+    ({
+      identity: Object.freeze({ ...identity, benchId }),
+      ownerToken,
+      revalidate,
+    }) as BenchLeaseToken
 
   return {
     async tryAcquire(spec) {
@@ -397,9 +408,29 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
       const r = await acquire({ kind: 'bench', benchId })
       if (r.status !== 'acquired') return r
       const { handle, revalidate } = makeHandle(r.key, r.bound, r.ownerToken)
-      return { status: 'acquired', handle, lease: mintLease(r.ownerToken, revalidate, benchId) }
+      const lease = mintLease(r.ownerToken, revalidate, benchId)
+      MINTED_LEASES.add(lease)
+      return { status: 'acquired', handle, lease }
     },
   }
+}
+
+/**
+ * 민팅 원장 — **이 모듈이 실제로 발급한 토큰만** 담는다(Codex PR#264 P1).
+ *
+ * 브랜드 `unique symbol` 은 위조를 막지 못한다: `const forged: BenchLeaseToken = {...lease, identity: B}`
+ * 는 **캐스트 0개**로 컴파일된다(TS 가 스프레드에서 미export 심볼 멤버를 보존하고, 민팅된 런타임 객체에는
+ * 브랜드 **값**이 아예 없다). 그런 복제본은 A 의 살아있는 `revalidate` 를 든 채 B 를 가리키므로
+ * 「배타는 A · 변이는 B」라는 cross-repo fail-open 이 된다 — 정확히 정정 54 가 타입에서 없앤 그 구멍이
+ * 런타임으로 되돌아온 형태다. 타입으로 막을 수 없으니 **출처를 런타임에 확인**한다.
+ *
+ * `WeakSet` 인 이유: 토큰 수명을 붙잡지 않는다(리스가 GC 되면 원장에서도 사라진다).
+ */
+const MINTED_LEASES = new WeakSet<BenchLeaseToken>()
+
+/** 이 프로세스의 `LockScope` 가 발급한 정품 토큰인가. 복제·수작업 조립은 false. */
+export function isMintedLease(lease: BenchLeaseToken): boolean {
+  return MINTED_LEASES.has(lease)
 }
 
 export type LeaseGuardResult<T> =
@@ -421,6 +452,11 @@ export async function withLeaseGuard<T>(
   lease: BenchLeaseToken,
   mutate: () => Promise<T>,
 ): Promise<LeaseGuardResult<T>> {
+  // **출처 먼저**(Codex PR#264 P1). 복제 토큰은 원본의 살아있는 `revalidate` 를 그대로 들고 있어
+  // `owned` 를 답한다 — 즉 재검증만으로는 「A 의 리스로 B 를 변이」를 구분하지 못한다.
+  // `stolen` 으로 분류하는 이유: 「이 크레덴셜은 이 프로세스가 인가한 보유를 대표하지 않는다」가
+  // `released`(내가 놓았다)보다 정확하고, 소비자의 fail-closed 분기가 이미 그 어휘를 처리한다.
+  if (!isMintedLease(lease)) return { kind: 'lost', reason: 'stolen' }
   const check = lease.revalidate()
   if (check.kind === 'lost') return { kind: 'lost', reason: check.reason }
   return { kind: 'ran', value: await mutate() }

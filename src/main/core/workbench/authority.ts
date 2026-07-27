@@ -200,8 +200,16 @@ export type CasResult =
     }
   /**
    * `released`·`stolen` 은 리스 자신의 어휘(`LeaseCheck`)에서 온다. `foreign-owner`·`identity-mismatch` 는
-   * **이 층이 생산**한다 — 전자는 레코드의 `writtenBy.ownerToken` 이 현 리스와 다를 때, 후자는 레코드
-   * identity 가 리스 identity 와 어긋날 때다(감사 L1-3: 스펙이 생산 조건을 서술하지 않아 여기서 고정).
+   * **이 층이 생산**한다(감사 L1-3: 스펙이 생산 조건을 서술하지 않아 여기서 고정).
+   *
+   * - `identity-mismatch` — 레코드 identity 가 리스 identity 와 어긋난다.
+   * - `foreign-owner` — 제출된 `FreshReadToken.leaseOwnerToken` 이 **지금 CAS 를 수행하는 리스의
+   *   `ownerToken` 과 다르다**. 즉 「남의 임계 구역에서 발급된 읽기 토큰을 들고 왔다」는 뜻이다.
+   *
+   * ⚠ **레코드의 `writtenBy.ownerToken` 과 비교하는 것이 아니다**(Codex PR#264 P1). 획득은 매번 새
+   * `ownerToken` 을 만들므로, 리스 A 가 커밋하고 해제한 뒤 정당한 리스 B 가 읽으면 `writtenBy` 는 **항상**
+   * A 다 — 그 비교를 쓰면 **모든 후속 CAS 가 `lease-invalid`** 가 되어 정상 활동도, 문서화된 고아 상태
+   * 회수도 불가능해진다. `writtenBy` 는 **진단·감사 기록**이지 인가 술어가 아니다.
    */
   | {
       readonly kind: 'lease-invalid'
