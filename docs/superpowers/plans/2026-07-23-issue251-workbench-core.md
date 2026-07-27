@@ -41,6 +41,10 @@
 5. **fs mock 금지** — `vi.spyOn(node:fs)` 는 win32 ESM 에서 조용히 skip(false-GREEN · 선례
    `ignored-baseline.test.ts:142-149,244-247`). 실패 주입은 **주입 `DurableFs` 페이크로만**.
 6. **PR 상한 = 코드 순증 1,900행**(기준선 평균 1,447·최대 1,918). 초과 시 **사전 선언한 분할점**을 적용한다.
+   **측정 시점 = 머지 직전 HEAD**(`git diff --numstat origin/master...HEAD` 의 `src/`+`scripts/`+`deploy/`+`e2e/`
+   순증 · 테스트 포함 · `docs/` 제외). 최초 푸시 시점 측정 **금지** — 리뷰 라운드가 코드를 늘린다(정정 74:
+   PR1b 는 1,581 로 기록됐으나 머지 트리 실측은 ≈2,430 이었다). 추정은 **「프로덕션 물리행 × 실측 배수
+   2.66~3.28」**(정정 51) — 「§3 행 개수 × 행당 비용」 모델은 세 번 연속 빗나갔으므로 쓰지 않는다.
 7. **커버리지는 함수 수가 아니라 4메트릭 실측으로 관리**(§3.1). PR 마다 4수치를 PR 본문에 기록하고,
    신규 모듈 **자체 statements ≥86%** 를 태스크 완료 조건으로 둔다.
 8. **엔진 미배선 불변식(정직 문안)**: PR0 을 제외한 PR1~PR5 는 `engine.ts`·`main/index.ts`·`server/boot.ts`·
@@ -71,7 +75,10 @@
 | **PR1a** | ID · 코디네이션 영역(파일시스템·git 층) | T1·T2 | **실측 1,176** | 없음(상한 내) |
 | **PR1b** | 자문 락 코어(커널 endpoint 층) · 서열 | T3·T4·T6 | 810~1,530 | 없음 |
 | **PR1c** | 인스턴스 배타 · 배포 계약 집행 | T5 | 570~950 | 없음 |
-| **PR2** | 계약 사슬 · 내구 쓰기 · 권위 CAS | T6b~T10 | 1,500~1,850 | T9 종료 >1,500 → T10 을 PR2b |
+| ~~**PR2**~~ | ~~계약 사슬 · 내구 쓰기 · 권위 CAS~~ | ~~T6b~T10~~ | ~~1,500~1,850~~ | ~~T9 종료 >1,500 → T10 을 PR2b~~ |
+| **PR2a** | 계약 사슬 골격 · 내구 쓰기 seam | T6b·T7 | 1,300~1,600 | 없음 |
+| **PR2b** | 권위 CAS 코어(`withAuthority`·`AuthorityTx`) | T8 | 1,500~1,700 | 불변식 9종 종료 >1,500 → §3-T61 전수표를 PR2b′ |
+| **PR2c** | rename 재시도 · `commit-uncertain` · launcher 브랜드 | T9·T10(**배선 제외**) | 700~1,000 | 없음 |
 | **PR3** | `GitRepo` · 통합 WAL 저널 · 복구 판정 | T11~T13 | 1,200~1,500 | 없음 |
 | **PR4** | slug · 레지스트리 · 태스크 경로 seam | T14~T17 | 1,400~1,750 | T16 종료 >1,400 → T17 을 PR4b |
 | **PR5** | 통합 트랜잭션 · 완결 관측 · 승인 2-페이즈 | T18~T21 | 1,150~1,450 | 없음 |
@@ -377,6 +384,67 @@ README·ADR·e2e 핀을 **PR1c′** 로 분리한다(상한 1,900 · §1-6).
   §3-T10(회수 = 커널 배타성 단독 · **락 소유 권위 레코드 부재** 구조 단언).
 
 ### PR2 — 계약 사슬 · 내구 쓰기 · 권위 CAS
+
+#### PR2 착수 전 실측 정정 (2026-07-27 · 6렌즈 감사 + 3면 런타임 실측)
+
+PR0~PR1c′ 가 확립한 「착수 전 ripple 전수 감사」를 PR2 에 적용했다. 6렌즈 find → 렌즈별 독립
+refuter(**88 후보 · 56 CONFIRMED · 30 PARTIAL · 2 REFUTED**), 그리고 **하중 프리미티브는 메인 루프가
+3면에서 직접 실측**했다 — win32 로컬(Node 24.16.0) · Docker `node:22.22.3`(필수 CI 게이트 런타임) ·
+`node:24-bookworm-slim --user 1000:1000`(프로덕션 근사). 동일 스크립트를 세 면에 태웠다.
+
+**실측 확정 사실 — `DurableFs` 프리미티브는 플랫폼별로 정확히 반대다**
+
+| 측정 | win32 24.16.0 | linux 22.22.3 | linux 24.18.0 |
+|---|---|---|---|
+| `openSync(dir,'r')` → `fsyncSync` | OK → **EPERM** | OK → **OK** | OK → **OK** |
+| `openSync(dir,'r+')` → `fsyncSync` | **OK → OK** | **EISDIR** | **EISDIR** |
+| `fsyncSync(**파일** `'r'` fd)` | **EPERM** | OK | OK |
+| `fsyncSync(닫힌 fd)` | EBADF | EBADF | EBADF |
+| `opendirSync()` 의 fd 노출 | **없음** | 없음 | 없음 |
+| `openSync(new,'wx',0o600)` 후 mode | **0o666** | 0o600 | 0o600 |
+| `mkdirSync(mode:0o700)` 후 mode | **0o666** | 0o700 | 0o700 |
+| **rename (대상이 fd 로 열림)** | **EPERM** | OK | OK |
+| rename (소스가 fd 로 열림) | OK | OK | OK |
+| rename → 기존 디렉터리 | EPERM | EISDIR | EISDIR |
+| `writeSync` 8MiB 1회 | 부분쓰기 없음 | 없음 | 없음 |
+
+| # | 계획/스펙 원문 | 실측 | 조치 |
+|---|---|---|---|
+| 51 | §3 분할표 「PR2 = T6b~T10 · 1,500~1,850 · 분할점 T10 을 PR2b」 | **코드 0줄 시점에 초과가 계산된다.** 형제 모듈 전수 실측으로 「총 순증 = 프로덕션 물리행 × **2.66~3.28**」 밴드가 확정된다(workbench 프로덕션 8파일 1,665 + 페이크 91 → 테스트 10파일 3,621 = 3.06배 · PR1c 독립 검산 566→1,854 = 3.28배 · PR1a 가 하한). 보수적으로 프로덕션 900 만 잡아도 총 ≥2,400 이고, T10 을 후하게 700 으로 떼도 1,700 은 **가장 낙관적 조합에서만** 상한 이내다 — PR1a 정정 ④·PR1c 분할점 발동의 **세 번째 동형 재발** | **착수 전 3분할 확정**(§3 표 갱신): **PR2a = T6b+T7** / **PR2b = T8** / **PR2c = T9+T10(배선 제외)**. 경계 근거 = ⓐ서로 다른 실패 모드(파일시스템 내구성 ↔ 인메모리 직렬화·revision 충돌 ↔ 재시도·기동 순서) ⓑ의존 **단방향**(store 가 `DurableFs` 를 소비 · 역방향 0) ⓒ각 경계 시점 **소비자 0**(엔진 미배선 · §1-8). 추정 방법을 「§3 행 개수 × 행당 비용」이 아니라 **「프로덕션 물리행 × 실측 배수 밴드」**로 §1 에 규범화 |
+| 52 | 계획 T10 「spawn seam 2곳」 · 스펙 §W-16:906 「`detect.ts`·`mcp/stdio.ts` 를 계약에 명시」 | **PR1c 가 랜딩한 §3-T8f 승격판이 이를 즉시 RED 로 만든다.** `src/server/boot-workbench.test.ts:214-219` = 「폐포에 `core/workbench/**` 0건」 `expect(hits).toEqual([])`. 간선 추출 정규식(:192 `/(?:from\|import\|require)\s*\(?\s*['"]([^'"]+)['"]/g`)이 **`import type` 을 구분하지 않고** 폐포는 전이적이다. `cli/detect.ts`·`mcp/stdio.ts` 는 `engine.ts:27,41` 을 통해 데스크톱 폐포 안이고 같은 테스트 :210 이 그 도달을 앵커로 단언한다 → **타입 한 줄 import 로도 RED**. 타입을 다른 파일로 옮겨도 그 파일이 authority 를 참조하면 전이로 걸린다 | **T10 의 spawn seam 배선 2곳을 PR7 로 이월**(정정 ①이 boot 배선에 한 것과 동형). PR2c 는 **workbench 안에서** `BenchLauncher` 타입·`createBenchLauncher(commit)` 팩토리·commit 단일사용까지만 착지하고 **소비자 0** 을 유지한다. 폐포 핀을 「타입 전용 간선 예외」로 개정하는 안은 **기각** — 그 핀이 증명하는 것이 정확히 「서버 전용 범위」이고, 파서 없이 정규식으로 `import {type X}` 혼합형을 구분할 수 없어 개정이 곧 무신호다. eslint bench-spawn 가드(§3-T16c)도 **같은 이유로 PR7 동반 이월**(정정 64) |
+| 53 | §3-T16 「`fsync-file`/`rename`/**`fsync-dir`** 각각 throw 시 `io-failure{step}` · lifecycle 무변」 ∧ §3-T17e·§W-4:396-398 「rename 성공 후 dir fsync 실패 = **`commit-uncertain`** · 디스크 revision 전진」 | **같은 주입에 상반된 반환을 요구한다.** 내구 순서(§W-4:471-474)상 `fsync-dir` 은 **항상 rename 뒤**이므로 도달 시 반드시 충돌한다 → 계획대로면 T8 과 T9 가 서로를 RED 로 만든다. 권위는 T17e(Codex 체크포인트 2 P1-5 로 이미 닫힌 구분). 게다가 `io-failure{step: DurableWriteStep}`(spec:395)의 `DurableWriteStep`(spec:516-517)이 `'open-dir'\|'fsync-dir'\|'close-dir'` 를 포함해 **타입 자체가** spec:394 주석(「rename 성공 전 실패」)과 모순 = tsc 무신호 | `DurableWriteStep` 을 **`PreCommitStep`(mkdir·open-tmp·write·fsync-file·close-tmp·rename) + `PostCommitStep`(open-dir·fsync-dir·close-dir)** 으로 쪼개고 `io-failure.step: PreCommitStep` 으로 좁힌다(타입이 오답을 거부). §3-T16 의 주입 대상은 **rename 성공 전 단계 한정**으로 축소, `fsync-dir` 은 T17e 단독 귀속. ⚠ 잔여 구멍도 함께 닫는다 — `open-dir`·`close-dir` 실패는 현재 **어느 종별에도 귀속되지 않는다**(`commit-uncertain.step` 은 리터럴 `'fsync-dir'` 단일) → `commit-uncertain.step: PostCommitStep` 으로 확장 |
+| 54 | 스펙 §W-4:355 「`BenchLeaseToken.identity: BenchAuthorityIdentity`」 · 계획 T6b 「타입 배치표 전량 확정」 | **민팅 지점에 채울 데이터가 구조적으로 없다.** `createLockScope` 가 받는 것은 `LockScopeOptions{digest, backend}` 뿐(locks.ts:279-283)이고 `digest` 는 sha256 단방향(coord-area.ts:95-97)이라 `commonGitDir` 역산 불가 · `benchRoot` 는 랜딩된 워크벤치 **데이터 구조 어디에도 없다**(src 전수: 주석 2건뿐) · `locks.ts` 는 `fs`·`path` 를 **어떤 표기로도** import 금지(locks-structure.test.ts:59-65)라 정준화 자체가 불가. 즉 **public 시그니처 변경**이고 호출부 4곳 갱신을 요구한다 | `LockScopeOptions` 를 **`{ identity: { commonGitDir, benchRoot }, backend }`** 로 확장하고 `digest` 는 **옵션 안에서 `endpointDigest(identity.commonGitDir)` 로 유도**(digest↔commonGitDir 불일치 창을 타입에서 제거). 정준화·검증은 **호출자 책임**(PR7)임을 주석에 명시 — PR2 는 문자열을 받기만 한다. 호출부 4곳(locks.test.ts:197 · lock-backend-uds.test.ts:247,417 · lock-order.test.ts:23)을 ripple 표에 등재 |
+| 55 | 스펙 §W-4:349-362 가 `BENCH_LEASE`·`LeaseCheck`·`BenchLeaseToken` 을 **다시 선언**(펜스 헤더 없음 · 앞 펜스는 `// authority.ts`) | 같은 3종이 **이미 `locks.ts` 에 랜딩**돼 있다(:211-213,224,230-238). `unique symbol` 은 선언마다 별개 타입이라 재선언하면 locks 가 민팅한 토큰이 authority 의 동명 타입에 **비대입**이다. 다만 실패 모드는 조용하지 않다(typecheck 즉시 RED = fail-loud) | 소유 = **`locks.ts`**(PR1b 랜딩) · `authority.ts` 는 **`import type` 단방향 소비**. `verbatimModuleSyntax`(tsconfig.base.json:15)라 타입 import 는 런타임 소거되어 값 순환 없음. T6b 배치표에 못 박고 PR 본문 「스펙 정정」에 등재 |
+| 56 | 스펙 §W-4:333 「`IntegrationStage`(§W-7)」 · §3 분할표가 §W-7 을 **PR3** 에 배정 | `BenchAuthorityRecord.currentIntegrationStage` 가 참조하므로 **PR2 가 정의하지 않으면 컴파일되지 않는다**(PR3 소유 타입을 PR2 가 필드로 쓰는 순환) | 어휘는 §0.1 **C7 이 이미 확정**(`prepared → composed → published → finalized` + `abandoned`)이므로 창작이 아니다 → **`authority.ts` 가 소유**, PR3 `journal` 이 import(방향 journal→authority = 비순환) |
+| 57 | 스펙 §W-4:333 「`SpawnOpts`(현행 `detect.ts` 타입 **재사용**)」 · §W-16:894 「`SpawnOpts` 에 `detached?`」 | **그런 타입은 레포에 없다**(src 전수 0건). `detect.ts` 가 가진 것은 **`RunOpts`**(:17-36 — `timeoutMs`·`cwd`·`signal`·`stdinInput`·`env`)이고 이는 **spawn 인자가 아니다**(실제 spawn 옵션은 :138-142 의 **이름 없는 인라인 리터럴** `{windowsHide, cwd, ...(env)}`). 두 스펙 문장도 상호 모순 — §333 이 참이면 `SpawnOpts ≡ RunOpts` 이므로 §894 의 「`RunOpts` 확장은 선택」이 성립 불가 | **신규 정의로 확정**(재사용 아님): `BenchSpawnOptions = node child_process `SpawnOptions` 의 사용 부분집합`(`windowsHide`·`cwd?`·`env?`·`stdio?`·`detached?`). 두 호출부의 shape 가 다르므로(stdio.ts:17 은 `stdio` 를 준다) **합집합**이어야 한다. 스펙 문면 정정을 PR 본문에 등재 |
+| 58 | 스펙 §W-4:500 `createCommandRunner(deps:{launcher?}): CommandRunner` + §W-4:498 4-arg `BenchLauncher` | **합성 불가**다. `CommandRunner`(detect.ts:42-47)는 `(command,args,opts:RunOpts,onStdout?)` 로 확정돼 **commit 을 실어 나를 채널이 없다** → 반환된 러너가 `launcher(...,commit)` 을 부를 때 4번째 인자의 출처가 없다. 스펙 자신(§W-16:909-910)은 「활동 컨텍스트는 `RunOpts` 에 싣지 않고 **클로저 주입**」이라 반대 방향을 규정 | 브랜드 강제를 **팩토리 인자**로 옮긴다: `createBenchLauncher(commit: AuthorityCommit): (cmd,args,opts)=>ChildProcess`. §3-T16b(`@ts-expect-error`)의 대상도 호출부가 아니라 **팩토리 호출**로 정정. 「AuthorityCommit 없이는 인자 부족으로 컴파일되지 않는다」는 1차 방어는 그대로 성립한다(한 단계 위로 이동) |
+| 59 | §W-5:516-528 `DurableFs` 9메서드 | **파일 종류·크기 판별 프리미티브가 없다.** 그런데 형제 2모듈은 「읽기 전 종류 확인」을 계약으로 굳혔다(coord-area.ts:181-186 `isLinkSync`=`'regular'` 선검사 · active-instance 5분기 정정 ㊵). 그 근거는 이 레포 실측 — **FIFO 면 `readFileSync` 가 무기한 블록**(부팅 정지) · **symlink 면 영역 밖 JSON 이 권위**가 된다. 현 인터페이스로는 ⓐ그 방어를 드롭(형제 대비 회귀)하거나 ⓑ store 안에서 `node:fs` 직접 호출(§W-5:531 「IO 전량 주입」 파기 + 페이크 검증 불가) 둘 중 하나가 강제된다 | `DurableFs` 에 **`statKind(path): {kind:'regular'\|'missing'\|'other'; size:number}`** 를 추가해 형제 규율을 **주입 seam 위에서** 재현한다. 권위 레코드 읽기는 `statKind` → `'regular'` 아닌 경우 **`invalid`(자동 삭제 금지)** 로 분기. §W-5 인터페이스 확장을 PR 본문에 등재 |
+| 60 | §W-4:471-474 「[POSIX] openDir→fsync(dirFd) / [win32] **생략**」 ∧ §W-5:534 「내구 등급은 **부팅 1회 실측 프로브**로 결정」 | **판정자가 둘이라 어긋나는 조합이 실재한다**: ⓐwin32 에서 프로브가 성공하면 등급이 `'file+dir'` 로 **승격**되는데 쓰기 경로는 여전히 '생략' → **갖지 않은 내구성을 레코드가 주장** ⓑLinux 에서 프로브가 실패하면 등급은 `'file-only'` 인데 쓰기 경로는 플랫폼 기준이라 계속 `openDir` 을 호출해 매 CAS 가 `commit-uncertain` | **프로브 결과를 유일 권위로 통일**(쓰기 경로가 그 값을 소비 · 플랫폼 리터럴 분기 제거) + **프로브는 강등만 가능**하도록 win32 를 `'file-only'` 로 **상한 고정**(U4 「조용한 강등 금지」의 쌍대 = **조용한 승격 금지**). §3-T18 에 「win32 에서 프로브가 성공해도 등급은 `'file-only'`」 1행 추가 |
+| 61 | §0.1 C3 · §W-4:474 「win32: `fsyncSync(dirFd)` = **EPERM**」을 `'file-only'` 강등의 근거로 제시 | **사실은 맞으나 원인 귀속이 틀렸다** — 3면 실측: win32 는 `'r+'` 로 열면 **디렉터리 fsync 가 성공**하고, 반대로 **파일**도 `'r'` fd 면 EPERM 이다. 원인은 「디렉터리」가 아니라 **권한**이다: `FlushFileBuffers` 는 **`GENERIC_WRITE` 를 요구**하고(MS Learn 원문) libuv `fs__sync_impl` 은 디렉터리 검사 없이 그 에러를 번역하며 `fs__open` 은 `FILE_FLAG_BACKUP_SEMANTICS` 를 **무조건** 설정한다. 게다가 Linux 는 `'r+'` 가 **EISDIR** 이라 같은 코드로 양 OS 를 못 탄다 | 강등은 **유지**하되 근거를 재기술: ⑴`'r'` fd 는 양 종류 모두 EPERM ⑵`'r+'` 는 API 성공이나 **MS 문서가 디렉터리 핸들 의미론을 규정하지 않는다**(별도 규정은 *볼륨* 핸들뿐 · 관리자 권한 필요) → POSIX 등가 보장 아님 ⑶Linux 는 `'r+'` 가 EISDIR. `openDir` 구현 = **`openSync(path,'r')`**(POSIX) — `opendirSync` 는 fd 를 주지 않는다(양 OS 실측). 정정 60 의 「승격 금지」가 ⑵의 직접 귀결이다 |
+| 62 | §3-T17 「rename EPERM 재시도(win32 **실측 고정**)」 · 감사 후보 L3-4 「win32 실패 주입이 성립 안 할 공산」(PR1c 가 `unlink(열린 파일)` = OK 를 실측했으므로) | **성립한다 — 실측으로 확정**: 대상 파일을 `openSync(tgt,'r')` 로 보유한 채 `renameSync` ×3 = `EPERM,EPERM,EPERM` → `closeSync` → **4회차 성공** · 내용 교체 · 소스 소멸. `unlink` 와 `rename` 의 공유 모드 요구가 다르다. Linux 는 대상이 열려 있어도 rename 이 **성공**한다 | §3-T17·T17b(「첫 3회 EPERM, 4회차 성공 = 정확히 1 commit」)를 **실 파일시스템 위에서** win32 게이트로 조작화(`describe.skipIf(platform!=='win32')`). 페이크 전용 조작화는 실물 성질을 증명하지 않으므로(PR1b 확립) **페이크(양 OS) + 실 FS(win32) 2층**. CI 의 `windows vitest` 잡이 실행처다 |
+| 63 | 계획 391 「`default: assertNever` 강제는 **eslint selector 로**」(적용 범위 미지정) | ⓐ「`no-restricted-syntax` 는 금지형이라 존재 요구를 표현 못 한다」는 통념은 **거짓** — `SwitchStatement:not(:has(SwitchCase[test=null] CallExpression[callee.name='assertNever']))` 가 **레포 설치본(ESLint 10.7.0)에서 실측 동작**한다(default 없는 switch·default 는 있으나 미호출 switch **둘 다** error · 정상형은 통과). ESLint 공식 selector 문서에 `:has()` 가 없다는 지적은 문서 누락이지 미지원이 아니다 ⓑ**범위가 공백**이고, 워크벤치 전체에 걸면 **랜딩된 `locks.ts` 의 switch 2곳이 즉시 RED**(둘 다 반환 타입으로 exhaustive 를 보장하며 `default:` 없음) | selector 채택 · 스코프는 **PR2 신규 파일 한정 옵트인**(PR1b `no-unsafe-type-assertion` 선례 동형). ⚠ **신규 블록으로 분리**해야 한다 — 기존 워크벤치 블록에 룰 키를 추가하면 `scripts/eslint-config-purity.test.ts:200-201` 의 **rules 키 집합 exact 동치 핀**이 RED 다(그 핀은 「코어 보호 룰을 재선언하지 않는다」는 보증 문장이라 완화가 곧 방어 축소). 신규 블록의 `files` 가 `'src/main/core/workbench/**/*.ts'` 를 **포함하지 않으므로** `find` 기반 `brandBlock` 조회와 무충돌(실측 확인) |
+| 64 | 계획 386-390 「bench-spawn `no-restricted-syntax` 가드 + config 객체 단언 핀(§3-T16c)」 | **가드의 `files` 스코프가 계획·스펙 어디에도 없고, 두 후보가 모두 무효다**: ⓐ워크벤치 스코프면 워크벤치에 spawn 이 **0건**이라 vacuous(막는 것이 없는데 T16c 는 GREEN) ⓑ코어 전역이면 **정당한 지점이 즉시 위반**이라 lint RED | 가드는 **정정 52 와 함께 PR7 로 이월**한다 — 막아야 할 우회로(러너를 안 거치는 직접 spawn)의 소비자가 PR7 에 생기므로 그 전에는 어느 스코프에서도 조작화가 성립하지 않는다. PR7 착지 형태를 **미리 고정**: 「코어 전역 + `detect.ts`·`mcp/stdio.ts` 만 `ignores`」 + T16c 핀에 **`ignores` 배열 exact 동치**(3번째 spawn 지점 신설 = RED). PR2a 의 §3-T16c 는 **assertNever 블록의 config 객체 단언**으로 대체 귀속 |
+| 65 | §W-5:520 `mkdirRecursive(path): void` | **mode 파라미터가 없다.** 권위 디렉터리(`<area>/authority/`)가 이 메서드로 생기는데 mode 를 못 주면 `0o777 & ~umask`(통상 0755)가 되어 §3-T59 의 **0700 단언을 주입 seam 위에서 만족할 수 없다**(형제 `coord-area.ts` 는 0700 을 명시 생성) | 시그니처를 **`mkdirRecursive(path, mode)`** 로 확정(§W-5 인터페이스 정정 등재). 실 어댑터는 `mkdirSync(path,{recursive:true,mode})` · win32 에서 mode 가 무시되는 것은 정정 67 의 게이트가 흡수 |
+| 66 | §W-5:522 `writeAll(fd, data: string): void` | `fs.writeSync` 는 **부분 쓰기가 가능**하고 Node 자신이 `writeFileSync` 에서 루프를 돈다. 그런데 시그니처가 `string` 이라 **재개가 원리적으로 틀린다**(문자 오프셋 ≠ 바이트 오프셋 · 멀티바이트 경계 절단). 3면 실측에서 8MiB 1회 호출은 전량 기록됐으나 **보장이 아니다** | 구현은 **`Buffer.from(data,'utf8')` 로 1회 변환 후 바이트 오프셋 루프**. 이름이 `writeAll` 인 이유(부분 쓰기 재개가 계약)를 주석에 명시하고, 페이크가 **부분 쓰기를 주입**하는 행을 §3-T15 에 추가(루프 없는 구현이면 RED — 실 FS 로는 재현 불가하므로 이것이 유일한 조작화) |
+| 67 | §3-T59 「0600/0700」 단언 | win32 는 `statSync().mode & 0o777` 이 **0o666**(파일)·**0o666**(디렉터리)을 답한다 — Node 문서가 「Windows 에서는 쓰기 권한만 변경 가능하고 group/others 구분이 없다」고 명시 | 모드 단언은 **POSIX 게이트**(`describe.skipIf(platform==='win32')`). win32 측 대응 행 = 「mode 인자를 **전달했음**」을 주입 페이크 호출 인자로 단언(양 OS) — 실 권한이 아니라 **계약 전달**을 검증 |
+| 68 | §3-T17d 「배리어로 겹쳐도 stale draft 미커밋 — **뮤텍스 부재 구현이면 RED**」 | **괄호 안이 거짓이다.** 뮤텍스가 없어도 revision-CAS 만으로 stale draft 는 커밋되지 않는다(tx1.readFresh(rev=1) → tx2 가 rev=2 커밋 → tx1.CAS 는 `revision-mismatch`). 즉 T17d 는 **선언한 결함을 실제로 못 잡는다** — PR1b 정정 ⑲ 와 동형 | 조작화 재정의: 뮤텍스가 잡는 것은 **직렬화**이지 정합성이 아니므로, RED 를 «**두 `withAuthority` 가 겹쳐 실행되지 않는다**»의 관측으로 바꾼다 — 주입 `DurableFs` 가 기록하는 **단계 타임라인이 인터리브되지 않음**(tx1 의 `rename` 이 tx2 의 첫 `readFileUtf8` 보다 먼저) + 「뮤텍스 없는 대조 구현에서는 인터리브가 실제로 관측된다」는 **자기검사 행**을 함께 둔다(자기검사 없으면 이 단언도 vacuous) |
+| 69 | §3-T13ⓑ 「커밋 후 디스크 레코드가 첫 draft 의 필드를 **하나도** 포함하지 않음」 | **불변식 9와 정면 모순이라 어떤 구현으로도 GREEN 이 될 수 없다** — `identity` 3필드는 「엔진 유도값과 정확 일치」가 강제되므로 두 draft 가 필연적으로 공유하고 `schemaVersion:1` 도 리터럴이라 항상 같다 | ⓑ를 «**두 번째 draft 가 실제로 바꾼 필드**에 한해 첫 draft 값이 남아 있지 않다»로 재기술(LWW 병합 구현이 RED 가 되는 성질은 보존). 대상 필드를 테스트가 **명시 열거**한다 |
+| 70 | §3-T18b(file-only 롤백 시뮬레이션) | **계획 전문에 `T18b` 문자열이 0건** — 어떤 태스크도 이 RED 를 만들지 않는다(정정 ②·㉟ 과 동형 계열). PR2 가 win32 `'file-only'` 를 출하하는 순간 「revision 단조성이 깨지는 표면의 안전 논증」이 산문으로만 남는다 | T18b 의 판정식(**ref-앵커 재조정** = git ref 열거)이 §W-7 소유라 PR2 에 앵커가 없다 → **PR3 T13 에 명시 귀속**(§3-T34 와 같은 행에서 검증). PR2 는 「`'file-only'` 표면의 안전 논증은 **PR3 의 ref-앵커에 의존**하며 PR2 단독으로는 미완결」을 `authority.ts` 계약 주석 + PR 본문에 **명시 선언**(조용한 누락 금지) |
+| 71 | §3.2 「`DurableFs` 훅에서 자식이 자살(`node -e`)하고 부모가 디스크를 관측하는 **실 프로세스 행** 최소 1행」 | **PR2 에서 조작화 불가**다. PR1b 에서는 자식이 *적대자*(순수 Node 프리미티브 재현)라 `node -e` 가 성립했으나, 여기서는 **자식이 프로덕션 코드를 실행하는 주체**여야 한다: `.ts` 자식 실행 불가(정정 ㉗) · `tsx`/`ts-node` devDep **0건** · `out/` 은 verify 체인상 vitest **뒤** · 자식으로 프로덕션 모듈을 적재하는 선례 **0건**. `node -e` 로 쓰면 자식이 내구 순서를 **JS 로 재구현**하게 되어 검증 대상이 프로덕션이 아니다 | **역할 재배치**로 재기술: 자식은 JS 로 「각 단계 직후의 **디스크 상태**」만 만들고(적대자 역할 유지 · 이것이 「도달 가능 상태」의 증거), **부모가 프로덕션 `readFresh`·복구 판정을 그 상태에 대고 실행**한다. 테스트 헤더에 «무엇이 프로덕션이고 무엇이 픽스처인가»를 명시(정직성). esbuild 번들 자식은 신규 기제라 **기각**(ADR-0003 ROI) |
+| 72 | §W-5:534-535 「내구 등급을 **`area.json`** + 레코드에 기록」 | `AreaRecord` 는 4필드(`schemaVersion`·`lockBackend`·`createdAt`·`createdBy`)이고 **`durability` 자리가 없다**. 그 확장은 정정 ㉟ 이 이미 **PR7/T29 사전 결정 항목으로 이월**했다(「필드 부재 v1 레코드 관용 vs fail-closed」 포함) | PR2 는 ⓐ`probeDurability()` **순수 판정만** 착지 ⓑ레코드 `writtenBy.durability` 에만 기록. `area.json` 기록은 **호출자(부팅)가 §1-8 로 부재**하므로 PR7 이월을 계획에 명시 |
+| 73 | §W-4:465 「`revision` 은 저장소만 배정 — `BenchAuthorityDraft = Omit<…>` 로 호출자 조작 불가」 | `Omit` 은 **객체 리터럴에만** 초과 프로퍼티 검사를 건다 — `const rec: BenchAuthorityRecord = …; tx.compareAndSwap(read, rec)` 는 구조적 서브타이핑으로 **tsc 를 그대로 통과**한다(즉 「조작 불가」는 타입이 주는 보장이 아니다) | 런타임 방어를 계약에 추가: `compareAndSwap` 이 **`revision`·`writtenBy` 키의 존재 자체를 거부**(`invariant-violation`)하고, 그 행을 §3-T13ⓒ 에 **행동 단언**으로 편입(타입 핀은 「스레딩 사고 방지」로 강등 — PR1b 정정 ㉑ 과 동형 처리) |
+| 74 | §1-6 「PR 상한 = 코드 순증 1,900행」(측정 시점 미규정) | **PR1b 의 기록이 머지 트리와 어긋난다** — PR#259 본문 「순증 1,581」 vs 머지 실측 ≈**2,430**(신설 9파일 현재 합 2,433 − PR1c 증분 ≈20 + config 수정). 차이의 원인은 **측정 시점**이다(PR1c 는 「자체 적대 리뷰 반영까지 마친 시점」에 측정해 정합) | §1-6 에 **측정 시점 명문화**: 「**머지 직전 HEAD 기준** `git diff --numstat origin/master...HEAD`」. 최초 푸시 시점 측정 **금지**(리뷰 라운드가 코드를 늘린다). §3 표의 PR1a·PR1b 칸이 서로 다른 기준의 숫자를 섞고 있음을 각주로 등재하고, 「PR1b 는 상한 내였다」를 PR2 추정 근거로 **상속하지 않는다** |
+| 75 | 계획 T7 「`DurableFs` 실 어댑터 + 등급 프로브」(플랫폼 커버리지 대응 없음) | 정정 ⑤·㉙ 이 확정한 대응 ⓐ(주입 seam + 페이크로 양 OS + 실 어댑터만 플랫폼 게이트)가 T7 에 **승계되지 않았다**. 그리고 PR2 는 앞선 PR 들과 달리 **양쪽 OS 에 각자 도달 불가 행이 생긴다**(POSIX dir fsync ↔ win32 rename EPERM 재시도) — 손실이 양방향이다 | 대응 ⓐ 를 T7 에 명시 승계 + **양방향 게이트**를 선언: POSIX 전용(dir fsync 성공 경로)과 win32 전용(rename EPERM 재시도 · mode 무시)을 각각 `describe.skipIf` 로 분리하고 **판정 로직은 전부 페이크로 양 OS**. 실 어댑터 완료 조건 = **≤160 물리행 ∧ 미커버 stmts ≤45**(PR1b 정정 ㉙ 의 절대 개수 규율 승계). 기준선 = 착수 시점 win32 로컬 실측 **S 3770/4040 · B 2450/2828 · F 663/704 · L 3318/3497** |
+
+**PR2a 확정 범위**(위 정정 반영): 신설 = `authority.ts`(§W-4 **타입 전량** + `IntegrationStage` +
+`PreCommitStep`/`PostCommitStep` · 값 구현은 PR2b) · `durable-fs.ts`(`DurableFs`+`statKind` ·
+`createNodeDurableFs` · `probeDurability`) · `__testing__/durable-fs-fake.ts` · 계약/구조 테스트 ·
+eslint **신규 블록**(assertNever selector · 신규 파일 한정 · `ELECTRON_DYNAMIC_IMPORT_SYNTAX` spread 재선언) ·
+`scripts/eslint-config-purity.test.ts` 핀 추가 · `locks.ts` `LockScopeOptions`·`BenchLeaseToken.identity`
+확장 + 호출부 4곳 · `src/shared/types.ts` `BenchLifecycle` 1줄.
+**미착지 명시**: `withAuthority`/CAS 구현(→PR2b) · rename 재시도·`commit-uncertain`(→PR2c) ·
+`BenchLauncher` 팩토리 런타임(→PR2c) · **spawn seam 배선 2곳 + bench-spawn eslint 가드**(→PR7 · 정정 52·64) ·
+`area.json` 등급 기록(→PR7 · 정정 72) · §3-T18b ref-앵커(→PR3 · 정정 70).
 
 **C 이식(핵심)**: 타입 골격이 어떤 런타임보다 앞선다.
 

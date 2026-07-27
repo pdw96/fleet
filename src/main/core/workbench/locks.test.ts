@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createFakeLockBackend, type FakeLockBackend } from './__testing__/lock-backend-fake'
+import { endpointDigest } from './coord-area'
 import {
   ABSTRACT_NAME_MAX_BYTES,
   availableLockBackends,
@@ -193,8 +194,11 @@ describe('availableLockBackends — 플랫폼 가용 백엔드 판정(순수)', 
 const scopeWith = (backend: FakeLockBackend): { scope: LockScope; digest: string } => {
   // 추상 이름공간은 net ns **전역**이라 파일 순차화가 아니라 **이름 무작위화**가 올바른 격리 수단이다
   // (§3.2 의 「mkdtemp 격리」는 pathname 시절 유물 · 계획 정정 ㉖).
-  const digest = randomBytes(16).toString('hex')
-  return { scope: createLockScope({ digest, backend }), digest }
+  const commonGitDir = `/repo-${randomBytes(8).toString('hex')}/.git`
+  return {
+    scope: createLockScope({ identity: { commonGitDir, benchRoot: '/wb' }, backend }),
+    digest: endpointDigest(commonGitDir),
+  }
 }
 
 const endpointOf = (digest: string, spec: Parameters<typeof endpointFor>[1]): string => {
@@ -499,5 +503,41 @@ describe('T4 보강 — 상실 사유는 사후에 덮어써지지 않는다', (
     expect(second.status).toBe('acquired')
     // 첫 핸들은 여전히 상실 상태여야 한다(부활하면 fail-open).
     expect(first.handle.revalidate()).toEqual({ kind: 'lost', reason: 'released' })
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------------------------
+ * PR2a T6b — 리스 크레덴셜의 신원(계획 정정 54 · 스펙 §W-4:355)
+ * ---------------------------------------------------------------------------------------------
+ */
+
+describe('BenchLeaseToken.identity — 권위 CAS 가 대조에 쓰는 3쌍', () => {
+  it('민팅된 리스가 identity 3필드를 싣는다', async () => {
+    const backend = createFakeLockBackend()
+    const commonGitDir = `/repo-${randomBytes(8).toString('hex')}/.git`
+    const benchRoot = '/workbenches'
+    const scope = createLockScope({ identity: { commonGitDir, benchRoot }, backend })
+    const benchId = newUlid()
+
+    const r = await scope.tryAcquireBenchLease(benchId)
+    if (r.status !== 'acquired') throw new Error(`픽스처 오류: ${r.status}`)
+    expect(r.lease.identity).toEqual({ commonGitDir, benchRoot, benchId })
+  })
+
+  /**
+   * **digest 를 호출자가 따로 주지 않는 것이 계약이다**(정정 54). 둘을 각각 받으면
+   * 「digest 는 레포 A · identity 는 레포 B」인 스코프가 정상 컴파일되고, 그 스코프는 **A 의 endpoint 를
+   * 잡은 채 B 의 권위 파일을 변이**한다 — 배타와 대조가 서로 다른 레포를 가리키는 fail-open 이다.
+   */
+  it('endpoint 이름이 identity.commonGitDir 에서 유도된다(불일치 창 부재)', async () => {
+    const backend = createFakeLockBackend()
+    const commonGitDir = `/repo-${randomBytes(8).toString('hex')}/.git`
+    const scope = createLockScope({ identity: { commonGitDir, benchRoot: '/wb' }, backend })
+
+    await scope.tryAcquire({ kind: 'repo' })
+    expect(backend.calls).toEqual([
+      { op: 'bind', endpoint: endpointOf(endpointDigest(commonGitDir), { kind: 'repo' }) },
+    ])
   })
 })

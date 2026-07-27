@@ -544,6 +544,16 @@ export interface ChatActivity {
 }
 
 /**
+ * Workbench 수명주기(#251 · 스펙 §W-1). 렌더러(#253)와 서버가 같은 어휘를 써야 하므로 공유 표면에 둔다.
+ *
+ * 이 슬라이스에서 유일한 소비자는 **공유 권위 레코드**(`core/workbench/authority.ts`)다 — 런타임 뷰
+ * `Workbench` 전체는 레지스트리(PR4)가 소유하므로 여기서 미리 만들지 않는다.
+ * ⚠ 파생 표시 상태(`integration-ready`·`stale-attempt`·`partially-integrated`)는 **이 유니온에 넣지
+ * 않는다**(§W-4:318-320) — 그것들은 영속되지 않는 계산값이고, 섞으면 상태 기계가 열린다.
+ */
+export type BenchLifecycle = 'open' | 'integrated' | 'archived'
+
+/**
  * 진행 중 실행 1건의 스코프 참조(#251 · 스펙 §W-10). `benchId` 부재 = 메인 워크스페이스를 편집하는
  * 레거시 런, 존재 = 그 Workbench(격리 worktree) 안에서만 도는 런.
  */

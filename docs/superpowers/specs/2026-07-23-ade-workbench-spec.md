@@ -287,6 +287,18 @@ EADDRINUSE      = 소유자 생존      → held(정상 대기)
 
 ### W-4. 공유 권위 레코드 · revision-CAS  ← **Codex 지정 계약 1·2·3·4항**
 
+> ⚠ **[#251 PR2a 착지 시 정정 — 계획 정정 53·55·57·58이 우선]**
+> ⓐ **`DurableWriteStep` 을 rename 경계로 쪼갠다** — `PreCommitStep`(mkdir…rename) / `PostCommitStep`
+> (open-dir·fsync-dir·close-dir). 하나로 두면 `io-failure{step:'fsync-dir'}` 가 **타입상 합법**이 되어
+> §3-T16 과 §3-T17e 가 같은 주입에 상반된 반환을 요구하고, Codex 체크포인트 2 P1-5 가 닫은 구분이
+> 되돌아온다. `io-failure.step: PreCommitStep` · `commit-uncertain.step: PostCommitStep`.
+> ⓑ **`BENCH_LEASE`·`LeaseCheck`·`BenchLeaseToken` 소유는 `locks.ts`**(PR1b 랜딩)다 — 아래 코드블록이
+> 이들을 다시 싣고 있으나 `unique symbol` 은 선언마다 별개 타입이라 재선언하면 라이브 핸들이 민팅한
+> 토큰이 대입되지 않는다. `authority.ts` 는 `import type` 단방향 소비.
+> ⓒ **`SpawnOpts` 는 레포에 없는 이름**이다(실제는 `RunOpts` 이고 그것은 spawn 인자가 아니다) — 런처
+> 옵션은 **신규 정의**이며 `createCommandRunner` 4-arg 합성은 불가하므로 브랜드 강제를 **팩토리 인자**
+> (`createBenchLauncher(commit)`)로 옮긴다. 실 배선(`detect.ts`·`mcp/stdio.ts`)은 **PR7 이월**(폐포 핀 보존).
+
 **레이아웃 = bench 당 파일 1개** `<area>/authority/<benchId>.json`.
 단일 파일 기각 근거: (a) 무관 bench 간 revision 충돌로 fail-closed 폭증 (b) 활동 경로가 레포-전역
 직렬화를 획득하게 되어 **락 서열(L-3) 위반** (c) N bench 마다 O(N) 전량 재직렬화.
@@ -511,6 +523,15 @@ export function createCommandRunner(deps: { launcher?: BenchLauncher }): Command
   (`noFallthroughCasesInSwitch`, tsconfig.base.json:8 과 결합해 새 실패 종별이 미처리 호출부를 컴파일 에러로).
 
 ### W-5. 내구 쓰기 seam (`DurableFs`)
+
+> ⚠ **[#251 PR2a 착지 시 정정 — 계획 정정 59·61·65·66·72가 우선]** 인터페이스 3점이 바뀌었다:
+> ⓐ **`statKind(path)` 신설** — 형제 모듈이 굳힌 「읽기 전 종류 확인」 규율(FIFO 무한 블록 · symlink 권위
+> 탈취 방어)을 seam 위에서 재현할 수단이 원안에 없었다. ⓑ **`mkdirRecursive(path, mode)`** — mode 인자가
+> 없으면 권위 디렉터리 0700 을 주입 경로로 만들 수 없다. ⓒ **`openExclusive(path, mode)`**.
+> 그리고 아래 「부팅 1회 실측 프로브」는 **win32 에서 시도하지 않는다**(상한 `'file-only'` 고정) — 3면 실측상
+> win32 는 `openSync(dir,'r+')` 로 열면 fsync 가 **성공**하지만 MS 문서가 디렉터리 핸들 의미론을 규정하지
+> 않아 POSIX 등가 보장이 아니고, 그것을 등급으로 올리면 U4 「조용한 강등 금지」의 쌍대인 **조용한 승격**이
+> 된다. `area.json` 기록은 `AreaRecord` 확장(PR7/T29)까지 **미착지**이며 PR2 는 `writtenBy.durability` 에만 쓴다.
 
 ```ts
 export type DurableWriteStep = 'mkdir'|'open-tmp'|'write'|'fsync-file'|'close-tmp'

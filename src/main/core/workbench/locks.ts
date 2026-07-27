@@ -1,6 +1,11 @@
 import { randomBytes } from 'node:crypto'
 
-import type { LockBackendKind } from './coord-area'
+import type { BenchAuthorityIdentity } from './authority'
+// `endpointDigest` 는 **값** import 다(형제 3종은 타입). 순수 sha256 이라 L-6 「판정에 디스크 I/O 0」과
+// 무관하고, 아래 구조 단언(fs·path 직접 import 금지)도 그대로 성립한다. 여기서 다시 구현하지 않는 이유는
+// digest 산식이 두 곳에 있으면 **드리프트가 곧 배타성 붕괴**이기 때문이다 — 같은 레포가 서로 다른 이름으로
+// 갈리면 두 인스턴스가 서로를 보지 못한다.
+import { endpointDigest, type LockBackendKind } from './coord-area'
 import { isUlid } from './ulid'
 
 /**
@@ -224,11 +229,15 @@ export type LeaseCheck =
 declare const BENCH_LEASE: unique symbol
 
 /**
- * bench 활동 리스 크레덴셜(§W-4). PR2 가 `identity: BenchAuthorityIdentity` 를 **추가**한다
- * (그 타입은 `authority.ts` 소유 = PR2 T6b 범위이므로 여기서 창작하지 않는다).
+ * bench 활동 리스 크레덴셜(§W-4).
+ *
+ * `identity` 는 권위 CAS 가 **대조**에 쓴다(§W-4 불변식 ⑨ · `lease-invalid{identity-mismatch}`).
+ * 크레덴셜이 자기 신원을 함께 나르는 이유는, 리스와 레코드가 서로 다른 레포·bench 를 가리키는 조합을
+ * **호출자가 조립할 수 없게** 하기 위해서다 — 두 값을 따로 넘기면 그 불일치가 정상 컴파일된다.
  */
 export interface BenchLeaseToken {
   readonly [BENCH_LEASE]: true
+  readonly identity: BenchAuthorityIdentity
   readonly ownerToken: string
   /**
    * L-6 per-retry 재검증 수단. 클로저를 **락 모듈이 소유**한다 — 반대로 하면 `authority.ts → locks.ts`
@@ -277,8 +286,15 @@ export interface LockScope {
 }
 
 export interface LockScopeOptions {
-  /** `endpointDigest(canonicalCommonGitDir)` 산출물(32 hex). */
-  readonly digest: string
+  /**
+   * 이 스코프가 대표하는 레포·bench 홈. **정준화·검증은 호출자 책임**이다(배선 = PR7) — 이 모듈은
+   * 파일시스템을 알지 못하므로 문자열을 받기만 한다.
+   *
+   * ⚠ **digest 를 따로 받지 않는 것이 계약이다**(계획 정정 54). 둘을 각각 받으면 「digest 는 레포 A ·
+   * identity 는 레포 B」인 스코프가 정상 컴파일되고, 그런 스코프는 **A 의 endpoint 를 잡은 채 B 의 권위
+   * 파일을 변이**한다 — 배타와 대조가 서로 다른 레포를 가리키는 fail-open 이다.
+   */
+  readonly identity: Omit<BenchAuthorityIdentity, 'benchId'>
   readonly backend: LockBackend
 }
 
@@ -291,6 +307,7 @@ export interface LockScopeOptions {
  * 「락 모듈 export 집합 exact 동치」 + 「raw 획득 이름이 모듈 밖 소스에 0건」.
  */
 export function createLockScope(opts: LockScopeOptions): LockScope {
+  const digest = endpointDigest(opts.identity.commonGitDir)
   const acquire = async (
     spec: LockKeySpec,
   ): Promise<
@@ -298,7 +315,7 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
     | { status: 'held' }
     | { status: 'unavailable'; detail: string }
   > => {
-    const ep = endpointFor(opts.digest, spec)
+    const ep = endpointFor(digest, spec)
     if (ep.status === 'invalid') {
       // 부수효과 이전에 막는다 — 이 경로에서는 어떤 bind 도 시도하지 않는다.
       return { status: 'unavailable', detail: `락 키 무효: ${ep.detail}` }
@@ -332,7 +349,10 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
     key: string,
     bound: BoundEndpoint,
     ownerToken: string,
-  ): { handle: LockHandle; lease: BenchLeaseToken } => {
+    // 리스 민팅이 `handle.revalidate` 를 **떼어내지 않도록** 클로저를 함께 반환한다 — 메서드 참조를
+    // 분리하면 `unbound-method` 위반이고, 무엇보다 핸들과 크레덴셜이 같은 클로저를 공유해야
+    // 「둘이 같은 커널 endpoint 를 증언한다」가 구조적으로 보장된다.
+  ): { handle: LockHandle; revalidate: () => LeaseCheck } => {
     /** `release()` 를 우리가 불렀는지 — `'released'` 와 `'stolen'` 을 구분하는 유일한 성분. */
     let releasedByUs = false
     const revalidate = (): LeaseCheck => {
@@ -352,11 +372,20 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
       releasedByUs = true
       bound.close()
     }
-    const handle: LockHandle = { key, ownerToken, revalidate, release }
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 브랜드(`BENCH_LEASE`)는 런타임 값이 없는 타입 전용 심볼이라 캐스트로만 민팅된다. 이곳이 §W-4 가 요구하는 「라이브 핸들에서만 민팅」의 유일한 forge 지점이며, 3번째 캐스트는 이 룰이 RED 로 만든다.
-    const lease = { ownerToken, revalidate } as BenchLeaseToken
-    return { handle, lease }
+    return { handle: { key, ownerToken, revalidate, release }, revalidate }
   }
+
+  /**
+   * 리스 민팅 — **라이브 핸들에서만** 일어난다(§W-4:350). `revalidate` 클로저를 그대로 넘겨주므로
+   * 크레덴셜과 핸들이 **같은 커널 endpoint 를 증언**한다(둘이 갈리면 「해제된 락의 유효한 리스」가 생긴다).
+   */
+  const mintLease = (
+    ownerToken: string,
+    revalidate: () => LeaseCheck,
+    benchId: string,
+  ): BenchLeaseToken =>
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 브랜드(`BENCH_LEASE`)는 런타임 값이 없는 타입 전용 심볼이라 캐스트로만 민팅된다. 이곳이 §W-4 가 요구하는 「라이브 핸들에서만 민팅」의 유일한 forge 지점이며, 3번째 캐스트는 이 룰이 RED 로 만든다.
+    ({ identity: { ...opts.identity, benchId }, ownerToken, revalidate }) as BenchLeaseToken
 
   return {
     async tryAcquire(spec) {
@@ -367,8 +396,8 @@ export function createLockScope(opts: LockScopeOptions): LockScope {
     async tryAcquireBenchLease(benchId) {
       const r = await acquire({ kind: 'bench', benchId })
       if (r.status !== 'acquired') return r
-      const { handle, lease } = makeHandle(r.key, r.bound, r.ownerToken)
-      return { status: 'acquired', handle, lease }
+      const { handle, revalidate } = makeHandle(r.key, r.bound, r.ownerToken)
+      return { status: 'acquired', handle, lease: mintLease(r.ownerToken, revalidate, benchId) }
     },
   }
 }

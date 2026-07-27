@@ -201,3 +201,63 @@ describe('브랜드 위조 차단 ESLint 게이트 (#251 PR1b)', () => {
     expect(keys).toEqual(['@typescript-eslint/no-unsafe-type-assertion'])
   })
 })
+
+/**
+ * #251 PR2a T6b — 실패 종별 소진 강제 게이트(§3-T16c · 계획 정정 63).
+ *
+ * §W-4 는 「모든 `CasResult` 소비는 `switch (r.kind)` + `default: assertNever(r)`」를 계약으로 못 박는다.
+ * `noFallthroughCasesInSwitch`(tsconfig.base.json:9)는 **fall-through 만** 잡고 exhaustiveness 는 보지
+ * 않으므로, 새 실패 종별이 추가돼도 미처리 호출부는 **조용히 통과**한다 — `assertNever` 호출이 있어야
+ * 비로소 tsc 가 `never` 대입 실패로 RED 를 낸다.
+ *
+ * 「부재를 금지」는 `no-restricted-syntax` 로 표현 불가하다는 통념이 있으나 **`:not(:has(…))` 로 된다**
+ * (레포 설치본 ESLint 10.7.0 실측: default 절이 없는 switch·default 는 있으나 `assertNever` 를 부르지
+ * 않는 switch **둘 다** error · 정상형은 통과).
+ *
+ * ⚠ **스코프가 신규 파일 한정인 이유**: 워크벤치 전체에 걸면 랜딩된 `locks.ts` 의 switch 2곳이 즉시
+ * RED 다(둘 다 반환 타입으로 exhaustive 를 보장하며 `default:` 가 없다). 무관한 파일을 끌고 오는 수정은
+ * PR 경계를 흐린다.
+ * ⚠ **현 시점 대상 파일에는 switch 가 0건**이다 — 이 가드는 `CasResult` 소비자가 생기는 PR2b 부터
+ * 실효하는 **선행 트립와이어**이며, 그 사실을 은폐하지 않는다.
+ */
+describe('실패 종별 소진 강제 ESLint 게이트 (#251 PR2a)', () => {
+  const exhaustBlock = blocks.find((c) =>
+    c.files?.includes('src/main/core/workbench/authority.ts'),
+  ) as { files?: string[]; rules?: Record<string, unknown> } | undefined
+
+  const syntax = exhaustBlock?.rules?.['no-restricted-syntax'] as
+    [string, ...{ selector: string; message: string }[]] | undefined
+
+  it('신규 계약 파일만 덮는다(기존 워크벤치 코드를 끌고 오지 않는다)', () => {
+    expect(exhaustBlock?.files).toEqual([
+      'src/main/core/workbench/authority.ts',
+      'src/main/core/workbench/durable-fs.ts',
+    ])
+  })
+
+  it('assertNever 부재를 잡는 selector 가 error 로 존재한다', () => {
+    expect(syntax?.[0]).toBe('error')
+    const selectors = (syntax?.slice(1) ?? []) as { selector: string }[]
+    expect(
+      selectors.some(
+        (s) =>
+          s.selector.includes('SwitchStatement') &&
+          s.selector.includes(':not(') &&
+          s.selector.includes('assertNever'),
+      ),
+    ).toBe(true)
+  })
+
+  /**
+   * **#174 재발 방지.** flat config 는 같은 룰 키를 뒤 블록이 **교체**한다(공식 문서: later objects
+   * overriding previous objects). 코어 블록(`src/main/core/**`)이 `no-restricted-syntax` 로
+   * `ELECTRON_DYNAMIC_IMPORT_SYNTAX` 를 걸고 있으므로, 이 블록이 같은 키를 선언하는 순간 **그 두 파일에서
+   * electron 동적 import 보호가 유실된다**. `tools` 블록(eslint.config.mjs:361-363)이 쓰는 「공유 const
+   * 재선언」 관용구를 그대로 답습해야 하고, 그 재선언을 여기서 핀한다.
+   */
+  it('코어의 electron 동적 import 보호를 재선언해 유실을 막는다(#174)', () => {
+    const selectors = (syntax?.slice(1) ?? []) as { selector: string }[]
+    expect(selectors.some((s) => /ImportExpression/.test(s.selector))).toBe(true)
+    expect(selectors.some((s) => /electron/.test(s.selector))).toBe(true)
+  })
+})
