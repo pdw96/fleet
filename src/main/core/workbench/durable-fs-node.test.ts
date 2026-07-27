@@ -1,10 +1,13 @@
+import { execFileSync } from 'node:child_process'
 import {
   closeSync,
   mkdirSync,
   mkdtempSync,
   openSync,
+  readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -189,5 +192,38 @@ describe.skipIf(process.platform !== 'win32')('win32 — fsync 는 쓰기 권한
     } finally {
       closeSync(fd)
     }
+  })
+})
+
+/**
+ * **POSIX 전용 — `statKind` 가 막겠다고 선언한 위협을 실물로 재현한다**(계획 정정 59).
+ *
+ * 이 두 행이 없으면 「읽기 전에 종류를 본다」는 규율이 **인용된 실측**(PR1c 표)에만 근거하고 이 어댑터로는
+ * 한 번도 확인되지 않는다. Docker `node:22.22.3`(비특권 uid 1000)에서 재현한 사실:
+ *   · `readFileSync(FIFO)` = **무기한 블록**(2초 타임아웃으로 확인 — 부팅 경로면 프로세스가 멈춘다)
+ *   · `lstat(symlink).isFile()` = **false** ↔ `stat(symlink).isFile()` = **true**,
+ *     그리고 `readFileSync(symlink)` 는 **영역 밖 파일 내용**을 돌려준다
+ * 즉 `stat` 기반 구현은 영역 밖 JSON 을 `regular` 로 보고해 **권위로 승격**시킨다.
+ *
+ * ⚠ 이 테스트는 **의도적으로 `readFileUtf8` 을 부르지 않는다** — 그것이 정확히 방어의 요점이고,
+ * 부르면 이 스위트가 영구 hang 한다.
+ */
+describe.skipIf(process.platform === 'win32')('POSIX — statKind 가 비정규 파일을 걸러낸다', () => {
+  it('FIFO 는 other 다(읽었다면 무기한 블록했을 경로)', () => {
+    const p = join(dir, 'pipe')
+    execFileSync('mkfifo', [p])
+    expect(createNodeDurableFs().statKind(p)).toEqual({ kind: 'other', size: 0 })
+  })
+
+  it('symlink 는 other 다 — 링크 대상이 일반 파일이어도 추종하지 않는다', () => {
+    const outside = join(dir, 'OUTSIDE.json')
+    writeFileSync(outside, '{"attacker":true}')
+    const link = join(dir, 'rec.json')
+    symlinkSync(outside, link)
+
+    expect(createNodeDurableFs().statKind(link).kind).toBe('other')
+    // 대조 앵커: `stat` 기반이었다면 regular 로 보고돼 영역 밖 내용이 권위가 됐다.
+    expect(statSync(link).isFile()).toBe(true)
+    expect(readFileSync(link, 'utf8')).toBe('{"attacker":true}')
   })
 })
