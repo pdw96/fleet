@@ -42,7 +42,6 @@ const stubFs = (
     fs[k] = rec(k, v as (...a: unknown[]) => unknown)
   }
   return {
-     
     fs: fs as unknown as DurableFs,
     get calls() {
       return log.map((e) => e.op)
