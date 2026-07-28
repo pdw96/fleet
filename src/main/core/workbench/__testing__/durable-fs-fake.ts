@@ -134,7 +134,16 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
     steps,
     calls,
     countOf: (op) => calls.filter((c) => c.op === op).length,
-    failNext: (op, err, times = 1, skip = 0) => void pending.set(op, { err, times, skip }),
+    failNext: (op, err, times = 1, skip = 0) => {
+      // ⚠ **조용히 덮어쓰지 않는다**(CodeRabbit): op당 슬롯이 하나라 실수로 두 번 부르면 첫 주입이
+      // 사라진 채 GREEN 이 된다 — 「페이크가 조용히 통과시키면 안 된다」는 이 파일의 자기 규율 위반이다.
+      if (pending.has(op)) {
+        throw new Error(
+          `${op} 에 이미 주입된 실패가 있다 — 다단계 시나리오는 skip 인자로 표현할 것`,
+        )
+      }
+      pending.set(op, { err, times, skip })
+    },
     setFile: (path, content) => void entries.set(path, { kind: 'regular', content }),
     setOther: (path) => void entries.set(path, { kind: 'other' }),
     remove: (path) => void entries.delete(path),

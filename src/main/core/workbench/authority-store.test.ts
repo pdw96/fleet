@@ -8,6 +8,7 @@ import type {
   BenchAuthorityDraft,
   BenchAuthorityRecord,
   CasResult,
+  FreshReadToken,
 } from './authority'
 import { createBenchAuthorityStore } from './authority'
 import { createFakeDurableFs, type FakeDurableFs, type FakeOp } from './__testing__/durable-fs-fake'
@@ -1418,5 +1419,185 @@ describe('TOCTOU 잔여 창 — 정직 고정(perf-1 · SEC-8)', () => {
     const r = await storeOn(fs).withAuthority(lease, (tx) => Promise.resolve(tx.readFresh()))
     // 교체본을 읽는다 = 상한·종류 검사는 statKind 시점 값이다. **이 창은 PR2b 가 닫지 않는다**(정직 선언).
     expect(r.kind === 'found' && r.record.revision).toBe(2)
+  })
+})
+
+/* ================================================================================================
+ * Codex PR#266 P1 x3 + CodeRabbit 수렴 — 전부 실측 확정 후 반영
+ * ============================================================================================= */
+
+/**
+ * **P1-1 — 늦게 도착한 독립 호출은 큐잉된다**(Codex + CodeRabbit 독립 수렴).
+ *
+ * 재진입 가드의 판정 근거가 모듈 전역 「실행 중」 집합이면, 첫 임계 구역이 `await` 하는 사이 도착한
+ * **무관한 호출**(다음 tick 의 IPC 핸들러 등)까지 throw 해 정당한 동시성이 죽는다 — 뮤텍스가 「같은 tick 에
+ * 함께 시작한 호출」에만 작동하게 된다. 기존 §3-T17d·FIFO 행이 이것을 놓친 이유는 **두 호출을 같은 tick 에
+ * 시작**하기 때문이다(그 시점엔 보유 집합이 비어 있다). 판정은 `AsyncLocalStorage` 로 한다.
+ */
+describe('늦게 도착한 동시 호출은 큐잉된다(Codex P1-1 · CodeRabbit 수렴)', () => {
+  it('첫 콜백이 실행 중일 때 외부 호출이 도착해도 throw 하지 않고 진입한다', async () => {
+    const fx = await setup()
+    const first = fx.store.withAuthority(fx.lease, async () => {
+      await new Promise((r) => setTimeout(r, 0))
+      return 'a'
+    })
+    await Promise.resolve() // 첫 구역이 실행에 들어간 뒤
+    const second = fx.store.withAuthority(fx.lease, () => Promise.resolve('b'))
+    expect(await Promise.all([first, second])).toEqual(['a', 'b'])
+  })
+
+  it('타이머 경계를 넘어 도착해도 큐잉된다(진입 상태가 유지되는 동안)', async () => {
+    const fx = await setup()
+    let firstDone = false
+    const a = fx.store.withAuthority(fx.lease, async () => {
+      await new Promise((r) => setTimeout(r, 30))
+      firstDone = true
+      return 'A'
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    // A 의 콜백이 이미 진입한 상태 — B 는 **기다렸다가** 들어가야 한다.
+    const b = await fx.store.withAuthority(fx.lease, () => Promise.resolve('B'))
+    expect(b).toBe('B')
+    expect(firstDone).toBe(true) // B 가 A 를 앞지르지 않았다.
+    expect(await a).toBe('A')
+  })
+
+  it('중첩(진짜 재진입)은 여전히 throw 한다 — 가드가 무력화되지 않았다', async () => {
+    const fx = await setup()
+    await expect(
+      fx.store.withAuthority(fx.lease, () =>
+        fx.store.withAuthority(fx.lease, () => Promise.resolve(1)),
+      ),
+    ).rejects.toThrow(/재진입/)
+  })
+
+  it('중첩이 await 를 건너도 잡힌다(비동기 컨텍스트 상속)', async () => {
+    const fx = await setup()
+    await expect(
+      fx.store.withAuthority(fx.lease, async () => {
+        await new Promise((r) => setTimeout(r, 5))
+        return fx.store.withAuthority(fx.lease, () => Promise.resolve(2))
+      }),
+    ).rejects.toThrow(/재진입/)
+  })
+})
+
+/**
+ * **P1-2 — 커밋 identity 는 깊게 동결된다**(Codex P1).
+ *
+ * `Object.freeze` 는 얕다. `mintCommit` 이 `record.identity` 를 **참조로** 실으면
+ * `Object.assign(result.record.identity, {benchId: 다른bench})` 가 **커밋의 identity 까지 바꾼다** —
+ * 바깥 객체는 동결·유효한 채로 남으므로 런처가 그 크레덴셜을 소비하면 **한 bench 용 커밋이 다른 bench 로
+ * 재조준**된다(CAS 없이). 실측으로 확정됐고, 형제 `locks.ts` 는 리스 민팅에서 같은 이유로 중첩까지 얼린다.
+ */
+describe('커밋 크레덴셜은 재조준되지 않는다(Codex P1-2)', () => {
+  const commit = async (): Promise<{ fx: Fixture; r: CasResult }> => {
+    const fx = await setup()
+    const r = await fx.store.withAuthority(fx.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return tx.compareAndSwap(read.read, draft(fx.benchId))
+    })
+    return { fx, r }
+  }
+
+  it('record.identity·commit.identity 가 둘 다 동결돼 있다', async () => {
+    const { r } = await commit()
+    expect(r.kind).toBe('committed')
+    if (r.kind !== 'committed') return
+    expect(Object.isFrozen(r.record.identity)).toBe(true)
+    expect(Object.isFrozen(r.commit.identity)).toBe(true)
+  })
+
+  it('record.identity 를 변조해도 commit.identity 가 따라 바뀌지 않는다(별칭 아님)', async () => {
+    const { fx, r } = await commit()
+    if (r.kind !== 'committed') throw new Error('committed 예상')
+    // 두 객체가 **다른 참조**여야 한다 — 같으면 한쪽 변조가 다른 쪽에 전파된다.
+    expect(r.commit.identity).not.toBe(r.record.identity)
+    expect(r.commit.identity.benchId).toBe(fx.benchId)
+    // 동결이므로 변조 시도 자체가 실패한다(ESM = strict mode).
+    expect(() => Object.assign(r.record.identity, { benchId: 'RETARGETED' })).toThrow(TypeError)
+    expect(r.commit.identity.benchId).toBe(fx.benchId)
+  })
+})
+
+/**
+ * **P1-3 — CAS 는 토큰의 필드를 신뢰하지 않는다**(Codex P1 · 가장 무거운 건).
+ *
+ * 스프레드 복제 `{...read, observedRevision: 현재값}` 은 미export 브랜드를 보존하면서 **새 객체**라
+ * 소진 원장에 없고 `leaseOwnerToken` 검사도 통과한다. 그리고 CAS 의 디스크 재독은 그 **공격자가 고른**
+ * `observedRevision` 과 디스크를 비교하므로 백스톱이 되지 못한다.
+ *
+ * ⚠ **실측 확정**: 수정 전에는 소진된 옛 토큰의 복제로 `committed` 를 받아 디스크가 rev 2→3 으로 전진하며
+ * **실제 읽기 이후 추가된 통합 4필드가 지워졌다**. 자체 적대 리뷰(F6)가 이 벡터를 찾았으나 refuter 가
+ * 「재독이 백스톱」이라며 P3 로 강등했고 **그 근거가 틀렸다** — Codex 가 정정했다. 그래서 판정·값 모두
+ * 모듈 스코프 `MINTED_READS` 원장에서 온다(형제 `MINTED_LEASES` 와 같은 규율).
+ */
+describe('읽기 토큰 출처 검증 — 필드를 신뢰하지 않는다(Codex P1-3)', () => {
+  it('스프레드 복제 + observedRevision 위조로 stale 덮어쓰기가 되지 않는다', async () => {
+    const fx = await setup()
+    const real = await fx.store.withAuthority(fx.lease, (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return Promise.resolve(read.read)
+    })
+
+    // 정상 커밋 2회로 디스크를 전진시키고 통합 4필드를 심는다.
+    for (const gen of [1, 2]) {
+      await fx.store.withAuthority(fx.lease, async (tx) => {
+        const read = tx.readFresh()
+        if (read.kind !== 'absent' && read.kind !== 'found') throw new Error('예상 밖')
+        return tx.compareAndSwap(
+          read.read,
+          draft(fx.benchId, {
+            sourceGeneration: gen,
+            currentIntegrationTxnId: `T${gen}`,
+            currentIntegrationStage: 'prepared',
+            currentIntegrationTxnGeneration: gen,
+            currentIntegrationResultOid: `oid${gen}`,
+          }),
+        )
+      })
+    }
+    const before: BenchAuthorityRecord = JSON.parse(fx.fs.readRaw(fx.path) ?? '{}')
+    expect([before.revision, before.currentIntegrationTxnId]).toEqual([2, 'T2'])
+
+    // **위조** — 캐스트 0개로 컴파일된다(브랜드가 스프레드에서 보존된다).
+    const forged: FreshReadToken = { ...real, observedRevision: before.revision }
+    const attack = await fx.store.withAuthority(fx.lease, (tx) =>
+      tx.compareAndSwap(forged, draft(fx.benchId, { sourceGeneration: 1 })),
+    )
+
+    expect(attack).toEqual({ kind: 'lease-invalid', reason: 'stolen' })
+    // 디스크가 **한 바이트도** 바뀌지 않았다 — 통합 4필드 보존이 이 행의 핵심이다.
+    const after: BenchAuthorityRecord = JSON.parse(fx.fs.readRaw(fx.path) ?? '{}')
+    expect([after.revision, after.currentIntegrationTxnId]).toEqual([2, 'T2'])
+    expect(after.currentIntegrationResultOid).toBe('oid2')
+  })
+
+  it('수작업 조립 토큰도 거부한다(원장 부재)', async () => {
+    const fx = await setup()
+    const real = await fx.store.withAuthority(fx.lease, (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return Promise.resolve(read.read)
+    })
+    // 필드를 그대로 베낀 새 객체 — 값은 전부 정품과 같지만 원장에 없다.
+    const cloned: FreshReadToken = { ...real }
+    const r = await fx.store.withAuthority(fx.lease, (tx) =>
+      tx.compareAndSwap(cloned, draft(fx.benchId)),
+    )
+    expect(r).toEqual({ kind: 'lease-invalid', reason: 'stolen' })
+    expect(fx.fs.countOf('rename')).toBe(0)
+  })
+
+  it('정품 토큰은 그대로 통과한다(가드가 과차단하지 않는다)', async () => {
+    const fx = await setup()
+    const r = await fx.store.withAuthority(fx.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return tx.compareAndSwap(read.read, draft(fx.benchId))
+    })
+    expect(r.kind).toBe('committed')
   })
 })

@@ -1,7 +1,7 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { join } from 'node:path'
 
 import type { BenchLifecycle } from '../../../shared/types'
-import { assertNever } from '../providers/types'
 import type { DurabilityLevel, DurableFs } from './durable-fs'
 import { isMintedLease } from './locks'
 /**
@@ -138,10 +138,11 @@ declare const FRESH_READ: unique symbol
  * 「이 임계 구역에서 방금 디스크를 읽었다」는 증거. **단일 사용**이 계약이라 `readSeq` 를 싣는다 —
  * 같은 토큰 재제출은 `read-token-spent` 다.
  *
- * ⚠ **정직**(자체 적대 리뷰 F6): 그 판정은 모듈 스코프 `WeakSet` 의 **참조 동일성**이므로 `{...read}`
- * 스프레드 복제가 캐스트 0개로 우회한다. 즉 단일 사용은 **규약**이고, 안전 백스톱은 CAS 가 rename
- * **직전에 디스크를 다시 읽어** revision 을 대조하는 것이다 — 복제 토큰으로도 stale revision 은 커밋되지
- * 않는다. 그 재독을 완화하는 변경은 이 규약을 실제 방어로 승격시켜야 한다.
+ * ⚠ **이 필드들을 CAS 가 신뢰하지 않는다**(Codex PR#266 P1). 스프레드 복제는 브랜드를 보존하면서 새
+ * 객체가 되므로, 토큰의 `observedRevision` 을 그대로 쓰면 **공격자가 고른 숫자**와 디스크를 비교하게 되고
+ * 「재독이 백스톱」은 성립하지 않는다(자체 적대 리뷰 F6 의 refuter 가 바로 그렇게 잘못 판정했다 —
+ * 실측: 복제 토큰이 rev 2→3 커밋에 성공하며 통합 4필드를 지웠다). 그래서 판정·값 모두 모듈 스코프
+ * **`MINTED_READS` 원장**에서 온다. 여기 필드는 진단·호출자 편의용이다.
  */
 export interface FreshReadToken {
   readonly [FRESH_READ]: true
@@ -350,14 +351,44 @@ const AUTHORITY_FILE_MODE = 0o600
  */
 let readSeqCounter = 0
 const SPENT_READS = new WeakSet<FreshReadToken>()
+/**
+ * **민팅 원장**(Codex PR#266 P1). `FreshReadToken` 의 **필드를 신뢰하지 않는다** — 스프레드 복제
+ * `{...read, observedRevision: 현재값}` 은 미export 브랜드를 보존하면서 **새 객체**라 `SPENT_READS` 에
+ * 없고 `leaseOwnerToken` 검사도 통과한다. 그리고 CAS 의 디스크 재독은 그 **공격자가 고른**
+ * `observedRevision` 과 디스크를 비교하므로 백스톱이 되지 못한다.
+ *
+ * ⚠ 이것이 실측으로 확정된 공격이다: 소진된 옛 토큰을 복제해 `observedRevision` 만 현재 revision 으로
+ * 바꾸면 CAS 가 `committed` 를 답하고, **실제 읽기 이후 바뀐 필드가 지워진다**(rev 2→3 · 통합 4필드 소멸).
+ * 자체 적대 리뷰(F6)는 이 벡터를 찾았으나 refuter 가 「재독이 백스톱」이라며 P3 로 강등했고 **그 근거가
+ * 틀렸다** — Codex 가 정정했다.
+ *
+ * 그래서 판정과 값 모두 **원장에서** 온다(형제 `locks.ts` 의 `MINTED_LEASES` 와 같은 규율).
+ * `WeakMap` 인 이유도 같다: 토큰 수명을 붙잡지 않는다.
+ */
+const MINTED_READS = new WeakMap<
+  FreshReadToken,
+  {
+    readonly observedRevision: number
+    readonly leaseOwnerToken: string
+    readonly identity: BenchAuthorityIdentity
+    readonly readSeq: number
+  }
+>()
 /** identity 별 임계 구역 꼬리. 같은 bench 의 `withAuthority` 호출을 FIFO 로 직렬화한다. */
 const MUTEX_TAILS = new Map<string, Promise<unknown>>()
 /**
- * **현재 실행 중인** 임계 구역 키. 재진입 교착을 fail-fast 로 바꾸는 유일한 수단이다(자체 적대 리뷰
- * DYN-06). `MUTEX_TAILS` 와 별개인 이유: 꼬리는 「대기 중인 것까지」 담지만 여기 필요한 것은
- * 「지금 이 콜스택이 이미 들고 있는가」다.
+ * **이 비동기 컨텍스트가 보유 중인** 임계 구역 키.
+ *
+ * 재진입 교착(자체 적대 리뷰 DYN-06)을 fail-fast 로 바꾸려면 「지금 **이 호출 사슬**이 이 키를 들고
+ * 있는가」를 알아야 한다. 원안은 모듈 스코프 `Set` 이었는데 그것은 **「누군가 실행 중인가」**를 보므로,
+ * 첫 임계 구역이 `await` 하는 사이 도착한 **무관한 호출**(다음 tick 의 IPC 핸들러 등)까지 throw 했다 —
+ * 즉 정당한 동시성이 파괴되고 뮤텍스가 「같은 tick 에 함께 시작한 호출」에만 작동했다.
+ * **Codex PR#266 P1 + CodeRabbit 이 독립 수렴**했고 실측으로 확정했다(외부 호출 B 가 큐잉되지 않고 throw).
+ *
+ * `AsyncLocalStorage` 는 그 구분을 정확히 표현하는 표준 수단이다 — 콜백 안에서 파생된 비동기 연속만
+ * 스토어를 상속하므로 **진짜 중첩만** 걸리고 별개 컨텍스트는 정상적으로 `MUTEX_TAILS` 에 큐잉된다.
  */
-const ENTERED_KEYS = new Set<string>()
+const HELD_KEYS = new AsyncLocalStorage<ReadonlySet<string>>()
 
 /**
  * 뮤텍스 키 — **직렬화 도메인은 자원 도메인과 정확히 같아야 한다**(자체 적대 리뷰 perf-7·DYN-11).
@@ -378,6 +409,18 @@ const mutexKey = (authorityDir: string, benchId: string): string =>
 
 /** `unknown` 을 캐스트 없이 들여다본다 — `Reflect.get` 은 own 여부를 묻지 않으므로 `hasOwn` 과 짝짓는다. */
 const own = (o: object, k: string): unknown => (Object.hasOwn(o, k) ? Reflect.get(o, k) : undefined)
+
+/**
+ * 전수화 강제 — **이 모듈 전용**이다(CodeRabbit).
+ *
+ * `providers/types.ts` 의 `assertNever` 는 `Unhandled ContentBlock variant: …` 를 던지므로 권위 CAS 분기에서
+ * 발화하면 진단이 **엉뚱한 층**을 가리킨다. 도달 자체가 프로그래밍 오류(새 종별 미처리)이니 그 순간의
+ * 메시지가 정확해야 한다. eslint `no-restricted-syntax` selector 가 `assertNever` **이름**을 요구하므로
+ * 이름은 유지한다.
+ */
+function assertNever(x: never): never {
+  throw new Error(`권위 CAS: 미처리 판별 종별 ${JSON.stringify(x)}`)
+}
 
 const isPlainObject = (v: unknown): v is object =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -624,11 +667,13 @@ const serialize = (
   writtenBy: BenchAuthorityRecord['writtenBy'],
 ): BenchAuthorityRecord => ({
   schemaVersion: SUPPORTED_AUTHORITY_SCHEMA,
-  identity: {
+  // 동결한다 — 반환된 `committed.record.identity` 가 호출자 손에서 바뀌면 진단·감사 기록이 거짓이 되고,
+  // `mintCommit` 이 같은 객체를 참조하던 시절에는 커밋 재조준까지 됐다(Codex PR#266 P1).
+  identity: Object.freeze({
     commonGitDir: draft.identity.commonGitDir,
     benchRoot: draft.identity.benchRoot,
     benchId: draft.identity.benchId,
-  },
+  }),
   revision,
   lifecycle: draft.lifecycle,
   sourceGeneration: draft.sourceGeneration,
@@ -688,8 +733,6 @@ export function createBenchAuthorityStore(
   const runCritical = <T>(
     lease: BenchLeaseToken,
     fn: (tx: AuthorityTx) => Promise<T>,
-    /** 재진입 판정용(DYN-06) — 「지금 이 콜스택이 이 키를 들고 있다」를 기록·해제한다. */
-    key: string,
   ): Promise<T> => {
     const path = pathFor(lease.identity.benchId)
     const tmpPath = tmpFor(lease.identity.benchId, lease.ownerToken)
@@ -776,11 +819,20 @@ export function createBenchAuthorityStore(
     ): Promise<CasResult> => {
       if (!live) return { kind: 'lease-invalid', reason: 'released' }
 
-      // ① 토큰 소진이 가장 앞이다(계획 정정 80). 이 순서가 없으면 T13ⓐ 와 T14 가 같은 셋업에
-      //    상반된 반환을 요구한다. 원장은 **모듈 스코프**라 store 를 두 번 만들어도 공유된다(정정 95).
-      if (SPENT_READS.has(read)) return { kind: 'read-token-spent', readSeq: read.readSeq }
-      if (read.leaseOwnerToken !== lease.ownerToken) {
+      // ⓪ **출처 먼저 — 토큰의 필드를 믿지 않는다**(Codex PR#266 P1). 원장에 없으면 이 모듈이 발급한
+      //    토큰이 아니다(스프레드 복제·수작업 조립). `stolen` 으로 분류하는 이유는 형제
+      //    `withLeaseGuard` 와 같다 — 「이 크레덴셜은 인가된 읽기를 대표하지 않는다」.
+      const minted = MINTED_READS.get(read)
+      if (minted === undefined) return { kind: 'lease-invalid', reason: 'stolen' }
+
+      // ① 토큰 소진(계획 정정 80). 이 순서가 없으면 T13ⓐ 와 T14 가 같은 셋업에 상반된 반환을 요구한다.
+      //    원장은 **모듈 스코프**라 store 를 두 번 만들어도 공유된다(정정 95).
+      if (SPENT_READS.has(read)) return { kind: 'read-token-spent', readSeq: minted.readSeq }
+      if (minted.leaseOwnerToken !== lease.ownerToken) {
         return { kind: 'lease-invalid', reason: 'foreign-owner' }
+      }
+      if (!sameIdentity(minted.identity, lease.identity)) {
+        return { kind: 'lease-invalid', reason: 'identity-mismatch' }
       }
       SPENT_READS.add(read)
 
@@ -808,16 +860,16 @@ export function createBenchAuthorityStore(
       const fresh = readFresh()
       switch (fresh.kind) {
         case 'found':
-          if (fresh.record.revision !== read.observedRevision) {
+          if (fresh.record.revision !== minted.observedRevision) {
             return {
               kind: 'revision-mismatch',
-              expected: read.observedRevision,
+              expected: minted.observedRevision,
               observed: fresh.record,
             }
           }
           break
         case 'absent':
-          if (read.observedRevision !== 0) {
+          if (minted.observedRevision !== 0) {
             // 권위 파일이 사라졌다. `revision-mismatch` 는 `observed` 레코드를 요구하는데 줄 것이 없다 —
             // 유니온에 이 경우의 자리가 없다는 것이 잔여 계약 공백이며(PR 본문 등재) fail-closed 로 답한다.
             return {
@@ -853,7 +905,7 @@ export function createBenchAuthorityStore(
           return assertNever(fresh)
       }
 
-      const revision = read.observedRevision + 1
+      const revision = minted.observedRevision + 1
       const record = serialize(next, revision, {
         ownerToken: lease.ownerToken,
         at: opts.now(),
@@ -950,15 +1002,18 @@ export function createBenchAuthorityStore(
         // close 가 던져도 `finally` 가 같은 fd 를 다시 닫지 않는다 — POSIX 는 실패해도 fd 를 반납하므로
         // 재-close 는 그 틈에 같은 번호를 받은 **무관한 fd** 를 닫을 수 있다.
         {
-          const own = fd
+          const toClose = fd // 모듈 헬퍼 `own(o,k)` 과 이름이 겹치지 않게(CodeRabbit)
           fd = undefined
-          fs.close(own)
+          fs.close(toClose)
         }
         step = 'rename'
         fs.rename(tmpPath, path)
         renamed = true
       } catch (cause) {
-        return { kind: 'io-failure', step, path: step === 'rename' ? path : tmpPath, cause }
+        // 단계별로 **실제 대상**을 싣는다(CodeRabbit): `mkdir` 은 디렉터리이고 `rename` 은 최종 경로다.
+        // 전부 tmp 로 답하면 복구 판정이 **존재하지도 않는 tmp** 를 보게 된다.
+        const target = step === 'mkdir' ? opts.authorityDir : step === 'rename' ? path : tmpPath
+        return { kind: 'io-failure', step, path: target, cause }
       } finally {
         // fd 가 남아 있다 = 어느 단계가 던졌다. 실물에서 열린 핸들은 **그 자체로 DoS 표면**이다 —
         // win32 는 대상에 열린 핸들이 하나라도 있으면 rename 이 EPERM 이고 그 rename 이 곧 CAS 커밋이다.
@@ -992,9 +1047,9 @@ export function createBenchAuthorityStore(
           fs.fsync(dirFd)
           post = 'close-dir'
           {
-            const own = dirFd // 소유권 이관(위와 동형)
+            const toClose = dirFd // 소유권 이관(위와 동형)
             dirFd = undefined
-            fs.close(own)
+            fs.close(toClose)
           }
         } catch (cause) {
           return { kind: 'commit-uncertain', step: post, advancedRevision: revision, cause }
@@ -1014,11 +1069,9 @@ export function createBenchAuthorityStore(
 
     const tx: AuthorityTx = { readFresh, compareAndSwap }
     return (async () => {
-      ENTERED_KEYS.add(key)
       try {
         return await fn(tx)
       } finally {
-        ENTERED_KEYS.delete(key)
         // 임계 구역을 벗어난 tx 는 죽는다 — 유출된 핸들로 뮤텍스·리스 재검증 창 **밖에서** CAS 가 도는
         // 것을 막는 유일한 수단이다(계획 정정 94). 새 실패 종별을 만들지 않고 `released` 를 재사용한다.
         live = false
@@ -1042,17 +1095,23 @@ export function createBenchAuthorityStore(
 
       const key = mutexKey(opts.authorityDir, lease.identity.benchId)
 
-      // **재진입은 즉시 실패한다**(자체 적대 리뷰 DYN-06 · 실측 확정). 같은 bench 로 중첩 호출하면 안쪽이
-      // 바깥의 꼬리를 기다리고 바깥은 안쪽의 완료를 기다려 **영구 교착**한다 — 그리고 그 고착은 RED 가
-      // 아니라 **hang** 이다(Promise.race 700ms 로 실측). 이 레포는 같은 실패 양식을 `writeAllBytes` 의
-      // 진행 보장에서 이미 「가드로 승격」했고(durable-fs.ts), 형제 `lock-order.ts` 도 서열 위반을
+      // **진짜 재진입만 즉시 실패한다**(자체 적대 리뷰 DYN-06 + Codex PR#266 P1 · 둘 다 실측 확정).
+      // 같은 bench 로 **중첩** 호출하면 안쪽이 바깥의 꼬리를 기다리고 바깥은 안쪽의 완료를 기다려
+      // **영구 교착**하고, 그 고착은 RED 가 아니라 **hang** 이다(Promise.race 700ms 실측). 이 레포는 같은
+      // 실패 양식을 `writeAllBytes` 진행 보장에서 이미 가드로 승격했고, 형제 `lock-order.ts` 도 서열 위반을
       // fail-fast throw 로 처리한다 — 프로그래밍 오류는 판별 유니온이 아니라 throw 다.
-      if (ENTERED_KEYS.has(key)) {
+      //
+      // ⚠ 판정 근거는 **이 비동기 컨텍스트의 보유 집합**이다(모듈 전역 「실행 중」 집합이 아니다) — 후자로
+      // 하면 첫 구역이 `await` 하는 사이 도착한 **무관한 동시 호출**까지 throw 해 정당한 동시성이 죽는다.
+      const held = HELD_KEYS.getStore()
+      if (held?.has(key) === true) {
         throw new Error(
           `withAuthority 재진입(같은 bench) — 교착이므로 즉시 실패한다. 한 임계 구역 안에서 ` +
             `tx 를 쓰고, 새 임계 구역이 필요하면 바깥 호출이 끝난 뒤에 열 것: ${key}`,
         )
       }
+      /** 이 임계 구역 안에서 보이는 보유 집합 — 바깥 것을 상속해 **다단 중첩**도 잡는다. */
+      const nextHeld: ReadonlySet<string> = new Set([...(held ?? []), key])
 
       const prev = MUTEX_TAILS.get(key) ?? Promise.resolve()
       // 앞 임계 구역의 성패와 무관하게 다음이 진입한다. ⚠ **그 성질을 만드는 것은 아래 `tail` 이다**
@@ -1063,7 +1122,7 @@ export function createBenchAuthorityStore(
       // 「사문을 보험으로 남기라」는 반론(꼬리를 `run` 으로 바꾸는 미래 편집 대비)은 **실측으로 기각**했다 —
       // 그 편집을 실제로 넣으면 「fn 이 throw 해도 다음 호출이 진입한다」·「중첩 실패 후 재진입」 **2행이
       // RED** 다. 보험은 사문이 아니라 그 행동 테스트가 들고 있다.
-      const run = prev.then(() => runCritical(lease, fn, key))
+      const run = prev.then(() => HELD_KEYS.run(nextHeld, () => runCritical(lease, fn)))
       const tail = run.then(
         () => undefined,
         () => undefined,
@@ -1083,19 +1142,37 @@ export function createBenchAuthorityStore(
  * 브랜드는 `declare const` 라 런타임 값이 없으므로 캐스트 외에 만들 방법이 없고, 그래서 이 두 함수가
  * 「CAS 성공 시에만 존재」·「같은 임계 구역에서 방금 읽었다」를 물리적으로 독점한다.
  */
-const mintRead = (lease: BenchLeaseToken, observedRevision: number): FreshReadToken =>
+const mintRead = (lease: BenchLeaseToken, observedRevision: number): FreshReadToken => {
+  const readSeq = ++readSeqCounter
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 브랜드(`FRESH_READ`)는 런타임 값이 없는 타입 전용 심볼이라 캐스트로만 민팅된다. 인가된 forge 2곳 중 하나이며 3번째는 구조 핀이 RED 로 만든다.
-  Object.freeze({
+  const token = Object.freeze({
     identity: lease.identity,
     observedRevision,
     leaseOwnerToken: lease.ownerToken,
-    readSeq: ++readSeqCounter,
+    readSeq,
   }) as FreshReadToken
+  // **원장이 권위다**(Codex PR#266 P1) — CAS 는 토큰 필드가 아니라 여기 기록된 값을 읽는다.
+  MINTED_READS.set(token, {
+    observedRevision,
+    leaseOwnerToken: lease.ownerToken,
+    identity: lease.identity,
+    readSeq,
+  })
+  return token
+}
 
 const mintCommit = (record: BenchAuthorityRecord, durability: DurabilityLevel): AuthorityCommit =>
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 위와 같다(인가된 forge 2곳 중 둘째).
   Object.freeze({
-    identity: record.identity,
+    // **복사 후 동결**(Codex PR#266 P1). `Object.freeze` 는 얕으므로 `record.identity` 를 참조로 실으면
+    // `Object.assign(result.record.identity, {benchId: 다른bench})` 가 **커밋의 identity 까지 바꾼다** —
+    // 바깥 객체는 동결·유효한 채로 남으므로 런처가 그 크레덴셜을 소비하면 **한 bench 용 커밋이 다른
+    // bench 로 재조준**된다(실측 확정). 형제 `locks.ts` 가 리스 민팅에서 같은 이유로 중첩까지 얼린다.
+    identity: Object.freeze({
+      commonGitDir: record.identity.commonGitDir,
+      benchRoot: record.identity.benchRoot,
+      benchId: record.identity.benchId,
+    }),
     revision: record.revision,
     sourceGeneration: record.sourceGeneration,
     ...(record.activeActivity === undefined
