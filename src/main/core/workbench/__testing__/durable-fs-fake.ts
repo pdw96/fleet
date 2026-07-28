@@ -71,6 +71,13 @@ export interface FakeOptions {
   /** 초기 디스크 내용. */
   readonly initial?: Readonly<Record<string, string>>
   /**
+   * 이미 존재하는 디렉터리 — `mkdirRecursive` 가 `undefined`(생성 안 함)를 답하게 한다.
+   *
+   * 이것이 필요한 이유는 **관심사 분리**다: 디렉터리 **생성** 경로는 부모 fsync 를 동반하므로(내구성 ·
+   * Codex 2R P1), 그것과 무관한 post-commit 단계 테스트가 생성 여부에 결합되면 `skip` 오프셋이 흔들린다.
+   */
+  readonly initialDirs?: readonly string[]
+  /**
    * 특정 프리미티브 **직전**에 끼워 넣을 훅. 인터리브(§3-T17d)·TOCTOU(외부가 statKind 와
    * readFileUtf8 사이에 파일을 바꾼다) 재현용. 스프레드 오버라이드를 대체한다(캐스트 0).
    */
@@ -88,6 +95,8 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
   const pending = new Map<FakeOp, { err: Error; times: number; skip: number }>()
   /** fd → 대상 경로. `close` 로 지운다 — 남아 있으면 누수다. */
   const openFds = new Map<number, string>()
+  /** 이미 존재하는 디렉터리 — `mkdirRecursive` 의 「새로 만들었는가」 판정용. */
+  const dirs = new Set<string>(opts.initialDirs ?? [])
   let nextFd = 3 // 0·1·2 는 표준 스트림 — 실물과 같은 형태로 둔다.
 
   const errno = (code: string, message: string): Error => {
@@ -174,6 +183,10 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
 
     mkdirRecursive(path, mode) {
       enter('mkdirRecursive', [path, mode])
+      // 「새로 만들었는가」를 모델링한다 — 호출자가 부모 fsync 여부를 그것으로 판단한다(Codex 2R P1).
+      if (dirs.has(path)) return undefined
+      dirs.add(path)
+      return path
     },
 
     openExclusive(path, mode) {

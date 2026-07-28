@@ -67,8 +67,15 @@ export interface PathKind {
 export interface DurableFs {
   readFileUtf8(path: string): string
   statKind(path: string): PathKind
-  /** `mode` 는 필수다 — 권위 디렉터리는 0700 이어야 하는데 기본값은 `0o777 & ~umask` 다(정정 65). */
-  mkdirRecursive(path: string, mode: number): void
+  /**
+   * `mode` 는 필수다 — 권위 디렉터리는 0700 이어야 하는데 기본값은 `0o777 & ~umask` 다(정정 65).
+   *
+   * **새로 만든 첫 경로를 반환**한다(이미 있었으면 `undefined`). Node 의 `mkdirSync(recursive:true)` 가
+   * 그 값을 이미 주므로 어댑터는 그대로 전달만 한다. 호출자가 이것을 필요로 하는 이유는 내구성이다 —
+   * 디렉터리 생성은 **부모 디렉터리**를 변경하므로, 그 부모를 fsync 하지 않으면 전원 손실 시
+   * `durability:'file+dir'` 로 커밋했는데도 디렉터리 엔트리가 통째로 사라질 수 있다(Codex PR#266 2R P1).
+   */
+  mkdirRecursive(path: string, mode: number): string | undefined
   /** `open(path,'wx',mode)` — create-only. 기존 이름은 종류를 불문하고 EEXIST(실측). */
   openExclusive(path: string, mode: number): number
   writeAll(fd: number, data: string): void
@@ -137,9 +144,7 @@ export function createNodeDurableFs(): DurableFs {
         throw err
       }
     },
-    mkdirRecursive: (path, mode) => {
-      mkdirSync(path, { recursive: true, mode })
-    },
+    mkdirRecursive: (path, mode) => mkdirSync(path, { recursive: true, mode }),
     openExclusive: (path, mode) => openSync(path, 'wx', mode),
     writeAll: (fd, data) => {
       writeAllBytes((buf, off, len) => writeSync(fd, buf, off, len), data)

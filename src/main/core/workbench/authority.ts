@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import type { BenchLifecycle } from '../../../shared/types'
 import type { DurabilityLevel, DurableFs } from './durable-fs'
@@ -372,6 +372,12 @@ const MINTED_READS = new WeakMap<
     readonly leaseOwnerToken: string
     readonly identity: BenchAuthorityIdentity
     readonly readSeq: number
+    /**
+     * **발급한 임계 구역**(Codex PR#266 2R P1). 이것이 없으면 콜백이 미사용 정품 토큰을 밖으로 내보내고
+     * **다음** 임계 구역에서 제출할 수 있다 — `AuthorityTx.compareAndSwap` 이 「**같은** 임계 구역에서
+     * 발급된 토큰」이라고 규정한 계약이 깨지고, 뮤텍스 밖에서 상태에 의존해 draft 를 조립하는 창이 열린다.
+     */
+    readonly tx: object
   }
 >()
 /** identity 별 임계 구역 꼬리. 같은 bench 의 `withAuthority` 호출을 FIFO 로 직렬화한다. */
@@ -387,8 +393,13 @@ const MUTEX_TAILS = new Map<string, Promise<unknown>>()
  *
  * `AsyncLocalStorage` 는 그 구분을 정확히 표현하는 표준 수단이다 — 콜백 안에서 파생된 비동기 연속만
  * 스토어를 상속하므로 **진짜 중첩만** 걸리고 별개 컨텍스트는 정상적으로 `MUTEX_TAILS` 에 큐잉된다.
+ *
+ * ⚠ 값이 `Set<string>` 이 아니라 **`Map<string,{live}>`** 인 이유(Codex PR#266 2R P1): 콜백이 분리된 비동기
+ * 작업(타이머·큐잉된 재시도)을 띄우고 반환하면 ALS 는 **임계 구역이 끝난 뒤에도** 그 작업에 컨텍스트를
+ * 전파한다. 그러면 그 작업에서 나온 정당한 후속 호출이 **거짓 재진입**으로 throw 된다. 그래서 보유를
+ * 값이 아니라 **살아있는 플래그**로 표현하고 콜백 종료 시 끈다.
  */
-const HELD_KEYS = new AsyncLocalStorage<ReadonlySet<string>>()
+const HELD_KEYS = new AsyncLocalStorage<ReadonlyMap<string, { live: boolean }>>()
 
 /**
  * 뮤텍스 키 — **직렬화 도메인은 자원 도메인과 정확히 같아야 한다**(자체 적대 리뷰 perf-7·DYN-11).
@@ -626,14 +637,27 @@ const checkInvariants = (r: BenchAuthorityRecord): string[] => {
     v.push('②: completedIntegrationTxnId 존재 ⟺ lifecycle==="integrated"')
   }
   const txn = has(r.currentIntegrationTxnId)
-  if (
-    has(r.currentIntegrationStage) !== txn ||
-    has(r.currentIntegrationTxnGeneration) !== txn ||
-    has(r.currentIntegrationResultOid) !== txn
-  ) {
-    v.push(
-      '③: 통합 4필드(Stage·Generation·ResultOid)는 TxnId 와 함께 존재하거나 함께 부재해야 한다',
-    )
+  if (has(r.currentIntegrationStage) !== txn || has(r.currentIntegrationTxnGeneration) !== txn) {
+    v.push('③: Stage·Generation 은 TxnId 와 함께 존재하거나 함께 부재해야 한다')
+  }
+  // ⚠ **`resultOid` 는 4필드 동시 존재가 아니다**(Codex PR#266 2R P1). `prepared` 단계에서는 txnId·
+  // generation 이 있어도 resultOid 가 **아직 없다** — 그것은 `composed` 에서 선기록되는 값이다
+  // (스펙 §W-7 `resultOid?: string // stage >= 'composed' 필수` · §0.1 C7 「composed 에서 resultOid 선기록」).
+  // 정정 98 이 고아 resultOid 를 막으려고 4필드를 무조건 묶었는데, 그러면 **WAL 이 첫 단계에 진입조차
+  // 못 한다**(prepared CAS 가 항상 `invariant-violation` → 문서화된 prepared 크래시 복구도 불가).
+  // 고아 방지는 아래 두 방향 함의로 충분하다.
+  const oidStage =
+    r.currentIntegrationStage === 'composed' ||
+    r.currentIntegrationStage === 'published' ||
+    r.currentIntegrationStage === 'finalized'
+  if (has(r.currentIntegrationResultOid) && !txn) {
+    v.push('③b: currentIntegrationResultOid 는 TxnId 없이 존재할 수 없다(고아 resultOid)')
+  }
+  if (has(r.currentIntegrationResultOid) && !oidStage) {
+    v.push('③c: currentIntegrationResultOid 는 stage >= composed 에서만 존재한다')
+  }
+  if (oidStage && !has(r.currentIntegrationResultOid)) {
+    v.push('③d: stage >= composed 이면 currentIntegrationResultOid 가 필수다')
   }
   if (
     r.currentIntegrationTxnGeneration !== undefined &&
@@ -719,8 +743,18 @@ const serialize = (
  */
 export function createBenchAuthorityStore(
   fs: DurableFs,
-  opts: BenchAuthorityStoreOptions,
+  options: BenchAuthorityStoreOptions,
 ): BenchAuthorityStore {
+  // **생성 시점 스냅샷**(Codex PR#266 2R P1 · 형제 `locks.ts` 가 PR#264 P1 으로 확립한 규율).
+  // `readonly` 는 참조된 객체를 얼리지 않으므로 호출자가 평범한 객체를 넘기면 store 생성 뒤에도 필드를
+  // 바꿀 수 있다. 클로저들이 각 단계에서 **다시 읽으면** 뮤텍스·경로가 한 디렉터리를 가리키는 동안
+  // `mkdirRecursive` 나 post-rename dir fsync 가 **다른 디렉터리**를 향할 수 있고, 기록되는 내구성 주장도
+  // 커밋 도중에 바뀐다 — 파괴적 메타데이터 쓰기의 방향을 호출자가 뒤에서 돌릴 수 있게 된다.
+  const opts: BenchAuthorityStoreOptions = Object.freeze({
+    authorityDir: options.authorityDir,
+    durability: options.durability,
+    now: options.now,
+  })
   const pathFor = (benchId: string): string => join(opts.authorityDir, `${benchId}.json`)
   /**
    * tmp 이름은 `ownerToken` 스코프다(§W-4). `ownerToken` 은 **획득당 1회** 민팅이므로 한 리스의 모든
@@ -733,11 +767,15 @@ export function createBenchAuthorityStore(
   const runCritical = <T>(
     lease: BenchLeaseToken,
     fn: (tx: AuthorityTx) => Promise<T>,
+    /** 이 구역의 보유 표식 — 종료 시 끈다(ALS 상속이 종료 후에도 남는 것을 무효화한다). */
+    holding: { live: boolean },
   ): Promise<T> => {
     const path = pathFor(lease.identity.benchId)
     const tmpPath = tmpFor(lease.identity.benchId, lease.ownerToken)
     /** 임계 구역 밖에서 tx 를 쓰는 것을 막는 유일한 수단(계획 정정 94). */
     let live = true
+    /** 이 tx 의 신원 — 발급 토큰을 여기 결속해 **다른 구역에서의 제출**을 거부한다(Codex 2R P1). */
+    const txId = {}
 
     const readFresh = (): AuthorityReadResult => {
       if (!live) return { kind: 'lease-invalid', reason: 'released' }
@@ -747,7 +785,7 @@ export function createBenchAuthorityStore(
       } catch (cause) {
         return { kind: 'io-failure', step: 'read', path, cause }
       }
-      if (kind.kind === 'missing') return { kind: 'absent', read: mintRead(lease, 0) }
+      if (kind.kind === 'missing') return { kind: 'absent', read: mintRead(lease, 0, txId) }
       if (kind.kind !== 'regular') {
         // **자동 삭제 금지.** FIFO 면 실물에서 `readFileUtf8` 이 무기한 블록되고(부팅 정지), symlink 면
         // 영역 밖 JSON 이 권위가 된다 — 둘 다 읽기 **전에** 막는다(형제 `coord-area.ts` 와 같은 규율).
@@ -810,7 +848,11 @@ export function createBenchAuthorityStore(
       const violations = checkInvariants(shape.record)
       if (violations.length > 0) return { kind: 'invalid', path, violations }
 
-      return { kind: 'found', record: shape.record, read: mintRead(lease, shape.record.revision) }
+      return {
+        kind: 'found',
+        record: shape.record,
+        read: mintRead(lease, shape.record.revision, txId),
+      }
     }
 
     const compareAndSwap = async (
@@ -834,6 +876,9 @@ export function createBenchAuthorityStore(
       if (!sameIdentity(minted.identity, lease.identity)) {
         return { kind: 'lease-invalid', reason: 'identity-mismatch' }
       }
+      // **같은 임계 구역에서 발급된 토큰만** 받는다(Codex PR#266 2R P1). `foreign-owner` 의 문면상 의미가
+      // 정확히 「남의 임계 구역에서 발급된 읽기 토큰을 들고 왔다」이므로 같은 리스의 다른 구역도 여기 든다.
+      if (minted.tx !== txId) return { kind: 'lease-invalid', reason: 'foreign-owner' }
       SPENT_READS.add(read)
 
       // ② **변이 직전** 리스 재검증(L-6). `withLeaseGuard` 의 보장 범위가 「변이 직전」이라는 문면 그대로,
@@ -990,7 +1035,22 @@ export function createBenchAuthorityStore(
       let fd: number | undefined
       let renamed = false
       try {
-        fs.mkdirRecursive(opts.authorityDir, AUTHORITY_DIR_MODE)
+        const created = fs.mkdirRecursive(opts.authorityDir, AUTHORITY_DIR_MODE)
+        // **생성은 부모를 변경한다**(Codex PR#266 2R P1). 그 부모를 fsync 하지 않으면 전원 손실 시
+        // `durability:'file+dir'` 로 `committed` 를 답했는데도 **권위 디렉터리 자체가 사라질 수 있다** —
+        // 파일과 디렉터리는 내구화했지만 그것을 담은 엔트리는 아직 저널에 없기 때문이다.
+        // 커밋 **전** 단계로 두는 이유: 디렉터리는 우리가 그것에 의존하기 시작하기 전에 내구해야 하고,
+        // 여기서 실패하면 디스크 무변이라 `io-failure` 가 정확한 종별이다(post-commit 로 밀면 아니다).
+        // 첫 CAS 에서만 발생한다(`created === undefined` 면 이미 있었다는 뜻).
+        if (created !== undefined && opts.durability === 'file+dir') {
+          const parent = dirname(created)
+          const parentFd = fs.openDir(parent)
+          try {
+            fs.fsync(parentFd)
+          } finally {
+            fs.close(parentFd)
+          }
+        }
         step = 'open-tmp'
         fd = fs.openExclusive(tmpPath, AUTHORITY_FILE_MODE)
         step = 'write'
@@ -1069,9 +1129,12 @@ export function createBenchAuthorityStore(
 
     const tx: AuthorityTx = { readFresh, compareAndSwap }
     return (async () => {
+      holding.live = true
       try {
         return await fn(tx)
       } finally {
+        // **보유 해제** — 이후 이 컨텍스트를 상속한 분리 작업은 재진입으로 오판되지 않는다(Codex 2R P1).
+        holding.live = false
         // 임계 구역을 벗어난 tx 는 죽는다 — 유출된 핸들로 뮤텍스·리스 재검증 창 **밖에서** CAS 가 도는
         // 것을 막는 유일한 수단이다(계획 정정 94). 새 실패 종별을 만들지 않고 `released` 를 재사용한다.
         live = false
@@ -1104,14 +1167,17 @@ export function createBenchAuthorityStore(
       // ⚠ 판정 근거는 **이 비동기 컨텍스트의 보유 집합**이다(모듈 전역 「실행 중」 집합이 아니다) — 후자로
       // 하면 첫 구역이 `await` 하는 사이 도착한 **무관한 동시 호출**까지 throw 해 정당한 동시성이 죽는다.
       const held = HELD_KEYS.getStore()
-      if (held?.has(key) === true) {
+      // **살아있는 보유만** 재진입이다 — 종료된 구역에서 상속된 항목은 무효다(Codex 2R P1).
+      if (held?.get(key)?.live === true) {
         throw new Error(
           `withAuthority 재진입(같은 bench) — 교착이므로 즉시 실패한다. 한 임계 구역 안에서 ` +
             `tx 를 쓰고, 새 임계 구역이 필요하면 바깥 호출이 끝난 뒤에 열 것: ${key}`,
         )
       }
-      /** 이 임계 구역 안에서 보이는 보유 집합 — 바깥 것을 상속해 **다단 중첩**도 잡는다. */
-      const nextHeld: ReadonlySet<string> = new Set([...(held ?? []), key])
+      /** 이 구역의 보유 표식 — `finally` 가 끈다(분리 작업으로 상속돼도 무효화된다). */
+      const holding = { live: false }
+      /** 이 구역 안에서 보이는 보유 지도 — 바깥 것을 상속해 **다단 중첩**도 잡는다. */
+      const nextHeld = new Map<string, { live: boolean }>([...(held ?? []), [key, holding]])
 
       const prev = MUTEX_TAILS.get(key) ?? Promise.resolve()
       // 앞 임계 구역의 성패와 무관하게 다음이 진입한다. ⚠ **그 성질을 만드는 것은 아래 `tail` 이다**
@@ -1122,7 +1188,7 @@ export function createBenchAuthorityStore(
       // 「사문을 보험으로 남기라」는 반론(꼬리를 `run` 으로 바꾸는 미래 편집 대비)은 **실측으로 기각**했다 —
       // 그 편집을 실제로 넣으면 「fn 이 throw 해도 다음 호출이 진입한다」·「중첩 실패 후 재진입」 **2행이
       // RED** 다. 보험은 사문이 아니라 그 행동 테스트가 들고 있다.
-      const run = prev.then(() => HELD_KEYS.run(nextHeld, () => runCritical(lease, fn)))
+      const run = prev.then(() => HELD_KEYS.run(nextHeld, () => runCritical(lease, fn, holding)))
       const tail = run.then(
         () => undefined,
         () => undefined,
@@ -1142,7 +1208,11 @@ export function createBenchAuthorityStore(
  * 브랜드는 `declare const` 라 런타임 값이 없으므로 캐스트 외에 만들 방법이 없고, 그래서 이 두 함수가
  * 「CAS 성공 시에만 존재」·「같은 임계 구역에서 방금 읽었다」를 물리적으로 독점한다.
  */
-const mintRead = (lease: BenchLeaseToken, observedRevision: number): FreshReadToken => {
+const mintRead = (
+  lease: BenchLeaseToken,
+  observedRevision: number,
+  txId: object,
+): FreshReadToken => {
   const readSeq = ++readSeqCounter
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 브랜드(`FRESH_READ`)는 런타임 값이 없는 타입 전용 심볼이라 캐스트로만 민팅된다. 인가된 forge 2곳 중 하나이며 3번째는 구조 핀이 RED 로 만든다.
   const token = Object.freeze({
@@ -1157,6 +1227,7 @@ const mintRead = (lease: BenchLeaseToken, observedRevision: number): FreshReadTo
     leaseOwnerToken: lease.ownerToken,
     identity: lease.identity,
     readSeq,
+    tx: txId,
   })
   return token
 }

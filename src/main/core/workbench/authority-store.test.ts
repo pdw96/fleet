@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
@@ -71,7 +71,9 @@ const setup = async (
   durability: 'file+dir' | 'file-only' = 'file-only',
 ): Promise<Fixture> => {
   const benchId = newUlid()
-  const fs = createFakeDurableFs({ initial })
+  // 권위 디렉터리를 **선존재**로 둔다 — 생성 경로(부모 fsync 동반 · Codex 2R P1-D)는 전용 행이 보고,
+  // 나머지 행들이 생성 여부에 결합되지 않게 한다(post-commit `skip` 오프셋이 흔들린다).
+  const fs = createFakeDurableFs({ initial, initialDirs: [AUTHORITY_DIR] })
   const lease = await mintLease(benchId)
   const store = createBenchAuthorityStore(fs, {
     authorityDir: AUTHORITY_DIR,
@@ -577,31 +579,33 @@ describe('§3-T13 revision-CAS', () => {
    * 「항상 revision-mismatch」가 거짓이 된다. **두 번의 독립 readFresh** 여야 두 토큰이 같은 revision 을
    * 관측한다.
    */
-  it('ⓐ 두 상충 draft 를 순차 CAS 하면 두 번째가 revision-mismatch', async () => {
+  /**
+   * ⚠ **셋업이 계약이다**(계획 정정 80 → Codex PR#266 2R P1 로 재정정). 원안은 두 임계 구역에서 토큰을
+   * 각각 받아 **세 번째** 구역에서 제출했는데, 그것은 §W-4 가 규정한 「**같은** 임계 구역에서 발급된
+   * 미사용 토큰」 계약을 위반한다(이제 `foreign-owner` 로 거부된다).
+   *
+   * 실제 위협 모델은 **다른 프로세스가 그 사이에 썼다**이므로(§W-2-a 동일 신뢰 도메인) 한 임계 구역 안에서
+   * 그것을 재현한다 — readFresh 뒤 외부가 디스크를 전진시키고, CAS 의 rename 직전 재독이 그것을 본다.
+   * 이 형태가 문면에도 충실하고 반증력도 더 강하다(토큰 재사용이 아니라 **재독 자체**를 검증한다).
+   */
+  it('ⓐ readFresh 뒤 외부가 디스크를 전진시키면 CAS 가 revision-mismatch', async () => {
     const { store, lease, benchId, fs, path } = await setup()
     fs.setFile(path, JSON.stringify(validRecord(benchId, { revision: 1 })))
 
-    const readOnce = async (): Promise<never> =>
-      store.withAuthority(lease, (tx) => {
-        const read = tx.readFresh()
-        if (read.kind !== 'found') throw new Error(`found 예상: ${read.kind}`)
-        return Promise.resolve(read.read as never)
-      })
+    const r = await store.withAuthority(lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'found') throw new Error(`found 예상: ${read.kind}`)
+      // **다른 프로세스**가 커밋했다 — 리스 없이도 이 영역에 쓸 수 있는 신뢰 도메인이다.
+      fs.setFile(path, JSON.stringify(validRecord(benchId, { revision: 2, sourceGeneration: 9 })))
+      return tx.compareAndSwap(read.read, draft(benchId, { sourceGeneration: 3 }))
+    })
 
-    const t1 = await readOnce()
-    const t2 = await readOnce()
-
-    const first = await store.withAuthority(lease, (tx) =>
-      tx.compareAndSwap(t1, draft(benchId, { sourceGeneration: 2 })),
-    )
-    const second = await store.withAuthority(lease, (tx) =>
-      tx.compareAndSwap(t2, draft(benchId, { sourceGeneration: 3 })),
-    )
-
-    expect(first.kind).toBe('committed')
-    expect(second.kind).toBe('revision-mismatch')
-    expect(second.kind === 'revision-mismatch' && second.expected).toBe(1)
-    expect(second.kind === 'revision-mismatch' && second.observed.revision).toBe(2)
+    expect(r.kind).toBe('revision-mismatch')
+    expect(r.kind === 'revision-mismatch' && r.expected).toBe(1)
+    expect(r.kind === 'revision-mismatch' && r.observed.revision).toBe(2)
+    // 자동 병합·LWW 가 없다 = 디스크는 외부가 쓴 그대로다(계약 6항).
+    const onDisk: BenchAuthorityRecord = JSON.parse(fs.readRaw(path) ?? '{}')
+    expect([onDisk.revision, onDisk.sourceGeneration]).toEqual([2, 9])
   })
 
   /**
@@ -617,9 +621,10 @@ describe('§3-T13 revision-CAS', () => {
       if (read.kind !== 'absent') throw new Error('absent 예상')
       return tx.compareAndSwap(
         read.read,
+        // `composed` 를 쓴다 — `prepared` 는 `resultOid` 를 실을 수 없다(불변식 ③c · Codex 2R P1-E).
         draft(benchId, {
           currentIntegrationTxnId: 'T1',
-          currentIntegrationStage: 'prepared',
+          currentIntegrationStage: 'composed',
           currentIntegrationTxnGeneration: 1,
           currentIntegrationResultOid: 'oid-1',
         }),
@@ -1534,60 +1539,69 @@ describe('커밋 크레덴셜은 재조준되지 않는다(Codex P1-2)', () => {
  * 모듈 스코프 `MINTED_READS` 원장에서 온다(형제 `MINTED_LEASES` 와 같은 규율).
  */
 describe('읽기 토큰 출처 검증 — 필드를 신뢰하지 않는다(Codex P1-3)', () => {
+  /**
+   * ⚠ **같은 임계 구역 안에서** 위조한다. Codex 2R P1-B 로 토큰이 발급 tx 에 결속됐으므로 교차 구역
+   * 제출은 `foreign-owner` 가 **먼저** 잡는다 — 원장 방어를 격리 검증하려면 tx 결속을 통과시켜야 한다.
+   * (교차 구역 거부는 아래 별도 행이 본다.)
+   */
   it('스프레드 복제 + observedRevision 위조로 stale 덮어쓰기가 되지 않는다', async () => {
     const fx = await setup()
-    const real = await fx.store.withAuthority(fx.lease, (tx) => {
-      const read = tx.readFresh()
-      if (read.kind !== 'absent') throw new Error('absent 예상')
-      return Promise.resolve(read.read)
-    })
-
-    // 정상 커밋 2회로 디스크를 전진시키고 통합 4필드를 심는다.
-    for (const gen of [1, 2]) {
-      await fx.store.withAuthority(fx.lease, async (tx) => {
-        const read = tx.readFresh()
-        if (read.kind !== 'absent' && read.kind !== 'found') throw new Error('예상 밖')
-        return tx.compareAndSwap(
-          read.read,
-          draft(fx.benchId, {
-            sourceGeneration: gen,
-            currentIntegrationTxnId: `T${gen}`,
-            currentIntegrationStage: 'prepared',
-            currentIntegrationTxnGeneration: gen,
-            currentIntegrationResultOid: `oid${gen}`,
-          }),
-        )
-      })
-    }
-    const before: BenchAuthorityRecord = JSON.parse(fx.fs.readRaw(fx.path) ?? '{}')
-    expect([before.revision, before.currentIntegrationTxnId]).toEqual([2, 'T2'])
-
-    // **위조** — 캐스트 0개로 컴파일된다(브랜드가 스프레드에서 보존된다).
-    const forged: FreshReadToken = { ...real, observedRevision: before.revision }
-    const attack = await fx.store.withAuthority(fx.lease, (tx) =>
-      tx.compareAndSwap(forged, draft(fx.benchId, { sourceGeneration: 1 })),
+    fx.fs.setFile(
+      fx.path,
+      JSON.stringify(
+        validRecord(fx.benchId, {
+          revision: 2,
+          currentIntegrationTxnId: 'T2',
+          currentIntegrationStage: 'composed',
+          currentIntegrationTxnGeneration: 1,
+          currentIntegrationResultOid: 'oid2',
+        }),
+      ),
     )
 
+    const attack = await fx.store.withAuthority(fx.lease, (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'found') throw new Error('found 예상')
+      // **위조** — 캐스트 0개로 컴파일된다(브랜드가 스프레드에서 보존된다).
+      const forged: FreshReadToken = { ...read.read, observedRevision: 2 }
+      return tx.compareAndSwap(forged, draft(fx.benchId, { sourceGeneration: 1 }))
+    })
+
     expect(attack).toEqual({ kind: 'lease-invalid', reason: 'stolen' })
-    // 디스크가 **한 바이트도** 바뀌지 않았다 — 통합 4필드 보존이 이 행의 핵심이다.
+    // 디스크가 **한 바이트도** 바뀌지 않았다 — 통합 필드 보존이 이 행의 핵심이다.
     const after: BenchAuthorityRecord = JSON.parse(fx.fs.readRaw(fx.path) ?? '{}')
     expect([after.revision, after.currentIntegrationTxnId]).toEqual([2, 'T2'])
     expect(after.currentIntegrationResultOid).toBe('oid2')
+    expect(fx.fs.countOf('rename')).toBe(0)
   })
 
-  it('수작업 조립 토큰도 거부한다(원장 부재)', async () => {
+  it('필드를 그대로 베낀 복제도 거부한다(원장 부재)', async () => {
     const fx = await setup()
-    const real = await fx.store.withAuthority(fx.lease, (tx) => {
+    const r = await fx.store.withAuthority(fx.lease, (tx) => {
       const read = tx.readFresh()
       if (read.kind !== 'absent') throw new Error('absent 예상')
-      return Promise.resolve(read.read)
+      const cloned: FreshReadToken = { ...read.read }
+      return tx.compareAndSwap(cloned, draft(fx.benchId))
     })
-    // 필드를 그대로 베낀 새 객체 — 값은 전부 정품과 같지만 원장에 없다.
-    const cloned: FreshReadToken = { ...real }
-    const r = await fx.store.withAuthority(fx.lease, (tx) =>
-      tx.compareAndSwap(cloned, draft(fx.benchId)),
-    )
     expect(r).toEqual({ kind: 'lease-invalid', reason: 'stolen' })
+    expect(fx.fs.countOf('rename')).toBe(0)
+  })
+
+  /**
+   * **발급 tx 결속**(Codex PR#266 2R P1-B). 미사용 정품 토큰을 밖으로 내보내 **다음** 임계 구역에서
+   * 제출하면 §W-4 의 「같은 임계 구역」 계약이 깨지고 뮤텍스 밖에서 상태 의존 draft 를 조립할 수 있다.
+   */
+  it('미사용 정품 토큰도 다른 임계 구역에서는 거부된다', async () => {
+    const fx = await setup()
+    const escaped = await fx.store.withAuthority(fx.lease, (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return Promise.resolve(read.read) // 소진하지 않고 유출
+    })
+    const r = await fx.store.withAuthority(fx.lease, (tx) =>
+      tx.compareAndSwap(escaped, draft(fx.benchId)),
+    )
+    expect(r).toEqual({ kind: 'lease-invalid', reason: 'foreign-owner' })
     expect(fx.fs.countOf('rename')).toBe(0)
   })
 
@@ -1597,6 +1611,251 @@ describe('읽기 토큰 출처 검증 — 필드를 신뢰하지 않는다(Codex
       const read = tx.readFresh()
       if (read.kind !== 'absent') throw new Error('absent 예상')
       return tx.compareAndSwap(read.read, draft(fx.benchId))
+    })
+    expect(r.kind).toBe('committed')
+  })
+})
+
+/* ================================================================================================
+ * Codex PR#266 2R P1 x5 — 전부 실측·스펙 확인 후 반영
+ * ============================================================================================= */
+
+/**
+ * **2R P1-D — 디렉터리 생성은 부모를 변경한다.**
+ *
+ * `mkdirRecursive` 로 권위 디렉터리를 만들면 새 엔트리는 **부모** 디렉터리에 생긴다. 그 부모를 fsync 하지
+ * 않으면 전원 손실 시 `durability:'file+dir'` 로 `committed` 를 답했는데도 **권위 디렉터리 자체가 사라진다**
+ * — 파일과 디렉터리는 내구화했지만 그것을 담은 엔트리는 아직 저널에 없기 때문이다.
+ */
+describe('디렉터리 생성 내구성(Codex 2R P1-D)', () => {
+  const onFreshDir = (
+    durability: 'file+dir' | 'file-only',
+  ): Promise<{ fx: Fixture; r: CasResult }> =>
+    (async () => {
+      const benchId = newUlid()
+      const lease = await mintLease(benchId)
+      // `initialDirs` 를 주지 않는다 = 디렉터리가 없는 첫 CAS.
+      const fs = createFakeDurableFs()
+      const store = createBenchAuthorityStore(fs, {
+        authorityDir: AUTHORITY_DIR,
+        durability,
+        now: () => AT,
+      })
+      const fx: Fixture = {
+        fs,
+        lease,
+        benchId,
+        path: join(AUTHORITY_DIR, `${benchId}.json`),
+        tmpPath: join(AUTHORITY_DIR, `${benchId}.json.${lease.ownerToken}.tmp`),
+        store,
+      }
+      const r = await store.withAuthority(lease, async (tx) => {
+        const read = tx.readFresh()
+        if (read.kind !== 'absent') throw new Error('absent 예상')
+        return tx.compareAndSwap(read.read, draft(benchId))
+      })
+      return { fx, r }
+    })()
+
+  it('file+dir 에서 새로 만들면 부모 디렉터리도 fsync 한다', async () => {
+    const { fx, r } = await onFreshDir('file+dir')
+    expect(r.kind).toBe('committed')
+    // 부모 fsync 는 **tmp 를 열기 전**에 온다 — 디렉터리는 의존이 시작되기 전에 내구해야 한다.
+    const steps = fx.fs.steps
+    const mkdirAt = steps.indexOf('mkdirRecursive')
+    const openTmpAt = steps.indexOf('openExclusive')
+    const parentDirAt = steps.indexOf('openDir')
+    expect(mkdirAt).toBeLessThan(parentDirAt)
+    expect(parentDirAt).toBeLessThan(openTmpAt)
+    // 인자가 **부모**여야 한다(권위 디렉터리 자신이 아니다).
+    const firstOpenDir = fx.fs.calls.find((c) => c.op === 'openDir')
+    expect(firstOpenDir?.args).toEqual([dirname(AUTHORITY_DIR)])
+    // 권위 디렉터리 fsync 는 rename 뒤에 따로 온다 = openDir 총 2회.
+    expect(fx.fs.countOf('openDir')).toBe(2)
+    expect(fx.fs.openFdCount()).toBe(0)
+  })
+
+  it('두 번째 CAS 는 부모를 다시 fsync 하지 않는다(생성이 없으므로)', async () => {
+    const { fx } = await onFreshDir('file+dir')
+    const before = fx.fs.countOf('openDir')
+    await fx.store.withAuthority(fx.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'found') throw new Error('found 예상')
+      return tx.compareAndSwap(read.read, draft(fx.benchId, { sourceGeneration: 2 }))
+    })
+    // 권위 디렉터리 fsync 1회만 늘어난다(부모는 이미 내구).
+    expect(fx.fs.countOf('openDir')).toBe(before + 1)
+  })
+
+  it('file-only 면 부모 fsync 도 하지 않는다(등급이 유일 권위)', async () => {
+    const { fx, r } = await onFreshDir('file-only')
+    expect(r.kind).toBe('committed')
+    expect(fx.fs.countOf('openDir')).toBe(0)
+  })
+
+  it('부모 fsync 실패는 커밋 전이라 io-failure 다(디스크 무변이)', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const fs = createFakeDurableFs()
+    fs.failNext('fsync', new Error('주입: 부모 fsync'))
+    const store = createBenchAuthorityStore(fs, {
+      authorityDir: AUTHORITY_DIR,
+      durability: 'file+dir',
+      now: () => AT,
+    })
+    const r = await store.withAuthority(lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return tx.compareAndSwap(read.read, draft(benchId))
+    })
+    expect(r.kind).toBe('io-failure')
+    expect(r.kind === 'io-failure' && r.step).toBe('mkdir')
+    expect(fs.countOf('rename')).toBe(0)
+    expect(fs.openFdCount()).toBe(0)
+  })
+})
+
+/**
+ * **2R P1-A — 종료된 임계 구역의 ALS 상속은 무효다.**
+ *
+ * 콜백이 분리된 비동기 작업(타이머·큐잉된 재시도)을 띄우고 반환하면 `AsyncLocalStorage` 는 임계 구역이
+ * 끝난 뒤에도 그 작업에 컨텍스트를 전파한다. 보유를 값으로만 표현하면 그 작업의 **정당한 후속 호출**이
+ * 거짓 재진입으로 throw 된다.
+ */
+describe('종료된 구역의 컨텍스트 상속은 재진입이 아니다(Codex 2R P1-A)', () => {
+  it('콜백이 띄운 분리 작업이 나중에 호출해도 진입한다', async () => {
+    const fx = await setup()
+    let detached: Promise<string> | undefined
+    await fx.store.withAuthority(fx.lease, () => {
+      // 임계 구역 **안에서** 분리 작업을 예약하고 기다리지 않는다 — ALS 컨텍스트를 상속한다.
+      detached = new Promise<string>((resolve) => {
+        setTimeout(() => {
+          resolve(fx.store.withAuthority(fx.lease, () => Promise.resolve('후속')))
+        }, 5)
+      })
+      return Promise.resolve('바깥')
+    })
+    // 바깥 구역이 끝난 뒤 실행되므로 재진입이 아니다.
+    await expect(detached).resolves.toBe('후속')
+  })
+
+  it('여전히 살아있는 구역 안에서의 호출은 throw 한다(가드 유지)', async () => {
+    const fx = await setup()
+    await expect(
+      fx.store.withAuthority(fx.lease, async () => {
+        await new Promise((r) => setTimeout(r, 5))
+        return fx.store.withAuthority(fx.lease, () => Promise.resolve(1))
+      }),
+    ).rejects.toThrow(/재진입/)
+  })
+})
+
+/**
+ * **2R P1-C — opts 는 생성 시점에 스냅샷된다**(형제 `locks.ts` 가 PR#264 P1 으로 확립한 규율).
+ *
+ * `readonly` 는 참조 객체를 얼리지 않는다. 클로저가 각 단계에서 다시 읽으면 뮤텍스·경로가 한 디렉터리를
+ * 가리키는 동안 `mkdirRecursive` 나 dir fsync 가 **다른 디렉터리**를 향할 수 있다.
+ */
+describe('store 옵션은 생성 시점 스냅샷이다(Codex 2R P1-C)', () => {
+  it('생성 후 opts 를 바꿔도 경로·등급이 따라 바뀌지 않는다', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const fs = createFakeDurableFs({ initialDirs: [AUTHORITY_DIR] })
+    const mutable = {
+      authorityDir: AUTHORITY_DIR,
+      durability: 'file-only' as const,
+      now: () => AT,
+    }
+    const store = createBenchAuthorityStore(fs, mutable)
+
+    // 호출자가 뒤에서 방향을 돌린다.
+    Object.assign(mutable, { authorityDir: '/탈취된/경로', durability: 'file+dir' })
+
+    const r = await store.withAuthority(lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return tx.compareAndSwap(read.read, draft(benchId))
+    })
+
+    expect(r.kind).toBe('committed')
+    // 원래 디렉터리에만 썼고, 등급도 생성 시점 값이다.
+    expect(fs.paths()).toEqual([join(AUTHORITY_DIR, `${benchId}.json`)])
+    expect(r.kind === 'committed' && r.commit.durability).toBe('file-only')
+    expect(fs.countOf('openDir')).toBe(0) // file+dir 로 바뀌지 않았다
+  })
+})
+
+/**
+ * **2R P1-E — `resultOid` 는 stage >= composed 에서만 존재한다.**
+ *
+ * 정정 98 이 고아 resultOid 를 막으려고 통합 4필드를 무조건 묶었는데, `prepared` 단계에서는 resultOid 가
+ * **아직 없다**(compose 에서 선기록된다 · 스펙 §W-7 `resultOid?: string // stage >= 'composed' 필수`).
+ * 그래서 그 규칙은 **WAL 이 첫 단계에 진입조차 못 하게** 만들었다.
+ */
+describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
+  const casWith = async (over: Partial<BenchAuthorityDraft>): Promise<CasResult> => {
+    const fx = await setup()
+    return fx.store.withAuthority(fx.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return tx.compareAndSwap(read.read, draft(fx.benchId, over))
+    })
+  }
+
+  it('prepared 는 resultOid 없이 커밋된다(WAL 1단계 진입 가능)', async () => {
+    const r = await casWith({
+      currentIntegrationTxnId: 'T1',
+      currentIntegrationStage: 'prepared',
+      currentIntegrationTxnGeneration: 1,
+    })
+    expect(r.kind).toBe('committed')
+  })
+
+  it.each(['composed', 'published', 'finalized'] as const)(
+    '%s 는 resultOid 와 함께 커밋된다',
+    async (stage) => {
+      const r = await casWith({
+        currentIntegrationTxnId: 'T1',
+        currentIntegrationStage: stage,
+        currentIntegrationTxnGeneration: 1,
+        currentIntegrationResultOid: 'oid1',
+      })
+      expect(r.kind).toBe('committed')
+    },
+  )
+
+  it.each(['composed', 'published', 'finalized'] as const)(
+    '%s 인데 resultOid 가 없으면 invariant-violation(③d)',
+    async (stage) => {
+      const r = await casWith({
+        currentIntegrationTxnId: 'T1',
+        currentIntegrationStage: stage,
+        currentIntegrationTxnGeneration: 1,
+      })
+      expect(r.kind).toBe('invariant-violation')
+    },
+  )
+
+  it('prepared 인데 resultOid 가 있으면 invariant-violation(③c)', async () => {
+    const r = await casWith({
+      currentIntegrationTxnId: 'T1',
+      currentIntegrationStage: 'prepared',
+      currentIntegrationTxnGeneration: 1,
+      currentIntegrationResultOid: 'oid1',
+    })
+    expect(r.kind).toBe('invariant-violation')
+  })
+
+  it('TxnId 없는 고아 resultOid 는 여전히 거부된다(③b · 정정 98 의 원래 목적 보존)', async () => {
+    const r = await casWith({ currentIntegrationResultOid: 'oid1' })
+    expect(r.kind).toBe('invariant-violation')
+  })
+
+  it('abandoned 는 resultOid 를 요구하지 않는다', async () => {
+    const r = await casWith({
+      currentIntegrationTxnId: 'T1',
+      currentIntegrationStage: 'abandoned',
+      currentIntegrationTxnGeneration: 1,
     })
     expect(r.kind).toBe('committed')
   })
