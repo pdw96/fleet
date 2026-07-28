@@ -22,9 +22,10 @@ fleet-pr-review 의 find≠verify 에 대응하는 계획판 규율 = **draft≠
    프롬프트에는 **스펙 경로 + 핵심 제약 요약**만 싣고 전문은 에이전트가 Read 로 직접 읽게 한다
    (서브에이전트는 독립 캐시·5분 TTL — 전문을 N개 프롬프트에 중복 탑재하면 그대로 N배 과금).
 3. **judge** — 디스패치 전 메인 루프가 초안 동일성을 훑는다 — 사실상 동일이면 judge 생략(강등
-   규칙·judge 의 붕괴 보고는 2차 안전망). 이후 `fleet-plan-judge` ×2 병렬(judge A=공백 그룹,
-   judge B=Codex 강점 그룹). 초안·스펙은 **경로로 전달**(전문 탑재는 파일로 못 주는 경우만).
-   draft 인스턴스와 분리(draft≠judge).
+   규칙·judge 의 붕괴 보고는 2차 안전망). planner 는 read-only(초안=반환 텍스트)이므로 **메인
+   루프가 먼저 각 초안을 파일로 저장**(스크래치 디렉터리, `draft-{a,b,c}.md`)한 뒤, 이후
+   `fleet-plan-judge` ×2 병렬(judge A=공백 그룹, judge B=Codex 강점 그룹) 프롬프트에 초안·스펙을
+   **경로로 전달**한다(파일로 못 주는 환경만 전문 탑재 폴백). draft 인스턴스와 분리(draft≠judge).
 4. **합성(메인 루프)** — 승자 골격 + 이식 목록 + 공통 결함 보강 →
    `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`. 판사 점수 요약·판정 근거를 계획 머리말에
    기록하고 사용자 확인을 받는다.
