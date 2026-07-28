@@ -1679,6 +1679,9 @@ describe('디렉터리 생성 내구성(Codex 2R P1-D · 3R P1-1)', () => {
     const r = await commitOn(h)
     expect(r.kind).toBe('io-failure')
     expect(r.kind === 'io-failure' && r.step).toBe('mkdir')
+    // **대상 경로까지 핀한다**(CodeRabbit): step 만 보면 부모/권위 어느 쪽을 실어도 GREEN 이라
+    // 「단계별로 실제 대상을 싣는다」는 이 경로의 규율이 새 단계에서 무신호로 깨진다.
+    expect(r.kind === 'io-failure' && r.path).toBe(dirname(AUTHORITY_DIR))
     expect(h.fs.countOf('rename')).toBe(0)
     expect(h.fs.openFdCount()).toBe(0)
   })

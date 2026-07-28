@@ -27,6 +27,27 @@ import type { BenchLeaseToken } from './locks'
  * 전체 스냅숏 tmp→rename 덮어쓰기라 두 프로세스가 붙으면 last-writer-wins 로 상대 세대가 조용히
  * 소멸한다(`store/json-file.ts:29,50-57`).
  *
+ * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · AGENTS.md 「안전 우선」이 요구하는 문서화 · Codex PR#266 4R)
+ *
+ * 이 모듈은 CAS 경로에서 `mkdir`·`openExclusive`·`writeAll`·`rename`·`unlinkIfExists` 를 **직접 조율**한다
+ * (실행은 주입 `DurableFs` 가 하지만 **무엇을 어디에 쓸지 정하는 것은 여기다**). 그럼에도 승인 게이트 밖인
+ * 근거는 형제 선례와 같다 — 게이트의 범위는 «LLM 변이·툴 실행·프로세스 spawn»이고(소비자 = `engine`·
+ * `orchestrator`·`mcp/host`·`tools/loop`), **엔진 인프라 쓰기**는 전부 게이트 밖이라는 선례가 이미 있다
+ * (`store/json-file.ts` · `workspace/ignored-baseline.ts` · `workbench/coord-area.ts` · `active-instance.ts` ·
+ * `durable-fs.ts`). 소비 경로도 **부팅·CAS 임계 구역**이라 승인자가 존재하지 않고, §W-3 **L-5**(승인 대기 중
+ * 락 보유 금지)와 방향이 정면으로 충돌한다 — 게이트를 걸면 리스를 쥔 채 사람을 기다리게 된다.
+ *
+ * **그래서 destructive 조작을 막는 것은 게이트가 아니라 아래 넷이다**(AGENTS.md 가 요구하는 「소유 확인 ·
+ * create-only 경합」의 이 모듈판):
+ * 1. **리스 출처 확인** — `withAuthority` 진입 시 `isMintedLease`. 실패하면 파일시스템을 **만지지 않는다**.
+ * 2. **변이 직전 리스 재검증(L-6)** — `compareAndSwap` 이 쓰기 전에 커널 endpoint 소유를 다시 본다.
+ * 3. **create-only 경합** — tmp 는 `openExclusive`(`wx`)로만 만들고 이름에 `ownerToken` 을 실어 타 보유자와
+ *    충돌하지 않는다. 대상 경로는 **호출자가 준 `authorityDir` + `benchId`** 로만 유도한다(경로를 지어내지 않는다).
+ * 4. **identity 3중 대조** — 리스·읽은 레코드·제출 draft 가 모두 같은 bench 를 가리켜야 한다.
+ *
+ * ⚠ 남는 경계도 적는다: `authorityDir` 의 **정준화·검증은 호출자 책임**(PR7)이므로, 이 모듈은 잘못된
+ * 디렉터리를 받으면 그 안에서 성실히 파괴적 쓰기를 한다. 그 방어는 배선 지점에 있다.
+ *
  * ⚠ **`'file-only'` 표면의 안전 논증은 이 파일 안에서 완결되지 않는다**(계획 정정 70). win32 는 디렉터리
  * 엔트리 내구성이 없어 머신 크래시 시 `revision` 단조성이 깨질 수 있고, 그 탐지는 **git ref 열거**
  * (§W-7 ref-앵커 재조정 · PR3 T13)에 의존한다 — 권위 파일 안에 앵커를 두면 롤백 시 함께 되돌아가
@@ -1027,6 +1048,8 @@ export function createBenchAuthorityStore(
       revision: number,
     ): CasResult => {
       let step: PreCommitStep = 'mkdir'
+      /** 부모 디렉터리 내구화 중이면 그 경로 — 실패 진단이 실제 대상을 싣게 한다(CodeRabbit). */
+      let parentTarget: string | undefined
       let fd: number | undefined
       let renamed = false
       try {
@@ -1045,13 +1068,17 @@ export function createBenchAuthorityStore(
         // 디스크 무변이라 `io-failure{step:'mkdir'}` 가 정확하다(post-commit 로 밀면 「revision 전진」이라는
         // 거짓 증언이 된다).
         if (opts.durability === 'file+dir' && !parentDurable) {
-          const parentFd = fs.openDir(dirname(opts.authorityDir))
+          // 이 구간의 실제 대상은 **부모**다 — 실패 시 진단이 권위 디렉터리를 가리키면 복구 판정이
+          // 엉뚱한 경로를 본다(CodeRabbit). 아래 `target` 계산이 이 값을 우선한다.
+          parentTarget = dirname(opts.authorityDir)
+          const parentFd = fs.openDir(parentTarget)
           try {
             fs.fsync(parentFd)
           } finally {
             fs.close(parentFd)
           }
           parentDurable = true // 성공했을 때만 — 실패하면 catch 로 나가고 다음 CAS 가 다시 한다.
+          parentTarget = undefined
         }
         step = 'open-tmp'
         fd = fs.openExclusive(tmpPath, AUTHORITY_FILE_MODE)
@@ -1074,7 +1101,11 @@ export function createBenchAuthorityStore(
       } catch (cause) {
         // 단계별로 **실제 대상**을 싣는다(CodeRabbit): `mkdir` 은 디렉터리이고 `rename` 은 최종 경로다.
         // 전부 tmp 로 답하면 복구 판정이 **존재하지도 않는 tmp** 를 보게 된다.
-        const target = step === 'mkdir' ? opts.authorityDir : step === 'rename' ? path : tmpPath
+        // `parentTarget` 이 우선이다(CodeRabbit) — 부모 내구화 구간의 실제 대상은 부모 디렉터리이고,
+        // step 은 여전히 'mkdir' 이라 그것만으로는 권위 디렉터리가 실려 진단이 엉뚱한 경로를 가리킨다.
+        const target =
+          parentTarget ??
+          (step === 'mkdir' ? opts.authorityDir : step === 'rename' ? path : tmpPath)
         return { kind: 'io-failure', step, path: target, cause }
       } finally {
         // fd 가 남아 있다 = 어느 단계가 던졌다. 실물에서 열린 핸들은 **그 자체로 DoS 표면**이다 —
