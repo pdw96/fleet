@@ -25,3 +25,5 @@ provider/SDK/CLI의 **현행 문서(context7)** 와 Fleet 코드를 대조해 �
 
 - 모델 페이지 endpoints 표는 보일러플레이트 — prose가 권위.
 - 절대 추측 금지: 갭 주장은 context7 현행 문서로 뒷받침.
+- **티어 배분(토큰 효율)** — 대조 find·refute 판정은 세션 티어 유지, 기계적 단계(문서 수확·표 정리)는
+  하위 effort/모델로 디스패치(AGENTS.md 「Codex 리뷰 운영 기준」 계층화 절).

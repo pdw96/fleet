@@ -21,3 +21,4 @@
 | [0011](0011-graceful-drain-경계-drainTimeout-grace-조율.md) | Accepted | graceful drain 의 drainTimeout↔stop_grace_period 조율은 코드가 아니라 문서·페어링 env·smoke canary 로 강제한다 |
 | [0012](0012-클라우드-에이전트-워크플로-폐기-로컬-스킬-일원화.md) | Accepted | 클라우드 에이전트 워크플로(claude-code-action)를 폐기하고 두 스킬을 로컬 전용으로 일원화한다(#228·ADR-0007 폐쇄) |
 | [0013](0013-인스턴스-배타-커널-endpoint-우선-container_name-배포집행.md) | Accepted | 인스턴스 배타는 커널 endpoint 를 먼저 잡고, 그 안전 전제는 compose container_name 이 파일로 집행한다(#251) |
+| [0014](0014-자가리뷰-봇공백-렌즈-계층화-티어-하향.md) | Accepted | 자가 적대리뷰는 봇 공백 렌즈로 계층화(축소 전제=머지 전 Codex 완료 확인)하고 서브에이전트 fan-out 은 티어를 하향한다 |
