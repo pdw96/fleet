@@ -229,9 +229,16 @@ describe.skipIf(IS_WIN)('POSIX 내구 경로 — file+dir 이 실물에서 성�
  */
 describe('크래시 도달 가능성 — 자식이 만든 실제 상태를 프로덕션이 읽는다(§3.2 · 정정 71)', () => {
   /** 자식을 띄워 지정 단계까지만 수행하고 **즉사**시킨다. 반환은 자식이 실제로 죽었는지. */
-  const crashAt = (stage: 'after-tmp-write' | 'after-fsync' | 'before-rename', payload: string) => {
-    const tmp = join(authorityDir, 'crash.json.owner.tmp')
-    const target = join(authorityDir, 'crash.json')
+  const crashAt = (
+    benchId: string,
+    stage: 'after-tmp-write' | 'after-fsync' | 'before-rename',
+    payload: string,
+  ) => {
+    // ⚠ **판정 리스와 같은 benchId 여야 한다**(CodeRabbit). 고정 이름을 쓰고 다른 benchId 로 읽으면
+    // `pathFor(lease.identity.benchId)` 가 잔재를 **아예 들여다보지 않아** 「무관한 파일은 absent」라는
+    // 자명한 사실만 확인하는 vacuous 테스트가 된다.
+    const tmp = join(authorityDir, `${benchId}.json.owner.tmp`)
+    const target = join(authorityDir, `${benchId}.json`)
     const script = [
       `const fs=require('fs');`,
       `fs.mkdirSync(${JSON.stringify(authorityDir)},{recursive:true,mode:0o700});`,
@@ -254,22 +261,24 @@ describe('크래시 도달 가능성 — 자식이 만든 실제 상태를 프�
   it.each(['after-tmp-write', 'after-fsync', 'before-rename'] as const)(
     '%s 에서 죽으면 권위 파일은 부재이고 tmp 만 남는다 — 프로덕션이 absent 로 읽는다',
     async (stage) => {
-      const { died, tmp, target } = crashAt(stage, '{"schemaVersion":1}')
+      const benchId = newUlid()
+      const { died, tmp, target } = crashAt(benchId, stage, '{"schemaVersion":1}')
       expect(died).toBe(true)
 
       // **도달 가능성 증거**: 그 단계 직후의 디스크가 실제로 이 모양이다.
       expect(statSync(tmp).isFile()).toBe(true)
       expect(() => statSync(target)).toThrow() // rename 전이므로 권위 파일 없음
 
-      // **프로덕션 판정**: 이 상태를 우리 코드가 어떻게 읽는가.
-      const lease = await mintLease(newUlid())
+      // **프로덕션 판정**: 이 상태를 우리 코드가 어떻게 읽는가. **같은 benchId** 로 읽어야 잔재를 본다.
+      const lease = await mintLease(benchId)
       const seen = await createBenchAuthorityStore(createNodeDurableFs(), {
         authorityDir,
         durability: 'file-only',
         now: () => 1,
       }).withAuthority(lease, (tx) => Promise.resolve(tx.readFresh()))
 
-      // 다른 benchId 라 자기 파일은 없다 = `absent`. 핵심은 **tmp 잔재가 읽기를 오염시키지 않는다**는 것.
+      // 자기 bench 의 tmp 잔재가 **바로 옆에 있는데도** 권위 파일이 없으므로 `absent` 다 —
+      // 잔재를 권위로 오독하는 구현이면 여기서 RED 다(그것이 이 행의 반증력이다).
       expect(seen.kind).toBe('absent')
     },
   )
