@@ -18,8 +18,8 @@ import type { BenchLeaseToken } from './locks'
 /**
  * 공유 권위 레코드 · revision-CAS (#251 · 스펙 §W-4) — **타입 층**(PR2a T6b).
  *
- * 값 구현(`createBenchAuthorityStore`·`withAuthority`)은 PR2b, rename 재시도·`commit-uncertain` 은 PR2c,
- * 엔진 배선은 PR7 이다. 타입이 먼저 서는 이유는 계약 사슬의 척추이기 때문이다 — 어느 실패 종별이
+ * 값 구현(`createBenchAuthorityStore`·`withAuthority`)과 **`commit-uncertain` 반환**은 PR2b(계획 정정 77 이
+ * 선이관), rename **재시도**·per-retry L-6·gated-orphan 회수는 PR2c, 엔진 배선은 PR7 이다. 타입이 먼저 서는 이유는 계약 사슬의 척추이기 때문이다 — 어느 실패 종별이
  * 존재하는지가 정해져야 그 각각을 RED 로 만들 수 있다.
  *
  * **레이아웃 = bench 당 파일 1개** `<area>/authority/<benchId>.json`. 단일 파일을 기각한 근거는
@@ -137,6 +137,11 @@ declare const FRESH_READ: unique symbol
 /**
  * 「이 임계 구역에서 방금 디스크를 읽었다」는 증거. **단일 사용**이 계약이라 `readSeq` 를 싣는다 —
  * 같은 토큰 재제출은 `read-token-spent` 다.
+ *
+ * ⚠ **정직**(자체 적대 리뷰 F6): 그 판정은 모듈 스코프 `WeakSet` 의 **참조 동일성**이므로 `{...read}`
+ * 스프레드 복제가 캐스트 0개로 우회한다. 즉 단일 사용은 **규약**이고, 안전 백스톱은 CAS 가 rename
+ * **직전에 디스크를 다시 읽어** revision 을 대조하는 것이다 — 복제 토큰으로도 stale revision 은 커밋되지
+ * 않는다. 그 재독을 완화하는 변경은 이 규약을 실제 방어로 승격시켜야 한다.
  */
 export interface FreshReadToken {
   readonly [FRESH_READ]: true
@@ -182,7 +187,15 @@ export type AuthorityReadResult =
       readonly expected: BenchAuthorityIdentity
       readonly found: BenchAuthorityIdentity
     }
-  /** 임계 구역 진입 시점에 리스가 이미 유실된 경우 — throw 는 「판별 유니온 반환」 원칙과 충돌한다. */
+  /**
+   * 리스를 이 임계 구역에서 쓸 수 없다 — throw 는 「판별 유니온 반환」 원칙과 충돌하므로 값으로 보고한다.
+   *
+   * ⚠ **실제 생산자를 정확히 적는다**(자체 적대 리뷰 SEC-7 · 원안은 「진입 시점에 유실」이라고만 썼다):
+   * ⓐ`'stolen'` = 비민팅/복제 리스(`isMintedLease` 실패 · 진입 전) ⓑ`'released'` = 임계 구역이 **끝난 뒤**
+   * 유출된 tx 사용. **진입 시점의 커널 재검증은 하지 않는다** — `MINTED_LEASES` 는 해제된 리스도 계속
+   * 담으므로, 이미 해제된 리스로 진입해 읽고 토큰을 민팅하는 것이 가능하다. 그 창은 **CAS 의 변이 직전
+   * 재검증(L-6)이 닫는다**(쓰기는 절대 나가지 않는다). 읽기만 하고 버리는 것은 무해하므로 이 경계를 택했다.
+   */
   | { readonly kind: 'lease-invalid'; readonly reason: 'released' | 'stolen' }
   | {
       readonly kind: 'io-failure'
@@ -221,7 +234,16 @@ export type CasResult =
     }
   | { readonly kind: 'read-token-spent'; readonly readSeq: number }
   | { readonly kind: 'invariant-violation'; readonly violations: readonly string[] }
-  /** rename **성공 전** 실패(재시도 소진 포함) = 디스크 무변이(tmp 만 잔존 · 다음 CAS 가 회수). */
+  /**
+   * rename **성공 전** 실패(재시도 소진 포함) = 디스크 무변이.
+   *
+   * ⚠ **정직**(계획 정정 78ⓒ 이행 · 자체 적대 리뷰 perf-4·DYN-08): 원안은 「tmp 만 잔존 · **다음 CAS 가
+   * 회수**」였는데 그 회수는 **두 갈래 모두에서 존재하지 않는다**. 같은 리스에서는 이 CAS 의 `finally` 가
+   * 이미 자기 tmp 를 치웠으므로 회수할 대상이 없고(vacuous), **크래시 잔재**는 tmp 이름이 `ownerToken`
+   * 스코프인데 다음 획득이 새 `ownerToken` 을 받으므로 이름을 알 수 없다 — 게다가 `DurableFs` 에 디렉터리
+   * 열거 프리미티브가 없어 seam 위에서 표현조차 못 한다. **고아 tmp 수확기는 미착지**(PR3 이월)이며,
+   * 그때까지 크래시 잔재는 누적된다. 이 사실을 은폐하지 않는다.
+   */
   | {
       readonly kind: 'io-failure'
       readonly step: PreCommitStep
@@ -230,8 +252,12 @@ export type CasResult =
     }
   /**
    * rename **성공 후** 내구 단계 실패 = **디스크 revision 은 이미 전진**했는데 커밋 토큰은 발급하지 않는다.
-   * 「쓰기 실패·상태 무변」과 반드시 구분한다(Codex 체크포인트 2 P1-5). 커밋 토큰이 없으므로 CLI 는
-   * 실행되지 않고, 디스크에 남은 `activeActivity{execGate:'gated'}` 가 다음 부팅의 회수 근거가 된다.
+   * 「쓰기 실패·상태 무변」과 반드시 구분한다(Codex 체크포인트 2 P1-5).
+   *
+   * ⚠ **미착지 기제를 현재형으로 쓰지 않는다**(자체 적대 리뷰 FRAME-07): 「커밋 토큰이 없으므로 CLI 는
+   * 실행되지 않는다」는 **런처가 존재할 때** 성립할 성질이고 런처는 PR2c·배선은 PR7 이다. 「디스크에 남은
+   * `activeActivity{execGate:'gated'}` 가 다음 부팅의 회수 근거가 된다」의 **회수 코드도 미착지**(PR2c).
+   * 지금 이 종별이 실제로 보장하는 것은 **커밋 토큰을 발급하지 않는다**는 것 하나뿐이다.
    */
   | {
       readonly kind: 'commit-uncertain'
@@ -247,7 +273,13 @@ export type CasResult =
  * `readFresh()` 를 부르는 코드가 정상 컴파일**되어 직렬화 경계가 타입이 아니라 규약으로 강등된다.
  */
 export interface AuthorityTx {
-  /** **항상 디스크에서 읽는다.** 반증 수단 = 주입 `DurableFs.readFileUtf8` 호출 카운트(1회당 정확히 1회). */
+  /**
+   * **항상 디스크에서 읽는다.**
+   *
+   * ⚠ 반증 수단은 **두 축**이다(계획 정정 79 · 원안 문면은 이 PR 이 반증했다): `found` 경로에서
+   * `readFileUtf8` 정확히 1회 · **전 경로**에서 `statKind` 정확히 1회. 「호출 1회당 `readFileUtf8` 1회」를
+   * 전 경로에 걸면 **부재 경로에서 정답 구현이 RED** 다 — `statKind` 가 `'missing'` 을 답하면 읽기는 0회다.
+   */
   readFresh(): AuthorityReadResult
   /** `read` 는 **같은 임계 구역**에서 발급된 미사용 토큰. 성공 시에만 `AuthorityCommit` 을 발급한다. */
   compareAndSwap(read: FreshReadToken, next: BenchAuthorityDraft): Promise<CasResult>
@@ -295,7 +327,16 @@ export interface BenchAuthorityStoreOptions {
  */
 const MAX_AUTHORITY_BYTES = 64 * 1024
 
-/** 권위 디렉터리·파일 권한. 형제 `coord-area.ts` 와 같다(win32 에서 무시되는 것은 §3-T59 가 흡수). */
+/**
+ * 권위 디렉터리·파일 권한(win32 에서 무시되는 것은 §3-T59 가 흡수).
+ *
+ * ⚠ **형제와 동형이 아니다**(자체 적대 리뷰 SEC-6 · 원안 주석은 「같다」고 썼는데 거짓이었다):
+ * `mkdirRecursive` 의 mode 는 **새로 만들 때만** 적용되고 **선존재 디렉터리에는 no-op** 이다. 형제
+ * `coord-area.ts` 는 uid 검사 + `chmodSync` 로 기존 모드까지 강제하는데, 여기서는 `DurableFs` 에
+ * `chmod`·`stat-uid` 프리미티브가 없어 **주입 seam 위에서 표현 자체가 불가**하다. 즉 이 상수가 보장하는
+ * 것은 「우리가 만든 디렉터리」뿐이며, 누군가 0777 로 미리 만들어 둔 경우는 **PR7 부팅 경로**가
+ * (형제와 같은 방식으로) 봐야 한다. 프리미티브 추가는 어댑터 두께 상한과 함께 그때 판단한다.
+ */
 const AUTHORITY_DIR_MODE = 0o700
 const AUTHORITY_FILE_MODE = 0o600
 
@@ -311,15 +352,29 @@ let readSeqCounter = 0
 const SPENT_READS = new WeakSet<FreshReadToken>()
 /** identity 별 임계 구역 꼬리. 같은 bench 의 `withAuthority` 호출을 FIFO 로 직렬화한다. */
 const MUTEX_TAILS = new Map<string, Promise<unknown>>()
+/**
+ * **현재 실행 중인** 임계 구역 키. 재진입 교착을 fail-fast 로 바꾸는 유일한 수단이다(자체 적대 리뷰
+ * DYN-06). `MUTEX_TAILS` 와 별개인 이유: 꼬리는 「대기 중인 것까지」 담지만 여기 필요한 것은
+ * 「지금 이 콜스택이 이미 들고 있는가」다.
+ */
+const ENTERED_KEYS = new Set<string>()
 
 /**
- * 뮤텍스 키 — **JSON 배열**이다. 3필드를 구분자로 이어 붙이면 경로에 그 구분자가 들어갈 때 서로 다른
- * identity 가 같은 키로 붕괴한다(실측: `['a','b c','d']` 와 `['a','b','c d']` 가 공백 결합에서 동일).
- * 붕괴 방향은 과직렬화(안전)지만, 반대로 **정준화되지 않은 경로**가 오면 같은 파일이 두 키로 갈려
- * 직렬화가 소멸한다(fail-open) — 그 방어는 호출자의 정준화 책임이며 여기 주석이 그 경계를 명시한다.
+ * 뮤텍스 키 — **직렬화 도메인은 자원 도메인과 정확히 같아야 한다**(자체 적대 리뷰 perf-7·DYN-11).
+ *
+ * 원안은 identity **3필드**였는데 권위 파일 경로는 `authorityDir` + `benchId` 로만 유도된다(`pathFor`).
+ * 키가 자원보다 **세밀하면** 같은 파일을 두 임계 구역이 동시에 변이할 수 있고(fail-open), 반대로 자원보다
+ * **거칠면** 무관한 bench 가 서로를 막는다(과직렬화). 그래서 키를 경로 유도와 **같은 성분**으로 맞춘다 —
+ * 뮤테이션 실측에서 키를 `benchId` 단독으로 붕괴시킨 M20 이 생존한 것도 이 정합이 미핀이었기 때문이다.
+ *
+ * **JSON 배열**인 이유는 구분자 충돌이다: 문자열 결합은 `['a','b c']` 와 `['a b','c']` 를 같은 키로
+ * 붕괴시킨다(3면 실측). 경로에는 공백이 정상적으로 들어간다.
+ *
+ * ⚠ 정준화는 여전히 **호출자 책임**이다(PR7) — 같은 파일을 가리키는 두 비정준 경로가 오면 키가 갈려
+ * 직렬화가 소멸한다. 이 모듈은 파일시스템을 모르므로 그것을 여기서 막을 수단이 없다.
  */
-const mutexKey = (id: BenchAuthorityIdentity): string =>
-  JSON.stringify([id.commonGitDir, id.benchRoot, id.benchId])
+const mutexKey = (authorityDir: string, benchId: string): string =>
+  JSON.stringify([authorityDir, benchId])
 
 /** `unknown` 을 캐스트 없이 들여다본다 — `Reflect.get` 은 own 여부를 묻지 않으므로 `hasOwn` 과 짝짓는다. */
 const own = (o: object, k: string): unknown => (Object.hasOwn(o, k) ? Reflect.get(o, k) : undefined)
@@ -330,9 +385,18 @@ const isPlainObject = (v: unknown): v is object =>
 const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0
 
 /**
- * 위반 메시지에 값을 싣는다. `String(unknown)` 은 객체에서 `[object Object]` 가 되어 진단이 무의미해지고
- * eslint `no-base-to-string` 이 그것을 막는다 — 적대 입력이므로 **어떤 값이 와도 던지지 않아야** 한다
- * (`JSON.stringify` 는 순환 참조에서 던진다).
+ * 위반 메시지에 값을 싣는다 — **적대 입력이므로 어떤 값이 와도 던지지 않아야 한다**.
+ *
+ * ⚠ `String(unknown)` 을 쓰면 안 되는 이유가 진단 품질이 아니라 **총체성**이다(자체 적대 리뷰 F8):
+ * `{"lifecycle":{"toString":0}}` 처럼 own `toString` 이 **비호출 가능**이면 `String()` 이
+ * OrdinaryToPrimitive 에서 `valueOf` 까지 실패해 **TypeError 를 던진다**. 그 바이트는 최상위
+ * `__proto__`/`constructor` 검사를 통과하므로(중첩은 보지 않는다) 도달 가능하고, throw 가 `readFresh` 의
+ * 「어떤 바이트에도 던지지 않는다」를 깨 뮤텍스 누수 = hang 이 된다.
+ *
+ * ⚠ **eslint 가 이것을 막지 않는다**: `no-base-to-string` 의 `checkUnknown` 옵션은 기본 비활성이고
+ * 이 레포는 `recommendedTypeChecked` 만 확장하므로 `String(unknown)` 은 애초에 보고 대상이 아니다
+ * (원안 주석은 「eslint 가 막는다」고 적었는데 거짓이었다 — 그래서 이 함수가 **규율**로 그 자리를 맡는다).
+ * `JSON.stringify` 는 순환 참조에서 던지므로 try 로 감싼다.
  */
 const show = (v: unknown): string => {
   if (typeof v === 'string') return v
@@ -390,7 +454,7 @@ const parseRecordShape = (
     return { ok: false, violations: ['revision 이 1 이상의 안전 정수가 아니다'] }
   }
   if (!isLifecycle(lifecycle)) {
-    return { ok: false, violations: [`lifecycle 이 유니온 밖이다: ${String(lifecycle)}`] }
+    return { ok: false, violations: [`lifecycle 이 유니온 밖이다: ${show(lifecycle)}`] }
   }
   if (!isCount(sourceGeneration)) {
     return { ok: false, violations: ['sourceGeneration 이 안전 정수가 아니다'] }
@@ -414,7 +478,7 @@ const parseRecordShape = (
     return { ok: false, violations: ['writtenBy.ownerToken·at 형태 오류'] }
   }
   if (wbDur !== 'file+dir' && wbDur !== 'file-only') {
-    return { ok: false, violations: [`writtenBy.durability 가 유니온 밖이다: ${String(wbDur)}`] }
+    return { ok: false, violations: [`writtenBy.durability 가 유니온 밖이다: ${show(wbDur)}`] }
   }
 
   const optString = (k: string): string | undefined => {
@@ -584,7 +648,21 @@ const serialize = (
   ...(draft.completedIntegrationTxnId === undefined
     ? {}
     : { completedIntegrationTxnId: draft.completedIntegrationTxnId }),
-  ...(draft.activeActivity === undefined ? {} : { activeActivity: draft.activeActivity }),
+  // **6필드 명시 재조립**(자체 적대 리뷰 F4). 참조로 실으면 호출자 객체의 초과 키가 디스크에 기록되고
+  // 반환 `committed.record` 가 호출자 객체의 **별칭**이 된다 — 읽기 경로는 이미 6필드로 재조립하므로
+  // (`parseRecordShape`) 쓰기만 참조 통과면 규율이 비대칭이다.
+  ...(draft.activeActivity === undefined
+    ? {}
+    : {
+        activeActivity: {
+          activityId: draft.activeActivity.activityId,
+          kind: draft.activeActivity.kind,
+          generation: draft.activeActivity.generation,
+          ownerToken: draft.activeActivity.ownerToken,
+          execGate: draft.activeActivity.execGate,
+          startedAt: draft.activeActivity.startedAt,
+        },
+      }),
   writtenBy,
 })
 
@@ -610,6 +688,8 @@ export function createBenchAuthorityStore(
   const runCritical = <T>(
     lease: BenchLeaseToken,
     fn: (tx: AuthorityTx) => Promise<T>,
+    /** 재진입 판정용(DYN-06) — 「지금 이 콜스택이 이 키를 들고 있다」를 기록·해제한다. */
+    key: string,
   ): Promise<T> => {
     const path = pathFor(lease.identity.benchId)
     const tmpPath = tmpFor(lease.identity.benchId, lease.ownerToken)
@@ -760,7 +840,15 @@ export function createBenchAuthorityStore(
             violations: [`지원 범위 초과 스키마(${fresh.found} > ${fresh.supported})`],
           }
         case 'io-failure':
-          return { kind: 'io-failure', step: 'rename', path: fresh.path, cause: fresh.cause }
+          // ⚠ **`io-failure{step:'rename'}` 으로 보고하지 않는다**(자체 적대 리뷰 F2·5렌즈 수렴). 이 지점은
+          // ④재독이라 `mkdir` 보다도 **앞**이고 디스크는 한 바이트도 바뀌지 않았다 — rename 이 반쯤 갔다고
+          // 증언하면 복구 판정이 「tmp 잔재가 있을 수 있다」로 잘못 분기한다. `step` 은 `PreCommitStep` 이라
+          // 재독을 표현할 값 자체가 없다(위 `absent` 분기와 **같은 유니온 공백**) → 같은 방식으로
+          // fail-closed 하고 공백을 문면에 남긴다(PR 본문 등재).
+          return {
+            kind: 'invariant-violation',
+            violations: [`CAS 재독이 IO 실패했다(${fresh.path}) — 디스크 무변이`],
+          }
         default:
           return assertNever(fresh)
       }
@@ -771,18 +859,81 @@ export function createBenchAuthorityStore(
         at: opts.now(),
         durability: opts.durability,
       })
-      const violations = checkInvariants(record)
-      if (violations.length > 0) return { kind: 'invariant-violation', violations }
 
-      return writeDurably(record, revision)
+      // ⑤ **왕복 검증 — 내가 쓴 것을 내가 읽을 수 있는가**(자체 적대 리뷰 F1·DYN-01 · 메인 루프 실측 확정).
+      //
+      // 쓰기 경로가 읽기 경로보다 약하면 이 모듈이 커밋한 레코드를 **이 모듈 자신이** 다음 `readFresh`
+      // 에서 `invalid` 로 거부한다. `invalid` 은 `read` 토큰을 싣지 않으므로 **이 모듈의 API 로는 그
+      // 상태를 벗어날 수 없다**(회수는 §W-18 `delete-record`·broken 경로 소관 = PR6 이며 PR2b 표면에 없다).
+      //
+      // 실측한 사슬: `sourceGeneration: NaN` → ⓐCAS 는 `committed` ⓑ`JSON.stringify` 가 그것을
+      // **무성으로 `null` 로** 바꿔 디스크에 쓰고 ⓒ다음 읽기가 `invalid['sourceGeneration 이 안전 정수가
+      // 아니다']`. 타입이 막을 것 같지만 막지 못한다 — `Omit` 의 초과 프로퍼티 검사는 객체 리터럴에만
+      // 걸리고(정정 73), 그래서 계획 정정 88ⓓ 가 「쓰기 검증이 이 검사를 **먼저** 통과시켜야 한다」를
+      // 명시 요구했다. 뮤테이션 실측: 이 블록 이전의 `checkInvariants` 단독 호출은 **지워도 479/479 GREEN**
+      // 이었다(M15) = 무신호 방어였다.
+      //
+      // 술어를 새로 쓰지 않고 **직렬화 → 역직렬화 → 읽기 경로와 같은 검증**을 태우는 이유는, 두 벌을
+      // 두면 그 둘이 갈리는 순간 같은 결함이 되돌아오기 때문이다. 이 형태는 「쓴 것은 읽힌다」를
+      // **구조적으로** 보장한다(향후 필드가 늘어도 자동 유지된다).
+      const json = JSON.stringify(record)
+      const verdict = verifySerialized(json, lease.identity)
+      if (verdict !== undefined) return verdict
+
+      return writeDurably(json, record, revision)
+    }
+
+    /**
+     * 왕복 검증 — 위반이면 `CasResult`, 통과면 `undefined`. **디스크를 만지기 전에** 판정한다.
+     *
+     * 크기 상한도 여기서 본다(자체 적대 리뷰 perf-3): 상한이 읽기 편측이면 초과 레코드를 커밋한 뒤
+     * 모든 `readFresh` 가 `invalid` 를 답해 같은 브릭이 된다 — 읽기가 거부할 것을 쓰지 않는다가 계약이다.
+     */
+    const verifySerialized = (
+      json: string,
+      identity: BenchAuthorityIdentity,
+    ): CasResult | undefined => {
+      const bytes = Buffer.byteLength(json, 'utf8')
+      if (bytes > MAX_AUTHORITY_BYTES) {
+        return {
+          kind: 'invariant-violation',
+          violations: [`레코드가 크기 상한 초과(${bytes}B > ${MAX_AUTHORITY_BYTES}B)`],
+        }
+      }
+      let back: unknown
+      try {
+        back = JSON.parse(json)
+      } catch {
+        return { kind: 'invariant-violation', violations: ['직렬화 결과가 다시 파싱되지 않는다'] }
+      }
+      if (!isPlainObject(back)) {
+        return { kind: 'invariant-violation', violations: ['직렬화 결과가 객체가 아니다'] }
+      }
+      const shape = parseRecordShape(back)
+      if (!shape.ok) {
+        // 「왕복 검증 실패」 접두를 붙인다 — 같은 문구가 읽기 경로에서도 나오므로 출처가 구분돼야 한다.
+        return {
+          kind: 'invariant-violation',
+          violations: shape.violations.map((v) => `왕복 검증 실패: ${v}`),
+        }
+      }
+      if (!sameIdentity(shape.record.identity, identity)) {
+        return { kind: 'lease-invalid', reason: 'identity-mismatch' }
+      }
+      const violations = checkInvariants(shape.record)
+      if (violations.length > 0) return { kind: 'invariant-violation', violations }
+      return undefined
     }
 
     /**
      * 내구 쓰기(§W-4 계약 3항). rename 을 경계로 **반환 종별이 갈린다** — 그 전 실패는 `io-failure`
      * (디스크 무변이), 그 후 실패는 `commit-uncertain`(디스크 revision 은 이미 전진).
      */
-    const writeDurably = (record: BenchAuthorityRecord, revision: number): CasResult => {
-      const json = JSON.stringify(record)
+    const writeDurably = (
+      json: string,
+      record: BenchAuthorityRecord,
+      revision: number,
+    ): CasResult => {
       let step: PreCommitStep = 'mkdir'
       let fd: number | undefined
       let renamed = false
@@ -795,8 +946,14 @@ export function createBenchAuthorityStore(
         step = 'fsync-file'
         fs.fsync(fd)
         step = 'close-tmp'
-        fs.close(fd)
-        fd = undefined
+        // **소유권 이관**(자체 적대 리뷰 SEC-5): `close` 를 부르기 **전에** 지역 소유권을 놓는다. 그래야
+        // close 가 던져도 `finally` 가 같은 fd 를 다시 닫지 않는다 — POSIX 는 실패해도 fd 를 반납하므로
+        // 재-close 는 그 틈에 같은 번호를 받은 **무관한 fd** 를 닫을 수 있다.
+        {
+          const own = fd
+          fd = undefined
+          fs.close(own)
+        }
         step = 'rename'
         fs.rename(tmpPath, path)
         renamed = true
@@ -805,11 +962,14 @@ export function createBenchAuthorityStore(
       } finally {
         // fd 가 남아 있다 = 어느 단계가 던졌다. 실물에서 열린 핸들은 **그 자체로 DoS 표면**이다 —
         // win32 는 대상에 열린 핸들이 하나라도 있으면 rename 이 EPERM 이고 그 rename 이 곧 CAS 커밋이다.
+        // 여기 도달 시 `fd` 가 남아 있다 = `close` **이전** 단계가 던졌다(close 자신은 위에서 소유권을
+        // 넘겼으므로 이 자리에 오지 않는다). 실물에서 열린 핸들은 그 자체로 DoS 표면이다 — win32 는 대상에
+        // 열린 핸들이 하나라도 있으면 rename 이 EPERM 이고 그 rename 이 곧 CAS 커밋이다.
         if (fd !== undefined) {
           try {
             fs.close(fd)
           } catch {
-            /* 이미 닫혔거나 close 자체가 실패한 경우 — 원인은 위에서 이미 반환됐다. */
+            /* 정리 실패가 원래 원인을 덮지 않는다. */
           }
         }
         // **자기 tmp 만** 치운다(정정 78). rename 이 성공했으면 tmp 는 이미 없다.
@@ -831,8 +991,11 @@ export function createBenchAuthorityStore(
           post = 'fsync-dir'
           fs.fsync(dirFd)
           post = 'close-dir'
-          fs.close(dirFd)
-          dirFd = undefined
+          {
+            const own = dirFd // 소유권 이관(위와 동형)
+            dirFd = undefined
+            fs.close(own)
+          }
         } catch (cause) {
           return { kind: 'commit-uncertain', step: post, advancedRevision: revision, cause }
         } finally {
@@ -840,7 +1003,7 @@ export function createBenchAuthorityStore(
             try {
               fs.close(dirFd)
             } catch {
-              /* 위와 같다. */
+              /* 위와 같다(SEC-5 이중 close 방지 동형). */
             }
           }
         }
@@ -851,9 +1014,11 @@ export function createBenchAuthorityStore(
 
     const tx: AuthorityTx = { readFresh, compareAndSwap }
     return (async () => {
+      ENTERED_KEYS.add(key)
       try {
         return await fn(tx)
       } finally {
+        ENTERED_KEYS.delete(key)
         // 임계 구역을 벗어난 tx 는 죽는다 — 유출된 핸들로 뮤텍스·리스 재검증 창 **밖에서** CAS 가 도는
         // 것을 막는 유일한 수단이다(계획 정정 94). 새 실패 종별을 만들지 않고 `released` 를 재사용한다.
         live = false
@@ -875,14 +1040,30 @@ export function createBenchAuthorityStore(
         return fn(dead)
       }
 
-      const key = mutexKey(lease.identity)
+      const key = mutexKey(opts.authorityDir, lease.identity.benchId)
+
+      // **재진입은 즉시 실패한다**(자체 적대 리뷰 DYN-06 · 실측 확정). 같은 bench 로 중첩 호출하면 안쪽이
+      // 바깥의 꼬리를 기다리고 바깥은 안쪽의 완료를 기다려 **영구 교착**한다 — 그리고 그 고착은 RED 가
+      // 아니라 **hang** 이다(Promise.race 700ms 로 실측). 이 레포는 같은 실패 양식을 `writeAllBytes` 의
+      // 진행 보장에서 이미 「가드로 승격」했고(durable-fs.ts), 형제 `lock-order.ts` 도 서열 위반을
+      // fail-fast throw 로 처리한다 — 프로그래밍 오류는 판별 유니온이 아니라 throw 다.
+      if (ENTERED_KEYS.has(key)) {
+        throw new Error(
+          `withAuthority 재진입(같은 bench) — 교착이므로 즉시 실패한다. 한 임계 구역 안에서 ` +
+            `tx 를 쓰고, 새 임계 구역이 필요하면 바깥 호출이 끝난 뒤에 열 것: ${key}`,
+        )
+      }
+
       const prev = MUTEX_TAILS.get(key) ?? Promise.resolve()
-      // 앞 임계 구역의 성패와 무관하게 다음이 진입한다(실측: `then(fn, fn)` 이 FIFO 를 지키면서
-      // 예외를 삼키지 않는다 — 예외는 `run` 쪽으로만 나가고 꼬리는 정상 진행한다).
-      const run = prev.then(
-        () => runCritical(lease, fn),
-        () => runCritical(lease, fn),
-      )
+      // 앞 임계 구역의 성패와 무관하게 다음이 진입한다. ⚠ **그 성질을 만드는 것은 아래 `tail` 이다**
+      // (자체 적대 리뷰 F7·DYN-10). 원안은 `prev.then(fn, fn)` 으로 핸들러를 둘 두고 그것을 근거로
+      // 서술했는데, `prev` 는 항상 예외를 흡수한 `tail` 이라 **결코 reject 하지 않으므로** 두 번째 핸들러는
+      // 도달 불가 사문이었다. 핸들러를 하나로 줄여 실제 기제를 문면과 일치시킨다.
+      //
+      // 「사문을 보험으로 남기라」는 반론(꼬리를 `run` 으로 바꾸는 미래 편집 대비)은 **실측으로 기각**했다 —
+      // 그 편집을 실제로 넣으면 「fn 이 throw 해도 다음 호출이 진입한다」·「중첩 실패 후 재진입」 **2행이
+      // RED** 다. 보험은 사문이 아니라 그 행동 테스트가 들고 있다.
+      const run = prev.then(() => runCritical(lease, fn, key))
       const tail = run.then(
         () => undefined,
         () => undefined,

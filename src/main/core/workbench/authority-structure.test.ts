@@ -26,16 +26,23 @@ const source = (file: string): string => readFileSync(join(HERE, file), 'utf8')
 const stripComments = (src: string): string =>
   src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 
-/** 워크벤치 **프로덕션 전량**(테스트 제외 · `__testing__` 포함). 새 파일은 자동으로 편입된다. */
-const PRODUCTION: readonly string[] = [
-  ...readdirSync(HERE)
-    .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
-    .sort(),
-  ...readdirSync(join(HERE, '__testing__'))
-    .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
-    .map((f) => join('__testing__', f))
-    .sort(),
-]
+/**
+ * 워크벤치 **프로덕션 전량**(테스트 제외). 새 파일은 자동으로 편입된다.
+ *
+ * ⚠ **재귀여야 한다**(자체 적대 리뷰 DYN-03·TP-8). 원안은 루트와 하드코딩된 `__testing__` **두 경로만**
+ * 훑어서, 신규 **하위 디렉터리**(예: PR3 가 만들 `journal/`)의 프로덕션 파일이 아래 네 가드(D-9 장기 핸들 ·
+ * fs importer 집합 · 브랜드 미export · forge 개수) **전부를 무신호로 통과**했다. 실증도 됐다 —
+ * `journal/wal.ts` 에 3번째 브랜드 forge 와 `createReadStream` 을 넣어도 전 게이트 GREEN 이었다.
+ * 「하드코딩 목록은 무신호」라며 파일 목록을 전수로 올린 바로 그 논리가 **디렉터리 축에는 미적용**이었다.
+ */
+const collect = (dir: string, prefix = ''): string[] =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    if (e.isDirectory()) return collect(join(dir, e.name), join(prefix, e.name))
+    if (!e.name.endsWith('.ts') || e.name.endsWith('.test.ts')) return []
+    return [join(prefix, e.name)]
+  })
+
+const PRODUCTION: readonly string[] = collect(HERE).sort()
 
 describe('전수 스캔의 전제 — 대상이 실재한다', () => {
   /**
@@ -49,6 +56,8 @@ describe('전수 스캔의 전제 — 대상이 실재한다', () => {
     expect(PRODUCTION).toContain(join('__testing__', 'durable-fs-fake.ts'))
     // 테스트 파일이 섞이면 술어들이 테스트의 관용구를 위반으로 오탐한다.
     expect(PRODUCTION.filter((f) => f.endsWith('.test.ts'))).toEqual([])
+    // **재귀 자기검사**: 하위 디렉터리 파일이 실제로 수집됐다(비재귀면 이 행이 RED · DYN-03).
+    expect(PRODUCTION.some((f) => f.includes(join('__testing__', '')))).toBe(true)
   })
 })
 

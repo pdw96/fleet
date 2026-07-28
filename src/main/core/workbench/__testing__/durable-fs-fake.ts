@@ -96,21 +96,30 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
     return err
   }
 
-  /** 모든 프리미티브의 공통 진입 — 계측·훅·실패 주입을 한 자리에 모은다. */
-  const enter = (op: FakeOp, args: readonly unknown[]): void => {
+  /** 계측만 — 훅 + 타임라인 + 인자 로그. */
+  const record = (op: FakeOp, args: readonly unknown[]): void => {
     opts.before?.(op, args)
     steps.push(op)
     calls.push({ op, args })
+  }
+
+  /** 주입된 실패가 있으면 던진다. `record` 와 분리한 이유는 `close` 참조. */
+  const maybeFail = (op: FakeOp): void => {
     const f = pending.get(op)
-    if (f !== undefined) {
-      if (f.skip > 0) {
-        pending.set(op, { ...f, skip: f.skip - 1 })
-        return
-      }
-      if (f.times <= 1) pending.delete(op)
-      else pending.set(op, { ...f, times: f.times - 1 })
-      throw f.err
+    if (f === undefined) return
+    if (f.skip > 0) {
+      pending.set(op, { ...f, skip: f.skip - 1 })
+      return
     }
+    if (f.times <= 1) pending.delete(op)
+    else pending.set(op, { ...f, times: f.times - 1 })
+    throw f.err
+  }
+
+  /** 대다수 프리미티브의 공통 진입 — 계측 후 실패 주입. */
+  const enter = (op: FakeOp, args: readonly unknown[]): void => {
+    record(op, args)
+    maybeFail(op)
   }
 
   const fdTarget = (fd: number): string => {
@@ -182,9 +191,15 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
     },
 
     close(fd) {
-      enter('close', [fd])
+      // ⚠ **`close` 는 실패해도 fd 를 반납한다**(POSIX 의미론 · 자체 적대 리뷰 SEC-5). 원안은 주입 실패가
+      // 먼저 던져 fd 가 열린 채 남았는데, 그것은 **실물보다 느슨한 모델**이라 프로덕션의 이중 close 결함이
+      // 이 페이크 위에서 GREEN 을 받았다(「fd 누수 0」 단언이 바로 그 이중 close 덕분에 통과했다).
+      // 페이크가 실물보다 느슨하면 안 된다는 것이 이 파일의 자기 규율이므로 순서를 바로잡는다:
+      // 계측 → fd 반납 → 실패 주입.
+      record('close', [fd])
       fdTarget(fd)
       openFds.delete(fd)
+      maybeFail('close')
     },
 
     rename(from, to) {
