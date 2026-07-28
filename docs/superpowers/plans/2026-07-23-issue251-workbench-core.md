@@ -44,7 +44,10 @@
    **측정 시점 = 머지 직전 HEAD**(`git diff --numstat origin/master...HEAD` 의 `src/`+`scripts/`+`deploy/`+`e2e/`
    순증 · 테스트 포함 · `docs/` 제외). 최초 푸시 시점 측정 **금지** — 리뷰 라운드가 코드를 늘린다(정정 74:
    PR1b 는 1,581 로 기록됐으나 머지 트리 실측은 ≈2,430 이었다). 추정은 **「프로덕션 물리행 × 실측 배수
-   2.66~3.28」**(정정 51) — 「§3 행 개수 × 행당 비용」 모델은 세 번 연속 빗나갔으므로 쓰지 않는다.
+   2.69~3.34」**(정정 51 원안 2.66~3.28 → **정정 92 가 4 PR 전수 재측정해 갱신**) — 「§3 행 개수 × 행당
+   비용」 모델은 세 번 연속 빗나갔으므로 쓰지 않는다. ⚠ **상한은 이미 두 번 초과됐다**(PR1b 2,432 ·
+   PR1c 1,952) — 「상한 내였다」를 후속 PR 추정 근거로 상속하지 않는다. 착수 전 트리거는 순증이 아니라
+   **프로덕션 물리행**(리뷰 라운드가 거의 늘리지 않는 축)으로 환산해 선언한다 = 1,900 ÷ 3.34 ≈ **569**.
 7. **커버리지는 함수 수가 아니라 4메트릭 실측으로 관리**(§3.1). PR 마다 4수치를 PR 본문에 기록하고,
    신규 모듈 **자체 statements ≥86%** 를 태스크 완료 조건으로 둔다.
 8. **엔진 미배선 불변식(정직 문안)**: PR0 을 제외한 PR1~PR5 는 `engine.ts`·`main/index.ts`·`server/boot.ts`·
@@ -77,7 +80,7 @@
 | **PR1c** | 인스턴스 배타 · 배포 계약 집행 | T5 | 570~950 | 없음 |
 | ~~**PR2**~~ | ~~계약 사슬 · 내구 쓰기 · 권위 CAS~~ | ~~T6b~T10~~ | ~~1,500~1,850~~ | ~~T9 종료 >1,500 → T10 을 PR2b~~ |
 | **PR2a** | 계약 사슬 골격 · 내구 쓰기 seam | T6b·T7 | 1,300~1,600 | 없음 |
-| **PR2b** | 권위 CAS 코어(`withAuthority`·`AuthorityTx`) | T8 | 1,500~1,700 | 불변식 9종 종료 >1,500 → §3-T61 전수표를 PR2b′ |
+| **PR2b** | 권위 CAS 코어(`withAuthority`·`AuthorityTx`) | T8 | 1,500~1,900 | **프로덕션 물리행 >569** → 「불변식 검증기 + §3-T61 전수표」를 PR2b′(정정 92) |
 | **PR2c** | rename 재시도 · `commit-uncertain` · launcher 브랜드 | T9·T10(**배선 제외**) | 700~1,000 | 없음 |
 | **PR3** | `GitRepo` · 통합 WAL 저널 · 복구 판정 | T11~T13 | 1,200~1,500 | 없음 |
 | **PR4** | slug · 레지스트리 · 태스크 경로 seam | T14~T17 | 1,400~1,750 | T16 종료 >1,400 → T17 을 PR4b |
@@ -475,6 +478,214 @@ eslint **신규 블록**(assertNever selector · 신규 파일 한정 · `ELECTR
 vacuous 로 판정해 이월한 것과 대칭이라는 지적. 차이는 **소비자 도착 시점**이다: `CasResult` switch 는 PR2b 가
 즉시 만들고, spawn 우회는 PR7 까지 생기지 않는다. 그래도 비대칭이 남으므로 PR2b 착수 시 재검토 항목으로 등재).
 
+#### PR2b 착수 전 실측 정정 (2026-07-28 · 6렌즈 감사 + 3면 JS 프리미티브 실측)
+
+PR0~PR2a 가 확립한 「착수 전 ripple 전수 감사」를 PR2b 에 적용했다. 6렌즈 find → **렌즈별 독립 refuter**
+(**78 후보 · 43 CONFIRMED · 33 PARTIAL · 2 REFUTED** · find 단계 P1 10건 중 refute 후 잔존 P1 **0**).
+그리고 **하중 프리미티브를 메인 루프가 3면에서 직접 실측**했다 — win32 로컬(Node 24.16.0) ·
+Docker `node:22.22.3`(필수 CI 게이트 런타임) · `node:24-bookworm-slim`.
+
+⚠ **refuter 가 뒤집은 것도 기록한다**(감사의 자기검사): `concurrency-13`(취소 신호 부재 → 백오프 총합
+150ms/CAS 라 드레인 상한에 무의미) · `gate-ripple-12`(폐포 핀 — 후보 자신이 「소비자 0 이면 GREEN」을 인정)
+**2건 REFUTED**. `gate-ripple-6`(「구현이 authority.ts 밖으로 나갈 수 없다」)은 **전제가 거짓**으로 판정됐다 —
+브랜드 프로퍼티 없는 객체는 대상 타입에 assignable 이라 다른 파일에서도 캐스트가 컴파일된다. 그래서 정정 97 의
+단일 파일 결정은 **구속이 아니라 선택**이며, 근거는 「가드 3종·eslint `files`·purity 핀 무변경」이다.
+그리고 메인 루프가 **에이전트 수치를 재측정해 정정한 것**이 둘 있다 — `budget-1` 의 「PR2a 배수 2.23 = 밴드
+하한 미달」은 **거짓**(docs 포함 raw additions 를 쓴 오류 · 정정 74 정의로 재측정하면 **2.69 로 밴드 내**),
+`invserial-1` 의 「수치 도메인을 하나도 검사하지 않는다」도 **과장**(⑧ 이 그것이다 — 정정 87 참조).
+
+**실측 확정 사실 — PR2a 와 달리 PR2b 의 프리미티브는 플랫폼 대칭이다**
+
+PR2a 는 `DurableFs` 가 fs 프리미티브라 3면이 정확히 반대였다(정정 61). PR2b 의 하중은 **JSON 왕복·복사
+연산·마이크로태스크 순서**이고, 세 면이 **전부 동일**했다. 그래서 이 슬라이스에는 플랫폼 게이트가 필요 없다.
+
+| 측정 | win32 24.16.0 / linux 22.22.3 / linux 24.18.0 (전면 동일) |
+|---|---|
+| `JSON.parse('{"__proto__":…}')` | own 데이터 프로퍼티 · **프로토타입 오염 없음** |
+| `{...parsed}` 스프레드 | own 키 보존 · **오염 없음** |
+| **`Object.assign(t, parsed)`** | **오염 발생**(`Object.getPrototypeOf(t) !== Object.prototype`) |
+| **`for (k of keys) t[k]=…`** | **오염 발생**(Set 시맨틱) |
+| `structuredClone(parsed)` | own 키 보존 · 오염 없음 |
+| `Object.hasOwn(o,'__proto__')` | 적대 레코드 **true** · 평범 객체 **false** |
+| `'__proto__' in o` | 적대·평범 **둘 다 true**(프로토타입 체인) |
+| `JSON.parse(…, reviver)` 로 `__proto__` 제거 | 키 실제 제거됨(`Object.keys` = `['revision']`) |
+| `{k: undefined}` | `in`·`hasOwn`·`Object.keys` 전부 잡힘 · `JSON.stringify` 는 **키 삭제** |
+| `JSON.stringify(NaN\|Infinity)` | **`null`**(무성 변환) |
+| `JSON.parse('9007199254740993')` | `…992`(정밀도 손실) · `Number.isSafeInteger` 가 `1.5·NaN·Infinity·2**53·'1'·null·true` 전부 거부 |
+| promise-chain 뮤텍스 | `start1,end1,start2,end2,start3,end3`(FIFO 직렬) · **예외 후에도 후속 진입 가능** |
+| 뮤텍스 **부재** 대조 구현 | `r1r2c1c2` — **200회 전부 동일**(자기검사 행이 결정론적 = flake 없음) |
+| 뮤텍스 키 문자열 결합 | 공백 구분자는 **충돌**(`a␣b c␣d` ≡ `a␣b␣c d`) · `JSON.stringify([…])` 는 충돌 없음 |
+
+**실측 확정 사실 2 — 배수 밴드와 상한 이력(메인 루프가 4 PR 전수 재측정)**
+
+정정 51 이 선언한 밴드(2.66~3.28)를 **정정 74 의 측정 정의**(`src`+`scripts`+`deploy`+`e2e` 순증 · docs 제외)로
+전수 재측정했다. 밴드는 유지되나 **상단이 더 높고**, 상한은 이미 **두 번 초과**됐다.
+
+| PR | 총순증 | 프로덕션 순증 | 배수 |
+|---|---:|---:|---:|
+| PR1a | 1,708 | 574 | 2.98 |
+| PR1b | 2,432 | 737 | **3.30** ⚠상한 초과 |
+| PR1c | 1,952 | 585 | **3.34** ⚠상한 초과 |
+| PR2a | 1,450 | 539 | 2.69 |
+
+⇒ **실측 밴드 = 2.69~3.34** · 상한 1,900 역산 = **프로덕션 물리행 569(보수)~706(낙관)**.
+
+| # | 계획/스펙 원문 | 실측·감사 | 조치 |
+|---|---|---|---|
+| 76 | §W-5:558 `createBenchAuthorityStore(fs: DurableFs, opts?: {...})` — `opts` 가 **문자 그대로 `{...}`** | **store 가 쓸 값이 하나도 정의돼 있지 않다**(4렌즈 수렴 · contract-chain-1·7 · budget-4 · invserial-12). ⓐ권위 경로 `<area>/authority/<benchId>.json` 의 `<area>` = `join(commonGitDir,'fleet')`(coord-area.ts:244)인데 `BenchAuthorityIdentity`(authority.ts:45-49)에 그 값이 없다 ⓑ`writtenBy.durability`(PR2b 기록처)를 채울 **등급의 출처**가 없다 — 프로브 호출자(부팅)는 §1-8 로 부재 ⓒ`writtenBy.at` 시계 seam 부재 | `opts` 를 **필수**로 확정: **`{ authorityDir: string; durability: DurabilityLevel; now: () => number }`**. 정준화·프로브 호출은 **호출자(PR7)** — 형제 `LockScopeOptions`(정정 54)와 동형. **재유도 금지를 구조 단언으로**: authority.ts 에 `AREA_DIR_NAME`·`'fleet'` 리터럴 0건 · `coord-area` import 0건 · **`process.platform`·`'win32'` 리터럴 0건**(등급 재판정 금지 = 정정 60 「판정자 이원화 금지」의 소비자 측 집행) + 각 술어에 자기검사 앵커 |
+| 77 | §3-T15(PR2b)는 시퀀스에 **`[posix] fsync-dir` 포함** ∧ 정정 53 이 §3-T16 을 「rename 성공 전 한정」으로 축소 ∧ §3-T17e(`commit-uncertain`)는 **PR2c** 귀속 | **5렌즈 독립 수렴**(contract-chain-2 · concurrency-9 · gate-ripple-7 · testop-2 · budget-6). PR2b 는 POSIX 에서 post-commit 3단계를 **실행해야 하는데** 그 실패의 반환 종별이 배정 행 어디에도 없다 → throw·삼킴·`commit-uncertain` **세 구현이 전부 GREEN**. 타입은 이미 랜딩(authority.ts:227-237)돼 생산자 0 인 죽은 union 멤버가 된다 | PR2b 범위를 **「post-commit 실행 + `commit-uncertain` **반환**까지」**로 확장(추가 ≈15 코드행). **재시도·per-retry L-6·gated-orphan 회수만 PR2c 유지**. 동시에 스펙 §3-T16 문면의 `fsync-dir` 을 정정 53 에 맞춰 **삭제**(문면↔타입 모순 잔존 금지) |
+| 78 | authority.ts:220 「rename 성공 전 실패 = 디스크 무변이(tmp 만 잔존 · **다음 CAS 가 회수**)」 | **4렌즈 수렴**(concurrency-2 · contract-chain-6 · invserial-7 · testop-13). ⓐ**더 하중받는 쪽**: tmp 이름이 `<benchId>.json.<ownerToken>.tmp`(spec:488)이고 `ownerToken` 은 **획득당 1회** 민팅(locks.ts:343)이라 **같은 리스의 모든 CAS 가 같은 tmp 경로**를 쓴다 → 실패 후 정리가 없으면 다음 CAS 의 `openExclusive`(create-only · durable-fs.ts:143)가 **EEXIST 로 자기잠금** ⓑ크래시 잔재는 `DurableFs` 10 프리미티브에 **열거가 없어**(durable-fs.ts:67-81) 원리적으로 회수 불가 | ⓐCAS 가 **`try/finally` 로 자기 tmp 를 `unlinkIfExists`**(PR1c 교훈 「수작업 정리는 try/finally 로 구조 승격」 승계) ⓑ§3-T16 에 **「같은 임계 구역에서 실패 직후 재-CAS 가 성공한다」 1행 추가**(EEXIST 자기잠금 falsifier — 이 행이 없으면 결함이 무신호) ⓒauthority.ts:220 을 **「같은 리스의 다음 CAS 가 자기 tmp 만 회수 · 크래시 잔재 수확기는 미착지(PR3 이월)」**로 정직 재기술 |
+| 79 | §3-T14 「주입 `DurableFs.readFileUtf8` 호출 카운터로 `readFresh` 1회당 대상 경로 읽기가 **정확히 1회**」 | **정답 구현이 RED 다**(testop-5). 정정 59 가 신설한 `statKind` 선검사 + 랜딩된 durable-fs.ts:126-139(ENOENT → `{kind:'missing'}`)를 합치면 **부재 경로의 `readFileUtf8` 호출은 0회**다(authority.ts:140 「부재 레코드 = 0」·:167 `absent`). 또 정정 59 문면 「`'regular'` 아닌 경우 `invalid`」는 `'missing'` 까지 `invalid` 로 사상해 `absent` 종별과 충돌한다 | T14 를 **분해**: ⓐ`found` 경로에서 `readFileUtf8` **정확히 1회** ⓑ**전 경로**에서 `statKind` **정확히 1회** ⓒ같은 행에 **「`missing`→`absent` · `other`→`invalid`(자동 삭제 0)」 분류 단언**. 캐시 falsifier(외부 교체 후 새 revision)는 ⓐ에 유지 |
+| 80 | §3-T13ⓐ 「두 상충 draft 를 순차 CAS 하면 두 번째가 **항상** `revision-mismatch`」 ∧ §3-T14 「같은 `FreshReadToken` 재사용 = `read-token-spent`」 | **같은 셋업에 상반된 반환을 요구한다**(testop-8). 가장 자연스러운 T13ⓐ 셋업(`readFresh` 1회 → CAS 2회)에서 **정답은 `read-token-spent`** 이므로 「항상 revision-mismatch」가 거짓이다. `CasResult` 는 두 종별을 나란히 싣기만 하고(authority.ts:196-200·218) **판정 순서 규정이 docs 전수 grep 상 0건** | 판정 순서를 **고정**: ①토큰 소진(`read-token-spent`) → ②리스 출처·identity(`lease-invalid`) → ③revision(`revision-mismatch`) → ④불변식(`invariant-violation`). T13ⓐ 셋업을 **「두 번의 독립 `readFresh`」**로 명시(각 임계 구역에서 1회씩 · 그래야 두 토큰이 같은 revision 을 관측한다) |
+| 81 | 정정 69 가 재정의한 §3-T13ⓑ 「두 번째 draft 가 **실제로 바꾼 필드**에 한해 첫 draft 값이 남아 있지 않다」 + 「LWW 병합 구현이 RED 가 되는 성질은 **보존**」 | **그 주장이 거짓이다**(testop-3). `{...prev, ...draft2}` 는 draft2 가 **값을 준** 필드에서 정답 구현과 관측이 **동일**하다. 병합이 발현하는 자리는 **draft1 이 세우고 draft2 가 생략한 옵셔널**뿐이고 그런 필드가 실재한다(authority.ts:87 `archivedBranch` · :90-96 `currentIntegration*`/`completedIntegrationTxnId` · :97 `activeActivity`) | T13ⓑ 대상 필드를 **「draft1 이 세우고 draft2 가 생략한 옵셔널」로 명시 열거**해 테스트가 그 자리만 본다. ⚠ lifecycle 전이를 동반시키면 불변식 ⑥⑦ 이 **우연히** 잡아 반증력이 흐려지므로, 픽스처는 **lifecycle 무변**으로 고정 |
+| 82 | §3-T17d 「두 `withAuthority` 호출을 **배리어로 겹쳐도**」 ∧ 정정 68 이 배리어 어휘를 유지한 채 술어만 변경 | **정답 구현이 deadlock 한다**(testop-6 · concurrency-14). 이 레포에서 「배리어」는 **랑데부**를 뜻하는 확립된 용례인데(계획 381 「배리어 = `open(…,'wx')` 원자성」), 상호배제가 성립하면 두 번째 `fn` 은 첫 `fn` 이 끝나기 전에 랑데부에 **도달할 수 없다**. §3.2 자신이 「배리어 타임아웃 flake 는 확률이 아니라 예정」이라 그 deadlock 이 flake 로 오진된다. 또 정정 68 이 필수화한 **자기검사 행의 조작화 기제가 미정**이라 가장 싼 구현이 **프로덕션에 「직렬화 끄기」 스위치**를 심는 형태가 된다 | **랑데부 금지**. 조작화 = ⓐ두 호출을 `Promise.all` 로 동시 시작하고 **주입 `DurableFs` 단계 타임라인이 인터리브되지 않음**을 단언(tx1 의 `rename` 이 tx2 의 첫 `statKind` 보다 앞) ⓑ자기검사는 **테스트 안의 뮤텍스-없는 대조 구현**으로만(프로덕션 표면에 우회 옵션 **신설 금지** — 옵션 키 집합 exact 핀으로 강제). 실측상 대조 구현의 인터리브는 **200회 결정론**(`r1r2c1c2`)이라 이 자기검사에 flake 가 없다 |
+| 83 | §3-T61 「조건부 스키마 불변식 1~9 **전수 테이블**」 | **두 표면을 뭉갠다**(testop-11). 임계 구역은 read 검증과 CAS 검증 **둘 다** 돌리는데(§W-4) 관측이 다르다 — ⑧(`revision>=1 ∧ 정수`)은 **CAS 표면에서 도달 불가**(Draft 에 `revision` 이 없다 · authority.ts:113 · 정정 73 이 그 키의 **존재 자체**를 거부하게 만들었다) · ⑨는 read 가 `identity-mismatch`(authority.ts:176-180), CAS 가 `lease-invalid{identity-mismatch}`(:214-217)로 **종별 모양이 다르다** | T61 을 **2표로 분리**: 「read 표면 9행(기대 종별 명시)」+「CAS 표면 9행(도달 불가 행은 **그 사실을 단언**)」. 단일 표로 두면 한쪽이 통째로 미검증인 채 「전수」라는 이름이 붙는다 |
+| 84 | §3-T53 「`StoreState` 키 집합 불변(권위 상태가 기존 store 에 새지 않음)」 | **런타임 열거로 조작화하면 false-GREEN**(testop-10 · **메인 루프 직접 확인**). `StoreState`(store/types.ts:50-69) = 필수 6 + **옵셔널 4**(`lastActiveProjectId`·`updaterChannel`·`droppedEventCount`·`eventSeq`)이고 `emptyState()`(memory.ts:5-12)는 **6키만** 반환한다 — 권위 누출의 전형이 **옵셔널 필드 추가**인데 `Object.keys(emptyState())` 는 그것을 영원히 못 잡는다. 레포 전수 grep 상 `keyof StoreState` 기반 핀은 **0건** | T53 을 **타입 수준 exact 핀**으로: `keyof StoreState` 를 리터럴 유니온과 상호 대입(`satisfies`/조건부 타입)해 **옵셔널 포함 전 키**를 고정한다. 런타임 `Object.keys` 열거는 **보조**로만 |
+| 85 | §3-T20 「stale 전체 스냅숏 순차 기록이 최신 세대를 되돌리지 못함(revision-CAS)」 | **중복이거나 판정 불가다**(testop-12). CAS 경유로 읽으면 T13ⓐ 와 **동일 시나리오**이고, 「전체 스냅숏」을 문면대로 raw 쓰기로 읽으면(어휘가 spec:305-306 `createJsonFileStore` LWW 클로버를 가리킨다) store 에 막을 수단이 없고 탐지식은 §W-7 **ref-앵커**다 — 정정 70 이 **정확히 그 이유로** T18b 를 PR3 T13 에 귀속시켰는데 T20 에는 그 처분이 없다 | 정정 70 과 **동형 처분**: T20 의 raw 스냅숏 해석분을 **PR3 ref-앵커에 명시 귀속**하고, PR2b 는 「CAS 경유 stale 기록 거부」(=T13ⓐ 와 같은 성질)만 담당함을 **명시 선언**한다(조용한 누락 금지) |
+| 86 | §3-T21c 「지원 범위 초과 `schemaVersion` → `incompatible-version` 분류」 | **하중받는 순서가 미핀이다**(invserial-3 · testop-9). I12 는 「문법 위반과 버전 스큐는 다른 사실」인데, **신 버전 레코드는 이 코드가 모르는 필드를 갖는다** — 문법 검사를 먼저 하면 `invalid` 로 오분류돼 **구 버전이 신 버전 권위를 삭제**한다. 형제 선례(coord-area.ts `probeRecord`)는 **문법 우선**이라 그대로 따르면 I12 가 무너진다. 게다가 T21c 의 「git 호출 0 · area 락 획득 시도 0」은 PR2b 에 셀 대상이 **구조적으로 부재**(budget-8) | ⓐ검사 순서를 **`schemaVersion` 최우선**으로 명시하고 **「신 버전 ∧ 문법 위반 동시」 픽스처**로 조작화(순서가 뒤집히면 `invalid` 가 나와 RED) ⓑ「git·락 0」은 **구조 단언**(authority.ts 가 git·락을 **값으로** import 0건 + 자기검사 앵커)으로 조작화하고, 행동 단언분은 **PR3/PR7 에 명시 귀속** |
+| 87 | §W-4 「조건부 스키마 불변식(0단계 검증)」 9종 | **관계만 검사하고 형태를 검사하지 않는다**(invserial-1 · **메인 루프가 문면 재확인해 정정**). ⑧(`revision>=1 ∧ 정수`)은 수치 도메인을 검사하므로 「하나도 검사하지 않는다」는 **과장**이나, **유니온 멤버십 검사는 0건**이다 — `lifecycle`·`execGate`·`archivedBranch`·`currentIntegrationStage` 어느 것도 값 집합을 보지 않는다. 유니온 밖 `lifecycle:'zzz'` 를 가진 디스크 레코드는 ①②⑥⑦ 을 **vacuously 만족**하며 `found` 로 통과한다 | 0단계 검증을 **계층화**: **①형태(타입·유니온 멤버십·수치 도메인) → ②`schemaVersion`(정정 86 이 최우선으로 올린 것) → ③identity → ④불변식 1~9**. ⚠ ②가 ① 앞이어야 I12 가 서므로 최종 순서는 **`schemaVersion` → 형태 → identity → 불변식**이다(정정 86 과 정합) |
+| 88 | (신규 — 3면 실측 산물) | `JSON.parse` 는 `__proto__` 를 **own 데이터 프로퍼티**로 만들어 그 자체로는 오염이 없으나, **`Object.assign` 과 키 대입 루프는 오염시킨다**(3면 동일 실측). 그리고 판별 술어로 `'__proto__' in o` 를 쓰면 **평범한 객체도 true** 라 무용하다 | 검증층 계약: ⓐ거부 술어는 **`Object.hasOwn(o,'__proto__')`**(적대 true·평범 false — 실측) ⓑ파싱 산출물에 **`Object.assign`·키 대입 루프 금지**(스프레드·`structuredClone` 은 안전 — 실측) ⓒ`found.record` 는 **필드 명시 재구성**으로 만든다(캐스트로 좁히면 `__proto__`·`constructor`·초과 키가 레코드에 실려 CAS 왕복으로 **디스크에 재기록**된다 · invserial-6) ⓓ`revision` 은 **`Number.isSafeInteger`**(실측: `1.5·NaN·Infinity·2**53·'1'·null·true` 전부 거부). ⚠ `JSON.stringify` 가 `NaN`/`Infinity` 를 **`null` 로 무성 변환**하므로 쓰기 검증이 이 검사를 **먼저** 통과시켜야 한다(invserial-4) |
+| 89 | §W-4 `readFresh(): AuthorityReadResult` | **총체성이 계약에 없다**(invserial-2). 중첩 객체(`identity`·`activeActivity`·`writtenBy`)를 순진하게 역참조하면 **임계 구역 밖으로 throw 가 새고**, 그 경로의 뮤텍스 누수는 RED 가 아니라 **hang** 이다(PR2a 가 `writeAllBytes` 에서 실측한 계열 — durable-fs.ts:106-113) | ⓐ`readFresh` 는 **어떤 바이트에도 throw 하지 않는다**를 계약에 명문화(모든 실패는 판별 유니온) ⓑ뮤텍스 해제를 **`try/finally`** 로 구조 승격(정정 78 ⓐ와 같은 규율) ⓒ조작화 = 적대 바이트 표(잘린 JSON·배열·`null`·문자열·중첩 타입 오류·거대 파일) 전수 테이블 |
+| 90 | `locks-structure.test.ts:104-130` 「브랜드 캐스트는 **인가된 2곳뿐**」 | **핀이 `LOCK_SOURCES` 한정이다**(gate-ripple-3 CONFIRMED · **메인 루프 직접 확인**). PR2b 는 `FreshReadToken`·`AuthorityCommit` 민팅에 **캐스트가 구조적으로 강제**되는데(브랜드가 `declare const` = 런타임 값 부재 · authority.ts:131,146) 그 새 forge 2곳은 **어떤 개수 핀에도 걸리지 않는다**. 게다가 브랜드 프로퍼티 없는 객체는 대상 타입에 assignable 이라 **다른 파일에서도 캐스트가 컴파일된다**(gate-ripple-6 이 「authority.ts 밖으로 못 나간다」를 반증) | forge 개수 핀을 **워크벤치 프로덕션 전수 스캔**으로 신설(형제 `locks-structure.test.ts:353` `readdirSync(HERE)` 관용구 승계) — 파일 분리 여부와 무관하게 닫힌다. 우회 vehicle(`as unknown as`·`as never`·`Parameters<`) 0건 + 앵글브래킷 형까지 세는 형제 술어를 그대로 재사용 |
+| 91 | `authority-structure.test.ts` 의 세 술어(D-9 장기 핸들 · fs import 금지 · 브랜드 미export) | **전부 하드코딩 파일 목록**이다(budget-5 CONFIRMED · gate-ripple-8·10). 형제 `locks-structure.test.ts:353,364` 는 이미 「하드코딩 목록이 아니라 **디렉터리 전수**여야 한다(새 파일이 목록에 없으면 무신호)」를 명문화했는데 authority 쪽은 비대칭이다 | 세 술어를 **디렉터리 전수 + 파일 수 앵커**로 승격(신규 프로덕션 파일이 자동 편입). ⚠ `__testing__/*.ts` 는 `.test.ts` 가 아니라 **프로덕션으로 집계**되므로(gate-ripple-2·10 CONFIRMED) 신설 페이크도 이 스캔과 eslint `no-unsafe-type-assertion` 대상이다 — **페이크에 캐스트를 쓰지 않는 설계**가 강제된다 |
+| 92 | §3 분할표 PR2b 칸 「1,500~1,700 · 분할점 = 불변식 9종 종료 >1,500 → §3-T61 전수표를 PR2b′」 | **트리거가 계획 자신이 금지한 측정 시점을 쓴다**(budget-1·2·3 · **메인 루프가 4 PR 전수 재측정**). 정정 74 는 유일 권위 측정을 「머지 직전 HEAD」로 고정했는데 「불변식 9종 종료」는 그보다 이른 시점이다. 그리고 선언된 레버(§3-T61 전수표)는 **약 200~280행(총량의 11~15%)뿐**이고, 프로덕션 검증기는 남아 §3.1 「신규 모듈 자체 ≥86%」와 spec:1112 가 닫은 무신호 구멍을 되돌린다 | ⓐ트리거를 **리뷰 라운드가 거의 늘리지 않는 축**으로 재정의: **「T8 프로덕션 물리행 ≤ 569」**(=1,900 ÷ 실측 상단 3.34). ⓑ분할점을 **「불변식 검증기(프로덕션) + T61 전수표」 한 쌍**으로 확장(레버 ≈270~350행 · 「검증기와 그 전수표는 같은 PR」 규율 유지). ⓒ2차 레버를 **사전 선언**: 「읽기 경로 / 쓰기 경로」 분리(둘이 거의 반씩 갈린다). ⓓ§1-6 밴드를 **2.69~3.34** 로 갱신하고 「상한은 PR1b·PR1c 에서 이미 두 번 초과됐다」를 각주로 등재 |
+| 93 | §W-4 「`withAuthority` 는 bench identity 별 in-process 뮤텍스를 보유한 채 …」 | **진입 시 리스 출처 확인 요구가 없다**(concurrency-1 · contract-chain-3). 복제 토큰(`{...lease, identity: B}`)은 **캐스트 0개로 컴파일**되고(locks.ts:421-432 실측) **같은 `ownerToken` 을 그대로 들고 있어** `foreign-owner` 검사(authority.ts:206-212)를 통과한다 → 뮤텍스 키와 권위 파일 경로가 **B 로 유도**되는데 커널 배타는 A 에만 걸려 있다. PR#264 가 런타임 원장(`isMintedLease`)으로 닫은 구멍이 **소비자 층에서 재개방**된다 | `withAuthority` 가 **뮤텍스를 잡기 전에** `isMintedLease` 를 1회 집행하고, 실패 시 **어떤 fs·뮤텍스 부수효과도 없이** 모든 tx 메서드가 `lease-invalid{stolen}` 을 **값으로** 반환. 조작화 = **신규 행 「위조/복제 토큰 음성 통제(읽기·CAS 양 경로)」** — 복제 토큰 투입 시 주입 `DurableFs` **호출 0건** 단언(T14 에 얹지 않는다) |
+| 94 | authority.ts:240 「임계 구역 안에서만 존재하는 핸들」 | **관찰 불가능한 서술이고 유출 경로가 열려 있다**(contract-chain-4 · concurrency-5). `fn` 이 `tx` 를 캡처해 `withAuthority` **반환 후** 호출하면 뮤텍스·리스 재검증 창 **밖**에서 CAS 가 돈다 — 스펙이 두 메서드를 tx 로 옮긴 근거(「뮤텍스 밖 호출이 정상 컴파일되면 경계가 규약으로 강등」)가 **한 단계 뒤에 그대로 재현**된다. 이를 잡는 §3 행이 없다 | 반환 시 **tx revoke**(클로저 플래그) + T17d 인접에 **신규 행 1개**. ⚠ **신규 종별을 만들지 않는다** — 만들면 assertNever 게이트 대상 switch 가 전부 갱신 대상이 되므로 기존 **`lease-invalid{released}` 재사용**이 싸다(리스가 이미 해제됐다는 것이 사실이기도 하다) |
+| 95 | authority.ts:133-144 `FreshReadToken` 주석 「단일 사용이 계약이라 `readSeq` 를 싣는다」 | **`readSeq` 의 「모듈 내부 단조」 한정이 랜딩 주석에서 소실됐다**(contract-chain-8). 스펙 §W-4:380 은 「모듈 내부 단조」이고 §3-T19 는 **그 한정 위에** `vi.resetModules()` 2회 import 셋업과 「모듈 스코프 카운터가 B 에서 초기값」 자기검사를 세운다. store-지역 카운터로 구현해도 **PR2b 게이트 전부 GREEN** 이고 RED 는 PR6 에서야 난다 | `readSeq` 카운터와 read/commit **소비 원장을 모듈 스코프로** 주석 재기술 + **T8 행동 단언 1행**: 「같은 프로세스의 두 store 인스턴스가 seq 공간과 소비 원장을 **공유**한다 — A 의 토큰을 B 에 제출 = `read-token-spent`」 |
+| 96 | `PathKind.size`(durable-fs.ts:59-62) | **소비자가 0건**이다(concurrency-12 · invserial-8 — refuter 가 후보보다 **근거를 강화**). 형제 `active-instance.ts` 는 같은 축에 **실측 기반 크기 상한을 이미 출하**했는데 권위 레코드에는 상한을 거는 주체가 없다 → 임계 구역 안의 **상한 없는 동기 읽기**가 뮤텍스+리스를 쥔 채 이벤트 루프를 막는다 | `readFresh` 가 `statKind().size` 를 **소비**해 상한 초과 시 `invalid`(자동 삭제 금지)로 분기. 상한값은 형제와 동형으로 **실측 근거와 함께** 고정 |
+| 97 | 스펙 §W-5 코드펜스가 「소유 = `core/workbench/durable-fs.ts`」라 선언한 블록 **안**에 `createBenchAuthorityStore` 를 싣는다 | **파일 소유가 문면상 모순**이다(testop-14 · budget-10 · contract-chain-9). 문면대로 durable-fs.ts 에 두면 PR2a 가 착지시킨 **어댑터 두께 가드가 즉시 RED**(코드 110행 상한 · 현재 97행). 신규 3번째 파일에 두면 **세 가드가 전부 무적용**인데(eslint assertNever `files` 는 정확히 2파일 + purity 핀이 exact `toEqual`) 핀은 **GREEN 을 유지**한다 = #137·#173 계열 무신호 | **`authority.ts` 단일 파일 유지**로 확정(eslint `files`·purity 핀·구조 가드 3종 **전부 무변경**). 정정 91 의 전수 스캔 승격이 「장차 신규 파일」 위험도 함께 닫는다. 스펙 펜스 배치가 편집 아티팩트임을 **PR 본문 「스펙 정정」에 등재**. 또 「PR2b 가 만든 첫 `CasResult` switch 가 assertNever selector 를 **실제로 밟았다**」(선행 트립와이어 → 실효 전환)를 PR 본문에 기록(PR2a 가 R6-5 로 남긴 미결 항목의 종결) |
+| 98 | §W-4 불변식 ③ 「`currentIntegrationStage`/`…Generation` 존재 ⟺ `currentIntegrationTxnId` 존재」 | **통합 4필드 중 3개만 덮는다**(invserial-11 · **메인 루프 직접 확인**) — `currentIntegrationResultOid` 는 **9개 불변식 어디에도 등장하지 않아** txnId 없는 **고아 resultOid** 가 정상 커밋된다 | 불변식 ③ 을 **통합 4필드 전체**(`Stage`·`Generation`·`ResultOid` ⟺ `TxnId`)로 확장하고 T61 두 표에 반영 |
+| 99b | §3-T13ⓒ 「`revision` 이 호출자 draft 에서 오지 않음(**`Omit` 타입 핀**)」 | **스펙이 stale 이다**(invserial-9). 정정 73 이 「`compareAndSwap` 이 `revision`·`writtenBy` **키의 존재 자체**를 거부하고 그 행을 T13ⓒ 에 **행동 단언**으로 편입」이라 했는데 스펙 문면은 여전히 타입 핀만 말한다. 그리고 **실측상 판별자 선택이 결과를 바꾼다**: `{revision: undefined}` 는 `in`·`hasOwn`·`Object.keys` 에 **전부 잡히지만** 값 검사(`=== undefined`)는 **통과**하고, `JSON.stringify` 는 그 키를 **삭제**한다(3면 동일) | 판별자를 **`Object.hasOwn`** 으로 고정(정정 88 ⓐ와 같은 술어군)하고 T13ⓒ 를 **타입 핀 + 행동 단언 2층**으로 재기술. 테스트는 **`{revision: undefined}` 케이스를 반드시 포함**한다 — 값 검사 구현이 이 행에서만 RED 다. ⚠ 부작용 정직 기재: 이 거부는 가장 자연스러운 갱신 관용구(`{...prev, lifecycle:'archived'}`)를 **실패시킨다**(스프레드가 `revision` 을 실어 나른다 — 실측). 호출자는 구조분해로 두 키를 떼야 하며, 그 규율을 `BenchAuthorityDraft` 주석에 명시 |
+| 99 | (잔여 · 개별 행 불요) | `gate-ripple-1`(P3) import 합칠 때 `authority-structure.test.ts:81` 앵커가 RED — 문장을 쪼개 회피하지 말고 **의미 단위 정규식으로 정당 갱신**(`:84-89` 자기검사는 유지되므로 약화 아님) · `gate-ripple-13`(P3) `brain:check` RED 는 **조건부가 아니라 확정**(brain.md:169 이 `authority … 260줄` 을 싣는다) → §1-9 순서 준수 · `budget-9`(P3) T15·T16·T17d 는 **전량 in-process 주입 페이크라 `--no-file-parallelism` 불요**(실 FS 행이 생기면 그때 등재) · `budget-11`(P3) **커버리지는 이 PR 의 구속이 아니다**(착수 실측 S 3815/4085=93.39% · B 2462/2840=86.69% · F 679/720=94.3% · L 94.93% · floor 대비 statements 슬랙 **97문**) — 구속은 **분량**이며 `coverage.exclude` 변경 **불요**(건드리면 exact 핀이 RED) · `testop-17`(P3) T16 의 「CLI 미실행」 절은 **런처 부재로 vacuous** 임을 명시(정직) | 각 항목을 해당 태스크 주석·PR 본문에 반영 |
+
+**착지 후 분량 실측 — 정정 92 의 프록시 트리거가 55% 과대예측했다**
+
+정정 92 는 착수 **전**에 쓸 수 있는 프록시로 「T8 프로덕션 물리행 ≤ 569」를 선언했다. 착지물은 그 축에서
+**876행**(authority.ts 순증 666 + 페이크 210)이라 트리거가 발동했고, 밴드 상단으로 환산한 예측 총량은
+876 × 3.34 ≈ **2,926** 이었다. **직접 실측은 1,887** 이다(`git diff --numstat` · src 4파일).
+
+| 축 | 값 |
+|---|---:|
+| `authority.ts` | +666 / −1 |
+| `authority-store.test.ts`(신설) | +794 |
+| `authority-structure.test.ts` | +251 / −33 |
+| `__testing__/durable-fs-fake.ts`(신설) | +210 |
+| **총 순증** | **1,887** (상한 1,900) |
+| 실측 배수 | **2.15** (밴드 2.69~3.34 **하한 미달**) |
+
+원인은 이 PR 의 **프로덕션/테스트 비율이 비정형**이라는 것이다 — 형제 PR 들은 프로덕션 1행당 테스트 2~2.3행을
+썼는데 여기는 **1.19행**이다(666 프로덕션 ↔ 794 테스트). 계약이 판별 유니온 반환이라 한 단언이 여러 종별을
+동시에 덮고, 반대로 프로덕션 쪽은 검증 계층이 주석 밀도가 높다. 즉 **밴드는 이 슬라이스에 대한 예측자로
+부적합**했다.
+
+**그리고 실제로 초과했다.** 위 1,887 은 CAS **재독 창**(readFresh 와 rename 사이의 디스크 변화) 7행을
+추가하기 전 값이다. 그 분기들 — 파일 소멸·손상 교체·신 버전 교체·타 레포 identity·재독 IO 실패·**L-6 변이
+직전 재검증**·foreign-owner — 은 전부 미커버였고, 이 영역이 §W-2-a 상 ttyd 셸·CLI 와 **같은 신뢰 도메인**
+이라 이론적 방어가 아니다. 추가 후 **순증 2,020**(상한 대비 +120 · 6.3%)이고 `authority.ts` 자체
+커버리지는 **S 87.45 → 90.32%** 다.
+
+**판정(사용자 결정 · 2026-07-28)**: **초과를 선언하고 진행한다.** 근거와 대가를 둘 다 적는다.
+- 선언된 분할점(「불변식 검증기 + T61 전수표」→ PR2b′)을 적용하면 규칙은 지켜지지만 PR2b 가
+  **불변식 검증 없는 `readFresh`** 를 출하한다 — 디스크의 불변식 위반 레코드를 `found` 로 통과시키는
+  **더 약한 계약**이 한 PR 동안 존재한다. 2차 레버(읽기/쓰기 경로 분리)도 T8 의 정의상 핵심인 CAS 를
+  떼어내므로 같은 성격의 손상이다. **6.3% 초과보다 이쪽 비용이 크다**는 판단.
+- 선례: 상한은 **PR1b(2,432 · 28% 초과)·PR1c(1,952 · 2.7% 초과)** 에서 이미 두 번 초과된 채 머지됐다.
+  상한의 목적은 **리뷰 가능성**이고 기술적 하드 리밋이 아니다.
+- **은폐하지 않는 것 둘**: ⓐ규칙은 **발동했다**(프록시 축 876 > 569 · 직접 축 2,020 > 1,900 — 두 축 모두).
+  ⓑ정정 74 대로 **리뷰 라운드가 더 늘린다**. 그래서 이 PR 의 리뷰 반영은 행 증가를 명시 예산으로
+  관리하고, 증가분을 PR 본문에 누적 기록한다.
+- **차기 PR 에 상속 금지**: 「PR2b 가 초과하고도 머지됐다」를 PR2c~PR7 의 추정 근거로 쓰지 않는다
+  (정정 74 가 PR1b 에 대해 세운 규율과 동형).
+
+밴드 자체는 이 관측(2.15)을 포함해 **2.15~3.34** 로 갱신하되 **하한을 예측에 쓰지 않는다**(하한은 사후
+설명이지 사전 보증이 아니다). 그리고 프록시 트리거는 **이 슬라이스에서 55% 과대예측**했으므로, 차기 PR 은
+「프로덕션 물리행」 단독이 아니라 **「프로덕션 물리행 × 그 PR 의 예상 테스트 비율」**로 예측한다 —
+테스트 비율은 계약 형태(판별 유니온 반환은 한 단언이 여러 종별을 덮는다)에 크게 좌우된다.
+
+**최종 실측 — 자가 적대 리뷰 반영 후 2,735(상한 +44%)**
+
+정정 74 가 예고한 「리뷰 라운드가 코드를 늘린다」가 그대로 실현됐다. 자가 적대 리뷰(64 후보 · 32 CONFIRMED ·
+**P1 2건 생존**)를 반영하며 **+715행**이 붙었다.
+
+| 파일 | 순증 |
+|---|---:|
+| `authority.ts` | +854 / −8 |
+| `authority-store.test.ts` | +1,422 |
+| `authority-structure.test.ts` | +260 / −33 |
+| `__testing__/durable-fs-fake.ts` | +225 |
+| `scripts/eslint-config-purity.test.ts` | +24 / −9 |
+| **총 순증** | **2,735** (상한 1,900 · **+44%**) |
+
+**판정(사용자 결정 2회차 · 2026-07-28)**: **그대로 진행.** 증가분 715행은 **전부 리뷰 발 하드닝**이고,
+그중 대부분이 **뮤테이션으로 증명된 무신호 방어를 핀하는 테스트**다 — 되돌리면 확정 결함(브릭 ·
+재진입 교착 · `String(unknown)` TypeError · 하위 디렉터리 무신호)이 **다시 열린다**. 분할 경계도 인위적이다:
+「테스트」와 「그 테스트가 핀하는 방어」를 갈라 두면 두 PR 사이 기간에 가드 없는 방어가 출하된다.
+상한의 목적은 **리뷰 가능성**이고, 여기 1,682 테스트행은 각각 특정 뮤턴트에 대응하므로 그 목적을 해치지 않는다.
+선례도 PR1b(2,432 · +28%)가 있다.
+
+⚠ **차기 PR 에 상속 금지**를 재확인한다 — PR2c~PR7 은 이 초과를 추정 근거로 쓰지 않는다.
+
+**최종 실측 — 봇 리뷰 4라운드 후 3,297(상한 +74%)**
+
+| 시점 | 순증 | 팽창률(착지 기준) |
+|---|---:|---:|
+| 착지 직후(자가리뷰 전) | 2,020 | 1.00 |
+| 자가 적대 리뷰 반영 | 2,735 | 1.35 |
+| **봇 리뷰 4R 반영(최종)** | **3,297** | **1.63** |
+
+§1-6 에 반영할 교훈: **「착수 전 예측은 리뷰 하드닝을 포함하지 않는다」.** 실측 팽창률 밴드를
+**1.54~1.63** 로 갱신한다(PR1b 1,581→2,430 = 1.54 · PR2b 2,020→3,297 = 1.63). 사전 추정에는 이 계수를
+곱해 상한을 확인해야 한다 — 즉 **착지 목표는 상한의 60~65%** 여야 머지 시점에 상한 안이다.
+
+**봇 리뷰 궤적(수렴 확인)**
+
+| 라운드 | Codex P1 | 성격 |
+|---:|---:|---|
+| 1R | 3 | 토큰 위조·커밋 재조준·동시성 파괴 — 자가리뷰가 **놓치거나 잘못 강등** |
+| 2R | 5 | 그중 1건은 **1R 수정이 만든 회귀**(WAL 진입 불가) |
+| 3R | 2 | 2R 수정의 후속 결함 → **재진입 가드 설계 철회** |
+| 4R | 1 | **문서화만**(ApprovalGate 예외) · 코드 결함 0 |
+
+**실증 검증 — 사용자 지적으로 발견한 공백**(머지 직전)
+
+봇 4라운드가 clean 이 된 뒤에도 **543개 테스트가 전부 주입 페이크 위에서만** 돌고 있었다. 세 공백:
+ⓐstore 와 **실 어댑터의 조합**이 한 번도 실행된 적 없다(PR2a 는 어댑터 단독만 실 FS 로 봤다)
+ⓑ프로덕션 경로인 POSIX `file+dir` 이 win32 에서 전부 `file-only` 로 우회돼 **미실행**(서버는 컨테이너다)
+ⓒ정정 71 이 요구한 §3.2 「실 프로세스 크래시 행」 **미구현**.
+
+→ `authority-node.test.ts` 신설(실 FS 13행 · win32 9 pass/4 skip · **ubuntu CI 13 pass**) +
+**Docker `node:24-bookworm-slim` 비특권 ALL PASS**(esbuild 번들 + plain node — vitest 는 win32
+node_modules 의 rollup 네이티브 때문에 컨테이너에서 못 돈다). 검증 항목: file+dir 완주 · 등급 기록 ·
+0700/0600 실 inode · `probeDurability='file+dir'` · 부모 디렉터리 · 연속 CAS 단조 · tmp 잔재 0 ·
+크래시 도달성 4항.
+
+⚠ **그리고 그 크래시 행이 처음엔 vacuous 였다**(CodeRabbit 적발): 고정 `crash.json` 을 쓰면서 판정은
+다른 benchId 리스로 해 **잔재를 아예 들여다보지 않았다** — §3.2 를 만족시키려고 쓴 바로 그 행이
+「무관한 파일은 absent」만 확인했다. 대상·리스 benchId 를 일치시키고, 읽기 경로를 tmp 로 오독하는
+뮤턴트에서 3행이 RED 가 됨을 확인했다. **교훈: 실증 테스트도 vacuous 할 수 있다 — 실 프로세스를
+띄웠다는 사실이 반증력을 보장하지 않는다.**
+
+**이 슬라이스가 남기는 방법론 교훈 3가지**(PR2c 착수 전에 읽을 것):
+1. **자가리뷰 refuter 의 강등을 의심하라** — 형제 모듈이 이미 닫은 패턴(`MINTED_LEASES`)을 「범주 혼동」
+   으로 기각한 판정이 실제 취약점(스프레드 복제 토큰 → stale 덮어쓰기)을 통과시켰고, 그 **틀린 근거를
+   코드 주석으로도 써 놨다**. 검증되지 않은 안전 주장은 문서화하지 않는다.
+2. **수정도 리뷰 대상이다** — 1R 지적을 반영하며 스펙을 재확인하지 않아 회귀를 만들었다(통합 4필드
+   무조건 묶음 → `prepared` CAS 영구 실패). 리뷰 반영 시 **원 계약을 다시 연다**.
+3. **런타임 heuristic 이 계약을 대신할 수 없으면 철회하라** — 재진입 가드가 3라운드에 걸쳐 거짓 양성
+   3종을 냈고 표면이 닫히지 않았다. 판단 기준은 **비용 비대칭**(거짓양성=프로덕션 가용성 / 거짓음성=
+   개발시점 hang)이었고, 정답은 **호출자 계약 + 철회 이력 주석**이었다.
+
+**PR2b 확정 범위**(위 정정 반영): `authority.ts` **단일 파일**에 값 구현 —
+`createBenchAuthorityStore(fs, opts)`(정정 76 의 필수 3필드) · `withAuthority`(진입 `isMintedLease` ·
+identity 별 뮤텍스 · `try/finally` 해제 · 반환 시 tx revoke) · `AuthorityTx.readFresh`(총체적 ·
+`statKind` 선검사 · `schemaVersion`→형태→identity→불변식 계층 · 크기 상한) ·
+`AuthorityTx.compareAndSwap`(판정 순서 고정 · 내구 순서 + **post-commit 실행 및 `commit-uncertain` 반환** ·
+`finally` tmp 정리) · `__testing__/durable-fs-fake.ts`(**캐스트 0** — eslint 프로덕션 스코프) ·
+계약/구조 테스트 · 구조 가드 3종 **전수 스캔 승격** + **forge 개수 핀 신설**.
+**미착지 명시**: rename 재시도·per-retry L-6·gated-orphan 회수(→PR2c) · `BenchLauncher` 런타임(→PR2c) ·
+spawn 배선·bench-spawn 가드(→PR7) · `area.json` 등급 기록(→PR7) · **크래시 잔재 tmp 수확기**(→PR3 · 정정 78) ·
+T20 raw 스냅숏분·T18b ref-앵커(→PR3 · 정정 85·70) · 엔진 배선(→PR7 · **소비자 0 유지**).
+
 **C 이식(핵심)**: 타입 골격이 어떤 런타임보다 앞선다.
 
 - **T6b 계약 사슬 골격(척추)** — **C 의 타입 배치표 전량**을 이 태스크에서 확정한다(스펙 §W-4 각주가 계획에
@@ -489,12 +700,20 @@ vacuous 로 판정해 이월한 것과 대칭이라는 지적. 차이는 **소�
   ADR-0003 ROI 게이트).
 - **T7 `DurableFs` 실 어댑터 + 등급 프로브** — §3-T59(실 FS: tmp 고유성·rename 후 tmp 부재·0600/0700·
   POSIX dir fsync / win32 `'file-only'` **반환값**) · §3-T18 · **T62 의 D-9 분**.
-- **T8 권위 CAS 코어(`withAuthority`·`AuthorityTx`)** — §3-T13(**행동 단언 3개**) · §3-T14(읽기 카운터) ·
-  §3-T15 · §3-T16 · §3-T17d(배리어 인터리브) · §3-T20 · §3-T53 · §3-T21c 분류 · **§3-T61**(조건부 스키마 9행).
+- **T8 권위 CAS 코어(`withAuthority`·`AuthorityTx`)** — §3-T13(**행동 단언 3개** · ⓑ대상 필드 명시 열거
+  = 정정 81 · ⓒ타입 핀 + `Object.hasOwn` 행동 단언 2층 = 정정 99b) · §3-T14(**분해** — found 경로
+  `readFileUtf8` 1회 / 전 경로 `statKind` 1회 / 종류별 분류 = 정정 79) · §3-T15(**post-commit 포함** ·
+  랑데부 금지) · §3-T16(rename 전 단계 한정 + **「실패 직후 재-CAS 성공」** = 정정 78ⓑ) ·
+  §3-T17d(**타임라인 비인터리브** · 테스트 내 대조 구현 자기검사 = 정정 82) · §3-T17e **반환 종별 절만**
+  (정정 77) · §3-T20(CAS 경유분만 · raw 스냅숏분은 PR3 = 정정 85) · §3-T53(**타입 수준** exact 핀 = 정정 84) ·
+  §3-T21c(**`schemaVersion` 최우선 순서**를 픽스처로 조작화 + git·락 0 은 구조 단언 = 정정 86) ·
+  **§3-T61**(**read/CAS 2표** = 정정 83) · §3-T18 의 「레코드 기록 · 조용한 스킵 금지」 절(정정 76ⓑ) ·
+  **신규 3행**: 위조/복제 토큰 음성 통제(정정 93) · tx 유출 거부(정정 94) · 두 store 인스턴스 원장 공유(정정 95).
   **store 는 `withAuthority` 만 public**, 두 메서드는 `AuthorityTx` 에.
-- **T9 rename 재시도 · per-retry L-6 · `commit-uncertain`** — §3-T17(win32 실측) · §3-T17b(**재시도 끝 성공 =
-  정확히 1 commit**) · §3-T17c(재시도 중 탈취 → 이후 rename 미실행) · §3-T17e(rename 후 `fsync-dir` 실패 =
-  `commit-uncertain` · 토큰 미발급 · CLI 미실행 · `gated` 만 회수, `running` 은 비대상).
+- **T9 rename 재시도 · per-retry L-6** — §3-T17(win32 실측) · §3-T17b(**재시도 끝 성공 =
+  정확히 1 commit**) · §3-T17c(재시도 중 탈취 → 이후 rename 미실행) · §3-T17e 의 **회수분**(재시작 복구가
+  `execGate:'gated'` 를 gated-orphan 으로 분류해 회수 · `running` 은 비대상). ⚠ `commit-uncertain` **반환**은
+  정정 77 로 **PR2b 선이관** — T9 에 남는 것은 재시도와 회수뿐이다.
 - **T10 `BenchLauncher` · spawn seam 2곳 · ADR-0013** — §3-T17f(commit 발급·spawn 이 **최종 acknowledged
   durability 이후**) + **B 이식: `CAS1('gated') → commit1 → CAS2('running') → commit2 → spawn(commit2)`
   순서 고정** + **spawn 실패 시 활동 종결 CAS**(세 초안 공통 누락).

@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 98 files · 237 import wires · 47 IPC channels · 생성 2026-07-27T08:16 UTC
+> 99 files · 238 import wires · 47 IPC channels · 생성 2026-07-28T08:31 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -150,6 +150,32 @@
 - **session/abort**
   - →의존: — · ←피의존: engine, session/api-session, session/cli-session · 57줄
 
+### workbench · core
+- **workbench/locks**
+  - →의존: workbench/authority, workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/authority, workbench/lock-backend-uds, workbench/lock-order · 467줄
+- **workbench/authority**
+  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/locks · 1263줄
+- **workbench/active-instance**
+  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
+- **workbench/coord-area**
+  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
+- **workbench/durable-fs**
+  - →의존: — · ←피의존: workbench/__testing__/durable-fs-fake, workbench/authority · 203줄
+- **workbench/instance-marker**
+  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
+- **workbench/__testing__/durable-fs-fake**
+  - →의존: workbench/durable-fs · ←피의존: — · 235줄
+- **workbench/__testing__/lock-backend-fake**
+  - →의존: workbench/locks · ←피의존: — · 92줄
+- **workbench/instance-marker-proc**
+  - →의존: workbench/instance-marker · ←피의존: — · 56줄
+- **workbench/lock-backend-uds**
+  - →의존: workbench/locks · ←피의존: — · 82줄
+- **workbench/lock-order**
+  - →의존: workbench/locks · ←피의존: — · 181줄
+- **workbench/ulid**
+  - →의존: — · ←피의존: workbench/locks · 86줄
+
 ### mcp · core — 바깥에서 가져온 도구 프로그램(MCP 서버)을 Fleet 안으로 안전하게 연결해, AI들이 쓸 수 있는 도구로 바꿔 관리하는 모듈이다.
 - **mcp/types** — 이 모듈의 부품들이 공유하는 약속(설계도) 모음 파일 _자식 프로세스, 통신 통로, 도구 정보, 서버 관리자 등이 각각 어떤 기능을 갖춰야 하는지 형태만 정의해 둔다. 실제 동작 코드는 없고, 부품들이 서로 같은 규격으로 끼워 맞춰지도록 하는 인터페이스다._
   - →의존: safety/approval, shared/types, tools/types · ←피의존: engine, mcp/client, mcp/host, mcp/stdio, mcp/wrap · 111줄
@@ -161,30 +187,6 @@
   - →의존: mcp/types, shared/types, tools/types · ←피의존: mcp/host · 112줄
 - **mcp/client** — 외부 도구 서버 한 곳과 대화를 주고받는 통신 담당 부품 _요청에 번호표를 붙여 보내고 같은 번호의 답이 오면 짝지어 돌려준다. 30초가 지나거나 사용자가 취소하면 대기를 정리하고 서버에도 '취소' 통보를 보내며, 연결이 끊기면 기다리던 요청을 모두 실패 처리한다._
   - →의존: mcp/types · ←피의존: mcp/host · 278줄
-
-### workbench · core
-- **workbench/locks**
-  - →의존: workbench/authority, workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/authority, workbench/lock-backend-uds, workbench/lock-order · 467줄
-- **workbench/authority**
-  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/locks · 260줄
-- **workbench/active-instance**
-  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
-- **workbench/coord-area**
-  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 356줄
-- **workbench/instance-marker**
-  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
-- **workbench/__testing__/lock-backend-fake**
-  - →의존: workbench/locks · ←피의존: — · 92줄
-- **workbench/durable-fs**
-  - →의존: — · ←피의존: workbench/authority · 203줄
-- **workbench/instance-marker-proc**
-  - →의존: workbench/instance-marker · ←피의존: — · 56줄
-- **workbench/lock-backend-uds**
-  - →의존: workbench/locks · ←피의존: — · 82줄
-- **workbench/lock-order**
-  - →의존: workbench/locks · ←피의존: — · 181줄
-- **workbench/ulid**
-  - →의존: — · ←피의존: workbench/locks · 86줄
 
 ### cli · core — 클로드·코덱스·제미니 같은 명령어형 AI 프로그램(CLI)이 컴퓨터에 깔려 있는지 확인하고, 그 프로그램을 실제로 실행해 답변 글자만 깔끔하게 뽑아내며, 각 프로그램의 사용법(명령어 종류)을 한곳에 정리해 두는 모듈이다.
 - **cli/detect** — AI 명령어 프로그램을 실제로 실행하고, 깔려 있는지·어느 버전인지 확인하는 부품 _사람이 터미널에 명령어를 치듯 클로드·코덱스·제미니 프로그램을 대신 실행해 그 결과(출력 글자)를 받아온다. '--version'을 물어 설치 여부와 버전을 알아내고, 응답이 너무 오래 걸리거나(시간초과) 사용자가 중간에 취소하면 그 프로그램과 거기서 또 생긴 자식 프로그램들까지 끝까지 종료시킨 뒤 마무리한다. 여러 AI를 한꺼번에 동시 점검하는 기능도 있다._

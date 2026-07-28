@@ -182,8 +182,13 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
  * 해당하지 않는다(다른 키 = 순수 추가).
  */
 describe('브랜드 위조 차단 ESLint 게이트 (#251 PR1b)', () => {
-  const brandBlock = blocks.find((c) => c.files?.includes('src/main/core/workbench/**/*.ts')) as
-    { files?: string[]; ignores?: string[]; rules?: Record<string, unknown> } | undefined
+  // ⚠ **룰 키로 선택한다**(#251 PR2b): 소진 강제 블록이 전수 glob 으로 승격돼(FRAME-09) 같은 `files` 를
+  // 쓰는 블록이 둘이 됐다 — `files` 로만 찾으면 둘 중 먼저 온 것을 잡아 두 핀이 서로를 오검한다.
+  const brandBlock = blocks.find(
+    (c) =>
+      c.files?.includes('src/main/core/workbench/**/*.ts') === true &&
+      c.rules?.['@typescript-eslint/no-unsafe-type-assertion'] !== undefined,
+  ) as { files?: string[]; ignores?: string[]; rules?: Record<string, unknown> } | undefined
 
   // 스코프가 **민팅 파일이 아니라 워크벤치 프로덕션 전체**여야 한다(Codex PR#259 P1): 민팅만 덮으면
   // 크레덴셜 **소비자**(장차 `authority.ts`)가 `as unknown as BenchLeaseToken` 으로 위조 토큰을 만들 수 있다.
@@ -221,17 +226,27 @@ describe('브랜드 위조 차단 ESLint 게이트 (#251 PR1b)', () => {
  * 실효하는 **선행 트립와이어**이며, 그 사실을 은폐하지 않는다.
  */
 describe('실패 종별 소진 강제 ESLint 게이트 (#251 PR2a)', () => {
-  const exhaustBlock = blocks.find((c) =>
-    c.files?.includes('src/main/core/workbench/authority.ts'),
-  ) as { files?: string[]; rules?: Record<string, unknown> } | undefined
+  const exhaustBlock = blocks.find(
+    (c) =>
+      c.files?.includes('src/main/core/workbench/**/*.ts') === true &&
+      c.rules?.['no-restricted-syntax'] !== undefined,
+  ) as { files?: string[]; ignores?: string[]; rules?: Record<string, unknown> } | undefined
 
   const syntax = exhaustBlock?.rules?.['no-restricted-syntax'] as
     [string, ...{ selector: string; message: string }[]] | undefined
 
-  it('신규 계약 파일만 덮는다(기존 워크벤치 코드를 끌고 오지 않는다)', () => {
-    expect(exhaustBlock?.files).toEqual([
-      'src/main/core/workbench/authority.ts',
-      'src/main/core/workbench/durable-fs.ts',
+  /**
+   * ⚠ **PR2b 에서 전수 glob 으로 승격**(자체 적대 리뷰 FRAME-09). 파일 2개 exact 로 두면 신규 워크벤치
+   * 파일이 `CasResult` 를 소비해도 소진 강제가 **무신호로 미적용**이다 — 구조 가드 4종은 전수로 올렸는데
+   * 정작 「새 실패 종별을 잡는」 이 게이트만 목록에 남아 있었다. 랜딩된 두 파일은 `ignores` 로 제외한다
+   * (둘 다 반환 타입으로 exhaustive 를 보장하며 `default:` 가 없어 즉시 RED).
+   */
+  it('워크벤치 프로덕션 전수를 덮고 랜딩 2파일만 제외한다', () => {
+    expect(exhaustBlock?.files).toEqual(['src/main/core/workbench/**/*.ts'])
+    expect(exhaustBlock?.ignores).toEqual([
+      'src/main/core/workbench/**/*.test.ts',
+      'src/main/core/workbench/locks.ts',
+      'src/main/core/workbench/lock-order.ts',
     ])
   })
 

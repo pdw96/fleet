@@ -422,7 +422,17 @@ export default tseslint.config(
   // (tools 블록 :361 과 같은 함정 · #174) `ELECTRON_DYNAMIC_IMPORT_SYNTAX` 를 여기서 **재선언**하지 않으면
   // 이 두 파일에서 electron 동적 import 보호가 유실된다. `scripts/eslint-config-purity.test.ts` 가 핀한다.
   {
-    files: ['src/main/core/workbench/authority.ts', 'src/main/core/workbench/durable-fs.ts'],
+    // ⚠ **디렉터리 전수여야 한다**(#251 PR2b 자체 적대 리뷰 FRAME-09). 파일 2개 exact 로 두면 신규
+    // 워크벤치 파일이 `CasResult` 를 소비해도 소진 강제가 **무신호로 적용되지 않는다** — 구조 가드 4종은
+    // 전수로 올렸는데 정작 「새 실패 종별을 잡는」 이 게이트만 목록에 남아 있었다.
+    // ⚠ `ignores` 로 랜딩된 `locks.ts`·`lock-order.ts` 를 제외한다 — 둘은 반환 타입으로 exhaustive 를
+    // 보장하며 `default:` 가 없어 즉시 RED 이고, 무관한 파일 수정을 이 PR 로 끌고 오지 않는다.
+    files: ['src/main/core/workbench/**/*.ts'],
+    ignores: [
+      'src/main/core/workbench/**/*.test.ts',
+      'src/main/core/workbench/locks.ts',
+      'src/main/core/workbench/lock-order.ts',
+    ],
     rules: {
       'no-restricted-syntax': [
         'error',
