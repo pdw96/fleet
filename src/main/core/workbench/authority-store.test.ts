@@ -33,19 +33,26 @@ interface Fixture {
   readonly store: ReturnType<typeof createBenchAuthorityStore>
 }
 
-const mintLease = async (
+/** 핸들도 함께 돌려준다 — L-6 재검증 분기를 조작화하려면 리스를 **잃게** 만들 수단이 필요하다. */
+const acquire = async (
   benchId: string,
   benchRoot = BENCH_ROOT,
   commonGitDir = COMMON_GIT_DIR,
-): Promise<BenchLeaseToken> => {
+): Promise<{ lease: BenchLeaseToken; release: () => void }> => {
   const scope = createLockScope({
     identity: { commonGitDir, benchRoot },
     backend: createFakeLockBackend(),
   })
   const r = await scope.tryAcquireBenchLease(benchId)
   if (r.status !== 'acquired') throw new Error(`리스 획득 실패: ${r.status}`)
-  return r.lease
+  return { lease: r.lease, release: () => r.handle.release() }
 }
+
+const mintLease = async (
+  benchId: string,
+  benchRoot = BENCH_ROOT,
+  commonGitDir = COMMON_GIT_DIR,
+): Promise<BenchLeaseToken> => (await acquire(benchId, benchRoot, commonGitDir)).lease
 
 const setup = async (
   initial: Readonly<Record<string, string>> = {},
@@ -790,5 +797,131 @@ describe('readSeq·소비 원장은 모듈 스코프다(정정 95)', () => {
 
     const r = await b.withAuthority(lease, (tx) => tx.compareAndSwap(token, draft(benchId)))
     expect(r.kind).toBe('read-token-spent')
+  })
+})
+
+/* ================================================================================================
+ * CAS 재독 창 — readFresh 와 rename 사이에 디스크가 바뀌면 (계획 정정 80 ④ · concurrency-10)
+ * ============================================================================================= */
+
+/**
+ * CAS 는 rename **직전에 디스크를 다시 읽는다** — 토큰의 `observedRevision` 만 믿는 구현은 in-process
+ * 시나리오에서만 맞고 크로스 프로세스(재시작·컨테이너 교체)에서 틀린다. 그 재독이 무엇을 보든 **fail-closed**
+ * 여야 하고, 각 종별이 CAS 어휘로 어떻게 사상되는지가 계약이다.
+ *
+ * 이 영역은 §W-2-a 상 ttyd 셸·CLI 에이전트와 **같은 신뢰 도메인**이라 이 창에서 남이 파일을 바꾸는 것이
+ * 실제로 가능하다 — 그래서 이 행들은 이론적 방어가 아니다.
+ */
+describe('CAS 재독 창 — 읽기와 쓰기 사이의 변화는 전부 fail-closed', () => {
+  /** readFresh 직후·CAS 직전에 디스크를 조작하고 결과 종별을 본다. */
+  const casAfterMutation = async (
+    mutate: (fx: Fixture) => void,
+    seed?: (fx: Fixture) => void,
+  ): Promise<CasResult> => {
+    const fx = await setup()
+    seed?.(fx)
+    return fx.store.withAuthority(fx.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent' && read.kind !== 'found') throw new Error(`예상 밖: ${read.kind}`)
+      mutate(fx)
+      return tx.compareAndSwap(read.read, draft(fx.benchId))
+    })
+  }
+
+  it('권위 파일이 사라졌으면 커밋하지 않는다', async () => {
+    const r = await casAfterMutation(
+      (fx) => fx.fs.remove(fx.path),
+      (fx) => fx.fs.setFile(fx.path, JSON.stringify(validRecord(fx.benchId, { revision: 3 }))),
+    )
+    expect(r.kind).toBe('invariant-violation')
+  })
+
+  it('손상 레코드로 교체되면 invariant-violation', async () => {
+    const r = await casAfterMutation((fx) => fx.fs.setFile(fx.path, '{"schemaVersion":1,'))
+    expect(r.kind).toBe('invariant-violation')
+  })
+
+  it('신 버전 레코드로 교체되면 커밋하지 않는다(구 버전이 신 권위를 덮지 않는다)', async () => {
+    const r = await casAfterMutation((fx) =>
+      fx.fs.setFile(fx.path, JSON.stringify({ schemaVersion: 99 })),
+    )
+    expect(r.kind).toBe('invariant-violation')
+    expect(r.kind === 'invariant-violation' && r.violations.join()).toContain('99')
+  })
+
+  it('다른 레포의 레코드로 교체되면 lease-invalid{identity-mismatch}', async () => {
+    const r = await casAfterMutation((fx) =>
+      fx.fs.setFile(
+        fx.path,
+        JSON.stringify(
+          validRecord(fx.benchId, {
+            identity: { commonGitDir: '/other/.git', benchRoot: '/other', benchId: fx.benchId },
+          }),
+        ),
+      ),
+    )
+    expect(r).toEqual({ kind: 'lease-invalid', reason: 'identity-mismatch' })
+  })
+
+  it('재독이 IO 실패면 io-failure 이고 디스크를 건드리지 않는다', async () => {
+    const fx = await setup()
+    const r = await fx.store.withAuthority(fx.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      fx.fs.failNext('statKind', new Error('주입: 재독 실패'))
+      return tx.compareAndSwap(read.read, draft(fx.benchId))
+    })
+
+    expect(r.kind).toBe('io-failure')
+    expect(fx.fs.countOf('rename')).toBe(0)
+    expect(fx.fs.paths()).toEqual([])
+  })
+
+  /**
+   * **L-6 — 변이 직전 재검증**(계획 정정 concurrency-10). 리스를 잃은 뒤에는 rename 이 **실행되지 않는다**.
+   * 이 행이 없으면 `lease-invalid{released|stolen}` 분기가 도달 불가로 착지한다.
+   */
+  it('리스를 잃으면 rename 을 실행하지 않는다', async () => {
+    const benchId = newUlid()
+    const { lease, release } = await acquire(benchId)
+    const fs = createFakeDurableFs()
+    const store = createBenchAuthorityStore(fs, {
+      authorityDir: AUTHORITY_DIR,
+      durability: 'file-only',
+      now: () => AT,
+    })
+
+    const r = await store.withAuthority(lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      release() // 변이 직전에 리스 상실 — 커널 endpoint 가 풀린다.
+      return tx.compareAndSwap(read.read, draft(benchId))
+    })
+
+    expect(r).toEqual({ kind: 'lease-invalid', reason: 'released' })
+    expect(fs.countOf('rename')).toBe(0)
+    expect(fs.countOf('openExclusive')).toBe(0)
+  })
+
+  it('남의 임계 구역에서 발급된 읽기 토큰은 foreign-owner 다', async () => {
+    const benchId = newUlid()
+    const a = await acquire(benchId)
+    const b = await acquire(benchId)
+    const fs = createFakeDurableFs()
+    const store = createBenchAuthorityStore(fs, {
+      authorityDir: AUTHORITY_DIR,
+      durability: 'file-only',
+      now: () => AT,
+    })
+
+    const token = await store.withAuthority(a.lease, (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return Promise.resolve(read.read as never)
+    })
+    const r = await store.withAuthority(b.lease, (tx) => tx.compareAndSwap(token, draft(benchId)))
+
+    expect(r).toEqual({ kind: 'lease-invalid', reason: 'foreign-owner' })
+    expect(fs.countOf('rename')).toBe(0)
   })
 })
