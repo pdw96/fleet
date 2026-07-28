@@ -646,6 +646,25 @@ PR2a 는 `DurableFs` 가 fs 프리미티브라 3면이 정확히 반대였다(�
 | 3R | 2 | 2R 수정의 후속 결함 → **재진입 가드 설계 철회** |
 | 4R | 1 | **문서화만**(ApprovalGate 예외) · 코드 결함 0 |
 
+**실증 검증 — 사용자 지적으로 발견한 공백**(머지 직전)
+
+봇 4라운드가 clean 이 된 뒤에도 **543개 테스트가 전부 주입 페이크 위에서만** 돌고 있었다. 세 공백:
+ⓐstore 와 **실 어댑터의 조합**이 한 번도 실행된 적 없다(PR2a 는 어댑터 단독만 실 FS 로 봤다)
+ⓑ프로덕션 경로인 POSIX `file+dir` 이 win32 에서 전부 `file-only` 로 우회돼 **미실행**(서버는 컨테이너다)
+ⓒ정정 71 이 요구한 §3.2 「실 프로세스 크래시 행」 **미구현**.
+
+→ `authority-node.test.ts` 신설(실 FS 13행 · win32 9 pass/4 skip · **ubuntu CI 13 pass**) +
+**Docker `node:24-bookworm-slim` 비특권 ALL PASS**(esbuild 번들 + plain node — vitest 는 win32
+node_modules 의 rollup 네이티브 때문에 컨테이너에서 못 돈다). 검증 항목: file+dir 완주 · 등급 기록 ·
+0700/0600 실 inode · `probeDurability='file+dir'` · 부모 디렉터리 · 연속 CAS 단조 · tmp 잔재 0 ·
+크래시 도달성 4항.
+
+⚠ **그리고 그 크래시 행이 처음엔 vacuous 였다**(CodeRabbit 적발): 고정 `crash.json` 을 쓰면서 판정은
+다른 benchId 리스로 해 **잔재를 아예 들여다보지 않았다** — §3.2 를 만족시키려고 쓴 바로 그 행이
+「무관한 파일은 absent」만 확인했다. 대상·리스 benchId 를 일치시키고, 읽기 경로를 tmp 로 오독하는
+뮤턴트에서 3행이 RED 가 됨을 확인했다. **교훈: 실증 테스트도 vacuous 할 수 있다 — 실 프로세스를
+띄웠다는 사실이 반증력을 보장하지 않는다.**
+
 **이 슬라이스가 남기는 방법론 교훈 3가지**(PR2c 착수 전에 읽을 것):
 1. **자가리뷰 refuter 의 강등을 의심하라** — 형제 모듈이 이미 닫은 패턴(`MINTED_LEASES`)을 「범주 혼동」
    으로 기각한 판정이 실제 취약점(스프레드 복제 토큰 → stale 덮어쓰기)을 통과시켰고, 그 **틀린 근거를
