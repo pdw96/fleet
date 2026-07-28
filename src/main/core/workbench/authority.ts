@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { dirname, join } from 'node:path'
 
 import type { BenchLifecycle } from '../../../shared/types'
@@ -291,6 +290,15 @@ export interface BenchAuthorityStore {
    * **유일한 public 진입점.** bench identity 별 in-process 뮤텍스를 보유한 채
    * `readFresh → 불변식 검사 → compareAndSwap 완료(내구 확정)` 전체를 하나의 임계 구역으로 실행한다.
    * **리스 = 프로세스 간, 뮤텍스 = 프로세스 안.**
+   *
+   * ⚠⚠ **같은 bench 로 중첩 호출하고 그것을 `await` 하면 영구 교착한다** — 안쪽이 바깥의 꼬리를 기다리고
+   * 바깥은 안쪽을 기다린다. 이것은 **호출자 계약**이며 런타임이 막지 않는다. 막으려 시도했다가 되돌린
+   * 이력을 남긴다(정직): `AsyncLocalStorage` 기반 재진입 가드를 넣었더니 **거짓 양성 3종**이 연달아
+   * 나왔다 — ⓐ첫 구역이 `await` 중일 때 도착한 무관한 호출 ⓑ구역 종료 후에도 상속된 컨텍스트
+   * ⓒ`finally` 보다 먼저 도는 분리 마이크로태스크(실측: `queueMicrotask` 후속이 `holding.live` 해제
+   * 이전에 실행된다). 거짓 양성은 **정당한 fire-and-forget 후속을 unhandled rejection 으로 만들어
+   * 프로세스를 죽일 수 있고**, 참 양성은 **개발 시점에 즉시 드러나는 hang** 이다. 비용이 비대칭이라
+   * 가드를 철회하고 **항상 큐잉**한다(Codex PR#266 3R). 분리 후속·늦은 동시 호출은 전부 정상 동작한다.
    */
   withAuthority<T>(lease: BenchLeaseToken, fn: (tx: AuthorityTx) => Promise<T>): Promise<T>
 }
@@ -382,24 +390,6 @@ const MINTED_READS = new WeakMap<
 >()
 /** identity 별 임계 구역 꼬리. 같은 bench 의 `withAuthority` 호출을 FIFO 로 직렬화한다. */
 const MUTEX_TAILS = new Map<string, Promise<unknown>>()
-/**
- * **이 비동기 컨텍스트가 보유 중인** 임계 구역 키.
- *
- * 재진입 교착(자체 적대 리뷰 DYN-06)을 fail-fast 로 바꾸려면 「지금 **이 호출 사슬**이 이 키를 들고
- * 있는가」를 알아야 한다. 원안은 모듈 스코프 `Set` 이었는데 그것은 **「누군가 실행 중인가」**를 보므로,
- * 첫 임계 구역이 `await` 하는 사이 도착한 **무관한 호출**(다음 tick 의 IPC 핸들러 등)까지 throw 했다 —
- * 즉 정당한 동시성이 파괴되고 뮤텍스가 「같은 tick 에 함께 시작한 호출」에만 작동했다.
- * **Codex PR#266 P1 + CodeRabbit 이 독립 수렴**했고 실측으로 확정했다(외부 호출 B 가 큐잉되지 않고 throw).
- *
- * `AsyncLocalStorage` 는 그 구분을 정확히 표현하는 표준 수단이다 — 콜백 안에서 파생된 비동기 연속만
- * 스토어를 상속하므로 **진짜 중첩만** 걸리고 별개 컨텍스트는 정상적으로 `MUTEX_TAILS` 에 큐잉된다.
- *
- * ⚠ 값이 `Set<string>` 이 아니라 **`Map<string,{live}>`** 인 이유(Codex PR#266 2R P1): 콜백이 분리된 비동기
- * 작업(타이머·큐잉된 재시도)을 띄우고 반환하면 ALS 는 **임계 구역이 끝난 뒤에도** 그 작업에 컨텍스트를
- * 전파한다. 그러면 그 작업에서 나온 정당한 후속 호출이 **거짓 재진입**으로 throw 된다. 그래서 보유를
- * 값이 아니라 **살아있는 플래그**로 표현하고 콜백 종료 시 끈다.
- */
-const HELD_KEYS = new AsyncLocalStorage<ReadonlyMap<string, { live: boolean }>>()
 
 /**
  * 뮤텍스 키 — **직렬화 도메인은 자원 도메인과 정확히 같아야 한다**(자체 적대 리뷰 perf-7·DYN-11).
@@ -755,6 +745,13 @@ export function createBenchAuthorityStore(
     durability: options.durability,
     now: options.now,
   })
+  /**
+   * 권위 디렉터리의 **부모**가 이 store 수명 안에서 내구화됐는가(Codex PR#266 3R P1).
+   * `false` 로 시작하므로 재시작 후 첫 CAS 도 한 번은 동기화한다 — 「이번에 만들었는가」로 판정하면
+   * 생성 성공 + fsync 실패 조합에서 구멍이 영구히 남는다.
+   */
+  let parentDurable = false
+
   const pathFor = (benchId: string): string => join(opts.authorityDir, `${benchId}.json`)
   /**
    * tmp 이름은 `ownerToken` 스코프다(§W-4). `ownerToken` 은 **획득당 1회** 민팅이므로 한 리스의 모든
@@ -767,8 +764,6 @@ export function createBenchAuthorityStore(
   const runCritical = <T>(
     lease: BenchLeaseToken,
     fn: (tx: AuthorityTx) => Promise<T>,
-    /** 이 구역의 보유 표식 — 종료 시 끈다(ALS 상속이 종료 후에도 남는 것을 무효화한다). */
-    holding: { live: boolean },
   ): Promise<T> => {
     const path = pathFor(lease.identity.benchId)
     const tmpPath = tmpFor(lease.identity.benchId, lease.ownerToken)
@@ -1035,21 +1030,28 @@ export function createBenchAuthorityStore(
       let fd: number | undefined
       let renamed = false
       try {
-        const created = fs.mkdirRecursive(opts.authorityDir, AUTHORITY_DIR_MODE)
-        // **생성은 부모를 변경한다**(Codex PR#266 2R P1). 그 부모를 fsync 하지 않으면 전원 손실 시
+        fs.mkdirRecursive(opts.authorityDir, AUTHORITY_DIR_MODE)
+        // **디렉터리 생성은 부모를 변경한다**(Codex PR#266 2R P1). 그 부모를 fsync 하지 않으면 전원 손실 시
         // `durability:'file+dir'` 로 `committed` 를 답했는데도 **권위 디렉터리 자체가 사라질 수 있다** —
         // 파일과 디렉터리는 내구화했지만 그것을 담은 엔트리는 아직 저널에 없기 때문이다.
-        // 커밋 **전** 단계로 두는 이유: 디렉터리는 우리가 그것에 의존하기 시작하기 전에 내구해야 하고,
-        // 여기서 실패하면 디스크 무변이라 `io-failure` 가 정확한 종별이다(post-commit 로 밀면 아니다).
-        // 첫 CAS 에서만 발생한다(`created === undefined` 면 이미 있었다는 뜻).
-        if (created !== undefined && opts.durability === 'file+dir') {
-          const parent = dirname(created)
-          const parentFd = fs.openDir(parent)
+        //
+        // ⚠ 판정 근거가 **「이번에 만들었는가」이면 안 된다**(Codex 3R P1): 만들었는데 부모 fsync 가
+        // **실패하면** 디렉터리는 디스크에 남고, 다음 CAS 는 `mkdirRecursive` 가 「이미 있음」을 답해
+        // 이 블록을 건너뛴 채 `committed` 를 반환한다 — 부모가 여전히 미내구인데 `file+dir` 을 주장한다.
+        // 그래서 **성공할 때까지 재시도**하는 store-지역 플래그를 쓴다. 플래그가 `false` 로 시작하므로
+        // **재시작 후 첫 CAS 도** 반드시 한 번 동기화한다(프로세스 교체로 구멍이 남지 않는다).
+        //
+        // 커밋 **전** 단계인 이유: 디렉터리는 우리가 의존을 시작하기 전에 내구해야 하고, 여기서 실패하면
+        // 디스크 무변이라 `io-failure{step:'mkdir'}` 가 정확하다(post-commit 로 밀면 「revision 전진」이라는
+        // 거짓 증언이 된다).
+        if (opts.durability === 'file+dir' && !parentDurable) {
+          const parentFd = fs.openDir(dirname(opts.authorityDir))
           try {
             fs.fsync(parentFd)
           } finally {
             fs.close(parentFd)
           }
+          parentDurable = true // 성공했을 때만 — 실패하면 catch 로 나가고 다음 CAS 가 다시 한다.
         }
         step = 'open-tmp'
         fd = fs.openExclusive(tmpPath, AUTHORITY_FILE_MODE)
@@ -1129,12 +1131,9 @@ export function createBenchAuthorityStore(
 
     const tx: AuthorityTx = { readFresh, compareAndSwap }
     return (async () => {
-      holding.live = true
       try {
         return await fn(tx)
       } finally {
-        // **보유 해제** — 이후 이 컨텍스트를 상속한 분리 작업은 재진입으로 오판되지 않는다(Codex 2R P1).
-        holding.live = false
         // 임계 구역을 벗어난 tx 는 죽는다 — 유출된 핸들로 뮤텍스·리스 재검증 창 **밖에서** CAS 가 도는
         // 것을 막는 유일한 수단이다(계획 정정 94). 새 실패 종별을 만들지 않고 `released` 를 재사용한다.
         live = false
@@ -1158,27 +1157,6 @@ export function createBenchAuthorityStore(
 
       const key = mutexKey(opts.authorityDir, lease.identity.benchId)
 
-      // **진짜 재진입만 즉시 실패한다**(자체 적대 리뷰 DYN-06 + Codex PR#266 P1 · 둘 다 실측 확정).
-      // 같은 bench 로 **중첩** 호출하면 안쪽이 바깥의 꼬리를 기다리고 바깥은 안쪽의 완료를 기다려
-      // **영구 교착**하고, 그 고착은 RED 가 아니라 **hang** 이다(Promise.race 700ms 실측). 이 레포는 같은
-      // 실패 양식을 `writeAllBytes` 진행 보장에서 이미 가드로 승격했고, 형제 `lock-order.ts` 도 서열 위반을
-      // fail-fast throw 로 처리한다 — 프로그래밍 오류는 판별 유니온이 아니라 throw 다.
-      //
-      // ⚠ 판정 근거는 **이 비동기 컨텍스트의 보유 집합**이다(모듈 전역 「실행 중」 집합이 아니다) — 후자로
-      // 하면 첫 구역이 `await` 하는 사이 도착한 **무관한 동시 호출**까지 throw 해 정당한 동시성이 죽는다.
-      const held = HELD_KEYS.getStore()
-      // **살아있는 보유만** 재진입이다 — 종료된 구역에서 상속된 항목은 무효다(Codex 2R P1).
-      if (held?.get(key)?.live === true) {
-        throw new Error(
-          `withAuthority 재진입(같은 bench) — 교착이므로 즉시 실패한다. 한 임계 구역 안에서 ` +
-            `tx 를 쓰고, 새 임계 구역이 필요하면 바깥 호출이 끝난 뒤에 열 것: ${key}`,
-        )
-      }
-      /** 이 구역의 보유 표식 — `finally` 가 끈다(분리 작업으로 상속돼도 무효화된다). */
-      const holding = { live: false }
-      /** 이 구역 안에서 보이는 보유 지도 — 바깥 것을 상속해 **다단 중첩**도 잡는다. */
-      const nextHeld = new Map<string, { live: boolean }>([...(held ?? []), [key, holding]])
-
       const prev = MUTEX_TAILS.get(key) ?? Promise.resolve()
       // 앞 임계 구역의 성패와 무관하게 다음이 진입한다. ⚠ **그 성질을 만드는 것은 아래 `tail` 이다**
       // (자체 적대 리뷰 F7·DYN-10). 원안은 `prev.then(fn, fn)` 으로 핸들러를 둘 두고 그것을 근거로
@@ -1188,7 +1166,7 @@ export function createBenchAuthorityStore(
       // 「사문을 보험으로 남기라」는 반론(꼬리를 `run` 으로 바꾸는 미래 편집 대비)은 **실측으로 기각**했다 —
       // 그 편집을 실제로 넣으면 「fn 이 throw 해도 다음 호출이 진입한다」·「중첩 실패 후 재진입」 **2행이
       // RED** 다. 보험은 사문이 아니라 그 행동 테스트가 들고 있다.
-      const run = prev.then(() => HELD_KEYS.run(nextHeld, () => runCritical(lease, fn, holding)))
+      const run = prev.then(() => runCritical(lease, fn))
       const tail = run.then(
         () => undefined,
         () => undefined,

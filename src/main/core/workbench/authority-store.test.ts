@@ -71,9 +71,7 @@ const setup = async (
   durability: 'file+dir' | 'file-only' = 'file-only',
 ): Promise<Fixture> => {
   const benchId = newUlid()
-  // 권위 디렉터리를 **선존재**로 둔다 — 생성 경로(부모 fsync 동반 · Codex 2R P1-D)는 전용 행이 보고,
-  // 나머지 행들이 생성 여부에 결합되지 않게 한다(post-commit `skip` 오프셋이 흔들린다).
-  const fs = createFakeDurableFs({ initial, initialDirs: [AUTHORITY_DIR] })
+  const fs = createFakeDurableFs({ initial })
   const lease = await mintLease(benchId)
   const store = createBenchAuthorityStore(fs, {
     authorityDir: AUTHORITY_DIR,
@@ -791,11 +789,13 @@ describe('post-commit 실패 → commit-uncertain (계획 정정 77)', () => {
    * PR2b 가 **실행하는** 단계의 실패는 PR2b 가 **분류**해야 한다. 이 행이 없으면 throw·삼킴·
    * `commit-uncertain` 세 구현이 전부 GREEN 이다(4렌즈 수렴 지적).
    */
+  // `skip` = 같은 프리미티브를 앞서 쓰는 차례를 통과시키는 횟수.
+  // ⚠ `file+dir` 의 **첫 CAS** 는 부모 디렉터리 fsync 를 먼저 한다(Codex 3R P1-1) — 그래서 각각 +1 이다:
+  // openDir(부모) · fsync(부모, 파일) · close(부모, tmp).
   const postCommit: readonly (readonly [FakeOp, string, number])[] = [
-    // `skip` = 같은 프리미티브의 **파일 차례**를 통과시키는 횟수(fsync-file · close-tmp).
-    ['openDir', 'open-dir', 0],
-    ['fsync', 'fsync-dir', 1],
-    ['close', 'close-dir', 1],
+    ['openDir', 'open-dir', 1],
+    ['fsync', 'fsync-dir', 2],
+    ['close', 'close-dir', 2],
   ]
 
   it.each(postCommit)(
@@ -1156,34 +1156,44 @@ describe('내구 쓰기 권한 인자 — 0700/0600 이 전달된다(뮤턴트 M
   })
 })
 
-describe('재진입은 즉시 실패한다 — hang 이 아니라 throw(DYN-06)', () => {
-  /**
-   * 실측: 가드가 없으면 안쪽 호출이 바깥의 꼬리를 기다리고 바깥은 안쪽을 기다려 **영구 교착**이며,
-   * 그것은 RED 가 아니라 hang 이다(Promise.race 700ms 로 확인). 이 레포는 같은 실패 양식을
-   * `writeAllBytes` 진행 보장에서 이미 가드로 승격했다.
-   */
-  it('같은 bench 로 중첩하면 throw 한다', async () => {
+/**
+ * **중첩·분리 호출은 전부 큐잉된다 — 재진입 가드를 철회했다**(Codex PR#266 3R P1-2).
+ *
+ * DYN-06 이 찾은 「같은 bench 중첩 `await` = 영구 hang」은 사실이고, 그것을 throw 로 바꾸는 가드를 넣었다가
+ * **되돌렸다**. 가드가 거짓 양성 3종을 연달아 냈기 때문이다 — ⓐ첫 구역이 `await` 중일 때 도착한 무관한
+ * 호출 ⓑ구역 종료 후에도 상속된 ALS 컨텍스트 ⓒ`finally` 보다 먼저 도는 분리 마이크로태스크
+ * (실측: `queueMicrotask` 후속이 해제 이전에 실행된다). 거짓 양성은 **정당한 fire-and-forget 후속을
+ * unhandled rejection 으로 만들어 프로세스를 죽일 수 있고**, 참 양성은 개발 시점에 즉시 드러나는 hang 이다.
+ * 비용이 비대칭이라 **항상 큐잉**으로 되돌렸고, 중첩 `await` 위험은 `withAuthority` 계약 주석에 명시했다.
+ */
+describe('중첩·분리 호출은 전부 큐잉된다(Codex 3R P1-2)', () => {
+  it('queueMicrotask 로 띄운 분리 후속이 throw 하지 않는다(3R P1-2 의 정확한 시나리오)', async () => {
     const fx = await setup()
-    await expect(
-      fx.store.withAuthority(fx.lease, async () => {
-        await fx.store.withAuthority(fx.lease, () => Promise.resolve('안쪽'))
-        return '바깥'
-      }),
-    ).rejects.toThrow(/재진입/)
+    let followUp: Promise<string> | undefined
+    await fx.store.withAuthority(fx.lease, () => {
+      // `finally` 가 돌기 **전에** 실행되는 마이크로태스크 — 가드가 있으면 여기서 unhandled rejection.
+      queueMicrotask(() => {
+        followUp = fx.store.withAuthority(fx.lease, () => Promise.resolve('후속'))
+      })
+      return Promise.resolve('바깥')
+    })
+    await expect(followUp).resolves.toBe('후속')
   })
 
-  it('중첩 실패 후에도 다음 호출이 정상 진입한다(가드가 키를 누수하지 않는다)', async () => {
+  it('setTimeout 으로 띄운 분리 후속도 진입한다', async () => {
     const fx = await setup()
-    await expect(
-      fx.store.withAuthority(fx.lease, () =>
-        fx.store.withAuthority(fx.lease, () => Promise.resolve(1)),
-      ),
-    ).rejects.toThrow(/재진입/)
-    const ok = await fx.store.withAuthority(fx.lease, () => Promise.resolve('진입함'))
-    expect(ok).toBe('진입함')
+    const later = await new Promise<string>((resolve) => {
+      void fx.store.withAuthority(fx.lease, () => {
+        setTimeout(() => {
+          resolve(fx.store.withAuthority(fx.lease, () => Promise.resolve('나중')))
+        }, 5)
+        return Promise.resolve('바깥')
+      })
+    })
+    expect(later).toBe('나중')
   })
 
-  it('다른 bench 는 중첩해도 진입한다(가드가 과차단하지 않는다)', async () => {
+  it('다른 bench 중첩은 진입한다(뮤텍스 키가 분리돼 있다)', async () => {
     const a = await setup()
     const otherLease = await mintLease(newUlid())
     const r = await a.store.withAuthority(a.lease, () =>
@@ -1460,30 +1470,10 @@ describe('늦게 도착한 동시 호출은 큐잉된다(Codex P1-1 · CodeRabbi
       return 'A'
     })
     await new Promise((r) => setTimeout(r, 10))
-    // A 의 콜백이 이미 진입한 상태 — B 는 **기다렸다가** 들어가야 한다.
     const b = await fx.store.withAuthority(fx.lease, () => Promise.resolve('B'))
     expect(b).toBe('B')
     expect(firstDone).toBe(true) // B 가 A 를 앞지르지 않았다.
     expect(await a).toBe('A')
-  })
-
-  it('중첩(진짜 재진입)은 여전히 throw 한다 — 가드가 무력화되지 않았다', async () => {
-    const fx = await setup()
-    await expect(
-      fx.store.withAuthority(fx.lease, () =>
-        fx.store.withAuthority(fx.lease, () => Promise.resolve(1)),
-      ),
-    ).rejects.toThrow(/재진입/)
-  })
-
-  it('중첩이 await 를 건너도 잡힌다(비동기 컨텍스트 상속)', async () => {
-    const fx = await setup()
-    await expect(
-      fx.store.withAuthority(fx.lease, async () => {
-        await new Promise((r) => setTimeout(r, 5))
-        return fx.store.withAuthority(fx.lease, () => Promise.resolve(2))
-      }),
-    ).rejects.toThrow(/재진입/)
   })
 })
 
@@ -1627,126 +1617,89 @@ describe('읽기 토큰 출처 검증 — 필드를 신뢰하지 않는다(Codex
  * 않으면 전원 손실 시 `durability:'file+dir'` 로 `committed` 를 답했는데도 **권위 디렉터리 자체가 사라진다**
  * — 파일과 디렉터리는 내구화했지만 그것을 담은 엔트리는 아직 저널에 없기 때문이다.
  */
-describe('디렉터리 생성 내구성(Codex 2R P1-D)', () => {
-  const onFreshDir = (
-    durability: 'file+dir' | 'file-only',
-  ): Promise<{ fx: Fixture; r: CasResult }> =>
-    (async () => {
-      const benchId = newUlid()
-      const lease = await mintLease(benchId)
-      // `initialDirs` 를 주지 않는다 = 디렉터리가 없는 첫 CAS.
-      const fs = createFakeDurableFs()
-      const store = createBenchAuthorityStore(fs, {
-        authorityDir: AUTHORITY_DIR,
-        durability,
-        now: () => AT,
-      })
-      const fx: Fixture = {
-        fs,
-        lease,
-        benchId,
-        path: join(AUTHORITY_DIR, `${benchId}.json`),
-        tmpPath: join(AUTHORITY_DIR, `${benchId}.json.${lease.ownerToken}.tmp`),
-        store,
-      }
-      const r = await store.withAuthority(lease, async (tx) => {
-        const read = tx.readFresh()
-        if (read.kind !== 'absent') throw new Error('absent 예상')
-        return tx.compareAndSwap(read.read, draft(benchId))
-      })
-      return { fx, r }
-    })()
+describe('디렉터리 생성 내구성(Codex 2R P1-D · 3R P1-1)', () => {
+  interface Fresh {
+    fs: FakeDurableFs
+    store: ReturnType<typeof createBenchAuthorityStore>
+    lease: BenchLeaseToken
+    benchId: string
+  }
 
-  it('file+dir 에서 새로 만들면 부모 디렉터리도 fsync 한다', async () => {
-    const { fx, r } = await onFreshDir('file+dir')
-    expect(r.kind).toBe('committed')
-    // 부모 fsync 는 **tmp 를 열기 전**에 온다 — 디렉터리는 의존이 시작되기 전에 내구해야 한다.
-    const steps = fx.fs.steps
-    const mkdirAt = steps.indexOf('mkdirRecursive')
-    const openTmpAt = steps.indexOf('openExclusive')
-    const parentDirAt = steps.indexOf('openDir')
-    expect(mkdirAt).toBeLessThan(parentDirAt)
-    expect(parentDirAt).toBeLessThan(openTmpAt)
-    // 인자가 **부모**여야 한다(권위 디렉터리 자신이 아니다).
-    const firstOpenDir = fx.fs.calls.find((c) => c.op === 'openDir')
-    expect(firstOpenDir?.args).toEqual([dirname(AUTHORITY_DIR)])
-    // 권위 디렉터리 fsync 는 rename 뒤에 따로 온다 = openDir 총 2회.
-    expect(fx.fs.countOf('openDir')).toBe(2)
-    expect(fx.fs.openFdCount()).toBe(0)
-  })
-
-  it('두 번째 CAS 는 부모를 다시 fsync 하지 않는다(생성이 없으므로)', async () => {
-    const { fx } = await onFreshDir('file+dir')
-    const before = fx.fs.countOf('openDir')
-    await fx.store.withAuthority(fx.lease, async (tx) => {
-      const read = tx.readFresh()
-      if (read.kind !== 'found') throw new Error('found 예상')
-      return tx.compareAndSwap(read.read, draft(fx.benchId, { sourceGeneration: 2 }))
-    })
-    // 권위 디렉터리 fsync 1회만 늘어난다(부모는 이미 내구).
-    expect(fx.fs.countOf('openDir')).toBe(before + 1)
-  })
-
-  it('file-only 면 부모 fsync 도 하지 않는다(등급이 유일 권위)', async () => {
-    const { fx, r } = await onFreshDir('file-only')
-    expect(r.kind).toBe('committed')
-    expect(fx.fs.countOf('openDir')).toBe(0)
-  })
-
-  it('부모 fsync 실패는 커밋 전이라 io-failure 다(디스크 무변이)', async () => {
+  const freshStore = async (durability: 'file+dir' | 'file-only'): Promise<Fresh> => {
     const benchId = newUlid()
     const lease = await mintLease(benchId)
     const fs = createFakeDurableFs()
-    fs.failNext('fsync', new Error('주입: 부모 fsync'))
-    const store = createBenchAuthorityStore(fs, {
-      authorityDir: AUTHORITY_DIR,
-      durability: 'file+dir',
-      now: () => AT,
-    })
-    const r = await store.withAuthority(lease, async (tx) => {
+    return {
+      fs,
+      lease,
+      benchId,
+      store: createBenchAuthorityStore(fs, {
+        authorityDir: AUTHORITY_DIR,
+        durability,
+        now: () => AT,
+      }),
+    }
+  }
+
+  const commitOn = (h: Fresh, gen = 1): Promise<CasResult> =>
+    h.store.withAuthority(h.lease, async (tx) => {
       const read = tx.readFresh()
-      if (read.kind !== 'absent') throw new Error('absent 예상')
-      return tx.compareAndSwap(read.read, draft(benchId))
+      if (read.kind !== 'absent' && read.kind !== 'found') throw new Error('예상 밖')
+      return tx.compareAndSwap(read.read, draft(h.benchId, { sourceGeneration: gen }))
     })
+
+  it('file+dir 첫 CAS 는 부모 디렉터리를 tmp 열기 전에 fsync 한다', async () => {
+    const h = await freshStore('file+dir')
+    expect((await commitOn(h)).kind).toBe('committed')
+    const steps = h.fs.steps
+    expect(steps.indexOf('mkdirRecursive')).toBeLessThan(steps.indexOf('openDir'))
+    expect(steps.indexOf('openDir')).toBeLessThan(steps.indexOf('openExclusive'))
+    expect(h.fs.calls.find((c) => c.op === 'openDir')?.args).toEqual([dirname(AUTHORITY_DIR)])
+    expect(h.fs.countOf('openDir')).toBe(2) // 부모 + 권위 디렉터리
+    expect(h.fs.openFdCount()).toBe(0)
+  })
+
+  it('두 번째 CAS 는 부모를 다시 fsync 하지 않는다', async () => {
+    const h = await freshStore('file+dir')
+    await commitOn(h, 1)
+    const before = h.fs.countOf('openDir')
+    await commitOn(h, 2)
+    expect(h.fs.countOf('openDir')).toBe(before + 1) // 권위 디렉터리만
+  })
+
+  it('file-only 면 부모 fsync 를 하지 않는다(등급이 유일 권위)', async () => {
+    const h = await freshStore('file-only')
+    expect((await commitOn(h)).kind).toBe('committed')
+    expect(h.fs.countOf('openDir')).toBe(0)
+  })
+
+  it('부모 fsync 실패는 커밋 전이라 io-failure{mkdir} 다(디스크 무변이)', async () => {
+    const h = await freshStore('file+dir')
+    h.fs.failNext('fsync', new Error('주입: 부모 fsync'))
+    const r = await commitOn(h)
     expect(r.kind).toBe('io-failure')
     expect(r.kind === 'io-failure' && r.step).toBe('mkdir')
-    expect(fs.countOf('rename')).toBe(0)
-    expect(fs.openFdCount()).toBe(0)
-  })
-})
-
-/**
- * **2R P1-A — 종료된 임계 구역의 ALS 상속은 무효다.**
- *
- * 콜백이 분리된 비동기 작업(타이머·큐잉된 재시도)을 띄우고 반환하면 `AsyncLocalStorage` 는 임계 구역이
- * 끝난 뒤에도 그 작업에 컨텍스트를 전파한다. 보유를 값으로만 표현하면 그 작업의 **정당한 후속 호출**이
- * 거짓 재진입으로 throw 된다.
- */
-describe('종료된 구역의 컨텍스트 상속은 재진입이 아니다(Codex 2R P1-A)', () => {
-  it('콜백이 띄운 분리 작업이 나중에 호출해도 진입한다', async () => {
-    const fx = await setup()
-    let detached: Promise<string> | undefined
-    await fx.store.withAuthority(fx.lease, () => {
-      // 임계 구역 **안에서** 분리 작업을 예약하고 기다리지 않는다 — ALS 컨텍스트를 상속한다.
-      detached = new Promise<string>((resolve) => {
-        setTimeout(() => {
-          resolve(fx.store.withAuthority(fx.lease, () => Promise.resolve('후속')))
-        }, 5)
-      })
-      return Promise.resolve('바깥')
-    })
-    // 바깥 구역이 끝난 뒤 실행되므로 재진입이 아니다.
-    await expect(detached).resolves.toBe('후속')
+    expect(h.fs.countOf('rename')).toBe(0)
+    expect(h.fs.openFdCount()).toBe(0)
   })
 
-  it('여전히 살아있는 구역 안에서의 호출은 throw 한다(가드 유지)', async () => {
-    const fx = await setup()
-    await expect(
-      fx.store.withAuthority(fx.lease, async () => {
-        await new Promise((r) => setTimeout(r, 5))
-        return fx.store.withAuthority(fx.lease, () => Promise.resolve(1))
-      }),
-    ).rejects.toThrow(/재진입/)
+  /**
+   * **3R P1-1**: 판정이 「이번에 만들었는가」이면 생성 성공 + 부모 fsync 실패 조합에서 디렉터리는 남고,
+   * 다음 CAS 는 「이미 있음」을 보고 건너뛴 채 `committed{file+dir}` 을 반환한다 — 부모가 미내구인데
+   * `file+dir` 을 주장한다. store-지역 플래그는 **성공할 때까지** 재시도하므로 그 구멍이 닫힌다.
+   */
+  it('부모 fsync 가 실패하면 다음 CAS 가 다시 시도한다', async () => {
+    const h = await freshStore('file+dir')
+    h.fs.failNext('fsync', new Error('주입: 첫 시도만'))
+    expect((await commitOn(h, 1)).kind).toBe('io-failure')
+
+    const r = await commitOn(h, 2)
+    expect(r.kind).toBe('committed')
+    // 재시도가 실제로 **부모**를 향했다 — 첫 CAS 1회 + 둘째 CAS 1회.
+    const parentSyncs = h.fs.calls.filter(
+      (c) => c.op === 'openDir' && c.args[0] === dirname(AUTHORITY_DIR),
+    )
+    expect(parentSyncs).toHaveLength(2)
   })
 })
 
@@ -1760,7 +1713,7 @@ describe('store 옵션은 생성 시점 스냅샷이다(Codex 2R P1-C)', () => {
   it('생성 후 opts 를 바꿔도 경로·등급이 따라 바뀌지 않는다', async () => {
     const benchId = newUlid()
     const lease = await mintLease(benchId)
-    const fs = createFakeDurableFs({ initialDirs: [AUTHORITY_DIR] })
+    const fs = createFakeDurableFs()
     const mutable = {
       authorityDir: AUTHORITY_DIR,
       durability: 'file-only' as const,
