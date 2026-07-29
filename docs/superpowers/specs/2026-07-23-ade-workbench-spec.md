@@ -681,6 +681,16 @@ export interface GitRepo {
   그러지 않으면 취소 후에도 백오프가 마저 도는 구간이 남는다(CodeRabbit PR#268).
 - **git 능력 프로브(부팅 1회)**: `merge-tree --write-tree`(git ≥2.38) 미지원이면 **Workbench 통합 기능만
   fail-closed 비활성**. 두 번째 구현 경로(squash 폴백)를 만들지 않는다. 실측: 컨테이너 git 2.39.5 ✅.
+  **결과는 3분류다**(PR3a · Codex PR#268): `supported` / `unsupported`(= **옵션 미인식** 증거 — pre-2.38 의
+  `unknown rev --write-tree` · 구형 usage · exit 0 인데 OID 아닌 에코) / `indeterminate`(그 외 실패).
+  **부팅 배선 규범**: `unsupported` 는 영구 비활성(버전 증거) · **`indeterminate` 는 비활성하되
+  `ensureRepo`·첫 커밋 이후 재프로브**한다 — 프로브가 `HEAD` 를 쓰므로 **커밋 없는 레포**에서는 최신 git
+  이어도 실패하고, 그것을 영구 비활성으로 굳히면 재시작 없이 되살릴 수 없다.
+- **열거의 성공 판정은 종료코드만으로 하지 않는다**(PR3a · Codex PR#268 P1 · 2면 실측): `for-each-ref` 는
+  손상된 loose ref 를 **exit 0 인 채 목록에서 빼고** `warning: ignoring broken ref …` 만 낸다. 복구 판정이
+  **부재를 「발행되지 않았다」의 증거**로 쓰므로 그대로 두면 손상된 결과 ref 가 포기 적격이 된다 →
+  손상 경고는 **fail-closed**. 단 경고는 **질의 접두 안에 손상이 있을 때만** 나므로 무관한 단일 ref 조회까지
+  막지는 않는다(과잉 차단 시 손상 하나가 레포 전 연산을 멈춘다).
 - `update-ref --stdin` 사용 시 **`--batch-updates` 금지**(CAS 거부에도 exit 0 — git 2.54 실측).
   ⚠ 그 옵션은 **배포 런타임 2.39.5·2.30.2 에는 존재조차 하지 않는다**(exit 129). 발행은 **단발
   `update-ref <ref> <new> <old>`** 이고 `<old>` 빈 문자열이 create-if-absent 다(40×0 은 SHA-256 레포에서

@@ -195,6 +195,43 @@ describe('T11/§3-T23 — listRefs 열거와 D/F 판정(실 git)', () => {
     expect(bare.status).toBe('failed')
   })
 
+  /**
+   * **Codex PR#268 P1**(2면 실측 win32 2.54 / linux 2.39.5): 손상된 loose ref 가 접두 아래 있으면
+   * `for-each-ref` 는 **exit 0 을 내면서 그 ref 를 목록에서 빼고** stderr 에 경고만 남긴다.
+   * 종료코드만 보는 구현은 「정상 열거 · 그 ref 없음」으로 읽는데, 소비자는 **부재를 「발행되지 않았다」의
+   * 증거**로 쓰므로 손상된 published 결과 ref 가 포기 적격으로 오판된다(fail-open).
+   */
+  it('손상된 ref 가 섞이면 exit 0 이어도 열거는 fail-closed 다', async () => {
+    const r = initRepo(join(mkTmp(), 'repo'))
+    const c = git(r, 'rev-parse', 'HEAD')
+    const repo = createGitRepo(r, execRunner)
+    await repo.casUpdateRef('refs/fleet/integrated/BK/GOOD', c, null)
+
+    const broken = join(r, '.git', 'refs', 'fleet', 'integrated', 'BK', 'BAD')
+    mkdirSync(dirname(broken), { recursive: true })
+    writeFileSync(broken, 'not-an-oid\n')
+
+    // 대조군: git 자신은 성공을 자칭한다(경고만 낸다).
+    const raw = execFileSync('git', ['for-each-ref', 'refs/fleet/integrated/BK'], {
+      cwd: r,
+      encoding: 'utf8',
+    })
+    expect(raw).not.toContain('BAD')
+
+    const listed = await repo.listRefs('refs/fleet/integrated/BK')
+    expect(listed.status).toBe('failed')
+    expect(listed.status === 'failed' && listed.stderr).toMatch(/broken ref/i)
+
+    // 같은 근거가 **손상 ref 자신의 재조회**에도 걸린다 — 「없다」가 아니라 「못 봤다」로 답해야 한다.
+    expect((await repo.refExists('refs/fleet/integrated/BK/BAD')).status).toBe('failed')
+    // ⚠ 반면 **손상과 무관한 단일 ref** 조회는 정상이다(경고는 질의 접두 안에 손상이 있을 때만 난다) —
+    //   과잉 차단하면 손상 하나가 그 레포의 전 연산을 멈춘다. 범위를 정직하게 적어 둔다.
+    expect(await repo.refExists('refs/fleet/integrated/BK/GOOD')).toEqual({
+      status: 'ok',
+      exists: true,
+    })
+  })
+
   it('결과가 없으면 빈 목록이고, 레포가 아니면 fail-closed(빈 배열로 위장하지 않는다)', async () => {
     const base = mkTmp()
     const r = initRepo(join(base, 'repo'))

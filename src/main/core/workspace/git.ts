@@ -241,6 +241,17 @@ export const REF_LOCK_BACKOFF_MS: readonly number[] = Object.freeze([10, 20, 40]
  */
 const REF_LOCK_RE = /Unable to create '[^']*\.lock': File exists|Another git process/i
 
+/**
+ * **열거가 조용히 불완전해지는 유일한 경로**(Codex PR#268 P1 · 2면 실측 win32 2.54 / linux 2.39.5).
+ *
+ * 손상된 loose ref(내용이 OID 가 아님·잘림·빈 파일·dangling)가 접두 아래 있으면 `for-each-ref` 는
+ * **exit 0 을 내면서** 그 ref 를 목록에서 **빼고** stderr 에 `warning: ignoring broken ref …` 만 남긴다.
+ * 종료코드만 보면 「정상적으로 열거했는데 그 ref 는 없다」로 읽히는데, 이 표면의 소비자(§W-7 복구 판정 ·
+ * ref-앵커 재조정)는 **부재를 「발행되지 않았다」의 증거로 쓴다** — 즉 손상된 published 결과 ref 가
+ * 포기 적격으로 오판된다(fail-open). 열거가 스스로 불완전을 선언한 이상 **fail-closed** 가 정답이다.
+ */
+const BROKEN_REF_RE = /ignoring broken ref|broken ref /i
+
 const realSleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms)
@@ -294,7 +305,7 @@ export function createGitRepo(
   /** ref 하나의 현재 값을 **열거로** 재조회한다(packed 공존에서 `rev-parse` 가 오답하므로). */
   const readRefExact = async (ref: string): Promise<string | null | GitFailure> => {
     const r = await run(['for-each-ref', '--format=%(refname)%00%(objectname)', ref])
-    if (r.code !== 0) return failed(r)
+    if (r.code !== 0 || BROKEN_REF_RE.test(r.stderr)) return failed(r)
     for (const line of r.stdout.split(/\r?\n/)) {
       const [name, oid] = line.split('\0')
       if (name === ref && oid !== undefined) return oid.trim()
@@ -345,7 +356,8 @@ export function createGitRepo(
       // `%00` 구분자 — refname 은 공백을 가질 수 없지만 형제 파서(worktree porcelain)가 공백에 물린
       // 전례가 있어 애초에 공백에 의존하지 않는 형식을 쓴다.
       const r = await run(['for-each-ref', '--format=%(refname)%00%(objectname)', prefix])
-      if (r.code !== 0) return failed(r)
+      // 손상 ref 가 있으면 **exit 0 이어도 목록이 불완전**하다(위 `BROKEN_REF_RE` 근거) → fail-closed.
+      if (r.code !== 0 || BROKEN_REF_RE.test(r.stderr)) return failed(r)
       const refs: GitRefEntry[] = []
       for (const line of r.stdout.split(/\r?\n/)) {
         if (line.trim() === '') continue
