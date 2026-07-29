@@ -289,6 +289,37 @@ describe('T10 런처 — 크레덴셜 거부(전부 spawn 0회)', () => {
   })
 })
 
+describe('T10 런처 — spawn 실패', () => {
+  it('spawn 이 던져도 커밋은 이미 소진됐다(같은 근거로 재시도 불가)', async () => {
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    let attempts = 0
+    const failing = (): ChildProcess => {
+      attempts += 1
+      throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    }
+    const launch = createBenchLauncher({
+      spawn: failing,
+      commit,
+      expected: expectedFor(benchId, sourceGeneration),
+    })
+
+    // 오류는 **전파**한다 — 런처는 크레덴셜 판정자이지 spawn 오류 처리자가 아니다.
+    // 실패 후 활동 종결 CAS 는 §W-4 가 호출자에게 지운 책임이고 배선은 PR7 T30b 다.
+    expect(() => launch('없는명령', [], {})).toThrow(/ENOENT/)
+    expect(attempts).toBe(1)
+
+    // 소진을 spawn **이후**로 미루면 이 행이 GREEN 이 되어 「한 커밋 = 한 자식」이 무한 재시도로 샌다.
+    const retry = createBenchLauncher({
+      spawn: failing,
+      commit,
+      expected: expectedFor(benchId, sourceGeneration),
+    })('없는명령', [], {})
+
+    expect(retry.kind === 'refused' && retry.reason).toBe('commit-spent')
+    expect(attempts).toBe(1)
+  })
+})
+
 describe('T10 런처 — 스냅숏 규율', () => {
   it('팩토리 생성 뒤 deps 를 바꿔도 대조가 무력화되지 않는다', async () => {
     const { commit, benchId, sourceGeneration } = await commitFor('running')
