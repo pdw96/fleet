@@ -220,7 +220,10 @@ describe('T11/§3-T23 — listRefs 열거와 D/F 판정(실 git)', () => {
 
     const listed = await repo.listRefs('refs/fleet/integrated/BK')
     expect(listed.status).toBe('failed')
-    expect(listed.status === 'failed' && listed.stderr).toMatch(/broken ref/i)
+    // ⚠ **git 원문을 단언하지 않는다**(CodeRabbit PR#268): `warning: ignoring broken ref …` 는 번역 대상이라
+    //   그 문면을 보면 이 테스트 자신이 **비영어 로케일에서 실패**한다 — 방금 세운 로케일 독립 규범과
+    //   어긋난다. 단언 대상은 **구현이 붙이는 라벨**이다(원문은 진단용으로 보존만 한다).
+    expect(listed.status === 'failed' && listed.stderr).toMatch(/열거 불완전/)
 
     // 같은 근거가 **손상 ref 자신의 재조회**에도 걸린다 — 「없다」가 아니라 「못 봤다」로 답해야 한다.
     expect((await repo.refExists('refs/fleet/integrated/BK/BAD')).status).toBe('failed')
