@@ -608,22 +608,60 @@ export function createBenchAuthorityStore(fs: DurableFs, opts?: {...}): BenchAut
 기존 `Workspace`(작업 트리 편집 · #80 전용)는 **한 줄도 건드리지 않는다**(C12). 같은 파일에 레포 단위
 read/ref 연산만 담은 신규 표면을 추가한다.
 
+> **⚠ 아래 코드펜스는 #251 PR3a 착수 전 4면 git 실측으로 개정됐다**(계획 정정 112~121). 개정 전 문면은
+> ⓐ실패 채널을 throw 로 두어 같은 절의 「실패를 값으로 반환」 관용구와 모순이었고 ⓑ**열거 메서드가 없어**
+> §W-7 의 확정 판정식(`for-each-ref` 열거)을 이 표면으로 구현할 수 없었으며 ⓒ`isAncestor` 를 boolean 으로
+> 접어 `merge-base --is-ancestor` 의 **128(해소 불가 OID)** 을 「비조상」으로 오분류했다.
+
 ```ts
+/** 실패를 값으로 답하는 공통 꼬리. */
+type GitFailure = { status: 'failed'; stderr: string; code: number | null }
+
+export type GitRefListResult = { status: 'ok'; refs: { ref: string; oid: string }[] } | GitFailure
+export type RefCasResult =
+  | { status: 'updated' }
+  /** `actual` = **실패 후 열거로 재조회한 디스크 값**. 「이미 존재」와 「기대값 불일치」가 둘 다 exit 128 이고
+   *  문면은 버전마다 달라질 수 있어 **문자열로 분류하지 않는다**(그 방식이 `LOCK_RE` 계열의 재발이다). */
+  | { status: 'rejected'; actual: string | null }
+  | GitFailure
+export type MergeTreeResult =
+  | { status: 'clean'; tree: string }
+  | { status: 'conflict'; tree: string; conflicts: string[] }
+  | GitFailure
+
 export interface GitRepo {
-  commonGitDir(): Promise<string>                         // rev-parse --path-format=absolute --git-common-dir
-  listWorktrees(): Promise<WorktreeEntry[]>               // worktree list --porcelain
-  addNamedWorktree(dir: string, branch: string, base: string): Promise<void>  // worktree add -b
-  addDetachedWorktreeAt(dir: string, base: string): Promise<void>            // worktree add --detach (태스크용)
-  removeWorktreeAt(dir: string, force: boolean): Promise<void>
-  revParse(rev: string): Promise<string | null>           // rev-parse --verify -q
-  refExists(ref: string): Promise<boolean>
+  commonGitDir(): Promise<GitRepoDirResult>               // rev-parse --path-format=absolute --git-common-dir
+  listWorktrees(): Promise<GitWorktreeListResult>         // worktree list --porcelain
+  /** for-each-ref 열거. **접두는 경로 성분 경계로 매칭**되고 bare 부모는 exact 항목으로 나타난다. */
+  listRefs(prefix: string): Promise<GitRefListResult>
+  addNamedWorktree(dir: string, branch: string, base: string): Promise<GitOpResult>  // worktree add -b
+  addDetachedWorktreeAt(dir: string, base: string): Promise<GitOpResult>             // worktree add --detach
+  removeWorktreeAt(dir: string, force: boolean): Promise<GitOpResult>
+  revParse(rev: string): Promise<{ status: 'ok'; oid: string } | { status: 'absent' } | GitFailure>
+  /** **열거 기반**이다 — `rev-parse --verify` 로 구현하면 win32 packed 공존에서 실존 ref 를 부재로 답한다. */
+  refExists(ref: string): Promise<{ status: 'ok'; exists: boolean } | GitFailure>
   /** 정확 old-OID 조건부 갱신. ff-only(조상 검사)는 CAS 가 아니므로 발행에 쓰지 않는다(15R). */
   casUpdateRef(ref: string, newOid: string, expectedOldOid: string | null): Promise<RefCasResult>
-  mergeTree(base: string, head: string): Promise<MergeTreeResult>   // merge-tree --write-tree
-  commitTree(tree: string, parents: string[], message: string): Promise<string>
-  isAncestor(maybeAncestor: string, descendant: string): Promise<boolean>  // merge-base --is-ancestor
+  mergeTree(base: string, head: string): Promise<MergeTreeResult>   // merge-tree --write-tree --name-only
+  commitTree(tree: string, parents: string[], message: string): Promise<{ status: 'ok'; oid: string } | GitFailure>
+  /** **3값**이다(0/1/128). boolean 으로 접으면 오류가 「미완결」로 조용히 오분류된다(U4 쌍대). */
+  isAncestor(a: string, b: string): Promise<{ status: 'yes' } | { status: 'no' } | GitFailure>
+  /** merge-tree --write-tree 지원 여부(부팅 1회). 미지원이면 통합만 fail-closed 비활성 — 폴백 없음. */
+  probeMergeTree(): Promise<{ supported: boolean }>
 }
 ```
+- **`mergeTree` 판별식은 종료코드가 아니라 stdout 첫 줄**이다(4면 실측): 충돌도 exit 1, **인자 오류도 exit 1**
+  이며 갈리는 것은 stdout 뿐(충돌 = 첫 줄이 트리 OID · 오류 = 빈 문자열). 무관 히스토리는 128.
+  **`--merge-base` 금지** — 배포 런타임 git 2.39.5 에 없는 옵션이다(exit 129).
+- **발행 왕복 검증**: `casUpdateRef` 성공 후 **열거로 재확인**하고 값이 다르면 fail-closed. win32 packed D/F 는
+  git 이 성공을 자칭해도 그 ref 가 해소되지 않는 상태를 만든다.
+- **발행은 `--no-deref` 로 한다**(PR3a · Codex 2R): 기본 `update-ref` 는 symref 를 따라가므로, 대상 자리가
+  dangling symbolic ref 면 create-if-absent 가 **네임스페이스 밖 ref 를 만들고** exit 0 을 내며 왕복 검증까지
+  통과한다(실측). 결과 ref 가 **가변 대상의 별칭**이 되는 것을 구조적으로 막는다.
+- **열거 완전성은 로케일 독립 규칙으로 판정한다**(PR3a · Codex 2R): 손상 경고 문면은 git 의 번역 대상이라
+  영어 매칭은 비영어 로케일에서 빗나간다 → 「exit 0 인데 stderr 가 비어 있지 않다」를 불완전 신호로 쓴다.
+- **`mergeTree` 의 충돌은 exit 1 뿐이다**(PR3a · Codex 2R): 러너는 취소·타임아웃·출력 상한에서 부분 stdout 을
+  보존한 채 `code: null` 을 돌려주므로, 「0 이 아니면 충돌」은 **중단된 연산을 완료된 충돌로** 기록한다.
 - 재사용하는 관용구는 4개로 한정: 실행 seam `GitRunner.run(args,cwd,signal)` · 에러 메시지 템플릿
   (`git.ts:115`) · `resolve(root, stdout.trim())` 파싱 · **실패를 값으로 반환**하는 `integrate` 계약.
 - **태스크 worktree 경로 seam(C10↔C12 해소 · 반증 반영)**:
@@ -635,13 +673,35 @@ export interface GitRepo {
   `(taskId) => join(benchRoot, '.fleet-wt-' + benchId, '.fleet-wt-' + sanitize(taskId))` 를 주입한다
   (`src/main/core/workbench/bench-workspace.ts`). `Workspace` **인터페이스·오케스트레이터는 무변경** —
   `orchestrator.ts:611` 의 `ws.addWorktree(task.id, base)` 호출은 그대로다.
-- **`ok()` 를 신규 연산에 쓰지 않는다**(불변식 G-1). 근거: `lockPath()` 가 **cwd 의 index.lock** 을 해소하는데
-  `worktree add/remove` 는 **공통 gitdir 을 다투므로 오조준 삭제**가 된다(C12 부수). 공통 gitdir 변이 명령은
-  **삭제 금지·지수 백오프 재시도-only**.
+- **`ok()` 를 신규 연산에 쓰지 않는다**(불변식 G-1). ⚠ **근거를 실측으로 정정한다**(계획 정정 114·115):
+  원문은 「`worktree add/remove` 가 공통 gitdir 을 다투므로 오조준 삭제」였으나, **메인 `index.lock` 아래에서
+  `worktree add`·`update-ref`·`merge-tree` 는 4면 전부 exit 0** 이라 그 축에서는 재시도·삭제가 애초에
+  발화하지 않는다. 오조준이 **실재하는 경로는 ref `.lock` 경합**이다 — `update-ref` 가 그때 exit 128 +
+  `Another git process…`(레거시 `LOCK_RE` 매칭)를 내고, `ok()` 는 그 실패를 락 경합으로 분류해
+  `lockPath()` 가 가리키는 **무관한 `index.lock` 을 삭제**한다. 따라서 신규 연산은 **삭제 금지·유계 지수
+  백오프 재시도-only**(그 스코프는 **신규 한정**이며 레거시는 무변경 — 레거시 두 경로는 5종 락 선점
+  전부에서 exit 0 이라 전환의 관측 이득이 0 이다).
 - `signal` 을 전 신규 연산에 관통(현행 `createWorkspace` 는 미전달 — 취소 불가).
+  **착지 형태(PR3a)**: `createGitRepo(root, git, { signal })` — **레포 스코프 주입**이고 내부 `run` 래퍼가
+  전 메서드에 전달한다. 메서드마다 인자를 늘리지 않은 이유는 소비자가 「한 bench 작업이 자기 `GitRepo` 를
+  만들어 쓰는」 형태(PR7 배선)이기 때문이다. **재시도 루프는 대기 전에 `aborted` 를 재검사**한다 —
+  그러지 않으면 취소 후에도 백오프가 마저 도는 구간이 남는다(CodeRabbit PR#268).
 - **git 능력 프로브(부팅 1회)**: `merge-tree --write-tree`(git ≥2.38) 미지원이면 **Workbench 통합 기능만
   fail-closed 비활성**. 두 번째 구현 경로(squash 폴백)를 만들지 않는다. 실측: 컨테이너 git 2.39.5 ✅.
-- `update-ref --stdin` 사용 시 **`--batch-updates` 금지**(CAS 거부에도 exit 0).
+  **결과는 3분류다**(PR3a · Codex PR#268): `supported` / `unsupported`(= **옵션 미인식** 증거 — pre-2.38 의
+  `unknown rev --write-tree` · 구형 usage · exit 0 인데 OID 아닌 에코) / `indeterminate`(그 외 실패).
+  **부팅 배선 규범**: `unsupported` 는 영구 비활성(버전 증거) · **`indeterminate` 는 비활성하되
+  `ensureRepo`·첫 커밋 이후 재프로브**한다 — 프로브가 `HEAD` 를 쓰므로 **커밋 없는 레포**에서는 최신 git
+  이어도 실패하고, 그것을 영구 비활성으로 굳히면 재시작 없이 되살릴 수 없다.
+- **열거의 성공 판정은 종료코드만으로 하지 않는다**(PR3a · Codex PR#268 P1 · 2면 실측): `for-each-ref` 는
+  손상된 loose ref 를 **exit 0 인 채 목록에서 빼고** `warning: ignoring broken ref …` 만 낸다. 복구 판정이
+  **부재를 「발행되지 않았다」의 증거**로 쓰므로 그대로 두면 손상된 결과 ref 가 포기 적격이 된다 →
+  손상 경고는 **fail-closed**. 단 경고는 **질의 접두 안에 손상이 있을 때만** 나므로 무관한 단일 ref 조회까지
+  막지는 않는다(과잉 차단 시 손상 하나가 레포 전 연산을 멈춘다).
+- `update-ref --stdin` 사용 시 **`--batch-updates` 금지**(CAS 거부에도 exit 0 — git 2.54 실측).
+  ⚠ 그 옵션은 **배포 런타임 2.39.5·2.30.2 에는 존재조차 하지 않는다**(exit 129). 발행은 **단발
+  `update-ref <ref> <new> <old>`** 이고 `<old>` 빈 문자열이 create-if-absent 다(40×0 은 SHA-256 레포에서
+  길이가 달라진다).
 - `worktree add -b` 는 브랜치 중복만 exit 255 — **종료 코드값을 계약으로 전제하지 않는다**(stderr 분류 병행).
 
 ### W-7. 통합 트랜잭션 · WAL · 결과 ref
@@ -1130,10 +1190,10 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T21** | **마이그레이션 충돌(계약 6항)** — 두 표면이 같은 bench 에 상충 권위 필드를 만든 상태에서 자동 병합·LWW 없이 `reconciliation-required`. **"기존 로컬 레코드 없음" 전제의 근거 = `StoreState` 무변경(T53)** — 이 근거를 계약 문면에 명시해 6항 미충족 재지적을 차단한다 | verify |
 | **T21c** | **버전 스큐(I12)** — 지원 범위 초과 `schemaVersion` 레코드 → `incompatible-version` 분류 · `delete-record` 거부 · git 호출 0 · area 락 획득 시도 0(구 버전이 신 버전 권위를 삭제하면 RED) | verify |
 | **T22** | 실 fork 2 프로세스 + 파일 배리어 — 리스 배타성이 in-process Map 뮤텍스로는 통과 불가함을 증명 | verify |
-| **T23** | **ref D/F — `<benchId>` bare ref 선점 시 통합 준비가 fail-closed 거부하고 어떤 ref 도 삭제하지 않음 · `<benchId>/<txn>` 2세대 생성 성공**(C1) | verify(실 git) |
-| **T24** | 정확 old-OID CAS — 조상 이동(ff 가능)에도 CAS 거부(ff-only 를 발행에 쓰지 않음 · 15R) | verify(실 git) |
-| **T25** | `merge-tree --write-tree` 충돌이 **값으로 보고**되고 git 상태 변이 0 · sequencer 파일 부재 | verify(실 git) |
-| **T26** | git 능력 프로브 — `merge-tree --write-tree` 미지원 시 통합 기능만 fail-closed 비활성(폴백 경로 부재) | verify |
+| **T23** | **ref D/F — `<benchId>` bare ref 선점 시 통합 준비가 fail-closed 거부하고 어떤 ref 도 삭제하지 않음 · `<benchId>/<txn>` 2세대 생성 성공**(C1). **PR3a 정정**: loose 축만 두면 **git 의 네이티브 거부에 얹혀가는 구현**이 통과한다 — win32 는 packed 상태에서 D/F 를 막지 못하므로(플랫폼 축) ⓐ`pack-refs --all` 을 끼운 실 git 축(win32 에서만 공존 도달 · 그 외 OS 는 거부를 확인하고 종료)과 ⓑ**주입 러너 쌍둥이**(열거는 답하는데 원시 해소는 부재 — 양 OS·전 버전에서 실행)를 **함께** 둔다. 단일 ref 재조회가 **exact** 임도 함께 고정(접두 매칭이면 「자식이 있으니 부모도 있다」로 오답) | verify(실 git + 주입) |
+| **T24** | 정확 old-OID CAS — 조상 이동(ff 가능)에도 CAS 거부(ff-only 를 발행에 쓰지 않음 · 15R). **PR3a 정정**: 거부만 단언하면 **무조건 거부 구현**이 통과하므로 **양성 대조**를 짝으로 둔다 — ⓐ정확 일치 시 성공 + ref 가 실제로 이동 ⓑcreate-if-absent 성공 후 재시도는 `rejected{actual}`. 또한 **존재하지 않는 객체로의 발행**(외부 `gc --prune=now` 경합)이 값으로 실패하고 ref 가 생기지 않음 | verify(실 git) |
+| **T25** | `merge-tree --write-tree` 충돌이 **값으로 보고**되고 git 상태 변이 0 · sequencer 파일 부재. **PR3a 정정 — 음성 통제 필수**: 충돌과 **인자 오류(비커밋 인자·없는 rev)가 같은 exit 1** 이므로(4면 실측) 그 둘이 **다른 종별로 분류됨**을 함께 단언한다. 없으면 「종료코드로 충돌 판정」 구현이 전 행을 통과한다 | verify(실 git) |
+| **T26** | git 능력 프로브 — `merge-tree --write-tree` 미지원 시 통합 기능만 fail-closed 비활성(폴백 경로 부재). **PR3a 정정**: 배포·CI git 이 전부 ≥2.38 이라 실 git 만으로는 미지원 분기가 **영구 미실행**이다 → **주입 러너로 pre-2.38 응답**(`exit 128 · fatal: unknown rev --write-tree`)을 재현하고, 비활성 후 **추가 git 호출 0**을 함께 단언한다. exit 0 이어도 첫 줄이 OID 가 아니면 미지원(구형 git 의 옵션 에코 방어) | verify(주입) |
 | **T27** | 결과=2-parent 커밋 → 소비자 `merge --ff-only` 성립 · bench 전체 스냅숏 포함(증분 아님 — R1 건너뛰고 R2 만 적용해도 무손실) | verify(실 git) |
 | **T28** | 완결 관측 레이스 — base=R 후 새 커밋 N 을 얹어도 **R 조상 도달성**으로 완결 · 강제 이동으로 도달 불가면 완결 **안 함** | verify(실 git) |
 | **T29** | 다중 시도 **형제 그래프** — R1 만 머지 → `partially-integrated` · T2 ff 불가 감지 → 명령 노출 중단 → `stale-attempt` → 재준비 T3 후에만 완결, 완결은 **T3 귀속** | verify(실 git) |
@@ -1169,8 +1229,8 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T54** | 코디네이션 영역 git 내성 — `gc`·`repack`·`prune`·`clean -xffd`·`worktree prune`·`fsck` 후 전량 생존 | verify(실 git) |
 | **T56** | **L-4** — `area.json.lockBackend` 불일치(win32 데스크톱 ↔ linux 컨테이너가 같은 레포) 시 **어떤 획득도 시도하지 않고** fail-closed | verify |
 | **T57** | **R-4** — 레거시 런 활성 중 bench 통합 거부 · 통합 트랜잭션 중 레거시 런 시작 거부(설계 §3.2.1-7) | verify |
-| **T58** | **R-5(검증 수단 재정의 · P1)** — 원안의 "주입 fs 스파이"는 **구현 불가능**하다: `git.ts:1` 이 `rmSync` 를 ESM named import 로 정적 바인딩해 주입 seam 이 없고, §W-5 가 fs mock 을 금지한다. **행동 단언으로 대체** — 실 `index.lock` 을 만든 뒤 공통 gitdir 변이 연산 실행 → 실패 후에도 **락 파일이 디스크에 잔존**(`existsSync` true) + 주입 `GitRunner` 호출 카운트로 지수 백오프 재시도-only 관측. 구조 근거 = `GitRepo` 가 `ok()` 를 호출하지 않음 | verify(실 git) |
-| **T58b** | **레거시 경합 회귀(신설 · 판사 2기 공통 지적)** — `git.ts:191`(`addWorktree`)·`git.ts:233`(`removeWorktree`)은 **현재 `ok()` 를 쓴다.** R-5 전환은 경합 하 **레거시 #80 worktree 생성의 성공률을 바꾼다** — "미배선·무회귀"가 아니다. 스테일 락 존재 하에서 레거시 경로의 동작 변화를 명시 단언하고 롤백 논증을 PR 본문에 남긴다 | verify(실 git) |
+| **T58** | **R-5(검증 수단 재-재정의 · PR3a 실측)** — 원안의 "주입 fs 스파이"는 구현 불가능(`git.ts` 가 `rmSync` 를 정적 바인딩 · fs mock 금지)이었고, 그 대체안(「실 `index.lock` 을 만들고 공통 gitdir 변이 연산을 **실패시킨다**」)도 **실측으로 구성 불가능**이다 — 4면 전부 `worktree add`·`update-ref`·`merge-tree` 가 index.lock 아래에서 **exit 0** 이라 실패가 발생하지 않는다. **성립하는 조작화**: 대상 ref 의 `.lock` 을 선점해 `update-ref` 를 128(`Another git process…` = 레거시 `LOCK_RE` 매칭)로 떨어뜨리고, **무관한 `index.lock` 을 함께 둔 뒤** ⓐ그 파일이 **보존**되고 ⓑ경합 `.lock` 도 삭제되지 않으며 ⓒ재시도가 **유계**임을 단언한다. 백오프 스케줄은 **주입 sleep + 리터럴**로 고정(상수와만 대조하면 「상수를 비움」 뮤턴트가 함께 통과한다). 구조 근거 = `createGitRepo` 본문에 `ok(`·`rmSync`·`existsSync` 0건(자기검사 앵커 동반) | verify(실 git + 주입) |
+| **T58b** | **레거시 무변경 증명(PR3a 실측으로 성격 반전)** — 원문은 「R-5 전환이 레거시 #80 worktree 생성의 **성공률을 바꾼다**」였으나 실측이 반증했다: 레거시가 실제로 쓰는 `worktree add --detach`(`git.ts:304`)·`worktree remove --force`(`:346`)는 **5종 락 선점**(index·packed-refs·HEAD·refs/heads·worktree admin) 전부에서 **exit 0** 이라 `ok()` 의 재시도·삭제 분기가 **도달 불가**다. 따라서 R-5 는 **신규 연산 한정**이고 레거시는 무변경이며, 이 행은 그 **무변경을 고정하는 회귀 핀**이다(`createWorkspace` 가 `ok()` 를 계속 쓴다는 구조 단언). `ok()` 의 삭제가 실제로 도는 곳은 **인덱스 경로**(`ensureRepo`·`collectDiff`·`keep`·`revert`)이며 그 위험은 이 슬라이스 밖에 남는다(정직 표기) | verify |
 | **T59** | **실 `DurableFs` 어댑터를 실 파일시스템에 대고 검증**(페이크 위에서만 서는 계약 3항의 공백 보완) — tmp 고유성·rename 후 tmp 부재·0600/0700 · POSIX dir fsync 성공 / win32 `'file-only'` 등급 반환 | verify |
 | **T60** | **T8 보강** — SIGKILL 재획득만으로는 pid-생존판정 lockfile 구현도 통과한다. 따라서 **① 프로토콜이 `connect` 이외의 생존 판정을 쓰지 않음**(주입 계층 호출 단언)과 **② pid 재사용 시나리오**(기록 pid 를 살아있는 무관 프로세스 pid 로 치환 → 획득이 `held` 로 오판되지 않음)를 함께 단언 | verify |
 | **T55** | 컨테이너 인스턴스 마커 — `boot_id` 단독 사용 금지 회귀(재시작 후 동일값이면 RED) | nightly(docker) |
