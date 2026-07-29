@@ -1,11 +1,19 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { BenchAuthorityDraft, BenchAuthorityRecord, CasResult } from './authority'
-import { createBenchAuthorityStore } from './authority'
+import { classifyStaleActivity, createBenchAuthorityStore, reclaimDraft } from './authority'
 import { createNodeDurableFs, probeDurability } from './durable-fs'
 import { createFakeLockBackend } from './__testing__/lock-backend-fake'
 import { type BenchLeaseToken, createLockScope } from './locks'
@@ -29,6 +37,20 @@ import { newUlid } from './ulid'
 
 const IS_WIN = process.platform === 'win32'
 
+/**
+ * 실 FS 위에서도 **백오프는 발동하지 않아야 한다** — 이 스위트의 rename 대상은 아무도 열고 있지 않다.
+ * 발동하면 그 자체가 신호다(win32 EPERM 이 실제로 났다 = 픽스처가 핸들을 남겼거나 외부 간섭).
+ * 재시도 계약의 실 FS 조작화는 `describe.skipIf` 로 분리된 win32 전용 행이 따로 가진다.
+ *
+ * ⚠ 형제 스위트와 같은 이유로 **던지지 않고 기록한다**(자가 적대 리뷰 F5) — throw 는 CAS 의 `catch` 에
+ * 잡혀 `io-failure` 로 재라벨되고, 그 재라벨이 다른 방어를 덮는다.
+ */
+const sleepCalls: number[] = []
+const neverSleeps = (ms: number): Promise<void> => {
+  sleepCalls.push(ms)
+  return Promise.resolve()
+}
+
 let root: string
 let authorityDir: string
 
@@ -38,6 +60,8 @@ beforeEach(() => {
 })
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
+  const seen = sleepCalls.splice(0)
+  expect(seen, '실 FS 스위트에서 백오프가 발동했다 — 열린 핸들이 남아 있다').toEqual([])
 })
 
 const mintLease = async (benchId: string): Promise<BenchLeaseToken> => {
@@ -69,6 +93,7 @@ const realStore = (
     authorityDir,
     durability,
     now: () => 1_700_000_000_000,
+    sleep: neverSleeps,
   })
 
 const commit = (
@@ -275,6 +300,7 @@ describe('크래시 도달 가능성 — 자식이 만든 실제 상태를 프�
         authorityDir,
         durability: 'file-only',
         now: () => 1,
+        sleep: neverSleeps,
       }).withAuthority(lease, (tx) => Promise.resolve(tx.readFresh()))
 
       // 자기 bench 의 tmp 잔재가 **바로 옆에 있는데도** 권위 파일이 없으므로 `absent` 다 —
@@ -322,9 +348,234 @@ describe('크래시 도달 가능성 — 자식이 만든 실제 상태를 프�
       authorityDir,
       durability: 'file-only',
       now: () => 1,
+      sleep: neverSleeps,
     }).withAuthority(lease, (tx) => Promise.resolve(tx.readFresh()))
 
     expect(seen.kind).toBe('found')
     expect(seen.kind === 'found' && seen.record.revision).toBe(1)
+  })
+})
+
+/**
+ * §3-T17 **실 FS 조작화**(#251 PR2c · win32 전용).
+ *
+ * C4 의 근거는 「win32 는 대상에 열린 핸들이 하나라도 있으면 rename 이 EPERM」이고, 3면 실측이 그것을
+ * 확인했다(win32 EPERM ×3 → close → 4회차 성공 / linux 는 애초에 성공). 페이크 위 재시도 테스트는
+ * **주입한 오류를 되돌려받는** 반면 이 행은 **실 커널이 EPERM 을 낸다** — 「방어를 만든 근거」와
+ * 「방어가 동작함」을 한 곳에서 묶는다(PR2a 교훈 ①).
+ *
+ * ⚠ **벽시계로 핸들을 닫지 않는다**(예: `setTimeout(close, 25)`). 백오프 총합이 150ms 라 CI 부하에서
+ * 순서가 뒤집혀 **정답 구현이 flake 로 RED** 가 된다. 대신 실 어댑터를 **카운팅 데코레이터로 감싸**
+ * 「n회차 rename 직전에 닫는다」를 사건 순서로 고정한다(주입 seam 이 이미 그 수단이다).
+ */
+describe.skipIf(!IS_WIN)('§3-T17 실 FS — win32 rename EPERM 재시도', () => {
+  it('열린 핸들이 3회 EPERM 을 만들고, 닫히면 4회차에 커밋된다', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const target = join(authorityDir, `${benchId}.json`)
+
+    // 1) 먼저 정상 커밋으로 대상 파일을 만든다(열 대상이 있어야 EPERM 을 낼 수 있다).
+    expect((await commit(realStore('file-only'), lease)).kind).toBe('committed')
+
+    // 2) 그 파일을 연다 — 이 순간부터 win32 는 rename 을 EPERM 으로 거절한다.
+    let held: number | undefined = openSync(target, 'r')
+    const delays: number[] = []
+    let renames = 0
+    const real = createNodeDurableFs()
+    const counting: typeof real = {
+      ...real,
+      rename: (from, to) => {
+        renames += 1
+        // 3회차까지는 핸들이 열린 채 — 4회차 **직전**에 닫는다.
+        if (renames === 4 && held !== undefined) {
+          closeSync(held)
+          held = undefined
+        }
+        real.rename(from, to)
+      },
+    }
+
+    const store = createBenchAuthorityStore(counting, {
+      authorityDir,
+      durability: 'file-only',
+      now: () => 1_700_000_000_001,
+      sleep: (ms) => {
+        delays.push(ms)
+        return Promise.resolve()
+      },
+    })
+
+    try {
+      const r = await commit(store, lease, { sourceGeneration: 2 })
+
+      expect(r.kind).toBe('committed')
+      expect(renames).toBe(4)
+      expect(delays).toEqual([10, 20, 40])
+      expect(JSON.parse(readFileSync(target, 'utf8'))).toMatchObject({
+        revision: 2,
+        sourceGeneration: 2,
+      })
+    } finally {
+      if (held !== undefined) closeSync(held)
+    }
+  })
+
+  it('핸들이 끝까지 열려 있으면 5회 시도 후 io-failure{rename} — 대상 내용 불변', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const target = join(authorityDir, `${benchId}.json`)
+    expect((await commit(realStore('file-only'), lease)).kind).toBe('committed')
+    const before = readFileSync(target, 'utf8')
+
+    const held = openSync(target, 'r')
+    let renames = 0
+    const real = createNodeDurableFs()
+    const counting: typeof real = {
+      ...real,
+      rename: (from, to) => {
+        renames += 1
+        real.rename(from, to)
+      },
+    }
+    const store = createBenchAuthorityStore(counting, {
+      authorityDir,
+      durability: 'file-only',
+      now: () => 1_700_000_000_002,
+      sleep: () => Promise.resolve(),
+    })
+
+    try {
+      const r = await commit(store, lease, { sourceGeneration: 3 })
+
+      expect(r.kind).toBe('io-failure')
+      expect(r.kind === 'io-failure' && r.step).toBe('rename')
+      expect(renames).toBe(5)
+      // 커밋되지 않았다 = 대상 내용이 그대로다. tmp 도 남지 않는다(finally 규율).
+      expect(readFileSync(target, 'utf8')).toBe(before)
+      expect(() =>
+        statSync(join(authorityDir, `${benchId}.json.${lease.ownerToken}.tmp`)),
+      ).toThrow()
+    } finally {
+      closeSync(held)
+    }
+  })
+})
+
+/**
+ * §W-4 「`commit-uncertain` 복구」 **종단**(#251 PR2c · 실 프로세스).
+ *
+ * 이 슬라이스의 각 조각은 페이크로 검증됐지만, 사슬 전체 — 「post-commit 실패로 디스크에만 남은
+ * `execGate:'gated'` 를 **다른 프로세스**가 gated-orphan 으로 분류해 회수한다」 — 는 어디서도 이어
+ * 붙지 않았다. 조각만 맞으면 「선언한 회귀를 실제로 못 잡는 테스트」가 되는 계열이라(PR2b 교훈 ⑤)
+ * 여기서 실 프로세스 급사로 잔재를 만들고 이 프로세스가 복구자 역할을 한다.
+ *
+ * 자식이 **fs 로 직접** 레코드를 쓰는 이유는 그것이 정확히 `commit-uncertain` 이 남기는 디스크 상태이기
+ * 때문이다(rename 은 성공했고 dir fsync 만 실패했다 = 파일은 제자리, 커밋 토큰은 미발급). 자식이
+ * 모듈을 import 할 수는 없다(빌드 산출물이 아니다) — 형제 크래시 행이 확립한 패턴 그대로다.
+ */
+describe('commit-uncertain 잔재 → 다른 프로세스가 gated-orphan 으로 회수한다', () => {
+  it('급사가 남긴 gated 활동을 분류해 회수하고, 세대·통합 필드는 보존한다', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const target = join(authorityDir, `${benchId}.json`)
+    const crashed: BenchAuthorityRecord = {
+      schemaVersion: 1,
+      identity: lease.identity,
+      revision: 3,
+      lifecycle: 'open',
+      sourceGeneration: 4,
+      currentIntegrationTxnId: 'txn-보존',
+      currentIntegrationStage: 'prepared',
+      currentIntegrationTxnGeneration: 1,
+      activeActivity: {
+        activityId: 'act-crash',
+        kind: 'run',
+        generation: 4,
+        ownerToken: 'crashed-owner',
+        execGate: 'gated',
+        startedAt: 1,
+      },
+      writtenBy: { ownerToken: 'crashed-owner', at: 1, durability: 'file+dir' },
+    }
+    const payload = JSON.stringify(JSON.stringify(crashed))
+    const script = [
+      `const fs=require('fs');`,
+      `fs.mkdirSync(${JSON.stringify(authorityDir)},{recursive:true,mode:0o700});`,
+      // rename 까지는 성공한 상태를 만든다 — post-commit(dir fsync)만 실패한 것이 commit-uncertain 이다.
+      `fs.writeFileSync(${JSON.stringify(target)},Buffer.from(${payload},'utf8'),{mode:0o600});`,
+      `process.kill(process.pid,'SIGKILL');`,
+    ].join('')
+    let died = false
+    try {
+      execFileSync(process.execPath, ['-e', script], { stdio: 'ignore' })
+    } catch {
+      died = true
+    }
+    expect(died).toBe(true) // 정리 훅이 돌지 않았음의 증거
+    expect(statSync(target).isFile()).toBe(true)
+
+    // ── 여기부터 「재시작한 프로세스」 역할 ──
+    const store = realStore('file-only')
+    const seen = await store.withAuthority(lease, (tx) => Promise.resolve(tx.readFresh()))
+    expect(seen.kind).toBe('found')
+    if (seen.kind !== 'found') return
+
+    const verdict = classifyStaleActivity(seen.record)
+    expect(verdict.kind).toBe('gated-orphan')
+    expect(verdict.kind === 'gated-orphan' && verdict.activityId).toBe('act-crash')
+
+    const reclaimed = await store.withAuthority(lease, async (tx) => {
+      const fresh = tx.readFresh()
+      if (fresh.kind !== 'found') throw new Error('found 예상')
+      return tx.compareAndSwap(fresh.read, reclaimDraft(fresh.record))
+    })
+    expect(reclaimed.kind).toBe('committed')
+
+    const after: BenchAuthorityRecord = JSON.parse(readFileSync(target, 'utf8'))
+    expect(after.activeActivity).toBeUndefined()
+    expect(after.revision).toBe(4)
+    // **세대와 통합 필드는 회수가 건드리지 않는다**(정정 101) — 되돌리면 §W-8 완결 관측의 귀속이 깨진다.
+    expect(after.sourceGeneration).toBe(4)
+    expect(after.currentIntegrationTxnId).toBe('txn-보존')
+    expect(after.currentIntegrationStage).toBe('prepared')
+    // 회수는 멱등 방향이다 — 한 번 치우면 더 이상 대상이 아니다.
+    expect(classifyStaleActivity(after).kind).toBe('none')
+  })
+
+  it('`running` 잔재는 같은 경로에서 회수 대상이 아니다(fail-open 음성 통제)', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const target = join(authorityDir, `${benchId}.json`)
+    const live: BenchAuthorityRecord = {
+      schemaVersion: 1,
+      identity: lease.identity,
+      revision: 1,
+      lifecycle: 'open',
+      sourceGeneration: 1,
+      activeActivity: {
+        activityId: 'act-live',
+        kind: 'run',
+        generation: 1,
+        ownerToken: 'other-owner',
+        execGate: 'running',
+        startedAt: 1,
+      },
+      writtenBy: { ownerToken: 'other-owner', at: 1, durability: 'file+dir' },
+    }
+    const payload = JSON.stringify(JSON.stringify(live))
+    execFileSync(process.execPath, [
+      '-e',
+      `const fs=require('fs');fs.mkdirSync(${JSON.stringify(authorityDir)},{recursive:true,mode:0o700});` +
+        `fs.writeFileSync(${JSON.stringify(target)},Buffer.from(${payload},'utf8'),{mode:0o600});`,
+    ])
+
+    const seen = await realStore('file-only').withAuthority(lease, (tx) =>
+      Promise.resolve(tx.readFresh()),
+    )
+    expect(seen.kind).toBe('found')
+    if (seen.kind !== 'found') return
+    // **살아있는 자식이 있을 수 있다** — 그것을 「0줄 실행」으로 오분류해 변이하면 스펙이 스스로
+    // fail-open 이라 부른 상태가 된다. 판정은 §W-16 해제 판정 소관이다.
+    expect(classifyStaleActivity(seen.record).kind).toBe('live-activity')
   })
 })

@@ -1,3 +1,4 @@
+import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { dirname, join } from 'node:path'
 
 import type { BenchLifecycle } from '../../../shared/types'
@@ -179,8 +180,8 @@ declare const AUTHORITY_COMMIT: unique symbol
  * CAS 성공 시에만 존재하는 증거(§W-4 계약 4항).
  *
  * ⚠ **이 타입 혼자서는 아무것도 강제하지 못한다.** 「CAS 를 건너뛴 코드가 컴파일되지 않는다」가 성립하려면
- * 세 조각이 더 필요한데 **전부 미착지**다: 런처 팩토리(`createBenchLauncher(commit)`) = PR2c ·
- * spawn 관문 배선 = PR7 · 우회 차단 eslint 가드 = PR7(계획 정정 52·64). 현재형으로 쓰면 있지도 않은
+ * 세 조각이 필요한데 지금 있는 것은 **런처 팩토리 하나**(`createBenchLauncher` · PR2c)뿐이다 —
+ * spawn 관문 배선과 우회 차단 eslint 가드는 **PR7**(계획 정정 52·64). 현재형으로 쓰면 있지도 않은
  * 방어를 있다고 읽히게 한다(자체 적대 리뷰 R5-9).
  */
 export interface AuthorityCommit {
@@ -189,6 +190,16 @@ export interface AuthorityCommit {
   readonly revision: number
   readonly sourceGeneration: number
   readonly activityId?: string
+  /**
+   * 이 커밋이 기록한 활동의 게이트 상태(#251 PR2c · 계획 정정 106).
+   *
+   * 없으면 **commit1(gated)과 commit2(running)이 `revision` 말고는 구별되지 않아**, §W-4 의
+   * 「launcher 에 넘기는 것은 commit2」가 **관례로만** 존재한다. 그 상태에서 배선자가 commit1 을 넘기면
+   * 전 게이트 GREEN 인 채 「디스크 `gated` + 살아있는 자식」이 만들어지고 — 그것이 스펙이 스스로
+   * fail-open 이라 부른 상태다 — gated-orphan 분류가 그 자식을 「0줄 실행」으로 오분류한다.
+   * 활동이 없는 커밋(예: 회수 CAS)은 `undefined` 이며 런처는 그것도 거부한다.
+   */
+  readonly execGate?: BenchActivityRecord['execGate']
   readonly durability: DurabilityLevel
 }
 
@@ -347,6 +358,235 @@ export interface BenchAuthorityStoreOptions {
   /** `probeDurability()` 산출물. 이 모듈은 플랫폼을 알지 못한다. */
   readonly durability: DurabilityLevel
   readonly now: () => number
+  /**
+   * rename 재시도 백오프 대기(#251 PR2c · C4). **`now` 와 같은 이유로 주입**이다 — 주입이 없으면
+   * 「백오프 0ms」·「순서 역전」·「고정값」 구현이 §3-T17·T17b·T17c 를 **전부 GREEN** 으로 통과해
+   * C4 의 존재 이유(상대 핸들이 닫히기를 기다리는 시간 창)가 미검증 출하된다(계획 정정 107).
+   *
+   * ⚠ **선택적이 아니라 필수**다(형제 `providers/resilient.ts:9` 는 선택적 + 기본값). 이 store 는
+   * PR2c 시점에 **소비자가 0** 이라, 기본값을 두면 그 기본 구현이 어떤 게이트도 거치지 않고 착지한다.
+   * 프로덕션 구현은 아래 `realBackoffSleep` 이며 PR7 배선이 그것을 주입한다.
+   */
+  readonly sleep: (ms: number) => Promise<void>
+}
+
+/**
+ * rename 재시도 백오프(ms · §W-4 C4). **원소 개수 = 재시도 횟수**이고 총 시도는 `1 + length` 다.
+ * 문면의 「4회」가 총 시도인지 재시도인지 미정이었고, 백오프 원소 4개를 전부 소비하는 해석으로
+ * 확정했다(계획 정정 108 · 총 대기 150ms).
+ */
+export const RENAME_BACKOFF_MS: readonly number[] = Object.freeze([10, 20, 40, 80])
+
+/**
+ * 재시도 대상 errno(§W-4 C4).
+ *
+ * ⚠ **3면 실측(win32 24.16 / linux 22.22.3 · 24.18)이 말해 주는 정직한 한계**(계획 「PR2c 착수 전 실측
+ * 정정」): 이 집합에서 **일시성이 확인된 것은 win32 EPERM(대상에 열린 핸들) 하나**다. 같은 win32 EPERM 이
+ * 「대상이 디렉터리」·「대상이 읽기 전용」에서도 나오는데 그 둘은 **영구 실패**이고 errno 로는 구분되지
+ * 않는다 — 그 경우 150ms 를 소진한 뒤 `io-failure` 로 끝난다. 영구/일시 판별을 시도하지 않는 이유는
+ * **비용 비대칭**이다: 판별자가 틀리면 일시적 실패를 영구로 오분류해 **정상 커밋을 잃는다**(150ms 지연
+ * 보다 훨씬 비싸다). `EACCES` 는 POSIX 에서 부모 권한 문제라 역시 영구이며, **`EBUSY` 는 3면 어디서도
+ * 재현되지 않았다** — 방어적으로 유지하되 그 근거가 관측이 아님을 여기 명기한다(미검증 근거를 검증된
+ * 것처럼 쓰지 않는다).
+ *
+ * `switch` 가 아니라 `Set` 인 것도 계약이다 — 워크벤치 전수 assertNever selector(`eslint.config.mjs`)는
+ * `switch` 마다 `default: assertNever` 를 요구하는데 errno 는 판별 유니온이 아니라 열린 문자열이다.
+ */
+const RENAME_RETRY_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+const isRetryableRenameError = (cause: unknown): boolean => {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(형제 `durable-fs.ts:134`·`active-instance.ts:160`). 캐스트를 리뷰에 보이게 두는 것이 이 룰의 목적이다.
+  const code = (cause as NodeJS.ErrnoException | undefined)?.code
+  return typeof code === 'string' && RENAME_RETRY_CODES.has(code)
+}
+
+/**
+ * 프로덕션 백오프 대기. 소비자는 **PR7 부팅 배선**이다(이 PR 시점에 호출부 0).
+ *
+ * `AbortSignal` 을 받지 않는 것이 형제 `providers/resilient.ts` 와의 의도적 차이다 — 이 대기는
+ * **리스와 뮤텍스를 쥔 채** 돌고, 중간에 끊으면 tmp 정리 책임이 두 갈래로 갈린다. 취소는
+ * 상위(활동 취소)가 소유한다.
+ *
+ * ⚠ **「총 150ms」는 이 모듈의 성질이 아니라 주입된 `sleep` 의 성질이다**(자가 적대 리뷰 F7). 모듈이
+ * 정하는 것은 **회차 수와 각 회차에 요청하는 지연**뿐이고, 실제 경과는 주입자가 결정한다 —
+ * `now`·`fs` 와 동급의 신뢰 경계다. 그 경계를 구조로 좁히는 것(부팅이 이 구현만 주입함)은 PR7 배선의
+ * 몫이며, 여기서는 프로덕션 구현이 무엇인지 명시하는 것으로 한정한다.
+ */
+export const realBackoffSleep = (ms: number): Promise<void> =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
+/**
+ * 활동 잔재의 종별(§W-4 「`commit-uncertain` 복구」 · #251 PR2c T9c).
+ *
+ * `gated-orphan` = **게이트가 해제된 적 없음 = 사용자 코드 0줄 실행**의 증거다. `commit-uncertain`
+ * (rename 성공 후 dir fsync 실패)은 커밋 토큰을 발급하지 않으므로 CLI 가 뜨지 못하는데 디스크에는
+ * `execGate:'gated'` 가 남을 수 있고, 그 항목은 리스 보유자가 정리해도 안전하다.
+ *
+ * `live-activity`(=`execGate:'running'`)는 **회수 대상이 아니다** — 살아있는 자식이 있을 수 있고
+ * 그것을 「0줄 실행」으로 오분류해 변이하면 스펙이 스스로 fail-open 이라 부른 상태가 된다. 그 판정은
+ * §W-16 해제 판정(자식 트리 사망 증거)의 소관이다.
+ */
+export type StaleActivity =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'gated-orphan'; readonly activityId: string }
+  | { readonly kind: 'live-activity'; readonly activityId: string }
+
+/**
+ * 활동 잔재 **판정만** 한다 — 이 함수는 아무것도 변이하지 않고 회수 CAS 는 호출자(PR7 T30b) 소관이다.
+ *
+ * 회수를 store 메서드로 만들지 않은 이유가 계약이다(계획 정정 100): 「`activeActivity` 를 뺀 draft 를
+ * CAS 한다」는 **이미 되는 일**이라 store 에 넣어도 새 보장이 없고, 반대로 「`running` 은 회수 불가」를
+ * CAS 층 불변식으로 넣으면 **정상 활동 종료**(spawn 실패 시 활동 종결 CAS — §W-4)까지 봉쇄돼 사용자가
+ * 고착된다. 판정과 집행을 분리하면 둘 다 피한다.
+ *
+ * ⚠ **`ownerToken` 을 보지 않는다.** 「이 gated 를 내 획득이 썼는가」는 판정을 바꾸지 않는다 — 누가
+ * 썼든 게이트가 열린 적 없다는 사실이 그대로 0줄 실행의 증거다. 판정을 바꾸지 않는 정보를 유니온에
+ * 실으면 소비자가 거기에 잘못된 의미(「내 것만 안전」)를 부여한다.
+ */
+export function classifyStaleActivity(record: BenchAuthorityRecord): StaleActivity {
+  const activity = record.activeActivity
+  if (activity === undefined) return { kind: 'none' }
+  return activity.execGate === 'gated'
+    ? { kind: 'gated-orphan', activityId: activity.activityId }
+    : { kind: 'live-activity', activityId: activity.activityId }
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * bench 런처 (T10 · §W-4 계약 4항) — **소비자 0**. 실 spawn seam 배선은 PR7 T30b.
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * spawn 옵션 — node `SpawnOptions` 의 **부분집합을 여기서 따로 정의**한다.
+ *
+ * 스펙이 인용한 `SpawnOpts` 는 레포에 없는 이름이고(실재는 `cli/detect.ts` 의 `RunOpts` 인데 그것은
+ * spawn 인자가 아니다), 그렇다고 `core/cli` 를 참조하면 **레이어 역전**이다 — 그리고 그 역전은
+ * 데스크톱 폐포 핀이 **방향성이라 잡지 못한다**(계획 정정 110). 워크벤치는 자기 밖 코어 모듈을
+ * 참조하지 않는다.
+ */
+export interface BenchSpawnOptions {
+  readonly cwd?: string
+  readonly env?: NodeJS.ProcessEnv
+  readonly windowsHide?: boolean
+  /**
+   * PR7 배선 대상 2곳의 shape 가 다르므로 **합집합**이다(계획 정정 57): `cli/detect.ts` 는
+   * cwd/env/windowsHide 만 쓰지만 `mcp/stdio.ts` 는 `stdio` 를 **필수로** 넘긴다. 앞쪽만 보고
+   * 부분집합을 만들면 PR7 에서 mcp 자식이 런처를 우회하게 되고, 그 순간 크레덴셜 게이트의 존재
+   * 이유가 사라진다(자가 적대 리뷰 F2).
+   */
+  readonly stdio?: SpawnOptions['stdio']
+  /**
+   * §W-16 배관 계약이 **P1 으로 요구**한다 — POSIX 트리 사망 증거(`kill(-pgid)`)는 자식이
+   * `detached: true` 로 떠 있어야만 성립한다. 소비자는 PR7 T30b 다.
+   */
+  readonly detached?: boolean
+}
+
+/** 실 spawn 은 **주입**이다 — 이 모듈은 자식을 만들지 않고 크레덴셜만 판정한다. */
+export type BenchSpawn = (
+  cmd: string,
+  args: readonly string[],
+  opts: BenchSpawnOptions,
+) => ChildProcess
+
+export type BenchSpawnRefusal =
+  | 'commit-not-minted'
+  | 'commit-spent'
+  | 'gate-not-released'
+  | 'identity-mismatch'
+  | 'activity-mismatch'
+  | 'generation-mismatch'
+
+/**
+ * 런처 결과. **판별 유니온인 것이 계약**이다(§W-4 「불일치는 throw 가 아니라 판별 유니온 반환」).
+ * 스펙 코드펜스는 `=> ChildProcess` 단일 반환이었는데 같은 절이 유니온 반환을 요구해 **한 함수에
+ * 상반된 반환**을 지시했다(계획 정정 102 · 4렌즈 독립 수렴).
+ */
+export type BenchSpawnResult =
+  | { readonly kind: 'spawned'; readonly child: ChildProcess }
+  | { readonly kind: 'refused'; readonly reason: BenchSpawnRefusal }
+
+/** bench 스코프 실행의 유일한 진입점. `AuthorityCommit` 없이는 **팩토리를 만들 수 없다**. */
+export type BenchLauncher = (
+  cmd: string,
+  args: readonly string[],
+  opts: BenchSpawnOptions,
+) => BenchSpawnResult
+
+export interface BenchLauncherDeps {
+  readonly spawn: BenchSpawn
+  readonly commit: AuthorityCommit
+  /**
+   * 대조 상대 — **커밋 자신이 아니라 호출자가 준다**(계획 정정 103).
+   *
+   * `mintCommit` 이 identity·sourceGeneration·activityId 를 커밋에 싣기 때문에, 커밋만 받아서 그
+   * 세 필드를 「대조」하면 **항상 참인 vacuous 검사**가 된다. 대조가 방지하려는 것은 「어떤 CAS 의
+   * 커밋이 **다른 활동**의 spawn 에 재사용되는 것」이므로, 지금 시작하려는 활동을 아는 쪽이 준다.
+   */
+  readonly expected: {
+    readonly identity: BenchAuthorityIdentity
+    readonly sourceGeneration: number
+    readonly activityId: string
+  }
+}
+
+/**
+ * 런처 팩토리(§W-4 계약 4항).
+ *
+ * 판정 **순서가 계약**이다(계획 정정 104): ①원장 조회(출처) → ②소진 여부 → ③게이트 → ④3필드.
+ * 출처를 먼저 보는 이유는 형제 `withAuthority` 진입과 같다 — 위조·복제 크레덴셜은 나머지 검사를
+ * 전부 통과하도록 조립할 수 있으므로 **필드가 아니라 원장이 권위**다.
+ *
+ * ⚠ **소진은 spawn 보다 먼저** 한다. spawn 이 던지면 커밋은 이미 죽어 있고 재시도하려면 새 CAS 가
+ * 필요하다 — fail-closed 방향이다. 반대로 두면 spawn 실패마다 같은 커밋으로 무한 재시도가 가능해진다.
+ *
+ * ⚠ **`deps` 는 생성 시점 스냅숏**이다(형제 store `opts` 규율). 참조를 계속 읽으면 호출자가 팩토리
+ * 생성 뒤에 `expected` 를 바꿔 대조를 무력화할 수 있다.
+ */
+export function createBenchLauncher(deps: BenchLauncherDeps): BenchLauncher {
+  const spawn = deps.spawn
+  const commit = deps.commit
+  const expected = Object.freeze({
+    identity: Object.freeze({
+      commonGitDir: deps.expected.identity.commonGitDir,
+      benchRoot: deps.expected.identity.benchRoot,
+      benchId: deps.expected.identity.benchId,
+    }),
+    sourceGeneration: deps.expected.sourceGeneration,
+    activityId: deps.expected.activityId,
+  })
+
+  const refuse = (reason: BenchSpawnRefusal): BenchSpawnResult => ({ kind: 'refused', reason })
+
+  return (cmd, args, opts) => {
+    if (!MINTED_COMMITS.has(commit)) return refuse('commit-not-minted')
+    if (SPENT_COMMITS.has(commit)) return refuse('commit-spent')
+    // 게이트가 해제된 커밋(=CAS2)만 자식을 띄운다. `undefined`(활동 없는 커밋 — 예: 회수 CAS)도 여기서 막힌다.
+    if (commit.execGate !== 'running') return refuse('gate-not-released')
+    if (!sameIdentity(commit.identity, expected.identity)) return refuse('identity-mismatch')
+    if (commit.activityId !== expected.activityId) return refuse('activity-mismatch')
+    if (commit.sourceGeneration !== expected.sourceGeneration) return refuse('generation-mismatch')
+    SPENT_COMMITS.add(commit)
+    return { kind: 'spawned', child: spawn(cmd, args, opts) }
+  }
+}
+
+/**
+ * 회수 CAS 에 그대로 넘길 draft — **`activeActivity` 만 소멸**하고 나머지는 전부 그대로다.
+ *
+ * 보존 계약(계획 정정 101 · 지금까지 어느 문서에도 없었다): `sourceGeneration` **무변**(되돌리면 §W-8
+ * 완결 관측의 세대 귀속이 조용히 깨진다) · `lifecycle`·`schemaVersion`·`identity`·통합 4필드·
+ * `archivedBranch` 전부 무변.
+ *
+ * **rest 구조분해**로 쓰는 것이 규범이다(필드 명시 재조립은 새 필드가 늘 때마다 누락 표면을 신설한다 —
+ * `serialize` 가 6필드를 명시 재조립하는 것은 **호출자 객체의 초과 키를 막기 위해서**이고 목적이 다르다).
+ * `revision`·`writtenBy` 를 함께 떼는 이유는 `compareAndSwap` 의 사전조건이 그 두 키의 **존재 자체**를
+ * `invariant-violation` 으로 거부하기 때문이다(저장소만 배정) — 즉 이 산출물은 그대로 CAS 인자가 된다.
+ */
+export function reclaimDraft(record: BenchAuthorityRecord): BenchAuthorityDraft {
+  const { activeActivity: _reclaimed, revision: _revision, writtenBy: _writtenBy, ...rest } = record
+  return rest
 }
 
 /**
@@ -380,6 +620,22 @@ const AUTHORITY_FILE_MODE = 0o600
  */
 let readSeqCounter = 0
 const SPENT_READS = new WeakSet<FreshReadToken>()
+/**
+ * 커밋 크레덴셜의 **민팅·소진 원장**(#251 PR2c · 계획 정정 104·105).
+ *
+ * 형제 2종(`MINTED_READS`·`MINTED_LEASES`)은 **Codex P1 으로 원장을 강제당했는데** 커밋만 비대칭이었다.
+ * 그래서 `{...commit}` 복제가 단일 사용 검사를 우회했다 — 읽기 토큰에서 **실측으로 확정된 것과 같은
+ * 벡터**다. 소진을 **launcher 호출 시점**에 하는 것도 계약이다: 팩토리에서 소진하면 만들어진 launcher 를
+ * 반복 호출해 한 커밋으로 자식을 여러 번 띄울 수 있다.
+ *
+ * ⚠ **보장 범위는 「한 커밋 = 한 자식」까지다**(자가 적대 리뷰 F3 · 실측 재현). 원장은 커밋 **객체**
+ * 동일성만 보므로, 활동이 `running` 인 동안 상태 갱신 CAS 가 한 번 더 일어나면 같은 `activityId` 를
+ * 실은 **두 번째 launchable 커밋**이 민팅되고 둘 다 판정을 통과한다. §W-16 이 전제하는 **「한 활동 =
+ * 한 자식」은 이 원장이 주는 성질이 아니며**, 그 집행은 활동 시작 시퀀서(PR7 T30b) 소관이다.
+ * 여기서 그것까지 막으려면 활동 스코프 키가 필요한데 그 키의 권위(활동 수명·세대)는 시퀀서가 쥔다.
+ */
+const MINTED_COMMITS = new WeakSet<AuthorityCommit>()
+const SPENT_COMMITS = new WeakSet<AuthorityCommit>()
 /**
  * **민팅 원장**(Codex PR#266 P1). `FreshReadToken` 의 **필드를 신뢰하지 않는다** — 스프레드 복제
  * `{...read, observedRevision: 현재값}` 은 미export 브랜드를 보존하면서 **새 객체**라 `SPENT_READS` 에
@@ -765,6 +1021,7 @@ export function createBenchAuthorityStore(
     authorityDir: options.authorityDir,
     durability: options.durability,
     now: options.now,
+    sleep: options.sleep,
   })
   /**
    * 권위 디렉터리의 **부모**가 이 store 수명 안에서 내구화됐는가(Codex PR#266 3R P1).
@@ -871,10 +1128,48 @@ export function createBenchAuthorityStore(
       }
     }
 
-    const compareAndSwap = async (
+    /**
+     * **같은 임계 구역 안에서 CAS 를 겹쳐 실행하는 것을 거부한다**(Codex PR#267 P1 · 실측 재현).
+     *
+     * PR2c 이전에는 `compareAndSwap` 이 **전 구간 동기**라 이 상태가 도달 불가였다. 재시도가 도입한
+     * `await`(백오프)가 그 창을 새로 열었고, 두 CAS 가 겹치면 **리스 스코프 tmp 경로를 공유**하는 것이
+     * 곧바로 파괴적이다 — 실측한 사슬: ⓐA 가 tmp 를 만들고 rename 이 EPERM 이라 백오프에서 양보
+     * ⓑB 가 진입해 `openExclusive` 에서 **EEXIST**(A 의 tmp) ⓒB 의 `finally` 가 「자기 tmp 정리」로
+     * **A 의 tmp 를 unlink** ⓓA 가 깨어나 rename 하면 **ENOENT**. 재시도만 했으면 성공했을 CAS 가
+     * 남의 정리에 파괴된다.
+     *
+     * **tmp 이름을 CAS 별로 고유화하는 대안은 기각**했다 — tmp 가 `ownerToken` 스코프인 것이 정정 78의
+     * 「같은 리스의 다음 CAS 가 자기 tmp 로 자기잠금」 falsifier 의 근거이고, 그것을 바꾸면 그 계약
+     * 테스트가 무의미해진다. 직렬화는 §W-4 문면(「`fresh read → 검사 → 내구 확정` **전체**를 하나의
+     * 임계 구역」)과도 정합한다.
+     *
+     * ⚠ PR2b 가 **철회한** 재진입 가드와 다르다: 그것은 `withAuthority` **호출 간** 중첩을
+     * `AsyncLocalStorage` 로 감지해 거짓 양성 3종(늦은 동시 호출·종료 후 컨텍스트 상속·분리
+     * 마이크로태스크)을 냈다. 여기는 **한 tx 객체 안** 단순 플래그이고 `finally` 로 즉시 해제되므로
+     * 순차 호출(`await` 후 다음 CAS)에는 영향이 0 이다 — 그 음성 통제를 계약 테스트가 고정한다.
+     */
+    let casInFlight = false
+
+    const compareAndSwap = (
       read: FreshReadToken,
       next: BenchAuthorityDraft,
     ): Promise<CasResult> => {
+      if (!live) return Promise.resolve({ kind: 'lease-invalid', reason: 'released' })
+      if (casInFlight) {
+        return Promise.resolve({
+          kind: 'invariant-violation',
+          violations: [
+            '같은 임계 구역에서 CAS 가 이미 진행 중이다 — 겹쳐 실행하면 두 CAS 가 tmp 경로를 공유해 서로의 잔재를 지운다',
+          ],
+        })
+      }
+      casInFlight = true
+      return runCas(read, next).finally(() => {
+        casInFlight = false
+      })
+    }
+
+    const runCas = async (read: FreshReadToken, next: BenchAuthorityDraft): Promise<CasResult> => {
       if (!live) return { kind: 'lease-invalid', reason: 'released' }
 
       // ⓪ **출처 먼저 — 토큰의 필드를 믿지 않는다**(Codex PR#266 P1). 원장에 없으면 이 모듈이 발급한
@@ -1042,11 +1337,58 @@ export function createBenchAuthorityStore(
      * 내구 쓰기(§W-4 계약 3항). rename 을 경계로 **반환 종별이 갈린다** — 그 전 실패는 `io-failure`
      * (디스크 무변이), 그 후 실패는 `commit-uncertain`(디스크 revision 은 이미 전진).
      */
-    const writeDurably = (
+    /**
+     * rename 유한 재시도(§W-4 C4 · #251 PR2c T9). 성공하면 `undefined`, 실패하면 그대로 반환할 `CasResult`.
+     *
+     * **매 시도 직전에 두 가지를 재검사**한다:
+     * - **L-6 리스 소유**(스펙 「각 rename 시도 직전에 … 유실 시 이후 재시도와 rename 을 중단」).
+     *   재검증이 루프 밖에 한 번만 있으면 「1회차 실패 → 그 사이 탈취 → 2회차 성공」이 통과해 **남의
+     *   리스 아래에서 커밋**한다.
+     * - **`live`**(계획 정정 109). 재시도가 이 모듈의 **첫 `await`** 를 만든다 — 그 전까지 CAS 는 동기
+     *   구간이라 임계 구역 밖으로 샐 수 없었다. `fn` 이 CAS 를 `await` 하지 않고 반환하면 뮤텍스 꼬리와
+     *   `live=false` 가 먼저 해소되고, 그 뒤에도 이 루프가 계속 돌아 파일시스템을 변이할 수 있다.
+     *   :「유출된 tx 는 쓰지 못한다」(정정 94)를 재시도 회차 단위로 유지한다.
+     *
+     * 재시도가 **CAS 결과 밖으로 새지 않는다**(acknowledged): 최종 성공/실패가 전부 반환값에 실린다.
+     */
+    const renameWithRetry = async (): Promise<CasResult | undefined> => {
+      // **유계 루프**(자가 적대 리뷰 PERF-1). 원안은 `for(;;)` 였고 종료를 전적으로 아래
+      // `backoff === undefined` 에 맡겼다 — 그 하나가 편집으로 사라지면 **리스와 뮤텍스를 쥔 채**
+      // 도는 무한 루프가 된다(형제 `writeAllBytes` 가 진행 보장 가드를 둔 것과 같은 이유이며,
+      // 그때 실측한 대로 이런 회귀는 RED 가 아니라 **hang** 이라 어떤 게이트도 신호를 못 낸다).
+      for (let attempt = 0; attempt <= RENAME_BACKOFF_MS.length; attempt += 1) {
+        if (!live) return { kind: 'lease-invalid', reason: 'released' }
+        const check = lease.revalidate()
+        if (check.kind === 'lost') return { kind: 'lease-invalid', reason: check.reason }
+        try {
+          fs.rename(tmpPath, path)
+          return undefined
+        } catch (cause) {
+          const backoff = RENAME_BACKOFF_MS[attempt]
+          // 재시도 대상이 아닌 코드(ENOENT·EISDIR·`code` 부재 등)는 **즉시** 실패한다 — 그리고 소진도
+          // 여기로 온다. 두 경우의 반환은 같다(디스크 무변이).
+          if (backoff === undefined || !isRetryableRenameError(cause)) {
+            return { kind: 'io-failure', step: 'rename', path, cause }
+          }
+          await opts.sleep(backoff)
+        }
+      }
+      // 도달 불가 — 마지막 회차의 `backoff === undefined` 가 반드시 반환한다. 그럼에도 값을 두는 이유는
+      // 암묵 `undefined` 로 떨어지면 그것이 **「커밋됐다」는 거짓 증언**이 되기 때문이다(반환 계약상
+      // `undefined` = rename 성공). 상한과 백오프 길이가 어긋나는 편집에서 안전한 쪽으로 실패한다.
+      return {
+        kind: 'io-failure',
+        step: 'rename',
+        path,
+        cause: new Error('rename 재시도 루프가 결과 없이 종료했다(상한과 백오프 길이 불일치)'),
+      }
+    }
+
+    const writeDurably = async (
       json: string,
       record: BenchAuthorityRecord,
       revision: number,
-    ): CasResult => {
+    ): Promise<CasResult> => {
       let step: PreCommitStep = 'mkdir'
       /** 부모 디렉터리 내구화 중이면 그 경로 — 실패 진단이 실제 대상을 싣게 한다(CodeRabbit). */
       let parentTarget: string | undefined
@@ -1096,16 +1438,22 @@ export function createBenchAuthorityStore(
           fs.close(toClose)
         }
         step = 'rename'
-        fs.rename(tmpPath, path)
+        // ⚠ **재시도는 이 한 단계에만** 걸린다(§3-T17 「재시도 범위 falsifier」). 앞 단계들을 함께
+        // 감싸면 `openExclusive` 가 자기 tmp 에 EEXIST 로 자기잠금하고(정정 78), 부분 쓰기가 누적된다.
+        const retryFailure = await renameWithRetry()
+        if (retryFailure !== undefined) return retryFailure
         renamed = true
       } catch (cause) {
-        // 단계별로 **실제 대상**을 싣는다(CodeRabbit): `mkdir` 은 디렉터리이고 `rename` 은 최종 경로다.
+        // 단계별로 **실제 대상**을 싣는다(CodeRabbit): `mkdir` 은 디렉터리이고 나머지는 tmp 다.
         // 전부 tmp 로 답하면 복구 판정이 **존재하지도 않는 tmp** 를 보게 된다.
         // `parentTarget` 이 우선이다(CodeRabbit) — 부모 내구화 구간의 실제 대상은 부모 디렉터리이고,
         // step 은 여전히 'mkdir' 이라 그것만으로는 권위 디렉터리가 실려 진단이 엉뚱한 경로를 가리킨다.
-        const target =
-          parentTarget ??
-          (step === 'mkdir' ? opts.authorityDir : step === 'rename' ? path : tmpPath)
+        //
+        // ⚠ **`rename` 분기가 여기 없다**(자가 적대 리뷰 COV-2·DYN4-06): PR2c 가 rename 을
+        // `renameWithRetry` 로 옮겨 그 실패를 **값으로 반환**하게 만든 뒤로, 이 catch 에서 `step` 이
+        // `'rename'` 인 경우는 도달 불가다. 삼항을 남겨 두면 어느 OS 에서도 실행되지 않는 arm 이 되어
+        // 커버리지에는 잡히지 않으면서 「여기서도 rename 을 처리한다」는 거짓 인상을 준다.
+        const target = parentTarget ?? (step === 'mkdir' ? opts.authorityDir : tmpPath)
         return { kind: 'io-failure', step, path: target, cause }
       } finally {
         // fd 가 남아 있다 = 어느 단계가 던졌다. 실물에서 열린 핸들은 **그 자체로 DoS 표면**이다 —
@@ -1241,9 +1589,9 @@ const mintRead = (
   return token
 }
 
-const mintCommit = (record: BenchAuthorityRecord, durability: DurabilityLevel): AuthorityCommit =>
+const mintCommit = (record: BenchAuthorityRecord, durability: DurabilityLevel): AuthorityCommit => {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 위와 같다(인가된 forge 2곳 중 둘째).
-  Object.freeze({
+  const commit = Object.freeze({
     // **복사 후 동결**(Codex PR#266 P1). `Object.freeze` 는 얕으므로 `record.identity` 를 참조로 실으면
     // `Object.assign(result.record.identity, {benchId: 다른bench})` 가 **커밋의 identity 까지 바꾼다** —
     // 바깥 객체는 동결·유효한 채로 남으므로 런처가 그 크레덴셜을 소비하면 **한 bench 용 커밋이 다른
@@ -1257,6 +1605,16 @@ const mintCommit = (record: BenchAuthorityRecord, durability: DurabilityLevel): 
     sourceGeneration: record.sourceGeneration,
     ...(record.activeActivity === undefined
       ? {}
-      : { activityId: record.activeActivity.activityId }),
+      : {
+          activityId: record.activeActivity.activityId,
+          execGate: record.activeActivity.execGate,
+        }),
     durability,
   }) as AuthorityCommit
+  // **원장이 권위다**(형제 `MINTED_READS`·`MINTED_LEASES` 와 같은 규율 · 계획 정정 104). 브랜드
+  // `unique symbol` 은 위조를 막지 못한다 — `{...commit}` 스프레드 복제는 브랜드를 보존하면서 **새
+  // 객체**라 단일 사용 WeakSet 을 캐스트 0개로 우회하고, PR7 배선 층의 `x as AuthorityCommit` 은
+  // 워크벤치 밖이라 eslint 위조 차단 스코프에도 걸리지 않는다. 그래서 런처는 **필드가 아니라 여기**를 본다.
+  MINTED_COMMITS.add(commit)
+  return commit
+}

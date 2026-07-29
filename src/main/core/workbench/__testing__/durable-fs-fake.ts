@@ -56,6 +56,14 @@ export interface FakeDurableFs extends DurableFs {
    * 「디렉터리 차례만 실패」를 만들 수 없어 post-commit 분류(계획 정정 77)를 조작화할 수 없다.
    */
   failNext(op: FakeOp, err: Error, times?: number, skip?: number): void
+  /**
+   * `op` 의 **n회차 결과를 배열로** 지정한다(`null` = 성공 · 배열 소진 후는 전부 성공).
+   *
+   * `failNext` 의 `times`/`skip` 은 「연속 k회 실패」밖에 표현하지 못해 **재시도 계약**(#251 PR2c T9)의
+   * 「첫 3회 EPERM → 4회차 성공」이나 「대상 코드와 비대상 코드가 섞인 시퀀스」를 만들 수 없다. 그것을
+   * 수동 카운터로 짜면 세 테스트가 각자 다른 하네스를 갖게 되고 그 카운터 자체가 검증되지 않는다.
+   */
+  failSequence(op: FakeOp, results: readonly (Error | null)[]): void
   /** 디스크 상태 직접 조작 — 「외부(다른 프로세스·ttyd 셸)가 교체했다」를 만든다. */
   setFile(path: string, content: string): void
   setOther(path: string): void
@@ -77,6 +85,19 @@ export interface FakeOptions {
   readonly before?: (op: FakeOp, args: readonly unknown[]) => void
 }
 
+/**
+ * errno 를 실은 오류 — 실물 `node:fs` 가 던지는 형태다.
+ *
+ * ⚠ **테스트가 이것을 쓰지 않으면 재시도 계약이 무신호다**: 재시도는 `err.code` 로 대상을 가리므로
+ * `new Error('주입 실패')`(code 부재)는 **즉시 실패 경로**로 간다. 기존 §3-T16 행이 정확히 그 code-less
+ * 관용구를 쓰고 있어(그 행에서는 **의도된 정답**이다) 복사되면 zero-retry 구현이 GREEN 을 받는다.
+ */
+export const errno = (code: string, message = `주입 실패: ${code}`): Error => {
+  const err: Error & { code?: string } = new Error(message)
+  err.code = code
+  return err
+}
+
 export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
   const entries = new Map<string, Entry>()
   for (const [p, c] of Object.entries(opts.initial ?? {})) {
@@ -86,15 +107,11 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
   const steps: FakeOp[] = []
   const calls: FakeCall[] = []
   const pending = new Map<FakeOp, { err: Error; times: number; skip: number }>()
+  /** `failSequence` 의 남은 결과 — 앞에서부터 소비한다. */
+  const sequences = new Map<FakeOp, (Error | null)[]>()
   /** fd → 대상 경로. `close` 로 지운다 — 남아 있으면 누수다. */
   const openFds = new Map<number, string>()
   let nextFd = 3 // 0·1·2 는 표준 스트림 — 실물과 같은 형태로 둔다.
-
-  const errno = (code: string, message: string): Error => {
-    const err: Error & { code?: string } = new Error(message)
-    err.code = code
-    return err
-  }
 
   /** 계측만 — 훅 + 타임라인 + 인자 로그. */
   const record = (op: FakeOp, args: readonly unknown[]): void => {
@@ -105,6 +122,14 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
 
   /** 주입된 실패가 있으면 던진다. `record` 와 분리한 이유는 `close` 참조. */
   const maybeFail = (op: FakeOp): void => {
+    const seq = sequences.get(op)
+    if (seq !== undefined && seq.length > 0) {
+      const next = seq.shift()
+      // `failNext` 와 **동시 사용 금지**가 아니라 순서 고정이다 — 시퀀스가 남아 있으면 그것이 이긴다.
+      // 배열이 비면 아래 `pending` 경로로 자연히 넘어간다(둘 다 없으면 성공).
+      if (next != null) throw next
+      return
+    }
     const f = pending.get(op)
     if (f === undefined) return
     if (f.skip > 0) {
@@ -143,6 +168,11 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
         )
       }
       pending.set(op, { err, times, skip })
+    },
+    failSequence: (op, results) => {
+      // 위와 같은 규율 — 조용히 덮어쓰면 첫 시퀀스가 사라진 채 GREEN 이 된다.
+      if (sequences.has(op)) throw new Error(`${op} 에 이미 주입된 시퀀스가 있다`)
+      sequences.set(op, [...results])
     },
     setFile: (path, content) => void entries.set(path, { kind: 'regular', content }),
     setOther: (path) => void entries.set(path, { kind: 'other' }),

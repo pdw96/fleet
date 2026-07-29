@@ -65,6 +65,7 @@
 | ~~M1~~ | ~~컨테이너 bind 마운트 위 UDS `listen` EACCES~~ — **폐기.** 로컬 검증에서 Docker Desktop 29.6.2 의 3종 마운트 전부 `listen` 성공으로 **재현되지 않았다**(구형 gRPC-FUSE/9p 한정 관측을 일반 사실로 인용했던 것). 추상 소켓 전환으로 애초에 무관 | — | — |
 | ~~M1′~~ | ~~추상 소켓 `listen` 컨테이너 가능 여부~~ — **로컬 검증에서 이미 실측 완료**: `node:24-bookworm-slim` · `--user 1000:1000` · 기본 seccomp 에서 `listen('\0fleet.wb.…')` 성공(추가 권한 불요). `/proc/self/ns/net` · `/proc/1/stat` f22 · `boot_id` 전부 비특권 읽기 가능 | — | 완료 |
 | **M2** | `safe.directory` × `/workbenches` | **PR4**(registry 생성) | worktree 생성 경로 전부 실패. B6 에서 리뷰 전량 통과 후 라이브에서만 적발된 계열 |
+| ⚠ | **Docker Desktop 근사로는 M2·M3 를 대체할 수 없다**(#251 PR2c 실측) | — | PR2c 가 실 `fleet-server` 이미지 + 실 `/workspace` bind mount 위에서 13 단언을 통과시켰으나, 그때 `/workspace` 는 **`owner=0:0 mode=777`** 로 보였다 — **Docker Desktop 이 bind mount 의 uid·권한을 가상화**하기 때문이고 이는 **실 Linux 호스트보다 관대**하다. 실 호스트에서는 호스트 소유권이 그대로 보여 컨테이너 uid 1000 이 못 쓰는 상황이 실재한다(PR1a 실측 「git 이 성공해도 `.git` 소유자가 다르면 `mkdir` EACCES」와 같은 축). **「Docker 에서 통과했다」를 「배포에서 통과한다」로 인용하지 말 것** — PR2a 가 gRPC-FUSE 관측을 일반 사실로 인용했다 정정한 것의 **반대 방향 실수**다 |
 | **M3** | named volume ↔ bind 마운트 2볼륨 토폴로지의 `worktree add` admin 파일 | PR4 | benchRoot 토폴로지 재결정. **`tmp/`→`authority/` rename 은 둘 다 `<common gitdir>/fleet/` 안이라 동일 볼륨이 구조적으로 보장** — 스펙 §5 가 둘을 섞어 서술했으나 실제 위험은 worktree admin 쪽뿐 |
 
 **M1·M1′ 은 소멸했다**(위 표) — 락 백엔드가 커널 네임스페이스 endpoint 로 바뀌어 파일시스템 마운트 권한과
@@ -81,7 +82,7 @@
 | ~~**PR2**~~ | ~~계약 사슬 · 내구 쓰기 · 권위 CAS~~ | ~~T6b~T10~~ | ~~1,500~1,850~~ | ~~T9 종료 >1,500 → T10 을 PR2b~~ |
 | **PR2a** | 계약 사슬 골격 · 내구 쓰기 seam | T6b·T7 | 1,300~1,600 | 없음 |
 | **PR2b** | 권위 CAS 코어(`withAuthority`·`AuthorityTx`) | T8 | 1,500~1,900 | **프로덕션 물리행 >569** → 「불변식 검증기 + §3-T61 전수표」를 PR2b′(정정 92) |
-| **PR2c** | rename 재시도 · `commit-uncertain` · launcher 브랜드 | T9·T10(**배선 제외**) | 700~1,000 | 없음 |
+| **PR2c** | rename 재시도 · per-retry L-6 · gated-orphan **분류** · launcher 브랜드 | T9·T10(**배선·순서고정 제외**) | 착지 480~1,050 / **머지 740~1,710** | **T9 종료 시 프로덕션 물리행 >230 → T10 전량을 PR2c′** |
 | **PR3** | `GitRepo` · 통합 WAL 저널 · 복구 판정 | T11~T13 | 1,200~1,500 | 없음 |
 | **PR4** | slug · 레지스트리 · 태스크 경로 seam | T14~T17 | 1,400~1,750 | T16 종료 >1,400 → T17 을 PR4b |
 | **PR5** | 통합 트랜잭션 · 완결 관측 · 승인 2-페이즈 | T18~T21 | 1,150~1,450 | 없음 |
@@ -722,6 +723,218 @@ T20 raw 스냅숏분·T18b ref-앵커(→PR3 · 정정 85·70) · 엔진 배선(
   **ADR-0013**: ①MCP 자식을 봉쇄 범위 밖으로 **명시 배제** ②nightly 부재로 §3-T55·N2~N4 를 #254 이관
   ③win32 `'file-only'` 수용(**Codex 3항의 충족이 아니라 회피**) ④M1 실패 시 추상 소켓 대안 판단.
 
+#### PR2c 착수 전 실측 정정 (2026-07-29 · 6렌즈 감사 + 3면 rename 실측)
+
+**3면 rename 실측 — 재시도 계약(C4)의 근거는 win32 EPERM «열린 핸들» 단 하나다.**
+동일 스크립트를 win32 로컬(Node 24.16.0) · Docker `node:22.22.3-bookworm-slim`(필수 CI 게이트 런타임) ·
+`node:24-bookworm-slim`(프로덕션 근사 · 둘 다 `--user 1000:1000`)에 태웠다.
+
+| 조건 | win32 24.16.0 | linux 22.22.3 / 24.18.0 |
+|---|---|---|
+| 대상이 fd 로 열림(`'r'`) | **EPERM** | OK |
+| 대상이 fd 로 열림(`'r+'`) | **EPERM** | OK |
+| **소스**(tmp)가 fd 로 열림 | OK | OK |
+| 대상 자리가 **디렉터리** | **EPERM** | EISDIR |
+| 대상이 **읽기 전용**(0444) | **EPERM** | OK |
+| 소스 부재 | ENOENT | ENOENT |
+| 부모 디렉터리 0500 | OK(권한 무시) | **EACCES** |
+| 대상 열린 채 3회 → close → 4회차 | EPERM×3 → **OK** | (해당 없음 — 애초에 성공) |
+
+여기서 **계약이 바뀌지는 않지만 정직하게 기록해야 하는 사실**이 나온다:
+
+1. **재시도 대상 3코드 중 「일시적」이 실측으로 확인된 것은 win32 EPERM(열린 핸들)뿐이다.**
+   같은 win32 EPERM 이 **대상=디렉터리·대상 읽기전용**에서도 나오는데 그 둘은 **영구 실패**다 —
+   재시도 4회를 다 소진하며 리스와 뮤텍스를 **150ms 동안 붙잡은 뒤** `io-failure` 로 끝난다.
+   errno 만으로는 두 경우를 구분할 수 없다(win32 는 `FlushFileBuffers`/`MoveFileEx` 계열 실패를 전부
+   EPERM 으로 번역한다 — PR2a 가 `openSync(dir,'r')` fsync 에서 관측한 것과 같은 계열).
+   → **계약은 유지**(fail-closed 방향이고 상한이 150ms 로 유계). 대신 「재시도가 무의미한 EPERM 이
+   존재한다」를 코드 주석과 PR 본문에 **정직한 한계**로 남긴다. 영구/일시 판별 시도는 하지 않는다 —
+   판별자가 틀리면 **일시적 실패를 영구로 오분류해 정상 커밋을 잃는다**(비용 비대칭: 150ms 지연 vs 커밋 소실).
+2. **EACCES 는 POSIX 에서 영구(부모 권한)** 이고, **EBUSY 는 3면 어디서도 재현되지 않았다.**
+   스펙 C4 는 `{EPERM,EBUSY,EACCES}` 를 근거 없이 열거했다 — 근거로 적힌 것은 win32 EPERM 뿐이다.
+   → 집합은 유지하되(방어적 · 네트워크 드라이브·AV 스캐너 계열에서 보고되는 코드), **「EBUSY 는 이
+   레포의 3면 실측에서 재현되지 않았다」**를 상수 주석에 명시한다(미검증 근거를 검증된 것처럼 쓰지 않는다 —
+   PR2b 교훈 ②의 직접 적용).
+3. **소스(tmp)를 연 채로는 양 OS 모두 rename 이 성공한다.** 현행 구현이 `close-tmp` 를 rename 앞에
+   두는 것은 내구성(fsync 후 close) 때문이지 rename 성공 조건 때문이 아니다 — 주석이 후자로 읽히지
+   않게 한다.
+4. **win32 EPERM×3 → close → 4회차 성공은 결정론적으로 재현된다**(위 표 마지막 행). PR2a 가 예고한
+   대로 §3-T17 의 **실 FS 조작화**가 가능하다(`authority-node.test.ts` 층 · `describe.skipIf(win32 아님)`).
+
+**6렌즈 감사**(find 6 → 렌즈별 독립 refuter 6 · **83 후보 · 82 생존 · P1 14**). ⚠ 이번 감사는
+**refuter 가 거의 기각하지 않았다**(REFUTED 1). PR2b 교훈 ②(잘못된 강등)의 **반대 방향 실패**이므로
+메인 루프가 P1 을 전수 재판정해 **4개 클러스터**로 압축했다 — 아래 정정 100~110 이 그 결과다.
+
+| # | 대상 | 사실(감사 → 메인 루프 재판정) | 조치(착수 전 확정) |
+|---|---|---|---|
+| 100 | 계획 T9(c)·스펙 §W-4 회수 문면·§3-T17e | **gated-orphan 회수에 PR2c 소유 산출물이 없다 — 4렌즈 독립 수렴**(PLAT-8·GP-3·TO-3·CC-3). 스펙 :452-456 은 「리스 보유 소유자가 CAS 로 **정리할 수 있다**」는 **능력 서술**이고 그 능력은 **오늘 이미 참**이다(`serialize` 가 draft 에서 6필드를 명시 재조립하므로 `activeActivity` 를 뺀 draft 를 CAS 하면 그대로 사라진다 — authority.ts:730-747 · 추가 코드 0). §3-T17e 의 판정 주체는 「**재시작 복구**」인데 그 경로는 PR3/PR7 이다. 반대로 「`running` 비대상」을 CAS 층 불변식으로 넣으면 **정상 활동 종료**(spec:475 「spawn 실패 시 활동 종결 CAS 가 필수」)까지 봉쇄돼 두 계약이 서로를 RED 로 만든다 | PR2c 산출물을 **순수 함수 2개로 확정**한다(store 메서드·결과 유니온 신설 0 · 소비자 0 유지): ⓐ`classifyStaleActivity(record): {kind:'none'} \| {kind:'gated-orphan',activityId} \| {kind:'live-activity',activityId}` ⓑ`reclaimDraft(record): BenchAuthorityDraft`(**`activeActivity` 만 소멸 · 나머지 전 필드 바이트 동일 보존**). CAS 층에는 **어떤 정책도 넣지 않는다**. 조작화 = ⓐ의 `it.each` 전수표 + 「`running` 입력에 `gated-orphan` 을 답하면 RED」 음성 통제 + ⓑ의 「6필드 생존」 RED 1행. 실제 회수 CAS 호출부는 **PR7 명시 귀속** |
+| 101 | 정정 100ⓑ 의 보존 계약 | 회수가 만드는 새 revision 의 계약이 **spec·계획 전수 0건**이다(CC-3·CC-4conc). 통합 4필드가 함께 소멸하면 불변식 ③ 이 **vacuously 만족**돼 어떤 게이트도 붉어지지 않는다 | `reclaimDraft` 계약을 명문화: **`sourceGeneration` 무변**(되돌리지 않는다 — §W-8 세대 귀속 보존) · `lifecycle` 무변 · 통합 4필드·`schemaVersion`·`identity` 무변. 구현 규범 = **rest 구조분해**(필드 명시 재조립은 새 필드가 늘 때 누락 표면을 신설한다 — 정정 99b 와 같은 근거). 스펙 §W-4 회수 문단에 이 표를 삽입 |
+| 102 | 스펙 §W-4:509-517 · 계획 정정 58 | **`BenchLauncher` 의 반환 타입과 실패 보고가 스펙 안에서 모순 — 4렌즈 독립 수렴**(PLAT-6·GP-1·CC-4·TO-5). :510 은 `=> ChildProcess` 단일 반환인데 :516-517 은 「불일치는 throw 가 아니라 **판별 유니온 반환**(spawn 미수행)」이다. 정정 58 은 브랜드를 팩토리로 올리며 **반환 타입을 그대로 승계**해 모순을 닫지 못했다. 게다가 인용된 `SpawnOpts` 는 **레포에 존재하지 않는 타입**이다(전수 grep 0건 · 실재는 `cli/detect.ts:17` `RunOpts` 와 node `SpawnOptions`) | 반환을 **판별 유니온으로 확정**: `BenchSpawnResult = {kind:'spawned'; child: ChildProcess} \| {kind:'refused'; reason: 'commit-not-minted'\|'commit-spent'\|'gate-not-released'\|'identity-mismatch'\|'activity-mismatch'\|'generation-mismatch'}`. `opts` 타입은 **workbench 자체 정의**(`BenchSpawnOptions` — node `SpawnOptions` 부분집합). 스펙 §W-4 계약 4항 코드펜스를 이 값으로 정정(PR 본문 「스펙 정정」 등재) |
+| 103 | 정정 102 의 「3필드 대조」 | 대조 **상대 피연산자가 PR2c 범위에 없다**(TO-5·CC-7·PLAT-6). `mintCommit` 이 identity·sourceGeneration·activityId 를 **커밋 자신에 싣기 때문에**(authority.ts:1251-1261) 팩토리가 commit 만 받으면 3필드 대조는 **항상 참인 vacuous 검사**가 된다 | 팩토리가 **대조 상대를 인자로 받는다**: `createBenchLauncher(deps: { spawn: BenchSpawn; commit: AuthorityCommit; expected: { identity; sourceGeneration; activityId } }): BenchLauncher`. 조작화 = 「expected 3필드를 각각 어긋뜨린 3행 + 일치 음성 통제 1행」. **`spawn` 은 주입**이라 팩토리가 실 spawn 을 호출하지 않는다 → cross-spawn 의존 0 · 전 행 페이크 커버 · 폐포 무영향(BUD-7·TO-6 수렴) |
+| 104 | `AuthorityCommit` 크레덴셜 | **민팅 원장이 없다 — 형제 2종과 비대칭**(CC-5·CC-3conc). `mintRead` 는 `MINTED_READS` 에, `mintLease` 는 `MINTED_LEASES` 에 등재하는데(둘 다 **Codex P1 으로 강제된** 규율) `mintCommit`(authority.ts:1244-1262)은 freeze 만 하고 **어떤 원장에도 넣지 않는다**. 따라서 `{...commit}` 스프레드 복제가 **캐스트 0개로** WeakSet 을 우회하고, PR7 배선 층의 `x as AuthorityCommit` 은 eslint 스코프(워크벤치 전용) 밖이라 lint 도 통과한다 | `MINTED_COMMITS`·`SPENT_COMMITS` **모듈 스코프 원장** 신설(`mintCommit` 등재 · authority.ts:381-397 규율 그대로). 판정 순서 = ①원장 조회 ②소진 여부 ③게이트 ④3필드. RED 신설: 「필드를 그대로 베낀 위조/복제 커밋 → `refused` · spawn 0회」(authority-store.test.ts:1531-1620 복제 토큰 행 이식) |
+| 105 | 소비 **단위**(CC-11) | 「commit 단일 사용」의 단위가 미정 — 팩토리 1회 소비면 만들어진 launcher 를 **여러 번 호출**해 자식 N개가 되고, §W-16 의 트리 사망 증거·활동 종결 CAS 가 전부 1:1 가정 위에 서 있어 무너진다 | **팩토리는 확인만, 소비는 launcher 호출 시점**. 두 번째 호출 = `refused{commit-spent}`. 「한 커밋 = 한 자식」이 집행되는 유일한 배치다 |
+| 106 | `AuthorityCommit` 필드(CC-2conc) | **commit1(gated)과 commit2(running)이 `revision` 말고는 구별 불가**하다. 스펙 :469 「launcher 에 넘기는 것은 commit2」가 **관례로만** 존재해, PR7 배선자가 commit1 을 넘겨도 전 게이트 GREEN 인 채 「디스크 gated + 살아있는 자식」 = 스펙이 스스로 fail-open 이라 부른 상태가 만들어진다. 필드 추가는 `mintCommit`·계약 테스트를 함께 건드리므로 **PR7 에서 열면 훨씬 비싸다** | `AuthorityCommit` 에 **`execGate` 를 싣고**(mintCommit 이 `record.activeActivity.execGate` 를 그대로 복사) 런처가 `execGate !== 'running'` 커밋을 `refused{gate-not-released}` 로 거부한다. 관례를 **팩토리 계약으로 승격**. ⚠ 단일 CAS 로 줄이는 붕괴형은 여전히 미집행 — 그 한계를 주석에 병기 |
+| 107 | 백오프 검증(TO-1·GP-4·PLAT-1) | **[10,20,40,80]ms 를 관측하는 §3 행이 0건**이고 주입 가능한 sleep seam 도 없다 → 「백오프 0ms」·「순서 역전」·「고정 5ms」 구현이 T17·T17b·T17c 를 **전부 GREEN** 으로 통과한다. C4 의 존재 이유(상대 핸들이 닫히기를 기다리는 시간 창)가 미검증 출하된다 | `BenchAuthorityStoreOptions` 에 **`sleep: (ms:number)=>Promise<void>` 필수 필드** 추가(형제 `providers/resilient.ts:9,84` 주입 패턴 승계 · 단 **선택적이 아니라 필수** — 기존 3필드가 전부 필수이고, 선택적이면 소비자 0 인 이 PR 에서 기본 구현이 **검증 없이** 착지한다). `realBackoffSleep` 을 함께 export 하고 fake timer 로 「타이머 1개 예약 → advance 후 resolve」를 고정. **§3-T17g 신설**: 기록된 지연 배열 `toEqual([10,20,40,80])` |
+| 108 | 재시도 횟수·범위·대상(PLAT-2·PLAT-5·PLAT-13·TO-2·TO-8) | ⓐ「4회」의 지시 대상이 미정이라 `countOf('rename')` exact 를 쓸 수 없었다 ⓑ**재시도 비대상 코드에서 즉시 실패**해야 한다는 계약이 어디에도 없다 ⓒ**「재시도는 rename 단계에만」을 고정하는 falsifier 가 없다**(쓰기 전체를 감싸는 구현이 통과) ⓓ기존 §3-T16 의 실패 주입은 **`code` 없는 `Error`** 라 그 관용구를 복사하면 zero-retry 구현도 GREEN | **확정: 초기 1회 + 재시도 4회 = rename 총 5회 시도 · 대기 [10,20,40,80] · 총 150ms**(백오프 원소 4개를 전부 소비하는 유일한 해석이고 위 실측 절의 150ms 와 정합). 단언 3종 신설: 소진 시 `countOf('rename')===5` · **비대상 코드(ENOENT·EISDIR·code 없음)는 `countOf('rename')===1`** · rename 아닌 단계 실패 시 그 단계 `countOf===1`(재시도 범위 falsifier) |
+| 109 | 재시도가 만드는 **첫 `await`**(CC-1 · 2렌즈) | 재시도 이전의 `writeDurably` 는 **동기**였다. async 가 되면 「`fn` 이 await 하지 않은 CAS」가 임계 구역 종료(`live=false`) 뒤에도 파일시스템을 변이하고 커밋 토큰을 민팅할 수 있다 — authority.ts:1164-1172 가 세운 「유출 tx 는 쓰지 못한다」(정정 94)의 우회 | 재시도 루프가 **매 회차 `live` 를 L-6 재검증과 같은 지점에서 재검사**하고 false 면 rename 없이 `lease-invalid{released}`. 기존 플래그 재사용이라 비용 ~3행 |
+| 110 | eslint·레이어(GP-7·CC-12) | ⓐerrno 재시도 판정을 `switch (err.code)` 로 쓰면 **워크벤치 전수 assertNever selector**(eslint.config.mjs:430-446)를 만족시킬 수 없고 `ignores` 완화는 purity exact 핀이 RED 로 막는다 ⓑ**폐포 핀은 방향성**이라 workbench → `cli/detect.ts` 타입 import(레이어 역전)를 **못 잡는다** | ⓐerrno 분류는 **상수 `Set` + `has`**(`switch` 는 진짜 판별 유니온에만) ⓑ`BenchSpawnOptions` 를 workbench 가 자체 정의하고 **「workbench 는 `core/cli`·`core/mcp` 를 import 하지 않는다」 구조 핀 1행** 신설(authority-structure.test.ts 의 fs 방향 핀 동형) |
+
+**분량 재도출**(BUD-1·2·3·11 — 셀 「700~1,000」은 정정 77 이후 **재도출되지 않은 stale** 이고 제목도
+이미 PR2b 에 착지한 `commit-uncertain` 을 달고 있었다):
+
+- §3 표 PR2c 셀 = 제목 「rename 재시도 · per-retry L-6 · gated-orphan 분류 · launcher 브랜드」 ·
+  **착지 480~1,050 / 머지 740~1,710**(두 시점 분리 기재 — 유일 권위 측정은 정정 74 의 머지 직전 HEAD).
+- **분할점 사전 확정**(「선언했다」가 아니라 「떼면 얼마가 남는지」까지 — PR1a·PR1c·PR2 3연속 재발 대응):
+  **T9 종료 시 프로덕션 물리행 > 230 이면 T10 전량(타입·팩토리·원장·§3-T16b)을 PR2c′ 로 분리**한다.
+  잔여 계산 = T9 단독 프로덕션 105~220 → 머지 420~1,075 / T10 단독 프로덕션 80~130 → 머지 320~635.
+  두 태스크의 결합점은 §3-T17f 1행뿐이고 그 행은 **PR7 로 이월**되므로(아래) 분리 비용이 0 이다.
+- 하네스 정리: T9 계열 테스트는 **`authority-retry.test.ts` 신설**(현행 `authority-store.test.ts` 1,819행 ·
+  상한의 목적은 리뷰 가능성). 페이크에 `errno` export + `failSequence(op, errs[])` 추가를 T9 예산에
+  **명시 계상**(BUD-10 — 3개 행의 하네스가 각 2~3행으로 줄어 순증이 오히려 감소한다).
+- `durable-fs.ts` 는 **0행 변경**(주석 1줄 stale 정정 제외 — :119 가 「win32 rename 재시도」를 이 파일의
+  행인 것처럼 열거하나 바로 다음 문장이 「규칙은 전부 주입 seam 위에」라고 명령한다 · BUD-4).
+  `authority.ts` 물리행 before/after 를 PR 본문 기록 항목으로 고정(BUD-5 · 상한 신설은 하지 않는다 —
+  이 레포가 PR2a 에서 실측으로 기각한 장치다).
+
+**PR7 명시 이월**(조용한 누락 금지 · CC-6cont 가 「PR7 태스크 어디에도 귀속돼 있지 않다」를 적발):
+§3-T17f(순서 대조) · `CAS1→commit1→CAS2→commit2→spawn` 시퀀서 · **spawn 실패 시 활동 종결 CAS** ·
+실 spawn seam 배선 2곳 · bench-spawn eslint 가드(§3-T16c) · **gated-orphan 회수 CAS 호출부**.
+PR2c 본문에 「§3-T16·T17·T17e 의 「CLI 미실행」 절은 런처 소비자 부재로 **이 PR 에서 vacuous**」를
+명시 선언한다(계획 :559 `testop-17` 이 이미 확립한 정직 표기 관례).
+
+#### PR2c 착지 기록 (2026-07-29)
+
+**분량**: 순증 **1,381**(코드 1,258 · 문서 123 — 계획/스펙은 tracked 다). 상한 1,900 의 66% ·
+셀 재도출값(머지 740~1,710) 안. **분할점 미발동** — T9 종료 시점 프로덕션 물리행 순증 **173 ≤ 230**
+이라 사전 선언한 규칙대로 T10 을 같은 PR 에 유지했다(세 PR 연속 물렸던 계열을 처음으로 **계산으로**
+통과한 사례다).
+
+**게이트**: verify 7게이트 GREEN · 커버리지 **S93.51 B87.21 F94.51 L94.89**(floor 91/83/90/92 ·
+착수 기준선 S93.39 B86.69 F94.30 L94.93 대비 S+0.12 B+0.52 F+0.21 L−0.04).
+
+**뮤테이션 15종 전부 RED**(T9 8 · T10 7). 값 큰 것: 「재시도 제거」·「L-6 을 루프 밖으로」·「백오프 역전」·
+「대상 코드 검사 제거」·「`live` 재검사 제거」·「소진을 팩토리-지역 플래그로」·「`execGate` 미탑재」·
+「expected 스냅숏 제거」. ⚠ **1종(M7 「소진을 spawn 이후로」)이 처음에 무신호**였다 — spawn 성공 경로만
+보면 두 구현이 동일하기 때문. spawn 이 던지는 행을 추가해 닫았다(`commit-spent` 로 재시도 차단).
+
+**실 Linux 22/22 pass**(Docker `node:22.22.3` · `node:24` · `--user 1000:1000` · esbuild 번들 + plain node).
+여기서만 증명되는 것: ⓐ**linux 는 대상이 열려 있어도 rename 이 성공**해 백오프가 0회다(win32 와 정확히
+반대인 3면 실측의 코드 층 확인) ⓑ`realBackoffSleep` 이 **실제로 시간을 소비**한다(≥60ms) ⓒ회수 draft 가
+실 FS 왕복에서 통합 필드·세대를 보존한다 ⓓ런처에 **실 `child_process.spawn` 을 주입해 진짜 자식이 뜨고**
+종료 코드가 돌아오며, 두 번째 호출은 `commit-spent`·복제 커밋은 `commit-not-minted` 다.
+
+**win32 실 FS 재시도 2행**(`authority-node.test.ts` · `describe.skipIf(!IS_WIN)`): 실 커널이 EPERM 을
+내고 4회차에 커밋된다 / 핸들이 끝까지 열려 있으면 5회 시도 후 `io-failure`·대상 내용 불변.
+**벽시계로 핸들을 닫지 않는다** — 백오프 총합이 150ms 라 CI 부하에서 순서가 뒤집혀 **정답 구현이
+flake 로 RED** 가 된다. 실 어댑터를 **카운팅 데코레이터로 감싸** 「n회차 rename 직전에 닫는다」를 사건
+순서로 고정했다.
+
+**구현 중 실측으로 잡은 것 — 페이크가 실물보다 느슨했다**: 테스트 `sleep` 을 `Promise.resolve()` 로
+두면 **마이크로태스크**라 재시도 루프가 `withAuthority` 의 `finally`(=`live=false`)보다 **먼저** 재개된다.
+실 구현 `realBackoffSleep` 은 `setTimeout` = **매크로태스크**다. 그래서 정정 109(유출 tx 봉쇄)의
+테스트가 「방어가 있는 구현」과 「없는 구현」을 구별하지 못했다(작성 중 RED 로 드러남 → 대기 0ms 를
+유지하되 `setTimeout(…, 0)` 으로 **태스크 경계만 실물과 같게**). 형제 `lock-backend-fake` 가 확립한
+「페이크가 실물보다 느슨하면 안 된다」 규율이 **시간 축에도 적용된다**는 새 사례다.
+
+**자가 적대 리뷰**(ADR-0014 **봇 공백 4렌즈** — 프레임 전복·성능 정량·커버리지·동적 검증 공백 ·
+27 후보). ⚠ 착수 전 감사(83중 1 기각)에 이어 **이번에도 refuter 가 0건 기각**해 메인 루프가 전수
+재판정했다 — 「refuter 의 잘못된 강등」(PR2b 교훈 ②)의 **반대 방향 실패**가 2회 연속이다.
+반영한 것:
+
+| # | 지적 | 조치 |
+|---|---|---|
+| **F1**(P1) | **내가 이 PR 에서 추가한 레이어 핀이 무신호였다** — 정규식이 `../` 를 **1단만** 허용해 같은 모듈을 가리키는 정상 철자 `../../core/cli/detect`(루트)·`../../cli/detect`(하위 디렉터리)를 둘 다 통과시켰다. 게다가 앵커가 술어 **사본**을 검사해 붕괴를 영원히 못 잡았다(형제 앵커 3종은 상수 공유 — 이 핀만 비대칭) | 문자열 패턴 → **경로 해소**(`resolve` 후 「코어 아래 ∧ 워크벤치 밖」) + **허용 이웃 exact 목록**(`workspace` — `coord-area`·`active-instance` 의 정당한 의존이 실제로 잡혔다) + 앵커가 **가드와 같은 함수**를 태우고 하위 디렉터리 기준까지 검사 |
+| **DYN4-01**(P1) | `renameWithRetry` 의 **attempt 0 재검증만** 지워도 전 게이트 GREEN — 기존 뮤턴트는 「루프 전체를 밖으로」만 다뤘고 「1회차만 건너뜀」 축이 비어 있었다(CAS ② 재검증이 먼저 잡아 준다) | ②를 통과시킨 **뒤**(쓰기 진입 후) 탈취하는 행 신설 — `openExclusive` 훅으로 그 창을 정확히 겨눈다 |
+| **DYN4-02**(P2) | 신규 seam 2종(`sleep`·`spawn`)의 「기본값 금지」가 **주석 문면뿐** — 형제 fs seam 은 구조 핀을 갖는데 비대칭 | 옵셔널화·값 import·`setTimeout` 개수 핀 3행 + 자기검사 앵커 |
+| **F5**(P2) | 내가 넣은 `neverSleeps` 가 **throw** 라 그 오류가 CAS `catch` 에서 `io-failure{rename}` 로 **재라벨**돼 기대값과 우연히 일치 → 「모든 오류 재시도」 뮤턴트를 **덮었다**(정확히 그 헬퍼가 막으려던 회귀) | 흐름을 바꾸지 않는 **기록형** + `afterEach` 단언 |
+| **F2**(P2) | `BenchSpawnOptions` 가 **이 계획 자신의 정정 57** 이 확정한 5필드 중 `stdio?`·`detached?` 를 무기록 누락(`detect.ts` 만 보고 부분집합을 도출) — `mcp/stdio.ts` 는 `stdio` 를 필수로 넘기고 §W-16 은 `detached` 를 P1 으로 요구 | 두 필드 추가(옵셔널 가산이라 테스트 수정 0) |
+| **F3**(P2) | 커밋 원장 주석이 **「한 활동 = 한 자식」**을 이 원장의 성질처럼 서술 — 실측상 활동 진행 중 상태 갱신 CAS 가 **두 번째 launchable 커밋**을 민팅한다 | 보장 범위를 「한 커밋 = 한 자식」으로 정정하고 활동 스코프는 **PR7 시퀀서 소관**임을 명시 |
+| **PERF-1**(P2) | `for(;;)` 의 종료가 `backoff === undefined` **하나**뿐 — 그 한 줄이 사라지면 리스+뮤텍스를 쥔 무한 루프(hang 은 RED 가 아니다) | 유계 루프 + 소진 없이 종료 시 `io-failure` 반환(암묵 `undefined` = 「커밋됐다」는 거짓 증언 방지) |
+| **COV-2·DYN4-06**(P2) | rename 을 `renameWithRetry` 로 옮긴 뒤 `catch` 의 `step === 'rename' ? path` arm 이 **어느 OS 에서도 도달 불가** | 삼항에서 제거 + 이유를 주석에 |
+| **DYN4-03·DYN4-04**(P2) | 재시도 스위트가 `file-only` 한 축에서만 돌아 **재시도 × post-commit 조합 0건** / 런처 스냅숏 규율이 **최상위 한 필드**만 검증 | 각각 1행 신설(post-commit 시퀀스 단언 · `expected.identity` 중첩 축) |
+| **F4·F7**(P3) | spawn 실패 테스트의 라벨이 실 seam 의 지배적 형태(비동기 `'error'`)와 다름 / 「총 150ms」는 모듈이 아니라 **주입된 sleep** 의 성질 | 정직 표기 주석 2곳 |
+
+**리뷰 반영 후 뮤테이션 5종 추가 실측**(전부 RED · 총 **20 뮤턴트**): attempt 0 재검증 건너뜀 ·
+sleep seam 옵셔널화 · `expected.identity` 참조 유지 · 레이어 역전 주입(`../../core/cli`) ·
+재시도 범위를 post-commit 까지 확대. 유계 루프 상한 제거만 GREEN 인데 **그것이 정답**이다
+(동작을 바꾸지 않는 **구조** 방어이므로 행동 테스트가 잡을 대상이 아니다 — 이 구분을 뮤턴트 기대값에
+명시했다).
+
+**최종 분량**: 전체 순증 **1,621**(코드 1,464) · `authority.ts` 1,262 → **1,582**. 리뷰 하드닝 팽창률
+**1.17**(1,381 → 1,621). 상한 1,900 의 85% 로 **이내**이나 착지 목표(상한의 60~65%)는 **초과**했다 —
+은폐하지 않는다. 초과분의 대부분은 위 표의 방어 신설이고, 그 대신 「선언만 하고 실재하지 않던 핀」이
+셋(F1·DYN4-02·F5) 닫혔다.
+
+**봇 리뷰 1R**(PR #267 · CI 7/7 pass):
+
+**Codex P1×1 — 실측 재현 후 수용.** 「재시도의 `await` 가 **같은 임계 구역 안 두 CAS 의 겹침**을 새로
+열었다」. PR2c 이전에는 `compareAndSwap` 이 전 구간 동기라 도달 불가였던 상태다. 재현한 파괴 사슬:
+ⓐA 가 tmp 를 만들고 rename EPERM 으로 백오프에서 양보 ⓑB 가 진입해 `openExclusive` 에서 **EEXIST**
+(A 의 tmp) ⓒB 의 `finally` 가 「자기 tmp 정리」로 **A 의 tmp 를 unlink** ⓓA 가 깨어나 rename 하면
+**ENOENT** — 재시도만 했으면 성공했을 CAS 가 남의 정리에 파괴된다(실측: A=`io-failure{rename,ENOENT}` ·
+B=`io-failure{open-tmp,EEXIST}` · 디스크 잔여 0).
+→ **tx-지역 in-flight 가드**(겹침 시 `invariant-violation`). Codex 가 병기한 대안(CAS 별 고유 tmp)은
+**기각** — tmp 가 `ownerToken` 스코프인 것이 정정 78 의 「같은 리스의 다음 CAS 가 자기 tmp 로
+자기잠금」 falsifier 의 근거라 이름을 바꾸면 그 계약 테스트가 무의미해진다. 직렬화는 §W-4 문면
+(「**전체**를 하나의 임계 구역」)과도 정합한다.
+⚠ **PR2b 가 철회한 재진입 가드와 다르다**: 그것은 `withAuthority` **호출 간** 중첩을 `AsyncLocalStorage`
+로 감지해 거짓 양성 3종을 냈다. 이것은 **한 tx 객체 안** 단순 플래그 + `finally` 즉시 해제라 순차
+호출에 영향이 0 이고, **그 음성 통제를 계약 테스트가 고정한다**(비용 비대칭 판단 기준 승계).
+
+**CodeRabbit 4건 전부 수용**: ⓐ내가 쓴 **스펙 T17b 관측면 서술이 착지물과 어긋났다** — 「`MINTED_COMMITS`
+원장 크기」라 적었는데 그것은 `WeakSet` 이라 **크기를 셀 수 없다**(실제 관측면 = 디스크 revision +
+`countOf('openExclusive')`). 이 계획이 스스로 경계하는 「선언만 하고 실재하지 않는 핀」을 문서에서
+반복한 셈이다 ⓑ`authority-launcher.test.ts` 의 `neverSleeps` 만 throw 로 남아 형제 두 스위트와 비대칭
+(F5 와 같은 재라벨 함정이 훗날 재발) ⓒ`reclaimDraft` JSDoc 이 런처 섹션 배너에 밀려 **고아 주석**이
+됐다 ⓓ§3-T16b 의 `@ts-expect-error` 가 서는 이유를 **브랜드 부재 하나로** 좁히도록 구조 필드를 채움.
+
+**뮤테이션 21종째**(가드 제거 → RED 확인). 최종 verify: **2544 pass / 57 skip** · S93.48 B87.22
+F94.53 L94.88 · 실 Linux 22/22 재확인.
+
+**교훈**: **「전 구간 동기」가 주던 안전을 async 승격이 조용히 거둬간다.** 정정 109(유출 tx 봉쇄)는
+「임계 구역 **종료 후**」를 닫았는데, 같은 승격이 「임계 구역 **안** 겹침」이라는 형제 구멍을 함께
+열었고 그쪽은 감사·자가리뷰 8렌즈가 전부 놓쳤다(봇이 잡았다). 동기→비동기 전환에서는 **그 함수가
+독점하던 자원을 전수 열거**해야 한다 — 여기서는 리스 스코프 tmp 경로였다.
+
+**머지 전 실증 라운드**(사용자가 「실증 테스트해」라고 물어 시작 — 갭 2개 적발. PR2a·PR2b 에 이어
+**3회차 동형 재발**):
+
+1. **사슬 전체가 이어 붙은 적이 없었다.** 각 조각(`commit-uncertain` 반환 · 분류 · 회수 draft)은 페이크로
+   검증됐지만 §W-4 「`commit-uncertain` 복구」의 **종단** — 「post-commit 실패로 디스크에만 남은
+   `execGate:'gated'` 를 **다른 프로세스**가 분류해 회수한다」 — 는 어디서도 연결되지 않았다.
+   실 프로세스 급사(SIGKILL)로 잔재를 만들고 새 프로세스가 복구자 역할을 하는 **컨테이너 e2e 3시나리오**
+   (19~20 단언 · node 22.22.3 · 24)를 짰다: ⓐ`commit-uncertain` → 급사 → 재시작 분류·회수(세대·통합
+   필드 보존 · 회수 후 `none` = 멱등 방향) ⓑ**재시도 백오프 중 급사** → tmp 잔재 → 새 소유자(다른
+   `ownerToken`)가 자기잠금 없이 커밋하고 **남의 잔재는 지우지 않는다** ⓒ`running` 잔재 음성 통제.
+2. ⚠ **그 실증의 첫 판이 엉뚱한 경로를 탔다** — `openDir` 을 통째로 막았더니 `file+dir` 첫 CAS 가
+   **rename 이전에** 부모 디렉터리를 fsync 하는 바람에(Codex PR#266 2R P1) `io-failure{mkdir}` 로 죽어
+   「commit-uncertain 잔재」를 애초에 만들지 못했다. post-commit **차례만** 겨냥해 고쳤다.
+   **실증도 조작을 틀리면 다른 사실을 증명한다**(PR2b 교훈 ⑤의 직접 재현).
+3. ⚠ **실증 안에 vacuous 한 단언이 하나 있었다** — 「죽은 소유자의 리스를 새로 획득할 수 있다」는
+   페이크 락 백엔드가 프로세스마다 자기 네임스페이스를 갖기 때문에 **항상 성공**한다. 삭제하고 근거
+   (크로스 프로세스 리스 배타는 PR1b 가 실 추상 소켓 + 실 fork 로 검증)를 주석에 남겼다.
+4. **실증 자체의 반증력을 뮤테이션으로 확인**했다(4/5 RED): classify 가 running 도 회수 적격 /
+   `reclaimDraft` 가 세대 되돌림 / 활동을 남김 / post-commit 실패를 `io-failure` 로 오분류.
+   1종(「rename 성공 후에도 tmp 정리 호출」)은 **동치 뮤턴트**였고(자기 tmp 는 이미 없어 no-op),
+   그것은 **단위 층이 잡는다**(호출 카운트 단언 → 3 fail 실측) — 층 분업이 정확함을 확인한 셈이다.
+5. **일회성으로 두지 않았다.** 스크래치패드 e2e 는 CI 에서 돌지 않으므로 회귀 가드가 아니다 →
+   핵심 시나리오(ⓐ·ⓒ)를 `authority-node.test.ts` 에 **실 프로세스 급사 형태 그대로** 이식했고,
+   두 행 각각의 반증력도 뮤턴트로 확인했다(각 1 fail).
+
+최종 verify: **2546 pass / 57 skip** · S93.48 B87.22 F94.53 L94.88.
+
+**배포 근사 라운드**(사용자가 「방금 한 테스트는 라이브 테스트냐」고 물어 시작 — 그때까지의 검증이
+전부 컨테이너 **tmpfs** 였다는 것이 드러났다). 실제 `fleet-server` 이미지(uid 1000=node) + 실제
+`/workspace` **bind mount** 위에 배포 레이아웃(`/workspace/<repo>/.git/fleet/authority`)을 만들어
+13 단언 통과: bind mount 위 `probeDurability='file+dir'` · 파일 모드 0600 · rename 원자 교체 ·
+재시도 4회 + 실 백오프 ≥60ms · 크래시 잔재 회수 종단 · tmp 잔재 0.
+
+⚠ **그럼에도 라이브가 아니며, 이 근사를 라이브 근거로 인용하면 안 된다** — 위 §2 표에 등재한 대로
+Docker Desktop 이 bind mount 권한을 가상화한다(`owner=0:0 mode=777`). 그리고 **애초에 라이브에서 이
+코드에 도달할 경로가 없다**(소비자 0 이 계약이고 폐포 핀이 그것을 강제한다) — 첫 라이브 실행 시점은
+**PR7 배선 이후**다. 검증 층위를 정직하게 적으면: 단위(페이크) → 실 FS(win32/linux) → 실 프로세스
+(컨테이너) → **배포 근사** → ~~라이브~~(PR7).
+
 ### PR3 — `GitRepo` 완성 · 통합 WAL 저널
 
 - **T11 `GitRepo` 나머지 8메서드 + 능력 프로브** — §3-T24(정확 old-OID CAS — **조상 이동(ff 가능)에도 거부**) ·
@@ -805,6 +1018,14 @@ T20 raw 스냅숏분·T18b ref-앵커(→PR3 · 정정 85·70) · 엔진 배선(
   `hostname`·`machine-id` **부적격**). `killTree(child,{processGroup:true})` **opt-in**.
   ②의 배포 전제(단일 인스턴스) 검사 · macOS `'platform-unsupported'` 거부.
   마감: brain 최종 1회 · `npm run verify` · e2e 무회귀 · #253/#254 핸드오프 메모.
+- **T30b 활동 시작 시퀀서 · 회수 호출부**(PR2c 이월 · 정정 100·102·106 · **주인 없던 행의 신설** —
+  CC-6cont 가 「§3-T16c·§3-T17f·spawn seam 배선이 PR7 태스크 어디에도 귀속돼 있지 않다」를 전수 대조로
+  적발) — `CAS1('gated') → commit1 → CAS2('running') → commit2 → launcher(commit2)` 시퀀서 · **spawn 실패
+  시 활동 종결 CAS**(없으면 `activeActivity{running}` 이 프로세스 종료까지 남아 다음 부팅이 ③
+  reconciliation = 사용자 고착) · §3-T17f(DurableFs 타임라인 ↔ launcher 호출 순서 대조) · 실 spawn seam
+  배선 2곳(`cli/detect.ts`·`mcp/stdio.ts` · 폐포 핀 해제와 동반) · **bench-spawn eslint 가드**(§3-T16c) ·
+  **gated-orphan 회수 CAS 호출부**(PR2c 가 착지시킨 `classifyStaleActivity`·`reclaimDraft` 소비 ·
+  회수 자체는 리스 보유 소유자의 `withAuthority` 안에서).
 
 ## 5. 무회귀 체크리스트
 

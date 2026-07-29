@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type {
   AuthorityReadResult,
@@ -35,6 +35,29 @@ const AUTHORITY_DIR = join('/repo/.git/fleet', 'authority')
 
 /** 고정 시계 — 픽스처 시계 규율(이 레포가 C1 에서 확립). `writtenBy.at` 이 관측 대상이다. */
 const AT = 1_700_000_000_000
+
+/**
+ * 이 스위트는 **재시도 경로를 타지 않는다** — 여기서 백오프가 발동하면 그것이 회귀다.
+ * §3-T16 의 실패 주입은 `code` 가 없어(=재시도 비대상) 즉시 실패 경로이고, 재시도 계약 자체는
+ * `authority-retry.test.ts`(#251 PR2c T9) 소관이다.
+ *
+ * ⚠ **던지지 않는다**(자가 적대 리뷰 F5 · 실측): 원안은 `throw` 였는데 그러면 그 오류가 CAS 의
+ * `catch` 에 잡혀 `io-failure{step:'rename'}` 로 **재라벨**돼 기대값과 우연히 일치한다 — 그 결과
+ * 「모든 오류를 재시도」 뮤턴트가 이 스위트에서 GREEN 이 됐다(정확히 이 헬퍼가 막으려던 회귀다).
+ * 흐름을 바꾸지 않고 **기록만** 한 뒤 `afterEach` 에서 단언하면 둘 다 얻는다.
+ */
+const sleepCalls: number[] = []
+const neverSleeps = (ms: number): Promise<void> => {
+  sleepCalls.push(ms)
+  return Promise.resolve()
+}
+
+afterEach(() => {
+  const seen = sleepCalls.splice(0)
+  expect(seen, '이 스위트에서 백오프가 발동했다 — 재시도는 authority-retry.test.ts 소관').toEqual(
+    [],
+  )
+})
 
 interface Fixture {
   readonly fs: FakeDurableFs
@@ -77,6 +100,7 @@ const setup = async (
     authorityDir: AUTHORITY_DIR,
     durability,
     now: () => AT,
+    sleep: neverSleeps,
   })
   return {
     fs,
@@ -269,6 +293,7 @@ describe('§3-T14 fresh read — 읽기 카운터는 두 축이다(정정 79)', 
       authorityDir: AUTHORITY_DIR,
       durability: 'file-only',
       now: () => AT,
+      sleep: neverSleeps,
     })
 
     const r = await store.withAuthority(lease, (tx) => Promise.resolve(tx.readFresh()))
@@ -835,6 +860,7 @@ describe('readSeq·소비 원장은 모듈 스코프다(정정 95)', () => {
         authorityDir: AUTHORITY_DIR,
         durability: 'file-only',
         now: () => AT,
+        sleep: neverSleeps,
       })
     const a = mk()
     const b = mk()
@@ -948,6 +974,7 @@ describe('CAS 재독 창 — 읽기와 쓰기 사이의 변화는 전부 fail-cl
       authorityDir: AUTHORITY_DIR,
       durability: 'file-only',
       now: () => AT,
+      sleep: neverSleeps,
     })
 
     const r = await store.withAuthority(lease, async (tx) => {
@@ -971,6 +998,7 @@ describe('CAS 재독 창 — 읽기와 쓰기 사이의 변화는 전부 fail-cl
       authorityDir: AUTHORITY_DIR,
       durability: 'file-only',
       now: () => AT,
+      sleep: neverSleeps,
     })
 
     const token = await store.withAuthority(a.lease, (tx) => {
@@ -1217,6 +1245,7 @@ describe('판정 순서 · tx 수명 보강(뮤턴트 M3 · M29 · DYN-05)', () 
       authorityDir: AUTHORITY_DIR,
       durability: 'file-only',
       now: () => AT,
+      sleep: neverSleeps,
     })
     const token = await store.withAuthority(a.lease, async (tx) => {
       const read = tx.readFresh()
@@ -1356,6 +1385,7 @@ describe('직렬화 완결성 보강(뮤턴트 M20 · M32 · M33 · TP-6 · TP-7
       authorityDir: AUTHORITY_DIR,
       durability: 'file-only',
       now: () => AT,
+      sleep: neverSleeps,
     })
     const commit = async (lease: BenchLeaseToken, benchRoot: string): Promise<CasResult> =>
       store.withAuthority(lease, async (tx) => {
@@ -1394,6 +1424,7 @@ describe('TOCTOU 잔여 창 — 정직 고정(perf-1 · SEC-8)', () => {
       authorityDir: AUTHORITY_DIR,
       durability: 'file-only',
       now: () => AT,
+      sleep: neverSleeps,
     })
 
   it('statKind 이후 파일이 사라지면 io-failure{step:read} 로 fail-closed 한다', async () => {
@@ -1637,6 +1668,7 @@ describe('디렉터리 생성 내구성(Codex 2R P1-D · 3R P1-1)', () => {
         authorityDir: AUTHORITY_DIR,
         durability,
         now: () => AT,
+        sleep: neverSleeps,
       }),
     }
   }
@@ -1721,6 +1753,7 @@ describe('store 옵션은 생성 시점 스냅샷이다(Codex 2R P1-C)', () => {
       authorityDir: AUTHORITY_DIR,
       durability: 'file-only' as const,
       now: () => AT,
+      sleep: neverSleeps,
     }
     const store = createBenchAuthorityStore(fs, mutable)
 
