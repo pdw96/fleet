@@ -147,7 +147,12 @@ export const ownerMismatch = (statUid: number, selfUid: number | undefined): boo
   selfUid !== undefined && statUid !== selfUid
 
 export interface OpenAreaOptions {
-  readonly repo: GitRepo
+  /**
+   * **`commonGitDir` 하나만** 받는다(#251 PR3). 전체 `GitRepo` 를 받으면 ⓐ영역 개방 경로가 ref 변이
+   * (`casUpdateRef`)·worktree 변이 권한을 함께 쥐게 되고 ⓑ`GitRepo` 에 메서드가 늘 때마다 이 경로의
+   * 테스트 더블이 **계약과 무관하게** 커진다. 필요한 것만 받는 것이 두 문제를 동시에 없앤다.
+   */
+  readonly repo: Pick<GitRepo, 'commonGitDir'>
   /** 이 플랫폼에서 실제로 bind 가능한 백엔드 집합. 빈 배열 = 기능 비활성(fail-closed). */
   readonly supportedBackends: readonly LockBackendKind[]
   /** 진단용 엔진 인스턴스 id(ULID). */

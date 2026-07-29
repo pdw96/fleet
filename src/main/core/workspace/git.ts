@@ -105,10 +105,76 @@ export type GitWorktreeListResult =
   | { status: 'ok'; worktrees: WorktreeEntry[] }
   | { status: 'failed'; stderr: string; code: number | null }
 
+/** 실패를 값으로 답하는 공통 꼬리(§W-6 재사용 관용구 4번째 — `integrate` 계약). */
+export interface GitFailure {
+  status: 'failed'
+  stderr: string
+  code: number | null
+}
+
+export interface GitRefEntry {
+  /** 정준 전체 이름(`refs/…`). */
+  ref: string
+  oid: string
+}
+
+export type GitRefListResult = { status: 'ok'; refs: GitRefEntry[] } | GitFailure
+
+/**
+ * 정확 old-OID CAS 의 결과.
+ *
+ * `rejected` 가 **실제 디스크 값**을 싣는 이유: git 은 「이미 존재」와 「기대값 불일치」를 **둘 다 exit 128**
+ * 로 내고 그 문면(`reference already exists` / `is at X but expected Y`)은 버전마다 달라질 수 있다(3면 실측).
+ * 문자열로 분류하면 `LOCK_RE` 계열(문면 의존 판정)의 재발이라, 실패 후 **열거로 재조회한 값**을 답한다.
+ */
+export type RefCasResult =
+  { status: 'updated' } | { status: 'rejected'; actual: string | null } | GitFailure
+
+/**
+ * `merge-tree --write-tree` 의 결과.
+ *
+ * ⚠ **판별식은 종료코드가 아니다**(3면 실측): 충돌도 exit 1, **인자 오류(비커밋 인자·없는 rev)도 exit 1**
+ * 이다. 갈리는 것은 stdout 뿐 — 충돌은 첫 줄이 결과 트리 OID 이고 오류는 stdout 이 비어 있다.
+ * 종료코드로 충돌을 판정하면 인자 오류가 「충돌」로 보고돼 통합이 조용히 실패로 굳는다.
+ */
+export type MergeTreeResult =
+  | { status: 'clean'; tree: string }
+  | { status: 'conflict'; tree: string; conflicts: string[] }
+  | GitFailure
+
+export type GitOidResult = { status: 'ok'; oid: string } | GitFailure
+export type GitRevParseResult = { status: 'ok'; oid: string } | { status: 'absent' } | GitFailure
+export type GitOpResult = { status: 'ok' } | GitFailure
+export type GitRefExistsResult = { status: 'ok'; exists: boolean } | GitFailure
+/** 조상 판정은 **3값**이다 — `merge-base --is-ancestor` 는 0/1 외에 **128**(해소 불가 OID)을 낸다(실측). */
+export type GitAncestorResult = { status: 'yes' } | { status: 'no' } | GitFailure
+
 export interface GitRepo {
   /** `<canonical common gitdir>` — 코디네이션 영역(§W-2)의 부모. 5형태에서 동일 값으로 수렴한다. */
   commonGitDir(): Promise<GitRepoDirResult>
   listWorktrees(): Promise<GitWorktreeListResult>
+  /**
+   * `for-each-ref` 열거. **접두는 경로 성분 경계로 매칭**된다(실측: `…/BX` 는 `…/BX/T1` 을 답하고 이웃
+   * `…/BXY/T9` 는 답하지 않는다). bare 부모 ref 는 결과에 **이름이 정확히 같은 항목**으로 나타난다.
+   *
+   * 이 메서드가 존재하는 이유는 편의가 아니다 — win32 git 은 packed 상태의 D/F 를 막지 못하고(linux 는
+   * 막는다), 그 공존 상태에서 `rev-parse --verify`·`show-ref --verify` 는 **실존 ref 를 부재로** 답한다.
+   * 결과 ref 관측(§3-T23·T34)은 그래서 **열거만** 신뢰한다.
+   */
+  listRefs(prefix: string): Promise<GitRefListResult>
+  revParse(rev: string): Promise<GitRevParseResult>
+  /** **열거 기반**이다(위 `listRefs` 주석의 근거). `revParse` 로 대체하면 packed 공존에서 오답한다. */
+  refExists(ref: string): Promise<GitRefExistsResult>
+  /** 정확 old-OID 조건부 갱신. `expectedOldOid === null` = create-if-absent. ff-only(조상 검사)는 CAS 가 아니다(15R). */
+  casUpdateRef(ref: string, newOid: string, expectedOldOid: string | null): Promise<RefCasResult>
+  mergeTree(base: string, head: string): Promise<MergeTreeResult>
+  commitTree(tree: string, parents: string[], message: string): Promise<GitOidResult>
+  isAncestor(maybeAncestor: string, descendant: string): Promise<GitAncestorResult>
+  addNamedWorktree(dir: string, branch: string, base: string): Promise<GitOpResult>
+  addDetachedWorktreeAt(dir: string, base: string): Promise<GitOpResult>
+  removeWorktreeAt(dir: string, force: boolean): Promise<GitOpResult>
+  /** `merge-tree --write-tree` 지원 여부(§W-6 부팅 1회). 미지원이면 통합 기능만 fail-closed 비활성 — **폴백 없음**. */
+  probeMergeTree(): Promise<{ supported: boolean }>
 }
 
 /** porcelain 은 `키 값` 한 줄 + 빈 줄 구분. 값에 공백이 있을 수 있어 **첫 공백 하나로만** 자른다. */
@@ -141,13 +207,71 @@ const parseWorktreePorcelain = (stdout: string): WorktreeEntry[] => {
   return out
 }
 
-export function createGitRepo(root: string, git: GitRunner = defaultGitRunner): GitRepo {
+/**
+ * ref `.lock` 경합 재시도 대기(ms · R-5). **원소 개수 = 재시도 횟수**이고 총 시도는 `1 + length` 다.
+ *
+ * 레거시 `ok()` 와의 차이가 이 상수의 존재 이유다 — `ok()` 는 재시도 사이에 `index.lock` 을 **삭제**하는데,
+ * 실측상 신규 연산이 실제로 겪는 경합은 `refs/…/<name>.lock` 이고 그때 `lockPath()` 가 가리키는 것은
+ * **무관한 남의 `index.lock`** 이다(오조준 삭제). R-5 는 「삭제 없는 유계 백오프」다.
+ */
+export const REF_LOCK_BACKOFF_MS: readonly number[] = Object.freeze([10, 20, 40])
+
+/**
+ * 재시도 대상 = ref/파일 락 경합. 레거시 `LOCK_RE`(`index.lock` 전용)와 달리 **`cannot lock ref`** 를 포함한다 —
+ * 실측상 신규 연산의 경합은 그 형태로 나타난다(`Unable to create '….lock': File exists.` 동반).
+ */
+const REF_LOCK_RE = /cannot lock ref|Unable to create '.*\.lock'|Another git process/i
+
+const realSleep = (ms: number): Promise<void> =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
+export interface GitRepoOptions {
+  /** 백오프 대기 seam. 미주입이면 실 타이머 — 주입은 **스케줄을 관측 가능하게** 만든다(§3-T58). */
+  readonly sleep?: (ms: number) => Promise<void>
+}
+
+const OID_SHAPE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
+
+export function createGitRepo(
+  root: string,
+  git: GitRunner = defaultGitRunner,
+  opts: GitRepoOptions = {},
+): GitRepo {
+  const sleep = opts.sleep ?? realSleep
   const run = (args: string[]): Promise<GitResult> => git.run(args, root)
+  /**
+   * 공통 gitdir 변이 연산 전용 재시도(R-5 · G-1). **락 파일을 삭제하지 않는다.**
+   * `ok()` 를 쓰지 않는 이유는 그 헬퍼의 안전 근거(「오케스트레이터는 순차 실행」)가 bench 병렬에서
+   * 깨지고, 삭제 대상이 경합 파일과 다른 파일이기 때문이다.
+   */
+  const runWithLockRetry = async (args: string[]): Promise<GitResult> => {
+    let last = await run(args)
+    for (const backoff of REF_LOCK_BACKOFF_MS) {
+      if (last.code === 0 || !REF_LOCK_RE.test(last.stderr)) return last
+      await sleep(backoff)
+      last = await run(args)
+    }
+    return last
+  }
   const failed = (r: GitResult): { status: 'failed'; stderr: string; code: number | null } => ({
     status: 'failed',
     stderr: r.stderr.trim() || `git 실패(code ${r.code})`,
     code: r.code,
   })
+  /** 실패를 값으로 답하는 얇은 래퍼 — `worktree` 3메서드가 공유한다. */
+  const opResult = (r: GitResult): GitOpResult => (r.code === 0 ? { status: 'ok' } : failed(r))
+  /** ref 하나의 현재 값을 **열거로** 재조회한다(packed 공존에서 `rev-parse` 가 오답하므로). */
+  const readRefExact = async (ref: string): Promise<string | null | GitFailure> => {
+    const r = await run(['for-each-ref', '--format=%(refname)%00%(objectname)', ref])
+    if (r.code !== 0) return failed(r)
+    for (const line of r.stdout.split(/\r?\n/)) {
+      const [name, oid] = line.split('\0')
+      if (name === ref && oid !== undefined) return oid.trim()
+    }
+    return null
+  }
   return {
     async commonGitDir() {
       // `--path-format=absolute`(git ≥2.31)가 핵심이다 — 없으면 메인 worktree 가 상대 `.git` 을,
@@ -184,6 +308,129 @@ export function createGitRepo(root: string, git: GitRunner = defaultGitRunner): 
       const r = await run(['worktree', 'list', '--porcelain'])
       if (r.code !== 0) return failed(r)
       return { status: 'ok', worktrees: parseWorktreePorcelain(r.stdout) }
+    },
+
+    async listRefs(prefix) {
+      // `%00` 구분자 — refname 은 공백을 가질 수 없지만 형제 파서(worktree porcelain)가 공백에 물린
+      // 전례가 있어 애초에 공백에 의존하지 않는 형식을 쓴다.
+      const r = await run(['for-each-ref', '--format=%(refname)%00%(objectname)', prefix])
+      if (r.code !== 0) return failed(r)
+      const refs: GitRefEntry[] = []
+      for (const line of r.stdout.split(/\r?\n/)) {
+        if (line.trim() === '') continue
+        const [ref, oid] = line.split('\0')
+        if (ref !== undefined && oid !== undefined) refs.push({ ref, oid: oid.trim() })
+      }
+      return { status: 'ok', refs }
+    },
+
+    async revParse(rev) {
+      const r = await run(['rev-parse', '--verify', '-q', rev])
+      if (r.code === 0) {
+        const oid = r.stdout.trim()
+        return OID_SHAPE.test(oid) ? { status: 'ok', oid } : failed(r)
+      }
+      // `--verify -q` 는 **해소 실패를 exit 1 + 무출력**으로 답한다. 그것만 「없음」이고, 나머지(레포가
+      // 아님 = 128 등)는 실패다 — 둘을 `null` 로 뭉개면 「없는 ref」와 「못 본 레포」가 구분되지 않는다.
+      if (r.code === 1 && r.stdout.trim() === '') return { status: 'absent' }
+      return failed(r)
+    },
+
+    async refExists(ref) {
+      const actual = await readRefExact(ref)
+      if (actual !== null && typeof actual === 'object') return actual
+      return { status: 'ok', exists: actual !== null }
+    },
+
+    async casUpdateRef(ref, newOid, expectedOldOid) {
+      // 빈 문자열 = 「존재하지 않아야 한다」(실측). 40×0 도 같은 뜻이지만 SHA-256 레포에서 길이가
+      // 달라지므로 길이에 의존하지 않는 형태를 쓴다.
+      // ⚠ `--stdin --batch-updates` 금지 — **거부에도 exit 0** 을 내서(2.54 실측) CAS 가 무성 통과한다.
+      //    그 옵션은 배포 런타임(2.39.5)·2.30.2 에는 존재조차 하지 않는다.
+      const r = await runWithLockRetry(['update-ref', ref, newOid, expectedOldOid ?? ''])
+      const actual = await readRefExact(ref)
+      if (actual !== null && typeof actual === 'object') return actual
+      if (r.code === 0) {
+        // **왕복 검증**: 성공을 자칭해도 디스크가 그 값을 답하지 못하면 발행되지 않은 것으로 다룬다.
+        // win32 packed D/F 공존에서 이 검증만이 「열거는 되는데 해소는 안 되는」 상태를 잡는다.
+        return actual === newOid
+          ? { status: 'updated' }
+          : {
+              status: 'failed',
+              stderr: `발행 후 왕복 검증 실패: ${ref} 가 ${String(actual)} 로 관측됨(기대 ${newOid})`,
+              code: r.code,
+            }
+      }
+      // 실패 분류는 **문면이 아니라 값**으로 한다(§ 타입 주석 참조).
+      // create-if-absent 인데 값이 있으면 = 경합 패배 / expected 를 줬는데 값이 다르면 = CAS 불일치.
+      if (expectedOldOid === null && actual !== null) return { status: 'rejected', actual }
+      if (expectedOldOid !== null && actual !== expectedOldOid)
+        return { status: 'rejected', actual }
+      return failed(r)
+    },
+
+    async mergeTree(base, head) {
+      // `--name-only` 로 충돌 보고를 **파일명 1행**으로 줄인다(기본 형식은 stage 3행 × 파일).
+      const r = await run(['merge-tree', '--write-tree', '--name-only', base, head])
+      const lines = r.stdout.split(/\r?\n/)
+      const tree = (lines[0] ?? '').trim()
+      // 판별식은 종료코드가 아니라 **첫 줄**이다 — 인자 오류도 exit 1 이지만 stdout 이 비어 있다.
+      if (!OID_SHAPE.test(tree)) return failed(r)
+      if (r.code === 0) return { status: 'clean', tree }
+      const conflicts: string[] = []
+      for (const raw of lines.slice(1)) {
+        const line = raw.trim()
+        if (line === '') break // 빈 줄 뒤는 사람용 정보 블록(`Auto-merging …`)이다.
+        conflicts.push(line)
+      }
+      return { status: 'conflict', tree, conflicts }
+    },
+
+    async commitTree(tree, parents, message) {
+      // identity 명시 — 형제 `createWorkspace.commit` 과 같은 근거(user.name 미설정 머신에서도 동작).
+      const args = ['-c', 'user.name=Fleet', '-c', 'user.email=fleet@local', 'commit-tree', tree]
+      for (const p of parents) args.push('-p', p)
+      args.push('-m', message)
+      const r = await run(args)
+      const oid = r.stdout.trim()
+      if (r.code !== 0 || !OID_SHAPE.test(oid)) return failed(r)
+      return { status: 'ok', oid }
+    },
+
+    async isAncestor(maybeAncestor, descendant) {
+      const r = await run(['merge-base', '--is-ancestor', maybeAncestor, descendant])
+      if (r.code === 0) return { status: 'yes' }
+      // **1 만 「비조상」이다.** 128(해소 불가 OID)을 여기로 접으면 오류가 「완결 안 됨」으로 조용히
+      // 오분류돼 bench 가 무진단 대기 상태로 굳는다(U4 「조용한 강등 금지」의 직접 사례).
+      if (r.code === 1) return { status: 'no' }
+      return failed(r)
+    },
+
+    async addNamedWorktree(dir, branch, base) {
+      // ⚠ 실패 형태가 원인마다 다르다(§W-9 실측): 디렉터리 선점(비어있지 않음) = **브랜치가 남는다**(고아) ·
+      // 브랜치 중복 = 디렉터리도 브랜치도 남지 않는다. 종료 코드값을 계약으로 전제하지 않고 값으로 답한다.
+      return opResult(await runWithLockRetry(['worktree', 'add', '-b', branch, dir, base]))
+    },
+
+    async addDetachedWorktreeAt(dir, base) {
+      return opResult(await runWithLockRetry(['worktree', 'add', '--detach', dir, base]))
+    },
+
+    async removeWorktreeAt(dir, force) {
+      const args = ['worktree', 'remove']
+      if (force) args.push('--force')
+      args.push(dir)
+      return opResult(await runWithLockRetry(args))
+    },
+
+    async probeMergeTree() {
+      // 자기 자신과의 머지 — 오브젝트 DB 에 새 트리를 만들지 않으면서 **명령 형태**만 검사한다.
+      // pre-2.38 은 `--write-tree` 를 **rev 로 해석**해 `fatal: unknown rev --write-tree`(exit 128)를 낸다.
+      // 그래서 「exit 0 ∧ 첫 줄이 OID」만 지원으로 본다 — 구형 git 의 옵션 에코(`rev-parse` 계열 선례)까지 함께 막는다.
+      const r = await run(['merge-tree', '--write-tree', '--name-only', 'HEAD', 'HEAD'])
+      return {
+        supported: r.code === 0 && OID_SHAPE.test((r.stdout.split(/\r?\n/)[0] ?? '').trim()),
+      }
     },
   }
 }

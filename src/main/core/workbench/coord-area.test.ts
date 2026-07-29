@@ -92,9 +92,12 @@ const expectOpen = (r: Awaited<ReturnType<typeof openCoordinationArea>>): Coordi
  * (`cli/detect.test.ts` 의 2초 PATH 해석 경로)까지 산발 RED 로 밀어낸다(master 대조 실측: master 전량
  * GREEN ↔ 초기 이 브랜치에서 1건 RED).
  */
-const fakeRepo = (gitDir: string, bare = false): GitRepo => ({
+/**
+ * 영역 개방이 받는 것은 **`commonGitDir` 하나**다(#251 PR3 · `OpenAreaOptions.repo`). 더블이
+ * `GitRepo` 전체를 흉내 내면 메서드가 늘 때마다 이 파일이 계약과 무관하게 커진다.
+ */
+const fakeRepo = (gitDir: string, bare = false): Pick<GitRepo, 'commonGitDir'> => ({
   commonGitDir: () => Promise.resolve({ status: 'ok' as const, path: gitDir, bare }),
-  listWorktrees: () => Promise.resolve({ status: 'ok' as const, worktrees: [] }),
 })
 
 /** 실 레포 없이 「common gitdir 자리」만 만든다(영역의 부모 디렉터리). */
@@ -155,7 +158,6 @@ describe('T2 — 정준화: git 원문이 아니라 realpath 정준값으로 유
     const r = await openCoordinationArea({
       repo: {
         commonGitDir: () => Promise.resolve({ status: 'ok' as const, path: ghost, bare: false }),
-        listWorktrees: () => Promise.resolve({ status: 'ok' as const, worktrees: [] }),
       },
       ...linuxLike,
     })

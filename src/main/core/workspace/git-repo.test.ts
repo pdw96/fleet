@@ -336,11 +336,23 @@ describe('T2 — listWorktrees(실 git · porcelain 파싱)', () => {
 })
 
 describe('T2 — 무회귀: 기존 git.ts 표면 불변(계획 §5-1)', () => {
-  it('`GitRepo` 도입이 기존 export 를 바꾸지 않는다', async () => {
+  it('`GitRepo` 도입이 기존 export 를 바꾸지 않는다 — 신규는 **추가만**(계획 §5-1)', async () => {
     const mod = await import('./git')
-    // 기존 8개(타입 5 는 런타임에 없으므로 값 3) + 신규 값 1(createGitRepo).
-    expect(Object.keys(mod).sort()).toEqual(
-      ['createGitRepo', 'createGitRunner', 'createWorkspace', 'defaultGitRunner'].sort(),
+    const keys = Object.keys(mod).sort()
+    // 기존 3(값 기준 — 타입 5 는 런타임에 없다)이 **그대로 살아 있어야** 한다.
+    for (const legacy of ['createGitRunner', 'createWorkspace', 'defaultGitRunner']) {
+      expect(keys).toContain(legacy)
+    }
+    // 전체 집합도 exact 로 고정한다 — 신규 추가는 **이 목록을 함께 고치는 변경**이어야 한다
+    // (PR3 이 `REF_LOCK_BACKOFF_MS` 를 더할 때 실제로 이 행이 RED 로 잡았다).
+    expect(keys).toEqual(
+      [
+        'REF_LOCK_BACKOFF_MS',
+        'createGitRepo',
+        'createGitRunner',
+        'createWorkspace',
+        'defaultGitRunner',
+      ].sort(),
     )
   })
 
