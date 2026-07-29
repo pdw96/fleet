@@ -1,10 +1,12 @@
-import { execFile, execFileSync, type ExecFileException } from 'node:child_process'
+import { execFile, execFileSync, spawn, type ExecFileException } from 'node:child_process'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -938,6 +940,76 @@ describe('T11 — 미도달 분기 고정(실패 채널 전수)', () => {
       null,
     )
     expect(res.status).toBe('failed')
+  })
+
+  /**
+   * **실증 라운드 이식**(#251 PR3a · 스크래치패드 e2e 는 CI 에서 돌지 않으므로 회귀 가드가 아니다).
+   *
+   * 잔재의 출처를 **우리가 만든 파일이 아니라 죽은 프로세스**로 만든다: `reference-transaction` 훅(git ≥2.28)은
+   * **락을 쥔 prepared 상태**에서 호출되므로, 거기서 잠든 git 을 SIGKILL 하면 진짜 크래시 잔재가 남는다.
+   *
+   * ⚠ 이 행이 고정하는 것은 「우리가 안전하다」가 아니라 **운영상 한계**다: 스테일 ref 락은 **아무도
+   * 치우지 않으므로**(R-5 가 삭제를 금지했고 git 도 스스로 치우지 않는다) 그 txn ref 는 **사람이 지울
+   * 때까지 영구 고착**된다. fail-closed 라 손상은 없지만 자동 회복도 없다 — 회수/관측은 PR3b 소관이다.
+   */
+  it('실 프로세스 급사가 남긴 ref 락 잔재 — fail-closed · 영구 고착 · 제거 시 회복(실증 이식)', async () => {
+    const r = initRepo(join(mkTmp(), 'repo'))
+    const head = git(r, 'rev-parse', 'HEAD')
+    const REF = 'refs/fleet/integrated/BC/T1'
+    const lockPath = `${join(r, '.git', ...REF.split('/'))}.lock`
+
+    // ⚠ **락 파일 존재를 신호로 쓰지 않는다**: 락은 정상 트랜잭션 도중에도 잠깐 존재하므로, 그것만 보고
+    //   SIGKILL 하면 「이미 끝난 트랜잭션을 죽이는」 판이 섞여 **flake** 가 된다(초판이 2/4 로 흔들렸다).
+    //   훅이 **prepared 진입을 스스로 증언**하도록 마커를 쓰게 하고, 그 마커를 사건 순서의 기준으로 삼는다.
+    const marker = join(r, '.git', 'prepared.marker')
+    const hook = join(r, '.git', 'hooks', 'reference-transaction')
+    mkdirSync(dirname(hook), { recursive: true })
+    writeFileSync(
+      hook,
+      `#!/bin/sh\nif [ "$1" = "prepared" ]; then : > '${marker.replace(/\\/g, '/')}'; sleep 60; fi\n`,
+    )
+    chmodSync(hook, 0o755)
+
+    const child = spawn('git', ['update-ref', REF, head, ''], { cwd: r, stdio: 'ignore' })
+    let prepared = false
+    for (let i = 0; i < 200; i++) {
+      if (existsSync(marker) && existsSync(lockPath)) {
+        prepared = true
+        break
+      }
+      await new Promise((res) => setTimeout(res, 25))
+    }
+    child.kill('SIGKILL')
+    writeFileSync(hook, '#!/bin/sh\nexit 0\n')
+
+    if (!prepared) {
+      // 훅이 돌지 않는 환경(POSIX 셸 부재 등)에서는 이 시나리오 자체를 만들 수 없다. **조용히 통과시키지
+      // 않는다** — 왜 못 만들었는지를 단언으로 남긴다(마커 부재 = 훅 미실행).
+      expect(existsSync(marker)).toBe(false)
+      return
+    }
+    await new Promise((res) => setTimeout(res, 200))
+    expect(existsSync(lockPath)).toBe(true) // 죽은 프로세스가 남긴 잔재
+    expect(git(r, 'for-each-ref', '--format=%(refname)', 'refs/fleet/')).toBe('') // 발행되지 않았다
+
+    const waited: number[] = []
+    const repo = createGitRepo(r, execRunner, {
+      sleep: (ms) => {
+        waited.push(ms)
+        return Promise.resolve()
+      },
+    })
+    expect((await repo.casUpdateRef(REF, head, null)).status).toBe('failed')
+    expect(waited).toEqual([10, 20, 40])
+    expect(existsSync(lockPath)).toBe(true) // 남의 잔재를 지우지 않는다
+    // **영구 고착**: 재시도로 풀리지 않는다(이 사실이 계약이고, 자동 회수는 PR3b 다).
+    expect((await repo.casUpdateRef(REF, head, null)).status).toBe('failed')
+    // 잔재와 무관하게 열거는 계속 답한다(`.lock` 은 ref 가 아니다).
+    expect(await repo.listRefs('refs/fleet/integrated/BC')).toEqual({ status: 'ok', refs: [] })
+
+    // 음성 통제 — 잔재를 치우면 즉시 발행된다(고착 원인이 락 잔재임의 증명).
+    rmSync(lockPath, { force: true })
+    expect(await repo.casUpdateRef(REF, head, null)).toEqual({ status: 'updated' })
   })
 
   it('레거시 `createWorkspace` 경로는 무변경이다 — R-5 는 신규 연산 한정(회귀 핀)', async () => {
