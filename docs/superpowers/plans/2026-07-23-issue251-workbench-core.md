@@ -65,6 +65,7 @@
 | ~~M1~~ | ~~컨테이너 bind 마운트 위 UDS `listen` EACCES~~ — **폐기.** 로컬 검증에서 Docker Desktop 29.6.2 의 3종 마운트 전부 `listen` 성공으로 **재현되지 않았다**(구형 gRPC-FUSE/9p 한정 관측을 일반 사실로 인용했던 것). 추상 소켓 전환으로 애초에 무관 | — | — |
 | ~~M1′~~ | ~~추상 소켓 `listen` 컨테이너 가능 여부~~ — **로컬 검증에서 이미 실측 완료**: `node:24-bookworm-slim` · `--user 1000:1000` · 기본 seccomp 에서 `listen('\0fleet.wb.…')` 성공(추가 권한 불요). `/proc/self/ns/net` · `/proc/1/stat` f22 · `boot_id` 전부 비특권 읽기 가능 | — | 완료 |
 | **M2** | `safe.directory` × `/workbenches` | **PR4**(registry 생성) | worktree 생성 경로 전부 실패. B6 에서 리뷰 전량 통과 후 라이브에서만 적발된 계열 |
+| ⚠ | **Docker Desktop 근사로는 M2·M3 를 대체할 수 없다**(#251 PR2c 실측) | — | PR2c 가 실 `fleet-server` 이미지 + 실 `/workspace` bind mount 위에서 13 단언을 통과시켰으나, 그때 `/workspace` 는 **`owner=0:0 mode=777`** 로 보였다 — **Docker Desktop 이 bind mount 의 uid·권한을 가상화**하기 때문이고 이는 **실 Linux 호스트보다 관대**하다. 실 호스트에서는 호스트 소유권이 그대로 보여 컨테이너 uid 1000 이 못 쓰는 상황이 실재한다(PR1a 실측 「git 이 성공해도 `.git` 소유자가 다르면 `mkdir` EACCES」와 같은 축). **「Docker 에서 통과했다」를 「배포에서 통과한다」로 인용하지 말 것** — PR2a 가 gRPC-FUSE 관측을 일반 사실로 인용했다 정정한 것의 **반대 방향 실수**다 |
 | **M3** | named volume ↔ bind 마운트 2볼륨 토폴로지의 `worktree add` admin 파일 | PR4 | benchRoot 토폴로지 재결정. **`tmp/`→`authority/` rename 은 둘 다 `<common gitdir>/fleet/` 안이라 동일 볼륨이 구조적으로 보장** — 스펙 §5 가 둘을 섞어 서술했으나 실제 위험은 worktree admin 쪽뿐 |
 
 **M1·M1′ 은 소멸했다**(위 표) — 락 백엔드가 커널 네임스페이스 endpoint 로 바뀌어 파일시스템 마운트 권한과
@@ -921,6 +922,18 @@ F94.53 L94.88 · 실 Linux 22/22 재확인.
    두 행 각각의 반증력도 뮤턴트로 확인했다(각 1 fail).
 
 최종 verify: **2546 pass / 57 skip** · S93.48 B87.22 F94.53 L94.88.
+
+**배포 근사 라운드**(사용자가 「방금 한 테스트는 라이브 테스트냐」고 물어 시작 — 그때까지의 검증이
+전부 컨테이너 **tmpfs** 였다는 것이 드러났다). 실제 `fleet-server` 이미지(uid 1000=node) + 실제
+`/workspace` **bind mount** 위에 배포 레이아웃(`/workspace/<repo>/.git/fleet/authority`)을 만들어
+13 단언 통과: bind mount 위 `probeDurability='file+dir'` · 파일 모드 0600 · rename 원자 교체 ·
+재시도 4회 + 실 백오프 ≥60ms · 크래시 잔재 회수 종단 · tmp 잔재 0.
+
+⚠ **그럼에도 라이브가 아니며, 이 근사를 라이브 근거로 인용하면 안 된다** — 위 §2 표에 등재한 대로
+Docker Desktop 이 bind mount 권한을 가상화한다(`owner=0:0 mode=777`). 그리고 **애초에 라이브에서 이
+코드에 도달할 경로가 없다**(소비자 0 이 계약이고 폐포 핀이 그것을 강제한다) — 첫 라이브 실행 시점은
+**PR7 배선 이후**다. 검증 층위를 정직하게 적으면: 단위(페이크) → 실 FS(win32/linux) → 실 프로세스
+(컨테이너) → **배포 근사** → ~~라이브~~(PR7).
 
 ### PR3 — `GitRepo` 완성 · 통합 WAL 저널
 
