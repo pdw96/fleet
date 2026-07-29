@@ -113,8 +113,17 @@ describe('타입 핀 — typecheck 가 판정자다', () => {
     const build = (): unknown =>
       createBenchLauncher({
         spawn,
+        // 구조 필드는 **전부 채운다**(CodeRabbit) — 그래야 이 지시자가 서는 이유가 「옵셔널 필드
+        // 누락」이 아니라 **브랜드 심볼 부재** 하나로 좁혀진다.
         // @ts-expect-error 브랜드 심볼이 없는 객체는 AuthorityCommit 이 아니다(원장 검사 이전에 tsc 가 막는다).
-        commit: { identity, revision: 2, sourceGeneration: 1, durability: 'file-only' as const },
+        commit: {
+          identity,
+          revision: 2,
+          sourceGeneration: 1,
+          activityId: 'a',
+          execGate: 'running' as const,
+          durability: 'file-only' as const,
+        },
         expected: { identity, sourceGeneration: 1, activityId: 'a' },
       })
     expect(build).toBeDefined()

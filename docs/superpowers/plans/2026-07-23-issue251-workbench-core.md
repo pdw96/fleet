@@ -864,6 +864,37 @@ sleep seam 옵셔널화 · `expected.identity` 참조 유지 · 레이어 역전
 은폐하지 않는다. 초과분의 대부분은 위 표의 방어 신설이고, 그 대신 「선언만 하고 실재하지 않던 핀」이
 셋(F1·DYN4-02·F5) 닫혔다.
 
+**봇 리뷰 1R**(PR #267 · CI 7/7 pass):
+
+**Codex P1×1 — 실측 재현 후 수용.** 「재시도의 `await` 가 **같은 임계 구역 안 두 CAS 의 겹침**을 새로
+열었다」. PR2c 이전에는 `compareAndSwap` 이 전 구간 동기라 도달 불가였던 상태다. 재현한 파괴 사슬:
+ⓐA 가 tmp 를 만들고 rename EPERM 으로 백오프에서 양보 ⓑB 가 진입해 `openExclusive` 에서 **EEXIST**
+(A 의 tmp) ⓒB 의 `finally` 가 「자기 tmp 정리」로 **A 의 tmp 를 unlink** ⓓA 가 깨어나 rename 하면
+**ENOENT** — 재시도만 했으면 성공했을 CAS 가 남의 정리에 파괴된다(실측: A=`io-failure{rename,ENOENT}` ·
+B=`io-failure{open-tmp,EEXIST}` · 디스크 잔여 0).
+→ **tx-지역 in-flight 가드**(겹침 시 `invariant-violation`). Codex 가 병기한 대안(CAS 별 고유 tmp)은
+**기각** — tmp 가 `ownerToken` 스코프인 것이 정정 78 의 「같은 리스의 다음 CAS 가 자기 tmp 로
+자기잠금」 falsifier 의 근거라 이름을 바꾸면 그 계약 테스트가 무의미해진다. 직렬화는 §W-4 문면
+(「**전체**를 하나의 임계 구역」)과도 정합한다.
+⚠ **PR2b 가 철회한 재진입 가드와 다르다**: 그것은 `withAuthority` **호출 간** 중첩을 `AsyncLocalStorage`
+로 감지해 거짓 양성 3종을 냈다. 이것은 **한 tx 객체 안** 단순 플래그 + `finally` 즉시 해제라 순차
+호출에 영향이 0 이고, **그 음성 통제를 계약 테스트가 고정한다**(비용 비대칭 판단 기준 승계).
+
+**CodeRabbit 4건 전부 수용**: ⓐ내가 쓴 **스펙 T17b 관측면 서술이 착지물과 어긋났다** — 「`MINTED_COMMITS`
+원장 크기」라 적었는데 그것은 `WeakSet` 이라 **크기를 셀 수 없다**(실제 관측면 = 디스크 revision +
+`countOf('openExclusive')`). 이 계획이 스스로 경계하는 「선언만 하고 실재하지 않는 핀」을 문서에서
+반복한 셈이다 ⓑ`authority-launcher.test.ts` 의 `neverSleeps` 만 throw 로 남아 형제 두 스위트와 비대칭
+(F5 와 같은 재라벨 함정이 훗날 재발) ⓒ`reclaimDraft` JSDoc 이 런처 섹션 배너에 밀려 **고아 주석**이
+됐다 ⓓ§3-T16b 의 `@ts-expect-error` 가 서는 이유를 **브랜드 부재 하나로** 좁히도록 구조 필드를 채움.
+
+**뮤테이션 21종째**(가드 제거 → RED 확인). 최종 verify: **2544 pass / 57 skip** · S93.48 B87.22
+F94.53 L94.88 · 실 Linux 22/22 재확인.
+
+**교훈**: **「전 구간 동기」가 주던 안전을 async 승격이 조용히 거둬간다.** 정정 109(유출 tx 봉쇄)는
+「임계 구역 **종료 후**」를 닫았는데, 같은 승격이 「임계 구역 **안** 겹침」이라는 형제 구멍을 함께
+열었고 그쪽은 감사·자가리뷰 8렌즈가 전부 놓쳤다(봇이 잡았다). 동기→비동기 전환에서는 **그 함수가
+독점하던 자원을 전수 열거**해야 한다 — 여기서는 리스 스코프 tmp 경로였다.
+
 ### PR3 — `GitRepo` 완성 · 통합 WAL 저널
 
 - **T11 `GitRepo` 나머지 8메서드 + 능력 프로브** — §3-T24(정확 old-OID CAS — **조상 이동(ff 가능)에도 거부**) ·

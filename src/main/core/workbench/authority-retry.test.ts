@@ -318,6 +318,63 @@ describe('§3-T17c per-retry L-6 — 재시도 중 리스를 잃으면 이후 re
 })
 
 /* ================================================================================================
+ * 재시도가 연 창 — 같은 임계 구역 안 CAS 겹침 (Codex PR#267 P1)
+ * ============================================================================================= */
+
+describe('같은 tx 안에서 CAS 는 겹칠 수 없다', () => {
+  it('재시도로 양보한 CAS 옆에 두 번째 CAS 가 끼어들면 거부되고, 첫 CAS 는 정상 완료한다', async () => {
+    // **실측으로 재현한 파괴 사슬**(가드 이전): ⓐA 가 tmp 를 만들고 rename EPERM 으로 백오프에서 양보
+    // ⓑB 가 `openExclusive` 에서 EEXIST ⓒB 의 `finally` 가 **A 의 tmp 를 unlink** ⓓA 가 깨어나 rename
+    // 하면 ENOENT. 즉 재시도만 했으면 성공했을 CAS 가 남의 정리에 파괴됐다.
+    const f = await setup()
+    f.fs.failSequence('rename', [EPERM(), null, null, null])
+
+    const results = await f.store.withAuthority(f.lease, async (tx) => {
+      const readA = tx.readFresh()
+      const readB = tx.readFresh()
+      if (readA.kind !== 'absent' || readB.kind !== 'absent') throw new Error('absent 예상')
+      return Promise.all([
+        tx.compareAndSwap(readA.read, draft(f.benchId)),
+        tx.compareAndSwap(readB.read, draft(f.benchId)),
+      ])
+    })
+
+    const [a, b] = results
+    // 먼저 진입한 쪽은 **재시도를 마치고 커밋**한다(가드가 없으면 여기서 io-failure{rename}/ENOENT 다).
+    expect(a?.kind).toBe('committed')
+    expect(b?.kind).toBe('invariant-violation')
+    expect(b?.kind === 'invariant-violation' && b.violations[0]).toMatch(/이미 진행 중/)
+    // 두 번째는 **디스크를 만지지 않았다** — tmp 를 만들지도, 남의 것을 지우지도 않았다.
+    expect(f.fs.countOf('openExclusive')).toBe(1)
+    expect(f.fs.countOf('unlinkIfExists')).toBe(0)
+    expect(f.fs.readRaw(f.path)).toBeDefined()
+    expect(f.fs.openFdCount()).toBe(0)
+  })
+
+  it('순차 CAS 는 영향받지 않는다 — 거짓 양성 음성 통제', async () => {
+    // ⚠ 이 행이 가드의 **비용 비대칭**을 지킨다. PR2b 는 재진입 가드가 거짓 양성 3종을 내자
+    // 철회했다(거짓양성 = 프로덕션 가용성 사고 / 거짓음성 = 개발 시점 hang). 이 가드는 `finally` 로
+    // 즉시 해제되므로 순차 호출에 영향이 0 이어야 하고, 그 성질은 선언이 아니라 여기서 고정된다.
+    const f = await setup()
+    f.fs.failSequence('rename', [EPERM(), null, null, null, null, null])
+
+    const out = await f.store.withAuthority(f.lease, async (tx) => {
+      const first = tx.readFresh()
+      if (first.kind !== 'absent') throw new Error('absent 예상')
+      const r1 = await tx.compareAndSwap(first.read, draft(f.benchId))
+      const second = tx.readFresh()
+      if (second.kind !== 'found') throw new Error('found 예상')
+      const r2 = await tx.compareAndSwap(second.read, draft(f.benchId, { sourceGeneration: 2 }))
+      return [r1, r2] as const
+    })
+
+    expect(out[0].kind).toBe('committed')
+    expect(out[1].kind).toBe('committed')
+    expect(out[1].kind === 'committed' && out[1].record.revision).toBe(2)
+  })
+})
+
+/* ================================================================================================
  * §3-T17g — 백오프 스케줄 · 실 sleep 구현
  * ============================================================================================= */
 

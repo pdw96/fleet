@@ -453,18 +453,6 @@ export function classifyStaleActivity(record: BenchAuthorityRecord): StaleActivi
     : { kind: 'live-activity', activityId: activity.activityId }
 }
 
-/**
- * 회수 CAS 에 그대로 넘길 draft — **`activeActivity` 만 소멸**하고 나머지는 전부 그대로다.
- *
- * 보존 계약(계획 정정 101 · 지금까지 어느 문서에도 없었다): `sourceGeneration` **무변**(되돌리면 §W-8
- * 완결 관측의 세대 귀속이 조용히 깨진다) · `lifecycle`·`schemaVersion`·`identity`·통합 4필드·
- * `archivedBranch` 전부 무변.
- *
- * **rest 구조분해**로 쓰는 것이 규범이다(필드 명시 재조립은 새 필드가 늘 때마다 누락 표면을 신설한다 —
- * `serialize` 가 6필드를 명시 재조립하는 것은 **호출자 객체의 초과 키를 막기 위해서**이고 목적이 다르다).
- * `revision`·`writtenBy` 를 함께 떼는 이유는 `compareAndSwap` 의 사전조건이 그 두 키의 **존재 자체**를
- * `invariant-violation` 으로 거부하기 때문이다(저장소만 배정) — 즉 이 산출물은 그대로 CAS 인자가 된다.
- */
 /* ------------------------------------------------------------------------------------------------
  * bench 런처 (T10 · §W-4 계약 4항) — **소비자 0**. 실 spawn seam 배선은 PR7 T30b.
  * ---------------------------------------------------------------------------------------------- */
@@ -584,6 +572,18 @@ export function createBenchLauncher(deps: BenchLauncherDeps): BenchLauncher {
   }
 }
 
+/**
+ * 회수 CAS 에 그대로 넘길 draft — **`activeActivity` 만 소멸**하고 나머지는 전부 그대로다.
+ *
+ * 보존 계약(계획 정정 101 · 지금까지 어느 문서에도 없었다): `sourceGeneration` **무변**(되돌리면 §W-8
+ * 완결 관측의 세대 귀속이 조용히 깨진다) · `lifecycle`·`schemaVersion`·`identity`·통합 4필드·
+ * `archivedBranch` 전부 무변.
+ *
+ * **rest 구조분해**로 쓰는 것이 규범이다(필드 명시 재조립은 새 필드가 늘 때마다 누락 표면을 신설한다 —
+ * `serialize` 가 6필드를 명시 재조립하는 것은 **호출자 객체의 초과 키를 막기 위해서**이고 목적이 다르다).
+ * `revision`·`writtenBy` 를 함께 떼는 이유는 `compareAndSwap` 의 사전조건이 그 두 키의 **존재 자체**를
+ * `invariant-violation` 으로 거부하기 때문이다(저장소만 배정) — 즉 이 산출물은 그대로 CAS 인자가 된다.
+ */
 export function reclaimDraft(record: BenchAuthorityRecord): BenchAuthorityDraft {
   const { activeActivity: _reclaimed, revision: _revision, writtenBy: _writtenBy, ...rest } = record
   return rest
@@ -1128,10 +1128,48 @@ export function createBenchAuthorityStore(
       }
     }
 
-    const compareAndSwap = async (
+    /**
+     * **같은 임계 구역 안에서 CAS 를 겹쳐 실행하는 것을 거부한다**(Codex PR#267 P1 · 실측 재현).
+     *
+     * PR2c 이전에는 `compareAndSwap` 이 **전 구간 동기**라 이 상태가 도달 불가였다. 재시도가 도입한
+     * `await`(백오프)가 그 창을 새로 열었고, 두 CAS 가 겹치면 **리스 스코프 tmp 경로를 공유**하는 것이
+     * 곧바로 파괴적이다 — 실측한 사슬: ⓐA 가 tmp 를 만들고 rename 이 EPERM 이라 백오프에서 양보
+     * ⓑB 가 진입해 `openExclusive` 에서 **EEXIST**(A 의 tmp) ⓒB 의 `finally` 가 「자기 tmp 정리」로
+     * **A 의 tmp 를 unlink** ⓓA 가 깨어나 rename 하면 **ENOENT**. 재시도만 했으면 성공했을 CAS 가
+     * 남의 정리에 파괴된다.
+     *
+     * **tmp 이름을 CAS 별로 고유화하는 대안은 기각**했다 — tmp 가 `ownerToken` 스코프인 것이 정정 78의
+     * 「같은 리스의 다음 CAS 가 자기 tmp 로 자기잠금」 falsifier 의 근거이고, 그것을 바꾸면 그 계약
+     * 테스트가 무의미해진다. 직렬화는 §W-4 문면(「`fresh read → 검사 → 내구 확정` **전체**를 하나의
+     * 임계 구역」)과도 정합한다.
+     *
+     * ⚠ PR2b 가 **철회한** 재진입 가드와 다르다: 그것은 `withAuthority` **호출 간** 중첩을
+     * `AsyncLocalStorage` 로 감지해 거짓 양성 3종(늦은 동시 호출·종료 후 컨텍스트 상속·분리
+     * 마이크로태스크)을 냈다. 여기는 **한 tx 객체 안** 단순 플래그이고 `finally` 로 즉시 해제되므로
+     * 순차 호출(`await` 후 다음 CAS)에는 영향이 0 이다 — 그 음성 통제를 계약 테스트가 고정한다.
+     */
+    let casInFlight = false
+
+    const compareAndSwap = (
       read: FreshReadToken,
       next: BenchAuthorityDraft,
     ): Promise<CasResult> => {
+      if (!live) return Promise.resolve({ kind: 'lease-invalid', reason: 'released' })
+      if (casInFlight) {
+        return Promise.resolve({
+          kind: 'invariant-violation',
+          violations: [
+            '같은 임계 구역에서 CAS 가 이미 진행 중이다 — 겹쳐 실행하면 두 CAS 가 tmp 경로를 공유해 서로의 잔재를 지운다',
+          ],
+        })
+      }
+      casInFlight = true
+      return runCas(read, next).finally(() => {
+        casInFlight = false
+      })
+    }
+
+    const runCas = async (read: FreshReadToken, next: BenchAuthorityDraft): Promise<CasResult> => {
       if (!live) return { kind: 'lease-invalid', reason: 'released' }
 
       // ⓪ **출처 먼저 — 토큰의 필드를 믿지 않는다**(Codex PR#266 P1). 원장에 없으면 이 모듈이 발급한

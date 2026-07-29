@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type {
   AuthorityCommit,
@@ -31,9 +31,23 @@ const AUTHORITY_DIR = join('/repo/.git/fleet', 'authority')
 const AT = 1_700_000_000_000
 const ACTIVITY_ID = 'act-launch-1'
 
+/**
+ * 형제 두 스위트와 같은 **기록형**이다(CodeRabbit) — throw 로 두면 그 오류가 CAS `catch` 에서
+ * `io-failure` 로 재라벨돼 무신호를 만든다(자가 적대 리뷰 F5 가 실측한 계열). 지금은 실패 주입이
+ * 없어 발동하지 않지만, 훗날 이 스위트에 주입 행이 붙는 순간 같은 함정이 재발한다.
+ */
+const sleepCalls: number[] = []
 const neverSleeps = (ms: number): Promise<void> => {
-  throw new Error(`이 스위트에서 백오프가 발동했다(${ms}ms)`)
+  sleepCalls.push(ms)
+  return Promise.resolve()
 }
+
+afterEach(() => {
+  const seen = sleepCalls.splice(0)
+  expect(seen, '이 스위트에서 백오프가 발동했다 — 재시도는 authority-retry.test.ts 소관').toEqual(
+    [],
+  )
+})
 
 /** spawn 산출물 — 이 모듈은 자식을 **전달만** 하므로 최소 구조로 충분하다. */
 const fakeChild = { pid: 4242 } as unknown as ChildProcess
