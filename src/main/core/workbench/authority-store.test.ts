@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type {
   AuthorityReadResult,
@@ -39,14 +39,25 @@ const AT = 1_700_000_000_000
 /**
  * 이 스위트는 **재시도 경로를 타지 않는다** — 여기서 백오프가 발동하면 그것이 회귀다.
  * §3-T16 의 실패 주입은 `code` 가 없어(=재시도 비대상) 즉시 실패 경로이고, 재시도 계약 자체는
- * `authority-retry.test.ts`(#251 PR2c T9) 소관이다. 조용한 `noop` 으로 두면 이 스위트가 재시도
- * 회귀를 **덮어버린다**(예: 「모든 오류를 재시도」 구현이 여기서 GREEN).
+ * `authority-retry.test.ts`(#251 PR2c T9) 소관이다.
+ *
+ * ⚠ **던지지 않는다**(자가 적대 리뷰 F5 · 실측): 원안은 `throw` 였는데 그러면 그 오류가 CAS 의
+ * `catch` 에 잡혀 `io-failure{step:'rename'}` 로 **재라벨**돼 기대값과 우연히 일치한다 — 그 결과
+ * 「모든 오류를 재시도」 뮤턴트가 이 스위트에서 GREEN 이 됐다(정확히 이 헬퍼가 막으려던 회귀다).
+ * 흐름을 바꾸지 않고 **기록만** 한 뒤 `afterEach` 에서 단언하면 둘 다 얻는다.
  */
+const sleepCalls: number[] = []
 const neverSleeps = (ms: number): Promise<void> => {
-  throw new Error(
-    `이 스위트에서 백오프가 발동했다(${ms}ms) — 재시도는 authority-retry.test.ts 소관`,
-  )
+  sleepCalls.push(ms)
+  return Promise.resolve()
 }
+
+afterEach(() => {
+  const seen = sleepCalls.splice(0)
+  expect(seen, '이 스위트에서 백오프가 발동했다 — 재시도는 authority-retry.test.ts 소관').toEqual(
+    [],
+  )
+})
 
 interface Fixture {
   readonly fs: FakeDurableFs

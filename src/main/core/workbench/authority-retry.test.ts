@@ -212,6 +212,23 @@ describe('§3-T17b 재시도 끝에 성공 — 정확히 1회 커밋', () => {
     expect(f.fs.openFdCount()).toBe(0)
   })
 
+  it('`file+dir` 내구 경로에서도 재시도 후 post-commit 이 정상 실행된다', async () => {
+    // 신규 스위트 전체가 `file-only` 한 축에서만 돌아 **재시도 × post-commit 조합이 0건**이었다
+    // (자가 적대 리뷰 DYN4-03 — 픽스처가 받도록 만든 `durability` 인자에 호출자가 없었다).
+    const f = await setup({}, 'file+dir')
+    f.fs.failSequence('rename', [EPERM(), EPERM(), null])
+
+    const r = await casOnce(f)
+
+    expect(r.kind).toBe('committed')
+    expect(f.fs.countOf('rename')).toBe(3)
+    expect(f.delays).toEqual([10, 20])
+    // post-commit(open-dir → fsync-dir → close-dir)이 rename 성공 **뒤에** 돌았다.
+    const afterRename = f.fs.steps.slice(f.fs.steps.lastIndexOf('rename') + 1)
+    expect(afterRename).toEqual(['openDir', 'fsync', 'close'])
+    expect(f.fs.openFdCount()).toBe(0)
+  })
+
   it('성공 후에는 남은 백오프를 쓰지 않는다 — 마지막 시도 뒤 대기 없음', async () => {
     const f = await setup()
     f.fs.failSequence('rename', [EPERM(), null])
@@ -277,6 +294,26 @@ describe('§3-T17c per-retry L-6 — 재시도 중 리스를 잃으면 이후 re
 
     expect(r.kind).toBe('lease-invalid')
     expect(f.fs.countOf('rename')).toBe(0)
+  })
+
+  it('CAS 재검증을 통과한 뒤 첫 rename 직전에 탈취돼도 rename 이 없다(attempt 0 재검증)', async () => {
+    // ⚠ 위 행만으로는 **부족하다**(자가 적대 리뷰 DYN4-01): 거기서는 `compareAndSwap` ②단계의
+    // 재검증(루프 **밖** · PR2b 랜딩분)이 먼저 잡으므로, 루프 안 `attempt 0` 검증을 통째로 지워도
+    // GREEN 이다. 여기서는 ②를 통과시킨 **뒤**(= 쓰기 단계 진입 후) 탈취해 그 창을 정확히 겨눈다.
+    const f = await setup()
+    f.onOp((op) => {
+      if (op === 'openExclusive') f.backend.forceLose(f.endpoint)
+    })
+
+    const r = await casOnce(f)
+
+    expect(r.kind).toBe('lease-invalid')
+    expect(r.kind === 'lease-invalid' && r.reason).toBe('stolen')
+    expect(f.fs.countOf('rename')).toBe(0)
+    // 쓰기는 시작했으므로 tmp 가 만들어졌다 — `finally` 가 그것을 치웠는지까지 본다.
+    expect(f.fs.countOf('openExclusive')).toBe(1)
+    expect(f.fs.paths()).not.toContain(f.tmpPath)
+    expect(f.fs.openFdCount()).toBe(0)
   })
 })
 

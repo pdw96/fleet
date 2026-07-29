@@ -41,9 +41,14 @@ const IS_WIN = process.platform === 'win32'
  * 실 FS 위에서도 **백오프는 발동하지 않아야 한다** — 이 스위트의 rename 대상은 아무도 열고 있지 않다.
  * 발동하면 그 자체가 신호다(win32 EPERM 이 실제로 났다 = 픽스처가 핸들을 남겼거나 외부 간섭).
  * 재시도 계약의 실 FS 조작화는 `describe.skipIf` 로 분리된 win32 전용 행이 따로 가진다.
+ *
+ * ⚠ 형제 스위트와 같은 이유로 **던지지 않고 기록한다**(자가 적대 리뷰 F5) — throw 는 CAS 의 `catch` 에
+ * 잡혀 `io-failure` 로 재라벨되고, 그 재라벨이 다른 방어를 덮는다.
  */
+const sleepCalls: number[] = []
 const neverSleeps = (ms: number): Promise<void> => {
-  throw new Error(`실 FS 스위트에서 백오프가 발동했다(${ms}ms) — 열린 핸들이 남아 있다`)
+  sleepCalls.push(ms)
+  return Promise.resolve()
 }
 
 let root: string
@@ -55,6 +60,8 @@ beforeEach(() => {
 })
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
+  const seen = sleepCalls.splice(0)
+  expect(seen, '실 FS 스위트에서 백오프가 발동했다 — 열린 핸들이 남아 있다').toEqual([])
 })
 
 const mintLease = async (benchId: string): Promise<BenchLeaseToken> => {

@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'node:child_process'
+import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { dirname, join } from 'node:path'
 
 import type { BenchLifecycle } from '../../../shared/types'
@@ -404,8 +404,13 @@ const isRetryableRenameError = (cause: unknown): boolean => {
  * 프로덕션 백오프 대기. 소비자는 **PR7 부팅 배선**이다(이 PR 시점에 호출부 0).
  *
  * `AbortSignal` 을 받지 않는 것이 형제 `providers/resilient.ts` 와의 의도적 차이다 — 이 대기는
- * **리스와 뮤텍스를 쥔 채** 도는 유계 구간(총 150ms)이고, 중간에 끊으면 tmp 정리 책임이 두 갈래로
- * 갈린다. 취소는 상위(활동 취소)가 소유한다.
+ * **리스와 뮤텍스를 쥔 채** 돌고, 중간에 끊으면 tmp 정리 책임이 두 갈래로 갈린다. 취소는
+ * 상위(활동 취소)가 소유한다.
+ *
+ * ⚠ **「총 150ms」는 이 모듈의 성질이 아니라 주입된 `sleep` 의 성질이다**(자가 적대 리뷰 F7). 모듈이
+ * 정하는 것은 **회차 수와 각 회차에 요청하는 지연**뿐이고, 실제 경과는 주입자가 결정한다 —
+ * `now`·`fs` 와 동급의 신뢰 경계다. 그 경계를 구조로 좁히는 것(부팅이 이 구현만 주입함)은 PR7 배선의
+ * 몫이며, 여기서는 프로덕션 구현이 무엇인지 명시하는 것으로 한정한다.
  */
 export const realBackoffSleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => {
@@ -476,6 +481,18 @@ export interface BenchSpawnOptions {
   readonly cwd?: string
   readonly env?: NodeJS.ProcessEnv
   readonly windowsHide?: boolean
+  /**
+   * PR7 배선 대상 2곳의 shape 가 다르므로 **합집합**이다(계획 정정 57): `cli/detect.ts` 는
+   * cwd/env/windowsHide 만 쓰지만 `mcp/stdio.ts` 는 `stdio` 를 **필수로** 넘긴다. 앞쪽만 보고
+   * 부분집합을 만들면 PR7 에서 mcp 자식이 런처를 우회하게 되고, 그 순간 크레덴셜 게이트의 존재
+   * 이유가 사라진다(자가 적대 리뷰 F2).
+   */
+  readonly stdio?: SpawnOptions['stdio']
+  /**
+   * §W-16 배관 계약이 **P1 으로 요구**한다 — POSIX 트리 사망 증거(`kill(-pgid)`)는 자식이
+   * `detached: true` 로 떠 있어야만 성립한다. 소비자는 PR7 T30b 다.
+   */
+  readonly detached?: boolean
 }
 
 /** 실 spawn 은 **주입**이다 — 이 모듈은 자식을 만들지 않고 크레덴셜만 판정한다. */
@@ -609,8 +626,13 @@ const SPENT_READS = new WeakSet<FreshReadToken>()
  * 형제 2종(`MINTED_READS`·`MINTED_LEASES`)은 **Codex P1 으로 원장을 강제당했는데** 커밋만 비대칭이었다.
  * 그래서 `{...commit}` 복제가 단일 사용 검사를 우회했다 — 읽기 토큰에서 **실측으로 확정된 것과 같은
  * 벡터**다. 소진을 **launcher 호출 시점**에 하는 것도 계약이다: 팩토리에서 소진하면 만들어진 launcher 를
- * 반복 호출해 **한 커밋에 자식 N개**가 되고, §W-16 의 트리 사망 증거·활동 종결 CAS 가 전부 1:1 가정
- * 위에 서 있으므로 무너진다.
+ * 반복 호출해 한 커밋으로 자식을 여러 번 띄울 수 있다.
+ *
+ * ⚠ **보장 범위는 「한 커밋 = 한 자식」까지다**(자가 적대 리뷰 F3 · 실측 재현). 원장은 커밋 **객체**
+ * 동일성만 보므로, 활동이 `running` 인 동안 상태 갱신 CAS 가 한 번 더 일어나면 같은 `activityId` 를
+ * 실은 **두 번째 launchable 커밋**이 민팅되고 둘 다 판정을 통과한다. §W-16 이 전제하는 **「한 활동 =
+ * 한 자식」은 이 원장이 주는 성질이 아니며**, 그 집행은 활동 시작 시퀀서(PR7 T30b) 소관이다.
+ * 여기서 그것까지 막으려면 활동 스코프 키가 필요한데 그 키의 권위(활동 수명·세대)는 시퀀서가 쥔다.
  */
 const MINTED_COMMITS = new WeakSet<AuthorityCommit>()
 const SPENT_COMMITS = new WeakSet<AuthorityCommit>()
@@ -1292,7 +1314,11 @@ export function createBenchAuthorityStore(
      * 재시도가 **CAS 결과 밖으로 새지 않는다**(acknowledged): 최종 성공/실패가 전부 반환값에 실린다.
      */
     const renameWithRetry = async (): Promise<CasResult | undefined> => {
-      for (let attempt = 0; ; attempt += 1) {
+      // **유계 루프**(자가 적대 리뷰 PERF-1). 원안은 `for(;;)` 였고 종료를 전적으로 아래
+      // `backoff === undefined` 에 맡겼다 — 그 하나가 편집으로 사라지면 **리스와 뮤텍스를 쥔 채**
+      // 도는 무한 루프가 된다(형제 `writeAllBytes` 가 진행 보장 가드를 둔 것과 같은 이유이며,
+      // 그때 실측한 대로 이런 회귀는 RED 가 아니라 **hang** 이라 어떤 게이트도 신호를 못 낸다).
+      for (let attempt = 0; attempt <= RENAME_BACKOFF_MS.length; attempt += 1) {
         if (!live) return { kind: 'lease-invalid', reason: 'released' }
         const check = lease.revalidate()
         if (check.kind === 'lost') return { kind: 'lease-invalid', reason: check.reason }
@@ -1308,6 +1334,15 @@ export function createBenchAuthorityStore(
           }
           await opts.sleep(backoff)
         }
+      }
+      // 도달 불가 — 마지막 회차의 `backoff === undefined` 가 반드시 반환한다. 그럼에도 값을 두는 이유는
+      // 암묵 `undefined` 로 떨어지면 그것이 **「커밋됐다」는 거짓 증언**이 되기 때문이다(반환 계약상
+      // `undefined` = rename 성공). 상한과 백오프 길이가 어긋나는 편집에서 안전한 쪽으로 실패한다.
+      return {
+        kind: 'io-failure',
+        step: 'rename',
+        path,
+        cause: new Error('rename 재시도 루프가 결과 없이 종료했다(상한과 백오프 길이 불일치)'),
       }
     }
 
@@ -1371,13 +1406,16 @@ export function createBenchAuthorityStore(
         if (retryFailure !== undefined) return retryFailure
         renamed = true
       } catch (cause) {
-        // 단계별로 **실제 대상**을 싣는다(CodeRabbit): `mkdir` 은 디렉터리이고 `rename` 은 최종 경로다.
+        // 단계별로 **실제 대상**을 싣는다(CodeRabbit): `mkdir` 은 디렉터리이고 나머지는 tmp 다.
         // 전부 tmp 로 답하면 복구 판정이 **존재하지도 않는 tmp** 를 보게 된다.
         // `parentTarget` 이 우선이다(CodeRabbit) — 부모 내구화 구간의 실제 대상은 부모 디렉터리이고,
         // step 은 여전히 'mkdir' 이라 그것만으로는 권위 디렉터리가 실려 진단이 엉뚱한 경로를 가리킨다.
-        const target =
-          parentTarget ??
-          (step === 'mkdir' ? opts.authorityDir : step === 'rename' ? path : tmpPath)
+        //
+        // ⚠ **`rename` 분기가 여기 없다**(자가 적대 리뷰 COV-2·DYN4-06): PR2c 가 rename 을
+        // `renameWithRetry` 로 옮겨 그 실패를 **값으로 반환**하게 만든 뒤로, 이 catch 에서 `step` 이
+        // `'rename'` 인 경우는 도달 불가다. 삼항을 남겨 두면 어느 OS 에서도 실행되지 않는 arm 이 되어
+        // 커버리지에는 잡히지 않으면서 「여기서도 rename 을 처리한다」는 거짓 인상을 준다.
+        const target = parentTarget ?? (step === 'mkdir' ? opts.authorityDir : tmpPath)
         return { kind: 'io-failure', step, path: target, cause }
       } finally {
         // fd 가 남아 있다 = 어느 단계가 던졌다. 실물에서 열린 핸들은 **그 자체로 DoS 표면**이다 —

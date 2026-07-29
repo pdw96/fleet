@@ -305,6 +305,11 @@ describe('T10 런처 — spawn 실패', () => {
 
     // 오류는 **전파**한다 — 런처는 크레덴셜 판정자이지 spawn 오류 처리자가 아니다.
     // 실패 후 활동 종결 CAS 는 §W-4 가 호출자에게 지운 책임이고 배선은 PR7 T30b 다.
+    //
+    // ⚠ **실 seam 의 지배적 실패 형태는 이것이 아니다**(정직 표기 · 자가 적대 리뷰 F4): cross-spawn 은
+    // 대개 자식 객체를 돌려준 뒤 **비동기 `'error'` 이벤트**로 ENOENT 를 알린다. 여기서 고정하는 것은
+    // 「spawn 이 동기로 던지는 경우에도 커밋이 이미 소진돼 있다」는 소진 시점 계약이며, 비동기 실패의
+    // 관측·활동 종결은 시퀀서(PR7)의 몫이다. 라벨을 ENOENT 로 둔 것은 형태가 아니라 사유의 예시다.
     expect(() => launch('없는명령', [], {})).toThrow(/ENOENT/)
     expect(attempts).toBe(1)
 
@@ -332,6 +337,25 @@ describe('T10 런처 — 스냅숏 규율', () => {
     const r = launch('codex', [], {})
 
     expect(r.kind === 'refused' && r.reason).toBe('activity-mismatch')
+    expect(spy.calls).toHaveLength(0)
+  })
+
+  it('`expected.identity` 도 스냅숏이다 — 중첩 객체를 참조로 들면 RED', async () => {
+    // 위 행은 **최상위 한 필드**(`activityId`)만 덮어 `identity` 를 참조로 들고 있는 구현이 통과했다
+    // (자가 적대 리뷰 DYN4-04). 형제 `mintCommit` 이 중첩까지 얼리는 것과 같은 이유다.
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    const spy = spawnSpy()
+    const identity = { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId: newUlid() }
+    const launch = createBenchLauncher({
+      spawn: spy.fn,
+      commit,
+      expected: { ...expectedFor(benchId, sourceGeneration), identity },
+    })
+
+    identity.benchId = benchId // 팩토리가 참조를 들고 있으면 이 한 줄이 대조를 통과시킨다.
+    const r = launch('codex', [], {})
+
+    expect(r.kind === 'refused' && r.reason).toBe('identity-mismatch')
     expect(spy.calls).toHaveLength(0)
   })
 })

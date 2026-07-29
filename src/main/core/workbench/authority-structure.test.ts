@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import type { StoreState } from '../store/types'
@@ -43,6 +43,45 @@ const collect = (dir: string, prefix = ''): string[] =>
   })
 
 const PRODUCTION: readonly string[] = collect(HERE).sort()
+
+/** `src/main/core` — 워크벤치의 부모. 이 아래이면서 워크벤치 밖이면 아래 허용 목록을 거쳐야 한다. */
+const CORE_ROOT = join(HERE, '..')
+
+/**
+ * 워크벤치가 참조해도 되는 **코어 이웃**. 이 목록이 exact 인 것이 요점이다 — 새 의존이 생기면 RED 가
+ * 되어 리뷰에 보인다(형제 fs importer 집합 핀과 같은 규율).
+ *
+ * `workspace` 만 있는 이유: 코디네이션 영역이 `GitRepo`(공통 gitdir 해소)와 `path-guard`(containment)를
+ * 쓴다 — PR1a 가 확정한 정당한 방향이고 둘 다 순수 계산·git 조회 층이다. 금지 대상은 **실행 표면**
+ * (`cli`·`mcp`·`engine`·`orchestrator`)이며, 그것을 참조하는 순간 워크벤치가 서버 전용 범위 밖 모듈에
+ * 결속된다.
+ */
+const ALLOWED_CORE_NEIGHBORS: readonly string[] = ['workspace']
+
+/**
+ * **레이어 판정**(#251 PR2c · 계획 정정 110ⓑ). 워크벤치는 자기 밖 **코어 모듈**을 참조하지 않는다.
+ *
+ * ⚠ **문자열 패턴이 아니라 경로 해소**여야 한다(자가 적대 리뷰 F1). 원안은 `\.\.\/(cli|mcp|…)` 로
+ * `../` 를 **정확히 1단**만 허용해서, 같은 모듈을 가리키는 정상 철자 `../../core/cli/detect`(루트 기준)와
+ * `../../cli/detect`(하위 디렉터리 기준)를 **둘 다 통과**시켰다. 즉 정정 110ⓑ 가 이 핀을 「폐포 핀이
+ * 방향성이라 못 잡는 역전」의 유일한 방어로 세워 놓고, 그 방어가 하위 디렉터리에서는 구조적으로 0건이었다.
+ *
+ * 해소 기준이라 `shared/`(코어 밖)·`node:`(비상대)·워크벤치 하위는 자연히 통과한다.
+ */
+const layerViolations = (fromDir: string, src: string): string[] => {
+  const out: string[] = []
+  for (const m of stripComments(src).matchAll(
+    /(?:from|import|require)\s*\(?\s*['"](\.[^'"]*)['"]/g,
+  )) {
+    const spec = m[1] ?? ''
+    const target = resolve(fromDir, spec)
+    if (!target.startsWith(CORE_ROOT + sep) || target.startsWith(HERE + sep)) continue
+    const neighbor = target.slice(CORE_ROOT.length + 1).split(sep)[0]
+    if (neighbor !== undefined && ALLOWED_CORE_NEIGHBORS.includes(neighbor)) continue
+    out.push(spec)
+  }
+  return out
+}
 
 describe('전수 스캔의 전제 — 대상이 실재한다', () => {
   /**
@@ -142,6 +181,44 @@ describe('fs 를 직접 아는 파일은 인가된 집합뿐이다', () => {
     expect(src).toMatch(/import type \{[^}]*\bDurabilityLevel\b[^}]*\} from '\.\/durable-fs'/)
   })
 
+  /**
+   * **신규 seam 2종의 「기본값 금지」 구조 핀**(#251 PR2c · 자가 적대 리뷰 DYN4-02).
+   *
+   * `sleep`·`spawn` 은 fs seam 과 같은 이유로 **필수 주입**이다 — 기본값이 생기는 순간 테스트가
+   * 실물을 우회하고(백오프는 실시간이 되어 flake, spawn 은 진짜 자식이 뜬다) 「소비자 0」 계약도
+   * 깨진다. 그런데 fs 는 위 방향 핀이 지키는 반면 새 seam 둘은 **주석 문면뿐**이었다.
+   */
+  it('주입 seam 은 옵셔널이 아니다 — 기본값이 생기면 RED', () => {
+    const src = stripComments(source('authority.ts'))
+    expect(src).toMatch(/readonly sleep: \(ms: number\) => Promise<void>/)
+    expect(src).toMatch(/readonly spawn: BenchSpawn/)
+    expect(src).not.toMatch(/readonly sleep\?:/)
+    expect(src).not.toMatch(/readonly spawn\?:/)
+    // `setTimeout` 은 프로덕션 백오프 구현 **한 곳**에만 있다(다른 곳에 생기면 주입을 우회한 것).
+    expect((src.match(/setTimeout\(/g) ?? []).length).toBe(1)
+  })
+
+  it('런처는 spawn 을 값으로 import 하지 않는다(주입만 · 타입은 허용)', () => {
+    const src = stripComments(source('authority.ts'))
+    expect(src).toMatch(/import type \{[^}]*\bChildProcess\b[^}]*\} from 'node:child_process'/)
+    // 값 import 가 생기면 워크벤치 안에 **가드 없는 spawn 지점**이 생긴다(bench-spawn eslint 가드는 PR7).
+    expect(src).not.toMatch(/import\s+\{[^}]*\bspawn\b[^}]*\}\s*from\s*'node:child_process'/)
+    expect(src).not.toMatch(/from\s*'cross-spawn'/)
+  })
+
+  it('앵커: seam 술어가 옵셔널화·값 import 를 잡는다(자기검사)', () => {
+    expect('  readonly sleep?: (ms: number) => Promise<void>').toMatch(/readonly sleep\?:/)
+    expect('  readonly spawn?: BenchSpawn').toMatch(/readonly spawn\?:/)
+    expect("import { spawn } from 'node:child_process'").toMatch(
+      /import\s+\{[^}]*\bspawn\b[^}]*\}\s*from\s*'node:child_process'/,
+    )
+    expect("import spawn from 'cross-spawn'").toMatch(/from\s*'cross-spawn'/)
+    // 음성 통제 — 현행 타입 import 는 값 술어에 걸리지 않는다.
+    expect("import type { ChildProcess, SpawnOptions } from 'node:child_process'").not.toMatch(
+      /import\s+\{[^}]*\bspawn\b[^}]*\}\s*from\s*'node:child_process'/,
+    )
+  })
+
   it('앵커: 방향 술어가 값 import 를 잡고 타입 import 는 통과시킨다', () => {
     const valueImport = "import { createNodeDurableFs } from './durable-fs'"
     const typeImport = "import type { DurableFs } from './durable-fs'"
@@ -158,31 +235,43 @@ describe('fs 를 직접 아는 파일은 인가된 집합뿐이다', () => {
    * 무신호로** 착지하고, 그 순간 워크벤치는 서버 전용 범위 밖 모듈에 묶인다. `import type` 도 금지다
    * (방출은 0이지만 계약 결속이 생기고, 폐포 추출 정규식은 `import type` 을 구분하지 않는다).
    */
-  it('워크벤치 프로덕션은 core/cli·core/mcp·engine 을 import 하지 않는다', () => {
-    const outward =
-      /(?:from|import|require)\s*\(?\s*['"]\.\.\/(cli|mcp|engine|orchestrator)[^'"]*['"]/
-    const offenders = PRODUCTION.filter((f) => outward.test(stripComments(source(f))))
+  it('워크벤치 프로덕션은 코어의 다른 모듈을 import 하지 않는다', () => {
+    const offenders = PRODUCTION.flatMap((f) =>
+      layerViolations(dirname(join(HERE, f)), source(f)).map((s) => `${f} → ${s}`),
+    )
     expect(offenders).toEqual([])
   })
 
   it('앵커: 레이어 술어가 실제 역전 형태를 잡는다(자기검사)', () => {
-    const outward =
-      /(?:from|import|require)\s*\(?\s*['"]\.\.\/(cli|mcp|engine|orchestrator)[^'"]*['"]/
+    // ⚠ **가드와 같은 함수**를 태운다. 앵커가 술어 **사본**을 검사하면 원본이 어떻게 망가져도 RED 가
+    // 되지 않는다 — 이 파일 자신이 :10-13 에서 세운 규율이고 형제 앵커 3종은 전부 상수를 공유한다.
     for (const sample of [
       "import type { RunOpts } from '../cli/detect'",
       "import { createDefaultSpawn } from '../mcp/stdio'",
       "const x = require('../engine')",
+      // **다단계·`core/` 경유도 잡아야 한다** — 루트 기준에서 `../../core/cli/…` 는 `../cli/…` 와
+      // **같은 모듈로 해소**되는데 원안 정규식은 앞의 것만 잡았다.
+      "import type { RunOpts } from '../../core/cli/detect'",
+      "import { x } from '../../../main/core/mcp/stdio'",
     ]) {
-      expect(sample).toMatch(outward)
+      expect(layerViolations(HERE, sample), sample).not.toEqual([])
     }
-    // 대조: 허용된 방향(같은 디렉터리·shared·node 표준)은 통과해야 한다.
+    // 대조: 허용된 방향(같은 디렉터리·shared·node 표준·워크벤치 하위)은 통과해야 한다.
     for (const ok of [
       "import type { DurableFs } from './durable-fs'",
+      "import { createFakeDurableFs } from './__testing__/durable-fs-fake'",
       "import type { BenchLifecycle } from '../../../shared/types'",
       "import type { ChildProcess } from 'node:child_process'",
+      // 허용 이웃 — 코디네이션 영역이 실제로 쓰는 방향(PR1a 확정).
+      "import { createGitRepo } from '../workspace/git'",
     ]) {
-      expect(ok).not.toMatch(outward)
+      expect(layerViolations(HERE, ok), ok).toEqual([])
     }
+    // **하위 디렉터리 기준**에서도 살아 있다 — 거기서는 `../../cli/…` 가 유일하게 올바른 철자이고
+    // 원안 정규식은 그것을 구조적으로 0건으로 만들었다(`__testing__/`·PR3 의 `journal/`).
+    expect(layerViolations(join(HERE, '__testing__'), "from '../../cli/detect'")).not.toEqual([])
+    expect(layerViolations(join(HERE, '__testing__'), "from '../durable-fs'")).toEqual([])
+    expect(layerViolations(join(HERE, '__testing__'), "from '../../workspace/git'")).toEqual([])
   })
 })
 
