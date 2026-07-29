@@ -148,6 +148,42 @@ describe('fs 를 직접 아는 파일은 인가된 집합뿐이다', () => {
     expect(valueImport).toMatch(/import\s+\{[^}]*createNodeDurableFs/)
     expect(typeImport).not.toMatch(/import\s+\{[^}]*createNodeDurableFs/)
   })
+
+  /**
+   * **레이어 핀**(#251 PR2c · 계획 정정 110ⓑ). 워크벤치는 자기 밖 **코어 모듈**을 참조하지 않는다.
+   *
+   * 이 방향은 `src/server/boot-workbench.test.ts` 의 폐포 핀이 **잡지 못한다** — 그 핀은 「데스크톱
+   * 엔트리에서 출발한 폐포에 workbench 가 0건」이라는 **반대 방향** 단언이다. 스펙 문면(런처 옵션 =
+   * 「현행 `detect.ts` 타입 재사용」)을 그대로 따르면 `workbench → core/cli` 역전이 **전 게이트
+   * 무신호로** 착지하고, 그 순간 워크벤치는 서버 전용 범위 밖 모듈에 묶인다. `import type` 도 금지다
+   * (방출은 0이지만 계약 결속이 생기고, 폐포 추출 정규식은 `import type` 을 구분하지 않는다).
+   */
+  it('워크벤치 프로덕션은 core/cli·core/mcp·engine 을 import 하지 않는다', () => {
+    const outward =
+      /(?:from|import|require)\s*\(?\s*['"]\.\.\/(cli|mcp|engine|orchestrator)[^'"]*['"]/
+    const offenders = PRODUCTION.filter((f) => outward.test(stripComments(source(f))))
+    expect(offenders).toEqual([])
+  })
+
+  it('앵커: 레이어 술어가 실제 역전 형태를 잡는다(자기검사)', () => {
+    const outward =
+      /(?:from|import|require)\s*\(?\s*['"]\.\.\/(cli|mcp|engine|orchestrator)[^'"]*['"]/
+    for (const sample of [
+      "import type { RunOpts } from '../cli/detect'",
+      "import { createDefaultSpawn } from '../mcp/stdio'",
+      "const x = require('../engine')",
+    ]) {
+      expect(sample).toMatch(outward)
+    }
+    // 대조: 허용된 방향(같은 디렉터리·shared·node 표준)은 통과해야 한다.
+    for (const ok of [
+      "import type { DurableFs } from './durable-fs'",
+      "import type { BenchLifecycle } from '../../../shared/types'",
+      "import type { ChildProcess } from 'node:child_process'",
+    ]) {
+      expect(ok).not.toMatch(outward)
+    }
+  })
 })
 
 /**

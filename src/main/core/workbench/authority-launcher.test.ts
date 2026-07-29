@@ -1,0 +1,306 @@
+import type { ChildProcess } from 'node:child_process'
+import { join } from 'node:path'
+
+import { describe, expect, it } from 'vitest'
+
+import type {
+  AuthorityCommit,
+  BenchAuthorityDraft,
+  BenchSpawnOptions,
+  CasResult,
+} from './authority'
+import { createBenchAuthorityStore, createBenchLauncher } from './authority'
+import { createFakeDurableFs } from './__testing__/durable-fs-fake'
+import { createFakeLockBackend } from './__testing__/lock-backend-fake'
+import { type BenchLeaseToken, createLockScope } from './locks'
+import { newUlid } from './ulid'
+
+/**
+ * #251 PR2c T10 — `BenchLauncher` 브랜드 · 커밋 원장 · 단일 사용(§W-4 계약 4항 · §3-T16b).
+ *
+ * ⚠ **이 PR 에 런처 소비자는 없다**(폐포 핀이 workbench 의 데스크톱 유입을 0 으로 강제하므로 배선은
+ * PR7 T30b). 그래서 §3-T17f(「spawn 이 최종 acknowledged durability 이후」)와 CAS1→CAS2 시퀀서는
+ * **여기서 쓰지 않는다** — 소비자가 없으면 테스트가 스스로 배열한 순서를 단언하게 되어 「프로덕션이
+ * 순서를 지키는가」를 증명하지 못한다(계획 정정 102·PR7 이월). 이 파일이 고정하는 것은 **크레덴셜
+ * 판정**이며 그것은 소비자 없이도 전부 관측 가능하다.
+ */
+
+const COMMON_GIT_DIR = '/repo/.git'
+const BENCH_ROOT = '/workbenches'
+const AUTHORITY_DIR = join('/repo/.git/fleet', 'authority')
+const AT = 1_700_000_000_000
+const ACTIVITY_ID = 'act-launch-1'
+
+const neverSleeps = (ms: number): Promise<void> => {
+  throw new Error(`이 스위트에서 백오프가 발동했다(${ms}ms)`)
+}
+
+/** spawn 산출물 — 이 모듈은 자식을 **전달만** 하므로 최소 구조로 충분하다. */
+const fakeChild = { pid: 4242 } as unknown as ChildProcess
+
+interface SpawnSpy {
+  readonly calls: { cmd: string; args: readonly string[]; opts: BenchSpawnOptions }[]
+  readonly fn: (cmd: string, args: readonly string[], opts: BenchSpawnOptions) => ChildProcess
+}
+
+const spawnSpy = (): SpawnSpy => {
+  const calls: { cmd: string; args: readonly string[]; opts: BenchSpawnOptions }[] = []
+  return {
+    calls,
+    fn: (cmd, args, opts) => {
+      calls.push({ cmd, args, opts })
+      return fakeChild
+    },
+  }
+}
+
+const mintLease = async (benchId: string): Promise<BenchLeaseToken> => {
+  const scope = createLockScope({
+    identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT },
+    backend: createFakeLockBackend(),
+  })
+  const r = await scope.tryAcquireBenchLease(benchId)
+  if (r.status !== 'acquired') throw new Error(`리스 획득 실패: ${r.status}`)
+  return r.lease
+}
+
+/**
+ * 실 CAS 로 커밋을 얻는다 — **커밋을 지어내지 않는 것이 이 하네스의 계약**이다. 브랜드는 미export 라
+ * 테스트가 캐스트로 만들 수도 있지만, 그러면 원장 검사가 통째로 vacuous 해진다.
+ */
+const commitFor = async (
+  execGate: 'gated' | 'running',
+  over: Partial<BenchAuthorityDraft> = {},
+): Promise<{ commit: AuthorityCommit; benchId: string; sourceGeneration: number }> => {
+  const benchId = newUlid()
+  const lease = await mintLease(benchId)
+  const store = createBenchAuthorityStore(createFakeDurableFs(), {
+    authorityDir: AUTHORITY_DIR,
+    durability: 'file-only',
+    now: () => AT,
+    sleep: neverSleeps,
+  })
+  const sourceGeneration = 5
+  const result: CasResult = await store.withAuthority(lease, async (tx) => {
+    const read = tx.readFresh()
+    if (read.kind !== 'absent') throw new Error('absent 예상')
+    return tx.compareAndSwap(read.read, {
+      schemaVersion: 1,
+      identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+      lifecycle: 'open',
+      sourceGeneration,
+      activeActivity: {
+        activityId: ACTIVITY_ID,
+        kind: 'run',
+        generation: sourceGeneration,
+        ownerToken: lease.ownerToken,
+        execGate,
+        startedAt: AT,
+      },
+      ...over,
+    })
+  })
+  if (result.kind !== 'committed') throw new Error(`커밋 실패: ${result.kind}`)
+  return { commit: result.commit, benchId, sourceGeneration }
+}
+
+const expectedFor = (
+  benchId: string,
+  sourceGeneration: number,
+): {
+  identity: { commonGitDir: string; benchRoot: string; benchId: string }
+  sourceGeneration: number
+  activityId: string
+} => ({
+  identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+  sourceGeneration,
+  activityId: ACTIVITY_ID,
+})
+
+describe('T10 런처 — 정상 경로', () => {
+  it('게이트가 해제된 커밋이면 spawn 하고 자식을 그대로 돌려준다', async () => {
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    const spy = spawnSpy()
+    const launch = createBenchLauncher({
+      spawn: spy.fn,
+      commit,
+      expected: expectedFor(benchId, sourceGeneration),
+    })
+
+    const r = launch('codex', ['--version'], { cwd: '/workbenches/a' })
+
+    expect(r.kind).toBe('spawned')
+    expect(r.kind === 'spawned' && r.child).toBe(fakeChild)
+    expect(spy.calls).toHaveLength(1)
+    expect(spy.calls[0]).toMatchObject({ cmd: 'codex', args: ['--version'] })
+    expect(spy.calls[0]?.opts.cwd).toBe('/workbenches/a')
+  })
+})
+
+describe('T10 런처 — 크레덴셜 거부(전부 spawn 0회)', () => {
+  it('원장에 없는 커밋(복제·위조)은 commit-not-minted', async () => {
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    const spy = spawnSpy()
+    // ⚠ **캐스트 0개로 컴파일된다** — 브랜드 `unique symbol` 은 스프레드에서 보존되고 결과는 새 객체다.
+    //    읽기 토큰에서 실측 확정된 것과 같은 벡터이며, 단일 사용 WeakSet 만으로는 잡히지 않는다.
+    const cloned: AuthorityCommit = { ...commit }
+    const launch = createBenchLauncher({
+      spawn: spy.fn,
+      commit: cloned,
+      expected: expectedFor(benchId, sourceGeneration),
+    })
+
+    const r = launch('codex', [], {})
+
+    expect(r.kind).toBe('refused')
+    expect(r.kind === 'refused' && r.reason).toBe('commit-not-minted')
+    expect(spy.calls).toHaveLength(0)
+  })
+
+  it('한 커밋으로 두 번 띄울 수 없다 — 두 번째는 commit-spent', async () => {
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    const spy = spawnSpy()
+    const launch = createBenchLauncher({
+      spawn: spy.fn,
+      commit,
+      expected: expectedFor(benchId, sourceGeneration),
+    })
+
+    expect(launch('codex', [], {}).kind).toBe('spawned')
+    const second = launch('codex', [], {})
+
+    expect(second.kind).toBe('refused')
+    expect(second.kind === 'refused' && second.reason).toBe('commit-spent')
+    expect(spy.calls).toHaveLength(1)
+  })
+
+  it('같은 커밋으로 팩토리를 다시 만들어도 소진은 유지된다(원장은 모듈 스코프)', async () => {
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    const spy = spawnSpy()
+    const deps = { spawn: spy.fn, commit, expected: expectedFor(benchId, sourceGeneration) }
+
+    expect(createBenchLauncher(deps)('codex', [], {}).kind).toBe('spawned')
+    const again = createBenchLauncher(deps)('codex', [], {})
+
+    // 소진을 팩토리-지역 플래그로 구현하면 이 행이 RED 다 — 「한 커밋 = 한 자식」이 깨진다.
+    expect(again.kind === 'refused' && again.reason).toBe('commit-spent')
+    expect(spy.calls).toHaveLength(1)
+  })
+
+  it('게이트가 열리지 않은 커밋(CAS1)은 gate-not-released', async () => {
+    const { commit, benchId, sourceGeneration } = await commitFor('gated')
+    const spy = spawnSpy()
+    const launch = createBenchLauncher({
+      spawn: spy.fn,
+      commit,
+      expected: expectedFor(benchId, sourceGeneration),
+    })
+
+    const r = launch('codex', [], {})
+
+    // 이 행이 없으면 §W-4 의 「launcher 에 넘기는 것은 commit2」가 **관례로만** 존재한다 — 배선자가
+    // commit1 을 넘겨도 전 게이트 GREEN 인 채 「디스크 gated + 살아있는 자식」이 만들어진다.
+    expect(r.kind === 'refused' && r.reason).toBe('gate-not-released')
+    expect(spy.calls).toHaveLength(0)
+  })
+
+  it('활동이 없는 커밋(회수 CAS 등)도 gate-not-released', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const store = createBenchAuthorityStore(createFakeDurableFs(), {
+      authorityDir: AUTHORITY_DIR,
+      durability: 'file-only',
+      now: () => AT,
+      sleep: neverSleeps,
+    })
+    const result = await store.withAuthority(lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return tx.compareAndSwap(read.read, {
+        schemaVersion: 1,
+        identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+        lifecycle: 'open',
+        sourceGeneration: 5,
+      })
+    })
+    if (result.kind !== 'committed') throw new Error('커밋 실패')
+    const spy = spawnSpy()
+
+    const r = createBenchLauncher({
+      spawn: spy.fn,
+      commit: result.commit,
+      expected: expectedFor(benchId, 5),
+    })('codex', [], {})
+
+    expect(r.kind === 'refused' && r.reason).toBe('gate-not-released')
+    expect(spy.calls).toHaveLength(0)
+  })
+
+  it.each([
+    [
+      'identity-mismatch',
+      (b: string, g: number) => ({
+        ...expectedFor(b, g),
+        identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId: newUlid() },
+      }),
+    ],
+    [
+      'activity-mismatch',
+      (b: string, g: number) => ({ ...expectedFor(b, g), activityId: 'act-다른것' }),
+    ],
+    [
+      'generation-mismatch',
+      (b: string, g: number) => ({ ...expectedFor(b, g), sourceGeneration: g + 1 }),
+    ],
+  ] as const)('expected 가 어긋나면 %s — 커밋 재조준 차단', async (reason, mutate) => {
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    const spy = spawnSpy()
+
+    const r = createBenchLauncher({
+      spawn: spy.fn,
+      commit,
+      expected: mutate(benchId, sourceGeneration),
+    })('codex', [], {})
+
+    expect(r.kind === 'refused' && r.reason).toBe(reason)
+    expect(spy.calls).toHaveLength(0)
+  })
+
+  it('거부된 커밋은 소진되지 않는다 — 올바른 expected 로 다시 만들면 뜬다', async () => {
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    const spy = spawnSpy()
+
+    const wrong = createBenchLauncher({
+      spawn: spy.fn,
+      commit,
+      expected: { ...expectedFor(benchId, sourceGeneration), activityId: '틀린-활동' },
+    })('codex', [], {})
+    expect(wrong.kind).toBe('refused')
+
+    const right = createBenchLauncher({
+      spawn: spy.fn,
+      commit,
+      expected: expectedFor(benchId, sourceGeneration),
+    })('codex', [], {})
+
+    // 거부가 커밋을 태워버리면 정상 재시도가 불가능해진다(소진은 **spawn 직전**에만).
+    expect(right.kind).toBe('spawned')
+    expect(spy.calls).toHaveLength(1)
+  })
+})
+
+describe('T10 런처 — 스냅숏 규율', () => {
+  it('팩토리 생성 뒤 deps 를 바꿔도 대조가 무력화되지 않는다', async () => {
+    const { commit, benchId, sourceGeneration } = await commitFor('running')
+    const spy = spawnSpy()
+    const expected = { ...expectedFor(benchId, sourceGeneration), activityId: '틀린-활동' }
+    const launch = createBenchLauncher({ spawn: spy.fn, commit, expected })
+
+    // 팩토리가 참조를 계속 읽으면 이 한 줄이 대조를 통과시킨다.
+    expected.activityId = ACTIVITY_ID
+    const r = launch('codex', [], {})
+
+    expect(r.kind === 'refused' && r.reason).toBe('activity-mismatch')
+    expect(spy.calls).toHaveLength(0)
+  })
+})

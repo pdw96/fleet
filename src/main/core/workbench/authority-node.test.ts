@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -338,5 +346,110 @@ describe('크래시 도달 가능성 — 자식이 만든 실제 상태를 프�
 
     expect(seen.kind).toBe('found')
     expect(seen.kind === 'found' && seen.record.revision).toBe(1)
+  })
+})
+
+/**
+ * §3-T17 **실 FS 조작화**(#251 PR2c · win32 전용).
+ *
+ * C4 의 근거는 「win32 는 대상에 열린 핸들이 하나라도 있으면 rename 이 EPERM」이고, 3면 실측이 그것을
+ * 확인했다(win32 EPERM ×3 → close → 4회차 성공 / linux 는 애초에 성공). 페이크 위 재시도 테스트는
+ * **주입한 오류를 되돌려받는** 반면 이 행은 **실 커널이 EPERM 을 낸다** — 「방어를 만든 근거」와
+ * 「방어가 동작함」을 한 곳에서 묶는다(PR2a 교훈 ①).
+ *
+ * ⚠ **벽시계로 핸들을 닫지 않는다**(예: `setTimeout(close, 25)`). 백오프 총합이 150ms 라 CI 부하에서
+ * 순서가 뒤집혀 **정답 구현이 flake 로 RED** 가 된다. 대신 실 어댑터를 **카운팅 데코레이터로 감싸**
+ * 「n회차 rename 직전에 닫는다」를 사건 순서로 고정한다(주입 seam 이 이미 그 수단이다).
+ */
+describe.skipIf(!IS_WIN)('§3-T17 실 FS — win32 rename EPERM 재시도', () => {
+  it('열린 핸들이 3회 EPERM 을 만들고, 닫히면 4회차에 커밋된다', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const target = join(authorityDir, `${benchId}.json`)
+
+    // 1) 먼저 정상 커밋으로 대상 파일을 만든다(열 대상이 있어야 EPERM 을 낼 수 있다).
+    expect((await commit(realStore('file-only'), lease)).kind).toBe('committed')
+
+    // 2) 그 파일을 연다 — 이 순간부터 win32 는 rename 을 EPERM 으로 거절한다.
+    let held: number | undefined = openSync(target, 'r')
+    const delays: number[] = []
+    let renames = 0
+    const real = createNodeDurableFs()
+    const counting: typeof real = {
+      ...real,
+      rename: (from, to) => {
+        renames += 1
+        // 3회차까지는 핸들이 열린 채 — 4회차 **직전**에 닫는다.
+        if (renames === 4 && held !== undefined) {
+          closeSync(held)
+          held = undefined
+        }
+        real.rename(from, to)
+      },
+    }
+
+    const store = createBenchAuthorityStore(counting, {
+      authorityDir,
+      durability: 'file-only',
+      now: () => 1_700_000_000_001,
+      sleep: (ms) => {
+        delays.push(ms)
+        return Promise.resolve()
+      },
+    })
+
+    try {
+      const r = await commit(store, lease, { sourceGeneration: 2 })
+
+      expect(r.kind).toBe('committed')
+      expect(renames).toBe(4)
+      expect(delays).toEqual([10, 20, 40])
+      expect(JSON.parse(readFileSync(target, 'utf8'))).toMatchObject({
+        revision: 2,
+        sourceGeneration: 2,
+      })
+    } finally {
+      if (held !== undefined) closeSync(held)
+    }
+  })
+
+  it('핸들이 끝까지 열려 있으면 5회 시도 후 io-failure{rename} — 대상 내용 불변', async () => {
+    const benchId = newUlid()
+    const lease = await mintLease(benchId)
+    const target = join(authorityDir, `${benchId}.json`)
+    expect((await commit(realStore('file-only'), lease)).kind).toBe('committed')
+    const before = readFileSync(target, 'utf8')
+
+    const held = openSync(target, 'r')
+    let renames = 0
+    const real = createNodeDurableFs()
+    const counting: typeof real = {
+      ...real,
+      rename: (from, to) => {
+        renames += 1
+        real.rename(from, to)
+      },
+    }
+    const store = createBenchAuthorityStore(counting, {
+      authorityDir,
+      durability: 'file-only',
+      now: () => 1_700_000_000_002,
+      sleep: () => Promise.resolve(),
+    })
+
+    try {
+      const r = await commit(store, lease, { sourceGeneration: 3 })
+
+      expect(r.kind).toBe('io-failure')
+      expect(r.kind === 'io-failure' && r.step).toBe('rename')
+      expect(renames).toBe(5)
+      // 커밋되지 않았다 = 대상 내용이 그대로다. tmp 도 남지 않는다(finally 규율).
+      expect(readFileSync(target, 'utf8')).toBe(before)
+      expect(() =>
+        statSync(join(authorityDir, `${benchId}.json.${lease.ownerToken}.tmp`)),
+      ).toThrow()
+    } finally {
+      closeSync(held)
+    }
   })
 })

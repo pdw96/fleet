@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process'
 import { dirname, join } from 'node:path'
 
 import type { BenchLifecycle } from '../../../shared/types'
@@ -179,8 +180,8 @@ declare const AUTHORITY_COMMIT: unique symbol
  * CAS 성공 시에만 존재하는 증거(§W-4 계약 4항).
  *
  * ⚠ **이 타입 혼자서는 아무것도 강제하지 못한다.** 「CAS 를 건너뛴 코드가 컴파일되지 않는다」가 성립하려면
- * 세 조각이 더 필요한데 **전부 미착지**다: 런처 팩토리(`createBenchLauncher(commit)`) = PR2c ·
- * spawn 관문 배선 = PR7 · 우회 차단 eslint 가드 = PR7(계획 정정 52·64). 현재형으로 쓰면 있지도 않은
+ * 세 조각이 필요한데 지금 있는 것은 **런처 팩토리 하나**(`createBenchLauncher` · PR2c)뿐이다 —
+ * spawn 관문 배선과 우회 차단 eslint 가드는 **PR7**(계획 정정 52·64). 현재형으로 쓰면 있지도 않은
  * 방어를 있다고 읽히게 한다(자체 적대 리뷰 R5-9).
  */
 export interface AuthorityCommit {
@@ -189,6 +190,16 @@ export interface AuthorityCommit {
   readonly revision: number
   readonly sourceGeneration: number
   readonly activityId?: string
+  /**
+   * 이 커밋이 기록한 활동의 게이트 상태(#251 PR2c · 계획 정정 106).
+   *
+   * 없으면 **commit1(gated)과 commit2(running)이 `revision` 말고는 구별되지 않아**, §W-4 의
+   * 「launcher 에 넘기는 것은 commit2」가 **관례로만** 존재한다. 그 상태에서 배선자가 commit1 을 넘기면
+   * 전 게이트 GREEN 인 채 「디스크 `gated` + 살아있는 자식」이 만들어지고 — 그것이 스펙이 스스로
+   * fail-open 이라 부른 상태다 — gated-orphan 분류가 그 자식을 「0줄 실행」으로 오분류한다.
+   * 활동이 없는 커밋(예: 회수 CAS)은 `undefined` 이며 런처는 그것도 거부한다.
+   */
+  readonly execGate?: BenchActivityRecord['execGate']
   readonly durability: DurabilityLevel
 }
 
@@ -449,6 +460,113 @@ export function classifyStaleActivity(record: BenchAuthorityRecord): StaleActivi
  * `revision`·`writtenBy` 를 함께 떼는 이유는 `compareAndSwap` 의 사전조건이 그 두 키의 **존재 자체**를
  * `invariant-violation` 으로 거부하기 때문이다(저장소만 배정) — 즉 이 산출물은 그대로 CAS 인자가 된다.
  */
+/* ------------------------------------------------------------------------------------------------
+ * bench 런처 (T10 · §W-4 계약 4항) — **소비자 0**. 실 spawn seam 배선은 PR7 T30b.
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * spawn 옵션 — node `SpawnOptions` 의 **부분집합을 여기서 따로 정의**한다.
+ *
+ * 스펙이 인용한 `SpawnOpts` 는 레포에 없는 이름이고(실재는 `cli/detect.ts` 의 `RunOpts` 인데 그것은
+ * spawn 인자가 아니다), 그렇다고 `core/cli` 를 참조하면 **레이어 역전**이다 — 그리고 그 역전은
+ * 데스크톱 폐포 핀이 **방향성이라 잡지 못한다**(계획 정정 110). 워크벤치는 자기 밖 코어 모듈을
+ * 참조하지 않는다.
+ */
+export interface BenchSpawnOptions {
+  readonly cwd?: string
+  readonly env?: NodeJS.ProcessEnv
+  readonly windowsHide?: boolean
+}
+
+/** 실 spawn 은 **주입**이다 — 이 모듈은 자식을 만들지 않고 크레덴셜만 판정한다. */
+export type BenchSpawn = (
+  cmd: string,
+  args: readonly string[],
+  opts: BenchSpawnOptions,
+) => ChildProcess
+
+export type BenchSpawnRefusal =
+  | 'commit-not-minted'
+  | 'commit-spent'
+  | 'gate-not-released'
+  | 'identity-mismatch'
+  | 'activity-mismatch'
+  | 'generation-mismatch'
+
+/**
+ * 런처 결과. **판별 유니온인 것이 계약**이다(§W-4 「불일치는 throw 가 아니라 판별 유니온 반환」).
+ * 스펙 코드펜스는 `=> ChildProcess` 단일 반환이었는데 같은 절이 유니온 반환을 요구해 **한 함수에
+ * 상반된 반환**을 지시했다(계획 정정 102 · 4렌즈 독립 수렴).
+ */
+export type BenchSpawnResult =
+  | { readonly kind: 'spawned'; readonly child: ChildProcess }
+  | { readonly kind: 'refused'; readonly reason: BenchSpawnRefusal }
+
+/** bench 스코프 실행의 유일한 진입점. `AuthorityCommit` 없이는 **팩토리를 만들 수 없다**. */
+export type BenchLauncher = (
+  cmd: string,
+  args: readonly string[],
+  opts: BenchSpawnOptions,
+) => BenchSpawnResult
+
+export interface BenchLauncherDeps {
+  readonly spawn: BenchSpawn
+  readonly commit: AuthorityCommit
+  /**
+   * 대조 상대 — **커밋 자신이 아니라 호출자가 준다**(계획 정정 103).
+   *
+   * `mintCommit` 이 identity·sourceGeneration·activityId 를 커밋에 싣기 때문에, 커밋만 받아서 그
+   * 세 필드를 「대조」하면 **항상 참인 vacuous 검사**가 된다. 대조가 방지하려는 것은 「어떤 CAS 의
+   * 커밋이 **다른 활동**의 spawn 에 재사용되는 것」이므로, 지금 시작하려는 활동을 아는 쪽이 준다.
+   */
+  readonly expected: {
+    readonly identity: BenchAuthorityIdentity
+    readonly sourceGeneration: number
+    readonly activityId: string
+  }
+}
+
+/**
+ * 런처 팩토리(§W-4 계약 4항).
+ *
+ * 판정 **순서가 계약**이다(계획 정정 104): ①원장 조회(출처) → ②소진 여부 → ③게이트 → ④3필드.
+ * 출처를 먼저 보는 이유는 형제 `withAuthority` 진입과 같다 — 위조·복제 크레덴셜은 나머지 검사를
+ * 전부 통과하도록 조립할 수 있으므로 **필드가 아니라 원장이 권위**다.
+ *
+ * ⚠ **소진은 spawn 보다 먼저** 한다. spawn 이 던지면 커밋은 이미 죽어 있고 재시도하려면 새 CAS 가
+ * 필요하다 — fail-closed 방향이다. 반대로 두면 spawn 실패마다 같은 커밋으로 무한 재시도가 가능해진다.
+ *
+ * ⚠ **`deps` 는 생성 시점 스냅숏**이다(형제 store `opts` 규율). 참조를 계속 읽으면 호출자가 팩토리
+ * 생성 뒤에 `expected` 를 바꿔 대조를 무력화할 수 있다.
+ */
+export function createBenchLauncher(deps: BenchLauncherDeps): BenchLauncher {
+  const spawn = deps.spawn
+  const commit = deps.commit
+  const expected = Object.freeze({
+    identity: Object.freeze({
+      commonGitDir: deps.expected.identity.commonGitDir,
+      benchRoot: deps.expected.identity.benchRoot,
+      benchId: deps.expected.identity.benchId,
+    }),
+    sourceGeneration: deps.expected.sourceGeneration,
+    activityId: deps.expected.activityId,
+  })
+
+  const refuse = (reason: BenchSpawnRefusal): BenchSpawnResult => ({ kind: 'refused', reason })
+
+  return (cmd, args, opts) => {
+    if (!MINTED_COMMITS.has(commit)) return refuse('commit-not-minted')
+    if (SPENT_COMMITS.has(commit)) return refuse('commit-spent')
+    // 게이트가 해제된 커밋(=CAS2)만 자식을 띄운다. `undefined`(활동 없는 커밋 — 예: 회수 CAS)도 여기서 막힌다.
+    if (commit.execGate !== 'running') return refuse('gate-not-released')
+    if (!sameIdentity(commit.identity, expected.identity)) return refuse('identity-mismatch')
+    if (commit.activityId !== expected.activityId) return refuse('activity-mismatch')
+    if (commit.sourceGeneration !== expected.sourceGeneration) return refuse('generation-mismatch')
+    SPENT_COMMITS.add(commit)
+    return { kind: 'spawned', child: spawn(cmd, args, opts) }
+  }
+}
+
 export function reclaimDraft(record: BenchAuthorityRecord): BenchAuthorityDraft {
   const { activeActivity: _reclaimed, revision: _revision, writtenBy: _writtenBy, ...rest } = record
   return rest
@@ -485,6 +603,17 @@ const AUTHORITY_FILE_MODE = 0o600
  */
 let readSeqCounter = 0
 const SPENT_READS = new WeakSet<FreshReadToken>()
+/**
+ * 커밋 크레덴셜의 **민팅·소진 원장**(#251 PR2c · 계획 정정 104·105).
+ *
+ * 형제 2종(`MINTED_READS`·`MINTED_LEASES`)은 **Codex P1 으로 원장을 강제당했는데** 커밋만 비대칭이었다.
+ * 그래서 `{...commit}` 복제가 단일 사용 검사를 우회했다 — 읽기 토큰에서 **실측으로 확정된 것과 같은
+ * 벡터**다. 소진을 **launcher 호출 시점**에 하는 것도 계약이다: 팩토리에서 소진하면 만들어진 launcher 를
+ * 반복 호출해 **한 커밋에 자식 N개**가 되고, §W-16 의 트리 사망 증거·활동 종결 CAS 가 전부 1:1 가정
+ * 위에 서 있으므로 무너진다.
+ */
+const MINTED_COMMITS = new WeakSet<AuthorityCommit>()
+const SPENT_COMMITS = new WeakSet<AuthorityCommit>()
 /**
  * **민팅 원장**(Codex PR#266 P1). `FreshReadToken` 의 **필드를 신뢰하지 않는다** — 스프레드 복제
  * `{...read, observedRevision: 현재값}` 은 미export 브랜드를 보존하면서 **새 객체**라 `SPENT_READS` 에
@@ -1384,9 +1513,9 @@ const mintRead = (
   return token
 }
 
-const mintCommit = (record: BenchAuthorityRecord, durability: DurabilityLevel): AuthorityCommit =>
+const mintCommit = (record: BenchAuthorityRecord, durability: DurabilityLevel): AuthorityCommit => {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- 위와 같다(인가된 forge 2곳 중 둘째).
-  Object.freeze({
+  const commit = Object.freeze({
     // **복사 후 동결**(Codex PR#266 P1). `Object.freeze` 는 얕으므로 `record.identity` 를 참조로 실으면
     // `Object.assign(result.record.identity, {benchId: 다른bench})` 가 **커밋의 identity 까지 바꾼다** —
     // 바깥 객체는 동결·유효한 채로 남으므로 런처가 그 크레덴셜을 소비하면 **한 bench 용 커밋이 다른
@@ -1400,6 +1529,16 @@ const mintCommit = (record: BenchAuthorityRecord, durability: DurabilityLevel): 
     sourceGeneration: record.sourceGeneration,
     ...(record.activeActivity === undefined
       ? {}
-      : { activityId: record.activeActivity.activityId }),
+      : {
+          activityId: record.activeActivity.activityId,
+          execGate: record.activeActivity.execGate,
+        }),
     durability,
   }) as AuthorityCommit
+  // **원장이 권위다**(형제 `MINTED_READS`·`MINTED_LEASES` 와 같은 규율 · 계획 정정 104). 브랜드
+  // `unique symbol` 은 위조를 막지 못한다 — `{...commit}` 스프레드 복제는 브랜드를 보존하면서 **새
+  // 객체**라 단일 사용 WeakSet 을 캐스트 0개로 우회하고, PR7 배선 층의 `x as AuthorityCommit` 은
+  // 워크벤치 밖이라 eslint 위조 차단 스코프에도 걸리지 않는다. 그래서 런처는 **필드가 아니라 여기**를 본다.
+  MINTED_COMMITS.add(commit)
+  return commit
+}

@@ -8,7 +8,7 @@ import type {
   PostCommitStep,
   PreCommitStep,
 } from './authority'
-import { SUPPORTED_AUTHORITY_SCHEMA } from './authority'
+import { createBenchLauncher, SUPPORTED_AUTHORITY_SCHEMA } from './authority'
 
 /**
  * #251 PR2a T6b — 계약 사슬 골격(§W-4)의 **타입 층** 핀.
@@ -94,5 +94,29 @@ describe('타입 핀 — typecheck 가 판정자다', () => {
     const rec = {} as BenchAuthorityRecord
     const asDraft: BenchAuthorityDraft = rec
     expect(asDraft).toBe(rec)
+  })
+
+  /**
+   * §3-T16b — **런처 팩토리의 파라미터 타입**을 핀한다(#251 PR2c T10).
+   *
+   * 원안 문면(「`AuthorityCommit` 인자 없는 호출이 tsc 에러」)은 **인자 개수**만 증명해 파라미터가
+   * 느슨해져도(예: `commit: unknown`) GREEN 이다. 브랜드 위조 자체는 위 행이 이미 닫았으므로, 여기서
+   * 닫아야 하는 것은 **소비 측이 그 브랜드를 실제로 요구하는가**다.
+   */
+  it('구조 조립한 commit 유사 객체는 런처 팩토리에 넘길 수 없다', () => {
+    const spawn = (): never => {
+      throw new Error('도달 불가 — 타입 단계에서 막힌다')
+    }
+    const identity = { commonGitDir: '/r/.git', benchRoot: '/wb', benchId: '0'.repeat(26) }
+    // 팩토리를 **실제로 호출**해야 파라미터 타입이 검사된다 — 리터럴을 지역 변수에 담아 두면 컨텍스트
+    // 타입이 없어 tsc 가 통과시키고 지시자가 「Unused」로 뒤집힌다(이 행을 쓰다 실측).
+    const build = (): unknown =>
+      createBenchLauncher({
+        spawn,
+        // @ts-expect-error 브랜드 심볼이 없는 객체는 AuthorityCommit 이 아니다(원장 검사 이전에 tsc 가 막는다).
+        commit: { identity, revision: 2, sourceGeneration: 1, durability: 'file-only' as const },
+        expected: { identity, sourceGeneration: 1, activityId: 'a' },
+      })
+    expect(build).toBeDefined()
   })
 })
