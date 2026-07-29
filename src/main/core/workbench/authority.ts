@@ -347,6 +347,111 @@ export interface BenchAuthorityStoreOptions {
   /** `probeDurability()` 산출물. 이 모듈은 플랫폼을 알지 못한다. */
   readonly durability: DurabilityLevel
   readonly now: () => number
+  /**
+   * rename 재시도 백오프 대기(#251 PR2c · C4). **`now` 와 같은 이유로 주입**이다 — 주입이 없으면
+   * 「백오프 0ms」·「순서 역전」·「고정값」 구현이 §3-T17·T17b·T17c 를 **전부 GREEN** 으로 통과해
+   * C4 의 존재 이유(상대 핸들이 닫히기를 기다리는 시간 창)가 미검증 출하된다(계획 정정 107).
+   *
+   * ⚠ **선택적이 아니라 필수**다(형제 `providers/resilient.ts:9` 는 선택적 + 기본값). 이 store 는
+   * PR2c 시점에 **소비자가 0** 이라, 기본값을 두면 그 기본 구현이 어떤 게이트도 거치지 않고 착지한다.
+   * 프로덕션 구현은 아래 `realBackoffSleep` 이며 PR7 배선이 그것을 주입한다.
+   */
+  readonly sleep: (ms: number) => Promise<void>
+}
+
+/**
+ * rename 재시도 백오프(ms · §W-4 C4). **원소 개수 = 재시도 횟수**이고 총 시도는 `1 + length` 다.
+ * 문면의 「4회」가 총 시도인지 재시도인지 미정이었고, 백오프 원소 4개를 전부 소비하는 해석으로
+ * 확정했다(계획 정정 108 · 총 대기 150ms).
+ */
+export const RENAME_BACKOFF_MS: readonly number[] = Object.freeze([10, 20, 40, 80])
+
+/**
+ * 재시도 대상 errno(§W-4 C4).
+ *
+ * ⚠ **3면 실측(win32 24.16 / linux 22.22.3 · 24.18)이 말해 주는 정직한 한계**(계획 「PR2c 착수 전 실측
+ * 정정」): 이 집합에서 **일시성이 확인된 것은 win32 EPERM(대상에 열린 핸들) 하나**다. 같은 win32 EPERM 이
+ * 「대상이 디렉터리」·「대상이 읽기 전용」에서도 나오는데 그 둘은 **영구 실패**이고 errno 로는 구분되지
+ * 않는다 — 그 경우 150ms 를 소진한 뒤 `io-failure` 로 끝난다. 영구/일시 판별을 시도하지 않는 이유는
+ * **비용 비대칭**이다: 판별자가 틀리면 일시적 실패를 영구로 오분류해 **정상 커밋을 잃는다**(150ms 지연
+ * 보다 훨씬 비싸다). `EACCES` 는 POSIX 에서 부모 권한 문제라 역시 영구이며, **`EBUSY` 는 3면 어디서도
+ * 재현되지 않았다** — 방어적으로 유지하되 그 근거가 관측이 아님을 여기 명기한다(미검증 근거를 검증된
+ * 것처럼 쓰지 않는다).
+ *
+ * `switch` 가 아니라 `Set` 인 것도 계약이다 — 워크벤치 전수 assertNever selector(`eslint.config.mjs`)는
+ * `switch` 마다 `default: assertNever` 를 요구하는데 errno 는 판별 유니온이 아니라 열린 문자열이다.
+ */
+const RENAME_RETRY_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+const isRetryableRenameError = (cause: unknown): boolean => {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(형제 `durable-fs.ts:134`·`active-instance.ts:160`). 캐스트를 리뷰에 보이게 두는 것이 이 룰의 목적이다.
+  const code = (cause as NodeJS.ErrnoException | undefined)?.code
+  return typeof code === 'string' && RENAME_RETRY_CODES.has(code)
+}
+
+/**
+ * 프로덕션 백오프 대기. 소비자는 **PR7 부팅 배선**이다(이 PR 시점에 호출부 0).
+ *
+ * `AbortSignal` 을 받지 않는 것이 형제 `providers/resilient.ts` 와의 의도적 차이다 — 이 대기는
+ * **리스와 뮤텍스를 쥔 채** 도는 유계 구간(총 150ms)이고, 중간에 끊으면 tmp 정리 책임이 두 갈래로
+ * 갈린다. 취소는 상위(활동 취소)가 소유한다.
+ */
+export const realBackoffSleep = (ms: number): Promise<void> =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
+/**
+ * 활동 잔재의 종별(§W-4 「`commit-uncertain` 복구」 · #251 PR2c T9c).
+ *
+ * `gated-orphan` = **게이트가 해제된 적 없음 = 사용자 코드 0줄 실행**의 증거다. `commit-uncertain`
+ * (rename 성공 후 dir fsync 실패)은 커밋 토큰을 발급하지 않으므로 CLI 가 뜨지 못하는데 디스크에는
+ * `execGate:'gated'` 가 남을 수 있고, 그 항목은 리스 보유자가 정리해도 안전하다.
+ *
+ * `live-activity`(=`execGate:'running'`)는 **회수 대상이 아니다** — 살아있는 자식이 있을 수 있고
+ * 그것을 「0줄 실행」으로 오분류해 변이하면 스펙이 스스로 fail-open 이라 부른 상태가 된다. 그 판정은
+ * §W-16 해제 판정(자식 트리 사망 증거)의 소관이다.
+ */
+export type StaleActivity =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'gated-orphan'; readonly activityId: string }
+  | { readonly kind: 'live-activity'; readonly activityId: string }
+
+/**
+ * 활동 잔재 **판정만** 한다 — 이 함수는 아무것도 변이하지 않고 회수 CAS 는 호출자(PR7 T30b) 소관이다.
+ *
+ * 회수를 store 메서드로 만들지 않은 이유가 계약이다(계획 정정 100): 「`activeActivity` 를 뺀 draft 를
+ * CAS 한다」는 **이미 되는 일**이라 store 에 넣어도 새 보장이 없고, 반대로 「`running` 은 회수 불가」를
+ * CAS 층 불변식으로 넣으면 **정상 활동 종료**(spawn 실패 시 활동 종결 CAS — §W-4)까지 봉쇄돼 사용자가
+ * 고착된다. 판정과 집행을 분리하면 둘 다 피한다.
+ *
+ * ⚠ **`ownerToken` 을 보지 않는다.** 「이 gated 를 내 획득이 썼는가」는 판정을 바꾸지 않는다 — 누가
+ * 썼든 게이트가 열린 적 없다는 사실이 그대로 0줄 실행의 증거다. 판정을 바꾸지 않는 정보를 유니온에
+ * 실으면 소비자가 거기에 잘못된 의미(「내 것만 안전」)를 부여한다.
+ */
+export function classifyStaleActivity(record: BenchAuthorityRecord): StaleActivity {
+  const activity = record.activeActivity
+  if (activity === undefined) return { kind: 'none' }
+  return activity.execGate === 'gated'
+    ? { kind: 'gated-orphan', activityId: activity.activityId }
+    : { kind: 'live-activity', activityId: activity.activityId }
+}
+
+/**
+ * 회수 CAS 에 그대로 넘길 draft — **`activeActivity` 만 소멸**하고 나머지는 전부 그대로다.
+ *
+ * 보존 계약(계획 정정 101 · 지금까지 어느 문서에도 없었다): `sourceGeneration` **무변**(되돌리면 §W-8
+ * 완결 관측의 세대 귀속이 조용히 깨진다) · `lifecycle`·`schemaVersion`·`identity`·통합 4필드·
+ * `archivedBranch` 전부 무변.
+ *
+ * **rest 구조분해**로 쓰는 것이 규범이다(필드 명시 재조립은 새 필드가 늘 때마다 누락 표면을 신설한다 —
+ * `serialize` 가 6필드를 명시 재조립하는 것은 **호출자 객체의 초과 키를 막기 위해서**이고 목적이 다르다).
+ * `revision`·`writtenBy` 를 함께 떼는 이유는 `compareAndSwap` 의 사전조건이 그 두 키의 **존재 자체**를
+ * `invariant-violation` 으로 거부하기 때문이다(저장소만 배정) — 즉 이 산출물은 그대로 CAS 인자가 된다.
+ */
+export function reclaimDraft(record: BenchAuthorityRecord): BenchAuthorityDraft {
+  const { activeActivity: _reclaimed, revision: _revision, writtenBy: _writtenBy, ...rest } = record
+  return rest
 }
 
 /**
@@ -765,6 +870,7 @@ export function createBenchAuthorityStore(
     authorityDir: options.authorityDir,
     durability: options.durability,
     now: options.now,
+    sleep: options.sleep,
   })
   /**
    * 권위 디렉터리의 **부모**가 이 store 수명 안에서 내구화됐는가(Codex PR#266 3R P1).
@@ -1042,11 +1148,45 @@ export function createBenchAuthorityStore(
      * 내구 쓰기(§W-4 계약 3항). rename 을 경계로 **반환 종별이 갈린다** — 그 전 실패는 `io-failure`
      * (디스크 무변이), 그 후 실패는 `commit-uncertain`(디스크 revision 은 이미 전진).
      */
-    const writeDurably = (
+    /**
+     * rename 유한 재시도(§W-4 C4 · #251 PR2c T9). 성공하면 `undefined`, 실패하면 그대로 반환할 `CasResult`.
+     *
+     * **매 시도 직전에 두 가지를 재검사**한다:
+     * - **L-6 리스 소유**(스펙 「각 rename 시도 직전에 … 유실 시 이후 재시도와 rename 을 중단」).
+     *   재검증이 루프 밖에 한 번만 있으면 「1회차 실패 → 그 사이 탈취 → 2회차 성공」이 통과해 **남의
+     *   리스 아래에서 커밋**한다.
+     * - **`live`**(계획 정정 109). 재시도가 이 모듈의 **첫 `await`** 를 만든다 — 그 전까지 CAS 는 동기
+     *   구간이라 임계 구역 밖으로 샐 수 없었다. `fn` 이 CAS 를 `await` 하지 않고 반환하면 뮤텍스 꼬리와
+     *   `live=false` 가 먼저 해소되고, 그 뒤에도 이 루프가 계속 돌아 파일시스템을 변이할 수 있다.
+     *   :「유출된 tx 는 쓰지 못한다」(정정 94)를 재시도 회차 단위로 유지한다.
+     *
+     * 재시도가 **CAS 결과 밖으로 새지 않는다**(acknowledged): 최종 성공/실패가 전부 반환값에 실린다.
+     */
+    const renameWithRetry = async (): Promise<CasResult | undefined> => {
+      for (let attempt = 0; ; attempt += 1) {
+        if (!live) return { kind: 'lease-invalid', reason: 'released' }
+        const check = lease.revalidate()
+        if (check.kind === 'lost') return { kind: 'lease-invalid', reason: check.reason }
+        try {
+          fs.rename(tmpPath, path)
+          return undefined
+        } catch (cause) {
+          const backoff = RENAME_BACKOFF_MS[attempt]
+          // 재시도 대상이 아닌 코드(ENOENT·EISDIR·`code` 부재 등)는 **즉시** 실패한다 — 그리고 소진도
+          // 여기로 온다. 두 경우의 반환은 같다(디스크 무변이).
+          if (backoff === undefined || !isRetryableRenameError(cause)) {
+            return { kind: 'io-failure', step: 'rename', path, cause }
+          }
+          await opts.sleep(backoff)
+        }
+      }
+    }
+
+    const writeDurably = async (
       json: string,
       record: BenchAuthorityRecord,
       revision: number,
-    ): CasResult => {
+    ): Promise<CasResult> => {
       let step: PreCommitStep = 'mkdir'
       /** 부모 디렉터리 내구화 중이면 그 경로 — 실패 진단이 실제 대상을 싣게 한다(CodeRabbit). */
       let parentTarget: string | undefined
@@ -1096,7 +1236,10 @@ export function createBenchAuthorityStore(
           fs.close(toClose)
         }
         step = 'rename'
-        fs.rename(tmpPath, path)
+        // ⚠ **재시도는 이 한 단계에만** 걸린다(§3-T17 「재시도 범위 falsifier」). 앞 단계들을 함께
+        // 감싸면 `openExclusive` 가 자기 tmp 에 EEXIST 로 자기잠금하고(정정 78), 부분 쓰기가 누적된다.
+        const retryFailure = await renameWithRetry()
+        if (retryFailure !== undefined) return retryFailure
         renamed = true
       } catch (cause) {
         // 단계별로 **실제 대상**을 싣는다(CodeRabbit): `mkdir` 은 디렉터리이고 `rename` 은 최종 경로다.

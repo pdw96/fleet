@@ -29,6 +29,15 @@ import { newUlid } from './ulid'
 
 const IS_WIN = process.platform === 'win32'
 
+/**
+ * 실 FS 위에서도 **백오프는 발동하지 않아야 한다** — 이 스위트의 rename 대상은 아무도 열고 있지 않다.
+ * 발동하면 그 자체가 신호다(win32 EPERM 이 실제로 났다 = 픽스처가 핸들을 남겼거나 외부 간섭).
+ * 재시도 계약의 실 FS 조작화는 `describe.skipIf` 로 분리된 win32 전용 행이 따로 가진다.
+ */
+const neverSleeps = (ms: number): Promise<void> => {
+  throw new Error(`실 FS 스위트에서 백오프가 발동했다(${ms}ms) — 열린 핸들이 남아 있다`)
+}
+
 let root: string
 let authorityDir: string
 
@@ -69,6 +78,7 @@ const realStore = (
     authorityDir,
     durability,
     now: () => 1_700_000_000_000,
+    sleep: neverSleeps,
   })
 
 const commit = (
@@ -275,6 +285,7 @@ describe('크래시 도달 가능성 — 자식이 만든 실제 상태를 프�
         authorityDir,
         durability: 'file-only',
         now: () => 1,
+        sleep: neverSleeps,
       }).withAuthority(lease, (tx) => Promise.resolve(tx.readFresh()))
 
       // 자기 bench 의 tmp 잔재가 **바로 옆에 있는데도** 권위 파일이 없으므로 `absent` 다 —
@@ -322,6 +333,7 @@ describe('크래시 도달 가능성 — 자식이 만든 실제 상태를 프�
       authorityDir,
       durability: 'file-only',
       now: () => 1,
+      sleep: neverSleeps,
     }).withAuthority(lease, (tx) => Promise.resolve(tx.readFresh()))
 
     expect(seen.kind).toBe('found')
