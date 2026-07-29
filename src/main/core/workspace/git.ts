@@ -242,15 +242,32 @@ export const REF_LOCK_BACKOFF_MS: readonly number[] = Object.freeze([10, 20, 40]
 const REF_LOCK_RE = /Unable to create '[^']*\.lock': File exists|Another git process/i
 
 /**
- * **열거가 조용히 불완전해지는 유일한 경로**(Codex PR#268 P1 · 2면 실측 win32 2.54 / linux 2.39.5).
+ * **열거의 완전성 판정은 「stderr 가 비어 있는가」다**(Codex PR#268 P1 ×2 · 2면 실측 win32 2.54 / linux 2.39.5).
  *
- * 손상된 loose ref(내용이 OID 가 아님·잘림·빈 파일·dangling)가 접두 아래 있으면 `for-each-ref` 는
- * **exit 0 을 내면서** 그 ref 를 목록에서 **빼고** stderr 에 `warning: ignoring broken ref …` 만 남긴다.
- * 종료코드만 보면 「정상적으로 열거했는데 그 ref 는 없다」로 읽히는데, 이 표면의 소비자(§W-7 복구 판정 ·
- * ref-앵커 재조정)는 **부재를 「발행되지 않았다」의 증거로 쓴다** — 즉 손상된 published 결과 ref 가
- * 포기 적격으로 오판된다(fail-open). 열거가 스스로 불완전을 선언한 이상 **fail-closed** 가 정답이다.
+ * 손상된 loose ref(내용이 OID 아님·잘림·빈 파일·dangling)가 접두 아래 있으면 `for-each-ref` 는
+ * **exit 0 을 내면서** 그 ref 를 목록에서 **빼고** stderr 에 경고만 남긴다. 종료코드만 보면 「정상 열거 ·
+ * 그 ref 없음」으로 읽히는데, 소비자(§W-7 복구 판정 · ref-앵커)는 **부재를 「발행되지 않았다」의 증거로
+ * 쓴다** — 손상된 published 결과 ref 가 포기 적격으로 오판된다(fail-open).
+ *
+ * ⚠ **문면 매칭을 판정 근거로 쓰지 않는다**(2차 지적): `warning: ignoring broken ref …` 는 git 의 **번역
+ * 대상 문자열**이라 비영어 `LC_MESSAGES`/`LANG` 아래에서는 영어 정규식이 빗나가고, 그러면 이 가드가
+ * 통째로 무력화돼 원래의 fail-open 이 되돌아온다. 그래서 판정은 **「exit 0 인데 stderr 가 비어 있지 않다」**
+ * 라는 로케일 독립 성질로 하고, 아래 정규식은 **진단 라벨**로만 쓴다(로그·테스트 가독성).
+ * `for-each-ref` 는 정상 경로에서 stderr 에 아무것도 쓰지 않으므로 이 규칙은 과잉 차단이 아니다.
  */
 const BROKEN_REF_RE = /ignoring broken ref|broken ref /i
+/** 열거가 스스로 불완전을 선언했는가 — **로케일 독립**(문면이 아니라 stderr 존재로 판정). */
+const enumerationIncomplete = (r: GitResult): boolean => r.stderr.trim() !== ''
+
+/**
+ * 불완전 열거의 실패값. **판정은 위 규칙이 하고 여기서는 라벨만 붙인다** — 손상 ref 로 식별되면 그렇게
+ * 적고, 아니면 「경고 동반」으로 남긴다(원문 stderr 는 항상 보존해 운영자가 번역문이라도 읽을 수 있게 한다).
+ */
+const enumerationFailure = (r: GitResult): GitFailure => ({
+  status: 'failed',
+  stderr: `열거 불완전(${BROKEN_REF_RE.test(r.stderr) ? '손상 ref' : '경고 동반'}): ${r.stderr.trim()}`,
+  code: r.code,
+})
 
 const realSleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => {
@@ -305,7 +322,8 @@ export function createGitRepo(
   /** ref 하나의 현재 값을 **열거로** 재조회한다(packed 공존에서 `rev-parse` 가 오답하므로). */
   const readRefExact = async (ref: string): Promise<string | null | GitFailure> => {
     const r = await run(['for-each-ref', '--format=%(refname)%00%(objectname)', ref])
-    if (r.code !== 0 || BROKEN_REF_RE.test(r.stderr)) return failed(r)
+    if (r.code !== 0) return failed(r)
+    if (enumerationIncomplete(r)) return enumerationFailure(r)
     for (const line of r.stdout.split(/\r?\n/)) {
       const [name, oid] = line.split('\0')
       if (name === ref && oid !== undefined) return oid.trim()
@@ -357,7 +375,8 @@ export function createGitRepo(
       // 전례가 있어 애초에 공백에 의존하지 않는 형식을 쓴다.
       const r = await run(['for-each-ref', '--format=%(refname)%00%(objectname)', prefix])
       // 손상 ref 가 있으면 **exit 0 이어도 목록이 불완전**하다(위 `BROKEN_REF_RE` 근거) → fail-closed.
-      if (r.code !== 0 || BROKEN_REF_RE.test(r.stderr)) return failed(r)
+      if (r.code !== 0) return failed(r)
+      if (enumerationIncomplete(r)) return enumerationFailure(r)
       const refs: GitRefEntry[] = []
       for (const line of r.stdout.split(/\r?\n/)) {
         if (line.trim() === '') continue
@@ -390,7 +409,13 @@ export function createGitRepo(
       // 달라지므로 길이에 의존하지 않는 형태를 쓴다.
       // ⚠ `--stdin --batch-updates` 금지 — **거부에도 exit 0** 을 내서(2.54 실측) CAS 가 무성 통과한다.
       //    그 옵션은 배포 런타임(2.39.5)·2.30.2 에는 존재조차 하지 않는다.
-      const r = await runWithLockRetry(['update-ref', ref, newOid, expectedOldOid ?? ''])
+      const r = await runWithLockRetry([
+        'update-ref',
+        '--no-deref',
+        ref,
+        newOid,
+        expectedOldOid ?? '',
+      ])
       const actual = await readRefExact(ref)
       if (actual !== null && typeof actual === 'object') return actual
       if (r.code === 0) {
@@ -431,6 +456,10 @@ export function createGitRepo(
       // 판별식은 종료코드가 아니라 **첫 줄**이다 — 인자 오류도 exit 1 이지만 stdout 이 비어 있다.
       if (!OID_SHAPE.test(tree)) return failed(r)
       if (r.code === 0) return { status: 'clean', tree }
+      // ⚠ **충돌은 exit 1 뿐이다**(Codex PR#268 P1). 러너는 취소·타임아웃·10MB 출력 상한에서 **부분 stdout 을
+      //    보존한 채 `code: null`** 을 돌려주므로(`cli/detect.ts`), 「0 이 아니면 충돌」로 접으면 **중단된 연산이
+      //    「충돌로 끝난 통합」으로 기록**된다. 큰 충돌·취소가 그 경로다 — 나머지 코드는 전부 실패로 남긴다.
+      if (r.code !== 1) return failed(r)
       const conflicts: string[] = []
       for (const raw of lines.slice(1)) {
         const line = raw.trim()

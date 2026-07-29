@@ -232,6 +232,57 @@ describe('T11/§3-T23 — listRefs 열거와 D/F 판정(실 git)', () => {
     })
   })
 
+  /**
+   * **Codex PR#268 2차 P1** — 손상 경고는 git 의 **번역 대상 문자열**이라 비영어 로케일에서 영어 정규식이
+   * 빗나간다. 문면으로 판정하면 그 순간 가드가 통째로 무력화돼 원래의 fail-open 이 되돌아온다.
+   * 그래서 판정은 **「exit 0 인데 stderr 가 비어 있지 않다」**(로케일 독립)로 한다.
+   */
+  it('손상 경고가 번역돼 있어도 열거는 fail-closed 다(로케일 독립)', async () => {
+    const localized: GitRunner = {
+      run: () =>
+        Promise.resolve({
+          code: 0,
+          stdout: `refs/fleet/integrated/BK/GOOD\0${'a'.repeat(40)}\n`,
+          // 독일어 로캘 예시 — 영어 문면 매칭 구현이면 이 경고를 놓친다.
+          stderr: 'Warnung: Ignoriere kaputte Referenz refs/fleet/integrated/BK/BAD\n',
+        }),
+    }
+    const repo = createGitRepo('/nowhere', localized)
+    expect((await repo.listRefs('refs/fleet/integrated/BK')).status).toBe('failed')
+    expect((await repo.refExists('refs/fleet/integrated/BK/GOOD')).status).toBe('failed')
+  })
+
+  /**
+   * **Codex PR#268 2차 P1** — 기본 `update-ref` 는 **symref 를 따라간다**. 대상 자리가 dangling symbolic ref
+   * 면 create-if-absent 가 그 **대상 ref(네임스페이스 밖)** 를 만들고 exit 0 을 내며, 왕복 검증마저
+   * 통과한다(실측: `refs/heads/other` 가 생기고 txn ref 는 symbolic 인 채 새 OID 로 해소된다).
+   * `--no-deref` 는 `dangling symref already exists`(128)로 **fail-closed** 한다.
+   */
+  it('symbolic ref 자리에는 발행하지 않는다 — 네임스페이스 밖을 만들지 않는다(`--no-deref`)', async () => {
+    const r = initRepo(join(mkTmp(), 'repo'))
+    const c = git(r, 'rev-parse', 'HEAD')
+    const repo = createGitRepo(r, execRunner)
+    const REF = 'refs/fleet/integrated/BM/T1'
+    git(r, 'symbolic-ref', REF, 'refs/heads/other') // dangling symref 선점
+
+    const res = await repo.casUpdateRef(REF, c, null)
+
+    expect(res.status).toBe('failed')
+    // **네임스페이스 밖 ref 가 만들어지지 않았다** — deref 구현이면 여기서 `refs/heads/other` 가 생기고
+    // 게다가 CAS 는 `updated` 를 답한다(왕복 검증도 symref 를 따라가 통과한다 · 실측).
+    expect(await repo.revParse('refs/heads/other')).toEqual({ status: 'absent' })
+    expect(await repo.refExists('refs/heads/other')).toEqual({ status: 'ok', exists: false })
+  })
+
+  it('`--no-deref` 가 정상 ref 발행을 막지 않는다(회귀 통제)', async () => {
+    const r = initRepo(join(mkTmp(), 'repo'))
+    const c = git(r, 'rev-parse', 'HEAD')
+    const repo = createGitRepo(r, execRunner)
+    expect(await repo.casUpdateRef('refs/fleet/integrated/BN/T1', c, null)).toEqual({
+      status: 'updated',
+    })
+  })
+
   it('결과가 없으면 빈 목록이고, 레포가 아니면 fail-closed(빈 배열로 위장하지 않는다)', async () => {
     const base = mkTmp()
     const r = initRepo(join(base, 'repo'))
@@ -410,6 +461,30 @@ describe('T11/§3-T25 — mergeTree: 충돌을 값으로 보고하고 git 상태
     commitFile(orphan, 'o.txt', 'o\n', 'orphan')
     const unrelated = await createGitRepo(orphan, execRunner).mergeTree('main', 'other')
     expect(unrelated.status).toBe('failed')
+  })
+
+  /**
+   * **Codex PR#268 2차 P1** — 러너는 취소·타임아웃·10MB 출력 상한에서 **부분 stdout 을 보존한 채
+   * `code: null`** 을 돌려준다(`cli/detect.ts`). 「0 이 아니면 충돌」로 접으면 **중단된 연산이 「충돌로 끝난
+   * 통합」으로 기록**된다 — 큰 충돌·취소가 정확히 그 경로다.
+   */
+  it('충돌은 **exit 1 뿐**이다 — 취소·상한 초과(`code: null`)는 실패로 남는다', async () => {
+    const tree = 'a'.repeat(40)
+    const truncated: GitRunner = {
+      run: () => Promise.resolve({ code: null, stdout: `${tree}\nfile.txt\n`, stderr: '' }),
+    }
+    const weird: GitRunner = {
+      run: () => Promise.resolve({ code: 137, stdout: `${tree}\nfile.txt\n`, stderr: '' }),
+    }
+    expect((await createGitRepo('/nowhere', truncated).mergeTree('a', 'b')).status).toBe('failed')
+    expect((await createGitRepo('/nowhere', weird).mergeTree('a', 'b')).status).toBe('failed')
+    // 대조군: 정상 충돌(exit 1)은 그대로 충돌이다.
+    const real: GitRunner = {
+      run: () => Promise.resolve({ code: 1, stdout: `${tree}\nfile.txt\n`, stderr: '' }),
+    }
+    const ok = await createGitRepo('/nowhere', real).mergeTree('a', 'b')
+    expect(ok.status).toBe('conflict')
+    expect(ok.status === 'conflict' && ok.conflicts).toEqual(['file.txt'])
   })
 
   it('`--merge-base` 를 쓰지 않는다 — 배포 런타임 git 2.39.5 에 없는 옵션이다(실측)', async () => {

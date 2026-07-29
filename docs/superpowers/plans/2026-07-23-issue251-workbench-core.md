@@ -964,6 +964,10 @@ linux **2.30.2**(pre-2.38 falsifier) / linux **2.54.0**(`alpine/git` · 플랫�
 | 127 | `listRefs`·단일 재조회의 성공 판정(**Codex PR#268 P1** · 2면 실측 win32 2.54 / linux 2.39.5) | **`for-each-ref` 는 손상된 loose ref 를 만나면 exit 0 인 채 그 ref 를 목록에서 빼고 `warning: ignoring broken ref …` 만 낸다**(내용이 OID 아님·잘림·빈 파일·dangling 4종 전부 동일). 종료코드만 보는 구현은 「정상 열거 · 그 ref 없음」으로 읽는데, §W-7 복구 판정과 ref-앵커는 **부재를 「발행되지 않았다」의 증거**로 쓴다 → **손상된 published 결과 ref 가 포기 적격으로 오판**된다(fail-open) | 열거·단일 재조회 모두 **stderr 의 손상 경고를 fail-closed 로** 승격. ⚠ 범위는 정직하게 좁힌다 — 경고는 **질의 접두 안에 손상이 있을 때만** 나므로 무관한 단일 ref 조회는 계속 정상이다(과잉 차단하면 손상 하나가 레포 전 연산을 멈춘다). 두 축 모두 테스트로 고정 |
 | 128 | 능력 프로브의 **재프로브 규범**(Codex PR#268 P1 잔여) | 프로브는 **부팅 1회**이고 `false` 가 통합을 끄는데, `HEAD` 의존이라 **커밋 없는 레포**에서는 재시작 없이 되살릴 방법이 없다 | 정정 반영으로 결과가 3분류가 됐으므로(`unsupported`/`indeterminate`) **부팅 배선(PR7)의 규범을 여기서 확정**한다: `unsupported` = 영구 비활성(버전 증거) · **`indeterminate` = 비활성하되 `ensureRepo`·첫 커밋 이후 재프로브**(레포 상태 증거이므로 되살아날 수 있다). 이 규범을 스펙 §W-6 에 명문화 |
 
+| 129 | `casUpdateRef` 의 발행(**Codex PR#268 2R P1** · win32 실측) | **`update-ref` 는 기본적으로 symref 를 따라간다.** 대상 자리가 dangling symbolic ref(`refs/fleet/integrated/B/T1 → refs/heads/other`)면 create-if-absent 가 ⓐ**우리 네임스페이스 밖 `refs/heads/other` 를 만들고** ⓑexit 0 을 내며 ⓒtxn ref 는 symbolic 인 채 새 OID 로 해소돼 **왕복 검증까지 통과**한다 → `updated` 오답. create-if-absent 계약 위반이자 「결과 ref 는 불변」의 붕괴(발행물이 **가변 대상의 별칭**이 된다) | 발행에 **`--no-deref`** 를 싣는다(실측: `dangling symref already exists` exit 128 fail-closed · 정상 ref 발행에는 영향 0). 실 git 행 2개 신설(symref 자리 거부 + 정상 발행 회귀 통제) |
+| 130 | 정정 127 의 손상 ref 가드(**Codex PR#268 2R P1**) | 가드를 **영어 문면(`ignoring broken ref`) 매칭**으로 구현했는데 그 경고는 git 의 **번역 대상 문자열**이다 — 비영어 `LC_MESSAGES`/`LANG` 아래에서 정규식이 빗나가면 가드가 통째로 무력화돼 **정정 127 이 닫으려던 fail-open 이 그대로 되돌아온다** | 판정을 **로케일 독립 구조 규칙**으로 교체: 「exit 0 인데 **stderr 가 비어 있지 않다**」 = 열거 불완전 → fail-closed. 정규식은 **진단 라벨**로만 남긴다(`for-each-ref` 는 정상 경로에서 stderr 에 아무것도 쓰지 않으므로 과잉 차단이 아니다). 독일어 경고 픽스처로 고정 |
+| 131 | `mergeTree` 의 충돌 판정(**Codex PR#268 2R P1**) | 「첫 줄이 OID ∧ code≠0 → 충돌」이었는데, 러너는 **취소·타임아웃·10MB 출력 상한**에서 **부분 stdout 을 보존한 채 `code: null`** 을 돌려준다(`cli/detect.ts:86` 계열) → **중단된 연산이 「충돌로 끝난 통합」으로 기록**된다(큰 충돌·사용자 취소가 정확히 그 경로) | **충돌은 exit 1 뿐**으로 좁힌다(0 = clean · 그 외 전부 failed). `code:null`·`code:137` 픽스처 + 정상 충돌 대조군으로 고정 |
+
 **PR3a 착지 기록 (2026-07-29)**
 
 - **분량**: 순증 **1,143**(src 1,057 · 문서 86 · **프로덕션 물리행 272**). 상한 1,900 의 **60%** =
@@ -973,7 +977,7 @@ linux **2.30.2**(pre-2.38 falsifier) / linux **2.54.0**(`alpine/git` · 플랫�
 - **게이트**: verify 7게이트 GREEN · vitest **2582 pass / 57 skip**(108 파일) ·
   커버리지 **S93.62 B87.40 F94.64 L94.98**(floor 91/83/90/92 · 착수 기준선 S93.48 B87.22 F94.53 L94.88
   대비 **S+0.14 B+0.18 F+0.11 L+0.10 — 네 메트릭 전부 상승**).
-- **뮤테이션 14종 전부 RED**(봇 리뷰 반영분 포함: 「손상 ref 가드 제거」·「`signal` 미전달」).
+- **뮤테이션 17종 전부 RED**(봇 리뷰 반영분 포함: 「손상 ref 가드 제거」·「`signal` 미전달」).
   값 큰 것: 「merge-tree 판별을 종료코드로」·「refExists 를 rev-parse 로」·
   「is-ancestor 128 을 no 로」·「재시도 제거」·「재시도 범위를 모든 실패로」·「열거 exact 를 접두로」·
   「능력 프로브 항상 true」·「왕복 검증 제거」·**「worktree 3메서드의 재시도 배선 제거」**·

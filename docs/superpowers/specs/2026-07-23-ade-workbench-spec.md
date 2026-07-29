@@ -655,6 +655,13 @@ export interface GitRepo {
   **`--merge-base` 금지** — 배포 런타임 git 2.39.5 에 없는 옵션이다(exit 129).
 - **발행 왕복 검증**: `casUpdateRef` 성공 후 **열거로 재확인**하고 값이 다르면 fail-closed. win32 packed D/F 는
   git 이 성공을 자칭해도 그 ref 가 해소되지 않는 상태를 만든다.
+- **발행은 `--no-deref` 로 한다**(PR3a · Codex 2R): 기본 `update-ref` 는 symref 를 따라가므로, 대상 자리가
+  dangling symbolic ref 면 create-if-absent 가 **네임스페이스 밖 ref 를 만들고** exit 0 을 내며 왕복 검증까지
+  통과한다(실측). 결과 ref 가 **가변 대상의 별칭**이 되는 것을 구조적으로 막는다.
+- **열거 완전성은 로케일 독립 규칙으로 판정한다**(PR3a · Codex 2R): 손상 경고 문면은 git 의 번역 대상이라
+  영어 매칭은 비영어 로케일에서 빗나간다 → 「exit 0 인데 stderr 가 비어 있지 않다」를 불완전 신호로 쓴다.
+- **`mergeTree` 의 충돌은 exit 1 뿐이다**(PR3a · Codex 2R): 러너는 취소·타임아웃·출력 상한에서 부분 stdout 을
+  보존한 채 `code: null` 을 돌려주므로, 「0 이 아니면 충돌」은 **중단된 연산을 완료된 충돌로** 기록한다.
 - 재사용하는 관용구는 4개로 한정: 실행 seam `GitRunner.run(args,cwd,signal)` · 에러 메시지 템플릿
   (`git.ts:115`) · `resolve(root, stdout.trim())` 파싱 · **실패를 값으로 반환**하는 `integrate` 계약.
 - **태스크 worktree 경로 seam(C10↔C12 해소 · 반증 반영)**:
