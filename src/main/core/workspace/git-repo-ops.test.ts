@@ -174,6 +174,26 @@ describe('T11/§3-T23 — listRefs 열거와 D/F 판정(실 git)', () => {
     expect(child.status).toBe('failed')
   })
 
+  /**
+   * **뮤테이션이 잡아낸 공백**: 단일 ref 재조회가 접두 매칭이면 「자식이 있으니 부모도 있다」로 오답한다.
+   * 그 오답은 `casUpdateRef` 의 실패 분류를 `failed`(D/F) → `rejected`(경합 패배)로 바꿔,
+   * 호출자가 재시도 가능한 상황으로 착각하게 만든다.
+   */
+  it('단일 ref 재조회는 **exact** 다 — 자식이 있어도 부모는 부재다', async () => {
+    const r = initRepo(join(mkTmp(), 'repo'))
+    const c = git(r, 'rev-parse', 'HEAD')
+    const repo = createGitRepo(r, execRunner)
+    await repo.casUpdateRef('refs/fleet/integrated/BP/T1', c, null)
+
+    expect(await repo.refExists('refs/fleet/integrated/BP')).toEqual({
+      status: 'ok',
+      exists: false,
+    })
+    // 자식이 있는 자리에 bare 부모를 만들려는 시도는 **D/F 실패**이지 「이미 있음(rejected)」이 아니다.
+    const bare = await repo.casUpdateRef('refs/fleet/integrated/BP', c, null)
+    expect(bare.status).toBe('failed')
+  })
+
   it('결과가 없으면 빈 목록이고, 레포가 아니면 fail-closed(빈 배열로 위장하지 않는다)', async () => {
     const base = mkTmp()
     const r = initRepo(join(base, 'repo'))
@@ -254,6 +274,23 @@ describe('T11/§3-T23 — packed 공존의 플랫폼 독립 쌍둥이(주입 러
     const runner = coexistenceRunner()
     await createGitRepo('/nowhere', runner).refExists(CHILD)
     expect(runner.seen.map((a) => a[0])).toEqual(['for-each-ref'])
+  })
+
+  /**
+   * **뮤테이션이 잡아낸 공백**: git 이 성공을 자칭했는데 디스크가 그 값을 답하지 못하는 상태가 실재한다
+   * (win32 packed D/F — 발행한 ref 가 열거에서 사라지거나 다른 값으로 보인다). 왕복 검증이 없으면
+   * 호출자는 「발행됨」을 믿고 저널을 `published` 로 전이시켜 **소비 불가능한 결과를 확정**한다.
+   */
+  it('발행 성공을 자칭해도 열거가 확인하지 못하면 실패다(왕복 검증)', async () => {
+    const liar: GitRunner = {
+      run: (args) =>
+        args[0] === 'for-each-ref'
+          ? Promise.resolve({ code: 0, stdout: '', stderr: '' }) // 디스크는 그 ref 를 모른다
+          : Promise.resolve({ code: 0, stdout: '', stderr: '' }), // update-ref 는 성공을 자칭
+    }
+    const res = await createGitRepo('/nowhere', liar).casUpdateRef(CHILD, 'a'.repeat(40), null)
+    expect(res.status).toBe('failed')
+    expect(res.status === 'failed' && res.stderr).toMatch(/왕복 검증/)
   })
 
   it('exact 일치만 존재로 센다 — 접두가 같은 이웃은 존재 근거가 아니다', async () => {
@@ -527,7 +564,10 @@ describe('T12/§3-T58 — R-5: 신규 연산은 남의 락을 지우지 않는�
       },
     })
     expect((await repo.casUpdateRef(REF, c, null)).status).toBe('failed')
-    expect(waited).toEqual([...REF_LOCK_BACKOFF_MS])
+    // ⚠ **리터럴로 고정한다.** 상수와만 대조하면 「상수를 `[]` 로」 뮤턴트가 양쪽을 함께 바꿔 통과한다
+    //   (PR2c 가 백오프에서 겪은 것과 같은 함정 — 관측면이 검증 대상과 같은 출처면 안 된다).
+    expect(waited).toEqual([10, 20, 40])
+    expect([...REF_LOCK_BACKOFF_MS]).toEqual([10, 20, 40])
   })
 
   it('락 경합이 아닌 실패는 재시도하지 않는다(재시도 범위 falsifier)', async () => {
