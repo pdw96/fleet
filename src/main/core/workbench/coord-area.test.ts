@@ -50,7 +50,7 @@ const git = (cwd: string, ...args: string[]): string =>
  *
  * `defaultGitRunner` → `defaultRunner` 는 **win32 + custom cwd** 에서 매 호출마다 PATH-only 해석을 하고
  * 그 상한이 `RESOLVE_TIMEOUT_MS = 2000`(캐시 없음 · `cli/detect.ts:234`)이다 — #158 의 cwd-셰도 하드닝
- * 경로다. 전체 스위트 병렬 실행(win32)에서 이 2초 해석이 초과되면 `{code: null, stderr: ''}` 로 떨어져
+ * 경로다. 전체 스위트 병렬 실행(win32)에서 이 해석 상한(**10s** · `cli/detect.ts:261`)이 초과되면 `{code: null, stderr: ''}` 로 떨어져
  * **여기 테스트들이 산발적으로 RED** 가 된다(실측 재현). 이 파일의 대상은 git 인자 구성·출력 파싱이지
  * 그 하드닝이 아니므로 러너를 주입해 우회한다. **미주입(=defaultGitRunner) 경로는 전용 테스트 1건이 지킨다.**
  */

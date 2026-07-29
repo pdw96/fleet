@@ -590,11 +590,175 @@ describe('T12/§3-T58 — R-5: 신규 연산은 남의 락을 지우지 않는�
 
   it('신규 표면은 `ok()`(락 강제 삭제 헬퍼)를 쓰지 않는다 — G-1 구조 핀', async () => {
     const body = createGitRepo.toString()
-    // 자기검사 앵커: 이 술어가 실제로 매칭되는지 먼저 확인한다(패턴이 죽으면 핀도 조용히 죽는다).
+    // 자기검사 앵커: **두 술어 모두** 실제로 매칭되는지 먼저 확인한다(패턴이 오타로 죽으면 핀도 조용히
+    // 죽는다 — 자가 적대 리뷰 SR-C6 이 두 번째 술어에 앵커가 없던 것을 적발했다).
     expect(/\bok\(/.test("const x = ok(['status'])")).toBe(true)
+    expect(/rmSync|unlinkSync|existsSync/.test('rmSync(lock); existsSync(p)')).toBe(true)
     expect(/\bok\(/.test(body)).toBe(false)
     // `rmSync`·`unlink` 계열이 신규 표면에 유입되면 「삭제 없는 백오프」가 무너진다.
     expect(/rmSync|unlinkSync|existsSync/.test(body)).toBe(false)
+  })
+
+  /**
+   * **자가 적대 리뷰 SR-C4** — 재시도 래퍼가 worktree 3메서드에도 배선돼 있는데 그 배선을 검증하는 행이
+   * 없었다(그 3곳을 `run` 으로 되돌리는 뮤턴트가 전 스위트를 GREEN 으로 통과한다). 실측 F4 가 확인한
+   * 「`worktree add -b` 는 ref `.lock` 경합에서 실패하고 그 stderr 가 락 문면을 낸다」를 그대로 쓴다.
+   */
+  it('worktree 변이도 같은 재시도를 탄다 — ref `.lock` 경합에서 유계 백오프 후 값 실패', async () => {
+    const base = mkTmp()
+    const r = initRepo(join(base, 'repo'))
+    const refLock = join(r, '.git', 'refs', 'heads', 'fleet', 'z.lock')
+    mkdirSync(dirname(refLock), { recursive: true })
+    writeFileSync(refLock, `${git(r, 'rev-parse', 'HEAD')}\n`)
+    const foreignIndexLock = join(r, '.git', 'index.lock')
+    writeFileSync(foreignIndexLock, '')
+
+    const waited: number[] = []
+    const repo = createGitRepo(r, execRunner, {
+      sleep: (ms) => {
+        waited.push(ms)
+        return Promise.resolve()
+      },
+    })
+    const res = await repo.addNamedWorktree(join(base, 'wt'), 'fleet/z', 'HEAD')
+
+    expect(res.status).toBe('failed')
+    expect(waited).toEqual([10, 20, 40])
+    expect(existsSync(foreignIndexLock)).toBe(true) // 오조준 삭제 0
+    expect(existsSync(refLock)).toBe(true)
+  })
+
+  /**
+   * **자가 적대 리뷰 SR-F1** — git 은 lockfile 실패를 `Unable to create '<path>.lock': <strerror>` 라는
+   * 같은 관용 포맷으로 내며 `Permission denied` 같은 **영구 실패**도 그 형태다. 경합만 재시도해야 한다.
+   */
+  it('영구 I/O 실패(Permission denied)는 재시도하지 않는다', async () => {
+    const waited: number[] = []
+    let calls = 0
+    const permanent: GitRunner = {
+      run: () => {
+        calls++
+        return Promise.resolve({
+          code: 128,
+          stdout: '',
+          stderr:
+            "fatal: cannot lock ref 'refs/fleet/integrated/B/T1': Unable to create '/x/.git/refs/fleet/integrated/B/T1.lock': Permission denied\n",
+        })
+      },
+    }
+    const repo = createGitRepo('/nowhere', permanent, {
+      sleep: (ms) => {
+        waited.push(ms)
+        return Promise.resolve()
+      },
+    })
+    expect(
+      (await repo.casUpdateRef('refs/fleet/integrated/B/T1', 'a'.repeat(40), null)).status,
+    ).toBe('failed')
+    expect(waited).toEqual([])
+    expect(calls).toBe(2) // update-ref 1회 + 실패 후 값 재조회 1회 — 재시도는 0
+  })
+})
+
+/**
+ * **자가 적대 리뷰 SR-C1·C2·C3·C5** — 어떤 테스트로도 실행되지 않던 성공·실패 분기들.
+ * 「도달하지 않는 분기」는 뮤턴트가 살아 있는 자리이므로 도달시켜 고정한다.
+ */
+describe('T11 — 미도달 분기 고정(실패 채널 전수)', () => {
+  it('revParse 는 성공·부재·실패 3값을 모두 답한다', async () => {
+    const base = mkTmp()
+    const r = initRepo(join(base, 'repo'))
+    const head = git(r, 'rev-parse', 'HEAD')
+    const repo = createGitRepo(r, execRunner)
+
+    expect(await repo.revParse('HEAD')).toEqual({ status: 'ok', oid: head })
+    expect(await repo.revParse('refs/heads/nope')).toEqual({ status: 'absent' })
+    // 레포가 아니면 **부재가 아니라 실패**다 — 뭉개면 「없는 ref」와 「못 본 레포」가 구분되지 않는다.
+    expect((await createGitRepo(base, execRunner).revParse('HEAD')).status).toBe('failed')
+  })
+
+  it('commitTree·addDetachedWorktreeAt·refExists 의 실패 채널이 값으로 온다', async () => {
+    const base = mkTmp()
+    const r = initRepo(join(base, 'repo'))
+    const repo = createGitRepo(r, execRunner)
+
+    expect((await repo.commitTree('f'.repeat(40), [], 'x')).status).toBe('failed')
+
+    const taken = join(base, 'taken')
+    mkdirSync(taken, { recursive: true })
+    writeFileSync(join(taken, 'x'), 'x')
+    expect((await repo.addDetachedWorktreeAt(taken, 'HEAD')).status).toBe('failed')
+
+    expect((await createGitRepo(base, execRunner).refExists('refs/fleet/x')).status).toBe('failed')
+  })
+
+  /**
+   * **자가 적대 리뷰 SR-D2** — 왕복 검증의 두 실패는 **다른 사실**이다: ⓐ열거에 없다(유령 성공)
+   * ⓑ다른 값이다(제3자가 그 ref 를 썼다). 한 문면으로 뭉개면 운영자가 원인을 가릴 수 없고,
+   * 「내 쓰기가 실패했다」는 ⓑ에서 **정확하지 않은 서술**이다(git 층에서는 성공했다).
+   */
+  it('왕복 검증 실패는 유령 성공과 제3자 개입을 구분해 보고한다', async () => {
+    const mine = 'a'.repeat(40)
+    const theirs = 'b'.repeat(40)
+    const phantom: GitRunner = {
+      run: (args) =>
+        Promise.resolve({ code: 0, stdout: args[0] === 'for-each-ref' ? '' : '', stderr: '' }),
+    }
+    const hijacked: GitRunner = {
+      run: (args) =>
+        Promise.resolve({
+          code: 0,
+          stdout: args[0] === 'for-each-ref' ? `refs/fleet/integrated/B/T1\0${theirs}\n` : '',
+          stderr: '',
+        }),
+    }
+    const a = await createGitRepo('/nowhere', phantom).casUpdateRef(
+      'refs/fleet/integrated/B/T1',
+      mine,
+      null,
+    )
+    const b = await createGitRepo('/nowhere', hijacked).casUpdateRef(
+      'refs/fleet/integrated/B/T1',
+      mine,
+      null,
+    )
+    expect(a.status).toBe('failed')
+    expect(a.status === 'failed' && a.stderr).toMatch(/유령 성공/)
+    expect(b.status).toBe('failed')
+    expect(b.status === 'failed' && b.stderr).toMatch(/제3자 개입/)
+    expect(b.status === 'failed' && b.stderr).toContain(theirs)
+  })
+
+  /**
+   * **자가 적대 리뷰 SR-D3** — 신규 11메서드가 전부 주입 러너로만 검증돼, **미주입 경로**
+   * (`defaultGitRunner` → `defaultRunner` 의 win32 PATH 해석·cwd 섀도 가드)를 한 번도 타지 않았다.
+   * 형제 파일은 `commonGitDir` 에만 그 행을 갖는다.
+   */
+  it('러너 미주입 시에도 신규 연산이 동작한다(defaultGitRunner 경로)', async () => {
+    const r = initRepo(join(mkTmp(), 'repo'))
+    const repo = createGitRepo(r) // ← 주입 없음
+    const head = git(r, 'rev-parse', 'HEAD')
+
+    expect(await repo.revParse('HEAD')).toEqual({ status: 'ok', oid: head })
+    expect(await repo.casUpdateRef('refs/fleet/integrated/BD/T1', head, null)).toEqual({
+      status: 'updated',
+    })
+    const listed = await repo.listRefs('refs/fleet/integrated/BD')
+    expect(listed.status === 'ok' && listed.refs.map((x) => x.ref)).toEqual([
+      'refs/fleet/integrated/BD/T1',
+    ])
+  })
+
+  it('재조회 자체가 실패하면 CAS 도 실패다(거짓 `rejected` 를 만들지 않는다)', async () => {
+    const broken: GitRunner = {
+      run: () => Promise.resolve({ code: 128, stdout: '', stderr: 'fatal: not a git repository' }),
+    }
+    const res = await createGitRepo('/nowhere', broken).casUpdateRef(
+      'refs/fleet/integrated/B/T1',
+      'a'.repeat(40),
+      null,
+    )
+    expect(res.status).toBe('failed')
   })
 
   it('레거시 `createWorkspace` 경로는 무변경이다 — R-5 는 신규 연산 한정(회귀 핀)', async () => {

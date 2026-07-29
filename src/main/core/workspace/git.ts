@@ -217,10 +217,17 @@ const parseWorktreePorcelain = (stdout: string): WorktreeEntry[] => {
 export const REF_LOCK_BACKOFF_MS: readonly number[] = Object.freeze([10, 20, 40])
 
 /**
- * 재시도 대상 = ref/파일 락 경합. 레거시 `LOCK_RE`(`index.lock` 전용)와 달리 **`cannot lock ref`** 를 포함한다 —
- * 실측상 신규 연산의 경합은 그 형태로 나타난다(`Unable to create '….lock': File exists.` 동반).
+ * 재시도 대상 = **락 파일 경합만**. 레거시 `LOCK_RE`(`index.lock` 전용)와 달리 ref `.lock` 형태를 포함한다 —
+ * 실측상 신규 연산의 경합은 `cannot lock ref '…': Unable to create '….lock': File exists.` + `Another git
+ * process…` 로 나타난다.
+ *
+ * ⚠ **`cannot lock ref` 를 단독 조건으로 쓰지 않는다**(자가 적대 리뷰 SR-F1): git 은 같은 lockfile 관용
+ * 포맷(`Unable to create '<path>.lock': <strerror>`)으로 **영구 실패**도 낸다 — `Permission denied` ·
+ * `Read-only file system` · `No space left on device`. 그것까지 재시도하면 유계(70ms)이긴 해도 무의미한
+ * 지연이고, 「경합이라 곧 풀린다」는 거짓 전제를 코드에 새긴다. 그래서 **경합에서만 나오는 두 문면**으로
+ * 좁힌다(4면 실측: 경합은 항상 둘을 함께 낸다).
  */
-const REF_LOCK_RE = /cannot lock ref|Unable to create '.*\.lock'|Another git process/i
+const REF_LOCK_RE = /Unable to create '[^']*\.lock': File exists|Another git process/i
 
 const realSleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => {
@@ -278,8 +285,10 @@ export function createGitRepo(
       // bare 가 `.` 을 돌려준다. 그럼에도 출력이 상대일 수 있는 구형 git 을 위해 **root 기준**으로
       // 해소한다(process.cwd() 기준으로 해소하면 **남의 레포**에 영역을 만든다 — §3-T6).
       // `rev-parse` 는 다중 질의를 **한 번에** 답한다(출력 = 질의 순서대로 한 줄씩) — 프로세스 스폰을
-      // 절반으로 줄인다. win32 에서 매 spawn 은 PATH 해석(2s 캡·캐시 없음 · `cli/detect.ts:234`)을
+      // 절반으로 줄인다. win32 에서 매 spawn 은 PATH 해석(**10s 캡**·캐시 없음 · `cli/detect.ts:261`)을
       // 동반하므로 이 절약은 부하 상황의 신뢰도에 직접 기여한다.
+      // (원 주석은 「2s 캡 · `detect.ts:234`」였으나 상한이 10s 로 상향된 뒤 갱신되지 않은 stale 이었다 —
+      //  자가 적대 리뷰 SR-P2. 형제 테스트 2곳의 같은 인용도 함께 정정했다.)
       const r = await run([
         'rev-parse',
         '--path-format=absolute',
@@ -351,15 +360,26 @@ export function createGitRepo(
       const actual = await readRefExact(ref)
       if (actual !== null && typeof actual === 'object') return actual
       if (r.code === 0) {
-        // **왕복 검증**: 성공을 자칭해도 디스크가 그 값을 답하지 못하면 발행되지 않은 것으로 다룬다.
-        // win32 packed D/F 공존에서 이 검증만이 「열거는 되는데 해소는 안 되는」 상태를 잡는다.
-        return actual === newOid
-          ? { status: 'updated' }
-          : {
-              status: 'failed',
-              stderr: `발행 후 왕복 검증 실패: ${ref} 가 ${String(actual)} 로 관측됨(기대 ${newOid})`,
-              code: r.code,
-            }
+        // **왕복 검증**: 성공을 자칭해도 열거가 그 값을 답하지 못하면 발행되지 않은 것으로 다룬다.
+        // ⚠ **범위를 정직하게 적는다**(자가 적대 리뷰 SR-F2): 이 검증이 잡는 것은 「git 은 성공이라는데
+        //    열거는 그 ref 를 모르거나 다른 값으로 안다」까지다. win32 packed D/F 공존(bare 부모가 packed
+        //    자식 위에 생기는 상태)은 **열거가 그 ref 를 그대로 답하므로 여기서 잡히지 않는다** — 그 판정은
+        //    `REF_NAMESPACE_CONFLICT` 선제 열거(§W-7 · PR3b)의 몫이다.
+        if (actual === newOid) return { status: 'updated' }
+        // 두 실패를 **구분해 적는다**(자가 적대 리뷰 SR-D2). ⓐ부재 = git 이 성공을 자칭했는데 디스크에
+        // 없다(유령 성공) ⓑ다른 값 = 내 쓰기 뒤에 **제3자가 그 ref 를 바꿨다**. ⓑ에서 git 층의 내 CAS 는
+        // 실제로 성공했으므로 「내가 실패했다」는 정확한 서술이 아니다 — 그럼에도 fail-closed 로 답하는
+        // 이유는 이 표면의 유일한 용법이 **txn 스코프 create-only 발행**이고(결과 ref 는 불변), 거기서
+        // 값이 달라졌다는 것은 **남이 우리 신원의 ref 를 썼다**는 뜻이라 진행하면 안 되기 때문이다.
+        // 움직이는 ref 에 이 메서드를 쓰는 소비자가 생기면 이 판정을 다시 열어야 한다(그 사실을 남긴다).
+        return {
+          status: 'failed',
+          stderr:
+            actual === null
+              ? `발행 후 왕복 검증 실패(유령 성공): ${ref} 가 열거에 없다(기대 ${newOid})`
+              : `발행 후 왕복 검증 실패(제3자 개입): ${ref} 가 ${actual} 로 관측됨(기대 ${newOid})`,
+          code: r.code,
+        }
       }
       // 실패 분류는 **문면이 아니라 값**으로 한다(§ 타입 주석 참조).
       // create-if-absent 인데 값이 있으면 = 경합 패배 / expected 를 줬는데 값이 다르면 = CAS 불일치.
