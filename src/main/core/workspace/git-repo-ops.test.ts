@@ -16,8 +16,9 @@ import { createGitRepo, REF_LOCK_BACKOFF_MS, type GitResult, type GitRunner } fr
 /**
  * T11 — `GitRepo` 나머지 연산(#251 PR3 · 스펙 §W-6 · 계약 테스트 §3-T23~T27).
  *
- * 이 파일의 계약은 전부 **3면 git 실측**(win32 2.54.0 / linux 2.39.5 = 배포 런타임 / linux 2.30.2 = pre-2.38)
- * 위에 서 있다. 실측이 뒤집은 것 셋을 여기 명시해 둔다 — 문면만 보고 고치면 되돌아간다:
+ * 이 파일의 계약은 전부 **4면 git 실측**(win32 2.54.0 / linux 2.39.5 = 배포 런타임 / linux 2.30.2 = pre-2.38 /
+ * linux 2.54.0 = 플랫폼 축 특정용) 위에 서 있다. 실측이 뒤집은 것 셋을 여기 명시해 둔다 —
+ * 문면만 보고 고치면 되돌아간다:
  *
  * 1. **`merge-tree --write-tree` 는 충돌과 인자 오류를 같은 exit 1 로 낸다.** 충돌은 stdout 첫 줄이 OID 이고
  *    인자 오류는 stdout 이 비어 있다 → **판별식은 종료코드가 아니라 첫 줄**이다.
@@ -55,7 +56,7 @@ const commitFile = (dir: string, name: string, content: string, message: string)
   return git(dir, 'rev-parse', 'HEAD')
 }
 
-/** 형제 파일과 같은 근거로 러너를 주입한다(win32 PATH 해석 2초 상한 회피 — `git-repo.test.ts:51-59`). */
+/** 형제 파일과 같은 근거로 러너를 주입한다(win32 PATH 해석 **10s** 상한 회피 · `cli/detect.ts:261`). */
 const execRunner: GitRunner = {
   run: (args: string[], cwd: string): Promise<GitResult> =>
     new Promise((resolve) => {
@@ -439,6 +440,23 @@ describe('T11/§3-T26 — 능력 프로브: 폴백 경로가 없다', () => {
   })
 
   /**
+   * **CodeRabbit PR#268** — 프로브는 `HEAD` 를 인자로 쓰므로 **커밋이 없는 레포**에서는 git 이 ≥2.38 이어도
+   * exit 128 이 난다. 그것을 「미지원」으로 접으면 폴백 없는 계약상 통합이 **영구 비활성**되는데 원인이
+   * 값에 남지 않아 진단할 수 없다. 결과(비활성)는 같아도 **이유는 다른 사실**이므로 구분해 답한다.
+   */
+  it('커밋 없는 레포(unborn HEAD)는 «미지원» 이 아니라 «판정 불가» 다', async () => {
+    const dir = join(mkTmp(), 'empty')
+    mkdirSync(dir, { recursive: true })
+    git(dir, 'init', '-q', '-b', 'main', '.')
+
+    const res = await createGitRepo(dir, execRunner).probeMergeTree()
+    expect(res.supported).toBe(false)
+    expect(res.supported === false && res.reason).toBe('indeterminate')
+    // 진단 가능해야 한다 — 원인 문면이 값에 실린다.
+    expect(res.supported === false && res.stderr.length).toBeGreaterThan(0)
+  })
+
+  /**
    * pre-2.38 은 `--write-tree` 를 **rev 로 해석**해 `fatal: unknown rev --write-tree`(exit 128)를 낸다
    * (2.30.2 실측). CI 러너의 git 버전에 의존하지 않도록 **주입 러너로 그 응답을 재현**한다 —
    * 실 git 만으로 조작화하면 신버전 CI 에서 이 행이 영원히 무신호다.
@@ -458,7 +476,10 @@ describe('T11/§3-T26 — 능력 프로브: 폴백 경로가 없다', () => {
       },
     }
     const repo = createGitRepo('/nowhere', oldGit)
-    expect(await repo.probeMergeTree()).toEqual({ supported: false })
+    const res = await repo.probeMergeTree()
+    expect(res.supported).toBe(false)
+    // pre-2.38 은 **버전에 대한 증거**다 — `indeterminate` 와 구분된다.
+    expect(res.supported === false && res.reason).toBe('unsupported')
     // 폴백(squash 등) 두 번째 구현 경로가 없다는 것이 계약이다.
     expect(seen.some((a) => a.includes('merge') && !a.includes('merge-tree'))).toBe(false)
   })
@@ -467,7 +488,9 @@ describe('T11/§3-T26 — 능력 프로브: 폴백 경로가 없다', () => {
     const echoGit: GitRunner = {
       run: () => Promise.resolve({ code: 0, stdout: '--write-tree\n', stderr: '' }),
     }
-    expect(await createGitRepo('/nowhere', echoGit).probeMergeTree()).toEqual({ supported: false })
+    const echoed = await createGitRepo('/nowhere', echoGit).probeMergeTree()
+    expect(echoed.supported).toBe(false)
+    expect(echoed.supported === false && echoed.reason).toBe('unsupported')
   })
 })
 
@@ -626,6 +649,47 @@ describe('T12/§3-T58 — R-5: 신규 연산은 남의 락을 지우지 않는�
     expect(waited).toEqual([10, 20, 40])
     expect(existsSync(foreignIndexLock)).toBe(true) // 오조준 삭제 0
     expect(existsSync(refLock)).toBe(true)
+    // **재시도 멱등성의 근거**(CodeRabbit PR#268): ref 락 경합은 **산출물이 만들어지기 전에** 실패한다 —
+    // 워크트리 디렉터리도 브랜치도 남지 않으므로 재시도가 「이미 존재」로 자기잠금되지 않는다(실측).
+    expect(existsSync(join(base, 'wt'))).toBe(false)
+    expect((await createGitRepo(r, execRunner).revParse('refs/heads/fleet/z')).status).toBe(
+      'absent',
+    )
+  })
+
+  /**
+   * **CodeRabbit PR#268** — 스펙 §W-6 은 「`signal` 을 전 신규 연산에 관통」을 요구하는데 배선이 없었다.
+   * 러너에 실제로 전달되는지 + **재시도 도중 취소가 즉시 반영되는지** 두 축을 고정한다.
+   */
+  it('`signal` 이 러너로 관통하고 재시도 루프가 취소를 존중한다', async () => {
+    const seenSignals: (AbortSignal | undefined)[] = []
+    const controller = new AbortController()
+    const waited: number[] = []
+    const contended: GitRunner = {
+      run: (_args, _cwd, signal) => {
+        seenSignals.push(signal)
+        return Promise.resolve({
+          code: 128,
+          stdout: '',
+          stderr:
+            "fatal: cannot lock ref 'refs/x': Unable to create '/x.lock': File exists.\n\nAnother git process seems to be running\n",
+        })
+      },
+    }
+    const repo = createGitRepo('/nowhere', contended, {
+      signal: controller.signal,
+      sleep: (ms) => {
+        waited.push(ms)
+        controller.abort() // 첫 백오프 뒤 취소된다
+        return Promise.resolve()
+      },
+    })
+    const res = await repo.casUpdateRef('refs/fleet/integrated/B/T1', 'a'.repeat(40), null)
+
+    expect(res.status).toBe('failed')
+    expect(seenSignals.every((s) => s === controller.signal)).toBe(true)
+    // 취소 후에는 더 자지 않는다 — 3회 예정이던 백오프가 1회에서 멈춘다.
+    expect(waited).toEqual([10])
   })
 
   /**

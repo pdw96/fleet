@@ -675,6 +675,10 @@ export interface GitRepo {
   백오프 재시도-only**(그 스코프는 **신규 한정**이며 레거시는 무변경 — 레거시 두 경로는 5종 락 선점
   전부에서 exit 0 이라 전환의 관측 이득이 0 이다).
 - `signal` 을 전 신규 연산에 관통(현행 `createWorkspace` 는 미전달 — 취소 불가).
+  **착지 형태(PR3a)**: `createGitRepo(root, git, { signal })` — **레포 스코프 주입**이고 내부 `run` 래퍼가
+  전 메서드에 전달한다. 메서드마다 인자를 늘리지 않은 이유는 소비자가 「한 bench 작업이 자기 `GitRepo` 를
+  만들어 쓰는」 형태(PR7 배선)이기 때문이다. **재시도 루프는 대기 전에 `aborted` 를 재검사**한다 —
+  그러지 않으면 취소 후에도 백오프가 마저 도는 구간이 남는다(CodeRabbit PR#268).
 - **git 능력 프로브(부팅 1회)**: `merge-tree --write-tree`(git ≥2.38) 미지원이면 **Workbench 통합 기능만
   fail-closed 비활성**. 두 번째 구현 경로(squash 폴백)를 만들지 않는다. 실측: 컨테이너 git 2.39.5 ✅.
 - `update-ref --stdin` 사용 시 **`--batch-updates` 금지**(CAS 거부에도 exit 0 — git 2.54 실측).

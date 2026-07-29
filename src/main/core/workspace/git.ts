@@ -142,6 +142,18 @@ export type MergeTreeResult =
   | { status: 'conflict'; tree: string; conflicts: string[] }
   | GitFailure
 
+/**
+ * 능력 프로브 결과.
+ *
+ * ⚠ **「미지원」과 「판정 불가」를 구분한다**(CodeRabbit PR#268). 프로브는 `HEAD` 를 인자로 쓰므로
+ * **커밋이 없는 레포(unborn HEAD)** 에서는 git 이 ≥2.38 이어도 exit 128 이 난다. 그것을 「미지원」으로
+ * 접으면 폴백이 없는 계약상 **통합 기능이 영구 비활성**되는데 원인이 값에 남지 않아 운영자가 진단할 수 없다.
+ * 둘 다 fail-closed(통합 비활성)라는 결과는 같지만 **이유는 다른 사실**이므로 따로 답한다.
+ */
+export type MergeTreeSupport =
+  | { supported: true }
+  | { supported: false; reason: 'unsupported' | 'indeterminate'; stderr: string }
+
 export type GitOidResult = { status: 'ok'; oid: string } | GitFailure
 export type GitRevParseResult = { status: 'ok'; oid: string } | { status: 'absent' } | GitFailure
 export type GitOpResult = { status: 'ok' } | GitFailure
@@ -174,7 +186,7 @@ export interface GitRepo {
   addDetachedWorktreeAt(dir: string, base: string): Promise<GitOpResult>
   removeWorktreeAt(dir: string, force: boolean): Promise<GitOpResult>
   /** `merge-tree --write-tree` 지원 여부(§W-6 부팅 1회). 미지원이면 통합 기능만 fail-closed 비활성 — **폴백 없음**. */
-  probeMergeTree(): Promise<{ supported: boolean }>
+  probeMergeTree(): Promise<MergeTreeSupport>
 }
 
 /** porcelain 은 `키 값` 한 줄 + 빈 줄 구분. 값에 공백이 있을 수 있어 **첫 공백 하나로만** 자른다. */
@@ -237,6 +249,14 @@ const realSleep = (ms: number): Promise<void> =>
 export interface GitRepoOptions {
   /** 백오프 대기 seam. 미주입이면 실 타이머 — 주입은 **스케줄을 관측 가능하게** 만든다(§3-T58). */
   readonly sleep?: (ms: number) => Promise<void>
+  /**
+   * 취소 seam(§W-6 「`signal` 을 전 신규 연산에 관통」 · CodeRabbit PR#268).
+   *
+   * 레포 스코프인 이유: 이 표면의 소비자는 **하나의 bench 작업**이 자기 `GitRepo` 를 만들어 쓰는 형태이고
+   * (PR7 배선), 메서드마다 인자를 늘리면 11메서드 시그니처가 취소 때문에 커진다. **재시도 사이에도**
+   * 검사하므로 백오프 도중 취소가 즉시 반영된다 — 그 검사가 없으면 「취소했는데 70ms 더 도는」 구간이 남는다.
+   */
+  readonly signal?: AbortSignal
 }
 
 const OID_SHAPE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
@@ -247,7 +267,7 @@ export function createGitRepo(
   opts: GitRepoOptions = {},
 ): GitRepo {
   const sleep = opts.sleep ?? realSleep
-  const run = (args: string[]): Promise<GitResult> => git.run(args, root)
+  const run = (args: string[]): Promise<GitResult> => git.run(args, root, opts.signal)
   /**
    * 공통 gitdir 변이 연산 전용 재시도(R-5 · G-1). **락 파일을 삭제하지 않는다.**
    * `ok()` 를 쓰지 않는 이유는 그 헬퍼의 안전 근거(「오케스트레이터는 순차 실행」)가 bench 병렬에서
@@ -257,6 +277,8 @@ export function createGitRepo(
     let last = await run(args)
     for (const backoff of REF_LOCK_BACKOFF_MS) {
       if (last.code === 0 || !REF_LOCK_RE.test(last.stderr)) return last
+      // 취소는 **대기 전에** 본다 — 뒤에 두면 이미 잔 뒤라 그 회차 지연이 취소를 무시한 것과 같다.
+      if (opts.signal?.aborted === true) return last
       await sleep(backoff)
       last = await run(args)
     }
@@ -446,10 +468,23 @@ export function createGitRepo(
     async probeMergeTree() {
       // 자기 자신과의 머지 — 오브젝트 DB 에 새 트리를 만들지 않으면서 **명령 형태**만 검사한다.
       // pre-2.38 은 `--write-tree` 를 **rev 로 해석**해 `fatal: unknown rev --write-tree`(exit 128)를 낸다.
-      // 그래서 「exit 0 ∧ 첫 줄이 OID」만 지원으로 본다 — 구형 git 의 옵션 에코(`rev-parse` 계열 선례)까지 함께 막는다.
       const r = await run(['merge-tree', '--write-tree', '--name-only', 'HEAD', 'HEAD'])
+      if (r.code === 0 && OID_SHAPE.test((r.stdout.split(/\r?\n/)[0] ?? '').trim())) {
+        return { supported: true }
+      }
+      const stderr = r.stderr.trim() || r.stdout.trim()
+      // **미지원의 증거는 「옵션을 못 알아본다」뿐이다**: pre-2.38 의 rev 오해석 · 더 구형의 usage 출력 ·
+      // exit 0 인데 첫 줄이 OID 가 아닌 옵션 에코(구형 git 관용 — `rev-parse` 계열 선례). 그 외의 실패
+      // (대표적으로 **커밋이 없는 레포의 unborn HEAD**)는 git 버전에 대한 정보가 아니므로 `indeterminate` 다.
+      const unrecognized =
+        r.code === 0 ||
+        /unknown rev --write-tree|unknown option[^\n]*write-tree|usage: git merge-tree/i.test(
+          stderr,
+        )
       return {
-        supported: r.code === 0 && OID_SHAPE.test((r.stdout.split(/\r?\n/)[0] ?? '').trim()),
+        supported: false,
+        reason: unrecognized ? ('unsupported' as const) : ('indeterminate' as const),
+        stderr,
       }
     },
   }
