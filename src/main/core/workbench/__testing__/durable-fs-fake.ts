@@ -38,7 +38,10 @@ export interface FakeCall {
   readonly args: readonly unknown[]
 }
 
-/** 페이크가 모델링하는 엔트리. `'other'` 는 FIFO·symlink·디렉터리 등 「정규 파일이 아님」 전부다. */
+/**
+ * 페이크가 모델링하는 엔트리. `'other'` 는 FIFO·디렉터리 등 「정규 파일도 심링크도 아님」이고,
+ * **심링크는 따로 모델링**한다 — 쓰기 경로가 그것을 구분해 거부하기 때문이다(#251 PR3b).
+ */
 type Entry =
   | { readonly kind: 'regular'; content: string }
   | { readonly kind: 'other' }

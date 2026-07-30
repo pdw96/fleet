@@ -215,13 +215,17 @@ describe.skipIf(process.platform === 'win32')('POSIX — statKind 가 비정규 
     expect(createNodeDurableFs().statKind(p)).toEqual({ kind: 'other', size: 0 })
   })
 
-  it('symlink 는 other 다 — 링크 대상이 일반 파일이어도 추종하지 않는다', () => {
+  it('symlink 는 symlink 로 보고된다 — 링크 대상이 일반 파일이어도 추종하지 않는다', () => {
     const outside = join(dir, 'OUTSIDE.json')
     writeFileSync(outside, '{"attacker":true}')
     const link = join(dir, 'rec.json')
     symlinkSync(outside, link)
 
-    expect(createNodeDurableFs().statKind(link).kind).toBe('other')
+    // ⚠ 원래는 `'other'` 였다(#251 PR3b 이전). **읽기 측 계약은 무변경**이다 — 소비자는 전부
+    // `!== 'regular'` 비교라 이 값이 무엇이든 「읽지 않는다」가 그대로 성립한다. 값을 가른 이유는
+    // **쓰기 측**이다: 저널이 `<journalDir>/<benchId>` 가 심링크인지 알아야 `mkdirRecursive` 가
+    // 그것을 따라가 영역 밖에 쓰는 것을 막는다(Codex PR#269 P1).
+    expect(createNodeDurableFs().statKind(link).kind).toBe('symlink')
     // 대조 앵커: `stat` 기반이었다면 regular 로 보고돼 영역 밖 내용이 권위가 됐다.
     expect(statSync(link).isFile()).toBe(true)
     expect(readFileSync(link, 'utf8')).toBe('{"attacker":true}')
