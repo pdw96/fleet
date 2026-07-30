@@ -394,10 +394,26 @@ describe('저널 버전 스큐 (§3-T67)', () => {
     expect(f.store.read(f.benchId, f.txnId).kind).toBe('invalid')
   })
 
-  it('__proto__ 오염 바이트를 거부한다', async () => {
+  it.each(['__proto__', 'constructor'])(
+    '%s 오염 키를 거부한다 — 나머지가 완전히 정상인 바이트로 단언한다',
+    async (key) => {
+      const f = await setup()
+      // ⚠ 「깨진 JSON + 오염 키」로 단언하면 **형태 검사가 대신 잡아** 오염 키 검사를 지워도 GREEN 이다
+      //   (뮤테이션 자기검사 실측). 그래서 **그 키 하나만** 다른 정상 레코드를 쓴다.
+      f.fs.setFile(f.path, `{${JSON.stringify(key)}:{"polluted":true},${serialized(f).slice(1)}`)
+
+      expect(f.store.read(f.benchId, f.txnId).kind).toBe('invalid')
+    },
+  )
+
+  it('크기 상한 초과는 읽기 전에 거부한다', async () => {
     const f = await setup()
-    f.fs.setFile(f.path, `{"__proto__":{"x":1},"schemaVersion":1}`)
-    expect(f.store.read(f.benchId, f.txnId).kind).toBe('invalid')
+    f.fs.setFile(f.path, JSON.stringify({ pad: 'x'.repeat(70_000) }))
+
+    const r = f.store.read(f.benchId, f.txnId)
+
+    expect(r.kind).toBe('invalid')
+    expect(f.fs.countOf('readFileUtf8')).toBe(0)
   })
 })
 
@@ -579,9 +595,15 @@ describe('저널 쓰기는 bench 리스 아래에서만 (§3-T70)', () => {
     expect(f.fs.calls).toEqual([])
   })
 
-  it('리스 identity 와 레코드가 어긋나면 거부한다', async () => {
+  it.each([
+    ['benchRoot', { benchRoot: '/elsewhere' }],
+    ['repoCommonGitDir', { repoCommonGitDir: '/other/.git' }],
+    // ⚠ benchId 축이 가장 위험하다 — 통과하면 **A 의 리스로 B 의 디렉터리에 쓴다**(경로가 draft 에서
+    // 유도되기 때문). 위 두 축만 단언하면 이 절이 그 구멍을 못 잡는다(뮤테이션 자기검사 실측).
+    ['benchId', { benchId: newUlid() }],
+  ])('리스 identity 와 레코드의 %s 가 어긋나면 거부한다', async (_name, over) => {
     const f = await setup()
-    const r = await f.store.append(f.lease, draftOf(f, { benchRoot: '/elsewhere' }), f.read)
+    const r = await f.store.append(f.lease, draftOf(f, over), f.read)
 
     expect(r).toEqual({ kind: 'lease-invalid', reason: 'identity-mismatch' })
     expect(f.fs.calls).toEqual([])
@@ -706,6 +728,9 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
       },
     ],
     ['비-abandoned 인데 stage ≠ nextAuthorityStage', { nextAuthorityStage: 'finalized' }],
+    // `prepared` 는 정의상 결과가 없다(형제 권위 불변식 ③c) — 있으면 이후 판정이 성립하지 않는
+    // 「값 비교」 분기로 들어간다.
+    ['prepared 인데 resultOid·resultTree 가 있다', { resultOid: OID_C, resultTree: OID_A }],
     ['draftDigest 가 빈 문자열', { draftDigest: '' }],
     ['resultRef 가 빈 문자열', { resultRef: '' }],
     ['expectedAuthorityRevision 이 음수', { expectedAuthorityRevision: -1 }],
@@ -757,6 +782,30 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
       ...draftOf(f),
     }
     expect(r.record).toEqual(expected)
+  })
+
+  it('draft 가 schemaVersion 을 실어 와도 store 배정을 덮어쓰지 못한다', async () => {
+    const f = await setup()
+    // `Omit` 의 초과 프로퍼티 검사는 **객체 리터럴에만** 걸리므로 구조적으로 실려 올 수 있다
+    // (형제 계획 정정 73 과 같은 구멍). 조용히 버리지 않고 **거부**하는 것이 계약이다.
+    const carrying = Object.assign({}, draftOf(f), { schemaVersion: 99 })
+
+    const r = await f.store.append(f.lease, carrying, f.read)
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('rename')).toBe(0)
+  })
+
+  it('직렬화가 크기 상한을 넘으면 쓰지 않는다(읽기가 거부할 것을 쓰지 않는다)', async () => {
+    const f = await setup()
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, { sourceBranch: 'x'.repeat(70_000) }),
+      f.read,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('openExclusive')).toBe(0)
   })
 
   it('초과 키는 재구성에서 탈락한다(디스크 재기록 오염 차단)', async () => {

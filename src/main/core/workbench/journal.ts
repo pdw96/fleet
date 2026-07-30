@@ -700,7 +700,16 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       violations.push('직전 증거가 다른 bench 의 것이다')
     }
 
-    const record: IntegrationTxnRecord = { schemaVersion: SUPPORTED_JOURNAL_SCHEMA, ...draft }
+    // ⚠ **스탬프가 스프레드보다 뒤에 온다**(순서가 계약이다): `Omit` 의 초과 프로퍼티 검사는 객체
+    // 리터럴에만 걸리므로 `const r: IntegrationTxnRecord = …; append(lease, r, prev)` 가 구조적
+    // 서브타이핑으로 통과한다(형제 계획 정정 73 과 같은 구멍). 스프레드가 뒤였다면 호출자가 실어 온
+    // `schemaVersion: 99` 가 store 배정을 **덮어써** 자기 자신에게 `incompatible-version` 인 파일이 남는다.
+    // 그래서 ⓐ스탬프를 뒤에 두어 구조적으로 이길 수 없게 하고 ⓑ그 키의 **존재 자체를 거부**한다
+    // (조용히 버리면 호출자는 자기 값이 기록됐다고 믿는다).
+    if (Object.hasOwn(draft, 'schemaVersion')) {
+      violations.push('draft 가 schemaVersion 을 싣고 있다 — 그 필드는 store 만 배정한다')
+    }
+    const record: IntegrationTxnRecord = { ...draft, schemaVersion: SUPPORTED_JOURNAL_SCHEMA }
     const shape = parseRecordShape(record)
     if (!shape.ok) violations.push(...shape.violations)
     if (violations.length > 0) return { kind: 'invariant-violation', violations }
@@ -724,21 +733,18 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       if (changed.length > 0) return { kind: 'invariant-violation', violations: changed }
     }
 
-    // ── ③ 왕복 검증 — 「읽기가 거부할 것을 쓰지 않는다」(형제 `verifySerialized` 와 같은 규율) ──
+    // ── ③ 「읽기가 거부할 것을 쓰지 않는다」 — 크기 상한(형제 `verifySerialized` 의 이 PR 판) ──
+    //
+    // ⚠ **왕복 파싱은 두지 않는다**(뮤테이션 자기검사 실측): 형제 `verifySerialized` 가 도달 가능한 이유는
+    // draft 가 `revision`·`writtenBy` 를 실어 올 수 있어서인데, 여기서 store 배정 필드는 `schemaVersion`
+    // 하나뿐이고 그것을 위 ⓐ스탬프 우선 + ⓑ명시 거부로 닫았다. 그러고 나면 「형태 검사를 통과한 레코드가
+    // 자기 직렬화를 다시 읽을 때 실패하는」 입력이 **존재하지 않는다** — 도달 불가 arm 을 남기면 커버리지에
+    // 잡히지 않으면서 「여기서도 검증한다」는 거짓 인상을 준다(형제 authority.ts 가 rename catch 분기를
+    // 같은 이유로 삭제했다). 크기 상한은 반대로 **도달 가능**하므로 남긴다.
     const json = JSON.stringify(record)
     const size = Buffer.byteLength(json, 'utf8')
     if (size > MAX_JOURNAL_BYTES) {
       return { kind: 'invariant-violation', violations: [`직렬화 크기 상한 초과: ${size}B`] }
-    }
-    const roundTrip = parseJournalJson(json, path, {
-      benchId: draft.benchId,
-      txnId: draft.txnId,
-    })
-    if (roundTrip.kind !== 'found') {
-      return {
-        kind: 'invariant-violation',
-        violations: [`직렬화 왕복 검증 실패: ${roundTrip.kind}`],
-      }
     }
 
     // ── ④ 변이 구간 ──
