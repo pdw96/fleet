@@ -1139,6 +1139,29 @@ rename EPERM 재시도 실측 완료)·tmp 문법과 배치·열거 필터(접�
 > 파생시킨 축)이 **원천 소멸**한다. 대가 = **C1 이 고정한 결과 ref 문법 변경**(spec §W-7:743). PR3b 는
 > 이 결정에 의존하지 않으므로 지금 정하지 않는다.
 
+#### PR3b 착수 시 확정 (2026-07-30 · 4축 정찰이 드러낸 잔여 모호점 8건)
+
+「미결 결정 0」은 **설계 축**에서 참이었고, 착수 정찰(계획 의무 · 스펙 의무 · 형제 패턴 · 품질 게이트)이
+**시그니처·소유 축의 모호점 8건**을 새로 드러냈다. 전부 여기서 닫는다 — 구현이 임의로 고르면 그것이
+곧 계약이 되기 때문이다(§1 전제 스펙 §1:377-382 의 「정의 없는 타입을 구현이 창작하지 않는다」).
+
+| # | 모호점 | 확정 |
+|---|---|---|
+| 173 | **복구 판정 판별 유니온의 소유가 계획 안에서 자기모순**이다 — T13a ⓐ(계획:1168-1169)는 「복구 판정 판별 유니온 배치」를 PR3b 에 두는데, 정정 159 는 판정을 **통째로** PR3c 로 옮겼고 정정 164 는 회수 어휘(`never-applied`)도 PR3c 로 보냈다. 타입만 먼저 착지시키면 정정 161 이 경고한 「PR3b 가 갓 만든 계약에 대한 첫 수술」이 그대로 재발한다 | **유니온도 PR3c**. T13a ⓐ 문면을 「`IntegrationTxnRecord`·`AbandonReason`·전이 술어 배치」로 좁힌다. 어휘는 그것을 **생산하는 함수와 같은 커밋**에서 태어난다(정정 159 가 세운 기준의 일관 적용) |
+| 174 | **`resultRef` 문법을 PR3b 가 검증하면 PR3c 가 즉시 수술한다** — 정정 166 채택으로 C1 문법이 `…/<benchId>/<고정폭 세대>-<txnId>` 로 바뀌는 것이 **확정 사항**인데, 스펙 코드펜스(spec §W-7)는 아직 구 문법이다 | PR3b 는 `resultRef` 를 **비어 있지 않은 문자열까지만** 검증한다(문법 파싱·조립 0). 문법 소유는 PR3c 이며 그 사실을 필드 주석에 적는다. ⚠ 「검증을 안 한다」가 아니라 **「문법 축은 이 PR 의 계약이 아니다」**를 명시하는 것이 정직 표기다 |
+| 175 | **`prev: AuthorityCommit`(정정 162ⓐ)의 첫 단계가 표현 불가**다 — `prepared` 는 트랜잭션의 **첫** 저널 쓰기라 선행 CAS 가 없다. 그리고 형제 원장 조회 술어가 **없다**(`isMintedLease` 는 있으나 `isMintedCommit` 은 부재) | 크레덴셜을 **`AuthorityCommit \| FreshReadToken`** 으로 둔다 — ⓐ`previousAuthorityStage` **부재**(=첫 단계)일 때만 `FreshReadToken` 허용 ⓑ그 외는 `AuthorityCommit` 필수 + **`expectedAuthorityRevision === prev.revision`** 값 결속 ⓒ**원장 소진 금지** — 런처가 `SPENT_COMMITS` 로 커밋을 소진하므로(authority.ts:564,570) 저널이 같은 원장을 소진하면 「CAS2 → 저널 → spawn」이 **구조적으로 불가능**해진다 ⓓ`isMintedCommit` 신설 **기각**: 프로덕션에서 브랜드 forge 는 미export + eslint `no-unsafe-type-assertion` + 구조 테스트의 **브랜드 캐스트 4곳 exact 핀**이 이미 막고, 조회 술어를 새로 export 하면 「착지 계약 무변경」이 깨진다. ⚠ 따라서 이 결속은 **스레딩 사고 방지**이지 위조 방어가 아니다(FreshReadToken 필드는 CAS 도 신뢰하지 않는다 — authority.ts:158-167) |
+| 176 | **「저널 쓰기는 bench 리스 아래에서만」(정정 155ⓓ)의 집행 형태가 미정**이고, tmp 이름의 `<ownerToken>` 출처도 미정이다 — 호출자가 문자열로 주면 PR3d 수확기의 배타원(「그 benchId 의 리스 보유자 · 다른 token = 죽은 잔재」)이 **위조 가능한 이름**에 얹힌다 | `append` 가 **`BenchLeaseToken` 을 인자로** 받고 ⓐ`isMintedLease` 로 출처 확인 ⓑ리스 identity ↔ 레코드 3필드 대조 ⓒ`ownerToken` 을 **리스에서만** 취해 tmp 이름을 만든다(문자열 인자 없음) ⓓrename **재시도 회차마다** `revalidate()`(L-6 동형 · authority.ts:1376-1379). 이로써 계약이 주석이 아니라 **타입과 값**으로 선다 |
+| 177 | **정정 167 의 `nextAuthorityStage` 가 포기 경로에서 표현 불가**다 — 포기는 권위의 통합 4필드를 **함께 소거**하므로(정정 148 · `reclaimDraft` 선례) 권위가 `abandoned` 를 갖는 일이 없다 | `nextAuthorityStage` 를 **옵셔널**로 두고 **부재 = 「후속 CAS 가 통합 필드를 소거한다」**로 규정한다(어휘 신설 0). 엔트리 자신의 `stage` 와의 관계는 **조건부 불변식**으로 강제 — 비-`abandoned` 는 `stage === nextAuthorityStage`, `abandoned` 는 `nextAuthorityStage` 부재. ⚠ 두 필드가 파생 관계인데도 **둘 다 저장하는 이유**는 복구가 「의도」와 「관측」을 대조해야 하기 때문이다(정정 167 의 승격 가능/불가 2분 근거) — 그 대조자는 PR3c 이므로 **이 PR 에서 vacuous** 로 계상한다 |
+| 178 | **「저널 엔트리 추가」의 물리적 의미가 미정**이다 — 배치가 `journal/<benchId>/<txnId>.json` **txn 당 1파일**이고 레코드의 `stage` 가 가변이므로, 단계 전진은 append 가 아니라 **같은 파일 덮어쓰기**다. 그러면 전이 술어(정정 142)를 **무엇과 비교**하는지가 정해져야 한다 | `append` 가 **디스크의 현재 엔트리를 스스로 읽어** 비교한다(파일 부재 ∧ `prepared` 만 초기 진입 허용). 함께 **불변 필드 집합**(`txnId`·`benchId`·identity 2·`sourceBranch`·`sourceSnapshot`·`sourceGeneration`·`targetBranch`·`targetHeadBeforeIntegration`·`resultRef`·`startedAt`·`ownerEngineId`)의 단계 간 변경을 거부한다 — 이것이 없으면 「전이는 합법인데 내용이 통째로 바뀐」 레코드가 통과한다. 읽기가 `incompatible-version` 이면 **덮어쓰지 않는다**(I12 — 구 버전이 신 버전 저널을 지우는 경로 차단) |
+| 179 | **spec §W-7 I11·§3-T33 문면 개정 시점**(정정 164 는 「같은 커밋」, PR 표:92 는 PR3c) | **PR3c 유지**. PR3b 가 착지시키는 것은 **stage 단독** 술어이고 현행 문면(「활성 = stage ∈ {prepared,composed}」)이 그것과 **이미 일치**한다 — 개정이 필요해지는 것은 **귀속 조건을 도입하는 PR3c** 이므로 정정 164 의 「같은 커밋」 규율은 그쪽에 걸린다. 두 문면을 지금 건드리면 오히려 착지 코드 없는 문면 변경이 된다 |
+| 180 | **rename 재시도 대상 errno 판정자가 비export**(authority.ts:412-418)라 저널이 재사용할 수 없다 | `isRetryableRenameError` 를 **추가 export**(신규 추가만 · 기존 시그니처·동작 무변경). 6줄 복제를 고른 쪽이 더 위험하다 — 안전 임계 술어가 두 벌이 되면 한쪽만 갱신되는 드리프트가 **무신호**다(`RENAME_BACKOFF_MS` 는 이미 export 이므로 두 상수가 갈라지는 것도 막는다). 「착지 계약 무변경」은 **기존 계약의 변경 없음**이며 추가 export 는 그 위반이 아님을 PR 본문에 명시한다 |
+
+**이 라운드가 신설한 §3 행 9건**(§1 전제 1 게이트 충족 — RED 목록): **T64**(배치·tmp 문법) · **T65**(열거
+7종 검증) · **T66**(전이 술어 전수) · **T67**(저널 `schemaVersion` 최우선) · **T68**(저널 rename 재시도) ·
+**T69**(크레덴셜 타입 강제) · **T70**(리스 아래에서만) · **T71**(불변 필드·결속) · **T72**(생성 저널 3채널).
+기존 §3 행 중 PR3b 가 **non-vacuous 로 소비**할 수 있는 것은 **T62 의 D-9 저널 분 1건**뿐이라는 것이
+정찰의 실측이고, 그래서 신설이 유일한 충족 경로였다.
+
 ### PR3 — `GitRepo` 완성 · 통합 WAL 저널
 
 > **PR3a 착지분(T11·T12)은 위 「PR3 착수 전 실측 정정」 절이 확정한 형태로 이미 랜딩했다.** 아래 원문은
@@ -1166,8 +1189,8 @@ rename EPERM 재시도 실측 완료)·tmp 문법과 배치·열거 필터(접�
 > PR3b 가 착지시키는 것은 ⓐ~ⓓ + tmp 문법/배치 + 열거 필터뿐이며, **미결 결정이 0** 이다.
 
 - **T13a 저널 코어 + ~~복구 판정~~ (PR3b)** — 신설 `src/main/core/workbench/journal.ts`(정정 141).
-  ⓐ`IntegrationTxnRecord`·`AbandonReason`·**복구 판정 판별 유니온**(kebab 표기) 배치 · `schemaVersion`
-  **최우선** 검사 → `incompatible-version`(정정 141 · I12 재발 차단) ⓑ내구 쓰기 = 저널도 `DurableFs`
+  ⓐ`IntegrationTxnRecord`·`AbandonReason` 배치(kebab 표기 · **복구 판정 판별 유니온은 정정 173 이
+  PR3c 로 보냈다**) · `schemaVersion` **최우선** 검사 → `incompatible-version`(정정 141 · I12 재발 차단) ⓑ내구 쓰기 = 저널도 `DurableFs`
   tmp→rename 이며 **win32 `rename` EPERM 재시도가 필수**다(실측: 대상에 읽기 핸들이 열려 있으면 EPERM,
   닫으면 즉시 성공 — C4 를 저널이 그대로 상속). ⓒ열거는 **접미 필터 + ULID 검증 둘 다**(실측: `.tmp`
   잔재가 필터 없이는 `txnId="<…>.json.<token>"` 인 엔트리로 오독된다) ⓓ**전이 술어**(정정 142) ·

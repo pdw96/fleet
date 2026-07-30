@@ -743,22 +743,52 @@ export type IntegrationStage = 'prepared' | 'composed' | 'published' | 'finalize
 export type AbandonReason = 'user-abandon' | 'superseded' | 'stale-attempt'
 
 export interface IntegrationTxnRecord {
-  readonly schema: 1
+  readonly schemaVersion: 1        // ⚠ 원안 `schema` 폐기 — 권위 레코드와 이름을 통일했고(계획 정정 141)
+                                   //    **문법 검사보다 먼저** 본다(초과 = 'incompatible-version' · I12)
   readonly txnId: string; readonly benchId: string           // ULID
   readonly repoCommonGitDir: string; readonly benchRoot: string   // 대조 전용
   readonly sourceBranch: string; readonly sourceSnapshot: string  // auto-keep OID
   readonly sourceGeneration: number
   readonly targetBranch: string; readonly targetHeadBeforeIntegration: string
-  readonly resultRef: string        // `refs/fleet/integrated/${benchId}/${txnId}` 고정 문법(C1)
+  readonly resultRef: string        // 문법 소유 = PR3c(정정 166 이 세대 결속으로 바꾼다) —
+                                    // 저널은 비어 있지 않은 문자열까지만 본다(정정 174)
   readonly startedAt: number; readonly ownerEngineId: string      // 진단용
-  stage: IntegrationStage
-  resultTree?: string; resultOid?: string   // stage >= 'composed' 필수
-  publishedAt?: number                      // stage >= 'published' 필수
-  abandonedAt?: number; abandonReason?: AbandonReason            // 'abandoned' 필수
+  readonly stage: IntegrationStage  // 단계 전진 = **같은 파일 덮어쓰기**(txn 당 1파일 · 정정 178)
+  readonly resultTree?: string; readonly resultOid?: string   // stage >= 'composed' 필수
+  readonly publishedAt?: number                               // stage >= 'published' 필수
+  readonly abandonedAt?: number; readonly abandonReason?: AbandonReason   // 'abandoned' 필수
+
+  // ── 권위 CAS 결속(Codex 3R · 계획 정정 167) — 저널은 **선기록**이므로 「무엇을 기대하고 썼는지」를
+  //    함께 남겨야 복구가 「자동 승격 가능 / reconciliation-required」를 가를 수 있다. 그 **대조자는
+  //    PR3c** 이므로 PR3b 안에서는 값이 기록만 되고 소비되지 않는다(vacuous 로 계상).
+  readonly expectedAuthorityRevision: number   // 이 저널에 이어질 CAS 가 맞출 revision
+  readonly previousAuthorityStage?: IntegrationStage  // 부재 = 진행 중 통합 없음(트랜잭션 첫 단계)
+  readonly nextAuthorityStage?: IntegrationStage      // 부재 = 후속 CAS 가 통합 필드를 **소거**한다(포기)
+  readonly integrationGeneration: number       // 발행자는 PR3c(prepared 마다 +1)
+  readonly draftDigest: string                 // 제출될 권위 draft 의 정준 JSON sha256
 }
 ```
 **폐기 필드**: `targetHeadAfterIntegration` · 결과 종별 `applied|already-applied`(C5).
 `resultKind: 'applied' | 'already-applied'` 는 **결과 트리 == 캡처된 base 트리** 로 재정의.
+
+**저널 매체 계약(신설 · PR3b · 계획 정정 165·176·178)** — 원안은 레코드 타입만 규정하고 「그것을 어디에
+어떻게 쓰는가」를 0건 규정해, 배치·tmp·리스·재시도가 전부 구현 재량이었다.
+
+- **배치** = `<area>/journal/<benchId>/<txnId>.json`. txn 당 파일 **1개**이고 단계 전진은 **같은 파일
+  덮어쓰기**다(§3-T64). `benchId`·`txnId` 는 경로 성분이 되기 **전에** ULID 문법 검증을 통과해야 한다
+  (§W-1 과 같은 규율 — 정규화하지 않고 거부).
+- **tmp** = **대상과 같은 디렉터리**의 `<txnId>.json.<ownerToken>.tmp`(별도 `tmp/` 없음 · §W-2).
+  `<ownerToken>` 의 출처는 **bench 리스뿐**이며 문자열 인자로 받지 않는다 — PR3d 수확기의 배타원
+  (「그 benchId 의 리스 보유자 · 다른 token = 죽은 잔재」)이 이 사실 위에 선다.
+- **쓰기는 bench 리스 아래에서만**(§3-T70): 출처 확인(`isMintedLease`) + 리스↔레코드 identity 대조 +
+  **rename 시도 회차마다 재검증**(L-6 동형).
+- **내구 쓰기는 §W-4 C4 를 그대로 상속**한다 — create-only tmp → `writeAll` → fsync → rename, win32
+  `rename` EPERM **유한** 재시도(§3-T68). rename **전** 실패 = 디스크 무변이, rename **후** 디렉터리 내구
+  단계 실패 = 파일은 이미 게시됐으므로 **별도 종별**로 답한다(§W-4 의 `commit-uncertain` 과 같은 구분).
+- **읽기는 D-9** — `readFileUtf8` 즉시-close 만. 비정규 노드는 **읽기 전** 거부(FIFO 무기한 블록 차단).
+- **열거는 순수 필터**다 — 디렉터리 순회 프리미티브 신설은 PR3d 이므로, PR3b 는 **주어진 이름 목록**에
+  대한 7종 검증(§3-T65)만 착지시킨다. 이 사실을 「열거가 있다」로 읽지 않는다.
+- **WAL 전이는 저널이 강제**한다(§3-T66). 권위 레코드 쪽 전이 불변식 계층은 **PR3c**.
 
 **복구 판정(순수 함수 · 무변이 관찰만 · git 변이 0)**
 
@@ -795,7 +825,7 @@ export interface IntegrationTxnRecord {
 
 | 대상 | 포기가 하는 일 |
 |---|---|
-| 저널 | `stage:'abandoned'` 확인-응답 기록 → 권위 CAS 후 엔트리 제거 |
+| 저널 | `stage:'abandoned'` 확인-응답 기록 → 권위 CAS. ⚠ **「엔트리 제거」는 「활성 집합에서 제외」로 읽는다**(계획 정정 135) — 파일은 **삭제하지 않고 감사 보존**한다(1109행이 후행 개정이자 목적 명시라 권위다). 765행 복구표의 「청소 복구」도 **멱등 종결**이지 삭제가 아니며, 그 표 문면 개정은 PR3c 소관이라 그때까지 스펙은 이 축에서 부분 모순으로 남는다(은폐하지 않는다) |
 | 권위 레코드 | `currentIntegrationTxnId → null`(revision CAS) · `lifecycle` **무변** · `sourceGeneration` **무변** |
 | 결과 ref | **삭제하지 않는다**(소비자가 이미 머지했을 수 있음) |
 | auto-keep 커밋 | **bench 브랜치에 보존**(사용자 작업 무손실 = 포기가 안전한 근거) |
@@ -1222,6 +1252,15 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T61** | **조건부 스키마 불변식 1~9 전수 테이블 테스트**(신설) — §W-4 가 9개 불변식을 명시했으나 §3 에 대응 행이 없어 구현 재량으로 누락돼도 **무신호**였다 | verify |
 | **T62** | **L-2 · D-9 · benchRoot env fail-fast**(신설) — 셋 다 §3 행 부재였다. L-2: `tryAcquire` 가 동일 tick 내 반환(논블로킹)·미지 errno → `unavailable` / D-9: 권위·저널 경로에 `createReadStream`·`watch`·장기 fd 부재(매칭 대상 파일 수 > 0 선단언) / env: 운영자 오설정 throw · 미설정 비활성+warn | verify |
 | **T63** | **통합 WAL 순서 단언(신설 · T17f 등가물)** — `composed`(resultOid 선기록)가 `casUpdateRef` **보다 먼저 acknowledged** 되었음을 강제한다. 이 행이 없으면 구현이 ref 를 먼저 만들고 저널을 나중에 써도 전부 GREEN 이 되어 C7 의 "추론 0" 논증이 무너진다 | verify(실 git) |
+| **T64** | **저널 배치·tmp 문법(신설 · PR3b)** — 엔트리는 정확히 `<journalDir>/<benchId>/<txnId>.json` 에만 생기고 tmp 는 **대상과 같은 디렉터리**의 `<txnId>.json.<ownerToken>.tmp` 다. 쓰기 전후 **전 경로 스냅숏 diff** 로 「`<benchId>` 디렉터리 밖에 생긴 파일 0」을 단언한다(flat 배치·별도 `tmp/` 구현이 RED) · 성공 후 tmp 부재 · 실패 경로에서도 **자기 tmp 만** 제거 · `benchId`/`txnId` 가 ULID 문법이 아니면 경로를 만들기 전에 거부(경로 성분 주입 차단) | verify |
+| **T65** | **저널 열거 7종 검증(신설 · PR3b)** — ⓐ`.json` **정확** 접미(`.json.<token>.tmp` 잔재·`x.jsonx` 거부) ⓑbasename ULID 문법 ⓒ내부 `txnId` == basename ⓓ`benchId` == 상위 디렉터리 ⓔ`schemaVersion` 최우선 ⓕ**regular file 만**(비정규 노드는 **읽기 전** 거부 — FIFO `readFileSync` 무기한 블록 차단) ⓖtmp 접미는 저널로 읽지 않음. 필터 없는 구현은 `.tmp` 잔재를 `txnId="<…>.json.<token>"` 로 오독해 RED | verify |
+| **T66** | **WAL 전이 술어 전수표(신설 · PR3b)** — 초기 진입(엔트리 부재) 5값 + 기존 stage 5 × 목표 stage 5 **전수**. 합법은 부재→`prepared` · `prepared→composed→published→finalized` · 임의 단계→`abandoned` 뿐이고 나머지는 거부. **양성·음성 대조 동반**이라 「무조건 허용」·「무조건 거부」 두 뮤턴트가 **모두** RED 다(역행 `published→prepared` · 부활 `abandoned→composed` · 자기 전이 `composed→composed`) | verify |
+| **T67** | **저널 버전 스큐(신설 · PR3b · T21c 의 저널 판)** — 지원 범위 초과 `schemaVersion` 엔트리는 `incompatible-version` 으로 분류하고 **덮어쓰지 않는다**(쓰기 0 · unlink 0). 픽스처는 「초과 버전 **∧** 다른 필드 형태 위반」이라 문법을 먼저 보는 구현은 `invalid` 를 답해 RED — 구 버전이 신 버전 저널을 지우는 I12 의 저널 표면 | verify |
+| **T68** | **저널 rename 유한 재시도(신설 · PR3b · C4 상속)** — `EPERM` 3연속 후 4회차 성공 = 성공이고 **exact 호출 계수**(rename 4 · sleep 3 · 인자 `[10,20,40]` 순서)를 고정한다 · 백오프 소진(5회 실패)은 `io-failure{step:'rename'}` + 디스크 무변이 · **비대상 errno(`ENOENT`)와 `code` 부재 Error 는 재시도 0**(즉시 실패). 권위 store 전용이던 §3-T17·T17g 가 저널을 덮지 않아 신설한다 | verify |
+| **T69** | **저널 쓰기 크레덴셜 강제(신설 · PR3b)** — `append` 는 `AuthorityCommit`(직전 단계 CAS 성공 증거) 또는 **첫 단계 한정** `FreshReadToken` 없이는 **타입 수준에서 호출 불가**(`@ts-expect-error` 로 고정) · 첫 단계가 아닌데 `FreshReadToken` 이면 런타임 거부 · `expectedAuthorityRevision !== prev.revision` 이면 거부. ⚠ **행동 단언(abort-on-CAS-failure)의 생산자는 PR5 T18** 이라 이 PR 에서 그 축은 vacuous 다 | verify |
+| **T70** | **저널 쓰기는 bench 리스 아래에서만(신설 · PR3b)** — 비민팅(복제) 리스면 파일시스템 **무접촉**(쓰기 0) · 리스 identity ↔ 레코드 3필드 대조 실패 시 거부 · tmp 이름의 `<ownerToken>` 은 **리스에서만** 취한다(문자열 인자 부재 = 위조 불가) · rename **회차마다** `revalidate()` 를 다시 보므로 「1회차 실패 → 그 사이 탈취 → 2회차 성공」 구현이 RED(L-6 동형). PR3d 수확기의 배타원이 이 계약 위에 선다 | verify |
+| **T71** | **저널 레코드 불변 필드·조건부 결속(신설 · PR3b)** — 단계 전진에서 불변 12필드(`txnId`·`benchId`·`repoCommonGitDir`·`benchRoot`·`sourceBranch`·`sourceSnapshot`·`sourceGeneration`·`targetBranch`·`targetHeadBeforeIntegration`·`resultRef`·`startedAt`·`ownerEngineId`) 중 하나라도 바뀌면 거부(「전이는 합법인데 내용이 통째로 바뀐」 레코드 차단) · `stage ≥ composed` → `resultOid`·`resultTree` 필수 · `published` → `publishedAt` 필수 · `abandoned` → `abandonedAt`·`abandonReason` 필수 ∧ `nextAuthorityStage` **부재**(포기 CAS 는 통합 필드를 소거한다) · 그 외 stage 는 `stage === nextAuthorityStage` | verify |
+| **T72** | **생성 저널 3채널 판정 규칙(신설 · PR3b · §W-9)** — {①저널 엔트리 ②worktree 디렉터리 ③git 브랜치} **8조합 전수**를 {없음·부분·완전}으로 사상하는 **순수 술어**. 생성은 통합의 `prepared` 규칙을 상속하지 않으므로 「없음」은 reconciliation 없이 종결 가능해야 한다. ⚠ **행동 단언은 PR4 T16 에 명시 귀속**(생산자가 거기 있다) — 이 PR 은 규칙만 착지시킨다 | verify |
 | **T38** | **I4: `broken ∧ busy` → 전 액션 거부**(크로스 프로세스 리스 보유) | verify |
 | **T39** | **I11 분리** — `prepared`/`composed` 잔존 bench 만 `delete-record` 거부(`journal-pending`) · **integration-ready(`published`) bench 는 허용** · `broken ∧ 활성 저널`은 `abandon-and-discard` 3구간으로만 탈출(락 밖 승인 → 락 안 재검사 → 단일 CAS) | verify |
 | **T39b** | bench 런 진행 중 **레거시 ProjectPanel 의 running 잠금·자동 선택이 발생하지 않음**(라이브 이벤트 + 하이드레이션 두 경로 · R-2) | verify |
