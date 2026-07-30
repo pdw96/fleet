@@ -172,6 +172,11 @@ export type JournalWriteResult =
    * 저널 표면이자, 손상 파일을 조용히 정상 파일로 갈아치우는 경로의 차단이다.
    */
   | { readonly kind: 'existing-unreadable'; readonly existing: JournalReadResult }
+  /**
+   * 호출자의 권위 임계 구역이 **이미 닫혔다** — 유출된 쓰기는 rename 하지 않는다(Codex PR#269 P1).
+   * `lease-invalid` 와 구분하는 이유: 리스는 **여전히 유효**하고, 깨진 것은 프로세스 안 직렬화다.
+   */
+  | { readonly kind: 'section-closed' }
   /** rename **성공 전** 실패(재시도 소진 포함) = 디스크 무변이. */
   | {
       readonly kind: 'io-failure'
@@ -203,6 +208,13 @@ export interface JournalStore {
   /** 디스크에서 **항상** 읽는다(캐시 없음 · D-9 즉시-close). */
   read(benchId: string, txnId: string): JournalReadResult
   /**
+   * 호출자의 **권위 임계 구역이 아직 열려 있는가**. `sleep` 과 같은 이유로 **선택적이 아니라 필수**다
+   * (Codex PR#269 P1): 재시도 백오프가 이 모듈의 첫 `await` 를 만들고, 호출자가 `append` 를 `await`
+   * 하지 않고 `withAuthority` 콜백을 끝내면 **뮤텍스가 풀린 뒤에도 이 쓰기가 살아남아** 다음 임계
+   * 구역이 갱신한 bench 위에 rename 한다. 리스는 그때도 유효하므로 L-6 재검증으로는 못 막는다.
+   * 생산자는 PR5 시퀀서다 — 기본값을 두면 그 구현이 어떤 게이트도 거치지 않고 착지한다.
+   */
+  /**
    * 단계 전진 1회 = (전이 검사, 내구 쓰기). `prev` 는 **직전 단계 CAS 의 증거**이며 첫 단계에 한해
    * `FreshReadToken` 이 그 자리를 대신한다(계획 정정 175).
    *
@@ -215,6 +227,7 @@ export interface JournalStore {
     lease: BenchLeaseToken,
     draft: IntegrationTxnDraft,
     prev: AuthorityCommit | FreshReadToken,
+    sectionLive: () => boolean,
   ): Promise<JournalWriteResult>
 }
 
@@ -587,6 +600,9 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
   /** 진행 중인 tmp 경로 — 겹침 가드(아래 `append` 의 주석이 근거). */
   const appendsInFlight = new Set<string>()
 
+  /** 크레덴셜 → 그 크레덴셜이 증언한 전이 1개(아래 `append` 의 주석이 근거 · 형제 원장과 별개다). */
+  const credentialUse = new WeakMap<object, { txnId: string; stage: IntegrationStage }>()
+
   const syncDirEntry = (dir: string): void => {
     const fd = fs.openDir(dir)
     try {
@@ -627,16 +643,22 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
   /**
    * rename 유한 재시도(C4 상속). 성공하면 `undefined`.
    *
-   * **매 시도 직전에 리스를 다시 본다**(L-6) — 재검증이 루프 밖에 한 번만 있으면 「1회차 실패 → 그 사이
-   * 탈취 → 2회차 성공」이 통과해 **남의 리스 아래에서 게시**한다. 형제 CAS 와 달리 `live` 플래그가 없는
-   * 것은 이 모듈에 임계 구역(뮤텍스)이 없기 때문이고, 그 직렬화는 호출자의 `withAuthority` 가 제공한다.
+   * **매 시도 직전에 둘을 다시 본다**:
+   * - **L-6 리스 소유** — 재검증이 루프 밖에 한 번만 있으면 「1회차 실패 → 그 사이 탈취 → 2회차 성공」이
+   *   통과해 **남의 리스 아래에서 게시**한다.
+   * - **호출자 임계 구역 생존**(Codex PR#269 P1) — 백오프가 이 모듈의 첫 `await` 이고, 호출자가 이
+   *   호출을 `await` 하지 않고 `withAuthority` 콜백을 끝내면 뮤텍스가 풀린 뒤에도 이 루프가 계속 돈다.
+   *   그때 **리스는 여전히 유효**하므로 위 재검증은 통과하고, 다음 임계 구역이 갱신한 bench 위에
+   *   rename 하게 된다. 형제 CAS 의 `live` 플래그와 같은 자리이며, 여기서는 주입으로 받는다.
    */
   const renameWithRetry = async (
     lease: BenchLeaseToken,
+    sectionLive: () => boolean,
     from: string,
     to: string,
   ): Promise<JournalWriteResult | undefined> => {
     for (let attempt = 0; attempt <= RENAME_BACKOFF_MS.length; attempt += 1) {
+      if (!sectionLive()) return { kind: 'section-closed' }
       const check = lease.revalidate()
       if (check.kind === 'lost') return { kind: 'lease-invalid', reason: check.reason }
       try {
@@ -664,6 +686,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     lease: BenchLeaseToken,
     draft: IntegrationTxnDraft,
     prev: AuthorityCommit | FreshReadToken,
+    sectionLive: () => boolean,
   ): Promise<JournalWriteResult> => {
     // ── ① 파일시스템 무접촉 구간: 리스·크레덴셜·형태 ──
     if (!isMintedLease(lease)) return { kind: 'lease-invalid', reason: 'stolen' }
@@ -756,12 +779,59 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
         violations: [`불법 전이: ${String(from)} → ${record.stage}`],
       }
     }
+
+    if (existing.kind === 'found' && from === 'abandoned') {
+      // **포기 재기록은 정확한 멱등 재생이어야 한다**(Codex PR#269 P1). `abandoned → abandoned` 를
+      // 합법으로 둔 근거는 「저널 기록 후 권위 CAS 전 크래시」의 재시도가 막다른 길이 되면 안 된다는
+      // 것뿐인데, 무조건 허용하면 `abandonedAt`·`abandonReason`·결속 필드가 **다른** 레코드로 종결
+      // 기록을 덮어쓸 수 있다 — 파일이 하나라 **원본 감사 증거가 그 자리에서 소멸**하고 PR3c 는
+      // 비교할 대상을 잃는다. `IMMUTABLE_FIELDS` 로는 부족해서(종결 필드가 그 목록에 없다) 전체를 본다.
+      if (canonicalJson(existing.record) !== canonicalJson(record)) {
+        return {
+          kind: 'invariant-violation',
+          violations: ['포기 엔트리는 정확히 같은 내용으로만 재기록할 수 있다(종결 기록 보존)'],
+        }
+      }
+    } else if (record.previousAuthorityStage !== from) {
+      // **주장한 직전 단계가 디스크와 일치해야 한다**(Codex PR#269 P1). 전이 검사는 「디스크 → 새 stage」만
+      // 보므로, `previousAuthorityStage` 에 아무 값이나 실어도 통과해 **결속이 없던 전이를 증언**한다 —
+      // 복구(PR3c)가 그 거짓 위에서 승격/reconciliation 을 가르게 된다.
+      return {
+        kind: 'invariant-violation',
+        violations: [
+          `previousAuthorityStage(${show(record.previousAuthorityStage)}) 가 디스크 단계(${String(from)}) 와 다르다`,
+        ],
+      }
+    }
+
     if (existing.kind === 'found') {
       const changed = IMMUTABLE_FIELDS.filter(
         (k) => own(existing.record, k) !== own(record, k),
       ).map((k) => `단계 전진에서 불변 필드가 바뀌었다: ${k}`)
       if (changed.length > 0) return { kind: 'invariant-violation', violations: changed }
     }
+
+    /**
+     * **크레덴셜 1개 = 전이 1개**(Codex PR#269 P1). revision 결속만으로는 같은 커밋을 두 번 쓰는 것을
+     * 막지 못한다 — `prepared` 상태의 커밋으로 `composed` 를 쓴 뒤 **같은 커밋**을 재사용해 `published`
+     * 까지 쓰면, 전이 검사는 저널의 새 상태만 보므로 통과하고 **저널이 권위를 두 단계 앞선다**.
+     * 형제의 `SPENT_COMMITS` 를 쓰지 않는 이유는 런처가 그 원장을 소비하기 때문이며(계획 정정 175ⓒ),
+     * 그래서 **저널 지역 원장**을 따로 둔다. **정확 재시도**(같은 txn·같은 stage)는 계속 허용한다 —
+     * rename 이 실패한 뒤의 재호출이 정상 경로다.
+     */
+    const claimed = credentialUse.get(prev)
+    if (
+      claimed !== undefined &&
+      (claimed.txnId !== record.txnId || claimed.stage !== record.stage)
+    ) {
+      return {
+        kind: 'invariant-violation',
+        violations: [
+          `이 증거는 이미 다른 전이에 쓰였다(${claimed.txnId} → ${claimed.stage}) — 크레덴셜 1개는 전이 1개다`,
+        ],
+      }
+    }
+    credentialUse.set(prev, { txnId: record.txnId, stage: record.stage })
 
     // ── ③ 「읽기가 거부할 것을 쓰지 않는다」 — 크기 상한(형제 `verifySerialized` 의 이 PR 판) ──
     //
@@ -779,10 +849,25 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     }
 
     // ── ④ 변이 구간 ──
+    if (!sectionLive()) return { kind: 'section-closed' }
     const preCheck = lease.revalidate()
     if (preCheck.kind === 'lost') return { kind: 'lease-invalid', reason: preCheck.reason }
 
     const benchDir = join(opts.journalDir, draft.benchId)
+
+    // **심링크를 따라가지 않는다**(Codex PR#269 P1). `mkdirRecursive` 는 기존 심링크를 그대로 따라가므로
+    // `<journalDir>/<benchId>` 가 심링크면 create-only tmp 와 rename 이 **영역 밖**에 떨어진다 — 「검증된
+    // ULID 가 파괴적 인프라 쓰기를 영역 안에 가둔다」는 이 모듈의 주장이 그 지점에서 깨진다. 읽기 경로가
+    // 「읽기 전에 종류를 본다」를 지키는 것과 같은 규율을 쓰기 경로에도 세운다.
+    // ⚠ **조상은 호출자 계약**이다 — `journalDir` 는 이미 정준화된 절대 경로라는 것이 주입 계약이고
+    // (형제 `authorityDir` 와 동형), 이 모듈이 유도하는 성분은 `<benchId>` 하나뿐이다.
+    const dirKind = fs.statKind(benchDir)
+    if (dirKind.kind === 'symlink' || dirKind.kind === 'regular') {
+      return {
+        kind: 'invariant-violation',
+        violations: [`저널 bench 디렉터리가 디렉터리가 아니다(${dirKind.kind}) — 따라가지 않는다`],
+      }
+    }
     const tmpPath = `${path}.${lease.ownerToken}${TMP_SUFFIX}`
 
     /**
@@ -807,7 +892,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     }
     appendsInFlight.add(tmpPath)
     try {
-      return await writeDurably(lease, { benchDir, tmpPath, path, json, record })
+      return await writeDurably(lease, sectionLive, { benchDir, tmpPath, path, json, record })
     } finally {
       appendsInFlight.delete(tmpPath)
     }
@@ -816,6 +901,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
   /** 변이 구간 본체 — rename 을 경계로 반환 종별이 갈린다(그 전 = 무변이 / 그 후 = 게시됨). */
   const writeDurably = async (
     lease: BenchLeaseToken,
+    sectionLive: () => boolean,
     target: {
       readonly benchDir: string
       readonly tmpPath: string
@@ -858,7 +944,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
         fs.close(toClose)
       }
       step = 'rename'
-      const failure = await renameWithRetry(lease, tmpPath, path)
+      const failure = await renameWithRetry(lease, sectionLive, tmpPath, path)
       if (failure !== undefined) return failure
       renamed = true
     } catch (cause) {

@@ -39,7 +39,10 @@ export interface FakeCall {
 }
 
 /** 페이크가 모델링하는 엔트리. `'other'` 는 FIFO·symlink·디렉터리 등 「정규 파일이 아님」 전부다. */
-type Entry = { readonly kind: 'regular'; content: string } | { readonly kind: 'other' }
+type Entry =
+  | { readonly kind: 'regular'; content: string }
+  | { readonly kind: 'other' }
+  | { readonly kind: 'symlink' }
 
 export interface FakeDurableFs extends DurableFs {
   /** 호출된 프리미티브 순서 — §3-T15 단계 시퀀스·§3-T17d 인터리브 판정의 관측면. */
@@ -67,6 +70,8 @@ export interface FakeDurableFs extends DurableFs {
   /** 디스크 상태 직접 조작 — 「외부(다른 프로세스·ttyd 셸)가 교체했다」를 만든다. */
   setFile(path: string, content: string): void
   setOther(path: string): void
+  /** 심링크 씨앗 — 쓰기 경로가 그것을 따라가지 않는지 보는 용도(#251 PR3b · Codex PR#269 P1). */
+  setSymlink(path: string): void
   remove(path: string): void
   readRaw(path: string): string | undefined
   /** 현재 열린 fd 수 — 실패 경로의 **fd 누수** 단언용(0 이어야 한다). */
@@ -176,6 +181,7 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
     },
     setFile: (path, content) => void entries.set(path, { kind: 'regular', content }),
     setOther: (path) => void entries.set(path, { kind: 'other' }),
+    setSymlink: (path) => void entries.set(path, { kind: 'symlink' }),
     remove: (path) => void entries.delete(path),
     readRaw: (path) => {
       const e = entries.get(path)
@@ -198,6 +204,9 @@ export function createFakeDurableFs(opts: FakeOptions = {}): FakeDurableFs {
       enter('statKind', [path])
       const e = entries.get(path)
       if (e === undefined) return { kind: 'missing', size: 0 }
+      // 실물 `lstat` 과 같이 심링크를 **따라가지 않고** 그대로 보고한다 — 페이크가 이것을 `'other'` 로
+      // 뭉개면 쓰기 경로의 심링크 거부가 이 위에서 무신호가 된다(「실물보다 느슨하면 안 된다」).
+      if (e.kind === 'symlink') return { kind: 'symlink', size: 0 }
       if (e.kind !== 'regular') return { kind: 'other', size: 0 }
       return { kind: 'regular', size: Buffer.byteLength(e.content, 'utf8') }
     },

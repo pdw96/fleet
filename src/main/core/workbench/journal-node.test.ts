@@ -48,6 +48,9 @@ const neverSleeps = (ms: number): Promise<void> => {
   return Promise.resolve()
 }
 
+/** 기본 임계 구역 생존 신호(주입 필수 seam — 생산자는 PR5 시퀀서다). */
+const alive = (): boolean => true
+
 let root: string
 let journalDir: string
 let authorityDir: string
@@ -141,7 +144,7 @@ describe('실 파일시스템 위의 저널 쓰기 — 프로덕션 조합', () 
     const txnId = newUlid()
     const lease = await mintLease(benchId)
 
-    const r = await realJournal().append(lease, draftOf(lease, txnId), await mintRead(lease))
+    const r = await realJournal().append(lease, draftOf(lease, txnId), await mintRead(lease), alive)
 
     expect(r.kind).toBe('written')
     expect(readdirSync(journalDir)).toEqual([benchId])
@@ -155,9 +158,9 @@ describe('실 파일시스템 위의 저널 쓰기 — 프로덕션 조합', () 
     const txnId = newUlid()
     const lease = await mintLease(benchId)
     const store = realJournal()
-    expect((await store.append(lease, draftOf(lease, txnId), await mintRead(lease))).kind).toBe(
-      'written',
-    )
+    expect(
+      (await store.append(lease, draftOf(lease, txnId), await mintRead(lease), alive)).kind,
+    ).toBe('written')
 
     const commit = await mintCommit(lease)
     const r = await store.append(
@@ -171,6 +174,7 @@ describe('실 파일시스템 위의 저널 쓰기 — 프로덕션 조합', () 
         expectedAuthorityRevision: commit.revision,
       }),
       commit,
+      alive,
     )
 
     expect(r.kind).toBe('written')
@@ -188,7 +192,7 @@ describe.skipIf(IS_WIN)('POSIX — 모드·디렉터리 내구성이 실물에�
     const txnId = newUlid()
     const lease = await mintLease(benchId)
 
-    await realJournal().append(lease, draftOf(lease, txnId), await mintRead(lease))
+    await realJournal().append(lease, draftOf(lease, txnId), await mintRead(lease), alive)
 
     expect(statSync(journalDir).mode & 0o777).toBe(0o700)
     expect(statSync(join(journalDir, benchId)).mode & 0o777).toBe(0o700)
@@ -204,6 +208,7 @@ describe.skipIf(IS_WIN)('POSIX — 모드·디렉터리 내구성이 실물에�
       lease,
       draftOf(lease, txnId),
       await mintRead(lease),
+      alive,
     )
 
     expect(r.kind).toBe('written')
@@ -219,7 +224,7 @@ describe.skipIf(!IS_WIN)('win32 — C4 상속이 저널 호출부에서도 성�
 
     // 1) 먼저 정상 쓰기로 대상 파일을 만든다(열 대상이 있어야 EPERM 을 낼 수 있다).
     expect(
-      (await realJournal().append(lease, draftOf(lease, txnId), await mintRead(lease))).kind,
+      (await realJournal().append(lease, draftOf(lease, txnId), await mintRead(lease), alive)).kind,
     ).toBe('written')
 
     // 2) 그 파일을 연다 — 이 순간부터 win32 는 rename 을 EPERM 으로 거절한다.
@@ -260,6 +265,7 @@ describe.skipIf(!IS_WIN)('win32 — C4 상속이 저널 호출부에서도 성�
           expectedAuthorityRevision: commit.revision,
         }),
         commit,
+        alive,
       )
 
       expect(r.kind).toBe('written')
