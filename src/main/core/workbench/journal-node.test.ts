@@ -14,7 +14,7 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import type { AuthorityCommit, FreshReadToken } from './authority'
+import type { AuthorityCommit } from './authority'
 import { createBenchAuthorityStore } from './authority'
 import { createNodeDurableFs } from './durable-fs'
 import type { IntegrationTxnDraft } from './journal'
@@ -49,9 +49,6 @@ const neverSleeps = (ms: number): Promise<void> => {
   sleepCalls.push(ms)
   return Promise.resolve()
 }
-
-/** 기본 임계 구역 생존 신호(주입 필수 seam — 생산자는 PR5 시퀀서다). */
-const alive = (): boolean => true
 
 let root: string
 let journalDir: string
@@ -92,21 +89,6 @@ const authorityStore = (): ReturnType<typeof createBenchAuthorityStore> =>
     durability: 'file-only',
     now: () => AT,
     sleep: neverSleeps,
-  })
-
-/**
- * 첫 단계 크레덴셜은 **살아 있는 구역 안에서만** 유효하다(Codex PR#269 3R P1) — 미리 뽑아 두고 나중에
- * 쓰면 소진·구역 종료를 통과시키게 된다. 그래서 토큰을 넘겨주는 대신 **구역 안에서 콜백을 돌린다**
- * (실제 WAL 순서와 같은 형태).
- */
-const inLiveSection = <T>(
-  lease: BenchLeaseToken,
-  fn: (read: FreshReadToken) => Promise<T>,
-): Promise<T> =>
-  authorityStore().withAuthority(lease, (tx) => {
-    const read = tx.readFresh()
-    if (read.kind !== 'absent') throw new Error(`예상 밖 읽기 결과: ${read.kind}`)
-    return fn(read.read)
   })
 
 const mintCommit = (lease: BenchLeaseToken): Promise<AuthorityCommit> =>
@@ -154,9 +136,7 @@ describe('실 파일시스템 위의 저널 쓰기 — 프로덕션 조합', () 
     const txnId = newUlid()
     const lease = await mintLease(benchId)
 
-    const r = await inLiveSection(lease, (read) =>
-      realJournal().append(lease, draftOf(lease, txnId), read, alive),
-    )
+    const r = await realJournal().append(lease, draftOf(lease, txnId))
 
     expect(r.kind).toBe('written')
     expect(readdirSync(journalDir)).toEqual([benchId])
@@ -170,13 +150,7 @@ describe('실 파일시스템 위의 저널 쓰기 — 프로덕션 조합', () 
     const txnId = newUlid()
     const lease = await mintLease(benchId)
     const store = realJournal()
-    expect(
-      (
-        await inLiveSection(lease, (read) =>
-          store.append(lease, draftOf(lease, txnId), read, alive),
-        )
-      ).kind,
-    ).toBe('written')
+    expect((await store.append(lease, draftOf(lease, txnId))).kind).toBe('written')
 
     const commit = await mintCommit(lease)
     const r = await store.append(
@@ -189,8 +163,6 @@ describe('실 파일시스템 위의 저널 쓰기 — 프로덕션 조합', () 
         previousAuthorityStage: 'prepared',
         expectedAuthorityRevision: commit.revision,
       }),
-      commit,
-      alive,
     )
 
     expect(r.kind).toBe('written')
@@ -208,9 +180,7 @@ describe.skipIf(IS_WIN)('POSIX — 모드·디렉터리 내구성이 실물에�
     const txnId = newUlid()
     const lease = await mintLease(benchId)
 
-    await inLiveSection(lease, (read) =>
-      realJournal().append(lease, draftOf(lease, txnId), read, alive),
-    )
+    await realJournal().append(lease, draftOf(lease, txnId))
 
     expect(statSync(journalDir).mode & 0o777).toBe(0o700)
     expect(statSync(join(journalDir, benchId)).mode & 0o777).toBe(0o700)
@@ -228,9 +198,7 @@ describe.skipIf(IS_WIN)('POSIX — 모드·디렉터리 내구성이 실물에�
     mkdirSync(journalDir, { recursive: true })
     symlinkSync(outside, join(journalDir, benchId))
 
-    const r = await inLiveSection(lease, (read) =>
-      realJournal().append(lease, draftOf(lease, txnId), read, alive),
-    )
+    const r = await realJournal().append(lease, draftOf(lease, txnId))
 
     expect(r.kind).toBe('invariant-violation')
     expect(readdirSync(outside)).toEqual([]) // 영역 밖에 아무것도 쓰지 않았다
@@ -241,9 +209,7 @@ describe.skipIf(IS_WIN)('POSIX — 모드·디렉터리 내구성이 실물에�
     const txnId = newUlid()
     const lease = await mintLease(benchId)
 
-    const r = await inLiveSection(lease, (read) =>
-      realJournal('file+dir').append(lease, draftOf(lease, txnId), read, alive),
-    )
+    const r = await realJournal('file+dir').append(lease, draftOf(lease, txnId))
 
     expect(r.kind).toBe('written')
   })
@@ -257,13 +223,7 @@ describe.skipIf(!IS_WIN)('win32 — C4 상속이 저널 호출부에서도 성�
     const target = join(journalDir, benchId, `${txnId}.json`)
 
     // 1) 먼저 정상 쓰기로 대상 파일을 만든다(열 대상이 있어야 EPERM 을 낼 수 있다).
-    expect(
-      (
-        await inLiveSection(lease, (read) =>
-          realJournal().append(lease, draftOf(lease, txnId), read, alive),
-        )
-      ).kind,
-    ).toBe('written')
+    expect((await realJournal().append(lease, draftOf(lease, txnId))).kind).toBe('written')
 
     // 2) 그 파일을 연다 — 이 순간부터 win32 는 rename 을 EPERM 으로 거절한다.
     let held: number | undefined = openSync(target, 'r')
@@ -302,8 +262,6 @@ describe.skipIf(!IS_WIN)('win32 — C4 상속이 저널 호출부에서도 성�
           previousAuthorityStage: 'prepared',
           expectedAuthorityRevision: commit.revision,
         }),
-        commit,
-        alive,
       )
 
       expect(r.kind).toBe('written')

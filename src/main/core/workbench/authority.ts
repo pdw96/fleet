@@ -672,12 +672,6 @@ const SPENT_COMMITS = new WeakSet<AuthorityCommit>()
  * 그래서 판정과 값 모두 **원장에서** 온다(형제 `locks.ts` 의 `MINTED_LEASES` 와 같은 규율).
  * `WeakMap` 인 이유도 같다: 토큰 수명을 붙잡지 않는다.
  */
-/**
- * **살아 있는 임계 구역**의 신원 집합(Codex PR#269 3R P1). `live` 플래그는 클로저 지역이라 모듈 밖에서
- * 물을 수 없다 — 저널처럼 「이 증거가 아직 유효한 구역의 것인가」를 알아야 하는 소비자가 생겼다.
- */
-const LIVE_SECTIONS = new WeakSet<object>()
-
 const MINTED_READS = new WeakMap<
   FreshReadToken,
   {
@@ -693,32 +687,6 @@ const MINTED_READS = new WeakMap<
     readonly tx: object
   }
 >()
-/**
- * **출처 조회 술어 2종**(#251 PR3b · Codex PR#269 P1 · 계획 정정 185) — 형제 `locks.ts` 의
- * `isMintedLease` 와 같은 형태이고 같은 이유로 export 한다: **크레덴셜을 소비하는 다른 모듈이
- * 「이것이 이 프로세스의 권위 모듈에서 나왔는가」를 물을 수단이 없으면 필드를 믿는 검사밖에 못 한다.**
- * 그리고 필드를 믿으면 `{...commit}` 복제가 통과한다 — 위 두 원장 주석이 **실측으로 확정한** 벡터다.
- *
- * ⚠ **조회일 뿐 소진이 아니다.** 소진은 `createBenchLauncher` 의 계약이며(한 커밋 = 한 자식), 저널이
- * 그것을 함께 소비하면 「CAS2 → 저널 → spawn」이 구조적으로 불가능해진다.
- */
-export function isMintedCommit(commit: AuthorityCommit): boolean {
-  return MINTED_COMMITS.has(commit)
-}
-
-/**
- * 살아 있는 임계 구역의 **미사용** 읽기 증거인가(Codex PR#269 3R P1).
- *
- * ⚠ **민팅 조회만으로는 부족하다**: 토큰이 CAS 로 소진된 뒤에도, 그리고 발급한 구역이 닫힌 뒤에도
- * `MINTED_READS` 에는 남는다. 그 상태의 정품 토큰을 다른 구역이 제출하면 「그 CAS 를 인가할 수 없는
- * 읽기」에 대한 활성 WAL 증거가 남는다 — CAS 자신은 `SPENT_READS`·`tx` 대조로 거부하는데 저널만
- * 통과시키면 두 매체가 어긋난다. 그래서 **소진 여부와 구역 생존까지** 함께 답한다.
- */
-export function isLiveUnspentRead(read: FreshReadToken): boolean {
-  const minted = MINTED_READS.get(read)
-  return minted !== undefined && !SPENT_READS.has(read) && LIVE_SECTIONS.has(minted.tx)
-}
-
 /**
  * 호출자 draft → **CAS 가 실제로 기록할 투영**(Codex PR#269 3R P1). `serialize` 가 쓰는 것과 **같은
  * 함수**를 거치므로 필드 목록이 갈릴 수 없다 — 별도로 나열하면 권위 레코드에 필드가 추가될 때
@@ -1584,7 +1552,6 @@ export function createBenchAuthorityStore(
     }
 
     const tx: AuthorityTx = { readFresh, compareAndSwap }
-    LIVE_SECTIONS.add(txId)
     return (async () => {
       try {
         return await fn(tx)
@@ -1592,8 +1559,6 @@ export function createBenchAuthorityStore(
         // 임계 구역을 벗어난 tx 는 죽는다 — 유출된 핸들로 뮤텍스·리스 재검증 창 **밖에서** CAS 가 도는
         // 것을 막는 유일한 수단이다(계획 정정 94). 새 실패 종별을 만들지 않고 `released` 를 재사용한다.
         live = false
-        // 같은 사실을 **모듈 밖 소비자**(저널)도 물을 수 있어야 한다 — `live` 는 클로저 지역이다.
-        LIVE_SECTIONS.delete(txId)
       }
     })()
   }

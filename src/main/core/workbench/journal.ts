@@ -2,20 +2,12 @@ import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
 import type {
-  AuthorityCommit,
   BenchAuthorityDraft,
-  FreshReadToken,
   IntegrationStage,
   PostCommitStep,
   PreCommitStep,
 } from './authority'
-import {
-  isLiveUnspentRead,
-  isMintedCommit,
-  isRetryableRenameError,
-  projectAuthorityDraft,
-  RENAME_BACKOFF_MS,
-} from './authority'
+import { isRetryableRenameError, projectAuthorityDraft, RENAME_BACKOFF_MS } from './authority'
 import type { DurabilityLevel, DurableFs } from './durable-fs'
 import type { BenchLeaseToken } from './locks'
 import { isMintedLease } from './locks'
@@ -35,21 +27,23 @@ import { isUlid } from './ulid'
  *   먼저 착지하는 배치 자체가 `anchor-unavailable` 같은 유령 상태를 만든다는 것이 그 정정의 근거다.
  * - **디렉터리 열거를 하지 않는다** — `DurableFs` 에 순회 프리미티브가 없고 그 신설은 PR3d 다. 여기 있는
  *   것은 **주어진 이름 목록에 대한 순수 필터**(`classifyJournalFileName`)뿐이며, 「열거가 있다」로 읽지 말 것.
+ * - **크레덴셜·임계 구역 결속이 여기 없다**(계획 정정 187 → PR3c). 「직전 단계 CAS 의 증거」·「호출자
+ *   구역 생존」을 저널이 인가하려면 authority 가 **구역 capability 를 민팅**하고 **크레덴셜이 관측된
+ *   통합 상태(txn·stage·세대)를 실어야** 하는데, 그 필드 계약은 PR3c 소유이고 유일한 소비자(시퀀서)는
+ *   PR5 다. Codex 4라운드가 이 축에서만 P1 을 반복 산출한 것이 그 배치가 틀렸다는 증거였고, 정정 159 가
+ *   복구 판정을 옮긴 것과 **같은 기준**으로 이관했다.
+ * - 그 결과 이 모듈이 세우는 인가는 **리스뿐**이다. 정정 167 의 결속 5필드는 **기록되지만 대조되지
+ *   않는다** — 대조자가 PR3c 다. 「검사한다」로 읽히지 않게 적는다.
  * - **소비자가 0 이다.** 통합 트랜잭션 시퀀서(PR5 T18)·부팅 복구(PR7)가 붙기 전까지 이 모듈은 프로덕션
- *   경로에서 도달 불가다. 정정 167 의 결속 5필드 중 **쓰기 시점에 대조되는 것은 셋**이고
- *   (`expectedAuthorityRevision` = 크레덴셜 revision 과 값 결속 · `previousAuthorityStage` = 첫 단계
- *   크레덴셜 허용 여부 · `nextAuthorityStage` = `stage` 와의 조건부 동치), **기록만 되는 것은 둘**이다
- *   (`integrationGeneration`·`draftDigest` — 형태만 본다). 어느 쪽이든 **복구 시점의 대조자는 PR3c** 이며
- *   그 축이 이 PR 에서 vacuous 다. 「전부 대조되지 않는다」로 뭉뚱그리지 않는다.
- * - **abort-on-CAS-failure 의 행동 강제자도 없다**(계획 정정 162ⓑ·165ⓒ) — 여기 있는 것은 크레덴셜
- *   **타입 강제**까지이고, 「CAS 실패 후 다음 단계로 전진하지 않는다」를 실제로 집행하는 시퀀서는 PR5 다.
+ *   경로에서 도달 불가다.
  *
  * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · 형제 `authority.ts` 와 동형 · AGENTS.md 「안전 우선」)
  *
  * 이 모듈도 CAS 경로와 같은 **엔진 인프라 쓰기**다 — 소비 지점이 부팅·리스 임계 구역이라 승인자가 없고
  * §W-3 **L-5**(승인 대기 중 락 보유 금지)와 방향이 충돌한다. destructive 조작을 막는 것은 게이트가 아니라
  * ⓐ**리스 출처 확인**(`isMintedLease`) ⓑ**변이 직전·재시도 회차마다 재검증**(L-6) ⓒ**create-only tmp**
- * (이름에 리스의 `ownerToken` 을 실어 타 보유자와 충돌하지 않는다) ⓓ**identity 3중 대조**다.
+ * (이름에 리스의 `ownerToken` 을 실어 타 보유자와 충돌하지 않는다) ⓓ**identity 3중 대조** ⓔ**심링크
+ * 거부**(`mkdirRecursive` 가 따라가는 것을 쓰기 전에 막는다)다.
  * 경로는 주입된 `journalDir` + 검증된 ULID 2개로만 유도한다 — 이 모듈은 코디네이션 영역을 재유도하지 않는다.
  */
 
@@ -114,7 +108,7 @@ export interface IntegrationTxnRecord {
   readonly publishedAt?: number
   readonly abandonedAt?: number
   readonly abandonReason?: AbandonReason
-  /** 이 저널에 이어질 권위 CAS 가 맞출 revision. 부재 레코드 = 0. */
+  /** 이 저널에 이어질 권위 CAS 가 맞출 revision(부재 레코드 = 0). **대조자는 PR3c** — 여기서는 형태만 본다. */
   readonly expectedAuthorityRevision: number
   /** 부재 = 진행 중 통합이 없다(트랜잭션 **첫 단계**). */
   readonly previousAuthorityStage?: IntegrationStage
@@ -178,11 +172,6 @@ export type JournalWriteResult =
    * 저널 표면이자, 손상 파일을 조용히 정상 파일로 갈아치우는 경로의 차단이다.
    */
   | { readonly kind: 'existing-unreadable'; readonly existing: JournalReadResult }
-  /**
-   * 호출자의 권위 임계 구역이 **이미 닫혔다** — 유출된 쓰기는 rename 하지 않는다(Codex PR#269 P1).
-   * `lease-invalid` 와 구분하는 이유: 리스는 **여전히 유효**하고, 깨진 것은 프로세스 안 직렬화다.
-   */
-  | { readonly kind: 'section-closed' }
   /** rename **성공 전** 실패(재시도 소진 포함) = 디스크 무변이. */
   | {
       readonly kind: 'io-failure'
@@ -214,27 +203,24 @@ export interface JournalStore {
   /** 디스크에서 **항상** 읽는다(캐시 없음 · D-9 즉시-close). */
   read(benchId: string, txnId: string): JournalReadResult
   /**
-   * 호출자의 **권위 임계 구역이 아직 열려 있는가**. `sleep` 과 같은 이유로 **선택적이 아니라 필수**다
-   * (Codex PR#269 P1): 재시도 백오프가 이 모듈의 첫 `await` 를 만들고, 호출자가 `append` 를 `await`
-   * 하지 않고 `withAuthority` 콜백을 끝내면 **뮤텍스가 풀린 뒤에도 이 쓰기가 살아남아** 다음 임계
-   * 구역이 갱신한 bench 위에 rename 한다. 리스는 그때도 유효하므로 L-6 재검증으로는 못 막는다.
-   * 생산자는 PR5 시퀀서다 — 기본값을 두면 그 구현이 어떤 게이트도 거치지 않고 착지한다.
-   */
-  /**
-   * 단계 전진 1회 = (전이 검사, 내구 쓰기). `prev` 는 **직전 단계 CAS 의 증거**이며 첫 단계에 한해
-   * `FreshReadToken` 이 그 자리를 대신한다(계획 정정 175).
+   * 단계 전진 1회 = (전이 검사, 내구 쓰기).
+   *
+   * ⚠ **크레덴셜 인자가 없다** — 「직전 단계 CAS 의 증거」와 「호출자 임계 구역 생존」 결속은 **PR3c 로
+   * 이관**됐다(계획 정정 187). 그 축은 ⓐ소비자(시퀀서)가 PR5 라 이 PR 에서 전부 vacuous 하고 ⓑ Codex
+   * 4라운드가 매 라운드 **직전 라운드의 방어 자체**에서 구멍을 찾았으며(원장 부재 → 동일성 키 우회 →
+   * store 스코프 우회 → capability 미인증) ⓒ남은 처방이 **authority 계약 확장**(구역 capability 민팅 ·
+   * 크레덴셜에 관측 통합 상태 결속)을 요구하는데 그 필드 계약은 PR3c 소유다. 정정 159 가 복구 판정을
+   * 옮긴 것과 **같은 기준**의 적용이다.
+   *
+   * 그래서 이 PR 이 세우는 인가는 **리스뿐**이다(출처 확인 + 변이 직전·회차별 재검증). 저널 레코드의
+   * 결속 필드(`expectedAuthorityRevision` 등)는 **기록되지만 대조자가 없다** — 그 대조가 PR3c 다.
    *
    * **비용 예산**(자가 적대 리뷰 정량화): 정상 경로 `file-only` = IO 프리미티브 **7**(statKind·
    * readFileUtf8·mkdir·openExclusive·writeAll·fsync·close·rename 중 부재 시 read 생략) ·
    * `file+dir` 최초 = **+4**(부모 2 + post-commit openDir/fsync/close). 최악 = rename 4회 재시도로
    * **+4 호출 + 총 150ms 대기**(백오프 `[10,20,40,80]`). 이 값이 바뀌면 §3-T68 의 exact 계수가 RED 다.
    */
-  append(
-    lease: BenchLeaseToken,
-    draft: IntegrationTxnDraft,
-    prev: AuthorityCommit | FreshReadToken,
-    sectionLive: () => boolean,
-  ): Promise<JournalWriteResult>
+  append(lease: BenchLeaseToken, draft: IntegrationTxnDraft): Promise<JournalWriteResult>
 }
 
 /* ================================================================================================
@@ -611,17 +597,12 @@ const parseJournalJson = (
  * store — 내구 쓰기
  * ============================================================================================= */
 
-/** `FreshReadToken` 만 갖는 필드로 가른다(브랜드 심볼은 미export 라 구조로 판별한다). */
-const isFreshRead = (c: AuthorityCommit | FreshReadToken): c is FreshReadToken =>
-  Object.hasOwn(c, 'observedRevision')
-
 /**
  * **크레덴셜 원장과 겹침 가드는 모듈 스코프**여야 한다(Codex PR#269 3R P1 · 형제 계획 정정 95 와 같은
  * 근거). store 지역이면 **같은 저널 디렉터리를 겨냥한 두 번째 store 를 만드는 것만으로** 「크레덴셜 1개 =
  * 전이 1개」와 tmp 겹침 가드가 통째로 우회된다 — A 로 `composed` 를 쓰고 B 로 같은 커밋을 재사용해
  * `published` 를 쓰면 두 검사 모두 빈 원장을 본다. 키가 크레덴셜 객체·tmp 경로라 store 간 오염은 없다.
  */
-const CREDENTIAL_USE = new WeakMap<object, { txnId: string; stage: IntegrationStage }>()
 const APPENDS_IN_FLIGHT = new Set<string>()
 
 export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): JournalStore {
@@ -693,12 +674,10 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
    */
   const renameWithRetry = async (
     lease: BenchLeaseToken,
-    sectionLive: () => boolean,
     from: string,
     to: string,
   ): Promise<JournalWriteResult | undefined> => {
     for (let attempt = 0; attempt <= RENAME_BACKOFF_MS.length; attempt += 1) {
-      if (!sectionLive()) return { kind: 'section-closed' }
       const check = lease.revalidate()
       if (check.kind === 'lost') return { kind: 'lease-invalid', reason: check.reason }
       try {
@@ -725,8 +704,6 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
   const append = async (
     lease: BenchLeaseToken,
     draft: IntegrationTxnDraft,
-    prev: AuthorityCommit | FreshReadToken,
-    sectionLive: () => boolean,
   ): Promise<JournalWriteResult> => {
     // ── ① 파일시스템 무접촉 구간: 리스·크레덴셜·형태 ──
     //
@@ -754,56 +731,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       }
     }
 
-    if (!isPlainObject(prev)) {
-      return { kind: 'invariant-violation', violations: ['직전 단계 증거(prev)가 없다'] }
-    }
-    const fromRead = isFreshRead(prev)
-    // **출처를 먼저 본다 — 필드를 믿지 않는다**(Codex PR#269 P1 · 계획 정정 185 가 175ⓓ 를 뒤집었다).
-    // `{...commit}` 복제는 미export 브랜드를 보존한 채 **새 객체**라 캐스트 없이 타입 검사를 통과하고,
-    // 그러면 아래 원장(객체 동일성 키)이 **빈 채로 조회**돼 「크레덴셜 1개 = 전이 1개」가 우회된다 —
-    // 정품 커밋으로 `composed` 를 쓰고 복제본으로 `published` 까지 써서 저널이 권위를 두 단계 앞선다.
-    // 형제 `locks.ts` 의 `isMintedLease` 와 같은 자리이며, **조회일 뿐 소진하지 않는다**.
-    // 읽기 증거는 **소진 여부와 구역 생존까지** 본다(3R P1): 민팅 조회만으로는 이미 CAS 에 쓰인 토큰이나
-    // 닫힌 구역의 토큰이 통과해, 「그 CAS 를 인가할 수 없는 읽기」에 활성 WAL 증거가 남는다.
-    if (fromRead ? !isLiveUnspentRead(prev) : !isMintedCommit(prev)) {
-      return {
-        kind: 'invariant-violation',
-        violations: [
-          fromRead
-            ? '읽기 증거가 살아 있는 임계 구역의 미사용 토큰이 아니다(복제·소진·구역 종료)'
-            : '직전 단계 증거가 이 프로세스의 권위 모듈이 발급한 것이 아니다(복제·조립)',
-        ],
-      }
-    }
-    const credRevision: unknown = fromRead ? prev.observedRevision : prev.revision
-    const credIdentity: unknown = prev.identity
-    // ⚠ **필드 형태까지 값으로 거부한다**(CodeRabbit PR#269): 타입을 우회한 `{}` 제출에서 여기가
-    // `credIdentity.benchId` 를 바로 읽으면 **TypeError 를 던진다** — 이 모듈은 실패를 전부 값으로
-    // 답하는 계약이고, 던지면 호출자의 임계 구역이 리스를 쥔 채 풀린다.
-    if (!isCount(credRevision) || !isPlainObject(credIdentity)) {
-      return {
-        kind: 'invariant-violation',
-        violations: ['직전 단계 증거의 형태가 아니다(revision·identity 부재)'],
-      }
-    }
     const violations: string[] = []
-    if (fromRead && submitted.previousAuthorityStage !== undefined) {
-      violations.push(
-        '첫 단계가 아닌데 FreshReadToken 을 제출했다 — 직전 단계 CAS 의 AuthorityCommit 이 필요하다',
-      )
-    }
-    if (credRevision !== submitted.expectedAuthorityRevision) {
-      violations.push(
-        `expectedAuthorityRevision(${submitted.expectedAuthorityRevision}) 이 직전 증거의 revision(${credRevision}) 과 다르다`,
-      )
-    }
-    if (
-      own(credIdentity, 'benchId') !== submitted.benchId ||
-      own(credIdentity, 'commonGitDir') !== submitted.repoCommonGitDir ||
-      own(credIdentity, 'benchRoot') !== submitted.benchRoot
-    ) {
-      violations.push('직전 증거가 다른 bench 의 것이다')
-    }
 
     // ⚠ **스탬프가 스프레드보다 뒤에 온다**(순서가 계약이다): `Omit` 의 초과 프로퍼티 검사는 객체
     // 리터럴에만 걸리므로 `const r: IntegrationTxnRecord = …; append(lease, r, prev)` 가 구조적
@@ -881,28 +809,6 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       if (broken.length > 0) return { kind: 'invariant-violation', violations: broken }
     }
 
-    /**
-     * **크레덴셜 1개 = 전이 1개**(Codex PR#269 P1). revision 결속만으로는 같은 커밋을 두 번 쓰는 것을
-     * 막지 못한다 — `prepared` 상태의 커밋으로 `composed` 를 쓴 뒤 **같은 커밋**을 재사용해 `published`
-     * 까지 쓰면, 전이 검사는 저널의 새 상태만 보므로 통과하고 **저널이 권위를 두 단계 앞선다**.
-     * 형제의 `SPENT_COMMITS` 를 쓰지 않는 이유는 런처가 그 원장을 소비하기 때문이며(계획 정정 175ⓒ),
-     * 그래서 **저널 지역 원장**을 따로 둔다. **정확 재시도**(같은 txn·같은 stage)는 계속 허용한다 —
-     * rename 이 실패한 뒤의 재호출이 정상 경로다.
-     */
-    const claimed = CREDENTIAL_USE.get(prev)
-    if (
-      claimed !== undefined &&
-      (claimed.txnId !== record.txnId || claimed.stage !== record.stage)
-    ) {
-      return {
-        kind: 'invariant-violation',
-        violations: [
-          `이 증거는 이미 다른 전이에 쓰였다(${claimed.txnId} → ${claimed.stage}) — 크레덴셜 1개는 전이 1개다`,
-        ],
-      }
-    }
-    CREDENTIAL_USE.set(prev, { txnId: record.txnId, stage: record.stage })
-
     // ── ③ 「읽기가 거부할 것을 쓰지 않는다」 — 크기 상한(형제 `verifySerialized` 의 이 PR 판) ──
     //
     // ⚠ **왕복 파싱은 두지 않는다**: 직렬화 대상이 **재구성물**이라 「형태 검사를 통과했는데 자기
@@ -919,7 +825,6 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     }
 
     // ── ④ 변이 구간 ──
-    if (!sectionLive()) return { kind: 'section-closed' }
     const preCheck = lease.revalidate()
     if (preCheck.kind === 'lost') return { kind: 'lease-invalid', reason: preCheck.reason }
 
@@ -962,7 +867,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     }
     APPENDS_IN_FLIGHT.add(tmpPath)
     try {
-      return await writeDurably(lease, sectionLive, { benchDir, tmpPath, path, json, record })
+      return await writeDurably(lease, { benchDir, tmpPath, path, json, record })
     } finally {
       APPENDS_IN_FLIGHT.delete(tmpPath)
     }
@@ -971,7 +876,6 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
   /** 변이 구간 본체 — rename 을 경계로 반환 종별이 갈린다(그 전 = 무변이 / 그 후 = 게시됨). */
   const writeDurably = async (
     lease: BenchLeaseToken,
-    sectionLive: () => boolean,
     target: {
       readonly benchDir: string
       readonly tmpPath: string
@@ -1014,7 +918,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
         fs.close(toClose)
       }
       step = 'rename'
-      const failure = await renameWithRetry(lease, sectionLive, tmpPath, path)
+      const failure = await renameWithRetry(lease, tmpPath, path)
       if (failure !== undefined) return failure
       renamed = true
     } catch (cause) {

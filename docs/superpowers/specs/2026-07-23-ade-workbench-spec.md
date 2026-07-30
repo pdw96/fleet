@@ -789,30 +789,21 @@ export interface IntegrationTxnRecord {
 - **열거는 순수 필터**다 — 디렉터리 순회 프리미티브 신설은 PR3d 이므로, PR3b 는 **주어진 이름 목록**에
   대한 7종 검증(§3-T65)만 착지시킨다. 이 사실을 「열거가 있다」로 읽지 않는다.
 - **WAL 전이는 저널이 강제**한다(§3-T66). 권위 레코드 쪽 전이 불변식 계층은 **PR3c**.
-- **결속은 값으로 검사한다**(Codex PR#269 P1 · 계획 정정 184): ⓐ`previousAuthorityStage` 는 **디스크의
-  현재 단계와 같아야** 한다 — 전이 검사는 「디스크 → 새 stage」만 보므로, 이것이 없으면 저널이 **결속이
-  없던 전이를 증언**하고 복구가 그 거짓 위에서 판정한다 ⓑ**크레덴셜 1개 = 전이 1개** — revision 결속만
-  두면 같은 커밋으로 두 단계를 써 **저널이 권위를 앞선다**. 저널 **지역** 원장으로 결속하고(형제
-  `SPENT_COMMITS` 는 런처가 소비하므로 공유하지 않는다) **같은 전이의 정확 재시도는 허용**한다
-  ⓔ**결과 증거는 한 번 나타나면 동결**된다(`resultTree`·`resultOid`·`publishedAt` — 처음 등장은 단계의
-  계약이고 **교체가 금지**다. txn 당 파일이 하나라 교체하면 원본 증거가 그 자리에서 소멸한다)
-  ⓕ읽기 증거는 **소진되지 않았고 발급 구역이 살아 있어야** 한다(민팅 조회만으로는 그 CAS 를 인가할 수
-  없는 읽기에 활성 WAL 증거가 남는다) ⓖ`draftDigest` 는 **CAS 가 기록할 투영**을 해시한다(호출자 draft 의
-  초과 키가 섞이면 같은 의도가 다른 증거로 보인다)
-  ⓒ`abandoned → abandoned` 는 **정확한 멱등 재생만** 허용한다 — 파일이 하나라 다른 사유·시각으로
-  재기록하면 원본 감사 증거가 그 자리에서 소멸한다 ⓓ**출처를 먼저 본다** — 크레덴셜이 권위 모듈의
-  민팅 원장에 있어야 한다(`isMintedCommit`·`isMintedRead`). 스프레드 복제는 브랜드를 보존한 채 **새
-  객체**라 ⓑ의 동일성 키 원장을 빈 채로 조회하게 만든다. **조회일 뿐 소진이 아니다** — 소진은 런처
-  계약이고, 저널이 함께 소비하면 「CAS2 → 저널 → spawn」이 구조적으로 불가능해진다.
+- **크레덴셜·임계 구역 결속은 PR3c 다**(계획 정정 187). 「직전 단계 CAS 의 증거」·「호출자 구역 생존」·
+  「크레덴셜 1개 = 전이 1개」를 저널이 인가하려면 authority 가 **구역 capability 를 민팅**하고 크레덴셜이
+  **관측된 통합 상태(txn·stage·세대)를 실어야** 하는데, 그 필드 계약은 PR3c 소유이고 유일한 소비자
+  (시퀀서)는 PR5 다. PR3b 가 세우는 인가는 **리스뿐**이며, 레코드의 결속 필드는 **기록되지만 대조되지
+  않는다**(대조자 = PR3c).
 - **`schemaVersion` 판정은 최상위 객체 확인 직후**다 — 오염 키·형태 검사보다 앞선다. 상위 버전 파일은
   무엇이 더 들어 있든 `incompatible-version` 이며, 그 종별만이 파괴적 조치를 차단한다(I12).
-- **옵션은 생성 시점 스냅숏**이고 **원장·겹침 가드는 모듈 스코프**다 — 전자는 호출자가 나중에
-  `journalDir` 를 바꿔 쓰기 경계를 재조준하는 것을, 후자는 두 번째 store 를 만들어 1:1 결속을 우회하는
-  것을 막는다(형제 계획 정정 95 와 같은 근거).
-- **호출자의 권위 임계 구역 생존을 주입받는다**(`sectionLive` · 필수). 재시도 백오프가 이 모듈의 첫
-  `await` 라, 호출자가 쓰기를 `await` 하지 않고 `withAuthority` 콜백을 끝내면 **뮤텍스가 풀린 뒤에도**
-  쓰기가 살아남아 다음 임계 구역이 갱신한 bench 위에 rename 한다. 그때 **리스는 여전히 유효**하므로
-  L-6 재검증으로는 막지 못한다 — 그래서 별도 종별(`section-closed`)로 답한다.
+- **옵션은 생성 시점 스냅숏**이고 **겹침 가드는 모듈 스코프**다 — 전자는 호출자가 나중에 `journalDir` 를
+  바꿔 쓰기 경계를 재조준하는 것을, 후자는 두 번째 store 를 만들어 tmp 겹침 방어를 우회하는 것을 막는다.
+- **제출물은 진입 즉시 스냅숏**한다 — 호출자 객체가 getter·Proxy 면 같은 프로퍼티가 읽을 때마다 다른 값을
+  줄 수 있어, identity 검사와 경로 유도가 **다른 bench 를 볼** 수 있다.
+- **결과 증거는 한 번 나타나면 동결**된다(`resultTree`·`resultOid`·`publishedAt`) · `abandoned → abandoned`
+  는 **정확한 멱등 재생만** 허용한다 — txn 당 파일이 하나라 교체하면 원본 증거가 그 자리에서 소멸한다.
+- **`draftDigest` 는 CAS 가 기록할 투영**을 해시한다(호출자 draft 의 초과 키가 섞이면 같은 의도가 다른
+  증거로 보인다).
 - **심링크를 따라가지 않는다**: `mkdirRecursive` 는 기존 심링크를 그대로 따라가므로, 쓰기 직전
   `<journalDir>/<benchId>` 의 종류를 보고 심링크·정규 파일이면 거부한다. 조상 경로는 **호출자의 정준화
   계약**이다(형제 `authorityDir` 와 동형). 이 판정을 위해 `PathKind` 에 `'symlink'` 를 **추가**했다 —
@@ -1285,7 +1276,7 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T66** | **WAL 전이 술어 전수표(신설 · PR3b)** — 초기 진입(엔트리 부재) 5값 + 기존 stage 5 × 목표 stage 5 **전수**. 합법은 부재→`prepared` · `prepared→composed→published→finalized` · 임의 단계→`abandoned` 뿐이고 나머지는 거부. **양성·음성 대조 동반**이라 「무조건 허용」·「무조건 거부」 두 뮤턴트가 **모두** RED 다(역행 `published→prepared` · 부활 `abandoned→composed` · 자기 전이 `composed→composed`) | verify |
 | **T67** | **저널 버전 스큐(신설 · PR3b · T21c 의 저널 판)** — 지원 범위 초과 `schemaVersion` 엔트리는 `incompatible-version` 으로 분류하고 **덮어쓰지 않는다**(쓰기 0 · unlink 0). 픽스처는 「초과 버전 **∧** 다른 필드 형태 위반」이라 문법을 먼저 보는 구현은 `invalid` 를 답해 RED — 구 버전이 신 버전 저널을 지우는 I12 의 저널 표면 | verify |
 | **T68** | **저널 rename 유한 재시도(신설 · PR3b · C4 상속)** — `EPERM` 3연속 후 4회차 성공 = 성공이고 **exact 호출 계수**(rename 4 · sleep 3 · 인자 `[10,20,40]` 순서)를 고정한다 · 백오프 소진(5회 실패)은 `io-failure{step:'rename'}` + 디스크 무변이 · **비대상 errno(`ENOENT`)와 `code` 부재 Error 는 재시도 0**(즉시 실패). 권위 store 전용이던 §3-T17·T17g 가 저널을 덮지 않아 신설한다 | verify |
-| **T69** | **저널 쓰기 크레덴셜 강제(신설 · PR3b)** — `append` 는 `AuthorityCommit`(직전 단계 CAS 성공 증거) 또는 **첫 단계 한정** `FreshReadToken` 없이는 **타입 수준에서 호출 불가**(`@ts-expect-error` 로 고정) · 첫 단계가 아닌데 `FreshReadToken` 이면 런타임 거부 · `expectedAuthorityRevision !== prev.revision` 이면 거부. ⚠ **행동 단언(abort-on-CAS-failure)의 생산자는 PR5 T18** 이라 이 PR 에서 그 축은 vacuous 다 | verify |
+| **T69** | **저널 쓰기 크레덴셜 결속(신설 · **PR3c** — 계획 정정 187 이 PR3b 에서 이관)** — 「직전 단계 CAS 의 증거」·「호출자 임계 구역 생존」·「크레덴셜 1개 = 전이 1개」를 저널이 인가한다. **authority 계약 확장이 선행조건**이다: 구역 capability 민팅 + 크레덴셜에 **관측된 통합 상태**(txn·stage·세대) 결속. 그것 없이 revision·identity 만 보면 ⓐ복제·소진·구역 종료 토큰 ⓑT2 커밋으로 T1 저널 전진 ⓒ`() => true` 로 유출 쓰기 연장이 전부 통과한다(Codex PR#269 4라운드 실측). 행동 단언의 생산자는 **PR5 T18** | verify |
 | **T70** | **저널 쓰기는 bench 리스 아래에서만(신설 · PR3b)** — 비민팅(복제) 리스면 파일시스템 **무접촉**(쓰기 0) · 리스 identity ↔ 레코드 3필드 대조 실패 시 거부 · tmp 이름의 `<ownerToken>` 은 **리스에서만** 취한다(문자열 인자 부재 = 위조 불가) · rename **회차마다** `revalidate()` 를 다시 보므로 「1회차 실패 → 그 사이 탈취 → 2회차 성공」 구현이 RED(L-6 동형). PR3d 수확기의 배타원이 이 계약 위에 선다 | verify |
 | **T71** | **저널 레코드 불변 필드·조건부 결속(신설 · PR3b)** — 단계 전진에서 불변 12필드(`txnId`·`benchId`·`repoCommonGitDir`·`benchRoot`·`sourceBranch`·`sourceSnapshot`·`sourceGeneration`·`targetBranch`·`targetHeadBeforeIntegration`·`resultRef`·`startedAt`·`ownerEngineId`) 중 하나라도 바뀌면 거부(「전이는 합법인데 내용이 통째로 바뀐」 레코드 차단) · `stage ≥ composed` → `resultOid`·`resultTree` 필수 · `published` → `publishedAt` 필수 · `abandoned` → `abandonedAt`·`abandonReason` 필수 ∧ `nextAuthorityStage` **부재**(포기 CAS 는 통합 필드를 소거한다) · 그 외 stage 는 `stage === nextAuthorityStage` | verify |
 | **T72** | **생성 저널 3채널 판정 규칙(신설 · PR4 T16)** — {①저널 엔트리 ②worktree 디렉터리 ③git 브랜치} **8조합 전수**를 {없음·부분·완전}으로 사상하는 **순수 술어** + 그 판정을 소비하는 생성 트랜잭션의 행동 단언. 생성은 통합의 `prepared` 규칙을 상속하지 않으므로 「없음」은 reconciliation 없이 종결 가능해야 한다. ⚠ **귀속이 PR3b → PR4 로 바뀌었다**(계획 정정 182): 규칙만 먼저 착지시키면 「판정 함수가 자기 입력의 생산자보다 먼저 서는」 배치가 되어 정정 159 가 방금 제거한 안티패턴을 되살린다. 대상 레코드도 통합 WAL 이 아니라 **생성 저널**이라 PR3b 모듈의 계약이 아니다 | verify |
