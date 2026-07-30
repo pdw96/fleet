@@ -157,9 +157,13 @@ export interface Workbench {
 │   #   쓰기를 되살려 L-6 「디스크 I/O 0」·§3-T10 「락 소유 권위 레코드 부재」와 충돌한다.
 ├── authority/<benchId>.json                # 공유 권위 레코드(revision-CAS)
 ├── activity/<benchId>.json                 # 활동 신원 · 인스턴스 마커
-├── journal/<benchId>/<txnId>.json          # 연산 WAL
-└── tmp/                                    # 확인-응답 쓰기 rename 소스(동일 볼륨 보장)
+└── journal/<benchId>/<txnId>.json          # 연산 WAL(tmp 는 같은 디렉터리 — 아래)
 ```
+
+- **별도 `tmp/` 디렉터리는 두지 않는다**(원안 폐기 · 계획 정정 165ⓑ). 확인-응답 쓰기의 rename 소스는
+  **대상과 같은 디렉터리**에 만든다 — 권위 `authority/<benchId>.json.<ownerToken>.tmp`(착지 코드가 이미
+  그렇다) · 저널 `journal/<benchId>/<txnId>.json.<ownerToken>.tmp`. 동일 볼륨 보장은 같은 디렉터리라는
+  사실에서 더 강하게 따라오고, 원안 문면대로 별도 디렉터리를 뒤지는 수확기(§W-5)는 **영원히 0건**이 된다.
 
 - **위치 확정 근거(실측)**: `gc --prune=now --aggressive`·`repack -ad`·`prune`·`reflog expire`·
   `clean -xffd`·`worktree prune`·`fsck` 전량 통과, `git status --porcelain` 무출력, 0700 보존
@@ -242,8 +246,11 @@ readonly activeInstance: {
   목표는 적대 셸의 절대 배제(불가능)가 아니라 **선의의 동시 사용에서 무손상**"(설계 636-640행).
 - 따라서 코디네이션 영역의 무결성 보장 범위 = **사고·경합**이지 **악의적 변조**가 아니다.
   HMAC 무결성 태깅·별도 볼륨 격리는 이 슬라이스의 비목표(§4).
-- 대안 검토(기각): 영역을 `FLEET_DATA_DIR/coord/<repoDigest>/`(ttyd 미마운트)로 옮기면 격리는 얻지만
-  **git worktree admin 파일과 다른 볼륨이 되어** `tmp/`→`authority/` rename 의 동일 볼륨 요건이 깨진다.
+- 대안 검토(기각): 영역을 `FLEET_DATA_DIR/coord/<repoDigest>/`(ttyd 미마운트)로 옮기면 격리는 얻는다.
+  ⚠ **원래 적었던 기각 근거(「`tmp/`→`authority/` rename 의 동일 볼륨 요건이 깨진다」)는 정정 165ⓑ 로
+  소멸했다** — tmp 는 대상과 **같은 디렉터리**에 만들므로 영역을 어디에 두든 rename 은 볼륨을 넘지 않는다.
+  남는 기각 근거는 위 「위치 확정 근거(실측)」뿐이다(영역이 레포와 함께 이동·정리되어야 하고 gc·prune·
+  clean 전량을 통과함이 실측됐다). 볼륨 논거를 인용하지 않는다.
 
 ### W-3. 자문 락 (서버 단일 표면 · 커널 endpoint)
 
@@ -354,9 +361,11 @@ export interface BenchAuthorityRecord {
   readonly schemaVersion: 1        // 지원 범위 초과 = 'incompatible-version'(≠ invalid — 아래 I12)
   readonly identity: BenchAuthorityIdentity
   /** 단조. 최초 1. CAS 성공마다 정확히 +1.
-   *  ⚠ 단 `durability==='file-only'` 표면(win32)에서는 머신 크래시 시 디렉터리 엔트리 유실로
-   *  단조성이 보장되지 않는다(C3). 그 표면의 안전 논증은 revision 이 아니라 §W-7 의 **ref-앵커
-   *  재조정**에 의존한다 — git ref 는 권위 파일과 독립 매체라 동시 롤백이 불가하다. */
+   *  ⚠ 단 `durability==='file-only'` 표면에서는 머신 크래시 시 디렉터리 엔트리 유실로 단조성이
+   *  보장되지 않는다(C3 · **win32 전용이 아니다** — dirfd fsync 불가 마운트 위의 POSIX 도 같은 등급).
+   *  그 표면의 **보조** 탐지가 §W-7 **ref-앵커**이며, 「git ref 는 독립 매체라 동시 롤백이 불가하다」는
+   *  **거짓**이다(git 소스 대조 · 계획 정정 133·152·156) — 앵커는 권위 쪽 단독 롤백만 탐지하고
+   *  ref 쪽 롤백·동시 롤백에는 **fail-open** 이다. */
   readonly revision: number
   readonly lifecycle: BenchLifecycle
   readonly archivedBranch?: 'preserved' | 'deleted'
@@ -734,22 +743,83 @@ export type IntegrationStage = 'prepared' | 'composed' | 'published' | 'finalize
 export type AbandonReason = 'user-abandon' | 'superseded' | 'stale-attempt'
 
 export interface IntegrationTxnRecord {
-  readonly schema: 1
+  readonly schemaVersion: 1        // ⚠ 원안 `schema` 폐기 — 권위 레코드와 이름을 통일했고(계획 정정 141)
+                                   //    **문법 검사보다 먼저** 본다(초과 = 'incompatible-version' · I12)
   readonly txnId: string; readonly benchId: string           // ULID
   readonly repoCommonGitDir: string; readonly benchRoot: string   // 대조 전용
   readonly sourceBranch: string; readonly sourceSnapshot: string  // auto-keep OID
   readonly sourceGeneration: number
   readonly targetBranch: string; readonly targetHeadBeforeIntegration: string
-  readonly resultRef: string        // `refs/fleet/integrated/${benchId}/${txnId}` 고정 문법(C1)
+  readonly resultRef: string        // 문법 소유 = PR3c(정정 166 이 세대 결속으로 바꾼다) —
+                                    // 저널은 비어 있지 않은 문자열까지만 본다(정정 174)
   readonly startedAt: number; readonly ownerEngineId: string      // 진단용
-  stage: IntegrationStage
-  resultTree?: string; resultOid?: string   // stage >= 'composed' 필수
-  publishedAt?: number                      // stage >= 'published' 필수
-  abandonedAt?: number; abandonReason?: AbandonReason            // 'abandoned' 필수
+  readonly stage: IntegrationStage  // 단계 전진 = **같은 파일 덮어쓰기**(txn 당 1파일 · 정정 178)
+  readonly resultTree?: string; readonly resultOid?: string   // stage >= 'composed' 필수
+  readonly publishedAt?: number   // 'published'·'finalized' 필수 · 'prepared'·'composed' 는 **금지**
+  readonly abandonedAt?: number; readonly abandonReason?: AbandonReason   // 'abandoned' 필수
+
+  // ── 권위 CAS 결속(Codex 3R · 계획 정정 167) — 저널은 **선기록**이므로 「무엇을 기대하고 썼는지」를
+  //    함께 남겨야 복구가 「자동 승격 가능 / reconciliation-required」를 가를 수 있다. 그 **대조자는
+  //    PR3c** 이므로 PR3b 안에서는 값이 기록만 되고 소비되지 않는다(vacuous 로 계상).
+  readonly expectedAuthorityRevision: number   // 이 저널에 이어질 CAS 가 맞출 revision
+  readonly previousAuthorityStage?: IntegrationStage  // 부재 = 진행 중 통합 없음(트랜잭션 첫 단계)
+  readonly nextAuthorityStage?: IntegrationStage      // 부재 = 후속 CAS 가 통합 필드를 **소거**한다(포기)
+  readonly integrationGeneration: number       // 발행자는 PR3c(prepared 마다 +1)
+  readonly draftDigest: string                 // 제출될 권위 draft 의 정준 JSON sha256
 }
 ```
 **폐기 필드**: `targetHeadAfterIntegration` · 결과 종별 `applied|already-applied`(C5).
 `resultKind: 'applied' | 'already-applied'` 는 **결과 트리 == 캡처된 base 트리** 로 재정의.
+
+**저널 매체 계약(신설 · PR3b · 계획 정정 165·176·178)** — 원안은 레코드 타입만 규정하고 「그것을 어디에
+어떻게 쓰는가」를 0건 규정해, 배치·tmp·리스·재시도가 전부 구현 재량이었다.
+
+- **배치** = `<area>/journal/<benchId>/<txnId>.json`. txn 당 파일 **1개**이고 단계 전진은 **같은 파일
+  덮어쓰기**다(§3-T64). `benchId`·`txnId` 는 경로 성분이 되기 **전에** ULID 문법 검증을 통과해야 한다
+  (§W-1 과 같은 규율 — 정규화하지 않고 거부).
+- **tmp** = **대상과 같은 디렉터리**의 `<txnId>.json.<ownerToken>.tmp`(별도 `tmp/` 없음 · §W-2).
+  `<ownerToken>` 의 출처는 **bench 리스뿐**이며 문자열 인자로 받지 않는다 — PR3d 수확기의 배타원
+  (「그 benchId 의 리스 보유자 · 다른 token = 죽은 잔재」)이 이 사실 위에 선다.
+- **쓰기는 bench 리스 아래에서만**(§3-T70): 출처 확인(`isMintedLease`) + 리스↔레코드 identity 대조 +
+  **rename 시도 회차마다 재검증**(L-6 동형).
+- **내구 쓰기는 §W-4 C4 를 그대로 상속**한다 — create-only tmp → `writeAll` → fsync → rename, win32
+  `rename` EPERM **유한** 재시도(§3-T68). rename **전** 실패 = 디스크 무변이, rename **후** 디렉터리 내구
+  단계 실패 = 파일은 이미 게시됐으므로 **별도 종별**로 답한다(§W-4 의 `commit-uncertain` 과 같은 구분).
+- **읽기는 D-9** — `readFileUtf8` 즉시-close 만. 비정규 노드는 **읽기 전** 거부(FIFO 무기한 블록 차단).
+- **열거는 순수 필터**다 — 디렉터리 순회 프리미티브 신설은 PR3d 이므로, PR3b 는 **주어진 이름 목록**에
+  대한 7종 검증(§3-T65)만 착지시킨다. 이 사실을 「열거가 있다」로 읽지 않는다.
+- **WAL 전이는 저널이 강제**한다(§3-T66). 권위 레코드 쪽 전이 불변식 계층은 **PR3c**.
+- **크레덴셜·임계 구역 결속은 PR3c 다**(계획 정정 187). 「직전 단계 CAS 의 증거」·「호출자 구역 생존」·
+  「크레덴셜 1개 = 전이 1개」를 저널이 인가하려면 authority 가 **구역 capability 를 민팅**하고 크레덴셜이
+  **관측된 통합 상태(txn·stage·세대)를 실어야** 하는데, 그 필드 계약은 PR3c 소유이고 유일한 소비자
+  (시퀀서)는 PR5 다. PR3b 가 세우는 인가는 **리스뿐**이며, 레코드의 결속 필드는 **기록되지만 대조되지
+  않는다**(대조자 = PR3c).
+- **`schemaVersion` 판정은 최상위 객체 확인 직후**다 — 오염 키·형태 검사보다 앞선다. 상위 버전 파일은
+  무엇이 더 들어 있든 `incompatible-version` 이며, 그 종별만이 파괴적 조치를 차단한다(I12).
+- **옵션은 생성 시점 스냅숏**이고 **겹침 가드는 모듈 스코프**다 — 전자는 호출자가 나중에 `journalDir` 를
+  바꿔 쓰기 경계를 재조준하는 것을, 후자는 두 번째 store 를 만들어 tmp 겹침 방어를 우회하는 것을 막는다.
+- **제출물은 진입 즉시 스냅숏**한다 — 호출자 객체가 getter·Proxy 면 같은 프로퍼티가 읽을 때마다 다른 값을
+  줄 수 있어, identity 검사와 경로 유도가 **다른 bench 를 볼** 수 있다.
+- **결과 증거는 한 번 나타나면 동결**된다(`resultTree`·`resultOid`·`publishedAt`) · `abandoned → abandoned`
+  는 **정확한 멱등 재생만** 허용한다 — txn 당 파일이 하나라 교체하면 원본 증거가 그 자리에서 소멸한다.
+- **`draftDigest` 는 CAS 가 기록할 투영**을 해시한다(호출자 draft 의 초과 키가 섞이면 같은 의도가 다른
+  증거로 보인다).
+- **심링크를 따라가지 않는다** ⚠ **다만 TOCTOU 는 닫지 않는다**(정직 표기 · Codex PR#269 5R): 경로 기반
+  검사와 이어지는 생성·쓰기 사이에 다른 프로세스가 디렉터리를 바꿔치기할 수 있고, 그것을 구조적으로
+  막으려면 검증한 **디렉터리 핸들 위에서** 쓰는 `openat` 계열 프리미티브가 필요하다(→ **PR3d** 의
+  `DurableFs` 확장 축). 지금 닫는 것은 **지속적으로 존재하는** 심링크(사고·잔재)이며, 경합하는 능동적
+  교체는 §W-2-a 위협 모델(보장 범위 = 사고·경합) 밖이다.
+- **결과 증거는 「그 값을 요구하는 단계」만 들여온다** — `resultTree`·`resultOid` 는 `composed`,
+  `publishedAt` 은 `published` 에서만 처음 등장할 수 있고 그 뒤로는 불변이다. 그렇지 않으면
+  `prepared → abandoned` 가 **존재한 적 없는 결과**를 증언하는 포기 기록을 남긴다(5R).
+  ⚠ 이 규칙은 **기존 엔트리가 있을 때만** 돈다 — **최초 쓰기**(부재 → `prepared`)에는 비교 대상이 없어
+  침묵하므로, 그 구간은 **형태 층**이 막는다: `prepared`·`composed` 에 `publishedAt` 이 있으면 거부한다
+  (게시 전 게시 시각 · 6R). 안 막으면 거짓 값이 먼저 박히고 이후 단계는 증거 동결 때문에 그것을
+  **보존해야** 해서 종결 기록까지 살아남는다.
+- 상세: `mkdirRecursive` 는 기존 심링크를 그대로 따라가므로, 쓰기 직전
+  `<journalDir>/<benchId>` 의 종류를 보고 심링크·정규 파일이면 거부한다. 조상 경로는 **호출자의 정준화
+  계약**이다(형제 `authorityDir` 와 동형). 이 판정을 위해 `PathKind` 에 `'symlink'` 를 **추가**했다 —
+  기존 소비자는 전부 `!== 'regular'` 비교라 읽기 측 계약은 무변경이다.
 
 **복구 판정(순수 함수 · 무변이 관찰만 · git 변이 0)**
 
@@ -771,8 +841,13 @@ export interface IntegrationTxnRecord {
   (C11) target HEAD 는 애초에 움직이지 않아 "불일치"가 win32 크래시 주 경로에서 성립하지 않는다.
 - **확정 판정식**: 부팅 시 `git for-each-ref refs/fleet/integrated/<benchId>/` 를 열거해,
   권위 레코드의 `currentIntegrationTxnId`·`completedIntegrationTxnId` **어디에도 귀속되지 않는 txnId 의
-  결과 ref 가 1건이라도 존재하면 `reconciliation-required`**(권위 롤백 탐지). git ref 는 권위 파일과
-  **독립 매체**라 동시 롤백이 불가능하다 — 이것이 앵커가 권위 파일 밖에 있어야 하는 이유다.
+  결과 ref 가 1건이라도 존재하면 `reconciliation-required`**(권위 롤백 탐지). 앵커가 권위 파일 **밖**에
+  있어야 하는 이유는 안에 두면 롤백 시 함께 되돌아가 발화하지 않기 때문이다.
+- ⚠ **「독립 매체라 동시 롤백이 불가능하다」는 거짓이다**(git 소스 대조로 확정 · 계획 정정 133·152·156).
+  git 은 기본 설정에서 ref 를 fsync 하지 않고(`FSYNC_COMPONENTS_DEFAULT` 에 REFERENCE 부재 ·
+  `core.fsync=all` 로도 loose ref 게시 rename 경로에는 디렉터리 fsync 가 없다) 권위 파일은 rename **전에**
+  fsync 되므로, **ref 가 더 약한 매체**다. 따라서 앵커는 **권위 쪽 단독 롤백만** 탐지하는 확률적 보조
+  신호이며 **ref 쪽 롤백·양쪽 동시 롤백에는 fail-open** 이다. 안전 근거로 인용하지 않는다.
 - `lastObservedTargetHead` 는 **보조 신호로 강등**(외부 소비자 완결 관측용). 그 값의 부재는 reconciliation
   사유가 아니다.
 - 복구 중 **자동 재시도·cherry-pick·reset·abort·skip·삭제 일절 금지**(설계 696행 유지).
@@ -781,7 +856,7 @@ export interface IntegrationTxnRecord {
 
 | 대상 | 포기가 하는 일 |
 |---|---|
-| 저널 | `stage:'abandoned'` 확인-응답 기록 → 권위 CAS 후 엔트리 제거 |
+| 저널 | `stage:'abandoned'` 확인-응답 기록 → 권위 CAS. ⚠ **「엔트리 제거」는 「활성 집합에서 제외」로 읽는다**(계획 정정 135) — 파일은 **삭제하지 않고 감사 보존**한다(1109행이 후행 개정이자 목적 명시라 권위다). 765행 복구표의 「청소 복구」도 **멱등 종결**이지 삭제가 아니며, 그 표 문면 개정은 PR3c 소관이라 그때까지 스펙은 이 축에서 부분 모순으로 남는다(은폐하지 않는다) |
 | 권위 레코드 | `currentIntegrationTxnId → null`(revision CAS) · `lifecycle` **무변** · `sourceGeneration` **무변** |
 | 결과 ref | **삭제하지 않는다**(소비자가 이미 머지했을 수 있음) |
 | auto-keep 커밋 | **bench 브랜치에 보존**(사용자 작업 무손실 = 포기가 안전한 근거) |
@@ -1208,6 +1283,15 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T61** | **조건부 스키마 불변식 1~9 전수 테이블 테스트**(신설) — §W-4 가 9개 불변식을 명시했으나 §3 에 대응 행이 없어 구현 재량으로 누락돼도 **무신호**였다 | verify |
 | **T62** | **L-2 · D-9 · benchRoot env fail-fast**(신설) — 셋 다 §3 행 부재였다. L-2: `tryAcquire` 가 동일 tick 내 반환(논블로킹)·미지 errno → `unavailable` / D-9: 권위·저널 경로에 `createReadStream`·`watch`·장기 fd 부재(매칭 대상 파일 수 > 0 선단언) / env: 운영자 오설정 throw · 미설정 비활성+warn | verify |
 | **T63** | **통합 WAL 순서 단언(신설 · T17f 등가물)** — `composed`(resultOid 선기록)가 `casUpdateRef` **보다 먼저 acknowledged** 되었음을 강제한다. 이 행이 없으면 구현이 ref 를 먼저 만들고 저널을 나중에 써도 전부 GREEN 이 되어 C7 의 "추론 0" 논증이 무너진다 | verify(실 git) |
+| **T64** | **저널 배치·tmp 문법(신설 · PR3b)** — 엔트리는 정확히 `<journalDir>/<benchId>/<txnId>.json` 에만 생기고 tmp 는 **대상과 같은 디렉터리**의 `<txnId>.json.<ownerToken>.tmp` 다. 쓰기 전후 **전 경로 스냅숏 diff** 로 「`<benchId>` 디렉터리 밖에 생긴 파일 0」을 단언한다(flat 배치·별도 `tmp/` 구현이 RED) · 성공 후 tmp 부재 · 실패 경로에서도 **자기 tmp 만** 제거 · `benchId`/`txnId` 가 ULID 문법이 아니면 경로를 만들기 전에 거부(경로 성분 주입 차단) | verify |
+| **T65** | **저널 열거 7종 검증(신설 · PR3b)** — ⓐ`.json` **정확** 접미(`.json.<token>.tmp` 잔재·`x.jsonx` 거부) ⓑbasename ULID 문법 ⓒ내부 `txnId` == basename ⓓ`benchId` == 상위 디렉터리 ⓔ`schemaVersion` 최우선 ⓕ**regular file 만**(비정규 노드는 **읽기 전** 거부 — FIFO `readFileSync` 무기한 블록 차단) ⓖtmp 접미는 저널로 읽지 않음. 필터 없는 구현은 `.tmp` 잔재를 `txnId="<…>.json.<token>"` 로 오독해 RED | verify |
+| **T66** | **WAL 전이 술어 전수표(신설 · PR3b)** — 초기 진입(엔트리 부재) 5값 + 기존 stage 5 × 목표 stage 5 **전수**. 합법은 부재→`prepared` · `prepared→composed→published→finalized` · 임의 단계→`abandoned` 뿐이고 나머지는 거부. **양성·음성 대조 동반**이라 「무조건 허용」·「무조건 거부」 두 뮤턴트가 **모두** RED 다(역행 `published→prepared` · 부활 `abandoned→composed` · 자기 전이 `composed→composed`) | verify |
+| **T67** | **저널 버전 스큐(신설 · PR3b · T21c 의 저널 판)** — 지원 범위 초과 `schemaVersion` 엔트리는 `incompatible-version` 으로 분류하고 **덮어쓰지 않는다**(쓰기 0 · unlink 0). 픽스처는 「초과 버전 **∧** 다른 필드 형태 위반」이라 문법을 먼저 보는 구현은 `invalid` 를 답해 RED — 구 버전이 신 버전 저널을 지우는 I12 의 저널 표면 | verify |
+| **T68** | **저널 rename 유한 재시도(신설 · PR3b · C4 상속)** — `EPERM` 3연속 후 4회차 성공 = 성공이고 **exact 호출 계수**(rename 4 · sleep 3 · 인자 `[10,20,40]` 순서)를 고정한다 · 백오프 소진(5회 실패)은 `io-failure{step:'rename'}` + 디스크 무변이 · **비대상 errno(`ENOENT`)와 `code` 부재 Error 는 재시도 0**(즉시 실패). 권위 store 전용이던 §3-T17·T17g 가 저널을 덮지 않아 신설한다 | verify |
+| **T69** | **저널 쓰기 크레덴셜 결속(신설 · **PR3c** — 계획 정정 187 이 PR3b 에서 이관)** — 「직전 단계 CAS 의 증거」·「호출자 임계 구역 생존」·「크레덴셜 1개 = 전이 1개」를 저널이 인가한다. **authority 계약 확장이 선행조건**이다: 구역 capability 민팅 + 크레덴셜에 **관측된 통합 상태**(txn·stage·세대) 결속. 그것 없이 revision·identity 만 보면 ⓐ복제·소진·구역 종료 토큰 ⓑT2 커밋으로 T1 저널 전진 ⓒ`() => true` 로 유출 쓰기 연장이 전부 통과한다(Codex PR#269 4라운드 실측). 행동 단언의 생산자는 **PR5 T18** | verify |
+| **T70** | **저널 쓰기는 bench 리스 아래에서만(신설 · PR3b)** — 비민팅(복제) 리스면 파일시스템 **무접촉**(쓰기 0) · 리스 identity ↔ 레코드 3필드 대조 실패 시 거부 · tmp 이름의 `<ownerToken>` 은 **리스에서만** 취한다(문자열 인자 부재 = 위조 불가) · rename **회차마다** `revalidate()` 를 다시 보므로 「1회차 실패 → 그 사이 탈취 → 2회차 성공」 구현이 RED(L-6 동형). PR3d 수확기의 배타원이 이 계약 위에 선다 | verify |
+| **T71** | **저널 레코드 불변 필드·조건부 결속(신설 · PR3b)** — 단계 전진에서 불변 12필드(`txnId`·`benchId`·`repoCommonGitDir`·`benchRoot`·`sourceBranch`·`sourceSnapshot`·`sourceGeneration`·`targetBranch`·`targetHeadBeforeIntegration`·`resultRef`·`startedAt`·`ownerEngineId`) 중 하나라도 바뀌면 거부(「전이는 합법인데 내용이 통째로 바뀐」 레코드 차단) · `stage ≥ composed` → `resultOid`·`resultTree` 필수 · `published`·`finalized` → `publishedAt` 필수이고 **`prepared`·`composed` 는 금지**(게시 전 게시 시각) · 결과 증거(`resultTree`·`resultOid`·`publishedAt`)는 **그 값을 요구하는 단계에서만 도입**되고 그 뒤 불변 · `abandoned` → `abandonedAt`·`abandonReason` 필수 ∧ `nextAuthorityStage` **부재**(포기 CAS 는 통합 필드를 소거한다) · 그 외 stage 는 `stage === nextAuthorityStage` | verify |
+| **T72** | **생성 저널 3채널 판정 규칙(신설 · PR4 T16)** — {①저널 엔트리 ②worktree 디렉터리 ③git 브랜치} **8조합 전수**를 {없음·부분·완전}으로 사상하는 **순수 술어** + 그 판정을 소비하는 생성 트랜잭션의 행동 단언. 생성은 통합의 `prepared` 규칙을 상속하지 않으므로 「없음」은 reconciliation 없이 종결 가능해야 한다. ⚠ **귀속이 PR3b → PR4 로 바뀌었다**(계획 정정 182): 규칙만 먼저 착지시키면 「판정 함수가 자기 입력의 생산자보다 먼저 서는」 배치가 되어 정정 159 가 방금 제거한 안티패턴을 되살린다. 대상 레코드도 통합 WAL 이 아니라 **생성 저널**이라 PR3b 모듈의 계약이 아니다 | verify |
 | **T38** | **I4: `broken ∧ busy` → 전 액션 거부**(크로스 프로세스 리스 보유) | verify |
 | **T39** | **I11 분리** — `prepared`/`composed` 잔존 bench 만 `delete-record` 거부(`journal-pending`) · **integration-ready(`published`) bench 는 허용** · `broken ∧ 활성 저널`은 `abandon-and-discard` 3구간으로만 탈출(락 밖 승인 → 락 안 재검사 → 단일 CAS) | verify |
 | **T39b** | bench 런 진행 중 **레거시 ProjectPanel 의 running 잠금·자동 선택이 발생하지 않음**(라이브 이벤트 + 하이드레이션 두 경로 · R-2) | verify |
@@ -1333,8 +1417,9 @@ vitest 는 파일 병렬이 기본이고 이 레포엔 win 병렬 spawn flake �
   파일시스템 소켓을 쓰지 않으므로 무관하다. 아래 항목은 이 정정 전 문안이다(①③만 유효).
 - **선행 실측 3건**(1건이 아니다): ①`safe.directory` × `/workbenches`(아래) ②컨테이너 bind 마운트 위에서
   **UDS `listen` 이 실제로 가능한지**(개발기에서 이미 EACCES 관측) ③`/workbenches` named volume 과
-  `/workspace` bind 마운트가 **서로 다른 볼륨**일 때 `git worktree add` 의 admin 파일과 §W-2 `tmp/`→
-  `authority/` rename 이 **동일 볼륨 요건**을 만족하는지(§W-2 는 이를 주장하나 볼륨 2개 토폴로지에서 미검증).
+  `/workspace` bind 마운트가 **서로 다른 볼륨**일 때 `git worktree add` 의 admin 파일과 §W-2 확인-응답
+  쓰기가 성립하는지. ⚠ **rename 축은 정정 165ⓑ 로 소멸**했다 — tmp 가 대상과 같은 디렉터리라 볼륨을
+  넘지 않는다. 남는 미검증은 `git worktree add` admin 파일 쪽뿐이다.
 - 커버리지 floor 여유(≈20~28 함수) 안에서 신규 export 함수 수 관리.
 - `emitPersisted` 헬퍼 추출 범위(기존 이벤트 경로 회귀 0 확인).
 - 중형+ → fleet-plan-panel(판사 패널) 각도 3(리스크/MVP/계약).

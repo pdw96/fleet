@@ -57,7 +57,14 @@ export type DurabilityLevel = 'file+dir' | 'file-only'
  * 재현할 수 없었다(계획 정정 59).
  */
 export interface PathKind {
-  readonly kind: 'regular' | 'missing' | 'other'
+  /**
+   * `'symlink'` 은 **추가만 하는 확장**이다(#251 PR3b · Codex PR#269 P1). 기존 소비자는 전부
+   * `kind !== 'regular'` 또는 `=== 'missing'` 비교라 영향이 없고, 새 값이 필요한 이유는 **쓰기 경로**다 —
+   * 「읽기 전에 종류를 본다」는 이 레포의 규율이 디렉터리 쪽에는 없어서, `<journalDir>/<benchId>` 가
+   * 심링크면 `mkdirRecursive` 가 그것을 따라가 **영역 밖에** 쓰기가 떨어진다. 그 구분은 여기서만 가능하다
+   * (`lstat` 을 seam 위에서 재현할 수단이 없다).
+   */
+  readonly kind: 'regular' | 'missing' | 'symlink' | 'other'
   readonly size: number
 }
 
@@ -128,7 +135,11 @@ export function createNodeDurableFs(): DurableFs {
         // **`lstat` 이다**(`stat` 아님) — symlink 를 따라가면 영역 밖 파일이 `regular` 로 보고돼
         // 「권위는 영역 안에 있다」가 무너진다. 형제 `path-guard.ts:29`·`coord-area.ts:191` 과 같은 규율.
         const st = lstatSync(path)
-        return st.isFile() ? { kind: 'regular', size: st.size } : { kind: 'other', size: st.size }
+        if (st.isFile()) return { kind: 'regular', size: st.size }
+        // `lstat` 이므로 심링크는 **따라가지 않고** 심링크 자신으로 보고된다 — 그 사실이 쓰기 경로의
+        // 유일한 방어 근거다(위 `PathKind` 주석).
+        if (st.isSymbolicLink()) return { kind: 'symlink', size: st.size }
+        return { kind: 'other', size: st.size }
       } catch (err) {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(레포 전역). 캐스트를 리뷰에 보이게 두는 것 자체가 이 룰의 목적이다.
         if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { kind: 'missing', size: 0 }
