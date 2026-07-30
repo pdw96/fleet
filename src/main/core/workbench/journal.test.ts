@@ -148,6 +148,15 @@ const serialized = (
   over: Record<string, unknown> = {},
 ): string => JSON.stringify({ schemaVersion: SUPPORTED_JOURNAL_SCHEMA, ...draftOf(f), ...over })
 
+/** 디스크에 놓을 **합법** `composed` 엔트리. 전이 게이트 절과 조건부 결속 절이 함께 쓴다. */
+const COMPOSED_ENTRY = {
+  stage: 'composed',
+  resultOid: OID_C,
+  resultTree: OID_A,
+  nextAuthorityStage: 'composed',
+  previousAuthorityStage: 'prepared',
+} as const satisfies Partial<IntegrationTxnDraft>
+
 describe('저널 배치·tmp 문법 (§3-T64)', () => {
   it('엔트리는 <journalDir>/<benchId>/<txnId>.json 에만 생기고 tmp 는 같은 디렉터리에 만든다', async () => {
     const f = await setup()
@@ -157,15 +166,18 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
     expect(r.kind).toBe('written')
     expect(f.fs.paths()).toEqual([...before, f.path].sort())
     // tmp 는 대상과 같은 디렉터리 · rename 성공 후 부재(정정 165ⓐ·ⓑ)
-    const tmpArgs = f.fs.calls.filter((c) => c.op === 'openExclusive').map((c) => c.args[0])
-    expect(tmpArgs).toEqual([f.tmpPath])
+    // ⚠ 인자를 **전량** 본다. `args[0]` 만 보면 mode 계약이 무신호가 되어 `0o600 → 0o666` 뮤턴트가
+    // 살아남는다(정정 189 실측). 형제 `authority-store.test.ts:1182-1183` 이 이미 세운 규율이며,
+    // win32 는 mode 를 무시하므로 여기서 보는 것은 실 권한이 아니라 **계약 전달**이다(정정 67).
+    const tmpArgs = f.fs.calls.filter((c) => c.op === 'openExclusive').map((c) => c.args)
+    expect(tmpArgs).toEqual([[f.tmpPath, 0o600]])
     expect(f.fs.paths()).not.toContain(f.tmpPath)
     // 「<benchId> 디렉터리 밖에 어떤 저널 파일도 만들지 않는다」 — flat 배치 구현이 RED
     expect(f.fs.paths().filter((p) => !before.includes(p))).toEqual([
       join(JOURNAL_DIR, f.benchId, `${f.txnId}.json`),
     ])
-    expect(f.fs.calls.filter((c) => c.op === 'mkdirRecursive').map((c) => c.args[0])).toEqual([
-      join(JOURNAL_DIR, f.benchId),
+    expect(f.fs.calls.filter((c) => c.op === 'mkdirRecursive').map((c) => c.args)).toEqual([
+      [join(JOURNAL_DIR, f.benchId), 0o700],
     ])
   })
 
@@ -331,6 +343,22 @@ describe('WAL 전이 술어 전수 (§3-T66)', () => {
     expect(STAGES.filter((s) => isActiveJournalStage(s))).toEqual(['prepared', 'composed'])
   })
 
+  /**
+   * ⚠ **아래 행들은 `previousAuthorityStage` 를 디스크와 정직하게 맞춘다.** 그러지 않으면 바로 아래의
+   * 결속 검사(`previousAuthorityStage !== from`, 정정 184)가 **같은 종별**을 먼저 돌려주어 전이 게이트가
+   * 가려진다 — 실제로 게이트를 `if (false)` 로 통째 무력화해도 두 스위트 104건이 전부 GREEN 이었다
+   * (정정 189 실측). 같은 파일 `seededAppend` 가 반대 방향에서 세운 규율의 수평 적용이고, 그래서
+   * 종별이 아니라 **위반 메시지**까지 단언한다 — 두 방어의 산출이 구별되어야 가림이 재발하지 않는다.
+   *
+   * 결속 검사 자신은 「주장한 previousAuthorityStage 가 디스크 단계와 다르면 거부한다」가 **전이가 합법인
+   * 상태**에서 따로 겨냥한다(가림 없음).
+   */
+  const violatesTransition = (r: Awaited<ReturnType<Fixture['store']['append']>>): void => {
+    expect(r.kind).toBe('invariant-violation')
+    if (r.kind !== 'invariant-violation') return
+    expect(r.violations).toEqual([expect.stringMatching(/^불법 전이:/)])
+  }
+
   it('append 가 전이를 강제한다 — 디스크의 현재 엔트리와 비교한다(정정 178)', async () => {
     const f = await setup()
     f.fs.setFile(
@@ -346,10 +374,14 @@ describe('WAL 전이 술어 전수 (§3-T66)', () => {
 
     const r = await f.store.append(
       f.lease,
-      draftOf(f, { stage: 'prepared', expectedAuthorityRevision: 1 }),
+      draftOf(f, {
+        stage: 'prepared',
+        previousAuthorityStage: 'published', // 디스크와 일치 — 결속 검사를 통과시켜 게이트만 남긴다
+        expectedAuthorityRevision: 1,
+      }),
     )
 
-    expect(r.kind).toBe('invariant-violation')
+    violatesTransition(r)
     expect(f.fs.countOf('rename')).toBe(0)
     expect(f.fs.readRaw(f.path)).toContain('"stage":"published"')
   })
@@ -363,13 +395,50 @@ describe('WAL 전이 술어 전수 (§3-T66)', () => {
         resultOid: OID_C,
         resultTree: OID_A,
         nextAuthorityStage: 'composed',
-        previousAuthorityStage: 'prepared',
+        // `previousAuthorityStage` **생략** = 부재(undefined)와 일치 — 결속 검사가 침묵한다
         expectedAuthorityRevision: 1,
       }),
     )
 
-    expect(r.kind).toBe('invariant-violation')
+    violatesTransition(r)
     expect(f.fs.countOf('openExclusive')).toBe(0)
+  })
+
+  it('부재에서 곧바로 published 를 만들 수 없다(WAL 선기록 우회 차단)', async () => {
+    const f = await setup()
+    // 형태는 완전히 합법인 게시 레코드다 — 막는 것은 **전이 게이트뿐**이다. 이 행이 없으면 복구(PR3c)가
+    // 「선기록 없는 게시」를 정상 저널로 재구성하게 된다.
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'published',
+        publishedAt: AT,
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'published',
+        expectedAuthorityRevision: 1,
+      }),
+    )
+
+    violatesTransition(r)
+    expect(f.fs.countOf('openExclusive')).toBe(0)
+  })
+
+  it('자기 전이(composed → composed)를 거부한다 — 순수 술어가 아니라 append 에서', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f, COMPOSED_ENTRY))
+
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        ...COMPOSED_ENTRY,
+        previousAuthorityStage: 'composed', // 디스크와 일치
+        expectedAuthorityRevision: 1,
+      }),
+    )
+
+    violatesTransition(r)
+    expect(f.fs.countOf('rename')).toBe(0)
   })
 })
 
@@ -630,14 +699,6 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
     f.fs.setFile(f.path, serialized(f, existing))
     const r = await f.store.append(f.lease, draftOf(f, { expectedAuthorityRevision: 1, ...over }))
     return { f, r }
-  }
-
-  const COMPOSED_ENTRY = {
-    stage: 'composed',
-    resultOid: OID_C,
-    resultTree: OID_A,
-    nextAuthorityStage: 'composed',
-    previousAuthorityStage: 'prepared',
   }
 
   it.each([
