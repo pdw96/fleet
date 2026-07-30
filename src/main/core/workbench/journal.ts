@@ -689,8 +689,17 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       return { kind: 'invariant-violation', violations: ['직전 단계 증거(prev)가 없다'] }
     }
     const fromRead = isFreshRead(prev)
-    const credRevision = fromRead ? prev.observedRevision : prev.revision
-    const credIdentity = prev.identity
+    const credRevision: unknown = fromRead ? prev.observedRevision : prev.revision
+    const credIdentity: unknown = prev.identity
+    // ⚠ **필드 형태까지 값으로 거부한다**(CodeRabbit PR#269): 타입을 우회한 `{}` 제출에서 여기가
+    // `credIdentity.benchId` 를 바로 읽으면 **TypeError 를 던진다** — 이 모듈은 실패를 전부 값으로
+    // 답하는 계약이고, 던지면 호출자의 임계 구역이 리스를 쥔 채 풀린다.
+    if (!isCount(credRevision) || !isPlainObject(credIdentity)) {
+      return {
+        kind: 'invariant-violation',
+        violations: ['직전 단계 증거의 형태가 아니다(revision·identity 부재)'],
+      }
+    }
     const violations: string[] = []
     if (fromRead && draft.previousAuthorityStage !== undefined) {
       violations.push(
@@ -703,9 +712,9 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       )
     }
     if (
-      credIdentity.benchId !== draft.benchId ||
-      credIdentity.commonGitDir !== draft.repoCommonGitDir ||
-      credIdentity.benchRoot !== draft.benchRoot
+      own(credIdentity, 'benchId') !== draft.benchId ||
+      own(credIdentity, 'commonGitDir') !== draft.repoCommonGitDir ||
+      own(credIdentity, 'benchRoot') !== draft.benchRoot
     ) {
       violations.push('직전 증거가 다른 bench 의 것이다')
     }
@@ -853,6 +862,9 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       if (failure !== undefined) return failure
       renamed = true
     } catch (cause) {
+      // 단계별 **실제 대상**을 싣는다. ⚠ 부모 내구화 실패도 `step` 은 `'mkdir'` 이다(CodeRabbit PR#269) —
+      // `PreCommitStep` 에 그 값이 없고 **그 유니온은 착지 계약**이라 이 PR 이 개정하지 않는다(형제
+      // authority.ts 가 같은 형태로, 구분은 `path` 가 진다: 부모 경로면 부모 내구화 실패다).
       const target = parentTarget ?? (step === 'mkdir' ? benchDir : tmpPath)
       return { kind: 'io-failure', step, path: target, cause }
     } finally {

@@ -501,6 +501,9 @@ describe('저널 rename 유한 재시도 (§3-T68 · C4 상속)', () => {
     const r = await f.store.append(f.lease, draftOf(f), f.read)
 
     expect(r).toMatchObject({ kind: 'io-failure', step: 'rename', path: f.tmpPath })
+    // exact 계수(초기 1 + 재시도 4)를 함께 고정한다 — 대기 시퀀스만 보면 「쓰기 전체를 감싸 재시도」
+    // 하거나 상한을 다르게 센 구현이 통과한다(CodeRabbit PR#269).
+    expect(f.fs.countOf('rename')).toBe(5)
     expect(takeSleeps()).toEqual([10, 20, 40, 80])
     expect(f.fs.paths()).not.toContain(f.path)
     expect(f.fs.paths()).not.toContain(f.tmpPath)
@@ -635,6 +638,17 @@ describe('저널 쓰기 크레덴셜 (§3-T69)', () => {
     )
 
     expect(r.kind).toBe('invariant-violation')
+  })
+
+  it('타입을 우회한 빈 객체 크레덴셜도 **값으로** 거부한다(던지지 않는다)', async () => {
+    const f = await setup()
+    // 이 모듈은 실패를 전부 값으로 답하는 계약이다 — 여기서 던지면 호출자의 임계 구역이 리스를 쥔 채
+    // 풀린다(CodeRabbit PR#269 지적).
+    // @ts-expect-error — 브랜드 없는 객체. 컴파일 거부가 1차 방어이고 이 행은 그 **백스톱**을 본다.
+    const r = await f.store.append(f.lease, draftOf(f), {})
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.calls).toEqual([])
   })
 
   it('크레덴셜 없이는 타입 수준에서 호출할 수 없다', async () => {
