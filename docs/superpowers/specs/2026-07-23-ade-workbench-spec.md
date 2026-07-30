@@ -755,7 +755,7 @@ export interface IntegrationTxnRecord {
   readonly startedAt: number; readonly ownerEngineId: string      // 진단용
   readonly stage: IntegrationStage  // 단계 전진 = **같은 파일 덮어쓰기**(txn 당 1파일 · 정정 178)
   readonly resultTree?: string; readonly resultOid?: string   // stage >= 'composed' 필수
-  readonly publishedAt?: number                               // stage >= 'published' 필수
+  readonly publishedAt?: number   // 'published'·'finalized' 필수 · 'prepared'·'composed' 는 **금지**
   readonly abandonedAt?: number; readonly abandonReason?: AbandonReason   // 'abandoned' 필수
 
   // ── 권위 CAS 결속(Codex 3R · 계획 정정 167) — 저널은 **선기록**이므로 「무엇을 기대하고 썼는지」를
@@ -812,6 +812,10 @@ export interface IntegrationTxnRecord {
 - **결과 증거는 「그 값을 요구하는 단계」만 들여온다** — `resultTree`·`resultOid` 는 `composed`,
   `publishedAt` 은 `published` 에서만 처음 등장할 수 있고 그 뒤로는 불변이다. 그렇지 않으면
   `prepared → abandoned` 가 **존재한 적 없는 결과**를 증언하는 포기 기록을 남긴다(5R).
+  ⚠ 이 규칙은 **기존 엔트리가 있을 때만** 돈다 — **최초 쓰기**(부재 → `prepared`)에는 비교 대상이 없어
+  침묵하므로, 그 구간은 **형태 층**이 막는다: `prepared`·`composed` 에 `publishedAt` 이 있으면 거부한다
+  (게시 전 게시 시각 · 6R). 안 막으면 거짓 값이 먼저 박히고 이후 단계는 증거 동결 때문에 그것을
+  **보존해야** 해서 종결 기록까지 살아남는다.
 - 상세: `mkdirRecursive` 는 기존 심링크를 그대로 따라가므로, 쓰기 직전
   `<journalDir>/<benchId>` 의 종류를 보고 심링크·정규 파일이면 거부한다. 조상 경로는 **호출자의 정준화
   계약**이다(형제 `authorityDir` 와 동형). 이 판정을 위해 `PathKind` 에 `'symlink'` 를 **추가**했다 —
@@ -1286,7 +1290,7 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T68** | **저널 rename 유한 재시도(신설 · PR3b · C4 상속)** — `EPERM` 3연속 후 4회차 성공 = 성공이고 **exact 호출 계수**(rename 4 · sleep 3 · 인자 `[10,20,40]` 순서)를 고정한다 · 백오프 소진(5회 실패)은 `io-failure{step:'rename'}` + 디스크 무변이 · **비대상 errno(`ENOENT`)와 `code` 부재 Error 는 재시도 0**(즉시 실패). 권위 store 전용이던 §3-T17·T17g 가 저널을 덮지 않아 신설한다 | verify |
 | **T69** | **저널 쓰기 크레덴셜 결속(신설 · **PR3c** — 계획 정정 187 이 PR3b 에서 이관)** — 「직전 단계 CAS 의 증거」·「호출자 임계 구역 생존」·「크레덴셜 1개 = 전이 1개」를 저널이 인가한다. **authority 계약 확장이 선행조건**이다: 구역 capability 민팅 + 크레덴셜에 **관측된 통합 상태**(txn·stage·세대) 결속. 그것 없이 revision·identity 만 보면 ⓐ복제·소진·구역 종료 토큰 ⓑT2 커밋으로 T1 저널 전진 ⓒ`() => true` 로 유출 쓰기 연장이 전부 통과한다(Codex PR#269 4라운드 실측). 행동 단언의 생산자는 **PR5 T18** | verify |
 | **T70** | **저널 쓰기는 bench 리스 아래에서만(신설 · PR3b)** — 비민팅(복제) 리스면 파일시스템 **무접촉**(쓰기 0) · 리스 identity ↔ 레코드 3필드 대조 실패 시 거부 · tmp 이름의 `<ownerToken>` 은 **리스에서만** 취한다(문자열 인자 부재 = 위조 불가) · rename **회차마다** `revalidate()` 를 다시 보므로 「1회차 실패 → 그 사이 탈취 → 2회차 성공」 구현이 RED(L-6 동형). PR3d 수확기의 배타원이 이 계약 위에 선다 | verify |
-| **T71** | **저널 레코드 불변 필드·조건부 결속(신설 · PR3b)** — 단계 전진에서 불변 12필드(`txnId`·`benchId`·`repoCommonGitDir`·`benchRoot`·`sourceBranch`·`sourceSnapshot`·`sourceGeneration`·`targetBranch`·`targetHeadBeforeIntegration`·`resultRef`·`startedAt`·`ownerEngineId`) 중 하나라도 바뀌면 거부(「전이는 합법인데 내용이 통째로 바뀐」 레코드 차단) · `stage ≥ composed` → `resultOid`·`resultTree` 필수 · `published` → `publishedAt` 필수 · `abandoned` → `abandonedAt`·`abandonReason` 필수 ∧ `nextAuthorityStage` **부재**(포기 CAS 는 통합 필드를 소거한다) · 그 외 stage 는 `stage === nextAuthorityStage` | verify |
+| **T71** | **저널 레코드 불변 필드·조건부 결속(신설 · PR3b)** — 단계 전진에서 불변 12필드(`txnId`·`benchId`·`repoCommonGitDir`·`benchRoot`·`sourceBranch`·`sourceSnapshot`·`sourceGeneration`·`targetBranch`·`targetHeadBeforeIntegration`·`resultRef`·`startedAt`·`ownerEngineId`) 중 하나라도 바뀌면 거부(「전이는 합법인데 내용이 통째로 바뀐」 레코드 차단) · `stage ≥ composed` → `resultOid`·`resultTree` 필수 · `published`·`finalized` → `publishedAt` 필수이고 **`prepared`·`composed` 는 금지**(게시 전 게시 시각) · 결과 증거(`resultTree`·`resultOid`·`publishedAt`)는 **그 값을 요구하는 단계에서만 도입**되고 그 뒤 불변 · `abandoned` → `abandonedAt`·`abandonReason` 필수 ∧ `nextAuthorityStage` **부재**(포기 CAS 는 통합 필드를 소거한다) · 그 외 stage 는 `stage === nextAuthorityStage` | verify |
 | **T72** | **생성 저널 3채널 판정 규칙(신설 · PR4 T16)** — {①저널 엔트리 ②worktree 디렉터리 ③git 브랜치} **8조합 전수**를 {없음·부분·완전}으로 사상하는 **순수 술어** + 그 판정을 소비하는 생성 트랜잭션의 행동 단언. 생성은 통합의 `prepared` 규칙을 상속하지 않으므로 「없음」은 reconciliation 없이 종결 가능해야 한다. ⚠ **귀속이 PR3b → PR4 로 바뀌었다**(계획 정정 182): 규칙만 먼저 착지시키면 「판정 함수가 자기 입력의 생산자보다 먼저 서는」 배치가 되어 정정 159 가 방금 제거한 안티패턴을 되살린다. 대상 레코드도 통합 WAL 이 아니라 **생성 저널**이라 PR3b 모듈의 계약이 아니다 | verify |
 | **T38** | **I4: `broken ∧ busy` → 전 액션 거부**(크로스 프로세스 리스 보유) | verify |
 | **T39** | **I11 분리** — `prepared`/`composed` 잔존 bench 만 `delete-record` 거부(`journal-pending`) · **integration-ready(`published`) bench 는 허용** · `broken ∧ 활성 저널`은 `abandon-and-discard` 3구간으로만 탈출(락 밖 승인 → 락 안 재검사 → 단일 CAS) | verify |
