@@ -782,6 +782,161 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
   })
 })
 
+describe('레코드 결속·경로 안전 — 크레덴셜 없이도 서는 방어', () => {
+  it('주장한 previousAuthorityStage 가 디스크 단계와 다르면 거부한다', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+
+    // 전이(prepared → composed)는 합법인데 **결속이 거짓**이다 — 전이 검사만으로는 통과한다.
+    const r = await f.first(
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'published',
+      }),
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('rename')).toBe(0)
+  })
+
+  const abandonDraft = (f: Fixture, over: Partial<IntegrationTxnDraft> = {}): IntegrationTxnDraft =>
+    draftOf(f, {
+      stage: 'abandoned',
+      nextAuthorityStage: undefined,
+      previousAuthorityStage: 'prepared',
+      abandonedAt: AT,
+      abandonReason: 'user-abandon',
+      ...over,
+    })
+
+  it('포기 엔트리는 **정확히 같은 내용**으로만 재기록된다(종결 증거 보존)', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    expect((await f.first(abandonDraft(f))).kind).toBe('written')
+    const written = f.fs.readRaw(f.path)
+
+    // 같은 내용 재생 = 허용(크래시 후 재시도가 막다른 길이 되면 안 된다)
+    expect((await f.first(abandonDraft(f))).kind).toBe('written')
+    expect(f.fs.readRaw(f.path)).toBe(written)
+
+    // 사유·시각이 다른 재기록 = 거부(원본 감사 증거가 그 자리에서 소멸한다)
+    const rewritten = await f.first(
+      abandonDraft(f, { abandonReason: 'superseded', abandonedAt: AT + 5 }),
+    )
+    expect(rewritten.kind).toBe('invariant-violation')
+    expect(f.fs.readRaw(f.path)).toBe(written)
+  })
+
+  it('이미 기록된 결과 증거는 다음 단계가 바꾸지 못한다(처음 등장은 허용)', async () => {
+    const f = await setup()
+    f.fs.setFile(
+      f.path,
+      serialized(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+      }),
+    )
+    const publish = (resultOid: string): ReturnType<Fixture['first']> =>
+      f.first(
+        draftOf(f, {
+          stage: 'published',
+          resultOid,
+          resultTree: OID_A,
+          publishedAt: AT,
+          nextAuthorityStage: 'published',
+          previousAuthorityStage: 'composed',
+        }),
+      )
+
+    expect((await publish(OID_B)).kind).toBe('invariant-violation')
+    expect((await publish(OID_C)).kind).toBe('written') // 양성 대조
+  })
+
+  it('상위 버전은 오염 키가 있어도 incompatible-version 이다(파괴적 조치 차단 종별)', async () => {
+    const f = await setup()
+    // ⚠ `invalid` 는 broken·삭제 처리로 흘러갈 수 있고 `incompatible-version` 은 그것을 막아야 하는
+    //   종별이다 — 해석 못 하는 스키마는 **무엇이 더 들어 있든** 상위 버전이다(I12).
+    f.fs.setFile(f.path, `{"constructor":{"x":1},"schemaVersion":2}`)
+
+    expect(f.store.read(f.benchId, f.txnId)).toMatchObject({
+      kind: 'incompatible-version',
+      found: 2,
+    })
+  })
+
+  it('bench 디렉터리가 심링크면 따라가지 않고 거부한다', async () => {
+    const f = await setup()
+    f.fs.setSymlink(join(JOURNAL_DIR, f.benchId))
+
+    const r = await f.first(draftOf(f))
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('mkdirRecursive')).toBe(0)
+    expect(f.fs.countOf('openExclusive')).toBe(0)
+  })
+
+  it('getter 로 값을 바꾸는 draft 도 **한 번만** 읽는다', async () => {
+    const f = await setup()
+    const other = newUlid()
+    let reads = 0
+    const shifty: IntegrationTxnDraft = Object.defineProperty({ ...draftOf(f) }, 'benchId', {
+      get() {
+        reads += 1
+        return reads === 1 ? f.benchId : other
+      },
+      enumerable: true,
+    })
+
+    const r = await f.first(shifty)
+
+    // **읽기 횟수 자체를 고정한다** — 「B 아래에 안 썼다」만 보면 다른 방어가 대신 잡아 vacuous 해진다.
+    expect(reads).toBe(1)
+    expect(r.kind).toBe('written')
+    expect(f.fs.paths().filter((p) => p.includes(other))).toEqual([])
+  })
+
+  it('옵션은 생성 시점에 스냅숏된다(호출자가 나중에 바꿔도 쓰기 경계가 안 움직인다)', async () => {
+    const fs = createFakeDurableFs()
+    const benchId = newUlid()
+    const txnId = newUlid()
+    const { lease } = await acquire(benchId)
+    // `readonly` 는 컴파일 타임 표기일 뿐이라 평범한 가변 객체를 넘길 수 있다.
+    const mutable = {
+      journalDir: JOURNAL_DIR,
+      durability: 'file-only' as const,
+      sleep: recordingSleep,
+    }
+    const store = createJournalStore(fs, mutable)
+    mutable.journalDir = '/elsewhere'
+
+    const r = await store.append(lease, draftOf({ benchId, txnId }))
+
+    expect(r.kind).toBe('written')
+    expect(fs.paths()).toEqual([join(JOURNAL_DIR, benchId, `${txnId}.json`)])
+  })
+
+  it('다이제스트는 CAS 가 기록할 투영만 해시한다(초과 키 무영향)', () => {
+    const benchId = newUlid()
+    const base: BenchAuthorityDraft = {
+      schemaVersion: 1,
+      identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+      lifecycle: 'open',
+      sourceGeneration: 1,
+    }
+    // 구조적 서브타이핑상 draft 는 초과 키를 실을 수 있는데, CAS 는 필드 명시 재조립을 기록한다 —
+    // 그대로 해시하면 같은 의도의 트랜잭션이 「다른 증거」로 보인다.
+    expect(digestAuthorityDraft(Object.assign({}, base, { evil: 'x' }))).toBe(
+      digestAuthorityDraft(base),
+    )
+  })
+})
+
 describe('읽기 실패 분류 · 파서 총체성', () => {
   it('ULID 문법 위반 id 로는 읽지 않는다', async () => {
     const f = await setup()
