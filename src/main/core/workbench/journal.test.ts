@@ -113,8 +113,15 @@ const mintCommitFor = async (lease: BenchLeaseToken, benchId: string): Promise<A
   return commit
 }
 
-/** 같은 형태로 얻는 `FreshReadToken` — 첫 단계 크레덴셜이다(정정 175). */
-const mintReadFor = async (lease: BenchLeaseToken): Promise<FreshReadToken> => {
+/**
+ * 첫 단계 크레덴셜은 **살아 있는 구역 안에서만** 유효하다(Codex PR#269 3R P1) — 미리 뽑아 두고 나중에
+ * 쓰면 소진·구역 종료를 통과시키게 된다. 그래서 「토큰을 준다」가 아니라 **「구역 안에서 돌린다」**가
+ * 이 헬퍼의 형태이며, 그것이 실제 WAL 순서와 같다.
+ */
+const inLiveSection = <T>(
+  lease: BenchLeaseToken,
+  fn: (read: FreshReadToken) => Promise<T>,
+): Promise<T> => {
   const store = createBenchAuthorityStore(createFakeDurableFs(), {
     authorityDir: AUTHORITY_DIR,
     durability: 'file-only',
@@ -124,9 +131,16 @@ const mintReadFor = async (lease: BenchLeaseToken): Promise<FreshReadToken> => {
   return store.withAuthority(lease, (tx) => {
     const read = tx.readFresh()
     if (read.kind !== 'absent') throw new Error(`예상 밖 읽기 결과: ${read.kind}`)
-    return Promise.resolve(read.read)
+    return fn(read.read)
   })
 }
+
+/**
+ * **구역이 닫힌 뒤에도 손에 남는** 정품 토큰 — 유출 시나리오를 조작화하는 유일한 수단이다.
+ * (이전 하네스가 기본으로 쓰던 형태이고, 3R P1 이 그것이 통과하면 안 되는 이유를 짚었다.)
+ */
+const mintEscapedRead = (lease: BenchLeaseToken): Promise<FreshReadToken> =>
+  inLiveSection(lease, (read) => Promise.resolve(read))
 
 interface Fixture {
   readonly fs: FakeDurableFs
@@ -137,7 +151,19 @@ interface Fixture {
   readonly path: string
   readonly tmpPath: string
   readonly store: ReturnType<typeof createJournalStore>
-  readonly read: FreshReadToken
+  /**
+   * **살아 있는 권위 임계 구역 안에서** 콜백을 돌린다 — 첫 단계 크레덴셜(`FreshReadToken`)은 소진되지
+   * 않았고 그 구역이 열려 있어야만 유효하기 때문이다(Codex PR#269 3R P1). 실제 WAL 순서(구역 안에서
+   * fresh read → 저널 선기록 → CAS)와 **같은 형태**라, 미리 뽑아 둔 토큰을 나중에 쓰던 이전 하네스보다
+   * 프로덕션에 가깝다.
+   */
+  inSection<T>(fn: (read: FreshReadToken) => Promise<T>): Promise<T>
+  /** 첫 단계 쓰기 — 위 구역 안에서 `append` 를 부른다. */
+  first(
+    draft: IntegrationTxnDraft,
+    live?: () => boolean,
+    leaseOverride?: BenchLeaseToken,
+  ): Promise<Awaited<ReturnType<ReturnType<typeof createJournalStore>['append']>>>
 }
 
 const setup = async (
@@ -154,6 +180,18 @@ const setup = async (
     sleep: recordingSleep,
   })
   const path = join(JOURNAL_DIR, benchId, `${txnId}.json`)
+  const authority = createBenchAuthorityStore(createFakeDurableFs(), {
+    authorityDir: AUTHORITY_DIR,
+    durability: 'file-only',
+    now: () => AT,
+    sleep: recordingSleep,
+  })
+  const inSection = <T>(fn: (read: FreshReadToken) => Promise<T>): Promise<T> =>
+    authority.withAuthority(lease, (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error(`예상 밖 읽기 결과: ${read.kind}`)
+      return fn(read.read)
+    })
   return {
     fs,
     lease,
@@ -163,7 +201,9 @@ const setup = async (
     path,
     tmpPath: `${path}.${lease.ownerToken}.tmp`,
     store,
-    read: await mintReadFor(lease),
+    inSection,
+    first: (draft, live = alive, leaseOverride) =>
+      inSection((read) => store.append(leaseOverride ?? lease, draft, read, live)),
   }
 }
 
@@ -201,7 +241,7 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
   it('엔트리는 <journalDir>/<benchId>/<txnId>.json 에만 생기고 tmp 는 같은 디렉터리에 만든다', async () => {
     const f = await setup()
     const before = f.fs.paths()
-    const r = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f))
 
     expect(r.kind).toBe('written')
     expect(f.fs.paths()).toEqual([...before, f.path].sort())
@@ -232,7 +272,7 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
   it('내구 쓰기 단계 순서를 고정한다 · file-only 는 디렉터리 fsync 0(음성 통제)', async () => {
     const f = await setup()
 
-    expect((await f.store.append(f.lease, draftOf(f), f.read, alive)).kind).toBe('written')
+    expect((await f.first(draftOf(f))).kind).toBe('written')
 
     // 순서가 바뀌면(예: fsync 전에 rename) 내구성이 사라지는데 결과 종별은 그대로다 — 그래서 **순서
     // 자체**를 관측한다(형제 스위트가 `steps` 를 단언하는 이유).
@@ -255,7 +295,7 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
     // `invalid` 이 되어 **이후 모든 append 가 `existing-unreadable` 로 고착**한다.
     const polluted = Object.assign({}, draftOf(f), { constructor: 'x' })
 
-    const r = await f.store.append(f.lease, polluted, f.read, alive)
+    const r = await f.first(polluted)
 
     expect(r.kind).toBe('written')
     if (r.kind === 'written') expect(Object.keys(r.record)).not.toContain('constructor')
@@ -288,7 +328,7 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
     let calls = 0
     const closingSection = (): boolean => (calls += 1) <= 2
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, closingSection)
+    const r = await f.first(draftOf(f), closingSection)
 
     expect(r).toEqual({ kind: 'section-closed' })
     expect(f.fs.countOf('rename')).toBe(1)
@@ -299,7 +339,7 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
   it('임계 구역이 이미 닫혀 있으면 파일시스템을 만지지 않는다', async () => {
     const f = await setup()
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, () => false)
+    const r = await f.first(draftOf(f), () => false)
 
     expect(r).toEqual({ kind: 'section-closed' })
     expect(f.fs.countOf('openExclusive')).toBe(0)
@@ -312,8 +352,8 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
     // Codex P1 으로 닫은 사슬 — 겹치면 B 의 `finally` 가 A 의 tmp 를 지운다).
     f.fs.failSequence('rename', [errno('EPERM'), null])
 
-    const first = f.store.append(f.lease, draftOf(f), f.read, alive)
-    const second = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const first = f.first(draftOf(f))
+    const second = await f.first(draftOf(f))
 
     expect(second.kind).toBe('invariant-violation')
     expect((await first).kind).toBe('written')
@@ -323,7 +363,7 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
 
   it('id 문법 위반이면 파일시스템을 만지기 전에 거부한다', async () => {
     const f = await setup()
-    const r = await f.store.append(f.lease, draftOf(f, { txnId: 'not-a-ulid' }), f.read, alive)
+    const r = await f.first(draftOf(f, { txnId: 'not-a-ulid' }))
 
     expect(r.kind).toBe('invariant-violation')
     expect(f.fs.calls).toEqual([])
@@ -477,7 +517,7 @@ describe('저널 버전 스큐 (§3-T67)', () => {
     const f = await setup()
     f.fs.setFile(f.path, JSON.stringify({ schemaVersion: 99, txnId: f.txnId }))
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f))
 
     expect(r.kind).toBe('existing-unreadable')
     expect(f.fs.countOf('rename')).toBe(0)
@@ -519,7 +559,7 @@ describe('저널 rename 유한 재시도 (§3-T68 · C4 상속)', () => {
     const f = await setup()
     f.fs.failSequence('rename', [errno('EPERM'), errno('EPERM'), errno('EPERM'), null])
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f))
 
     expect(r.kind).toBe('written')
     expect(f.fs.countOf('rename')).toBe(4)
@@ -531,7 +571,7 @@ describe('저널 rename 유한 재시도 (§3-T68 · C4 상속)', () => {
     const f = await setup()
     f.fs.failNext('rename', errno('EPERM'), 5)
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f))
 
     expect(r).toMatchObject({ kind: 'io-failure', step: 'rename', path: f.tmpPath })
     // exact 계수(초기 1 + 재시도 4)를 함께 고정한다 — 대기 시퀀스만 보면 「쓰기 전체를 감싸 재시도」
@@ -546,13 +586,13 @@ describe('저널 rename 유한 재시도 (§3-T68 · C4 상속)', () => {
   it('비대상 errno 와 code 부재 오류는 재시도 0 이다', async () => {
     const f = await setup()
     f.fs.failNext('rename', errno('ENOENT'))
-    expect((await f.store.append(f.lease, draftOf(f), f.read, alive)).kind).toBe('io-failure')
+    expect((await f.first(draftOf(f))).kind).toBe('io-failure')
     expect(f.fs.countOf('rename')).toBe(1)
     expect(takeSleeps()).toEqual([])
 
     const g = await setup()
     g.fs.failNext('rename', new Error('code 없는 실패'))
-    expect((await g.store.append(g.lease, draftOf(g), g.read, alive)).kind).toBe('io-failure')
+    expect((await g.first(draftOf(g))).kind).toBe('io-failure')
     expect(g.fs.countOf('rename')).toBe(1)
     expect(takeSleeps()).toEqual([])
   })
@@ -561,7 +601,7 @@ describe('저널 rename 유한 재시도 (§3-T68 · C4 상속)', () => {
     const f = await setup()
     f.fs.failNext('writeAll', errno('ENOSPC'))
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f))
 
     expect(r).toMatchObject({ kind: 'io-failure', step: 'write', path: f.tmpPath })
     expect(f.fs.paths()).not.toContain(f.tmpPath)
@@ -573,7 +613,7 @@ describe('저널 rename 유한 재시도 (§3-T68 · C4 상속)', () => {
     // fsync 순서 = [영역 루트, journalDir, tmp 파일, **benchDir(post-commit)**] — 마지막만 실패시킨다.
     f.fs.failSequence('fsync', [null, null, null, errno('EIO')])
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f))
 
     expect(r).toMatchObject({ kind: 'write-uncertain', step: 'fsync-dir' })
     expect(f.fs.paths()).toContain(f.path)
@@ -584,15 +624,14 @@ describe('저널 rename 유한 재시도 (§3-T68 · C4 상속)', () => {
 describe('저널 쓰기 크레덴셜 (§3-T69)', () => {
   it('첫 단계는 FreshReadToken 으로 쓸 수 있다', async () => {
     const f = await setup()
-    expect((await f.store.append(f.lease, draftOf(f), f.read, alive)).kind).toBe('written')
+    expect((await f.first(draftOf(f))).kind).toBe('written')
   })
 
   it('첫 단계가 아니면 FreshReadToken 을 거부한다(직전 CAS 증거를 요구)', async () => {
     const f = await setup()
     f.fs.setFile(f.path, serialized(f))
 
-    const r = await f.store.append(
-      f.lease,
+    const r = await f.first(
       draftOf(f, {
         stage: 'composed',
         resultOid: OID_C,
@@ -600,8 +639,6 @@ describe('저널 쓰기 크레덴셜 (§3-T69)', () => {
         nextAuthorityStage: 'composed',
         previousAuthorityStage: 'prepared',
       }),
-      f.read,
-      alive,
     )
 
     expect(r.kind).toBe('invariant-violation')
@@ -704,7 +741,7 @@ describe('저널 쓰기는 bench 리스 아래에서만 (§3-T70)', () => {
     const f = await setup()
     const cloned: BenchLeaseToken = { ...f.lease }
 
-    const r = await f.store.append(cloned, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f), alive, cloned)
 
     expect(r).toEqual({ kind: 'lease-invalid', reason: 'stolen' })
     expect(f.fs.calls).toEqual([])
@@ -718,7 +755,7 @@ describe('저널 쓰기는 bench 리스 아래에서만 (§3-T70)', () => {
     ['benchId', { benchId: newUlid() }],
   ])('리스 identity 와 레코드의 %s 가 어긋나면 거부한다', async (_name, over) => {
     const f = await setup()
-    const r = await f.store.append(f.lease, draftOf(f, over), f.read, alive)
+    const r = await f.first(draftOf(f, over))
 
     expect(r).toEqual({ kind: 'lease-invalid', reason: 'identity-mismatch' })
     expect(f.fs.calls).toEqual([])
@@ -728,7 +765,7 @@ describe('저널 쓰기는 bench 리스 아래에서만 (§3-T70)', () => {
     const f = await setup()
     f.release()
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f))
 
     expect(r).toMatchObject({ kind: 'lease-invalid', reason: 'released' })
     expect(f.fs.countOf('openExclusive')).toBe(0)
@@ -756,9 +793,10 @@ describe('저널 쓰기는 bench 리스 아래에서만 (§3-T70)', () => {
       sleep: recordingSleep,
     })
     fs.failNext('rename', errno('EPERM'), 1)
-    const read = await mintReadFor(lease)
 
-    const out = await store.append(lease, draftOf({ benchId, txnId }), read, alive)
+    const out = await inLiveSection(lease, (read) =>
+      store.append(lease, draftOf({ benchId, txnId }), read, alive),
+    )
 
     expect(out).toMatchObject({ kind: 'lease-invalid' })
     expect(renames).toBe(1)
@@ -770,7 +808,7 @@ describe('저널 쓰기는 bench 리스 아래에서만 (§3-T70)', () => {
     const f = await setup()
     f.fs.failNext('rename', errno('ENOENT'))
 
-    await f.store.append(f.lease, draftOf(f), f.read, alive)
+    await f.first(draftOf(f))
 
     const opened = f.fs.calls.find((c) => c.op === 'openExclusive')?.args[0]
     expect(opened).toBe(`${f.path}.${f.lease.ownerToken}.tmp`)
@@ -921,12 +959,7 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
     ['expectedAuthorityRevision 이 음수', { expectedAuthorityRevision: -1 }],
   ])('조건부 결속 위반: %s', async (_name, over) => {
     const f = await setup()
-    const r = await f.store.append(
-      f.lease,
-      draftOf(f, over as Partial<IntegrationTxnDraft>),
-      f.read,
-      alive,
-    )
+    const r = await f.first(draftOf(f, over as Partial<IntegrationTxnDraft>))
     expect(r.kind).toBe('invariant-violation')
     expect(f.fs.countOf('rename')).toBe(0)
   })
@@ -958,7 +991,7 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
 
   it('기록된 엔트리는 다시 읽힌다(왕복) · schemaVersion 은 store 가 찍는다', async () => {
     const f = await setup()
-    await f.store.append(f.lease, draftOf(f), f.read, alive)
+    await f.first(draftOf(f))
 
     const r = f.store.read(f.benchId, f.txnId)
 
@@ -977,7 +1010,7 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
     // (형제 계획 정정 73 과 같은 구멍). 조용히 버리지 않고 **거부**하는 것이 계약이다.
     const carrying = Object.assign({}, draftOf(f), { schemaVersion: 99 })
 
-    const r = await f.store.append(f.lease, carrying, f.read, alive)
+    const r = await f.first(carrying)
 
     expect(r.kind).toBe('invariant-violation')
     expect(f.fs.countOf('rename')).toBe(0)
@@ -985,12 +1018,7 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
 
   it('직렬화가 크기 상한을 넘으면 쓰지 않는다(읽기가 거부할 것을 쓰지 않는다)', async () => {
     const f = await setup()
-    const r = await f.store.append(
-      f.lease,
-      draftOf(f, { sourceBranch: 'x'.repeat(70_000) }),
-      f.read,
-      alive,
-    )
+    const r = await f.first(draftOf(f, { sourceBranch: 'x'.repeat(70_000) }))
 
     expect(r.kind).toBe('invariant-violation')
     expect(f.fs.countOf('openExclusive')).toBe(0)
@@ -1036,12 +1064,7 @@ describe('Codex PR#269 P1 — 결속·보존·경로 방어', () => {
   it('첫 엔트리는 previousAuthorityStage 가 있으면 거부된다(부재 == 디스크 부재)', async () => {
     const f = await setup()
 
-    const r = await f.store.append(
-      f.lease,
-      draftOf(f, { previousAuthorityStage: 'prepared' }),
-      f.read,
-      alive,
-    )
+    const r = await f.first(draftOf(f, { previousAuthorityStage: 'prepared' }))
 
     expect(r.kind).toBe('invariant-violation')
   })
@@ -1176,9 +1199,11 @@ describe('Codex PR#269 P1 — 결속·보존·경로 방어', () => {
 
   it('복제 FreshReadToken 도 첫 단계에서 거부한다', async () => {
     const f = await setup()
-    const cloned: FreshReadToken = { ...f.read }
 
-    const r = await f.store.append(f.lease, draftOf(f), cloned, alive)
+    const r = await f.inSection((read) => {
+      const cloned: FreshReadToken = { ...read }
+      return f.store.append(f.lease, draftOf(f), cloned, alive)
+    })
 
     expect(r.kind).toBe('invariant-violation')
     expect(f.fs.calls).toEqual([])
@@ -1188,11 +1213,166 @@ describe('Codex PR#269 P1 — 결속·보존·경로 방어', () => {
     const f = await setup()
     f.fs.setSymlink(join(JOURNAL_DIR, f.benchId))
 
-    const r = await f.store.append(f.lease, draftOf(f), f.read, alive)
+    const r = await f.first(draftOf(f))
 
     expect(r.kind).toBe('invariant-violation')
     expect(f.fs.countOf('mkdirRecursive')).toBe(0)
     expect(f.fs.countOf('openExclusive')).toBe(0)
+  })
+})
+
+describe('Codex PR#269 3R P1 — 버전 우선순위 · 스냅숏 · 프로세스 원장 · 증거 동결', () => {
+  it('상위 버전은 오염 키가 있어도 incompatible-version 이다(파괴적 조치 차단 종별)', async () => {
+    const f = await setup()
+    // ⚠ `invalid` 는 broken·삭제 처리로 흘러갈 수 있고 `incompatible-version` 은 그것을 막아야 하는
+    //   종별이다 — 「이 바이너리가 해석 못 하는 스키마」는 무엇이 더 들어 있든 상위 버전이다(I12).
+    f.fs.setFile(f.path, `{"constructor":{"x":1},"schemaVersion":2}`)
+
+    expect(f.store.read(f.benchId, f.txnId)).toMatchObject({
+      kind: 'incompatible-version',
+      found: 2,
+    })
+  })
+
+  it('옵션은 생성 시점에 스냅숏된다(호출자가 나중에 바꿔도 쓰기 경계가 안 움직인다)', async () => {
+    const fs = createFakeDurableFs()
+    const benchId = newUlid()
+    const txnId = newUlid()
+    const { lease } = await acquire(benchId)
+    // `readonly` 는 컴파일 타임 표기일 뿐이라 평범한 가변 객체를 넘길 수 있다.
+    const mutable = {
+      journalDir: JOURNAL_DIR,
+      durability: 'file-only' as const,
+      sleep: recordingSleep,
+    }
+    const store = createJournalStore(fs, mutable)
+    mutable.journalDir = '/elsewhere'
+
+    const r = await inLiveSection(lease, (read) =>
+      store.append(lease, draftOf({ benchId, txnId }), read, alive),
+    )
+
+    expect(r.kind).toBe('written')
+    expect(fs.paths()).toEqual([join(JOURNAL_DIR, benchId, `${txnId}.json`)])
+  })
+
+  it('크레덴셜 원장은 **프로세스 스코프**다 — 두 번째 store 로 우회할 수 없다', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    const commit = await mintCommitFor(f.lease, f.benchId)
+    const composed = draftOf(f, {
+      stage: 'composed',
+      resultOid: OID_C,
+      resultTree: OID_A,
+      nextAuthorityStage: 'composed',
+      previousAuthorityStage: 'prepared',
+      expectedAuthorityRevision: commit.revision,
+    })
+    expect((await f.store.append(f.lease, composed, commit, alive)).kind).toBe('written')
+
+    // 같은 저널 디렉터리를 겨냥한 **두 번째 store** — 원장이 store 지역이면 여기서 빈 원장을 본다.
+    const second = createJournalStore(f.fs, {
+      journalDir: JOURNAL_DIR,
+      durability: 'file-only',
+      sleep: recordingSleep,
+    })
+    const r = await second.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'published',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        publishedAt: AT,
+        nextAuthorityStage: 'published',
+        previousAuthorityStage: 'composed',
+        expectedAuthorityRevision: commit.revision,
+      }),
+      commit,
+      alive,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+  })
+
+  it('소진된 읽기 토큰은 거부한다(그 CAS 를 인가할 수 없는 읽기)', async () => {
+    const f = await setup()
+    const authority = createBenchAuthorityStore(createFakeDurableFs(), {
+      authorityDir: AUTHORITY_DIR,
+      durability: 'file-only',
+      now: () => AT,
+      sleep: recordingSleep,
+    })
+
+    const r = await authority.withAuthority(f.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error(`예상 밖: ${read.kind}`)
+      // 같은 구역이지만 **CAS 가 먼저 토큰을 소진**했다 — 저널 선기록 순서를 어긴 형태다.
+      const cas = await tx.compareAndSwap(read.read, authorityDraft(f.benchId))
+      expect(cas.kind).toBe('committed')
+      return f.store.append(f.lease, draftOf(f), read.read, alive)
+    })
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.calls).toEqual([])
+  })
+
+  it('구역이 닫힌 뒤의 정품 토큰도 거부한다', async () => {
+    const f = await setup()
+    const escaped = await mintEscapedRead(f.lease)
+
+    const r = await f.store.append(f.lease, draftOf(f), escaped, alive)
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.calls).toEqual([])
+  })
+
+  it('다이제스트는 CAS 가 기록할 투영만 해시한다(초과 키 무영향)', () => {
+    const benchId = newUlid()
+    const base: BenchAuthorityDraft = {
+      schemaVersion: 1,
+      identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+      lifecycle: 'open',
+      sourceGeneration: 1,
+    }
+    // 구조적 서브타이핑상 draft 는 초과 키를 실을 수 있는데, CAS 는 필드 명시 재조립을 기록한다 —
+    // 그대로 해시하면 같은 의도의 트랜잭션이 「다른 증거」로 보인다.
+    const carrying = Object.assign({}, base, { evil: 'x' })
+
+    expect(digestAuthorityDraft(carrying)).toBe(digestAuthorityDraft(base))
+  })
+
+  it('이미 기록된 결과 증거는 다음 단계가 바꾸지 못한다', async () => {
+    const f = await setup()
+    f.fs.setFile(
+      f.path,
+      serialized(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+      }),
+    )
+    const commit = await mintCommitFor(f.lease, f.benchId)
+    const publish = (resultOid: string): Promise<unknown> =>
+      f.store.append(
+        f.lease,
+        draftOf(f, {
+          stage: 'published',
+          resultOid,
+          resultTree: OID_A,
+          publishedAt: AT,
+          nextAuthorityStage: 'published',
+          previousAuthorityStage: 'composed',
+          expectedAuthorityRevision: commit.revision,
+        }),
+        commit,
+        alive,
+      )
+
+    expect(await publish(OID_B)).toMatchObject({ kind: 'invariant-violation' })
+    // 양성 대조: 같은 값을 그대로 실으면 단계 전진이 정상이다(처음 등장은 허용, 교체는 금지).
+    expect(await publish(OID_C)).toMatchObject({ kind: 'written' })
   })
 })
 
@@ -1247,7 +1427,7 @@ describe('읽기 실패 분류 · 파서 총체성', () => {
     // 그것은 RED 가 아니라 호출자의 hang·크래시가 된다(형제 authority.ts 의 `show` 와 같은 축).
     const hostile = Object.assign({}, draftOf(f), { startedAt: 1n })
 
-    const r = await f.store.append(f.lease, hostile, f.read, alive)
+    const r = await f.first(hostile)
 
     expect(r.kind).toBe('invariant-violation')
   })
@@ -1259,7 +1439,7 @@ describe('부모 디렉터리 엔트리 내구화 (file+dir)', () => {
     const openDirs = (): unknown[] =>
       f.fs.calls.filter((c) => c.op === 'openDir').map((c) => c.args[0])
 
-    expect((await f.store.append(f.lease, draftOf(f), f.read, alive)).kind).toBe('written')
+    expect((await f.first(draftOf(f))).kind).toBe('written')
     // 최초 = 영역 루트(`journal/` 엔트리) · journalDir(`<benchId>/` 엔트리) · post-commit benchDir
     expect(openDirs()).toEqual([dirname(JOURNAL_DIR), JOURNAL_DIR, join(JOURNAL_DIR, f.benchId)])
 
@@ -1290,18 +1470,14 @@ describe('부모 디렉터리 엔트리 내구화 (file+dir)', () => {
 
   it('다른 bench 는 journalDir 엔트리를 다시 내구화한다', async () => {
     const f = await setup({}, 'file+dir')
-    await f.store.append(f.lease, draftOf(f), f.read, alive)
+    await f.first(draftOf(f))
 
     const otherBench = newUlid()
     const other = await acquire(otherBench)
-    const otherRead = await mintReadFor(other.lease)
     const before = f.fs.countOf('openDir')
 
-    const r = await f.store.append(
-      other.lease,
-      draftOf({ benchId: otherBench, txnId: newUlid() }),
-      otherRead,
-      alive,
+    const r = await inLiveSection(other.lease, (read) =>
+      f.store.append(other.lease, draftOf({ benchId: otherBench, txnId: newUlid() }), read, alive),
     )
 
     expect(r.kind).toBe('written')

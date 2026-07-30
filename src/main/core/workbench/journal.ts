@@ -10,9 +10,10 @@ import type {
   PreCommitStep,
 } from './authority'
 import {
+  isLiveUnspentRead,
   isMintedCommit,
-  isMintedRead,
   isRetryableRenameError,
+  projectAuthorityDraft,
   RENAME_BACKOFF_MS,
 } from './authority'
 import type { DurabilityLevel, DurableFs } from './durable-fs'
@@ -364,7 +365,12 @@ const canonicalJson = (value: unknown): string => {
  * 대조자(PR3c)가 각자 다른 정준화를 만들어 「불일치」가 상시 참이 된다.
  */
 export function digestAuthorityDraft(draft: BenchAuthorityDraft): string {
-  return createHash('sha256').update(canonicalJson(draft), 'utf8').digest('hex')
+  // ⚠ **CAS 가 실제로 기록할 투영을 해시한다**(Codex PR#269 3R P1). 호출자 draft 를 그대로 해시하면
+  // 구조적 서브타이핑으로 실려 온 **초과 키**가 값에 섞이는데, 정작 CAS 는 필드 명시 재조립을 기록한다 —
+  // 그러면 같은 의도의 트랜잭션이 「다른 증거」로 보여 복구가 정상 CAS 를 reconciliation 으로 오분류한다.
+  return createHash('sha256')
+    .update(canonicalJson(projectAuthorityDraft(draft)), 'utf8')
+    .digest('hex')
 }
 
 /* ================================================================================================
@@ -398,6 +404,12 @@ const IMMUTABLE_FIELDS = [
   'startedAt',
   'ownerEngineId',
 ] as const
+
+/**
+ * **한 번 나타나면 얼어붙는 결과 증거**(Codex PR#269 3R P1). 불변 12필드와 다른 점은 **처음 등장이
+ * 정상**이라는 것이다 — 단계가 값을 들여오는 것은 계약이고, 이미 들어온 값을 바꾸는 것이 금지다.
+ */
+const EVIDENCE_FIELDS = ['resultTree', 'resultOid', 'publishedAt'] as const
 
 /**
  * 형태 + 조건부 결속 검증(§3-T71). **관계 검사보다 형태가 앞선다**(형제 authority.ts 와 같은 순서) —
@@ -559,16 +571,23 @@ const parseJournalJson = (
   if (!isPlainObject(parsed)) {
     return { kind: 'invalid', path, violations: ['최상위가 객체가 아니다'] }
   }
-  if (Object.hasOwn(parsed, '__proto__') || Object.hasOwn(parsed, 'constructor')) {
-    return { kind: 'invalid', path, violations: ['프로토타입 오염 키가 있다'] }
-  }
 
+  // ⚠ **버전 판정이 다른 어떤 검사보다도 앞선다**(Codex PR#269 3R P1 — 「최우선」을 문면으로만 지키고
+  // 있었다): 오염 키 검사를 먼저 두면 `schemaVersion: 2` + `constructor` 인 파일이 `invalid` 로 분류되고,
+  // `invalid` 는 broken·삭제 처리로 흘러갈 수 있는 반면 `incompatible-version` 은 **파괴적 조치를
+  // 차단해야 하는** 종별이다(I12). 이 바이너리가 해석할 수 없는 스키마는 **무엇이 더 들어 있든**
+  // 상위 버전이다. `own` 은 `Object.hasOwn` + `Reflect.get` 이라 오염 키가 있어도 안전하게 읽는다.
   const sv = own(parsed, 'schemaVersion')
   if (!isCount(sv) || sv < 1) {
     return { kind: 'invalid', path, violations: [`schemaVersion 형태 오류: ${show(sv)}`] }
   }
   if (sv > SUPPORTED_JOURNAL_SCHEMA) {
     return { kind: 'incompatible-version', path, found: sv, supported: SUPPORTED_JOURNAL_SCHEMA }
+  }
+
+  // 지원 버전에만 스키마별 키 검증을 적용한다.
+  if (Object.hasOwn(parsed, '__proto__') || Object.hasOwn(parsed, 'constructor')) {
+    return { kind: 'invalid', path, violations: ['프로토타입 오염 키가 있다'] }
   }
 
   const shape = parseRecordShape(parsed)
@@ -593,7 +612,26 @@ const parseJournalJson = (
 const isFreshRead = (c: AuthorityCommit | FreshReadToken): c is FreshReadToken =>
   Object.hasOwn(c, 'observedRevision')
 
+/**
+ * **크레덴셜 원장과 겹침 가드는 모듈 스코프**여야 한다(Codex PR#269 3R P1 · 형제 계획 정정 95 와 같은
+ * 근거). store 지역이면 **같은 저널 디렉터리를 겨냥한 두 번째 store 를 만드는 것만으로** 「크레덴셜 1개 =
+ * 전이 1개」와 tmp 겹침 가드가 통째로 우회된다 — A 로 `composed` 를 쓰고 B 로 같은 커밋을 재사용해
+ * `published` 를 쓰면 두 검사 모두 빈 원장을 본다. 키가 크레덴셜 객체·tmp 경로라 store 간 오염은 없다.
+ */
+const CREDENTIAL_USE = new WeakMap<object, { txnId: string; stage: IntegrationStage }>()
+const APPENDS_IN_FLIGHT = new Set<string>()
+
 export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): JournalStore {
+  /**
+   * **생성 시점 스냅숏**(Codex PR#269 3R P1). `readonly` 는 컴파일 타임 표기일 뿐이라, 평범한 가변 객체를
+   * 넘긴 뒤 `journalDir` 를 바꾸면 **검증된 쓰기 경계 밖으로 인프라 쓰기가 재조준**되고 `durability` 를
+   * 바꾸면 요구된 디렉터리 fsync 가 조용히 건너뛰어진다(형제 store 가 옵션을 동결하는 것과 같은 규율).
+   */
+  const cfg: JournalStoreOptions = Object.freeze({
+    journalDir: opts.journalDir,
+    durability: opts.durability,
+    sleep: opts.sleep,
+  })
   /**
    * 부모 디렉터리 엔트리를 내구화한 적이 있는가. **디렉터리 생성은 부모를 변경**하므로 그 부모를 fsync
    * 하지 않으면 전원 손실 시 파일·디렉터리는 살아남았는데 그것을 담은 엔트리가 사라질 수 있다
@@ -601,12 +639,6 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
    * 다시 시도하게 한다 — 「이번에 만들었는가」로 판정하면 실패 후 다음 쓰기가 건너뛴다.
    */
   const syncedParents = new Set<string>()
-
-  /** 진행 중인 tmp 경로 — 겹침 가드(아래 `append` 의 주석이 근거). */
-  const appendsInFlight = new Set<string>()
-
-  /** 크레덴셜 → 그 크레덴셜이 증언한 전이 1개(아래 `append` 의 주석이 근거 · 형제 원장과 별개다). */
-  const credentialUse = new WeakMap<object, { txnId: string; stage: IntegrationStage }>()
 
   const syncDirEntry = (dir: string): void => {
     const fd = fs.openDir(dir)
@@ -618,7 +650,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
   }
 
   const read = (benchId: string, txnId: string): JournalReadResult => {
-    const path = journalEntryPath(opts.journalDir, benchId, txnId)
+    const path = journalEntryPath(cfg.journalDir, benchId, txnId)
     if (path === undefined) {
       return { kind: 'invalid', violations: ['benchId·txnId 가 ULID 문법이 아니다'] }
     }
@@ -675,7 +707,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
         if (backoff === undefined || !isRetryableRenameError(cause)) {
           return { kind: 'io-failure', step: 'rename', path: from, cause }
         }
-        await opts.sleep(backoff)
+        await cfg.sleep(backoff)
       }
     }
     // **유계 루프**의 도달 불가 꼬리 — 안전 실패로 닫는다(형제 authority.ts 와 같은 규율).
@@ -703,7 +735,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       return { kind: 'lease-invalid', reason: 'identity-mismatch' }
     }
 
-    const path = journalEntryPath(opts.journalDir, draft.benchId, draft.txnId)
+    const path = journalEntryPath(cfg.journalDir, draft.benchId, draft.txnId)
     if (path === undefined) {
       return {
         kind: 'invariant-violation',
@@ -720,10 +752,16 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     // 그러면 아래 원장(객체 동일성 키)이 **빈 채로 조회**돼 「크레덴셜 1개 = 전이 1개」가 우회된다 —
     // 정품 커밋으로 `composed` 를 쓰고 복제본으로 `published` 까지 써서 저널이 권위를 두 단계 앞선다.
     // 형제 `locks.ts` 의 `isMintedLease` 와 같은 자리이며, **조회일 뿐 소진하지 않는다**.
-    if (fromRead ? !isMintedRead(prev) : !isMintedCommit(prev)) {
+    // 읽기 증거는 **소진 여부와 구역 생존까지** 본다(3R P1): 민팅 조회만으로는 이미 CAS 에 쓰인 토큰이나
+    // 닫힌 구역의 토큰이 통과해, 「그 CAS 를 인가할 수 없는 읽기」에 활성 WAL 증거가 남는다.
+    if (fromRead ? !isLiveUnspentRead(prev) : !isMintedCommit(prev)) {
       return {
         kind: 'invariant-violation',
-        violations: ['직전 단계 증거가 이 프로세스의 권위 모듈이 발급한 것이 아니다(복제·조립)'],
+        violations: [
+          fromRead
+            ? '읽기 증거가 살아 있는 임계 구역의 미사용 토큰이 아니다(복제·소진·구역 종료)'
+            : '직전 단계 증거가 이 프로세스의 권위 모듈이 발급한 것이 아니다(복제·조립)',
+        ],
       }
     }
     const credRevision: unknown = fromRead ? prev.observedRevision : prev.revision
@@ -822,7 +860,15 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       const changed = IMMUTABLE_FIELDS.filter(
         (k) => own(existing.record, k) !== own(record, k),
       ).map((k) => `단계 전진에서 불변 필드가 바뀌었다: ${k}`)
-      if (changed.length > 0) return { kind: 'invariant-violation', violations: changed }
+      // **결과 증거는 한 번 나타나면 얼어붙는다**(Codex PR#269 3R P1). 단계마다 **처음 등장**하는 것은
+      // 정상이지만(`composed` 가 `resultOid` 를, `published` 가 `publishedAt` 을 들여온다) 이미 기록된
+      // 값을 **바꾸는** 것은 다르다 — txn 당 파일이 하나뿐이라 그 순간 원본 증거가 소멸하고, 완결·복구가
+      // **교체된 결과**를 근거로 추론하게 된다.
+      const replaced = EVIDENCE_FIELDS.filter(
+        (k) => own(existing.record, k) !== undefined && own(existing.record, k) !== own(record, k),
+      ).map((k) => `이미 기록된 결과 증거가 바뀌었다: ${k}`)
+      const broken = [...changed, ...replaced]
+      if (broken.length > 0) return { kind: 'invariant-violation', violations: broken }
     }
 
     /**
@@ -833,7 +879,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
      * 그래서 **저널 지역 원장**을 따로 둔다. **정확 재시도**(같은 txn·같은 stage)는 계속 허용한다 —
      * rename 이 실패한 뒤의 재호출이 정상 경로다.
      */
-    const claimed = credentialUse.get(prev)
+    const claimed = CREDENTIAL_USE.get(prev)
     if (
       claimed !== undefined &&
       (claimed.txnId !== record.txnId || claimed.stage !== record.stage)
@@ -845,7 +891,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
         ],
       }
     }
-    credentialUse.set(prev, { txnId: record.txnId, stage: record.stage })
+    CREDENTIAL_USE.set(prev, { txnId: record.txnId, stage: record.stage })
 
     // ── ③ 「읽기가 거부할 것을 쓰지 않는다」 — 크기 상한(형제 `verifySerialized` 의 이 PR 판) ──
     //
@@ -867,7 +913,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     const preCheck = lease.revalidate()
     if (preCheck.kind === 'lost') return { kind: 'lease-invalid', reason: preCheck.reason }
 
-    const benchDir = join(opts.journalDir, draft.benchId)
+    const benchDir = join(cfg.journalDir, draft.benchId)
 
     // **심링크를 따라가지 않는다**(Codex PR#269 P1). `mkdirRecursive` 는 기존 심링크를 그대로 따라가므로
     // `<journalDir>/<benchId>` 가 심링크면 create-only tmp 와 rename 이 **영역 밖**에 떨어진다 — 「검증된
@@ -896,7 +942,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
      * ⚠ 이것은 **in-process** 가드다(store 스코프). 프로세스 간 배타는 리스가, 같은 bench 의 권위 쓰기
      * 직렬화는 호출자의 `withAuthority` 뮤텍스가 맡는다 — 그 둘을 대체하지 않는다.
      */
-    if (appendsInFlight.has(tmpPath)) {
+    if (APPENDS_IN_FLIGHT.has(tmpPath)) {
       return {
         kind: 'invariant-violation',
         violations: [
@@ -904,11 +950,11 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
         ],
       }
     }
-    appendsInFlight.add(tmpPath)
+    APPENDS_IN_FLIGHT.add(tmpPath)
     try {
       return await writeDurably(lease, sectionLive, { benchDir, tmpPath, path, json, record })
     } finally {
-      appendsInFlight.delete(tmpPath)
+      APPENDS_IN_FLIGHT.delete(tmpPath)
     }
   }
 
@@ -932,11 +978,11 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     let renamed = false
     try {
       fs.mkdirRecursive(benchDir, JOURNAL_DIR_MODE)
-      if (opts.durability === 'file+dir') {
+      if (cfg.durability === 'file+dir') {
         // 새로 생긴 엔트리를 담은 **부모**를 내구화한다: `<area>` 가 `journal/` 을, `journal/` 이
         // `<benchId>/` 를 얻었다. bench 마다 다시 필요하므로 키를 디렉터리별로 둔다.
-        for (const parent of [dirname(opts.journalDir), opts.journalDir]) {
-          const key = parent === opts.journalDir ? benchDir : parent
+        for (const parent of [dirname(cfg.journalDir), cfg.journalDir]) {
+          const key = parent === cfg.journalDir ? benchDir : parent
           if (syncedParents.has(key)) continue
           parentTarget = parent
           syncDirEntry(parent)
@@ -986,7 +1032,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     }
 
     // ── 여기부터 엔트리는 게시됐다. 실패해도 디스크에는 남아 있다. ──
-    if (opts.durability === 'file+dir') {
+    if (cfg.durability === 'file+dir') {
       let post: PostCommitStep = 'open-dir'
       let dirFd: number | undefined
       try {
