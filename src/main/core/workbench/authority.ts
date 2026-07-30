@@ -687,6 +687,23 @@ const MINTED_READS = new WeakMap<
     readonly tx: object
   }
 >()
+/**
+ * **출처 조회 술어 2종**(#251 PR3b · Codex PR#269 P1 · 계획 정정 185) — 형제 `locks.ts` 의
+ * `isMintedLease` 와 같은 형태이고 같은 이유로 export 한다: **크레덴셜을 소비하는 다른 모듈이
+ * 「이것이 이 프로세스의 권위 모듈에서 나왔는가」를 물을 수단이 없으면 필드를 믿는 검사밖에 못 한다.**
+ * 그리고 필드를 믿으면 `{...commit}` 복제가 통과한다 — 위 두 원장 주석이 **실측으로 확정한** 벡터다.
+ *
+ * ⚠ **조회일 뿐 소진이 아니다.** 소진은 `createBenchLauncher` 의 계약이며(한 커밋 = 한 자식), 저널이
+ * 그것을 함께 소비하면 「CAS2 → 저널 → spawn」이 구조적으로 불가능해진다.
+ */
+export function isMintedCommit(commit: AuthorityCommit): boolean {
+  return MINTED_COMMITS.has(commit)
+}
+
+export function isMintedRead(read: FreshReadToken): boolean {
+  return MINTED_READS.has(read)
+}
+
 /** identity 별 임계 구역 꼬리. 같은 bench 의 `withAuthority` 호출을 FIFO 로 직렬화한다. */
 const MUTEX_TAILS = new Map<string, Promise<unknown>>()
 

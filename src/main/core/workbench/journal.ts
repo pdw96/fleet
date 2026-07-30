@@ -9,7 +9,12 @@ import type {
   PostCommitStep,
   PreCommitStep,
 } from './authority'
-import { isRetryableRenameError, RENAME_BACKOFF_MS } from './authority'
+import {
+  isMintedCommit,
+  isMintedRead,
+  isRetryableRenameError,
+  RENAME_BACKOFF_MS,
+} from './authority'
 import type { DurabilityLevel, DurableFs } from './durable-fs'
 import type { BenchLeaseToken } from './locks'
 import { isMintedLease } from './locks'
@@ -706,12 +711,21 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       }
     }
 
-    // 크레덴셜은 **값 결속**까지 본다. ⚠ 위조 방어가 아니라 스레딩 사고 방지다 — 브랜드 원장은
-    // authority.ts 모듈 스코프이고 조회 술어를 export 하지 않기로 했다(계획 정정 175ⓓ).
     if (!isPlainObject(prev)) {
       return { kind: 'invariant-violation', violations: ['직전 단계 증거(prev)가 없다'] }
     }
     const fromRead = isFreshRead(prev)
+    // **출처를 먼저 본다 — 필드를 믿지 않는다**(Codex PR#269 P1 · 계획 정정 185 가 175ⓓ 를 뒤집었다).
+    // `{...commit}` 복제는 미export 브랜드를 보존한 채 **새 객체**라 캐스트 없이 타입 검사를 통과하고,
+    // 그러면 아래 원장(객체 동일성 키)이 **빈 채로 조회**돼 「크레덴셜 1개 = 전이 1개」가 우회된다 —
+    // 정품 커밋으로 `composed` 를 쓰고 복제본으로 `published` 까지 써서 저널이 권위를 두 단계 앞선다.
+    // 형제 `locks.ts` 의 `isMintedLease` 와 같은 자리이며, **조회일 뿐 소진하지 않는다**.
+    if (fromRead ? !isMintedRead(prev) : !isMintedCommit(prev)) {
+      return {
+        kind: 'invariant-violation',
+        violations: ['직전 단계 증거가 이 프로세스의 권위 모듈이 발급한 것이 아니다(복제·조립)'],
+      }
+    }
     const credRevision: unknown = fromRead ? prev.observedRevision : prev.revision
     const credIdentity: unknown = prev.identity
     // ⚠ **필드 형태까지 값으로 거부한다**(CodeRabbit PR#269): 타입을 우회한 `{}` 제출에서 여기가

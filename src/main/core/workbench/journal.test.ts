@@ -1138,6 +1138,52 @@ describe('Codex PR#269 P1 — 결속·보존·경로 방어', () => {
     expect((await f.store.append(f.lease, composed, commit, alive)).kind).toBe('written')
   })
 
+  it('복제 크레덴셜은 원장 조회 전에 거부한다(1:1 결속 우회 차단)', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    const commit = await mintCommitFor(f.lease, f.benchId)
+    const composed = draftOf(f, {
+      stage: 'composed',
+      resultOid: OID_C,
+      resultTree: OID_A,
+      nextAuthorityStage: 'composed',
+      previousAuthorityStage: 'prepared',
+      expectedAuthorityRevision: commit.revision,
+    })
+    expect((await f.store.append(f.lease, composed, commit, alive)).kind).toBe('written')
+
+    // `{...commit}` 은 미export 브랜드를 보존한 채 **새 객체**라 캐스트 없이 타입 검사를 통과하고,
+    // 객체 동일성 키 원장을 빈 채로 조회하게 만든다 — 정품으로 composed, 복제본으로 published.
+    const cloned: AuthorityCommit = { ...commit }
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'published',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        publishedAt: AT,
+        nextAuthorityStage: 'published',
+        previousAuthorityStage: 'composed',
+        expectedAuthorityRevision: commit.revision,
+      }),
+      cloned,
+      alive,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.readRaw(f.path) ?? '').toContain('"stage":"composed"')
+  })
+
+  it('복제 FreshReadToken 도 첫 단계에서 거부한다', async () => {
+    const f = await setup()
+    const cloned: FreshReadToken = { ...f.read }
+
+    const r = await f.store.append(f.lease, draftOf(f), cloned, alive)
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.calls).toEqual([])
+  })
+
   it('bench 디렉터리가 심링크면 따라가지 않고 거부한다', async () => {
     const f = await setup()
     f.fs.setSymlink(join(JOURNAL_DIR, f.benchId))
