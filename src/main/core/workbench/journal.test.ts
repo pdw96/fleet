@@ -858,6 +858,60 @@ describe('레코드 결속·경로 안전 — 크레덴셜 없이도 서는 방�
     expect((await publish(OID_C)).kind).toBe('written') // 양성 대조
   })
 
+  it.each([['prepared'], ['composed']])(
+    '%s 단계는 publishedAt 을 실을 수 없다(게시 전 게시 시각 · 최초 쓰기 포함)',
+    async (stage) => {
+      const f = await setup()
+      // ⚠ 전이 층의 도입 규칙은 **기존 엔트리가 있을 때만** 돈다 — 최초 쓰기에서는 침묵하므로
+      //   거짓 게시 시각이 먼저 박히고, 이후 단계는 증거 동결 때문에 그것을 **보존해야** 한다.
+      const over: Partial<IntegrationTxnDraft> =
+        stage === 'prepared'
+          ? { publishedAt: AT }
+          : {
+              stage: 'composed',
+              resultOid: OID_C,
+              resultTree: OID_A,
+              nextAuthorityStage: 'composed',
+              publishedAt: AT,
+            }
+
+      const r = await f.first(draftOf(f, over))
+
+      expect(r.kind).toBe('invariant-violation')
+      expect(f.fs.countOf('openExclusive')).toBe(0)
+    },
+  )
+
+  it('포기는 이미 게시된 시각을 승계할 수 있다(양성 대조)', async () => {
+    const f = await setup()
+    f.fs.setFile(
+      f.path,
+      serialized(f, {
+        stage: 'published',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        publishedAt: AT,
+        nextAuthorityStage: 'published',
+        previousAuthorityStage: 'composed',
+      }),
+    )
+
+    const r = await f.first(
+      draftOf(f, {
+        stage: 'abandoned',
+        nextAuthorityStage: undefined,
+        previousAuthorityStage: 'published',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        publishedAt: AT,
+        abandonedAt: AT,
+        abandonReason: 'user-abandon',
+      }),
+    )
+
+    expect(r.kind).toBe('written')
+  })
+
   it('포기가 없던 결과 증거를 들여오지 못한다(존재한 적 없는 결과 증언 차단)', async () => {
     const f = await setup()
     f.fs.setFile(f.path, serialized(f)) // prepared — 결과 증거 없음

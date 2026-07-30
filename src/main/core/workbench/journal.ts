@@ -104,7 +104,11 @@ export interface IntegrationTxnRecord {
   /** `stage ∈ {composed, published, finalized}` 필수. `prepared` 에는 **없어야** 한다. */
   readonly resultTree?: string
   readonly resultOid?: string
-  /** `stage ∈ {published, finalized}` 필수. */
+  /**
+   * `stage ∈ {published, finalized}` **필수**이고 `prepared`·`composed` 에는 **없어야** 한다
+   * (게시 전 게시 시각 금지 · Codex PR#269 6R). `abandoned` 는 **승계가 정상**이라 형태 층이 아니라
+   * 전이 층의 「증거 도입」 규칙이 판정한다.
+   */
   readonly publishedAt?: number
   readonly abandonedAt?: number
   readonly abandonReason?: AbandonReason
@@ -524,6 +528,18 @@ const parseRecordShape = (
     record.publishedAt === undefined
   ) {
     v.push(`stage=${record.stage} 인데 publishedAt 이 없다`)
+  }
+  if (
+    (record.stage === 'prepared' || record.stage === 'composed') &&
+    record.publishedAt !== undefined
+  ) {
+    // **게시 전에 게시 시각이 있을 수 없다**(Codex PR#269 6R P1). 전이 층의 「증거 도입」 규칙은
+    // 기존 엔트리가 있을 때만 도는데, **최초 쓰기**(부재 → `prepared`)에는 기존이 없어 그 규칙이
+    // 침묵한다 — 그러면 거짓 게시 시각이 먼저 박히고, 이후 단계는 그것을 **보존해야 하므로**
+    // (증거 동결) 거짓이 종결 기록까지 살아남는다. 그래서 **형태 층**에서 단계별로 금지한다
+    // (`prepared` 의 `resultOid`·`resultTree` 금지와 같은 자리). `abandoned` 는 승계가 정상이라
+    // 여기서 막지 않고 전이 층의 도입 규칙이 판정한다.
+    v.push(`stage=${record.stage} 인데 publishedAt 이 있다(게시 전 게시 시각)`)
   }
   if (record.stage === 'abandoned') {
     if (record.abandonedAt === undefined || record.abandonReason === undefined) {
