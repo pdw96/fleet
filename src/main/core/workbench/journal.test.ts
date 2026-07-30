@@ -1,0 +1,805 @@
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it } from 'vitest'
+
+import type {
+  AuthorityCommit,
+  BenchAuthorityDraft,
+  FreshReadToken,
+  IntegrationStage,
+} from './authority'
+import { createBenchAuthorityStore } from './authority'
+import { createFakeDurableFs, errno, type FakeDurableFs } from './__testing__/durable-fs-fake'
+import { createFakeLockBackend } from './__testing__/lock-backend-fake'
+import type { IntegrationTxnDraft, IntegrationTxnRecord } from './journal'
+import {
+  canAdvanceStage,
+  classifyJournalFileName,
+  createJournalStore,
+  digestAuthorityDraft,
+  isActiveJournalStage,
+  journalEntryPath,
+  selectJournalTxnIds,
+  SUPPORTED_JOURNAL_SCHEMA,
+} from './journal'
+import { type BenchLeaseToken, createLockScope } from './locks'
+import { newUlid } from './ulid'
+
+/**
+ * #251 PR3b T13a′ — 통합 WAL 저널 코어(§W-7 「저널 매체 계약」).
+ *
+ * 대응 §3 행: **T64**(배치·tmp 문법) · **T65**(열거 7종) · **T66**(전이 전수) · **T67**(버전 스큐) ·
+ * **T68**(rename 재시도) · **T69**(크레덴셜) · **T70**(리스) · **T71**(불변 필드·조건부 결속).
+ *
+ * 전량 주입 페이크 위에서 돌아 **양 OS 가 같은 행을 실행**한다(§3.1 대응 ⓐ · fs mock 금지 = §1 전제 5).
+ */
+
+const COMMON_GIT_DIR = '/repo/.git'
+const BENCH_ROOT = '/workbenches'
+const JOURNAL_DIR = join('/repo/.git/fleet', 'journal')
+const AUTHORITY_DIR = join('/repo/.git/fleet', 'authority')
+const AT = 1_700_000_000_000
+const OID_A = 'a'.repeat(40)
+const OID_B = 'b'.repeat(40)
+const OID_C = 'c'.repeat(40)
+
+const STAGES: readonly IntegrationStage[] = [
+  'prepared',
+  'composed',
+  'published',
+  'finalized',
+  'abandoned',
+]
+
+/**
+ * 이 스위트의 기본 시나리오는 **재시도를 타지 않는다** — 여기서 백오프가 발동하면 회귀다.
+ * 재시도 계약 자체는 아래 「§3-T68」 절이 `sleepCalls` 를 **직접 소비**해 단언한다(형제
+ * `authority-store.test.ts:49-60` 규율 — 던지지 않고 기록만 한다).
+ */
+const sleepCalls: number[] = []
+const recordingSleep = (ms: number): Promise<void> => {
+  sleepCalls.push(ms)
+  return Promise.resolve()
+}
+/** 소비하지 않은 백오프를 다음 테스트로 흘리지 않는다. */
+const takeSleeps = (): number[] => sleepCalls.splice(0)
+
+afterEach(() => {
+  expect(sleepCalls.splice(0), '백오프가 발동했는데 그 테스트가 소비하지 않았다').toEqual([])
+})
+
+const acquire = async (
+  benchId: string,
+  benchRoot = BENCH_ROOT,
+  commonGitDir = COMMON_GIT_DIR,
+): Promise<{ lease: BenchLeaseToken; release: () => void }> => {
+  const scope = createLockScope({
+    identity: { commonGitDir, benchRoot },
+    backend: createFakeLockBackend(),
+  })
+  const r = await scope.tryAcquireBenchLease(benchId)
+  if (r.status !== 'acquired') throw new Error(`리스 획득 실패: ${r.status}`)
+  return { lease: r.lease, release: () => r.handle.release() }
+}
+
+const authorityDraft = (benchId: string): BenchAuthorityDraft => ({
+  schemaVersion: SUPPORTED_JOURNAL_SCHEMA,
+  identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+  lifecycle: 'open',
+  sourceGeneration: 1,
+})
+
+/**
+ * 실 `AuthorityCommit` 을 얻는 유일한 경로 = **실제 CAS 를 돌린다**. 페이크 fs 를 저널과 **분리**하는
+ * 이유는 관측면 오염이다 — 같은 fs 를 쓰면 §3-T64 의 「저널 디렉터리 밖 파일 0」 스냅숏에 권위 파일이 섞인다.
+ */
+const mintCommitFor = async (lease: BenchLeaseToken, benchId: string): Promise<AuthorityCommit> => {
+  const store = createBenchAuthorityStore(createFakeDurableFs(), {
+    authorityDir: AUTHORITY_DIR,
+    durability: 'file-only',
+    now: () => AT,
+    sleep: recordingSleep,
+  })
+  const commit = await store.withAuthority(lease, async (tx) => {
+    const read = tx.readFresh()
+    if (read.kind !== 'absent') throw new Error(`예상 밖 읽기 결과: ${read.kind}`)
+    const cas = await tx.compareAndSwap(read.read, authorityDraft(benchId))
+    if (cas.kind !== 'committed') throw new Error(`CAS 실패: ${cas.kind}`)
+    return cas.commit
+  })
+  return commit
+}
+
+/** 같은 형태로 얻는 `FreshReadToken` — 첫 단계 크레덴셜이다(정정 175). */
+const mintReadFor = async (lease: BenchLeaseToken): Promise<FreshReadToken> => {
+  const store = createBenchAuthorityStore(createFakeDurableFs(), {
+    authorityDir: AUTHORITY_DIR,
+    durability: 'file-only',
+    now: () => AT,
+    sleep: recordingSleep,
+  })
+  return store.withAuthority(lease, (tx) => {
+    const read = tx.readFresh()
+    if (read.kind !== 'absent') throw new Error(`예상 밖 읽기 결과: ${read.kind}`)
+    return Promise.resolve(read.read)
+  })
+}
+
+interface Fixture {
+  readonly fs: FakeDurableFs
+  readonly lease: BenchLeaseToken
+  readonly release: () => void
+  readonly benchId: string
+  readonly txnId: string
+  readonly path: string
+  readonly tmpPath: string
+  readonly store: ReturnType<typeof createJournalStore>
+  readonly read: FreshReadToken
+}
+
+const setup = async (
+  initial: Readonly<Record<string, string>> = {},
+  durability: 'file+dir' | 'file-only' = 'file-only',
+): Promise<Fixture> => {
+  const benchId = newUlid()
+  const txnId = newUlid()
+  const fs = createFakeDurableFs({ initial })
+  const { lease, release } = await acquire(benchId)
+  const store = createJournalStore(fs, {
+    journalDir: JOURNAL_DIR,
+    durability,
+    sleep: recordingSleep,
+  })
+  const path = join(JOURNAL_DIR, benchId, `${txnId}.json`)
+  return {
+    fs,
+    lease,
+    release,
+    benchId,
+    txnId,
+    path,
+    tmpPath: `${path}.${lease.ownerToken}.tmp`,
+    store,
+    read: await mintReadFor(lease),
+  }
+}
+
+const draftOf = (
+  f: Pick<Fixture, 'benchId' | 'txnId'>,
+  over: Partial<IntegrationTxnDraft> = {},
+): IntegrationTxnDraft => ({
+  txnId: f.txnId,
+  benchId: f.benchId,
+  repoCommonGitDir: COMMON_GIT_DIR,
+  benchRoot: BENCH_ROOT,
+  sourceBranch: `fleet/bench-${f.benchId}`,
+  sourceSnapshot: OID_A,
+  sourceGeneration: 1,
+  targetBranch: 'main',
+  targetHeadBeforeIntegration: OID_B,
+  resultRef: `refs/fleet/integrated/${f.benchId}/${f.txnId}`,
+  startedAt: AT,
+  ownerEngineId: 'engine-1',
+  stage: 'prepared',
+  expectedAuthorityRevision: 0,
+  nextAuthorityStage: 'prepared',
+  integrationGeneration: 1,
+  draftDigest: 'a'.repeat(64),
+  ...over,
+})
+
+/** 디스크에 놓을 기존 엔트리(문자열). `over` 로 형태 위반을 주입한다. */
+const serialized = (
+  f: Pick<Fixture, 'benchId' | 'txnId'>,
+  over: Record<string, unknown> = {},
+): string => JSON.stringify({ schemaVersion: SUPPORTED_JOURNAL_SCHEMA, ...draftOf(f), ...over })
+
+describe('저널 배치·tmp 문법 (§3-T64)', () => {
+  it('엔트리는 <journalDir>/<benchId>/<txnId>.json 에만 생기고 tmp 는 같은 디렉터리에 만든다', async () => {
+    const f = await setup()
+    const before = f.fs.paths()
+    const r = await f.store.append(f.lease, draftOf(f), f.read)
+
+    expect(r.kind).toBe('written')
+    expect(f.fs.paths()).toEqual([...before, f.path].sort())
+    // tmp 는 대상과 같은 디렉터리 · rename 성공 후 부재(정정 165ⓐ·ⓑ)
+    const tmpArgs = f.fs.calls.filter((c) => c.op === 'openExclusive').map((c) => c.args[0])
+    expect(tmpArgs).toEqual([f.tmpPath])
+    expect(f.fs.paths()).not.toContain(f.tmpPath)
+    // 「<benchId> 디렉터리 밖에 어떤 저널 파일도 만들지 않는다」 — flat 배치 구현이 RED
+    expect(f.fs.paths().filter((p) => !before.includes(p))).toEqual([
+      join(JOURNAL_DIR, f.benchId, `${f.txnId}.json`),
+    ])
+    expect(f.fs.calls.filter((c) => c.op === 'mkdirRecursive').map((c) => c.args[0])).toEqual([
+      join(JOURNAL_DIR, f.benchId),
+    ])
+  })
+
+  it('경로 유도 헬퍼는 ULID 문법 위반을 거부한다(경로 성분 주입 차단)', () => {
+    const benchId = newUlid()
+    const txnId = newUlid()
+    expect(journalEntryPath(JOURNAL_DIR, benchId, txnId)).toBe(
+      join(JOURNAL_DIR, benchId, `${txnId}.json`),
+    )
+    expect(journalEntryPath(JOURNAL_DIR, '../evil', txnId)).toBeUndefined()
+    expect(journalEntryPath(JOURNAL_DIR, benchId, '..')).toBeUndefined()
+    expect(journalEntryPath(JOURNAL_DIR, benchId, benchId.toLowerCase())).toBeUndefined()
+  })
+
+  it('id 문법 위반이면 파일시스템을 만지기 전에 거부한다', async () => {
+    const f = await setup()
+    const r = await f.store.append(f.lease, draftOf(f, { txnId: 'not-a-ulid' }), f.read)
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.calls).toEqual([])
+  })
+})
+
+describe('저널 열거 필터 7종 (§3-T65)', () => {
+  const txnId = newUlid()
+
+  it.each([
+    [`${txnId}.json`, 'entry'],
+    [`${txnId}.json.OWNERTOKEN.tmp`, 'ignored'],
+    [`${txnId}.json.tmp`, 'ignored'],
+    [`${txnId}.jsonx`, 'ignored'],
+    [`${txnId}`, 'ignored'],
+    [`${txnId.toLowerCase()}.json`, 'ignored'],
+    ['not-a-ulid.json', 'ignored'],
+    [`${txnId}extra.json`, 'ignored'],
+    ['.json', 'ignored'],
+  ])('%s → %s', (name, kind) => {
+    expect(classifyJournalFileName(name).kind).toBe(kind)
+  })
+
+  it('tmp 잔재는 txnId 로 오독되지 않는다(필터 부재 구현이 RED)', () => {
+    const residue = `${txnId}.json.OWNER.tmp`
+    expect(selectJournalTxnIds([`${txnId}.json`, residue, 'README'])).toEqual([txnId])
+    const verdict = classifyJournalFileName(residue)
+    expect(verdict).toEqual({ kind: 'ignored', reason: 'tmp-residue' })
+  })
+
+  it('비정규 노드는 읽기 전에 거부한다(FIFO readFileUtf8 무기한 블록 차단)', async () => {
+    const f = await setup()
+    f.fs.setOther(f.path)
+
+    const r = f.store.read(f.benchId, f.txnId)
+
+    expect(r.kind).toBe('invalid')
+    expect(f.fs.countOf('readFileUtf8')).toBe(0)
+  })
+
+  it('내부 txnId·benchId 가 경로와 어긋나면 invalid 다', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f, { txnId: newUlid() }))
+    expect(f.store.read(f.benchId, f.txnId).kind).toBe('invalid')
+
+    const g = await setup()
+    g.fs.setFile(g.path, serialized(g, { benchId: newUlid() }))
+    expect(g.store.read(g.benchId, g.txnId).kind).toBe('invalid')
+  })
+})
+
+describe('WAL 전이 술어 전수 (§3-T66)', () => {
+  const LEGAL: ReadonlySet<string> = new Set([
+    'undefined→prepared',
+    'prepared→composed',
+    'composed→published',
+    'published→finalized',
+    'prepared→abandoned',
+    'composed→abandoned',
+    'published→abandoned',
+    'finalized→abandoned',
+    'abandoned→abandoned',
+  ])
+
+  it('초기 진입 5값 + 5×5 전수 = 합법 9쌍만 통과한다', () => {
+    const froms: readonly (IntegrationStage | undefined)[] = [undefined, ...STAGES]
+    const actual: string[] = []
+    for (const from of froms) {
+      for (const to of STAGES) {
+        if (canAdvanceStage(from, to)) actual.push(`${String(from)}→${to}`)
+      }
+    }
+    expect(actual.sort()).toEqual([...LEGAL].sort())
+  })
+
+  it('역행·부활·자기 전이를 거부한다', () => {
+    expect(canAdvanceStage('published', 'prepared')).toBe(false)
+    expect(canAdvanceStage('abandoned', 'composed')).toBe(false)
+    expect(canAdvanceStage('composed', 'composed')).toBe(false)
+    expect(canAdvanceStage(undefined, 'composed')).toBe(false)
+  })
+
+  it('활성 저널 집합은 {prepared, composed} 뿐이다(C6 · spec §W-7)', () => {
+    expect(STAGES.filter((s) => isActiveJournalStage(s))).toEqual(['prepared', 'composed'])
+  })
+
+  it('append 가 전이를 강제한다 — 디스크의 현재 엔트리와 비교한다(정정 178)', async () => {
+    const f = await setup()
+    f.fs.setFile(
+      f.path,
+      serialized(f, {
+        stage: 'published',
+        publishedAt: AT,
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'published',
+      }),
+    )
+    const commit = await mintCommitFor(f.lease, f.benchId)
+
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, { stage: 'prepared', expectedAuthorityRevision: commit.revision }),
+      commit,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('rename')).toBe(0)
+    expect(f.fs.readRaw(f.path)).toContain('"stage":"published"')
+  })
+
+  it('엔트리 부재에서 prepared 가 아니면 거부한다', async () => {
+    const f = await setup()
+    const commit = await mintCommitFor(f.lease, f.benchId)
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: commit.revision,
+      }),
+      commit,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('openExclusive')).toBe(0)
+  })
+})
+
+describe('저널 버전 스큐 (§3-T67)', () => {
+  it('지원 초과 schemaVersion 은 문법 위반보다 먼저 판정된다', async () => {
+    const f = await setup()
+    // 초과 버전 **∧** 형태 위반 — 문법을 먼저 보는 구현은 invalid 를 답해 RED 다.
+    f.fs.setFile(f.path, JSON.stringify({ schemaVersion: 2, txnId: 3 }))
+
+    const r = f.store.read(f.benchId, f.txnId)
+
+    expect(r).toMatchObject({
+      kind: 'incompatible-version',
+      found: 2,
+      supported: SUPPORTED_JOURNAL_SCHEMA,
+    })
+  })
+
+  it('읽을 수 없는 기존 엔트리는 덮어쓰지 않는다(I12 — 구 버전이 신 버전을 지우는 경로 차단)', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, JSON.stringify({ schemaVersion: 99, txnId: f.txnId }))
+
+    const r = await f.store.append(f.lease, draftOf(f), f.read)
+
+    expect(r.kind).toBe('existing-unreadable')
+    expect(f.fs.countOf('rename')).toBe(0)
+    expect(f.fs.countOf('unlinkIfExists')).toBe(0)
+    expect(f.fs.readRaw(f.path)).toContain('"schemaVersion":99')
+  })
+
+  it('schemaVersion 형태 오류는 invalid 다(버전 스큐가 아니다)', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, JSON.stringify({ ...JSON.parse(serialized(f)), schemaVersion: '1' }))
+    expect(f.store.read(f.benchId, f.txnId).kind).toBe('invalid')
+  })
+
+  it('__proto__ 오염 바이트를 거부한다', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, `{"__proto__":{"x":1},"schemaVersion":1}`)
+    expect(f.store.read(f.benchId, f.txnId).kind).toBe('invalid')
+  })
+})
+
+describe('저널 rename 유한 재시도 (§3-T68 · C4 상속)', () => {
+  it('EPERM 3연속 후 4회차 성공 — exact 호출 계수와 백오프 순서', async () => {
+    const f = await setup()
+    f.fs.failSequence('rename', [errno('EPERM'), errno('EPERM'), errno('EPERM'), null])
+
+    const r = await f.store.append(f.lease, draftOf(f), f.read)
+
+    expect(r.kind).toBe('written')
+    expect(f.fs.countOf('rename')).toBe(4)
+    expect(takeSleeps()).toEqual([10, 20, 40])
+    expect(f.fs.openFdCount()).toBe(0)
+  })
+
+  it('백오프 소진은 io-failure{step:rename} 이고 디스크는 무변이다', async () => {
+    const f = await setup()
+    f.fs.failNext('rename', errno('EPERM'), 5)
+
+    const r = await f.store.append(f.lease, draftOf(f), f.read)
+
+    expect(r).toMatchObject({ kind: 'io-failure', step: 'rename', path: f.tmpPath })
+    expect(takeSleeps()).toEqual([10, 20, 40, 80])
+    expect(f.fs.paths()).not.toContain(f.path)
+    expect(f.fs.paths()).not.toContain(f.tmpPath)
+    expect(f.fs.openFdCount()).toBe(0)
+  })
+
+  it('비대상 errno 와 code 부재 오류는 재시도 0 이다', async () => {
+    const f = await setup()
+    f.fs.failNext('rename', errno('ENOENT'))
+    expect((await f.store.append(f.lease, draftOf(f), f.read)).kind).toBe('io-failure')
+    expect(f.fs.countOf('rename')).toBe(1)
+    expect(takeSleeps()).toEqual([])
+
+    const g = await setup()
+    g.fs.failNext('rename', new Error('code 없는 실패'))
+    expect((await g.store.append(g.lease, draftOf(g), g.read)).kind).toBe('io-failure')
+    expect(g.fs.countOf('rename')).toBe(1)
+    expect(takeSleeps()).toEqual([])
+  })
+
+  it('rename 전 실패는 io-failure 이고 자기 tmp 만 치운다', async () => {
+    const f = await setup()
+    f.fs.failNext('writeAll', errno('ENOSPC'))
+
+    const r = await f.store.append(f.lease, draftOf(f), f.read)
+
+    expect(r).toMatchObject({ kind: 'io-failure', step: 'write', path: f.tmpPath })
+    expect(f.fs.paths()).not.toContain(f.tmpPath)
+    expect(f.fs.openFdCount()).toBe(0)
+  })
+
+  it('file+dir 에서 rename 후 디렉터리 내구 실패는 write-uncertain 이다(파일은 이미 게시됨)', async () => {
+    const f = await setup({}, 'file+dir')
+    // fsync 순서 = [영역 루트, journalDir, tmp 파일, **benchDir(post-commit)**] — 마지막만 실패시킨다.
+    f.fs.failSequence('fsync', [null, null, null, errno('EIO')])
+
+    const r = await f.store.append(f.lease, draftOf(f), f.read)
+
+    expect(r).toMatchObject({ kind: 'write-uncertain', step: 'fsync-dir' })
+    expect(f.fs.paths()).toContain(f.path)
+    expect(f.fs.openFdCount()).toBe(0)
+  })
+})
+
+describe('저널 쓰기 크레덴셜 (§3-T69)', () => {
+  it('첫 단계는 FreshReadToken 으로 쓸 수 있다', async () => {
+    const f = await setup()
+    expect((await f.store.append(f.lease, draftOf(f), f.read)).kind).toBe('written')
+  })
+
+  it('첫 단계가 아니면 FreshReadToken 을 거부한다(직전 CAS 증거를 요구)', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+      }),
+      f.read,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('openExclusive')).toBe(0)
+  })
+
+  it('expectedAuthorityRevision 이 직전 커밋 revision 과 어긋나면 거부한다', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    const commit = await mintCommitFor(f.lease, f.benchId)
+
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: commit.revision + 1,
+      }),
+      commit,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('rename')).toBe(0)
+  })
+
+  it('직전 커밋 증거가 있으면 다음 단계를 쓴다', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    const commit = await mintCommitFor(f.lease, f.benchId)
+
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: commit.revision,
+      }),
+      commit,
+    )
+
+    expect(r.kind).toBe('written')
+    expect(f.fs.readRaw(f.path)).toContain('"stage":"composed"')
+  })
+
+  it('타 bench 의 커밋은 거부한다', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    const other = await acquire(newUlid())
+    const foreign = await mintCommitFor(other.lease, other.lease.identity.benchId)
+
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: foreign.revision,
+      }),
+      foreign,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+  })
+
+  it('크레덴셜 없이는 타입 수준에서 호출할 수 없다', async () => {
+    const f = await setup()
+    // @ts-expect-error — `prev` 인자 누락. **컴파일이 이 행의 단언**이고(직전 CAS 증거 없이 저널을 쓰는
+    // 코드는 서지 않는다), 런타임 폴백도 값으로 거부하는지 함께 본다(타입 우회 경로의 백스톱).
+    const r = await f.store.append(f.lease, draftOf(f))
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.calls).toEqual([])
+  })
+})
+
+describe('저널 쓰기는 bench 리스 아래에서만 (§3-T70)', () => {
+  it('비민팅(복제) 리스면 파일시스템에 손대지 않는다', async () => {
+    const f = await setup()
+    const cloned: BenchLeaseToken = { ...f.lease }
+
+    const r = await f.store.append(cloned, draftOf(f), f.read)
+
+    expect(r).toEqual({ kind: 'lease-invalid', reason: 'stolen' })
+    expect(f.fs.calls).toEqual([])
+  })
+
+  it('리스 identity 와 레코드가 어긋나면 거부한다', async () => {
+    const f = await setup()
+    const r = await f.store.append(f.lease, draftOf(f, { benchRoot: '/elsewhere' }), f.read)
+
+    expect(r).toEqual({ kind: 'lease-invalid', reason: 'identity-mismatch' })
+    expect(f.fs.calls).toEqual([])
+  })
+
+  it('해제된 리스는 **변이 전에** 거부된다(tmp 잔재를 만들지 않는다)', async () => {
+    const f = await setup()
+    f.release()
+
+    const r = await f.store.append(f.lease, draftOf(f), f.read)
+
+    expect(r).toMatchObject({ kind: 'lease-invalid', reason: 'released' })
+    expect(f.fs.countOf('openExclusive')).toBe(0)
+    expect(f.fs.countOf('mkdirRecursive')).toBe(0)
+    expect(f.fs.paths()).toEqual([])
+  })
+
+  it('재시도 회차 중간에 리스를 잃으면 그 뒤 rename 을 시도하지 않는다(L-6 동형)', async () => {
+    const benchId = newUlid()
+    const txnId = newUlid()
+    const { lease, release } = await acquire(benchId)
+    let renames = 0
+    // 1회차 rename 이 **실패하는 그 순간** 리스를 잃게 만든다 — 재검증이 루프 밖에 한 번만 있는
+    // 구현은 2회차에 성공해 「남의 리스 아래에서 게시」한다(authority.ts:1360-1367 과 같은 축).
+    const fs = createFakeDurableFs({
+      before: (op) => {
+        if (op !== 'rename') return
+        renames += 1
+        if (renames === 1) release()
+      },
+    })
+    const store = createJournalStore(fs, {
+      journalDir: JOURNAL_DIR,
+      durability: 'file-only',
+      sleep: recordingSleep,
+    })
+    fs.failNext('rename', errno('EPERM'), 1)
+    const read = await mintReadFor(lease)
+
+    const out = await store.append(lease, draftOf({ benchId, txnId }), read)
+
+    expect(out).toMatchObject({ kind: 'lease-invalid' })
+    expect(renames).toBe(1)
+    expect(takeSleeps()).toEqual([10])
+    expect(fs.paths()).toEqual([])
+  })
+
+  it('tmp 이름의 ownerToken 은 리스에서만 온다', async () => {
+    const f = await setup()
+    f.fs.failNext('rename', errno('ENOENT'))
+
+    await f.store.append(f.lease, draftOf(f), f.read)
+
+    const opened = f.fs.calls.find((c) => c.op === 'openExclusive')?.args[0]
+    expect(opened).toBe(`${f.path}.${f.lease.ownerToken}.tmp`)
+  })
+})
+
+describe('불변 필드·조건부 결속 (§3-T71)', () => {
+  const advance = async (
+    f: Fixture,
+    over: Partial<IntegrationTxnDraft>,
+  ): ReturnType<Fixture['store']['append']> => {
+    f.fs.setFile(f.path, serialized(f))
+    const commit = await mintCommitFor(f.lease, f.benchId)
+    return f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: commit.revision,
+        ...over,
+      }),
+      commit,
+    )
+  }
+
+  it.each([
+    ['sourceSnapshot', { sourceSnapshot: OID_C }],
+    ['sourceBranch', { sourceBranch: 'other' }],
+    ['targetBranch', { targetBranch: 'other' }],
+    ['targetHeadBeforeIntegration', { targetHeadBeforeIntegration: OID_C }],
+    ['sourceGeneration', { sourceGeneration: 2 }],
+    ['resultRef', { resultRef: 'refs/other' }],
+    ['startedAt', { startedAt: AT + 1 }],
+    ['ownerEngineId', { ownerEngineId: 'engine-2' }],
+  ])('단계 전진에서 %s 가 바뀌면 거부한다', async (_name, over) => {
+    const f = await setup()
+    expect((await advance(f, over)).kind).toBe('invariant-violation')
+  })
+
+  it('불변 필드가 그대로면 통과한다(양성 대조 — 「무조건 거부」 뮤턴트 차단)', async () => {
+    const f = await setup()
+    expect((await advance(f, {})).kind).toBe('written')
+  })
+
+  it.each([
+    ['composed 인데 resultOid 부재', { stage: 'composed', nextAuthorityStage: 'composed' }],
+    [
+      'published 인데 publishedAt 부재',
+      {
+        stage: 'published',
+        nextAuthorityStage: 'published',
+        resultOid: OID_C,
+        resultTree: OID_A,
+      },
+    ],
+    [
+      'abandoned 인데 abandonReason 부재',
+      { stage: 'abandoned', nextAuthorityStage: undefined, abandonedAt: AT },
+    ],
+    [
+      'abandoned 인데 nextAuthorityStage 존재',
+      {
+        stage: 'abandoned',
+        nextAuthorityStage: 'abandoned' as IntegrationStage,
+        abandonedAt: AT,
+        abandonReason: 'user-abandon' as const,
+      },
+    ],
+    ['비-abandoned 인데 stage ≠ nextAuthorityStage', { nextAuthorityStage: 'finalized' }],
+    ['draftDigest 가 빈 문자열', { draftDigest: '' }],
+    ['resultRef 가 빈 문자열', { resultRef: '' }],
+    ['expectedAuthorityRevision 이 음수', { expectedAuthorityRevision: -1 }],
+  ])('조건부 결속 위반: %s', async (_name, over) => {
+    const f = await setup()
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, over as Partial<IntegrationTxnDraft>),
+      f.read,
+    )
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('rename')).toBe(0)
+  })
+
+  it('포기 엔트리는 nextAuthorityStage 부재로 기록된다(정정 177)', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    const commit = await mintCommitFor(f.lease, f.benchId)
+
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'abandoned',
+        nextAuthorityStage: undefined,
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: commit.revision,
+        abandonedAt: AT,
+        abandonReason: 'user-abandon',
+      }),
+      commit,
+    )
+
+    expect(r.kind).toBe('written')
+    const raw = f.fs.readRaw(f.path) ?? ''
+    expect(raw).toContain('"stage":"abandoned"')
+    expect(raw).not.toContain('nextAuthorityStage')
+  })
+
+  it('기록된 엔트리는 다시 읽힌다(왕복) · schemaVersion 은 store 가 찍는다', async () => {
+    const f = await setup()
+    await f.store.append(f.lease, draftOf(f), f.read)
+
+    const r = f.store.read(f.benchId, f.txnId)
+
+    expect(r.kind).toBe('found')
+    if (r.kind !== 'found') return
+    const expected: IntegrationTxnRecord = {
+      schemaVersion: SUPPORTED_JOURNAL_SCHEMA,
+      ...draftOf(f),
+    }
+    expect(r.record).toEqual(expected)
+  })
+
+  it('초과 키는 재구성에서 탈락한다(디스크 재기록 오염 차단)', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f, { evil: 'x' }))
+
+    const r = f.store.read(f.benchId, f.txnId)
+
+    expect(r.kind).toBe('found')
+    if (r.kind !== 'found') return
+    expect(Object.keys(r.record)).not.toContain('evil')
+  })
+})
+
+describe('권위 draft 다이제스트 (정정 167)', () => {
+  it('키 순서에 무관하게 같은 값을 낸다(정준 직렬화)', () => {
+    const benchId = newUlid()
+    const a: BenchAuthorityDraft = {
+      schemaVersion: 1,
+      identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+      lifecycle: 'open',
+      sourceGeneration: 1,
+    }
+    const b: BenchAuthorityDraft = {
+      sourceGeneration: 1,
+      lifecycle: 'open',
+      identity: { benchId, benchRoot: BENCH_ROOT, commonGitDir: COMMON_GIT_DIR },
+      schemaVersion: 1,
+    }
+    expect(digestAuthorityDraft(a)).toBe(digestAuthorityDraft(b))
+    expect(digestAuthorityDraft(a)).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('값이 하나라도 다르면 달라진다', () => {
+    const benchId = newUlid()
+    const base: BenchAuthorityDraft = {
+      schemaVersion: 1,
+      identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+      lifecycle: 'open',
+      sourceGeneration: 1,
+    }
+    expect(digestAuthorityDraft(base)).not.toBe(
+      digestAuthorityDraft({ ...base, sourceGeneration: 2 }),
+    )
+  })
+})

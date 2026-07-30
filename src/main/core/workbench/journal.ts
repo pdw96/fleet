@@ -1,0 +1,838 @@
+import { createHash } from 'node:crypto'
+import { dirname, join } from 'node:path'
+
+import type {
+  AuthorityCommit,
+  BenchAuthorityDraft,
+  FreshReadToken,
+  IntegrationStage,
+  PostCommitStep,
+  PreCommitStep,
+} from './authority'
+import { isRetryableRenameError, RENAME_BACKOFF_MS } from './authority'
+import type { DurabilityLevel, DurableFs } from './durable-fs'
+import type { BenchLeaseToken } from './locks'
+import { isMintedLease } from './locks'
+import { isUlid } from './ulid'
+
+/**
+ * 통합 WAL 저널 (#251 PR3b · 스펙 §W-7 「저널 매체 계약」) — **레코드·파서·전이 술어·내구 쓰기**.
+ *
+ * **레이아웃 = txn 당 파일 1개** `<area>/journal/<benchId>/<txnId>.json`. 단계 전진은 append 가 아니라
+ * **같은 파일 덮어쓰기**이고(계획 정정 178), 그래서 전이 술어의 비교 대상은 인자가 아니라 **디스크의
+ * 현재 엔트리**다 — 인자로 받으면 호출자가 「내가 방금 뭘 썼다고 생각하는지」를 근거로 전진하게 되어
+ * 크래시 후 재개에서 실제 디스크와 어긋난다.
+ *
+ * ## 이 PR 에서 **하지 않는** 것(정직 표기 — 미착지 기제를 현재형으로 쓰지 않는다)
+ *
+ * - **복구 판정·회수 어휘는 여기 없다**(계획 정정 159·173 → PR3c). 판정 함수가 자기 입력의 생산자보다
+ *   먼저 착지하는 배치 자체가 `anchor-unavailable` 같은 유령 상태를 만든다는 것이 그 정정의 근거다.
+ * - **디렉터리 열거를 하지 않는다** — `DurableFs` 에 순회 프리미티브가 없고 그 신설은 PR3d 다. 여기 있는
+ *   것은 **주어진 이름 목록에 대한 순수 필터**(`classifyJournalFileName`)뿐이며, 「열거가 있다」로 읽지 말 것.
+ * - **소비자가 0 이다.** 통합 트랜잭션 시퀀서(PR5 T18)·부팅 복구(PR7)가 붙기 전까지 이 모듈은 프로덕션
+ *   경로에서 도달 불가다. 특히 `expectedAuthorityRevision`·`previous/nextAuthorityStage`·
+ *   `integrationGeneration`·`draftDigest` 는 **기록만 되고 대조되지 않는다**(대조자 = PR3c).
+ * - **abort-on-CAS-failure 의 행동 강제자도 없다**(계획 정정 162ⓑ·165ⓒ) — 여기 있는 것은 크레덴셜
+ *   **타입 강제**까지이고, 「CAS 실패 후 다음 단계로 전진하지 않는다」를 실제로 집행하는 시퀀서는 PR5 다.
+ *
+ * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · 형제 `authority.ts` 와 동형 · AGENTS.md 「안전 우선」)
+ *
+ * 이 모듈도 CAS 경로와 같은 **엔진 인프라 쓰기**다 — 소비 지점이 부팅·리스 임계 구역이라 승인자가 없고
+ * §W-3 **L-5**(승인 대기 중 락 보유 금지)와 방향이 충돌한다. destructive 조작을 막는 것은 게이트가 아니라
+ * ⓐ**리스 출처 확인**(`isMintedLease`) ⓑ**변이 직전·재시도 회차마다 재검증**(L-6) ⓒ**create-only tmp**
+ * (이름에 리스의 `ownerToken` 을 실어 타 보유자와 충돌하지 않는다) ⓓ**identity 3중 대조**다.
+ * 경로는 주입된 `journalDir` + 검증된 ULID 2개로만 유도한다 — 이 모듈은 코디네이션 영역을 재유도하지 않는다.
+ */
+
+/**
+ * 이 코드베이스가 읽을 수 있는 저널 스키마 상한. 초과 = `incompatible-version`(≠ invalid · I12).
+ * 형제 `SUPPORTED_AUTHORITY_SCHEMA` 와 같은 규율로 **레코드 필드를 이 값에서 타입 유도**한다.
+ *
+ * ⚠ 필드 이름이 스펙 원문의 `schema` 가 아니라 `schemaVersion` 인 것은 **의도된 통일**이다(계획 정정 141):
+ * 두 매체가 다른 이름을 쓰면 「최우선 검사」 규율이 한쪽에서만 지켜져도 무신호가 된다.
+ */
+export const SUPPORTED_JOURNAL_SCHEMA = 1
+
+/**
+ * 저널 1건의 크기 상한. **읽기 전에** 본다(형제 authority.ts 와 같은 규율) — 상한을 읽은 뒤에 보면
+ * 적대적 크기의 파일이 이미 메모리에 올라간 뒤다.
+ */
+export const MAX_JOURNAL_BYTES = 64 * 1024
+
+const ENTRY_SUFFIX = '.json'
+const TMP_SUFFIX = '.tmp'
+const JOURNAL_DIR_MODE = 0o700
+const JOURNAL_FILE_MODE = 0o600
+/** `digestAuthorityDraft` 산출 형식. 임의 문자열을 저장하지 못하게 **형식을 계약으로 고정**한다. */
+const DIGEST_RE = /^[0-9a-f]{64}$/
+
+/** §W-7 C7. 스펙 3값 그대로이며 여기서 창작하지 않는다. */
+export type AbandonReason = 'user-abandon' | 'superseded' | 'stale-attempt'
+
+/**
+ * 통합 트랜잭션 WAL 레코드(§W-7).
+ *
+ * 뒤쪽 5필드는 **권위 CAS 결속**이다(Codex 3R · 계획 정정 167). 저널이 **선기록**이므로 「무엇을 기대하고
+ * 썼는지」를 함께 남겨야 복구가 「자동 승격 가능」과 「`reconciliation-required`」를 가를 수 있다.
+ */
+export interface IntegrationTxnRecord {
+  readonly schemaVersion: typeof SUPPORTED_JOURNAL_SCHEMA
+  readonly txnId: string
+  readonly benchId: string
+  /** 대조 전용 — 경로 유도에 쓰지 않는다(형제 `BenchAuthorityIdentity` 와 같은 규율). */
+  readonly repoCommonGitDir: string
+  readonly benchRoot: string
+  readonly sourceBranch: string
+  /** auto-keep OID. */
+  readonly sourceSnapshot: string
+  readonly sourceGeneration: number
+  readonly targetBranch: string
+  readonly targetHeadBeforeIntegration: string
+  /**
+   * ⚠ **문법 소유는 PR3c 다**(계획 정정 174). 정정 166 채택으로 C1 문법에 통합 세대가 결속되는 것이
+   * 확정 사항이라, 여기서 문법을 파싱·조립하면 다음 PR 이 곧바로 그것을 수술한다. 이 모듈은 **비어 있지
+   * 않은 문자열**까지만 본다 — 「검증을 안 한다」가 아니라 「문법 축이 이 PR 의 계약이 아니다」이다.
+   */
+  readonly resultRef: string
+  readonly startedAt: number
+  /** 진단용. */
+  readonly ownerEngineId: string
+  readonly stage: IntegrationStage
+  /** `stage ∈ {composed, published, finalized}` 필수. `prepared` 에는 **없어야** 한다. */
+  readonly resultTree?: string
+  readonly resultOid?: string
+  /** `stage ∈ {published, finalized}` 필수. */
+  readonly publishedAt?: number
+  readonly abandonedAt?: number
+  readonly abandonReason?: AbandonReason
+  /** 이 저널에 이어질 권위 CAS 가 맞출 revision. 부재 레코드 = 0. */
+  readonly expectedAuthorityRevision: number
+  /** 부재 = 진행 중 통합이 없다(트랜잭션 **첫 단계**). */
+  readonly previousAuthorityStage?: IntegrationStage
+  /**
+   * 부재 = 후속 CAS 가 권위의 통합 필드를 **소거**한다(포기 · 계획 정정 177). 포기는 권위 레코드에
+   * `abandoned` 를 남기지 않고 4필드를 함께 지우므로(`reclaimDraft` 선례), 「소거」를 표현할 어휘를
+   * 새로 만들지 않고 **부재**로 표현한다.
+   */
+  readonly nextAuthorityStage?: IntegrationStage
+  /** 발행자는 PR3c(`prepared` 마다 +1). 이 PR 에서는 값을 검증만 하고 소비하지 않는다. */
+  readonly integrationGeneration: number
+  /** 제출될 권위 draft 의 정준 JSON sha256(`digestAuthorityDraft`). */
+  readonly draftDigest: string
+}
+
+/**
+ * 호출자가 제출하는 것. `schemaVersion` 은 **store 만 배정**한다 — 호출자가 찍게 두면 지원 범위 밖 버전을
+ * 기록하는 경로가 열리고, 그 파일은 이후 자기 자신에게 `incompatible-version` 이 된다.
+ */
+export type IntegrationTxnDraft = Omit<IntegrationTxnRecord, 'schemaVersion'>
+
+/** 이름 하나에 대한 판정. 이 PR 은 **순회하지 않는다** — 이름 목록의 출처는 호출자(PR3d)다. */
+export type JournalFileVerdict =
+  | { readonly kind: 'entry'; readonly txnId: string }
+  | {
+      readonly kind: 'ignored'
+      readonly reason: 'tmp-residue' | 'not-json' | 'basename-not-ulid'
+    }
+
+export type JournalReadResult =
+  | { readonly kind: 'found'; readonly record: IntegrationTxnRecord }
+  | { readonly kind: 'absent' }
+  | {
+      readonly kind: 'invalid'
+      readonly path?: string
+      readonly violations: readonly string[]
+    }
+  /** 문법 위반과 버전 스큐는 다른 사실이다 — 섞으면 구 버전이 신 버전 저널을 지운다(I12). */
+  | {
+      readonly kind: 'incompatible-version'
+      readonly path: string
+      readonly found: number
+      readonly supported: number
+    }
+  | {
+      readonly kind: 'io-failure'
+      readonly step: 'stat' | 'read'
+      readonly path: string
+      readonly cause: unknown
+    }
+
+export type JournalWriteResult =
+  | { readonly kind: 'written'; readonly record: IntegrationTxnRecord; readonly path: string }
+  | { readonly kind: 'invariant-violation'; readonly violations: readonly string[] }
+  | {
+      readonly kind: 'lease-invalid'
+      readonly reason: 'released' | 'stolen' | 'identity-mismatch'
+    }
+  /**
+   * 현재 엔트리를 **읽지 못했다** — 그래서 덮어쓰지 않는다. 구 버전이 신 버전 저널을 지우는 I12 의
+   * 저널 표면이자, 손상 파일을 조용히 정상 파일로 갈아치우는 경로의 차단이다.
+   */
+  | { readonly kind: 'existing-unreadable'; readonly existing: JournalReadResult }
+  /** rename **성공 전** 실패(재시도 소진 포함) = 디스크 무변이. */
+  | {
+      readonly kind: 'io-failure'
+      readonly step: PreCommitStep
+      readonly path: string
+      readonly cause: unknown
+    }
+  /**
+   * rename **성공 후** 디렉터리 내구 단계 실패 = 엔트리는 **이미 게시**됐다. 「쓰기 실패·무변이」와 반드시
+   * 구분한다(형제 `commit-uncertain` 과 같은 구분 · Codex 체크포인트 2 P1-5).
+   */
+  | {
+      readonly kind: 'write-uncertain'
+      readonly step: PostCommitStep
+      readonly path: string
+      readonly cause: unknown
+    }
+
+export interface JournalStoreOptions {
+  /** `<area>/journal` — **이미 정준화된** 절대 경로. 검증은 호출자 책임(PR7). */
+  readonly journalDir: string
+  /** `probeDurability()` 산출물. 이 모듈은 플랫폼을 알지 못한다. */
+  readonly durability: DurabilityLevel
+  /** rename 재시도 백오프 대기. **선택적이 아니라 필수**다(형제 store 와 같은 근거 — 소비자 0 이라 기본값을 두면 그 구현이 어떤 게이트도 거치지 않고 착지한다). */
+  readonly sleep: (ms: number) => Promise<void>
+}
+
+export interface JournalStore {
+  /** 디스크에서 **항상** 읽는다(캐시 없음 · D-9 즉시-close). */
+  read(benchId: string, txnId: string): JournalReadResult
+  /**
+   * 단계 전진 1회 = (전이 검사, 내구 쓰기). `prev` 는 **직전 단계 CAS 의 증거**이며 첫 단계에 한해
+   * `FreshReadToken` 이 그 자리를 대신한다(계획 정정 175).
+   */
+  append(
+    lease: BenchLeaseToken,
+    draft: IntegrationTxnDraft,
+    prev: AuthorityCommit | FreshReadToken,
+  ): Promise<JournalWriteResult>
+}
+
+/* ================================================================================================
+ * 순수 술어 — 소비자(PR3c·PR5·PR7)보다 먼저 서는 부분
+ * ============================================================================================= */
+
+const STAGE_ORDER: readonly IntegrationStage[] = ['prepared', 'composed', 'published', 'finalized']
+
+/**
+ * 합법 전이 그래프(계획 정정 142). 타입·스펙·코드 어디에도 없어 **역행·부활이 어느 층에서도 차단되지
+ * 않던** 축이다 — 권위 CAS 는 신 레코드를 단독으로만 검사하므로(authority.ts `checkInvariants`)
+ * `published → prepared` 를 막지 못한다.
+ *
+ * 합법: 부재 → `prepared` · `prepared → composed → published → finalized` · **임의 단계 → `abandoned`**.
+ * 그 외 전부 거부(자기 전이 포함 — 같은 단계 재기록은 「전진」이 아니다).
+ *
+ * 권위 레코드 쪽 전이 불변식 계층은 **PR3c** 다(같은 비가역 축을 두 PR 로 쪼개지 않는다).
+ */
+export function canAdvanceStage(from: IntegrationStage | undefined, to: IntegrationStage): boolean {
+  if (to === 'abandoned') return from !== undefined
+  if (from === undefined) return to === 'prepared'
+  const i = STAGE_ORDER.indexOf(from)
+  return i >= 0 && STAGE_ORDER[i + 1] === to
+}
+
+/**
+ * 활성 저널 집합 = {`prepared`,`composed`} (§W-7 · C6). **함수 1개로 통일**한다(계획 정정 164) —
+ * 「stage 단독」과 「귀속 필요」 두 정의가 공존하면 소비자마다 다른 게이트를 쓰게 된다. 귀속 조건을
+ * 더하는 것은 그 어휘를 신설하는 **PR3c** 의 일이며, 그때 spec I11·§3-T33 문면을 같은 커밋에서 고친다.
+ *
+ * ⚠ `published` 는 **활성이 아니다** — integration-ready bench 의 `delete-record`·`abandon` 이 허용되는
+ * 근거가 이 사실이고, `abandoned` 는 **보존하되 활성에서 제외**한다(계획 정정 135 · 감사 목적).
+ */
+export function isActiveJournalStage(stage: IntegrationStage): boolean {
+  return stage === 'prepared' || stage === 'composed'
+}
+
+/**
+ * 파일 이름 1개 판정(§3-T65). **tmp 를 먼저 거른다** — 실측상 접미 필터가 없으면 크래시 tmp 잔재가
+ * `txnId = "<ULID>.json.<ownerToken>"` 인 엔트리로 **오독**된다.
+ */
+export function classifyJournalFileName(name: string): JournalFileVerdict {
+  if (name.endsWith(TMP_SUFFIX)) return { kind: 'ignored', reason: 'tmp-residue' }
+  if (!name.endsWith(ENTRY_SUFFIX)) return { kind: 'ignored', reason: 'not-json' }
+  const base = name.slice(0, -ENTRY_SUFFIX.length)
+  if (!isUlid(base)) return { kind: 'ignored', reason: 'basename-not-ulid' }
+  return { kind: 'entry', txnId: base }
+}
+
+/** 이름 목록 → 저널 txnId 목록. 순회는 호출자(PR3d)가 한다. */
+export function selectJournalTxnIds(names: readonly string[]): readonly string[] {
+  const out: string[] = []
+  for (const name of names) {
+    const verdict = classifyJournalFileName(name)
+    if (verdict.kind === 'entry') out.push(verdict.txnId)
+  }
+  return out
+}
+
+/**
+ * 엔트리 경로 유도. **문법 위반이면 `undefined`** — 두 id 는 경로 성분이 되므로 정규화하지 않고 거부하는
+ * 것이 단사 계약의 집행이다(§W-1 `isUlid` 와 같은 규율). ULID 알파벳에는 `/`·`.` 가 없어 통과 집합에서
+ * 경로 탈출이 **표현 불가**하다.
+ */
+export function journalEntryPath(
+  journalDir: string,
+  benchId: string,
+  txnId: string,
+): string | undefined {
+  if (!isUlid(benchId) || !isUlid(txnId)) return undefined
+  return join(journalDir, benchId, `${txnId}${ENTRY_SUFFIX}`)
+}
+
+/* ================================================================================================
+ * 정준 직렬화 · 다이제스트
+ * ============================================================================================= */
+
+/** `unknown` 을 캐스트 없이 들여다본다(형제 authority.ts 와 같은 관용구). */
+const own = (o: object, k: string): unknown => (Object.hasOwn(o, k) ? Reflect.get(o, k) : undefined)
+
+const isPlainObject = (v: unknown): v is object =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.length > 0
+
+const isCount = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+
+/**
+ * 위반 메시지에 값을 싣는다 — **적대 입력이므로 어떤 값이 와도 던지지 않아야 한다**(형제 authority.ts:722
+ * 와 같은 근거: own `toString` 이 비호출 가능이면 `String()` 이 TypeError 를 던져 파서가 총체성을 잃는다).
+ */
+const show = (v: unknown): string => {
+  if (typeof v === 'string') return v
+  try {
+    return JSON.stringify(v) ?? typeof v
+  } catch {
+    return typeof v
+  }
+}
+
+/**
+ * 키 순서에 무관한 정준 JSON. `JSON.stringify` 는 **삽입 순서**를 그대로 쓰므로 같은 내용의 draft 가 다른
+ * 다이제스트를 낼 수 있고, 그러면 복구의 「digest 불일치 = 다른 의도」 판정(정정 167)이 오탐을 낸다.
+ */
+const canonicalJson = (value: unknown): string => {
+  if (!isPlainObject(value)) {
+    if (Array.isArray(value)) {
+      // 현재 권위 draft 계약에 배열은 없지만, 미래 필드가 조용히 잘못 직렬화되지 않도록 인덱스 경로를 둔다.
+      const len = own(value, 'length')
+      const n = typeof len === 'number' ? len : 0
+      const items: string[] = []
+      for (let i = 0; i < n; i += 1) items.push(canonicalJson(own(value, String(i))))
+      return `[${items.join(',')}]`
+    }
+    return JSON.stringify(value) ?? 'null'
+  }
+  const parts: string[] = []
+  for (const key of Object.keys(value).sort()) {
+    const v = own(value, key)
+    if (v === undefined) continue // `JSON.stringify` 와 같은 규칙 — 부재와 undefined 를 같게 본다.
+    parts.push(`${JSON.stringify(key)}:${canonicalJson(v)}`)
+  }
+  return `{${parts.join(',')}}`
+}
+
+/**
+ * 저널이 결속하는 `draftDigest` 의 **유일한 생산자**(계획 정정 167). 여기 두지 않으면 생산자(PR5)와
+ * 대조자(PR3c)가 각자 다른 정준화를 만들어 「불일치」가 상시 참이 된다.
+ */
+export function digestAuthorityDraft(draft: BenchAuthorityDraft): string {
+  return createHash('sha256').update(canonicalJson(draft), 'utf8').digest('hex')
+}
+
+/* ================================================================================================
+ * 파서 — `schemaVersion` 최우선
+ * ============================================================================================= */
+
+const STAGES: readonly IntegrationStage[] = [
+  'prepared',
+  'composed',
+  'published',
+  'finalized',
+  'abandoned',
+]
+const REASONS: readonly AbandonReason[] = ['user-abandon', 'superseded', 'stale-attempt']
+
+const isStage = (v: unknown): v is IntegrationStage => STAGES.some((s) => s === v)
+const isReason = (v: unknown): v is AbandonReason => REASONS.some((r) => r === v)
+
+/** 단계가 바뀌어도 **같아야 하는** 필드. 「전이는 합법인데 내용이 통째로 바뀐」 레코드를 막는다. */
+const IMMUTABLE_FIELDS = [
+  'txnId',
+  'benchId',
+  'repoCommonGitDir',
+  'benchRoot',
+  'sourceBranch',
+  'sourceSnapshot',
+  'sourceGeneration',
+  'targetBranch',
+  'targetHeadBeforeIntegration',
+  'resultRef',
+  'startedAt',
+  'ownerEngineId',
+] as const
+
+/**
+ * 형태 + 조건부 결속 검증(§3-T71). **관계 검사보다 형태가 앞선다**(형제 authority.ts 와 같은 순서) —
+ * 유니온 밖 `stage` 는 조건부 규칙을 vacuously 만족하며 통과한 뒤 전 소비자의 분기를 조용히 빠져나간다.
+ *
+ * 산출은 **필드 명시 재구성**이다 — 캐스트로 좁히면 초과 키·`__proto__` 가 레코드에 실려 다음 쓰기에서
+ * 디스크로 되돌아간다.
+ */
+const parseRecordShape = (
+  o: object,
+):
+  | { readonly ok: true; readonly record: IntegrationTxnRecord }
+  | { readonly ok: false; readonly violations: string[] } => {
+  const v: string[] = []
+  const str = (k: string): string => {
+    const raw = own(o, k)
+    if (!isNonEmptyString(raw)) {
+      v.push(`${k} 가 비어 있지 않은 문자열이 아니다: ${show(raw)}`)
+      return ''
+    }
+    return raw
+  }
+  const num = (k: string): number => {
+    const raw = own(o, k)
+    if (!isCount(raw)) {
+      v.push(`${k} 가 0 이상의 안전 정수가 아니다: ${show(raw)}`)
+      return 0
+    }
+    return raw
+  }
+  const optStr = (k: string): string | undefined => {
+    const raw = own(o, k)
+    if (raw === undefined) return undefined
+    if (!isNonEmptyString(raw)) {
+      v.push(`${k} 가 비어 있지 않은 문자열이 아니다: ${show(raw)}`)
+      return undefined
+    }
+    return raw
+  }
+  const optNum = (k: string): number | undefined => {
+    const raw = own(o, k)
+    if (raw === undefined) return undefined
+    if (!isCount(raw)) {
+      v.push(`${k} 가 0 이상의 안전 정수가 아니다: ${show(raw)}`)
+      return undefined
+    }
+    return raw
+  }
+  const optStage = (k: string): IntegrationStage | undefined => {
+    const raw = own(o, k)
+    if (raw === undefined) return undefined
+    if (!isStage(raw)) {
+      v.push(`${k} 가 IntegrationStage 유니온 밖이다: ${show(raw)}`)
+      return undefined
+    }
+    return raw
+  }
+
+  const txnId = str('txnId')
+  const benchId = str('benchId')
+  if (txnId !== '' && !isUlid(txnId)) v.push(`txnId 가 ULID 문법이 아니다: ${show(txnId)}`)
+  if (benchId !== '' && !isUlid(benchId)) v.push(`benchId 가 ULID 문법이 아니다: ${show(benchId)}`)
+
+  const stageRaw = own(o, 'stage')
+  if (!isStage(stageRaw)) {
+    // 이후 조건부 규칙 전체가 stage 에 걸려 있으므로 **즉시 반환**한다(수집하면 뒤 규칙이 무의미해진다).
+    v.push(`stage 가 IntegrationStage 유니온 밖이다: ${show(stageRaw)}`)
+    return { ok: false, violations: v }
+  }
+
+  const reasonRaw = own(o, 'abandonReason')
+  if (reasonRaw !== undefined && !isReason(reasonRaw)) {
+    v.push(`abandonReason 이 유니온 밖이다: ${show(reasonRaw)}`)
+  }
+
+  const record: IntegrationTxnRecord = {
+    schemaVersion: SUPPORTED_JOURNAL_SCHEMA,
+    txnId,
+    benchId,
+    repoCommonGitDir: str('repoCommonGitDir'),
+    benchRoot: str('benchRoot'),
+    sourceBranch: str('sourceBranch'),
+    sourceSnapshot: str('sourceSnapshot'),
+    sourceGeneration: num('sourceGeneration'),
+    targetBranch: str('targetBranch'),
+    targetHeadBeforeIntegration: str('targetHeadBeforeIntegration'),
+    resultRef: str('resultRef'),
+    startedAt: num('startedAt'),
+    ownerEngineId: str('ownerEngineId'),
+    stage: stageRaw,
+    resultTree: optStr('resultTree'),
+    resultOid: optStr('resultOid'),
+    publishedAt: optNum('publishedAt'),
+    abandonedAt: optNum('abandonedAt'),
+    abandonReason: isReason(reasonRaw) ? reasonRaw : undefined,
+    expectedAuthorityRevision: num('expectedAuthorityRevision'),
+    previousAuthorityStage: optStage('previousAuthorityStage'),
+    nextAuthorityStage: optStage('nextAuthorityStage'),
+    integrationGeneration: num('integrationGeneration'),
+    draftDigest: str('draftDigest'),
+  }
+
+  if (record.draftDigest !== '' && !DIGEST_RE.test(record.draftDigest)) {
+    v.push(`draftDigest 가 sha256 hex 64 형식이 아니다: ${show(record.draftDigest)}`)
+  }
+
+  // ── 조건부 결속(§3-T71) ──
+  const composedOrLater =
+    record.stage === 'composed' || record.stage === 'published' || record.stage === 'finalized'
+  if (composedOrLater && (record.resultOid === undefined || record.resultTree === undefined)) {
+    v.push(`stage=${record.stage} 인데 resultOid·resultTree 가 없다`)
+  }
+  if (
+    record.stage === 'prepared' &&
+    (record.resultOid !== undefined || record.resultTree !== undefined)
+  ) {
+    // 형제 권위 불변식 ③c 와 같은 방향 — `prepared` 는 정의상 결과가 없고, 있으면 이후 판정이
+    // 「값 비교」를 시도해 성립하지 않는 분기로 들어간다.
+    v.push('stage=prepared 인데 resultOid·resultTree 가 있다')
+  }
+  if (
+    (record.stage === 'published' || record.stage === 'finalized') &&
+    record.publishedAt === undefined
+  ) {
+    v.push(`stage=${record.stage} 인데 publishedAt 이 없다`)
+  }
+  if (record.stage === 'abandoned') {
+    if (record.abandonedAt === undefined || record.abandonReason === undefined) {
+      v.push('stage=abandoned 인데 abandonedAt·abandonReason 이 없다')
+    }
+    if (record.nextAuthorityStage !== undefined) {
+      v.push('포기 엔트리에는 nextAuthorityStage 가 없어야 한다(후속 CAS 가 통합 필드를 소거한다)')
+    }
+  } else if (record.nextAuthorityStage !== record.stage) {
+    v.push(
+      `nextAuthorityStage(${show(record.nextAuthorityStage)}) 가 stage(${record.stage}) 와 다르다`,
+    )
+  }
+
+  return v.length > 0 ? { ok: false, violations: v } : { ok: true, record }
+}
+
+/**
+ * 바이트 → 레코드. **`schemaVersion` 을 문법보다 먼저** 본다(I12) — 그 순서를 뒤집으면 구 버전이 신 버전
+ * 저널을 `invalid` 로 오분류하고, 이 모듈의 쓰기 경로는 `invalid` 를 덮어쓸 수 있게 되어 **상위 버전이
+ * 만든 진행 중 트랜잭션이 지워진다**.
+ */
+const parseJournalJson = (
+  raw: string,
+  path: string,
+  expected: { readonly benchId: string; readonly txnId: string },
+): JournalReadResult => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (cause) {
+    return { kind: 'invalid', path, violations: [`JSON 파싱 실패: ${show(cause)}`] }
+  }
+  if (!isPlainObject(parsed)) {
+    return { kind: 'invalid', path, violations: ['최상위가 객체가 아니다'] }
+  }
+  if (Object.hasOwn(parsed, '__proto__') || Object.hasOwn(parsed, 'constructor')) {
+    return { kind: 'invalid', path, violations: ['프로토타입 오염 키가 있다'] }
+  }
+
+  const sv = own(parsed, 'schemaVersion')
+  if (!isCount(sv) || sv < 1) {
+    return { kind: 'invalid', path, violations: [`schemaVersion 형태 오류: ${show(sv)}`] }
+  }
+  if (sv > SUPPORTED_JOURNAL_SCHEMA) {
+    return { kind: 'incompatible-version', path, found: sv, supported: SUPPORTED_JOURNAL_SCHEMA }
+  }
+
+  const shape = parseRecordShape(parsed)
+  if (!shape.ok) return { kind: 'invalid', path, violations: shape.violations }
+
+  // 경로와 내용의 대조(§3-T65 ⓒⓓ) — 이름만 믿으면 복사된 엔트리가 남의 txn 으로 행세한다.
+  const mismatch: string[] = []
+  if (shape.record.txnId !== expected.txnId) mismatch.push('내부 txnId 가 파일 이름과 다르다')
+  if (shape.record.benchId !== expected.benchId) {
+    mismatch.push('내부 benchId 가 상위 디렉터리와 다르다')
+  }
+  if (mismatch.length > 0) return { kind: 'invalid', path, violations: mismatch }
+
+  return { kind: 'found', record: shape.record }
+}
+
+/* ================================================================================================
+ * store — 내구 쓰기
+ * ============================================================================================= */
+
+/** `FreshReadToken` 만 갖는 필드로 가른다(브랜드 심볼은 미export 라 구조로 판별한다). */
+const isFreshRead = (c: AuthorityCommit | FreshReadToken): c is FreshReadToken =>
+  Object.hasOwn(c, 'observedRevision')
+
+export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): JournalStore {
+  /**
+   * 부모 디렉터리 엔트리를 내구화한 적이 있는가. **디렉터리 생성은 부모를 변경**하므로 그 부모를 fsync
+   * 하지 않으면 전원 손실 시 파일·디렉터리는 살아남았는데 그것을 담은 엔트리가 사라질 수 있다
+   * (형제 authority.ts 가 Codex PR#266 2R P1 로 닫은 축). **성공했을 때만** 기록해 실패 시 다음 쓰기가
+   * 다시 시도하게 한다 — 「이번에 만들었는가」로 판정하면 실패 후 다음 쓰기가 건너뛴다.
+   */
+  const syncedParents = new Set<string>()
+
+  const syncDirEntry = (dir: string): void => {
+    const fd = fs.openDir(dir)
+    try {
+      fs.fsync(fd)
+    } finally {
+      fs.close(fd)
+    }
+  }
+
+  const read = (benchId: string, txnId: string): JournalReadResult => {
+    const path = journalEntryPath(opts.journalDir, benchId, txnId)
+    if (path === undefined) {
+      return { kind: 'invalid', violations: ['benchId·txnId 가 ULID 문법이 아니다'] }
+    }
+    let kind
+    try {
+      kind = fs.statKind(path)
+    } catch (cause) {
+      return { kind: 'io-failure', step: 'stat', path, cause }
+    }
+    if (kind.kind === 'missing') return { kind: 'absent' }
+    if (kind.kind !== 'regular') {
+      // **읽기 전** 거부 — FIFO 면 `readFileUtf8` 이 무기한 블록해 부팅이 정지한다(§W-5 규율).
+      return { kind: 'invalid', path, violations: ['정규 파일이 아니다(읽지 않았다)'] }
+    }
+    if (kind.size > MAX_JOURNAL_BYTES) {
+      return { kind: 'invalid', path, violations: [`크기 상한 초과: ${kind.size}B`] }
+    }
+    let raw: string
+    try {
+      raw = fs.readFileUtf8(path)
+    } catch (cause) {
+      return { kind: 'io-failure', step: 'read', path, cause }
+    }
+    return parseJournalJson(raw, path, { benchId, txnId })
+  }
+
+  /**
+   * rename 유한 재시도(C4 상속). 성공하면 `undefined`.
+   *
+   * **매 시도 직전에 리스를 다시 본다**(L-6) — 재검증이 루프 밖에 한 번만 있으면 「1회차 실패 → 그 사이
+   * 탈취 → 2회차 성공」이 통과해 **남의 리스 아래에서 게시**한다. 형제 CAS 와 달리 `live` 플래그가 없는
+   * 것은 이 모듈에 임계 구역(뮤텍스)이 없기 때문이고, 그 직렬화는 호출자의 `withAuthority` 가 제공한다.
+   */
+  const renameWithRetry = async (
+    lease: BenchLeaseToken,
+    from: string,
+    to: string,
+  ): Promise<JournalWriteResult | undefined> => {
+    for (let attempt = 0; attempt <= RENAME_BACKOFF_MS.length; attempt += 1) {
+      const check = lease.revalidate()
+      if (check.kind === 'lost') return { kind: 'lease-invalid', reason: check.reason }
+      try {
+        fs.rename(from, to)
+        return undefined
+      } catch (cause) {
+        const backoff = RENAME_BACKOFF_MS[attempt]
+        // 재시도 비대상 코드와 백오프 소진은 반환이 같다(둘 다 디스크 무변이).
+        if (backoff === undefined || !isRetryableRenameError(cause)) {
+          return { kind: 'io-failure', step: 'rename', path: from, cause }
+        }
+        await opts.sleep(backoff)
+      }
+    }
+    // **유계 루프**의 도달 불가 꼬리 — 안전 실패로 닫는다(형제 authority.ts 와 같은 규율).
+    return {
+      kind: 'io-failure',
+      step: 'rename',
+      path: from,
+      cause: new Error('rename 재시도 루프가 결과 없이 종료했다(상한과 백오프 길이 불일치)'),
+    }
+  }
+
+  const append = async (
+    lease: BenchLeaseToken,
+    draft: IntegrationTxnDraft,
+    prev: AuthorityCommit | FreshReadToken,
+  ): Promise<JournalWriteResult> => {
+    // ── ① 파일시스템 무접촉 구간: 리스·크레덴셜·형태 ──
+    if (!isMintedLease(lease)) return { kind: 'lease-invalid', reason: 'stolen' }
+    if (
+      lease.identity.benchId !== draft.benchId ||
+      lease.identity.commonGitDir !== draft.repoCommonGitDir ||
+      lease.identity.benchRoot !== draft.benchRoot
+    ) {
+      return { kind: 'lease-invalid', reason: 'identity-mismatch' }
+    }
+
+    const path = journalEntryPath(opts.journalDir, draft.benchId, draft.txnId)
+    if (path === undefined) {
+      return {
+        kind: 'invariant-violation',
+        violations: ['benchId·txnId 가 ULID 문법이 아니다(경로를 만들지 않았다)'],
+      }
+    }
+
+    // 크레덴셜은 **값 결속**까지 본다. ⚠ 위조 방어가 아니라 스레딩 사고 방지다 — 브랜드 원장은
+    // authority.ts 모듈 스코프이고 조회 술어를 export 하지 않기로 했다(계획 정정 175ⓓ).
+    if (!isPlainObject(prev)) {
+      return { kind: 'invariant-violation', violations: ['직전 단계 증거(prev)가 없다'] }
+    }
+    const fromRead = isFreshRead(prev)
+    const credRevision = fromRead ? prev.observedRevision : prev.revision
+    const credIdentity = prev.identity
+    const violations: string[] = []
+    if (fromRead && draft.previousAuthorityStage !== undefined) {
+      violations.push(
+        '첫 단계가 아닌데 FreshReadToken 을 제출했다 — 직전 단계 CAS 의 AuthorityCommit 이 필요하다',
+      )
+    }
+    if (credRevision !== draft.expectedAuthorityRevision) {
+      violations.push(
+        `expectedAuthorityRevision(${draft.expectedAuthorityRevision}) 이 직전 증거의 revision(${credRevision}) 과 다르다`,
+      )
+    }
+    if (
+      credIdentity.benchId !== draft.benchId ||
+      credIdentity.commonGitDir !== draft.repoCommonGitDir ||
+      credIdentity.benchRoot !== draft.benchRoot
+    ) {
+      violations.push('직전 증거가 다른 bench 의 것이다')
+    }
+
+    const record: IntegrationTxnRecord = { schemaVersion: SUPPORTED_JOURNAL_SCHEMA, ...draft }
+    const shape = parseRecordShape(record)
+    if (!shape.ok) violations.push(...shape.violations)
+    if (violations.length > 0) return { kind: 'invariant-violation', violations }
+
+    // ── ② 현재 엔트리와의 대조 — 읽지 못하면 **덮어쓰지 않는다** ──
+    const existing = read(draft.benchId, draft.txnId)
+    if (existing.kind !== 'found' && existing.kind !== 'absent') {
+      return { kind: 'existing-unreadable', existing }
+    }
+    const from = existing.kind === 'found' ? existing.record.stage : undefined
+    if (!canAdvanceStage(from, record.stage)) {
+      return {
+        kind: 'invariant-violation',
+        violations: [`불법 전이: ${String(from)} → ${record.stage}`],
+      }
+    }
+    if (existing.kind === 'found') {
+      const changed = IMMUTABLE_FIELDS.filter(
+        (k) => own(existing.record, k) !== own(record, k),
+      ).map((k) => `단계 전진에서 불변 필드가 바뀌었다: ${k}`)
+      if (changed.length > 0) return { kind: 'invariant-violation', violations: changed }
+    }
+
+    // ── ③ 왕복 검증 — 「읽기가 거부할 것을 쓰지 않는다」(형제 `verifySerialized` 와 같은 규율) ──
+    const json = JSON.stringify(record)
+    const size = Buffer.byteLength(json, 'utf8')
+    if (size > MAX_JOURNAL_BYTES) {
+      return { kind: 'invariant-violation', violations: [`직렬화 크기 상한 초과: ${size}B`] }
+    }
+    const roundTrip = parseJournalJson(json, path, {
+      benchId: draft.benchId,
+      txnId: draft.txnId,
+    })
+    if (roundTrip.kind !== 'found') {
+      return {
+        kind: 'invariant-violation',
+        violations: [`직렬화 왕복 검증 실패: ${roundTrip.kind}`],
+      }
+    }
+
+    // ── ④ 변이 구간 ──
+    const preCheck = lease.revalidate()
+    if (preCheck.kind === 'lost') return { kind: 'lease-invalid', reason: preCheck.reason }
+
+    const benchDir = join(opts.journalDir, draft.benchId)
+    const tmpPath = `${path}.${lease.ownerToken}${TMP_SUFFIX}`
+    let step: PreCommitStep = 'mkdir'
+    /** 부모 내구화 중이면 그 경로 — 실패 진단이 실제 대상을 싣게 한다. */
+    let parentTarget: string | undefined
+    let fd: number | undefined
+    let renamed = false
+    try {
+      fs.mkdirRecursive(benchDir, JOURNAL_DIR_MODE)
+      if (opts.durability === 'file+dir') {
+        // 새로 생긴 엔트리를 담은 **부모**를 내구화한다: `<area>` 가 `journal/` 을, `journal/` 이
+        // `<benchId>/` 를 얻었다. bench 마다 다시 필요하므로 키를 디렉터리별로 둔다.
+        for (const parent of [dirname(opts.journalDir), opts.journalDir]) {
+          const key = parent === opts.journalDir ? benchDir : parent
+          if (syncedParents.has(key)) continue
+          parentTarget = parent
+          syncDirEntry(parent)
+          syncedParents.add(key)
+          parentTarget = undefined
+        }
+      }
+      step = 'open-tmp'
+      fd = fs.openExclusive(tmpPath, JOURNAL_FILE_MODE)
+      step = 'write'
+      fs.writeAll(fd, json)
+      step = 'fsync-file'
+      fs.fsync(fd)
+      step = 'close-tmp'
+      {
+        // **소유권 이관** — close 가 던져도 `finally` 가 같은 fd 를 다시 닫지 않는다(형제 SEC-5).
+        const toClose = fd
+        fd = undefined
+        fs.close(toClose)
+      }
+      step = 'rename'
+      const failure = await renameWithRetry(lease, tmpPath, path)
+      if (failure !== undefined) return failure
+      renamed = true
+    } catch (cause) {
+      const target = parentTarget ?? (step === 'mkdir' ? benchDir : tmpPath)
+      return { kind: 'io-failure', step, path: target, cause }
+    } finally {
+      if (fd !== undefined) {
+        try {
+          fs.close(fd)
+        } catch {
+          /* 정리 실패가 원래 원인을 덮지 않는다. */
+        }
+      }
+      // **자기 tmp 만** 치운다(이름에 자기 `ownerToken` 이 실려 있다). rename 이 성공했으면 이미 없다.
+      if (!renamed) {
+        try {
+          fs.unlinkIfExists(tmpPath)
+        } catch {
+          /* 정리 실패가 원래 원인을 덮지 않는다. */
+        }
+      }
+    }
+
+    // ── 여기부터 엔트리는 게시됐다. 실패해도 디스크에는 남아 있다. ──
+    if (opts.durability === 'file+dir') {
+      let post: PostCommitStep = 'open-dir'
+      let dirFd: number | undefined
+      try {
+        dirFd = fs.openDir(benchDir)
+        post = 'fsync-dir'
+        fs.fsync(dirFd)
+        post = 'close-dir'
+        {
+          const toClose = dirFd
+          dirFd = undefined
+          fs.close(toClose)
+        }
+      } catch (cause) {
+        return { kind: 'write-uncertain', step: post, path, cause }
+      } finally {
+        if (dirFd !== undefined) {
+          try {
+            fs.close(dirFd)
+          } catch {
+            /* 위와 같다(이중 close 방지 동형). */
+          }
+        }
+      }
+    }
+
+    return { kind: 'written', record, path }
+  }
+
+  return { read, append }
+}

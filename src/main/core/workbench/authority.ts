@@ -411,7 +411,12 @@ export const RENAME_BACKOFF_MS: readonly number[] = Object.freeze([10, 20, 40, 8
  */
 const RENAME_RETRY_CODES: ReadonlySet<string> = new Set(['EPERM', 'EBUSY', 'EACCES'])
 
-const isRetryableRenameError = (cause: unknown): boolean => {
+/**
+ * ⚠ **export 인 이유는 저널이 같은 판정을 써야 하기 때문이다**(#251 PR3b · 계획 정정 180). 6줄을 복제하면
+ * 안전 임계 술어가 두 벌이 되고, 한쪽만 갱신되는 드리프트는 **무신호**다(`RENAME_BACKOFF_MS` 를 이미
+ * export 한 것과 같은 근거 — 상수와 판정자가 갈라지면 「4회 재시도」의 의미가 매체마다 달라진다).
+ */
+export const isRetryableRenameError = (cause: unknown): boolean => {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- catch 의 `unknown` 을 errno 형태로 협소화하는 표준 관용구(형제 `durable-fs.ts:134`·`active-instance.ts:160`). 캐스트를 리뷰에 보이게 두는 것이 이 룰의 목적이다.
   const code = (cause as NodeJS.ErrnoException | undefined)?.code
   return typeof code === 'string' && RENAME_RETRY_CODES.has(code)
