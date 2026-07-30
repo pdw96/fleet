@@ -1,11 +1,13 @@
 import {
   closeSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -197,6 +199,23 @@ describe.skipIf(IS_WIN)('POSIX — 모드·디렉터리 내구성이 실물에�
     expect(statSync(journalDir).mode & 0o777).toBe(0o700)
     expect(statSync(join(journalDir, benchId)).mode & 0o777).toBe(0o700)
     expect(statSync(join(journalDir, benchId, `${txnId}.json`)).mode & 0o777).toBe(0o600)
+  })
+
+  it('bench 디렉터리가 **실제 심링크**면 따라가지 않고 거부한다(영역 밖 쓰기 차단)', async () => {
+    const benchId = newUlid()
+    const txnId = newUlid()
+    const lease = await mintLease(benchId)
+    // 영역 **밖** 대상을 만들고 bench 디렉터리 자리에 심링크를 건다 — 페이크는 이 배치를 모델링만
+    // 하지만, 「`mkdirRecursive` 가 따라간다」는 성질 자체는 실물에서만 확인된다.
+    const outside = join(root, 'OUTSIDE')
+    mkdirSync(outside, { recursive: true })
+    mkdirSync(journalDir, { recursive: true })
+    symlinkSync(outside, join(journalDir, benchId))
+
+    const r = await realJournal().append(lease, draftOf(lease, txnId), await mintRead(lease), alive)
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(readdirSync(outside)).toEqual([]) // 영역 밖에 아무것도 쓰지 않았다
   })
 
   it('file+dir 쓰기가 실 디렉터리 fsync 를 통과한다', async () => {
