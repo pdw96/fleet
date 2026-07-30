@@ -314,17 +314,11 @@ const show = (v: unknown): string => {
  * 다이제스트를 낼 수 있고, 그러면 복구의 「digest 불일치 = 다른 의도」 판정(정정 167)이 오탐을 낸다.
  */
 const canonicalJson = (value: unknown): string => {
-  if (!isPlainObject(value)) {
-    if (Array.isArray(value)) {
-      // 현재 권위 draft 계약에 배열은 없지만, 미래 필드가 조용히 잘못 직렬화되지 않도록 인덱스 경로를 둔다.
-      const len = own(value, 'length')
-      const n = typeof len === 'number' ? len : 0
-      const items: string[] = []
-      for (let i = 0; i < n; i += 1) items.push(canonicalJson(own(value, String(i))))
-      return `[${items.join(',')}]`
-    }
-    return JSON.stringify(value) ?? 'null'
-  }
+  // ⚠ **배열 전용 경로를 두지 않는다**: 권위 draft 계약에 배열이 없어 그 arm 은 도달 불가이고, 도달 불가
+  // arm 은 커버리지에 잡히지 않으면서 「처리한다」는 인상만 준다(이 PR 이 왕복 파싱을 지운 것과 같은 규율).
+  // 미래에 배열 필드가 생기면 아래 일반 경로가 인덱스 키 객체로 직렬화하는데 — JSON 과 모양은 다르지만
+  // **결정론적**이라 다이제스트 용도에는 충분하다. 그때 전용 경로와 단언을 함께 추가한다.
+  if (!isPlainObject(value)) return JSON.stringify(value) ?? 'null'
   const parts: string[] = []
   for (const key of Object.keys(value).sort()) {
     const v = own(value, key)

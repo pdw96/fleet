@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -820,6 +820,118 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
   })
 })
 
+describe('읽기 실패 분류 · 파서 총체성', () => {
+  it('ULID 문법 위반 id 로는 읽지 않는다', async () => {
+    const f = await setup()
+    const r = f.store.read('../evil', f.txnId)
+
+    expect(r.kind).toBe('invalid')
+    expect(f.fs.calls).toEqual([])
+  })
+
+  it.each([
+    ['statKind', 'stat'],
+    ['readFileUtf8', 'read'],
+  ] as const)('%s 실패는 io-failure{step:%s} 로 분류된다', async (op, step) => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    f.fs.failNext(op, errno('EACCES'))
+
+    expect(f.store.read(f.benchId, f.txnId)).toMatchObject({ kind: 'io-failure', step })
+  })
+
+  it.each([
+    ['깨진 JSON', '{'],
+    ['최상위가 배열', '[]'],
+    ['최상위가 문자열', '"x"'],
+    ['최상위가 null', 'null'],
+  ])('%s 은 invalid 다', async (_name, raw) => {
+    const f = await setup()
+    f.fs.setFile(f.path, raw)
+    expect(f.store.read(f.benchId, f.txnId).kind).toBe('invalid')
+  })
+
+  it.each([
+    ['publishedAt 이 숫자가 아니다', { publishedAt: 'x' }],
+    ['previousAuthorityStage 가 유니온 밖', { previousAuthorityStage: 'zzz' }],
+    ['resultTree 가 문자열이 아니다', { resultTree: 123 }],
+    ['abandonReason 이 유니온 밖', { abandonReason: 'because' }],
+    ['stage 가 유니온 밖', { stage: 'zzz' }],
+    ['draftDigest 가 hex64 가 아니다', { draftDigest: 'ZZZ' }],
+    ['sourceGeneration 이 음수', { sourceGeneration: -1 }],
+  ])('필드 형태 위반: %s', async (_name, over) => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f, over))
+    expect(f.store.read(f.benchId, f.txnId).kind).toBe('invalid')
+  })
+
+  it('적대 값(BigInt)이 와도 파서는 던지지 않고 값으로 거부한다', async () => {
+    const f = await setup()
+    // `JSON.stringify` 가 **던지는** 값이다 — 진단 문자열 생성이 총체적이지 않으면 파서가 예외를 내고
+    // 그것은 RED 가 아니라 호출자의 hang·크래시가 된다(형제 authority.ts 의 `show` 와 같은 축).
+    const hostile = Object.assign({}, draftOf(f), { startedAt: 1n })
+
+    const r = await f.store.append(f.lease, hostile, f.read)
+
+    expect(r.kind).toBe('invariant-violation')
+  })
+})
+
+describe('부모 디렉터리 엔트리 내구화 (file+dir)', () => {
+  it('bench 마다 한 번씩만 부모를 fsync 한다(같은 bench 재쓰기는 건너뛴다)', async () => {
+    const f = await setup({}, 'file+dir')
+    const openDirs = (): unknown[] =>
+      f.fs.calls.filter((c) => c.op === 'openDir').map((c) => c.args[0])
+
+    expect((await f.store.append(f.lease, draftOf(f), f.read)).kind).toBe('written')
+    // 최초 = 영역 루트(`journal/` 엔트리) · journalDir(`<benchId>/` 엔트리) · post-commit benchDir
+    expect(openDirs()).toEqual([dirname(JOURNAL_DIR), JOURNAL_DIR, join(JOURNAL_DIR, f.benchId)])
+
+    const commit = await mintCommitFor(f.lease, f.benchId)
+    const second = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: commit.revision,
+      }),
+      commit,
+    )
+
+    expect(second.kind).toBe('written')
+    // 두 부모는 이미 내구화됐다 — post-commit benchDir 만 다시 본다.
+    expect(openDirs()).toEqual([
+      dirname(JOURNAL_DIR),
+      JOURNAL_DIR,
+      join(JOURNAL_DIR, f.benchId),
+      join(JOURNAL_DIR, f.benchId),
+    ])
+  })
+
+  it('다른 bench 는 journalDir 엔트리를 다시 내구화한다', async () => {
+    const f = await setup({}, 'file+dir')
+    await f.store.append(f.lease, draftOf(f), f.read)
+
+    const otherBench = newUlid()
+    const other = await acquire(otherBench)
+    const otherRead = await mintReadFor(other.lease)
+    const before = f.fs.countOf('openDir')
+
+    const r = await f.store.append(
+      other.lease,
+      draftOf({ benchId: otherBench, txnId: newUlid() }),
+      otherRead,
+    )
+
+    expect(r.kind).toBe('written')
+    // journalDir(새 `<benchId>/` 엔트리) + post-commit benchDir = 2회. 영역 루트는 이미 했다.
+    expect(f.fs.countOf('openDir') - before).toBe(2)
+  })
+})
+
 describe('권위 draft 다이제스트 (정정 167)', () => {
   it('키 순서에 무관하게 같은 값을 낸다(정준 직렬화)', () => {
     const benchId = newUlid()
@@ -837,6 +949,20 @@ describe('권위 draft 다이제스트 (정정 167)', () => {
     }
     expect(digestAuthorityDraft(a)).toBe(digestAuthorityDraft(b))
     expect(digestAuthorityDraft(a)).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('undefined 옵셔널 필드는 부재와 같게 본다(JSON 규칙과 동형)', () => {
+    const benchId = newUlid()
+    const base: BenchAuthorityDraft = {
+      schemaVersion: 1,
+      identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId },
+      lifecycle: 'open',
+      sourceGeneration: 1,
+    }
+
+    expect(digestAuthorityDraft({ ...base, archivedBranch: undefined })).toBe(
+      digestAuthorityDraft(base),
+    )
   })
 
   it('값이 하나라도 다르면 달라진다', () => {
