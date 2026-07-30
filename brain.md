@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 99 files · 238 import wires · 47 IPC channels · 생성 2026-07-29T09:38 UTC
+> 100 files · 242 import wires · 47 IPC channels · 생성 2026-07-30T05:58 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -104,6 +104,34 @@
 - **main/window-guards** — 새 창 열기와 다른 페이지로의 이동을 전부 막는 '이동 문지기' _이 앱은 화면이 하나뿐이라 새 창을 열거나 다른 웹페이지로 넘어갈 일이 없으므로, window.open·외부 링크·리다이렉트·하위 프레임 이동 등을 모두 차단한다. AI 출력에 섞여 들어온 코드가 몰래 다른 곳으로 화면을 끌고 가는 일을 막는 안전 가드이며, 앱의 정상적인 첫 화면 로딩은 그대로 둔다._
   - →의존: — · ←피의존: main/index · 36줄
 
+### workbench · core
+- **workbench/locks**
+  - →의존: workbench/authority, workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/authority, workbench/journal, workbench/lock-backend-uds, workbench/lock-order · 467줄
+- **workbench/authority**
+  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/journal, workbench/locks · 1643줄
+- **workbench/journal**
+  - →의존: workbench/authority, workbench/durable-fs, workbench/locks, workbench/ulid · ←피의존: — · 845줄
+- **workbench/active-instance**
+  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
+- **workbench/coord-area**
+  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 361줄
+- **workbench/durable-fs**
+  - →의존: — · ←피의존: workbench/__testing__/durable-fs-fake, workbench/authority, workbench/journal · 203줄
+- **workbench/instance-marker**
+  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
+- **workbench/ulid**
+  - →의존: — · ←피의존: workbench/journal, workbench/locks · 86줄
+- **workbench/__testing__/durable-fs-fake**
+  - →의존: workbench/durable-fs · ←피의존: — · 265줄
+- **workbench/__testing__/lock-backend-fake**
+  - →의존: workbench/locks · ←피의존: — · 92줄
+- **workbench/instance-marker-proc**
+  - →의존: workbench/instance-marker · ←피의존: — · 56줄
+- **workbench/lock-backend-uds**
+  - →의존: workbench/locks · ←피의존: — · 82줄
+- **workbench/lock-order**
+  - →의존: workbench/locks · ←피의존: — · 181줄
+
 ### providers · core — 클로드·제미니·GPT 같은 여러 AI 서비스의 서로 다른 대화 방식을 똑같은 형태로 맞춰주고, 인터넷 장애에도 잘 견디게 해주는 'AI 통역·연결 창구' 모음.
 - **providers/types** — 모든 AI 창구가 똑같이 쓰는 공통 약속(데이터 모양)과 기본 도구를 모아 둔 규격집 _대화 한 마디, 답변 결과, 도구 호출, 토큰 사용량 같은 데이터의 표준 모양을 정의해 어떤 AI든 같은 형태로 주고받게 한다. 또 API 키 확인, 인터넷 통신 기본 도구, 오류 표현 같은 공용 부품도 함께 담고 있다._
   - →의존: shared/types · ←피의존: engine, providers/anthropic, providers/google, providers/openai, providers/registry, providers/resilient, session/api-session, tools/context, tools/loop, tools/types · 303줄
@@ -149,32 +177,6 @@
   - →의존: shared/types · ←피의존: orchestrator/plan, session/api-session, session/cli-session, session/manager · 61줄
 - **session/abort**
   - →의존: — · ←피의존: engine, session/api-session, session/cli-session · 57줄
-
-### workbench · core
-- **workbench/locks**
-  - →의존: workbench/authority, workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/authority, workbench/lock-backend-uds, workbench/lock-order · 467줄
-- **workbench/authority**
-  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/locks · 1621줄
-- **workbench/active-instance**
-  - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
-- **workbench/coord-area**
-  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 361줄
-- **workbench/durable-fs**
-  - →의존: — · ←피의존: workbench/__testing__/durable-fs-fake, workbench/authority · 203줄
-- **workbench/instance-marker**
-  - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
-- **workbench/__testing__/durable-fs-fake**
-  - →의존: workbench/durable-fs · ←피의존: — · 265줄
-- **workbench/__testing__/lock-backend-fake**
-  - →의존: workbench/locks · ←피의존: — · 92줄
-- **workbench/instance-marker-proc**
-  - →의존: workbench/instance-marker · ←피의존: — · 56줄
-- **workbench/lock-backend-uds**
-  - →의존: workbench/locks · ←피의존: — · 82줄
-- **workbench/lock-order**
-  - →의존: workbench/locks · ←피의존: — · 181줄
-- **workbench/ulid**
-  - →의존: — · ←피의존: workbench/locks · 86줄
 
 ### mcp · core — 바깥에서 가져온 도구 프로그램(MCP 서버)을 Fleet 안으로 안전하게 연결해, AI들이 쓸 수 있는 도구로 바꿔 관리하는 모듈이다.
 - **mcp/types** — 이 모듈의 부품들이 공유하는 약속(설계도) 모음 파일 _자식 프로세스, 통신 통로, 도구 정보, 서버 관리자 등이 각각 어떤 기능을 갖춰야 하는지 형태만 정의해 둔다. 실제 동작 코드는 없고, 부품들이 서로 같은 규격으로 끼워 맞춰지도록 하는 인터페이스다._
