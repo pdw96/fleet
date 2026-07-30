@@ -403,6 +403,9 @@ const IMMUTABLE_FIELDS = [
   'resultRef',
   'startedAt',
   'ownerEngineId',
+  // 통합 세대는 **시도에 배정**된다(정정 166: prepared 마다 +1) — 단계 전진에서 바뀌면 그 시도의
+  // 권위 결속이 소멸하고 복구가 다른 세대를 근거로 추론한다(Codex PR#269 4R P1).
+  'integrationGeneration',
 ] as const
 
 /**
@@ -726,16 +729,24 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     sectionLive: () => boolean,
   ): Promise<JournalWriteResult> => {
     // ── ① 파일시스템 무접촉 구간: 리스·크레덴셜·형태 ──
+    //
+    // ⚠ **가장 먼저 제출물을 스냅숏한다**(Codex PR#269 4R P1). 호출자 객체는 평범한 타입으로도 **getter·
+    // Proxy** 일 수 있어, 같은 프로퍼티를 여러 번 읽으면 **읽을 때마다 다른 값**을 줄 수 있다 — identity
+    // 검사는 bench A 를 보고 경로 유도·재구성·디스크 읽기·`benchDir` 유도는 bench B 를 보는 조합이
+    // 성립하면, A 의 리스·크레덴셜로 **B 아래에 파괴적 쓰기**가 인가된다. 스프레드는 각 프로퍼티를
+    // **한 번만** 읽으므로 이 복사본 이후로는 호출자가 무엇을 하든 관측이 흔들리지 않는다.
+    const submitted: IntegrationTxnRecord = { ...draft, schemaVersion: SUPPORTED_JOURNAL_SCHEMA }
+
     if (!isMintedLease(lease)) return { kind: 'lease-invalid', reason: 'stolen' }
     if (
-      lease.identity.benchId !== draft.benchId ||
-      lease.identity.commonGitDir !== draft.repoCommonGitDir ||
-      lease.identity.benchRoot !== draft.benchRoot
+      lease.identity.benchId !== submitted.benchId ||
+      lease.identity.commonGitDir !== submitted.repoCommonGitDir ||
+      lease.identity.benchRoot !== submitted.benchRoot
     ) {
       return { kind: 'lease-invalid', reason: 'identity-mismatch' }
     }
 
-    const path = journalEntryPath(cfg.journalDir, draft.benchId, draft.txnId)
+    const path = journalEntryPath(cfg.journalDir, submitted.benchId, submitted.txnId)
     if (path === undefined) {
       return {
         kind: 'invariant-violation',
@@ -776,20 +787,20 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       }
     }
     const violations: string[] = []
-    if (fromRead && draft.previousAuthorityStage !== undefined) {
+    if (fromRead && submitted.previousAuthorityStage !== undefined) {
       violations.push(
         '첫 단계가 아닌데 FreshReadToken 을 제출했다 — 직전 단계 CAS 의 AuthorityCommit 이 필요하다',
       )
     }
-    if (credRevision !== draft.expectedAuthorityRevision) {
+    if (credRevision !== submitted.expectedAuthorityRevision) {
       violations.push(
-        `expectedAuthorityRevision(${draft.expectedAuthorityRevision}) 이 직전 증거의 revision(${credRevision}) 과 다르다`,
+        `expectedAuthorityRevision(${submitted.expectedAuthorityRevision}) 이 직전 증거의 revision(${credRevision}) 과 다르다`,
       )
     }
     if (
-      own(credIdentity, 'benchId') !== draft.benchId ||
-      own(credIdentity, 'commonGitDir') !== draft.repoCommonGitDir ||
-      own(credIdentity, 'benchRoot') !== draft.benchRoot
+      own(credIdentity, 'benchId') !== submitted.benchId ||
+      own(credIdentity, 'commonGitDir') !== submitted.repoCommonGitDir ||
+      own(credIdentity, 'benchRoot') !== submitted.benchRoot
     ) {
       violations.push('직전 증거가 다른 bench 의 것이다')
     }
@@ -803,7 +814,6 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     if (Object.hasOwn(draft, 'schemaVersion')) {
       violations.push('draft 가 schemaVersion 을 싣고 있다 — 그 필드는 store 만 배정한다')
     }
-    const submitted: IntegrationTxnRecord = { ...draft, schemaVersion: SUPPORTED_JOURNAL_SCHEMA }
     const shape = parseRecordShape(submitted)
     if (!shape.ok) {
       violations.push(...shape.violations)
@@ -820,7 +830,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     const record = shape.record
 
     // ── ② 현재 엔트리와의 대조 — 읽지 못하면 **덮어쓰지 않는다** ──
-    const existing = read(draft.benchId, draft.txnId)
+    const existing = read(submitted.benchId, submitted.txnId)
     if (existing.kind !== 'found' && existing.kind !== 'absent') {
       return { kind: 'existing-unreadable', existing }
     }
@@ -913,7 +923,7 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     const preCheck = lease.revalidate()
     if (preCheck.kind === 'lost') return { kind: 'lease-invalid', reason: preCheck.reason }
 
-    const benchDir = join(cfg.journalDir, draft.benchId)
+    const benchDir = join(cfg.journalDir, submitted.benchId)
 
     // **심링크를 따라가지 않는다**(Codex PR#269 P1). `mkdirRecursive` 는 기존 심링크를 그대로 따라가므로
     // `<journalDir>/<benchId>` 가 심링크면 create-only tmp 와 rename 이 **영역 밖**에 떨어진다 — 「검증된

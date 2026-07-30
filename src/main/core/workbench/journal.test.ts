@@ -1209,6 +1209,53 @@ describe('Codex PR#269 P1 — 결속·보존·경로 방어', () => {
     expect(f.fs.calls).toEqual([])
   })
 
+  it('getter 로 값을 바꾸는 draft 도 **한 번만** 읽는다(A 로 검사하고 B 에 쓰기 차단)', async () => {
+    const f = await setup()
+    const other = newUlid()
+    let reads = 0
+    // 평범한 타입으로도 getter 를 실을 수 있다 — identity 검사는 A 를 보고 경로 유도는 B 를 보는
+    // 조합이 성립하면 A 의 리스로 B 아래에 쓰게 된다(Codex PR#269 4R P1).
+    const shifty: IntegrationTxnDraft = Object.defineProperty({ ...draftOf(f) }, 'benchId', {
+      get() {
+        reads += 1
+        return reads === 1 ? f.benchId : other
+      },
+      enumerable: true,
+    })
+
+    const r = await f.first(shifty)
+
+    // **읽기 횟수 자체를 고정한다** — 「B 아래에 안 썼다」만 보면 다른 방어(크레덴셜 identity 대조)가
+    // 대신 잡아 주어 이 단언이 vacuous 해진다(뮤테이션 실측: 스냅숏을 지워도 GREEN 이었다).
+    expect(reads).toBe(1)
+    expect(r.kind).toBe('written')
+    if (r.kind === 'written') expect(r.record.benchId).toBe(f.benchId)
+    expect(f.fs.paths().filter((p) => p.includes(other))).toEqual([])
+  })
+
+  it('integrationGeneration 은 단계 전진에서 바뀌지 못한다', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f))
+    const commit = await mintCommitFor(f.lease, f.benchId)
+
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: commit.revision,
+        integrationGeneration: 2,
+      }),
+      commit,
+      alive,
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+  })
+
   it('bench 디렉터리가 심링크면 따라가지 않고 거부한다', async () => {
     const f = await setup()
     f.fs.setSymlink(join(JOURNAL_DIR, f.benchId))
