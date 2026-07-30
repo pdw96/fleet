@@ -858,6 +858,54 @@ describe('레코드 결속·경로 안전 — 크레덴셜 없이도 서는 방�
     expect((await publish(OID_C)).kind).toBe('written') // 양성 대조
   })
 
+  it('포기가 없던 결과 증거를 들여오지 못한다(존재한 적 없는 결과 증언 차단)', async () => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f)) // prepared — 결과 증거 없음
+
+    const r = await f.first(
+      draftOf(f, {
+        stage: 'abandoned',
+        nextAuthorityStage: undefined,
+        previousAuthorityStage: 'prepared',
+        abandonedAt: AT,
+        abandonReason: 'user-abandon',
+        resultOid: OID_C, // ← 존재한 적 없는 결과
+        resultTree: OID_A,
+      }),
+    )
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('rename')).toBe(0)
+  })
+
+  it('포기가 **이미 있던** 결과 증거는 그대로 실어야 한다(양성 대조)', async () => {
+    const f = await setup()
+    f.fs.setFile(
+      f.path,
+      serialized(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+      }),
+    )
+
+    const r = await f.first(
+      draftOf(f, {
+        stage: 'abandoned',
+        nextAuthorityStage: undefined,
+        previousAuthorityStage: 'composed',
+        abandonedAt: AT,
+        abandonReason: 'user-abandon',
+        resultOid: OID_C,
+        resultTree: OID_A,
+      }),
+    )
+
+    expect(r.kind).toBe('written')
+  })
+
   it('상위 버전은 오염 키가 있어도 incompatible-version 이다(파괴적 조치 차단 종별)', async () => {
     const f = await setup()
     // ⚠ `invalid` 는 broken·삭제 처리로 흘러갈 수 있고 `incompatible-version` 은 그것을 막아야 하는

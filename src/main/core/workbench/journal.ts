@@ -798,13 +798,24 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
       const changed = IMMUTABLE_FIELDS.filter(
         (k) => own(existing.record, k) !== own(record, k),
       ).map((k) => `단계 전진에서 불변 필드가 바뀌었다: ${k}`)
-      // **결과 증거는 한 번 나타나면 얼어붙는다**(Codex PR#269 3R P1). 단계마다 **처음 등장**하는 것은
-      // 정상이지만(`composed` 가 `resultOid` 를, `published` 가 `publishedAt` 을 들여온다) 이미 기록된
-      // 값을 **바꾸는** 것은 다르다 — txn 당 파일이 하나뿐이라 그 순간 원본 증거가 소멸하고, 완결·복구가
-      // **교체된 결과**를 근거로 추론하게 된다.
-      const replaced = EVIDENCE_FIELDS.filter(
-        (k) => own(existing.record, k) !== undefined && own(existing.record, k) !== own(record, k),
-      ).map((k) => `이미 기록된 결과 증거가 바뀌었다: ${k}`)
+      // **결과 증거는 「그 값을 요구하는 단계」만 들여올 수 있고, 그 뒤로는 얼어붙는다**
+      // (Codex PR#269 3R·5R P1). 두 규칙이 필요하다:
+      // ⓐ이미 기록된 값을 **바꾸는** 것 — txn 당 파일이 하나뿐이라 그 순간 원본 증거가 소멸한다.
+      // ⓑ**없던 값을 아무 단계나 들여오는** 것 — `prepared → abandoned` 가 임의의 `resultOid` 를
+      //   실으면 **존재한 적 없는 결과**를 증언하는 포기 기록이 남는다(5R 이 짚은 구멍).
+      // 그래서 도입은 그 필드를 **계약으로 요구하는 단계**에서만 허용한다.
+      const introducer: Record<(typeof EVIDENCE_FIELDS)[number], IntegrationStage> = {
+        resultTree: 'composed',
+        resultOid: 'composed',
+        publishedAt: 'published',
+      }
+      const replaced = EVIDENCE_FIELDS.filter((k) => {
+        const before = own(existing.record, k)
+        const after = own(record, k)
+        if (before === after) return false
+        // 값이 달라지는 것은 **도입 단계에서 처음 등장할 때만** 정상이다.
+        return !(before === undefined && after !== undefined && record.stage === introducer[k])
+      }).map((k) => `결과 증거가 허용되지 않은 단계에서 바뀌었다: ${k}`)
       const broken = [...changed, ...replaced]
       if (broken.length > 0) return { kind: 'invariant-violation', violations: broken }
     }
@@ -836,6 +847,13 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     // 「읽기 전에 종류를 본다」를 지키는 것과 같은 규율을 쓰기 경로에도 세운다.
     // ⚠ **조상은 호출자 계약**이다 — `journalDir` 는 이미 정준화된 절대 경로라는 것이 주입 계약이고
     // (형제 `authorityDir` 와 동형), 이 모듈이 유도하는 성분은 `<benchId>` 하나뿐이다.
+    //
+    // ⚠ **이 검사는 TOCTOU 를 닫지 않는다**(Codex PR#269 5R · 정직 표기): 경로 기반 `lstat` 과 이어지는
+    // `mkdirRecursive`·`openExclusive` 사이에 **다른 프로세스가 디렉터리를 심링크로 바꿔치기**할 수 있다.
+    // 그것을 구조적으로 막으려면 검증한 디렉터리 **핸들 위에서** 쓰는 `openat` 계열 프리미티브가 필요한데
+    // `DurableFs` 에 없고 그 확장은 **PR3d 축**이다. 지금 이 검사가 닫는 것은 **지속적으로 존재하는**
+    // 심링크(사고·잔재)이며, 경합하는 능동적 교체는 §W-2-a 위협 모델(「보장 범위 = 사고·경합이지 악의적
+    // 변조가 아니다」) **밖**이다 — 「막는다」로 읽히지 않게 여기 적는다.
     const dirKind = fs.statKind(benchDir)
     if (dirKind.kind === 'symlink' || dirKind.kind === 'regular') {
       return {
