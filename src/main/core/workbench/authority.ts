@@ -49,10 +49,11 @@ import type { BenchLeaseToken } from './locks'
  * ⚠ 남는 경계도 적는다: `authorityDir` 의 **정준화·검증은 호출자 책임**(PR7)이므로, 이 모듈은 잘못된
  * 디렉터리를 받으면 그 안에서 성실히 파괴적 쓰기를 한다. 그 방어는 배선 지점에 있다.
  *
- * ⚠ **`'file-only'` 표면의 안전 논증은 이 파일 안에서 완결되지 않는다**(계획 정정 70). win32 는 디렉터리
- * 엔트리 내구성이 없어 머신 크래시 시 `revision` 단조성이 깨질 수 있고, 그 탐지는 **git ref 열거**
- * (§W-7 ref-앵커 재조정 · PR3 T13)에 의존한다 — 권위 파일 안에 앵커를 두면 롤백 시 함께 되돌아가
- * 발화하지 않기 때문이다. PR2 단독으로는 미완결임을 은폐하지 않는다.
+ * ⚠ **`'file-only'` 표면의 안전 논증은 이 파일 안에서 완결되지 않는다**(계획 정정 70·133·152·156).
+ * 디렉터리 엔트리 내구성이 없는 표면에서는 머신 크래시 시 `revision` 단조성이 깨질 수 있고, 그 **부분적**
+ * 탐지는 **git ref 열거**(§W-7 ref-앵커 · **PR3c 미착지**)에 의존한다 — 권위 파일 안에 앵커를 두면 롤백 시
+ * 함께 되돌아가 발화하지 않기 때문이다. 다만 그 앵커는 착지해도 **완전한 rollback detector 가 아니다**
+ * (탐지·미탐지 경계는 `revision` 필드 주석). PR2 단독으로는 미완결임을 은폐하지 않는다.
  */
 
 /**
@@ -103,9 +104,25 @@ export interface BenchAuthorityRecord {
   readonly identity: BenchAuthorityIdentity
   /**
    * 단조. 최초 1. CAS 성공마다 정확히 +1.
-   * ⚠ `durability==='file-only'` 표면(win32)에서는 머신 크래시 시 디렉터리 엔트리 유실로 단조성이
-   * 보장되지 않는다(C3). 그 표면의 안전 논증은 revision 이 아니라 §W-7 **ref-앵커 재조정**에 의존한다 —
-   * git ref 는 권위 파일과 독립 매체라 동시 롤백이 불가능하다(파일 머리말 참조).
+   *
+   * ⚠ `durability==='file-only'` 표면에서는 머신 크래시 시 디렉터리 엔트리 유실로 단조성이 보장되지
+   * 않는다(C3). **win32 전용이 아니다**(계획 정정 151) — dirfd fsync 를 지원하지 않는 마운트 위의 POSIX 도
+   * `probeDurability`(durable-fs.ts:184-201)가 같은 등급으로 강등한다. 그 표면의 **보조** 탐지가 §W-7
+   * **ref-앵커**(PR3c 미착지)다.
+   *
+   * ⚠ **「git ref 는 독립 매체라 동시 롤백이 불가능하다」는 거짓이었다**(계획 정정 133·152·156 — git
+   * **소스** 대조로 확정. 문서만 읽으면 정반대 결론이 나온다): ⓐ두 경로는 대개 같은 볼륨이다(정션·심링크·
+   * reftable 배치에서 갈릴 수 있으나 갈려도 순서 보장이 강해지지는 않는다) ⓑgit 은 **기본 설정에서 ref 를
+   * fsync 하지 않는다** — `environment.c:62` 가 `FSYNC_COMPONENTS_DEFAULT` 를 기본으로 두는데 그 집합
+   * (`write-or-die.h:33-35`)은 pack·pack-metadata·commit-graph 뿐이라 **REFERENCE 가 없고**, 비트가 없으면
+   * `write-or-die.c:78-83` 이 no-op 이다(플랫폼 오버라이드 훅 `write-or-die.h:51-52` 는 upstream·GfW
+   * 어디서도 재정의되지 않는다 · 2.36.0~2.54.0 동일). `core.fsync=all` 로도 **rename 내구성은 얻지 못한다** —
+   * loose ref 게시는 `.lock` 쓰기 + rename 인데 그 경로에 디렉터리 fsync 가 없다(`lockfile.c` fsync 0건 ·
+   * `tempfile.c:348`).
+   *
+   * 그래서 정확한 강도는 이렇다: 권위 파일은 rename **전에** fsync 되고(`writeDurably`) loose ref 는 안 되므로
+   * **ref 가 더 약한 매체**다. 앵커는 **권위 쪽 단독 롤백만** 탐지하고 **ref 쪽 롤백·양쪽 동시 롤백은
+   * 미탐지(fail-open)** 다 — 확률적 보조 신호이지 안전 근거가 아니다.
    */
   readonly revision: number
   readonly lifecycle: BenchLifecycle

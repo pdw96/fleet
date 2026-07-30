@@ -157,9 +157,13 @@ export interface Workbench {
 │   #   쓰기를 되살려 L-6 「디스크 I/O 0」·§3-T10 「락 소유 권위 레코드 부재」와 충돌한다.
 ├── authority/<benchId>.json                # 공유 권위 레코드(revision-CAS)
 ├── activity/<benchId>.json                 # 활동 신원 · 인스턴스 마커
-├── journal/<benchId>/<txnId>.json          # 연산 WAL
-└── tmp/                                    # 확인-응답 쓰기 rename 소스(동일 볼륨 보장)
+└── journal/<benchId>/<txnId>.json          # 연산 WAL(tmp 는 같은 디렉터리 — 아래)
 ```
+
+- **별도 `tmp/` 디렉터리는 두지 않는다**(원안 폐기 · 계획 정정 165ⓑ). 확인-응답 쓰기의 rename 소스는
+  **대상과 같은 디렉터리**에 만든다 — 권위 `authority/<benchId>.json.<ownerToken>.tmp`(착지 코드가 이미
+  그렇다) · 저널 `journal/<benchId>/<txnId>.json.<ownerToken>.tmp`. 동일 볼륨 보장은 같은 디렉터리라는
+  사실에서 더 강하게 따라오고, 원안 문면대로 별도 디렉터리를 뒤지는 수확기(§W-5)는 **영원히 0건**이 된다.
 
 - **위치 확정 근거(실측)**: `gc --prune=now --aggressive`·`repack -ad`·`prune`·`reflog expire`·
   `clean -xffd`·`worktree prune`·`fsck` 전량 통과, `git status --porcelain` 무출력, 0700 보존
@@ -242,8 +246,11 @@ readonly activeInstance: {
   목표는 적대 셸의 절대 배제(불가능)가 아니라 **선의의 동시 사용에서 무손상**"(설계 636-640행).
 - 따라서 코디네이션 영역의 무결성 보장 범위 = **사고·경합**이지 **악의적 변조**가 아니다.
   HMAC 무결성 태깅·별도 볼륨 격리는 이 슬라이스의 비목표(§4).
-- 대안 검토(기각): 영역을 `FLEET_DATA_DIR/coord/<repoDigest>/`(ttyd 미마운트)로 옮기면 격리는 얻지만
-  **git worktree admin 파일과 다른 볼륨이 되어** `tmp/`→`authority/` rename 의 동일 볼륨 요건이 깨진다.
+- 대안 검토(기각): 영역을 `FLEET_DATA_DIR/coord/<repoDigest>/`(ttyd 미마운트)로 옮기면 격리는 얻는다.
+  ⚠ **원래 적었던 기각 근거(「`tmp/`→`authority/` rename 의 동일 볼륨 요건이 깨진다」)는 정정 165ⓑ 로
+  소멸했다** — tmp 는 대상과 **같은 디렉터리**에 만들므로 영역을 어디에 두든 rename 은 볼륨을 넘지 않는다.
+  남는 기각 근거는 위 「위치 확정 근거(실측)」뿐이다(영역이 레포와 함께 이동·정리되어야 하고 gc·prune·
+  clean 전량을 통과함이 실측됐다). 볼륨 논거를 인용하지 않는다.
 
 ### W-3. 자문 락 (서버 단일 표면 · 커널 endpoint)
 
@@ -354,9 +361,11 @@ export interface BenchAuthorityRecord {
   readonly schemaVersion: 1        // 지원 범위 초과 = 'incompatible-version'(≠ invalid — 아래 I12)
   readonly identity: BenchAuthorityIdentity
   /** 단조. 최초 1. CAS 성공마다 정확히 +1.
-   *  ⚠ 단 `durability==='file-only'` 표면(win32)에서는 머신 크래시 시 디렉터리 엔트리 유실로
-   *  단조성이 보장되지 않는다(C3). 그 표면의 안전 논증은 revision 이 아니라 §W-7 의 **ref-앵커
-   *  재조정**에 의존한다 — git ref 는 권위 파일과 독립 매체라 동시 롤백이 불가하다. */
+   *  ⚠ 단 `durability==='file-only'` 표면에서는 머신 크래시 시 디렉터리 엔트리 유실로 단조성이
+   *  보장되지 않는다(C3 · **win32 전용이 아니다** — dirfd fsync 불가 마운트 위의 POSIX 도 같은 등급).
+   *  그 표면의 **보조** 탐지가 §W-7 **ref-앵커**이며, 「git ref 는 독립 매체라 동시 롤백이 불가하다」는
+   *  **거짓**이다(git 소스 대조 · 계획 정정 133·152·156) — 앵커는 권위 쪽 단독 롤백만 탐지하고
+   *  ref 쪽 롤백·동시 롤백에는 **fail-open** 이다. */
   readonly revision: number
   readonly lifecycle: BenchLifecycle
   readonly archivedBranch?: 'preserved' | 'deleted'
@@ -771,8 +780,13 @@ export interface IntegrationTxnRecord {
   (C11) target HEAD 는 애초에 움직이지 않아 "불일치"가 win32 크래시 주 경로에서 성립하지 않는다.
 - **확정 판정식**: 부팅 시 `git for-each-ref refs/fleet/integrated/<benchId>/` 를 열거해,
   권위 레코드의 `currentIntegrationTxnId`·`completedIntegrationTxnId` **어디에도 귀속되지 않는 txnId 의
-  결과 ref 가 1건이라도 존재하면 `reconciliation-required`**(권위 롤백 탐지). git ref 는 권위 파일과
-  **독립 매체**라 동시 롤백이 불가능하다 — 이것이 앵커가 권위 파일 밖에 있어야 하는 이유다.
+  결과 ref 가 1건이라도 존재하면 `reconciliation-required`**(권위 롤백 탐지). 앵커가 권위 파일 **밖**에
+  있어야 하는 이유는 안에 두면 롤백 시 함께 되돌아가 발화하지 않기 때문이다.
+- ⚠ **「독립 매체라 동시 롤백이 불가능하다」는 거짓이다**(git 소스 대조로 확정 · 계획 정정 133·152·156).
+  git 은 기본 설정에서 ref 를 fsync 하지 않고(`FSYNC_COMPONENTS_DEFAULT` 에 REFERENCE 부재 ·
+  `core.fsync=all` 로도 loose ref 게시 rename 경로에는 디렉터리 fsync 가 없다) 권위 파일은 rename **전에**
+  fsync 되므로, **ref 가 더 약한 매체**다. 따라서 앵커는 **권위 쪽 단독 롤백만** 탐지하는 확률적 보조
+  신호이며 **ref 쪽 롤백·양쪽 동시 롤백에는 fail-open** 이다. 안전 근거로 인용하지 않는다.
 - `lastObservedTargetHead` 는 **보조 신호로 강등**(외부 소비자 완결 관측용). 그 값의 부재는 reconciliation
   사유가 아니다.
 - 복구 중 **자동 재시도·cherry-pick·reset·abort·skip·삭제 일절 금지**(설계 696행 유지).
@@ -1333,8 +1347,9 @@ vitest 는 파일 병렬이 기본이고 이 레포엔 win 병렬 spawn flake �
   파일시스템 소켓을 쓰지 않으므로 무관하다. 아래 항목은 이 정정 전 문안이다(①③만 유효).
 - **선행 실측 3건**(1건이 아니다): ①`safe.directory` × `/workbenches`(아래) ②컨테이너 bind 마운트 위에서
   **UDS `listen` 이 실제로 가능한지**(개발기에서 이미 EACCES 관측) ③`/workbenches` named volume 과
-  `/workspace` bind 마운트가 **서로 다른 볼륨**일 때 `git worktree add` 의 admin 파일과 §W-2 `tmp/`→
-  `authority/` rename 이 **동일 볼륨 요건**을 만족하는지(§W-2 는 이를 주장하나 볼륨 2개 토폴로지에서 미검증).
+  `/workspace` bind 마운트가 **서로 다른 볼륨**일 때 `git worktree add` 의 admin 파일과 §W-2 확인-응답
+  쓰기가 성립하는지. ⚠ **rename 축은 정정 165ⓑ 로 소멸**했다 — tmp 가 대상과 같은 디렉터리라 볼륨을
+  넘지 않는다. 남는 미검증은 `git worktree add` admin 파일 쪽뿐이다.
 - 커버리지 floor 여유(≈20~28 함수) 안에서 신규 export 함수 수 관리.
 - `emitPersisted` 헬퍼 추출 범위(기존 이벤트 경로 회귀 0 확인).
 - 중형+ → fleet-plan-panel(판사 패널) 각도 3(리스크/MVP/계약).
