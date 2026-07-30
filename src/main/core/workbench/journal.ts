@@ -30,8 +30,11 @@ import { isUlid } from './ulid'
  * - **디렉터리 열거를 하지 않는다** — `DurableFs` 에 순회 프리미티브가 없고 그 신설은 PR3d 다. 여기 있는
  *   것은 **주어진 이름 목록에 대한 순수 필터**(`classifyJournalFileName`)뿐이며, 「열거가 있다」로 읽지 말 것.
  * - **소비자가 0 이다.** 통합 트랜잭션 시퀀서(PR5 T18)·부팅 복구(PR7)가 붙기 전까지 이 모듈은 프로덕션
- *   경로에서 도달 불가다. 특히 `expectedAuthorityRevision`·`previous/nextAuthorityStage`·
- *   `integrationGeneration`·`draftDigest` 는 **기록만 되고 대조되지 않는다**(대조자 = PR3c).
+ *   경로에서 도달 불가다. 정정 167 의 결속 5필드 중 **쓰기 시점에 대조되는 것은 셋**이고
+ *   (`expectedAuthorityRevision` = 크레덴셜 revision 과 값 결속 · `previousAuthorityStage` = 첫 단계
+ *   크레덴셜 허용 여부 · `nextAuthorityStage` = `stage` 와의 조건부 동치), **기록만 되는 것은 둘**이다
+ *   (`integrationGeneration`·`draftDigest` — 형태만 본다). 어느 쪽이든 **복구 시점의 대조자는 PR3c** 이며
+ *   그 축이 이 PR 에서 vacuous 다. 「전부 대조되지 않는다」로 뭉뚱그리지 않는다.
  * - **abort-on-CAS-failure 의 행동 강제자도 없다**(계획 정정 162ⓑ·165ⓒ) — 여기 있는 것은 크레덴셜
  *   **타입 강제**까지이고, 「CAS 실패 후 다음 단계로 전진하지 않는다」를 실제로 집행하는 시퀀서는 PR5 다.
  *
@@ -202,6 +205,11 @@ export interface JournalStore {
   /**
    * 단계 전진 1회 = (전이 검사, 내구 쓰기). `prev` 는 **직전 단계 CAS 의 증거**이며 첫 단계에 한해
    * `FreshReadToken` 이 그 자리를 대신한다(계획 정정 175).
+   *
+   * **비용 예산**(자가 적대 리뷰 정량화): 정상 경로 `file-only` = IO 프리미티브 **7**(statKind·
+   * readFileUtf8·mkdir·openExclusive·writeAll·fsync·close·rename 중 부재 시 read 생략) ·
+   * `file+dir` 최초 = **+4**(부모 2 + post-commit openDir/fsync/close). 최악 = rename 4회 재시도로
+   * **+4 호출 + 총 150ms 대기**(백오프 `[10,20,40,80]`). 이 값이 바뀌면 §3-T68 의 exact 계수가 RED 다.
    */
   append(
     lease: BenchLeaseToken,
@@ -222,7 +230,9 @@ const STAGE_ORDER: readonly IntegrationStage[] = ['prepared', 'composed', 'publi
  * `published → prepared` 를 막지 못한다.
  *
  * 합법: 부재 → `prepared` · `prepared → composed → published → finalized` · **임의 단계 → `abandoned`**.
- * 그 외 전부 거부(자기 전이 포함 — 같은 단계 재기록은 「전진」이 아니다).
+ * 그 외 전부 거부한다. **자기 전이 중 `abandoned → abandoned` 만 합법**인데(위 「임의 단계」에 포함),
+ * 그것이 스펙 §W-7 이 규정한 「청소 복구(**멱등**)」의 형태이기 때문이다 — 「저널 기록 후 권위 CAS 전
+ * 크래시」의 재시도가 막다른 길이 되면 안 된다. 나머지 자기 전이 4개(`composed → composed` 등)는 거부다.
  *
  * 권위 레코드 쪽 전이 불변식 계층은 **PR3c** 다(같은 비가역 축을 두 PR 로 쪼개지 않는다).
  */
@@ -316,8 +326,11 @@ const show = (v: unknown): string => {
 const canonicalJson = (value: unknown): string => {
   // ⚠ **배열 전용 경로를 두지 않는다**: 권위 draft 계약에 배열이 없어 그 arm 은 도달 불가이고, 도달 불가
   // arm 은 커버리지에 잡히지 않으면서 「처리한다」는 인상만 준다(이 PR 이 왕복 파싱을 지운 것과 같은 규율).
-  // 미래에 배열 필드가 생기면 아래 일반 경로가 인덱스 키 객체로 직렬화하는데 — JSON 과 모양은 다르지만
-  // **결정론적**이라 다이제스트 용도에는 충분하다. 그때 전용 경로와 단언을 함께 추가한다.
+  //
+  // ⚠ **정직**: `isPlainObject` 는 배열을 **제외**하므로(위 술어) 배열이 오면 아래 일반 객체 경로가 아니라
+  // **native `JSON.stringify`** 로 빠진다 — 원소가 원시값이면 결정론적이지만 **배열 안의 객체는 키 정렬을
+  // 받지 못한다**. 즉 미래에 배열 필드가 생기면 이 함수는 조용히 정준성을 잃는다. 그때 전용 경로와
+  // 단언을 **함께** 추가해야 한다(지금 추가하면 그 arm 이 도달 불가다).
   if (!isPlainObject(value)) return JSON.stringify(value) ?? 'null'
   const parts: string[] = []
   for (const key of Object.keys(value).sort()) {
@@ -571,6 +584,9 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
    */
   const syncedParents = new Set<string>()
 
+  /** 진행 중인 tmp 경로 — 겹침 가드(아래 `append` 의 주석이 근거). */
+  const appendsInFlight = new Set<string>()
+
   const syncDirEntry = (dir: string): void => {
     const fd = fs.openDir(dir)
     try {
@@ -703,10 +719,21 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
     if (Object.hasOwn(draft, 'schemaVersion')) {
       violations.push('draft 가 schemaVersion 을 싣고 있다 — 그 필드는 store 만 배정한다')
     }
-    const record: IntegrationTxnRecord = { ...draft, schemaVersion: SUPPORTED_JOURNAL_SCHEMA }
-    const shape = parseRecordShape(record)
-    if (!shape.ok) violations.push(...shape.violations)
+    const submitted: IntegrationTxnRecord = { ...draft, schemaVersion: SUPPORTED_JOURNAL_SCHEMA }
+    const shape = parseRecordShape(submitted)
+    if (!shape.ok) {
+      violations.push(...shape.violations)
+      return { kind: 'invariant-violation', violations }
+    }
     if (violations.length > 0) return { kind: 'invariant-violation', violations }
+
+    // ⚠ **이 아래로는 제출물이 아니라 재구성물만 쓴다**(자가 적대 리뷰 4렌즈 독립 수렴 · CONFIRMED).
+    // 원본 스프레드를 그대로 직렬화하면 구조적 서브타이핑으로 실려 온 **초과 키**(own enumerable
+    // `constructor` · 계산 키 `__proto__`)가 디스크로 나가고, 그 파일은 자기 `read()` 에서
+    // 프로토타입 오염으로 `invalid` 이 되어 **이후 모든 append 가 `existing-unreadable` 로 고착**한다.
+    // 형제 `authority.ts` 의 `serialize` 가 필드 명시 재조립인 것과 같은 이유이며, 위 `parseRecordShape`
+    // 주석이 이미 그 취지를 적어 놓고 정작 쓰기가 재구성물을 버리고 있었다.
+    const record = shape.record
 
     // ── ② 현재 엔트리와의 대조 — 읽지 못하면 **덮어쓰지 않는다** ──
     const existing = read(draft.benchId, draft.txnId)
@@ -729,12 +756,13 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
 
     // ── ③ 「읽기가 거부할 것을 쓰지 않는다」 — 크기 상한(형제 `verifySerialized` 의 이 PR 판) ──
     //
-    // ⚠ **왕복 파싱은 두지 않는다**(뮤테이션 자기검사 실측): 형제 `verifySerialized` 가 도달 가능한 이유는
-    // draft 가 `revision`·`writtenBy` 를 실어 올 수 있어서인데, 여기서 store 배정 필드는 `schemaVersion`
-    // 하나뿐이고 그것을 위 ⓐ스탬프 우선 + ⓑ명시 거부로 닫았다. 그러고 나면 「형태 검사를 통과한 레코드가
-    // 자기 직렬화를 다시 읽을 때 실패하는」 입력이 **존재하지 않는다** — 도달 불가 arm 을 남기면 커버리지에
-    // 잡히지 않으면서 「여기서도 검증한다」는 거짓 인상을 준다(형제 authority.ts 가 rename catch 분기를
-    // 같은 이유로 삭제했다). 크기 상한은 반대로 **도달 가능**하므로 남긴다.
+    // ⚠ **왕복 파싱은 두지 않는다**: 직렬화 대상이 **재구성물**이라 「형태 검사를 통과했는데 자기
+    // 직렬화를 다시 읽으면 실패하는」 입력이 표현 불가하다(초과 키·프로토타입 키가 애초에 담기지 않고
+    // `schemaVersion` 은 store 가 찍는다). 도달 불가 arm 을 남기면 커버리지에 잡히지 않으면서 「여기서도
+    // 검증한다」는 거짓 인상을 준다(형제 authority.ts 가 rename catch 분기를 같은 이유로 삭제했다).
+    // ⚠ 이 논거는 **재구성물을 쓴다는 사실에 의존**한다 — 위 `const record = shape.record` 를 되돌리면
+    // 이 주석도 함께 거짓이 된다(그 형태가 실제로 착지했다가 자가 리뷰에서 CONFIRMED 로 잡혔다).
+    // 크기 상한은 반대로 **도달 가능**하므로 남긴다.
     const json = JSON.stringify(record)
     const size = Buffer.byteLength(json, 'utf8')
     if (size > MAX_JOURNAL_BYTES) {
@@ -747,6 +775,47 @@ export function createJournalStore(fs: DurableFs, opts: JournalStoreOptions): Jo
 
     const benchDir = join(opts.journalDir, draft.benchId)
     const tmpPath = `${path}.${lease.ownerToken}${TMP_SUFFIX}`
+
+    /**
+     * **겹침 가드** — 형제 `authority.ts` 의 `casInFlight` 와 **같은 사슬**이고, 그 사슬은 Codex P1 으로
+     * 이미 한 번 닫혔다: ⓐA 가 tmp 를 만들고 rename 이 EPERM 이라 백오프에서 양보 ⓑB 가 진입해
+     * `openExclusive` 에서 EEXIST ⓒB 의 `finally` 가 「자기 tmp 정리」로 **A 의 tmp 를 unlink**
+     * ⓓA 가 깨어나 rename 하면 ENOENT. 재시도만 했으면 성공했을 쓰기가 남의 정리에 파괴된다.
+     *
+     * 창을 여는 것은 재시도의 `await` 다. 키가 tmp 경로인 이유는 충돌 조건이 정확히 그것이기 때문이다 —
+     * 같은 리스라도 **txnId 가 다르면 tmp 도 다르므로** 병렬이 안전하고, 막을 이유가 없다.
+     *
+     * ⚠ 이것은 **in-process** 가드다(store 스코프). 프로세스 간 배타는 리스가, 같은 bench 의 권위 쓰기
+     * 직렬화는 호출자의 `withAuthority` 뮤텍스가 맡는다 — 그 둘을 대체하지 않는다.
+     */
+    if (appendsInFlight.has(tmpPath)) {
+      return {
+        kind: 'invariant-violation',
+        violations: [
+          '같은 tmp 경로의 저널 쓰기가 이미 진행 중이다 — 겹쳐 실행하면 두 쓰기가 서로의 tmp 를 지운다',
+        ],
+      }
+    }
+    appendsInFlight.add(tmpPath)
+    try {
+      return await writeDurably(lease, { benchDir, tmpPath, path, json, record })
+    } finally {
+      appendsInFlight.delete(tmpPath)
+    }
+  }
+
+  /** 변이 구간 본체 — rename 을 경계로 반환 종별이 갈린다(그 전 = 무변이 / 그 후 = 게시됨). */
+  const writeDurably = async (
+    lease: BenchLeaseToken,
+    target: {
+      readonly benchDir: string
+      readonly tmpPath: string
+      readonly path: string
+      readonly json: string
+      readonly record: IntegrationTxnRecord
+    },
+  ): Promise<JournalWriteResult> => {
+    const { benchDir, tmpPath, path, json, record } = target
     let step: PreCommitStep = 'mkdir'
     /** 부모 내구화 중이면 그 경로 — 실패 진단이 실제 대상을 싣게 한다. */
     let parentTarget: string | undefined

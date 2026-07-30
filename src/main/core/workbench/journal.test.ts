@@ -226,6 +226,70 @@ describe('저널 배치·tmp 문법 (§3-T64)', () => {
     expect(journalEntryPath(JOURNAL_DIR, benchId, benchId.toLowerCase())).toBeUndefined()
   })
 
+  it('내구 쓰기 단계 순서를 고정한다 · file-only 는 디렉터리 fsync 0(음성 통제)', async () => {
+    const f = await setup()
+
+    expect((await f.store.append(f.lease, draftOf(f), f.read)).kind).toBe('written')
+
+    // 순서가 바뀌면(예: fsync 전에 rename) 내구성이 사라지는데 결과 종별은 그대로다 — 그래서 **순서
+    // 자체**를 관측한다(형제 스위트가 `steps` 를 단언하는 이유).
+    expect(f.fs.steps.filter((s) => s !== 'statKind')).toEqual([
+      'mkdirRecursive',
+      'openExclusive',
+      'writeAll',
+      'fsync',
+      'close',
+      'rename',
+    ])
+    // `file-only` 에서 디렉터리 내구화를 시도하면 **갖지 않은 내구성을 주장**하는 것이다(U4 의 쌍대).
+    expect(f.fs.countOf('openDir')).toBe(0)
+  })
+
+  it('초과 키를 실은 draft 를 써도 디스크에는 재구성물만 나간다', async () => {
+    const f = await setup()
+    // own enumerable `constructor` 는 구조적 서브타이핑으로 실려 온다(`Omit` 의 초과 프로퍼티 검사는
+    // 객체 리터럴에만 걸린다). 그대로 직렬화하면 그 파일은 자기 `read()` 에서 프로토타입 오염으로
+    // `invalid` 이 되어 **이후 모든 append 가 `existing-unreadable` 로 고착**한다.
+    const polluted = Object.assign({}, draftOf(f), { constructor: 'x' })
+
+    const r = await f.store.append(f.lease, polluted, f.read)
+
+    expect(r.kind).toBe('written')
+    if (r.kind === 'written') expect(Object.keys(r.record)).not.toContain('constructor')
+    expect(f.fs.readRaw(f.path) ?? '').not.toContain('constructor')
+    // 자기 파서가 그 파일을 다시 읽고, 후속 전이도 가능해야 한다(고착 부재의 종단 증거).
+    expect(f.store.read(f.benchId, f.txnId).kind).toBe('found')
+    const commit = await mintCommitFor(f.lease, f.benchId)
+    const next = await f.store.append(
+      f.lease,
+      draftOf(f, {
+        stage: 'composed',
+        resultOid: OID_C,
+        resultTree: OID_A,
+        nextAuthorityStage: 'composed',
+        previousAuthorityStage: 'prepared',
+        expectedAuthorityRevision: commit.revision,
+      }),
+      commit,
+    )
+    expect(next.kind).toBe('written')
+  })
+
+  it('같은 tmp 경로의 append 가 겹치면 두 번째를 거부한다(서로의 tmp 를 지우는 사슬 차단)', async () => {
+    const f = await setup()
+    // 첫 append 가 rename EPERM 으로 **백오프에서 양보**하는 순간이 그 창이다(형제 authority.ts 가
+    // Codex P1 으로 닫은 사슬 — 겹치면 B 의 `finally` 가 A 의 tmp 를 지운다).
+    f.fs.failSequence('rename', [errno('EPERM'), null])
+
+    const first = f.store.append(f.lease, draftOf(f), f.read)
+    const second = await f.store.append(f.lease, draftOf(f), f.read)
+
+    expect(second.kind).toBe('invariant-violation')
+    expect((await first).kind).toBe('written')
+    expect(f.fs.paths()).toEqual([f.path])
+    expect(takeSleeps()).toEqual([10])
+  })
+
   it('id 문법 위반이면 파일시스템을 만지기 전에 거부한다', async () => {
     const f = await setup()
     const r = await f.store.append(f.lease, draftOf(f, { txnId: 'not-a-ulid' }), f.read)
@@ -684,6 +748,9 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
     )
   }
 
+  // ⚠ **12필드 중 8개만 여기서 단언 가능**하다(정직 표기): `txnId`·`benchId`·`repoCommonGitDir`·
+  // `benchRoot` 는 그 전에 **리스 identity 대조와 경로 유도**가 이미 고정하므로, 이 경로까지 「바뀐 채로」
+  // 도달할 수 없다 — 즉 그 4행은 **구조적으로 구성 불가**이지 누락이 아니다.
   it.each([
     ['sourceSnapshot', { sourceSnapshot: OID_C }],
     ['sourceBranch', { sourceBranch: 'other' }],
@@ -703,30 +770,95 @@ describe('불변 필드·조건부 결속 (§3-T71)', () => {
     expect((await advance(f, {})).kind).toBe('written')
   })
 
+  /**
+   * **전이가 합법인 상태를 만들어 놓고** 조건부 결속만 어긴다.
+   *
+   * ⚠ 이 헬퍼가 없으면 이 절이 **vacuous** 다(자가 적대 리뷰 CONFIRMED): 엔트리 부재에서 `composed`·
+   * `published`·`abandoned` 를 제출하면 **전이 검사가 먼저** 거부하므로, 조건부 규칙 4개를 통째로
+   * 지워도 전 스위트가 GREEN 이 된다. 두 방어가 같은 입력을 함께 잡는 전형적인 가림이다.
+   */
+  const seededAppend = async (
+    existing: Record<string, unknown>,
+    over: Partial<IntegrationTxnDraft>,
+  ): Promise<{ f: Fixture; r: Awaited<ReturnType<Fixture['store']['append']>> }> => {
+    const f = await setup()
+    f.fs.setFile(f.path, serialized(f, existing))
+    const commit = await mintCommitFor(f.lease, f.benchId)
+    const r = await f.store.append(
+      f.lease,
+      draftOf(f, { expectedAuthorityRevision: commit.revision, ...over }),
+      commit,
+    )
+    return { f, r }
+  }
+
+  const COMPOSED_ENTRY = {
+    stage: 'composed',
+    resultOid: OID_C,
+    resultTree: OID_A,
+    nextAuthorityStage: 'composed',
+    previousAuthorityStage: 'prepared',
+  }
+
   it.each([
-    ['composed 인데 resultOid 부재', { stage: 'composed', nextAuthorityStage: 'composed' }],
+    [
+      'composed 인데 resultOid 부재',
+      {},
+      { stage: 'composed', nextAuthorityStage: 'composed', previousAuthorityStage: 'prepared' },
+    ],
     [
       'published 인데 publishedAt 부재',
+      COMPOSED_ENTRY,
       {
         stage: 'published',
         nextAuthorityStage: 'published',
+        previousAuthorityStage: 'composed',
         resultOid: OID_C,
         resultTree: OID_A,
       },
     ],
     [
       'abandoned 인데 abandonReason 부재',
-      { stage: 'abandoned', nextAuthorityStage: undefined, abandonedAt: AT },
+      {},
+      {
+        stage: 'abandoned',
+        nextAuthorityStage: undefined,
+        previousAuthorityStage: 'prepared',
+        abandonedAt: AT,
+      },
     ],
     [
       'abandoned 인데 nextAuthorityStage 존재',
+      {},
       {
         stage: 'abandoned',
         nextAuthorityStage: 'abandoned' as IntegrationStage,
+        previousAuthorityStage: 'prepared',
         abandonedAt: AT,
         abandonReason: 'user-abandon' as const,
       },
     ],
+  ])('전이는 합법인데 조건부 결속 위반: %s', async (_name, existing, over) => {
+    const { f, r } = await seededAppend(existing, over as Partial<IntegrationTxnDraft>)
+
+    expect(r.kind).toBe('invariant-violation')
+    expect(f.fs.countOf('rename')).toBe(0)
+  })
+
+  it('그 픽스처가 결속을 지키면 통과한다(양성 대조 — 「무조건 거부」 뮤턴트 차단)', async () => {
+    const { r } = await seededAppend(COMPOSED_ENTRY, {
+      stage: 'published',
+      nextAuthorityStage: 'published',
+      previousAuthorityStage: 'composed',
+      resultOid: OID_C,
+      resultTree: OID_A,
+      publishedAt: AT,
+    })
+
+    expect(r.kind).toBe('written')
+  })
+
+  it.each([
     ['비-abandoned 인데 stage ≠ nextAuthorityStage', { nextAuthorityStage: 'finalized' }],
     // `prepared` 는 정의상 결과가 없다(형제 권위 불변식 ③c) — 있으면 이후 판정이 성립하지 않는
     // 「값 비교」 분기로 들어간다.
