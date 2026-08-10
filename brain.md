@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 100 files · 242 import wires · 47 IPC channels · 생성 2026-07-30T12:01 UTC
+> 100 files · 242 import wires · 47 IPC channels · 생성 2026-08-10T10:09 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -114,7 +114,7 @@
 - **workbench/active-instance**
   - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
 - **workbench/coord-area**
-  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 361줄
+  - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 372줄
 - **workbench/durable-fs**
   - →의존: — · ←피의존: workbench/__testing__/durable-fs-fake, workbench/authority, workbench/journal · 214줄
 - **workbench/instance-marker**
@@ -218,7 +218,7 @@
 - **workspace/git** — AI가 코드를 고치기 전 상태를 저장해 두고, 바뀐 내용을 모아 보여주거나 처음으로 되돌리는 작업 기록 관리원 _작업방을 버전 관리 저장소(git)로 만들어 '시작 사진'을 찍어두고, AI가 무엇을 바꿨는지 변경 목록과 그 내용(diff)을 모아 보여주거나, 마음에 안 들면 시작 사진 시점으로 통째로 되돌립니다. 사용자가 미리 만들어둔 작업은 시작 때 따로 보존해 지워지지 않게 하고, 여러 AI가 동시에 저장소를 건드려 생기는 잠금 충돌은 잠깐 기다렸다 다시 시도하며, 변경 내용이 너무 길면 6만 자에서 잘라 보여줍니다._
   - →의존: cli/detect, workspace/ignored-baseline · ←피의존: engine, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workbench/coord-area, workspace/ignored-baseline · 702줄
 - **workspace/ignored-baseline**
-  - →의존: safety/approval, workspace/git · ←피의존: orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/git · 616줄
+  - →의존: safety/approval, workspace/git · ←피의존: orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/git · 635줄
 - **workspace/path-guard**
   - →의존: — · ←피의존: tools/workspace-tools, workbench/active-instance, workbench/coord-area, workspace/set-workspace · 70줄
 - **workspace/set-workspace**
@@ -228,7 +228,7 @@
 - **store/types** — 창고에 담기는 데이터들의 모양과 규칙을 미리 적어 둔 설계도 부품 _프로젝트·할 일·채팅방·저장된 AI 세션 등이 각각 어떤 항목들로 이뤄지는지 형태를 정의한 명세서다. 특히 AI 연결 정보는 구독형 CLI(클로드·코덱스 등)와 API 두 종류로 나뉘며, API 키 같은 비밀번호는 절대 그대로 적지 않고 암호로 바꾼 형태만 저장하도록 규칙을 못 박아 둔다._
   - →의존: shared/types · ←피의존: chat/room, engine, main/index, orchestrator/orchestrator, store/json-file, store/memory · 167줄
 - **store/json-file** — 데이터를 컴퓨터 안 파일에 안전하게 저장해 두는 보관 담당 부품 _앱이 다루는 모든 정보를 'fleet-store.json'이라는 파일에 적어두고, 다음에 앱을 켜면 다시 불러온다. 저장할 때는 임시 파일에 먼저 쓴 뒤 이름만 바꿔치기해서 도중에 멈춰도 원본이 안 깨지게 하고, 파일이 읽다가 망가져 있으면 '.corrupt' 라는 이름으로 따로 백업해 둔 뒤 빈 상태로 시작한다._
-  - →의존: store/memory, store/types · ←피의존: main/index, server/boot · 60줄
+  - →의존: store/memory, store/types · ←피의존: main/index, server/boot · 71줄
 - **store/memory** — 데이터를 메모리에서 직접 넣고 빼고 고치는 실제 일꾼 부품 _프로젝트·할 일·채팅방·메시지·기록 등을 만들고(create), 찾고(get), 목록을 보고(list), 수정하는(update) 모든 기능이 여기에 들어 있다. 데이터를 바꿀 때마다 사본을 따로 떠서 넘겨주어 원본이 바깥에서 함부로 바뀌지 않게 보호하고, 변경이 생기면 위의 파일 저장 담당에게 알려 디스크에 기록하게 한다._
   - →의존: shared/types, store/types · ←피의존: engine, store/json-file · 291줄
 

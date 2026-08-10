@@ -25,7 +25,7 @@ npm run verify   # 집계 게이트 — 아래 전부를 cheapest-first 로 순�
 #   typecheck       tsc --noEmit (main + renderer + shared)
 #   lint            eslint (경고도 0 으로 유지)
 #   test:coverage   vitest --coverage — 코어 단위/통합 + src/main/core/** 커버리지 floor(헤드리스)
-#   build           electron-vite build = 기동 가능성 smoke
+#   build           electron-vite build && build:server = 데스크톱·서버 양 표면 기동 가능성 smoke
 ```
 
 CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 **이 `npm run verify` 단일 명령을 강제**한다
@@ -33,12 +33,16 @@ CI(`.github/workflows/ci.yml`)가 PR/`master` push 에서 **이 `npm run verify`
 (`master protection`)이 `typecheck · lint · test · build`·`windows vitest (win32 보안 회귀)` 잡을
 required status check 로 걸어, 통과 전 머지를 플랫폼 차원에서 차단한다(관례 → 강제).** 잡 표시명은
 required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 로 단일화돼 있다.
-`npm run test:e2e`(playwright)는 느려 CI 게이트에 없다 — 로컬에서 필요 시 수동 실행.
+`npm run test:e2e`(playwright)는 느리고 실 디스플레이가 필요해 **PR 게이트에는 없다** — 별도
+`e2e.yml` 이 수동 `workflow_dispatch` + **nightly cron(18:23 UTC = 03:23 KST)**으로 돌린다(그날 머지분
+회귀를 밤새 검증). 로컬에서도 필요 시 수동 실행.
 
 **커버리지 floor**: `test:coverage` 가 `src/main/core/**` 전역 4메트릭 floor(회귀 backstop)를 강제한다.
 커버리지가 유의하게 오르면 `vitest.config.ts` 의 `coverage.thresholds` 를 수동 상향(ratchet) — `autoUpdate`
-는 config 자가변경 churn 회피 위해 미사용. **Node24 smoke**: 출하 런타임(Electron 42=Node 24) 회귀는
-advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아님 — required check 이름 보존).
+는 config 자가변경 churn 회피 위해 미사용. **Node24 smoke**: 출하 런타임(현 `electron@43` = Node 24)
+회귀는 advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아님 — required check
+이름 보존). ⚠ 여기서 고정해야 하는 건 Electron 메이저가 아니라 **번들 Node 메이저**다 — Electron 을
+올릴 때 Node 메이저가 함께 넘어가면 이 잡의 `node-version` 도 같이 올려야 한다.
 
 ## 아키텍처 규칙 (어기지 말 것)
 
@@ -51,12 +55,16 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
   - `CliAdapter` 는 IPC 로 직렬화되므로 **함수 필드 금지** — 데이터 필드만 둔다.
 - **안전 우선.** **에이전트가 유발하는** 파일 쓰기/삭제/shell 은 `ApprovalGate` 를 통과해야 한다
   (`core/safety/`). 기본은 destructive 차단. 게이트의 소비자는 LLM 변이·툴 실행·프로세스 spawn 경로
-  (`engine.ts`·`orchestrator.ts`·`mcp/host.ts`·`tools/loop.ts`)다.
-  - **예외 = 엔진 인프라 쓰기**(엔진 자신의 상태·메타데이터). `store/json-file.ts`·
-    `workspace/ignored-baseline.ts`·`workbench/coord-area.ts`·`workbench/active-instance.ts` 가 그것이며,
-    부팅 경로라 승인자가 존재하지 않는다(§W-3 L-5 와도 방향이 충돌한다). 예외를 새로 만들 때는 **모듈
-    상단에 근거를 명시**하고, destructive 조작은 게이트가 아니라 **소유 확인·create-only 경합**으로 막는다.
-    (이 구분을 문면에 두지 않아 리뷰에서 반복 지적된 항목 — ADR-0013.)
+  (`engine.ts`·`orchestrator/orchestrator.ts`·`mcp/host.ts`·`tools/loop.ts`)다.
+  - **예외 = 엔진 인프라 쓰기**(엔진 자신의 상태·메타데이터). 현재 **일곱 모듈**이다 —
+    `store/json-file.ts`·`workspace/ignored-baseline.ts`·`workbench/coord-area.ts`·
+    `workbench/active-instance.ts`·`workbench/durable-fs.ts`·`workbench/authority.ts`·
+    `workbench/journal.ts`. 소비 지점이 **부팅·CAS 임계 구역**이라 승인자가 존재하지 않는다
+    (§W-3 L-5 와도 방향이 충돌한다). 예외를 새로 만들 때는 **모듈 독블록에 「`ApprovalGate` 를 거치지
+    않는 이유」 `##` 절로 근거를 명시**하고, destructive 조작은 게이트가 아니라 **소유 확인·create-only
+    경합**으로 막는다. (이 구분을 문면에 두지 않아 리뷰에서 반복 지적된 항목 — ADR-0013.)
+    이 열거는 산문이 아니라 **계약**이다 — `scripts/approval-gate-exceptions.test.ts` 가 「근거 절을 가진
+    모듈 집합 == 위 열거」를 양방향으로 강제하므로, 예외를 늘리면서 이 문단을 안 고치면 RED 다.
 - **provider 계약.** `ApiProvider.chat()` 는 구조화된 `ChatResult`(text·toolCalls·finishReason·
   usage)를 반환한다. `LlmSession.send()` 는 하위호환을 위해 여전히 `string` 을 반환한다.
 

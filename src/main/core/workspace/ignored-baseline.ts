@@ -14,6 +14,25 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { SENSITIVE_FILE } from '../safety/approval'
 import type { GitRunner } from './git'
 
+/**
+ * ignored 파일 베이스라인 — 워크트리를 폐기하면 함께 사라질 gitignore 대상(빌드 산출·로컬 설정·
+ * 자격증명)을 캡처하고 선택 복원한다(#123-A · 하드닝 #128-B1·B2).
+ *
+ * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · AGENTS.md 「안전 우선」)
+ *
+ * 이 모듈은 형제 예외 중 **유일하게 코디네이션 메타데이터 밖을 쓴다** — 복원은 사용자 워크스페이스에
+ * 되쓰고, 정리 경로는 `rmSync` 까지 부른다. 그럼에도 승인 게이트 밖인 근거는 **유발자**다: 게이트의
+ * 범위는 «LLM 변이·툴 실행·프로세스 spawn»이고(소비자 = `engine`·`orchestrator`·`mcp/host`·
+ * `tools/loop`), 캡처·복원을 부르는 것은 에이전트가 아니라 **워크트리 수명주기**(생성·폐기)라
+ * 승인자가 붙어 있는 시점이 아니다.
+ *
+ * 그래서 destructive 조작을 막는 것은 게이트가 아니라 **경계·종류 검사**다:
+ * ⓐ `relative(root, abs)` 렉시컬 containment(탈출 링크도 거둬야 해서 realpath 는 의도적으로 안 쓴다)
+ * ⓑ `lstatSync` 링크 비추종 + 비정규 파일 거부(FIFO 무기한 블록·dangling 링크 write-through 차단)
+ * ⓒ denylist ⓓ 스캔 상한. 이 방어들이 **advisory**(악의적 동시 편집자 방어 아님)라는 한계는 #128 에
+ * 문서화돼 있다.
+ */
+
 /** [:270] walk의 unreadable-dir 및 listIgnored의 over-cap 합성 마커 경로 상수.
  * restore/rmSync 등 실-경로로 취급하는 곳에서는 반드시 이 값을 걸러내야 한다. */
 export const SCAN_CAPPED = 'scan-capped'
