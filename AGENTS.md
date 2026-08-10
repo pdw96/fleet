@@ -76,15 +76,31 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
 - **engine-strict floor 정직성.** `.npmrc` 의 `engine-strict=true` 때문에 선언한
   `engines.node`(현 `>=22.22.2 <23 || >=24.15.0 <25 || >=26.0.0`)가 의존성 트리의 *실제* 바닥과
   어긋나면 `npm ci` 가 EBADENGINE 로 하드 실패한다(transitive 까지 강제). 현 바닥 결정자는
-  **런타임 의존** `which@7`(`^22.22.2 || ^24.15.0 || >=26.0.0`) **단독** — 두 floor(22.22.2·24.15.0)와
-  **Node 23·25 제외**를 전부 이것이 정하고, 선언값은 이걸 그대로 전개한 것이다(Node 25 를 배제하는
-  항목은 트리에서 이것뿐). dev 쪽 차순위 `lint-staged@17`(`>=22.22.1`) · `electron@43`(`>= 22.12.0`)
-  과, Node 23 을 중복 배제하는 `eslint@10`/`eslint-visitor-keys@5`(`^20.19.0 || ^22.13.0 || >=24`) 계열은
-  현재 전부 흡수돼 비구속이다. 즉 **dev-tool 뿐 아니라 런타임 의존도 floor 를 올린다**. 올라가면
+  `^22.22.2 || ^24.15.0 || >=26.0.0` 을 선언한 **두 패키지** — **런타임 의존** `which@7` 와
+  **dev 의존** `jsdom@30` — 이고 둘의 범위는 동일하다. 두 floor(22.22.2·24.15.0)와 **Node 23·25
+  제외**를 이 둘이 정하며, 선언값은 그 범위를 그대로 전개한 것이다(Node 25 를 배제하는 항목도
+  트리에서 이 둘뿐). **단 `--omit=dev` 프로덕션 설치에선 `which@7` 단독**이다 — jsdom 은 dev
+  트리에서만 공동 결정자다. 차순위 `lint-staged@17`(`>=22.22.1`) · `undici@8`(`>=22.19.0`, jsdom 하위)
+  · `electron@43`(`>= 22.12.0`) 과, Node 23 을 중복 배제하는 `eslint@10`/`eslint-visitor-keys@5`
+  (`^20.19.0 || ^22.13.0 || >=24`) 계열은 현재 전부 흡수돼 비구속이다. 즉 **dev-tool 뿐 아니라
+  런타임 의존도 floor 를 올린다**. 올라가면
   **최신 메이저를 다운그레이드해 회피하지 말고 floor 를 정직하게 상향**하라(핀된 `.nvmrc`/CI 엔
   무영향). lockfile 루트 `engines` 드리프트는 `npm install --package-lock-only` 로 동기화.
   ⚠ 이 결정자 열거를 강제하는 자동 검사는 없다 — 의존성 범프마다 낡으므로, 손댈 땐 락파일의
-  `engines.node` 전체를 다시 교집합해 확인하고 이 문단도 같이 갱신할 것.
+  `engines.node` 전체를 다시 교집합해 확인하고 이 문단도 같이 갱신할 것. 확인 수단:
+
+  ```js
+  // node -e — 각 Node 후보를 락파일의 모든 engines.node 선언에 대해 실판정
+  const semver = require('semver')
+  const ent = Object.entries(require('./package-lock.json').packages).filter(([k, v]) => k && v.engines?.node)
+  for (const v of ['22.22.1', '22.22.2', '23.0.0', '24.14.0', '24.15.0', '25.0.0', '26.0.0']) {
+    const blockers = ent.filter(([, p]) => !semver.satisfies(v, p.engines.node))
+    console.log(v, blockers.length, [...new Set(blockers.map(([k]) => k.split('node_modules/').pop()))])
+  }
+  ```
+
+  선언이 허용하는 버전에서 차단 0건(과대선언 없음) · 배제하는 버전에서 차단 ≥1건(과소선언 없음)
+  이어야 하고, 차단 목록에 뜨는 이름이 곧 위 「결정자」다.
 
 ## 컨벤션
 
