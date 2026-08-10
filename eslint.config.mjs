@@ -154,6 +154,9 @@ const CORE_FS_REEXPORT_SYNTAX = [
   // 미매치인데 능력은 그대로 흘러나간다(Codex PR#282 7R). 내보내는 **로컬 이름**으로 잡는다
   // (코어 전역 exact 일치 0 실측 — 오탐 없음).
   `ExportSpecifier[local.name=${FS_MUTATION_PATTERN}]`,
+  // `export default writeFileSync` 는 ExportSpecifier 가 아니라 ExportDefaultDeclaration 이라 위
+  // 셀렉터를 통과한다(Codex 10R). 기본 내보내기 경로도 함께 막는다.
+  `ExportDefaultDeclaration[declaration.name=${FS_MUTATION_PATTERN}]`,
   // `import { writeFileSync as w } from 'node:fs'; export { w }` — `local.name` 이 `w` 라 위 셀렉터가
   // 미매치다(Codex 8R). ESLint 셀렉터로 데이터플로를 못 쫓으므로 **전제를 고정**한다: fs 변형은
   // **별칭 없이** import 해야 한다. 그러면 내보내는 로컬 이름이 곧 fs 이름이라 위 셀렉터가 잡는다.
@@ -538,6 +541,8 @@ export default tseslint.config(
         ...CORE_GUARD_SYNTAX,
         ...CHILD_PROCESS_DYNAMIC_IMPORT_SYNTAX,
         ...TOOLS_FS_DYNAMIC_IMPORT_SYNTAX,
+        // allowlist 의 `workspace-tools.ts` 도 named-only 전제를 받는다(Codex 10R).
+        ...CORE_FS_BINDING_FORM_SYNTAX,
         {
           selector: FS_MUTATION_SELECTOR,
           message:
@@ -609,7 +614,15 @@ export default tseslint.config(
         'error',
         { paths: ELECTRON_IMPORT_PATHS, patterns: ELECTRON_IMPORT_PATTERNS },
       ],
-      'no-restricted-syntax': ['error', ...CORE_GUARD_SYNTAX],
+      'no-restricted-syntax': [
+        'error',
+        ...CORE_GUARD_SYNTAX,
+        // 변이 티어도 named-only 전제와 동적 import 금지를 받는다(Codex 10R): 이 배선이 없으면
+        // allowlist **안에서** `import * as fs` 나 `const fs = await import('node:fs')` 뒤에
+        // `export { fs }` 로 능력을 흘릴 수 있고, 그 소비자는 fs 지정자도 seam 도 없이 변이한다.
+        ...CORE_FS_BINDING_FORM_SYNTAX,
+        ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
+      ],
     },
   },
   // 브랜드 위조 차단(#251 PR1b · 스펙 §W-3/§W-4). `BenchLeaseToken`·`Held<L>` 은 미export
@@ -677,6 +690,7 @@ export default tseslint.config(
         'error',
         ...CORE_GUARD_SYNTAX,
         ...CORE_FS_BINDING_FORM_SYNTAX,
+        ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
         ...CORE_FS_READONLY_SYNTAX,
         // ⚠ 이 블록은 **설정 맨 끝**이라(앞에 두면 workbench 블록이 교체한다 — 프로브 0 error 실측)
         // 뒤따르는 블록이 없다. 대신 이 파일들이 잃게 되는 후속 가드를 여기서 직접 스프레드해야 한다

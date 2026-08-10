@@ -72,7 +72,9 @@ export const usesDurableFs = (src: string): boolean =>
   // ⚠ **동적 import 도 본다**(Codex 8R): `await import('../workbench/durable-fs')` + `createNodeDurableFs()`
   // 는 정적 `from` 이 없어 seam 판정을 통과했다 — 공통 로더 가드는 리터럴 동적 import 를 허용하므로
   // lint 도 안 잡는다. 여기서 잡아야 「seam 소비자 ∪ 변이 티어 == 열거」가 성립한다.
-  /(?:from|import)\s*\(?\s*'[^']*\/durable-fs'/.test(stripComments(src))
+  // ⚠ **확장자 붙은 지정자도 본다**(Codex 10R): Bundler 해석은 `'../workbench/durable-fs.js'` 를
+  // TS 소스로 해소한다 — 따옴표를 바로 요구하면 그 형태가 seam 판정을 통과한다.
+  /(?:from|import)\s*\(?\s*'[^']*\/durable-fs(?:\.[a-z]+)?'/.test(stripComments(src))
 
 /** 파일 머리 영역 = 첫 top-level `export` 이전. 그 뒤의 함수 JSDoc 은 「모듈 상단」이 아니다. */
 export const moduleHeader = (src: string): string => {
