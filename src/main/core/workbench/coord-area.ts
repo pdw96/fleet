@@ -31,6 +31,17 @@ import { isLinkSync } from '../workspace/path-guard'
  * ⚠ **위협 모델(§W-2-a)**: 프로덕션에서 이 영역은 `/workspace/.git/fleet/` 이고 `/workspace` 는 ttyd
  * 컨테이너에도 마운트돼 **같은 uid** 로 열려 있다. 따라서 0700·uid 검사는 «사고·경합» 방어이지
  * 악의적 변조 방어가 아니다 — 비목표로 명시 선언돼 있다.
+ *
+ * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · 형제 `active-instance.ts` 와 동형)
+ *
+ * 영역 생성은 `mkdir`·`chmod`·tmp 쓰기·`link` 로 파일시스템을 변이한다. 그럼에도 승인 게이트 밖인
+ * 근거는 형제 모듈과 같다 — 게이트의 범위는 «LLM 변이·툴 실행·프로세스 spawn»이고(소비자 =
+ * `engine`·`orchestrator`·`mcp/host`·`tools/loop`), 이 경로는 **부팅 시점**이라 승인자가 존재하지
+ * 않으며 §W-3 **L-5**(승인 대기 중 락 보유 금지)와 방향이 충돌한다. 결정 근거는 ADR-0013.
+ *
+ * 무엇보다 **파괴할 기존 상태를 건드리지 않는다**: 기존 `area.json` 은 읽어서 검증할 뿐 덮어쓰지
+ * 않고(전방호환 fail-closed), 발행은 tmp+`link` **create-only 경합**이라 패자만 자기 tmp 를 거둔다.
+ * `unlinkSync` 가 닿는 유일한 대상이 그 자기 tmp 다.
  */
 
 export const AREA_DIR_NAME = 'fleet'

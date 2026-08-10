@@ -56,14 +56,35 @@ describe('코어 순수성 ESLint 게이트 회귀 가드 (#173)', () => {
 // #174: 도구 실행 모듈 read-only 구조 가드. ApprovalGate 는 tool.classify() 자가신고만 신뢰하므로
 // (loop.ts:171) classify:'safe' 인 신규 도구가 raw fs 변형/spawn 하면 무프롬프트로 워크스페이스를
 // 바꾼다. 가드가 조용히 삭제/약화되면 lint 는 여전히 green(위반 0)이라 무신호 → 게이트 자체를 핀.
-const toolsBlock = blocks.find((c) => c.files?.includes('src/main/core/tools/**/*.ts'))
+const toolsBlock = blocks.find((c) =>
+  c.files?.includes('src/main/core/tools/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'),
+)
 
 describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
   it('tools 블록 존재 + files/ignores 스코프', () => {
     expect(toolsBlock).toBeDefined()
-    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.ts')
+    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}')
     expect((toolsBlock as { ignores?: string[] })?.ignores).toContain(
-      'src/main/core/tools/**/*.test.ts',
+      'src/main/core/tools/**/*.test.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
+    )
+  })
+
+  /**
+   * `workspace-tools.ts` 는 fs allowlist 의 읽기 전용 티어인데, tools 블록이 읽기 전용 티어 블록보다
+   * **뒤**라 여기가 최종 적용이다 — 티어 가드를 여기서 스프레드하지 않으면 그 파일만 조용히 약해진다
+   * (Codex 13R: 재-export 형태 금지가 빠져 `export { readFile }` 로 읽기 능력이 샐 수 있었다).
+   */
+  it('tools 블록이 fs 티어 가드(바인딩 형태·재-export 형태)를 함께 보유한다', () => {
+    const selectors = (
+      (toolsBlock?.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[]
+    ).map((s) => s.selector ?? '')
+    expect(selectors).toContain(
+      "ImportDeclaration[source.value='node:fs'] > ImportNamespaceSpecifier",
+    )
+    expect(selectors).toContain('ExportNamedDeclaration:not([source]) > ExportSpecifier')
+    expect(selectors).toContain('ExportDefaultDeclaration')
+    expect(selectors).toContain(
+      "ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type='Identifier']",
     )
   })
 
@@ -85,7 +106,13 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     const selectors = (rule?.slice(1) as { selector?: string }[])
       .map((s) => s.selector ?? '')
       .join('  ')
-    const dot = selectors.match(/MemberExpression\[property\.name=\/[^/]*\//)?.[0] ?? ''
+    // ⚠ **첫 매치를 집으면 안 된다**(#282): 공통 가드(`CORE_GUARD_SYNTAX`)가 앞에 스프레드되면서
+    // 로더용 `MemberExpression[property.name=/^(createRequire|…)/]` 이 먼저 나온다. fs 변형 셀렉터를
+    // **내용으로** 특정한다.
+    const dot =
+      (selectors.match(/MemberExpression\[property\.name=\/[^/]*\//g) ?? []).find((m) =>
+        m.includes('writeFile'),
+      ) ?? ''
     // write·delete·open(write-mode)·메타데이터(fchmod/lutimes) 경로를 각각 핀 — 하나만 남아도 통과하던 약점 보완.
     expect(dot).toContain('writeFile')
     expect(dot).toContain('rm')
@@ -277,5 +304,234 @@ describe('실패 종별 소진 강제 ESLint 게이트 (#251 PR2a)', () => {
     const selectors = ((syntax?.slice(1) ?? []) as { selector: string }[]).map((s) => s.selector)
     expect(selectors).toContain("ImportExpression[source.value='electron']")
     expect(selectors).toContain('ImportExpression[source.value=/^electron\\//]')
+  })
+})
+
+/**
+ * #282 — **fs 경계 가드가 후속 블록에 교체당하지 않는지** 전수로 핀한다.
+ *
+ * flat config 는 같은 rule-key 를 병합이 아니라 **교체**한다. 이 레포는 그 함정을 알고 electron 가드를
+ * 블록마다 재선언해 왔는데, #282 가 추가한 fs 경계 가드는 그 규율을 따르지 않아 **workbench 블록이
+ * 통째로 무력화**하고 있었다(Codex 7R 적발 — lint 는 green 이라 무신호). 개별 블록을 하나씩 핀하면
+ * **다음에 추가되는 블록이 같은 방식으로 또 뚫는다**. 그래서 「코어를 스코프로 `no-restricted-syntax`
+ * 를 선언하는 **모든** 블록은 공통 묶음을 포함한다」를 불변식으로 세운다.
+ */
+describe('fs 경계 가드 override 방지 (#282)', () => {
+  // flat config 는 rule-key 를 교체하므로 실제로 적용되는 건 **마지막 매칭 블록**뿐이다.
+  // 이 레포가 쓰는 glob 형태만 다루는 최소 매처(`**/*.{a,b}` · 디렉터리 prefix · 리터럴 경로).
+  const matches = (glob: string, file: string): boolean => {
+    const braces = /\{([^}]*)\}/.exec(glob)
+    if (braces) {
+      return braces[1].split(',').some((ext) => matches(glob.replace(braces[0], ext.trim()), file))
+    }
+    if (!glob.includes('*')) return glob === file
+    // 이 레포의 glob 은 `<dir>/**/*<ext>` 와 `<dir>/**` 두 형태다 — 정규식 조립 없이 접두/접미로 판정.
+    const star = glob.indexOf('**/*')
+    if (star >= 0) {
+      const prefix = glob.slice(0, star)
+      const suffix = glob.slice(star + '**/*'.length)
+      return file.startsWith(prefix) && file.endsWith(suffix)
+    }
+    if (glob.endsWith('/**')) return file.startsWith(glob.slice(0, -'**'.length))
+    // ⚠ **조용히 false 를 반환하면 안 된다**(CodeRabbit PR#282). 미지원 형태를 미매치로 처리하면
+    // `lastFor` 가 엉뚱한 블록을 최종 블록으로 고르고, 그때 이 테스트는 RED 가 아니라 **잘못된 GREEN**
+    // 이 된다 — 이 파일이 강제하려는 것이 바로 「무신호로 약해지지 않는다」이므로 매처의 한계는
+    // 반드시 드러나야 한다.
+    throw new Error(
+      `미지원 glob 형태: ${glob} — 최소 매처를 확장하라(조용한 미매치는 잘못된 GREEN 을 만든다).`,
+    )
+  }
+  /**
+   * 이 블록이 이 파일에 적용되는가 — **`files` 가 없으면 전 파일에 적용된다**(Codex 15R).
+   * 앞서 이 층은 「`files` 중 하나가 코어 경로 접두로 시작하는가」로 블록을 골랐는데, 그러면
+   * `files: ['**\/*.ts']` 같은 광범위 블록이나 `files` 자체가 없는 블록이 **선별에서 빠지면서도**
+   * 코어 파일의 `no-restricted-syntax` 를 실제로는 교체한다 — 경계가 사라져도 이 테스트는 green 이다.
+   */
+  const appliesTo = (c: (typeof blocks)[number], file: string): boolean =>
+    (c.files === undefined || c.files.some((f) => matches(f, file))) &&
+    (c as { ignores?: string[] }).ignores?.some((g) => matches(g, file)) !== true
+
+  /** `no-restricted-syntax` 를 선언하는 블록 전량 — 스코프 표기가 아니라 **실제 겹침**으로 고른다. */
+  const syntaxBlocks = blocks.filter((c) => c.rules?.['no-restricted-syntax'] !== undefined)
+
+  /** allowlist 티어 블록 = `files` 가 전부 리터럴 경로인 블록(=`CORE_FS_*` 상수를 그대로 받은 것). */
+  const tierFilesContaining = (probe: string): string[] =>
+    syntaxBlocks.find(
+      (c) => c.files?.every((f) => !f.includes('*')) === true && c.files.includes(probe),
+    )?.files ?? []
+  const mutatingFiles = tierFilesContaining('src/main/core/store/json-file.ts')
+  const readonlyFiles = tierFilesContaining('src/main/core/workspace/path-guard.ts')
+
+  /** 코어 대표 파일 — 티어 전량 + 비-allowlist 코어 + 게이트가 덮는 다른 두 스코프. */
+  const CORE_PROBES = [
+    ...mutatingFiles,
+    ...readonlyFiles,
+    'src/main/core/workbench/journal.ts',
+    'src/main/core/engine.ts',
+    'src/server/access-jwt.ts',
+    'src/shared/transport/channels.ts',
+  ]
+  const coreSyntaxBlocks = syntaxBlocks.filter((c) => CORE_PROBES.some((f) => appliesTo(c, f)))
+
+  const lastFor = (file: string) =>
+    // ⚠ **전체 블록에서 찾는다**(15R): 코어 스코프로 선별된 것만 보면, 뒤에 오는 광범위 블록이
+    // 실제 최종 규칙인데도 그 존재를 못 본다.
+    [...syntaxBlocks].reverse().find((c) => appliesTo(c, file))
+  const effectiveSelectors = (file: string): string[] =>
+    (
+      (lastFor(file)?.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[]
+    ).map((e) => e.selector ?? '')
+
+  it('앵커: 코어에 적용되는 no-restricted-syntax 블록이 복수다', () => {
+    expect(coreSyntaxBlocks.length).toBeGreaterThanOrEqual(4)
+    expect(CORE_PROBES.every((f) => lastFor(f) !== undefined)).toBe(true)
+  })
+
+  /**
+   * **정적 fs import 금지는 `no-restricted-syntax` 가 아니라 `no-restricted-imports` 가 한다**
+   * (Codex 16R). 위 감사는 `no-restricted-syntax` 만 봤으므로, 뒤에 오는 광범위 블록이
+   * `no-restricted-imports` 를 `'off'` 로 두거나 다른 제한으로 **교체**하면 allowlist 밖 코어의
+   * 평범한 `import { writeFileSync } from 'node:fs'` 가 합법이 되는데 이 스위트도 대조 테스트도
+   * green 이다(로더·재-export 셀렉터는 평범한 `ImportDeclaration` 을 잡지 않는다).
+   * 같은 「최종 적용 블록」 방식으로 이 룰도 감사한다.
+   */
+  it('allowlist 밖 코어의 정적 fs import 금지가 최종 적용 규칙에 살아 있다', () => {
+    const importBlocks = blocks.filter((c) => c.rules?.['no-restricted-imports'] !== undefined)
+    const lastImportFor = (file: string) =>
+      [...importBlocks].reverse().find((c) => appliesTo(c, file))
+
+    // allowlist 밖 코어 대표 — 여기서 fs import 가 합법이 되면 경계 자체가 사라진 것이다.
+    for (const file of ['src/main/core/engine.ts', 'src/main/core/workbench/journal.ts']) {
+      const rule = lastImportFor(file)?.rules?.['no-restricted-imports']
+      expect(rule, `${file} 에 적용되는 no-restricted-imports 블록이 없다`).toBeDefined()
+      expect(rule?.[0], `${file} 의 fs import 금지가 error 가 아니다`).toBe('error')
+      const opts = rule?.[1] as { patterns?: { group?: string[] }[] }
+      const groups = (opts?.patterns ?? []).flatMap((p) => p.group ?? [])
+      for (const m of ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']) {
+        expect(
+          groups,
+          `${file} 의 최종 적용 블록(files=${JSON.stringify(lastImportFor(file)?.files)})이 '${m}' 금지를 잃었다`,
+        ).toContain(m)
+      }
+    }
+
+    // allowlist 안이라도 electron 금지는 유지돼야 한다(코어 순수성 · #173).
+    for (const file of [...mutatingFiles, ...readonlyFiles]) {
+      const rule = lastImportFor(file)?.rules?.['no-restricted-imports']
+      expect(rule?.[0], `${file} 의 no-restricted-imports 가 error 가 아니다`).toBe('error')
+      const opts = rule?.[1] as { paths?: { name: string }[] }
+      expect(
+        (opts?.paths ?? []).map((p) => p.name),
+        `${file} 의 최종 적용 블록이 electron 금지를 잃었다`,
+      ).toContain('electron')
+    }
+  })
+
+  /** 공통 묶음의 대표 셀렉터 — 하나라도 빠지면 그 블록에서 해당 방어가 사라진 것이다. */
+  const REQUIRED = [
+    "ImportExpression[source.value='electron']",
+    "ImportExpression[source.type!='Literal']",
+    "ExportNamedDeclaration[source.value='node:fs']",
+    // 14R: 외부(bare) 모듈 재-export 금지 — 아직 이름을 모르는 빌트인의 로더 능력까지 덮는 안전망.
+    "ExportNamedDeclaration[source][exportKind!='type']:not([source.value=/^\\./])",
+    // 15R: 프로덕션이 테스트 모듈을 끌어와 경계 밖 쓰기를 번들에 넣는 경로 차단.
+    'ImportDeclaration[source.value=/\\.test(\\..+)?$/]',
+  ]
+
+  it('코어에 적용되는 모든 블록이 공통 가드(electron·로더·재-export·테스트 import)를 포함한다', () => {
+    for (const block of coreSyntaxBlocks) {
+      const entries = (block.rules?.['no-restricted-syntax'] ?? []).slice(1) as {
+        selector?: string
+      }[]
+      const selectors = entries.map((e) => e.selector)
+      for (const required of REQUIRED) {
+        expect(
+          selectors,
+          `블록 files=${JSON.stringify(block.files)} 에 "${required}" 가 없다 — CORE_GUARD_SYNTAX 를 스프레드하라(flat config 는 rule-key 를 교체한다)`,
+        ).toContain(required)
+      }
+    }
+  })
+
+  it('앵커: 두 allowlist 티어 블록이 실존하고 비어 있지 않다', () => {
+    expect(mutatingFiles.length).toBeGreaterThanOrEqual(4)
+    expect(readonlyFiles.length).toBeGreaterThanOrEqual(4)
+    expect(mutatingFiles.filter((f) => readonlyFiles.includes(f))).toEqual([])
+  })
+
+  /**
+   * **8R·11R 이 반복 적발한 클래스** — 같은 rule-key 교체 함정의 재발. 손으로 고른 파일 몇 개만
+   * 검사하면 다음 블록이 **다른 파일에서** 같은 방식으로 또 뚫는다(11R: 워크벤치 블록이 변이 티어의
+   * 바인딩 형태·동적 import 가드를 떨어뜨렸는데, 당시 이 테스트는 소진 강제만 봐서 green 이었다).
+   *
+   * 그래서 검사 단위를 **블록이 아니라 파일**로 바꾼다: allowlist 전 파일에 대해 「마지막 매칭 블록의
+   * 셀렉터 집합」이 그 파일의 티어가 요구하는 가드를 **전부** 갖는지 본다. 블록을 새로 추가하든 순서를
+   * 바꾸든, 실효 규칙이 약해지는 순간 RED 다.
+   */
+  it('allowlist 전 파일의 **최종 적용** 규칙이 티어 가드를 온전히 보유한다', () => {
+    /** 티어 공통(CORE_FS_TIER_SYNTAX) 대표 — 바인딩 형태·동적 import 는 10R 이 배선한 가드다. */
+    const TIER_REQUIRED = [
+      ...REQUIRED,
+      "ImportDeclaration[source.value='node:fs'] > ImportNamespaceSpecifier",
+      "ImportExpression[source.value='node:fs']",
+      // 12R·13R: 재-export **형태** 금지 — 읽기 API 유출 경로까지 이름 검사 없이 닫는다.
+      'ExportNamedDeclaration:not([source]) > ExportSpecifier',
+      'ExportDefaultDeclaration',
+      "ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type='Identifier']",
+    ]
+    for (const file of [...mutatingFiles, ...readonlyFiles]) {
+      const block = lastFor(file)
+      expect(block, `${file} 에 매칭되는 no-restricted-syntax 블록이 없다`).toBeDefined()
+      const selectors = effectiveSelectors(file)
+      for (const sel of TIER_REQUIRED) {
+        expect(
+          selectors,
+          `${file} 의 최종 적용 블록(files=${JSON.stringify(block?.files)})이 "${sel}" 를 잃었다 — CORE_FS_TIER_SYNTAX 를 스프레드하라(flat config 는 rule-key 를 교체한다)`,
+        ).toContain(sel)
+      }
+      // 읽기 전용 티어는 fs 변형 집행까지 받아야 라벨이 선언에 그치지 않는다(6R) —
+      // 변형 이름 집합은 자주 늘어나므로 셀렉터 **형태**로 핀한다(11R 이 추가한 생성자 형태 포함).
+      if (readonlyFiles.includes(file)) {
+        for (const [what, head] of [
+          ['변형 API import 차단', 'ImportSpecifier[imported.name=/^(writeFile'],
+          // 12R: `import { 'writeFileSync' as w }` 는 `imported` 가 Literal 이라 위 셀렉터가 미매치다.
+          ['문자열 이름 import 차단', 'ImportSpecifier[imported.value=/^(writeFile'],
+          ['변형 생성자 차단', 'NewExpression[callee.name=/^(writeFile'],
+        ] as const) {
+          expect(
+            selectors.some((s) => s.startsWith(head)),
+            `${file}(읽기 전용 티어)의 최종 적용 블록이 ${what}를 잃었다 — CORE_FS_READONLY_SYNTAX 를 스프레드하라`,
+          ).toBe(true)
+        }
+      }
+      // 워크벤치를 덮으면 소진 강제도 함께 유지해야 한다(8R).
+      if (file.startsWith('src/main/core/workbench/')) {
+        expect(
+          selectors.some((sel) => sel.includes("callee.name='assertNever'")),
+          `${file} 의 최종 적용 블록이 소진 강제를 빠뜨렸다 — WORKBENCH_EXHAUSTIVE_SYNTAX 를 스프레드하라`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  /** seam 소비자(fs 미import)도 워크벤치 가드를 잃지 않는지 — allowlist 밖 경로의 대표 1건. */
+  it('fs 를 import 하지 않는 워크벤치 파일도 소진 강제를 받는다', () => {
+    const selectors = effectiveSelectors('src/main/core/workbench/journal.ts')
+    expect(selectors.some((sel) => sel.includes("callee.name='assertNever'"))).toBe(true)
+  })
+
+  it('로더 가드가 별칭·구조분해 형태까지 덮는다(7R)', () => {
+    const boundary = coreSyntaxBlocks.flatMap(
+      (c) => (c.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[],
+    )
+    const selectors = boundary.map((e) => e.selector ?? '')
+    expect(
+      selectors.some((s) => s.startsWith('ImportSpecifier[imported.name=/^(createRequire')),
+    ).toBe(true)
+    expect(
+      selectors.some((s) => s.startsWith('ObjectPattern > Property[key.name=/^(createRequire')),
+    ).toBe(true)
+    // import-then-export 형태(source 없는 재-export)
+    expect(selectors.some((s) => s.startsWith('ExportSpecifier[local.name='))).toBe(true)
   })
 })

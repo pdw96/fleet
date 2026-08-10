@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { defaultRunner } from '../cli/detect'
 import {
@@ -9,6 +9,34 @@ import {
   type IgnoredBaseline,
   type IgnoredChangeSet,
 } from './ignored-baseline'
+
+/**
+ * ## `ApprovalGate` 를 거치지 않는 이유 (명시 예외 · Codex PR#282 P1 이 파생 스캔으로 표면화)
+ *
+ * 이 모듈의 직접 파일시스템 접촉은 **`existsSync(index.lock)` 하나뿐**이고, 그것도 실패 메시지에
+ * 「어디가 막혔는지」를 싣기 위한 **읽기**다. 게이트 밖인 근거는 형제 예외와 같다 — 게이트의 범위는
+ * «LLM 변이·툴 실행·프로세스 spawn»이고(소비자 = `engine`·`orchestrator`·`mcp/host`·`tools/loop`),
+ * 여기를 부르는 것은 에이전트가 아니라 **엔진의 git 재시도 정책**이다.
+ *
+ * ## `index.lock` 을 **삭제하지 않는** 이유 (PR#282 에서 제거 · Codex 2R P1 + CodeRabbit)
+ *
+ * 예전 `ok()` 는 2회차부터 `rmSync(index.lock)` 으로 락을 강제 제거했고, 그 근거는 주석에 적힌
+ * 「오케스트레이터는 순차 실행이라 이 시점에 동시 git 프로세스가 없음이 보장된다」였다.
+ * **그 전제는 출하 형상에서 거짓이다** — `deploy/docker-compose.yml` 이 ttyd 웹터미널과 `/workspace`
+ * 를 **공유**하므로(「두 문이 공유하는 프로젝트 폴더」) 사용자의 셸·IDE 가 같은 인덱스를 만진다.
+ * 발동 조건(락 계열 stderr · 2회차 이후 · `existsSync`)은 그 락이 stale 하거나 우리 것임을 전혀
+ * 증명하지 못하고, **살아있는 락을 지우면 경쟁 인덱스 writer 가 허용되어 staged 상태가 유실된다.**
+ * git 은 `index.lock` 에 소유 PID 를 안 남기므로 파일만 봐서는 소유를 알 수 없다 — 나이·재시도 횟수
+ * 같은 간접 신호는 전부 휴리스틱이다(#251 락 층의 「연령·신원은 소유 증거가 아니다」와 같은 기준).
+ * 실제로 #251 PR3a 는 이 위험 때문에 통합 경로에서 `ok()` 를 **의도적으로 우회**하고 있었다(R-5).
+ *
+ * 그래서 재시도는 **백오프만** 하고, 소진하면 락 경로를 실패 메시지에 실어 **정직하게 실패**한다.
+ * 비가역 데이터 손실보다 복구 가능한 실패가 낫다. 취소·크래시로 죽은 에이전트 CLI 가 남긴 락의
+ * **자동 회수는 #285** 가 「소유를 구성적으로 아는 지점」(자식 트리 kill 직후)에서 복원한다.
+ *
+ * ⚠ 이 모듈은 그 밖에도 git 하위 프로세스를 통해 워크트리를 만들고 지운다. 그건 파일 API 변이가
+ * 아니라 **git 명령의 효과**라 위 파생 스캔에는 잡히지 않지만, 성격은 같은 엔진 인프라 조작이다.
+ */
 
 /**
  * 두 경로가 같은 위치를 가리키는지 비교한다.
@@ -82,8 +110,9 @@ export const defaultGitRunner: GitRunner = createGitRunner()
  * 신규 표면인 이유(§0.1 C12): `Workspace` 는 worktree 경로를 **내부 유도**하고 디렉터리 인자를 받지
  * 않아 named-branch worktree 를 재사용할 수 없다. 기존 export 는 **무변경**이고 여기에 추가만 한다.
  *
- * ⚠ `ok()` 를 쓰지 않는다(R-5 · §3-T58). `ok()` 의 index.lock 강제 삭제는 "오케스트레이터는 순차 실행"
- * 이라는 전제 위에 있는데, bench 병렬에서는 그 전제가 깨진다 — 남의 라이브 락을 지우게 된다.
+ * ⚠ `ok()` 를 쓰지 않는다(R-5 · §3-T58). 원래 근거는 `ok()` 의 index.lock 강제 삭제였고 **그 삭제는
+ * PR#282 에서 제거**됐지만, 미사용 계약은 유지한다 — `ok()` 의 재시도 판정은 `LOCK_RE`(index.lock
+ * 전용)라 이 표면이 실제로 겪는 `refs/…/<name>.lock` 경합을 못 걸러낸다(아래 `REF_LOCK_RE`).
  */
 export type GitRepoDirResult =
   | { status: 'ok'; path: string; bare: boolean }
@@ -539,10 +568,10 @@ const worktreeDir = (root: string, id: string): string =>
 
 export function createWorkspace(root: string, git: GitRunner = defaultGitRunner): Workspace {
   const run = (args: string[]) => git.run(args, root)
-  // 반드시 성공해야 하는 git 명령. index.lock 경합(편집 에이전트의 자체 git)에는
-  // 백오프 재시도하고, 끈질긴 스테일 락은 제거한다 — 오케스트레이터는 순차 실행이라
-  // 이 시점에 동시 git 프로세스가 없음이 보장된다(락 제거가 안전).
-  // 락 파일 경로를 git 에 묻는다(linked worktree 는 <main>/.git/worktrees/<id>/index.lock).
+  // 반드시 성공해야 하는 git 명령. index.lock 경합에는 **백오프 재시도만** 하고 락은 지우지
+  // 않는다(모듈 상단 「index.lock 을 삭제하지 않는 이유」 — 옛 근거였던 「순차 실행 보장」은
+  // ttyd 가 /workspace 를 공유하는 출하 형상에서 거짓이다).
+  // 락 파일 경로는 실패 메시지용으로만 묻는다(linked worktree 는 <main>/.git/worktrees/<id>/index.lock).
   // 실패하면 기존 추정 경로로 폴백한다(일반 레포 루트 호환).
   const lockPath = async (): Promise<string> => {
     const r = await run(['rev-parse', '--git-path', 'index.lock'])
@@ -559,16 +588,19 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       last = r
       if (!LOCK_RE.test(r.stderr)) break // 락 외 에러는 재시도하지 않는다
       await wait(150 * (attempt + 1))
+    }
+    const stderr = last?.stderr.trim() ?? ''
+    // 락으로 소진했으면 **지우지 말고** 어디가 막혔는지 알려준다(모듈 상단 「삭제하지 않는 이유」).
+    let hint = ''
+    if (LOCK_RE.test(stderr)) {
       const lock = await lockPath()
-      if (attempt >= 1 && existsSync(lock)) {
-        try {
-          rmSync(lock)
-        } catch {
-          /* 다음 시도에서 재확인 */
-        }
+      if (existsSync(lock)) {
+        hint =
+          ` — 락 파일이 남아 있다: ${lock}. 다른 git 프로세스(터미널·IDE·ttyd)가 사용 중이 아님을` +
+          ` 확인한 뒤 직접 제거할 것(자동 회수는 #285).`
       }
     }
-    throw new Error(`git ${args[0]} 실패(code ${last?.code ?? null}): ${last?.stderr.trim() ?? ''}`)
+    throw new Error(`git ${args[0]} 실패(code ${last?.code ?? null}): ${stderr}${hint}`)
   }
 
   // Fleet 내부 체크포인트 커밋엔 명시적 아이덴티티를 준다(user.name/email 미설정 머신에서도 동작).
@@ -658,7 +690,8 @@ export function createWorkspace(root: string, git: GitRunner = defaultGitRunner)
       // identity 명시(미설정 머신) + 빈 keep 커밋 허용(--allow-empty, 오래된 호환 옵션).
       // (P1 #2) --empty=drop 은 git 2.45+ 전용이라 구버전(2.43/2.44)에서 `error: unknown option` 으로
       //   모든 통합이 깨진다. Fleet 은 시스템 git 을 핀하지 않으므로 --empty=drop 을 쓰지 않는다.
-      // ok() 의 index.lock 강제 제거는 외부 사용자 git 과 경합 위험이라 통합 경로에선 쓰지 않는다.
+      // ok() 는 통합 경로에서 쓰지 않는다(R-5). 예전 근거였던 index.lock 강제 제거는 PR#282 에서
+      // 사라졌지만, 재시도 판정이 index.lock 전용이라 ref 락 경합에 부적합하다는 이유는 그대로다.
       const r = await run([
         '-c',
         'user.name=Fleet',

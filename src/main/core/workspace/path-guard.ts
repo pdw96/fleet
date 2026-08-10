@@ -8,7 +8,9 @@
 // Windows ESM 환경에서는 Node 빌트인 프로퍼티가 non-configurable이라 spy가 "Cannot redefine
 // property"로 실패한다 — 따라서 EINVAL spy 테스트는 best-effort 이다.
 // 'suspicious' 분기의 실 커버리지는 POSIX 환경에서 FIFO를 생성하는 테스트가 담당한다.
-import * as fs from 'node:fs'
+// ⚠ **named import 로 고정**(#282 · Codex 9R): 네임스페이스 바인딩은 `export { fs }` 한 줄로
+// 전체 fs 능력을 재-export 할 수 있어 경계 밖 소비자가 생긴다. 코어는 named 만 쓴다.
+import { existsSync, lstatSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 /** 경로의 종류를 lstat(링크 비추종)으로 판정한다.
@@ -20,7 +22,7 @@ export type LinkKind = 'regular' | 'dir' | 'link' | 'suspicious' | 'missing'
 
 export function isLinkSync(abs: string): LinkKind {
   try {
-    const st = fs.lstatSync(abs)
+    const st = lstatSync(abs)
     if (st.isSymbolicLink()) return 'link'
     if (st.isDirectory()) return 'dir'
     if (st.isFile()) return 'regular'
@@ -41,7 +43,7 @@ const fold = (p: string): string => (process.platform === 'win32' ? p.toLowerCas
 export function resolveWithin(root: string, p: string): string {
   let realRoot: string
   try {
-    realRoot = fs.realpathSync.native(root)
+    realRoot = realpathSync.native(root)
   } catch (err) {
     throw new Error(`워크스페이스 realpath 해소 불가(운영 에러): ${root}`, { cause: err })
   }
@@ -49,7 +51,7 @@ export function resolveWithin(root: string, p: string): string {
   // 최근접 존재 조상까지 올라가 그 조상의 realpath 를 구하고 미존재 tail 을 재부착한다.
   let existingAbs = abs
   const tail: string[] = []
-  while (!fs.existsSync(existingAbs)) {
+  while (!existsSync(existingAbs)) {
     tail.unshift(basename(existingAbs))
     const parent = dirname(existingAbs)
     if (parent === existingAbs) break
@@ -57,7 +59,7 @@ export function resolveWithin(root: string, p: string): string {
   }
   let realCandidate: string
   try {
-    const realExisting = fs.realpathSync.native(existingAbs)
+    const realExisting = realpathSync.native(existingAbs)
     realCandidate = tail.length ? resolve(realExisting, ...tail) : realExisting
   } catch (err) {
     throw new Error(`경로 realpath 해소 실패(안전상 거부): ${p}`, { cause: err })
