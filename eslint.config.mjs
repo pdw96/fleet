@@ -174,6 +174,26 @@ const CORE_LOADER_GUARD_SYNTAX = [
 }))
 
 /**
+ * **외부 모듈 재-export 금지**(Codex 14R). 13R 에서 `node:module` 재-export 를 막았더니 이번엔
+ * `export { getBuiltinModule as loader } from 'node:process'` 가 나왔다 — Node 는 이 이름을
+ * `node:process` 의 named export 로도 노출하고, 그게 **쓰기 가능한 `node:fs` 를 돌려준다**(실측).
+ * 능력을 가진 빌트인을 하나씩 열거하는 한 이 목록은 계속 늘어난다(`module`·`process`·향후 무엇이든).
+ *
+ * 그래서 모듈 이름이 아니라 **형태**를 막는다: 코어는 **bare 지정자를 재-export 하지 않는다**.
+ * 상대경로 재-export 는 허용된다 — allowlist 모듈은 이미 raw 능력을 내보낼 수 없으므로
+ * (`CORE_FS_EXPORT_FORM_SYNTAX`) 상대 경로로 흘릴 것이 없다. 타입 전용 재-export 도 허용한다
+ * (런타임 능력이 없다). 실측 비용 0 — 코어·서버·transport 전체의 소스 있는 재-export 는
+ * `export type { … } from '../../../shared/types'` **한 건**이고 상대경로 타입 전용이다.
+ */
+const CORE_BARE_REEXPORT_SYNTAX = ['ExportNamedDeclaration', 'ExportAllDeclaration'].map(
+  (kind) => ({
+    selector: `${kind}[source][exportKind!='type']:not([source.value=/^\\./])`,
+    message:
+      '코어(src/main/core)는 외부 모듈을 재-export 하지 않는다(#282 · 14R). 빌트인 재-export 는 로더 능력(`createRequire`·`getBuiltinModule`)을 이름 검사 없이 흘려 fs 경계를 무력화한다 — 필요하면 감싸는 함수를 직접 정의하고 사유를 인라인 disable 로 남겨라.',
+  }),
+)
+
+/**
  * **raw fs 재-export 금지**(6R): allowlist 안의 모듈이 `export { writeFileSync } from 'node:fs'` 로
  * 능력을 흘리면, 그걸 import 하는 모듈은 fs 지정자를 안 쓰고도 변이할 수 있다. 재-export 는 정당한
  * 용도가 없으므로 **코어 전역**에서 막는다(allowlist 안팎 모두).
@@ -307,6 +327,10 @@ const CORE_GUARD_SYNTAX = [
   ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
   ...CORE_LOADER_GUARD_SYNTAX,
   ...CORE_FS_REEXPORT_SYNTAX,
+  // ⚠ 위 두 묶음의 **소스 있는 재-export** 셀렉터(`node:fs`·`node:module`)와 스코프가 겹친다.
+  // 의도한 중복이다 — 겹치는 줄은 어차피 금지된 줄이고, 흔한 경우에 더 구체적인 메시지를 주는 쪽이
+  // 진단으로 낫다. 일반 규칙은 **아직 이름을 모르는** 빌트인까지 덮는 안전망이다.
+  ...CORE_BARE_REEXPORT_SYNTAX,
 ]
 
 /**

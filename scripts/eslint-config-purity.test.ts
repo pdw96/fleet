@@ -333,6 +333,8 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
     "ImportExpression[source.value='electron']",
     "ImportExpression[source.type!='Literal']",
     "ExportNamedDeclaration[source.value='node:fs']",
+    // 14R: 외부(bare) 모듈 재-export 금지 — 아직 이름을 모르는 빌트인의 로더 능력까지 덮는 안전망.
+    "ExportNamedDeclaration[source][exportKind!='type']:not([source.value=/^\\./])",
   ]
 
   it('모든 코어 스코프 블록이 공통 가드(electron·로더·fs 재-export)를 포함한다', () => {
