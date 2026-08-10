@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 100 files · 242 import wires · 47 IPC channels · 생성 2026-08-10T16:16 UTC
+> 100 files · 242 import wires · 47 IPC channels · 생성 2026-08-10T16:31 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -138,7 +138,7 @@
 - **providers/registry** — 설정에 적힌 AI 종류를 보고 알맞은 창구를 골라 만들어 주는 안내데스크 _'anthropic·openai·google' 중 무엇인지 보고 그에 맞는 대화 창구를 하나 만들어 돌려준다. 새 AI 서비스를 추가할 때 여기 한 곳만 고치면 되도록 분기점을 모아 둔 곳이다._
   - →의존: providers/anthropic, providers/google, providers/openai, providers/types, shared/types · ←피의존: engine · 31줄
 - **providers/anthropic** — 클로드(Anthropic) AI 와 대화하는 전용 창구 _클로드에게 질문을 보내고 답을 받아오며, 답이 한 글자씩 실시간으로 오게 하는 처리도 한다. 또 클로드의 '깊이 생각하기' 기능이 켜지면 답이 잘리지 않게 답변 분량을 더 넉넉히 잡아주고, 모델 종류에 맞춰 안 통하는 설정은 알아서 빼준다._
-  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 549줄
+  - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 562줄
 - **providers/google** — 구글 제미니(Gemini) AI 와 대화하는 전용 창구 _제미니에게 질문을 보내고 답을 받아오며, 제미니 버전(2.5/3 등)마다 다른 '생각 깊이' 설정 방식을 알아서 맞춰 보낸다. 생각하기를 켜면 답이 굶지 않도록 답변 분량을 늘리고, 제미니가 답을 차단했는지도 가려낸다._
   - →의존: providers/sse, providers/types, shared/types · ←피의존: providers/registry · 574줄
 - **providers/openai** — OpenAI(GPT) 및 같은 방식을 쓰는 호환 AI 와 대화하는 전용 창구 _GPT 에게 질문을 보내고 답을 받아오며, o1·GPT-5 같은 추론 모델이 거부하는 설정(온도·토큰 항목 등)을 모델에 맞게 알아서 바꿔 보낸다. 같은 방식을 쓰는 다른 회사 AI(openai-compatible)도 이 창구로 함께 처리한다._
