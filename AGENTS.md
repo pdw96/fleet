@@ -71,6 +71,10 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
     (Codex PR#282 P1 — 이 층을 넣자 미선언 변이자 `workspace/git.ts` 가 드러났다).
     ⚠ ①은 **자식 프로세스를 통한 변이는 못 잡는다**(git 하위 명령의 워크트리 생성·삭제 등). spawn 은
     위 「게이트의 소비자」 절이 다루는 별개 계약이다.
+    ⚠ **`workspace/git.ts` 는 현재 이 규칙을 완전히 충족하지 못한다** — `index.lock` 강제 삭제가
+    「대상 고정」은 만족하나 **「소유 확인」은 못 한다**(살아있는 락을 지울 수 있다 · #285 로 추적).
+    열거에 있는 것은 「게이트 밖」이라는 사실의 기록이지 「안전하다」는 보증이 아니며, 미충족은
+    근거 절에 명시해 리뷰 가능하게 둔다.
 - **provider 계약.** `ApiProvider.chat()` 는 구조화된 `ChatResult`(text·toolCalls·finishReason·
   usage)를 반환한다. `LlmSession.send()` 는 하위호환을 위해 여전히 `string` 을 반환한다.
 

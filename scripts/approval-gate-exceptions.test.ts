@@ -37,8 +37,15 @@ const AGENTS = 'AGENTS.md'
 /** 근거 절 헤딩 — 블록 주석 안의 `## ` 절 형태여야 한다. */
 const RATIONALE_HEADING = /^\s*\*\s*##\s*`ApprovalGate`\s*를 거치지 않는 이유/m
 
-/** 직접 호출 시 파일시스템을 변이하는 node:fs API. 읽기 전용 API 는 일부러 뺀다. */
-export const FS_MUTATION_APIS = [
+/**
+ * 파일시스템을 변이하는 node:fs API. 읽기 전용 API 는 일부러 뺀다.
+ *
+ * ⚠ **동기형만 넣으면 구멍이 남는다**(Codex PR#282 2R P1): `node:fs/promises` 의 `writeFile`·`rm`·
+ * `unlink` 는 이름에 `Sync` 가 없어 동기 목록에 안 걸리는데 파일을 똑같이 변이한다. 1차 구현은 그
+ * 구멍을 「`writeFile` 은 비변이자」라는 **단언으로 고정까지** 해 놓았었다 — 목록의 누락이 스펙으로
+ * 굳는 형태라 특히 나쁘다. 동기·비동기 양쪽 이름을 모두 싣는다.
+ */
+const SYNC_MUTATORS = [
   'appendFileSync',
   'chmodSync',
   'chownSync',
@@ -46,7 +53,10 @@ export const FS_MUTATION_APIS = [
   'cpSync',
   'createWriteStream',
   'ftruncateSync',
+  'lchmodSync',
+  'lchownSync',
   'linkSync',
+  'lutimesSync',
   'mkdirSync',
   'mkdtempSync',
   'openSync',
@@ -61,6 +71,34 @@ export const FS_MUTATION_APIS = [
   'writeSync',
 ] as const
 
+/** 위의 비동기(콜백·promise) 대응물. `node:fs` 와 `node:fs/promises` 양쪽에서 같은 이름으로 나온다. */
+const ASYNC_MUTATORS = [
+  'appendFile',
+  'chmod',
+  'chown',
+  'copyFile',
+  'cp',
+  'ftruncate',
+  'lchmod',
+  'lchown',
+  'link',
+  'lutimes',
+  'mkdir',
+  'mkdtemp',
+  'open',
+  'rename',
+  'rm',
+  'rmdir',
+  'symlink',
+  'truncate',
+  'unlink',
+  'utimes',
+  'write',
+  'writeFile',
+] as const
+
+export const FS_MUTATION_APIS: readonly string[] = [...SYNC_MUTATORS, ...ASYNC_MUTATORS]
+
 /**
  * 주석 제거 — 스캔이 **주석 속 산문**을 코드로 오인하지 않게 한다. 이 레포의 소스는 계약을 길게
  * 설명하므로 `renameSync` 같은 이름이 설명문에 흔히 등장하고, 실제로 주석을 안 벗긴 1차 스캔이
@@ -70,17 +108,35 @@ export const FS_MUTATION_APIS = [
 export const stripComments = (src: string): string =>
   src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 
-/** `import { … } from 'node:fs'` 의 named 바인딩 중 변이 API. */
+/**
+ * `node:fs`(및 `/promises`)에서 들여온 **변이 증거**. 두 경로를 모두 본다:
+ * ① named 바인딩(`import { rmSync } …`) ② 네임스페이스·기본 별칭의 **멤버 호출**(`fs.rmSync(…)`).
+ *
+ * ②가 필요한 이유는 실측이다 — `workspace/path-guard.ts` 가 `import * as fs from 'node:fs'` 를 쓴다.
+ * named 스캔만으로는 네임스페이스 import 한 줄로 전 계층이 통째로 시야에서 사라진다. 반대로 「네임스페이스
+ * import 자체를 변이자로 간주」하면 읽기 전용인 그 파일이 오탐이 되므로, **멤버 호출까지 봐야** 맞다.
+ */
 export const fsMutationBindings = (src: string): string[] => {
+  const code = stripComments(src)
   const found = new Set<string>()
-  const re = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*'node:fs(?:\/promises)?'/g
-  for (const m of stripComments(src).matchAll(re)) {
+
+  const named = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*'node:fs(?:\/promises)?'/g
+  for (const m of code.matchAll(named)) {
     for (const raw of m[1].split(',')) {
       const name = raw
         .trim()
         .split(/\s+as\s+/)[0]
         .trim()
-      if ((FS_MUTATION_APIS as readonly string[]).includes(name)) found.add(name)
+      if (FS_MUTATION_APIS.includes(name)) found.add(name)
+    }
+  }
+
+  // `import * as fs from 'node:fs'` · `import fs from 'node:fs'` (type-only 는 호출 불가라 제외).
+  const alias =
+    /import\s+(?!type\b)(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*'node:fs(?:\/promises)?'/g
+  for (const m of code.matchAll(alias)) {
+    for (const api of FS_MUTATION_APIS) {
+      if (new RegExp(`\\b${m[1]}\\.${api}\\s*\\(`).test(code)) found.add(`${m[1]}.${api}`)
     }
   }
   return [...found].sort()
@@ -243,10 +299,40 @@ describe('스캔 술어 — 합성 소스로 반증력 실측', () => {
   it('fs 변이 import 를 잡고, 읽기 전용 import 는 안 잡는다', () => {
     expect(fsMutationBindings(`import { rmSync, readFileSync } from 'node:fs'`)).toEqual(['rmSync'])
     expect(fsMutationBindings(`import { readFileSync, statSync } from 'node:fs'`)).toEqual([])
-    expect(fsMutationBindings(`import { writeFile } from 'node:fs/promises'`)).toEqual([])
     expect(fsMutationBindings(`import { writeFileSync as w } from 'node:fs'`)).toEqual([
       'writeFileSync',
     ])
+  })
+
+  /**
+   * **회귀 가드**(Codex PR#282 2R P1): 1차 구현은 동기 이름만 실어서 `node:fs/promises` 의 비동기
+   * 변이자를 통째로 놓쳤고, 심지어 「`writeFile` 은 비변이자」라는 **단언으로 그 구멍을 고정**했다.
+   */
+  it('promise·콜백형 비동기 변이자도 잡는다', () => {
+    expect(fsMutationBindings(`import { writeFile } from 'node:fs/promises'`)).toEqual([
+      'writeFile',
+    ])
+    expect(fsMutationBindings(`import { rm, unlink } from 'node:fs/promises'`)).toEqual([
+      'rm',
+      'unlink',
+    ])
+    expect(fsMutationBindings(`import { readFile, stat } from 'node:fs/promises'`)).toEqual([])
+  })
+
+  /**
+   * 네임스페이스 import 는 named 스캔의 완전 사각이다 — 한 줄로 전 계층이 시야에서 사라진다.
+   * 실측 근거: `workspace/path-guard.ts` 가 `import * as fs from 'node:fs'` 를 쓴다(읽기 전용이라
+   * 오탐이 나면 안 되므로, import 존재가 아니라 **멤버 호출**을 본다).
+   */
+  it('네임스페이스·기본 별칭의 멤버 호출을 잡되, 읽기 전용 사용은 안 잡는다', () => {
+    expect(fsMutationBindings(`import * as fs from 'node:fs'\nfs.rmSync(p)`)).toEqual(['fs.rmSync'])
+    expect(fsMutationBindings(`import fs from 'node:fs'\nawait fs.writeFile(p, s)`)).toEqual([
+      'fs.writeFile',
+    ])
+    expect(
+      fsMutationBindings(`import * as fs from 'node:fs'\nfs.lstatSync(p)\nfs.existsSync(p)`),
+    ).toEqual([])
+    expect(fsMutationBindings(`import type * as fs from 'node:fs'`)).toEqual([])
   })
 
   it('주석 속 산문은 변이자로 오인하지 않는다(1차 스캔이 실제로 낸 오분류)', () => {
