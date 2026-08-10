@@ -82,7 +82,8 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
   트리에서 이 둘뿐). **`--omit=dev` 로도 dev 의존의 engines 는 회피되지 않는다** — Arborist 가
   ideal tree 에서 engines 를 먼저 검사하고 omit 은 그 뒤 디스크 반영 단계라, dev 전용 패키지의
   불만족도 그대로 EBADENGINE 이다(실측 확인). 반면 **optional 은 검사에서 빠진다**(불만족이어도
-  설치 성공). 차순위 `lint-staged@17`(`>=22.22.1`) · `undici@8`(`>=22.19.0`, jsdom 하위)
+  설치 성공). 차순위 `lint-staged@17`(`>=22.22.1`) · **jsdom 하위** `undici@8.10.0`(`>=22.19.0` —
+  루트의 `undici@6.28.0` 과 다른 사본이다)
   · `electron@43`(`>= 22.12.0`) 과, Node 23 을 중복 배제하는 `eslint@10`/`eslint-visitor-keys@5`
   (`^20.19.0 || ^22.13.0 || >=24`) 계열은 현재 전부 흡수돼 비구속이다. 즉 **dev-tool 뿐 아니라
   런타임 의존도 floor 를 올린다**. 올라가면
@@ -94,19 +95,26 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
   ```js
   // node -e — 각 Node 후보를 락파일의 engines.node 선언에 대해 실판정
   const semver = require('semver')
-  const ent = Object.entries(require('./package-lock.json').packages).filter(
-    ([k, v]) => k && v.engines?.node && !v.optional, // optional 은 npm 이 engines 로 설치를 막지 않는다
+  const lock = require('./package-lock.json')
+  const declared = lock.packages[''].engines.node // 루트 선언(= package.json 미러). 탐침 판정의 기준
+  const ent = Object.entries(lock.packages).filter(
+    // 루트는 비교 「대상」이라 트리 제약에서 뺀다 · optional 은 npm 이 engines 로 설치를 막지 않는다
+    ([k, v]) => k && v.engines?.node && !v.optional,
   )
+  console.log('declared:', declared, '| 검사 대상 선언:', ent.length)
   for (const v of ['22.22.1', '22.22.2', '23.0.0', '24.14.0', '24.15.0', '25.0.0', '26.0.0']) {
     const blockers = ent.filter(([, p]) => !semver.satisfies(v, p.engines.node))
-    console.log(v, blockers.length, [...new Set(blockers.map(([k]) => k.split('node_modules/').pop()))])
+    const label = semver.satisfies(v, declared) ? '허용' : '배제'
+    const bad = (label === '허용') === blockers.length > 0 ? ' ← 불일치' : '' // 허용+차단 or 배제+무차단
+    console.log(v, label, blockers.length, [...new Set(blockers.map(([k]) => k.split('node_modules/').pop()))], bad)
   }
   ```
 
-  읽는 법 — **이건 경계 스모크지 범위 증명이 아니다.** 선언이 허용하는 버전(22.22.2·24.15.0·
-  26.0.0)에서 차단 0건 · 배제하는 버전(22.22.1·24.14.0·25.0.0)에서 차단 ≥1건이면 **그 경계들이**
-  맞다는 뜻일 뿐이다. 구간 내부(예: 22.23.0)나 상단에서 새로 거부하는 패키지가 생기면 이 표본은
-  못 잡는다 — tightness 를 실제로 증명하려면 전 선언의 범위 교집합을 계산해야 한다.
+  읽는 법 — **이건 경계 스모크지 범위 증명이 아니다.** 허용/배제 라벨은 루트 선언에서 파생되므로
+  `engines` 를 바꾸면 라벨도 따라 움직인다(탐침 목록 자체는 수동이라, 경계를 옮겼으면 목록도 같이
+  고칠 것). **허용인데 차단 ≥1 = 과대선언 · 배제인데 차단 0 = 과소선언**이고, 둘 다 없으면 **그
+  경계들이** 맞다는 뜻일 뿐이다. 구간 내부(예: 22.23.0)나 상단에서 새로 거부하는 패키지가 생기면
+  이 표본은 못 잡는다 — tightness 를 실제로 증명하려면 전 선언의 범위 교집합을 계산해야 한다.
   차단 목록도 **결정자 「후보」일 뿐 확정이 아니다.** floor 바로 아래 지점(22.22.1·24.14.0·
   25.0.0)의 목록이 그나마 후보에 가깝지만 — 23.0.0 같은 지점은 중복 배제자가 20여 개 떠서
   후보로도 못 쓴다 — 여기서도 오분류가 난다: 예컨대 `>=24.14.1` 을 요구하는 패키지는 탐침
