@@ -28,40 +28,53 @@ const DEFAULT_MAX_TOKENS = 4096
 /**
  * thinking 활성 시 기본 max_tokens — 사고 토큰이 max_tokens 예산을 소모하므로 4096 으론 thinking 만으로
  * 한도를 쳐 빈-응답 truncation(unwrap throw)이 잦다. 비스트리밍은 HTTP 타임아웃 위험 한계인 ~16K,
- * 스트리밍은 타임아웃 부담이 없어 Sonnet 4.6 출력 상한(64K) 이내로 상향한다. 명시 설정은 항상 존중.
+ * 스트리밍은 타임아웃 부담이 없어 64K 로 상향한다(4.6 세대 출력 상한 64K 의 안전값 — 5세대는 128K
+ * 까지 지원하나 전 세대 공용 기본으로 64K 를 유지, 더 필요하면 명시 설정). 명시 설정은 항상 존중.
  */
 const THINKING_BUFFERED_MAX_TOKENS = 16_384
 const THINKING_STREAMING_MAX_TOKENS = 64_000
 
 // ── 모델-인지 thinking 정규화 (오프라인 화이트리스트 — MODEL LAUNCH 시 동기화) ─────────────
-// adaptive thinking·effort(max 포함)는 현행 세대 전용: Fable · Opus 4.6+ · Sonnet 4.6. 구형
-// (Opus 4.5 이하·Sonnet 4.5·Haiku)은 adaptive/effort 가 400 → thinking 통째 생략(=off).
-// 생략은 항상 안전 — temperature 가드와 동일한 보수 원칙. 미래 모델(opus-4-9 등)도 화이트리스트
-// 밖이면 무해하게 off 로 동작한다(장기적으론 Models API capability 조회가 정답 — #13 계열 후속).
-// `(?![0-9])` 룩어헤드로 마이너 버전 숫자가 더 긴 숫자로 번지는 부분일치(opus-4-60 이 4-6 으로 매칭)를 막는다 —
-// 미지 모델을 off 로 안전 강등하는 게 화이트리스트의 목적이므로 substring 매칭은 그 목적을 무력화한다.
-const ADAPTIVE_MODELS = /claude-(fable|opus-4-(6|7|8)|sonnet-4-6)(?![0-9])/
-// xhigh effort 와 thinking.display 필드는 Opus 4.7 도입. 4.6 세대는 summarized 가 기본 동작이라
-// display 생략이 행동 보존이고, xhigh 는 effort 생략(=서버 기본 high)으로 하향한다.
-const OPUS_47_PLUS = /claude-(fable|opus-4-(7|8))(?![0-9])/
-// sampling 파라미터(temperature/top_p/top_k) 자체를 400 으로 거부하는 reasoning-native 세대(Fable·Opus 4.7/4.8).
-// 현 세대에선 OPUS_47_PLUS(xhigh/display 지원 집합)와 같은 모델 집합이나 의미 축이 독립적이라 별도 상수로 둔다 —
-// 미래에 'xhigh 는 지원하되 temperature 는 허용'처럼 두 축이 갈리는 모델이 나와도, OPUS_47_PLUS 수정이 이
-// sampling 가드를 조용히 깨지 않도록 분리한다. (fable 토큰은 모든 Fable 세대를 의도적으로 포괄 — Fable 은
-// 전 세대가 no-sampling 이라 미지 버전도 temperature 생략이 안전·정합. opus-4-X 의 (?![0-9]) 룩어헤드는
-// opus-4-70 이 4-7 로 번지는 부분일치만 차단한다.)
-const NO_SAMPLING_MODELS = /claude-(fable|opus-4-(7|8))(?![0-9])/
+// adaptive thinking·effort(max 포함)는 현행 세대 전용: 5세대(Fable·Mythos·Opus 5·Sonnet 5) ·
+// Opus 4.6+ · Sonnet 4.6. 구형(Opus 4.5 이하·Sonnet 4.5·Haiku)은 adaptive/effort 가 400 →
+// thinking 통째 생략(=off). 생략은 항상 안전 — temperature 가드와 동일한 보수 원칙. 미지 모델
+// (opus-4-9 등)도 화이트리스트 밖이면 무해하게 off 로 동작한다(장기적으론 Models API capability
+// 조회가 정답 — #13 계열 후속). `(?![0-9])` 룩어헤드로 마이너 버전 숫자가 더 긴 숫자로 번지는
+// 부분일치(opus-4-60→4-6, opus-50→opus-5)를 막는다 — 미지 모델을 off 로 안전 강등하는 게
+// 화이트리스트의 목적이므로 substring 매칭은 그 목적을 무력화한다.
+// (fable·mythos 토큰은 패밀리 전체를 의도적으로 포괄 — 두 패밀리는 전 세대가 5세대 계약이다.)
+const ADAPTIVE_MODELS = /claude-(fable|mythos|opus-4-(6|7|8)|opus-5|sonnet-4-6|sonnet-5)(?![0-9])/
+// 5세대는 thinking 이 **항상 켜져 있다**(끌 수 없음 — 문서: "thinking is already on"). thinking
+// 노브가 없어도 thinking-활성으로 취급해야 max_tokens 기본(사고 예산)·temperature 생략·display
+// 동봉이 정합한다. 미등재 시 4096 기본이 사고 토큰에 잠식돼 전 요청 truncation(Gemini thinking
+// 기아와 동형 — 2026-08 갭감사 P1).
+const ALWAYS_THINKING_MODELS = /claude-(fable|mythos|opus-5|sonnet-5)(?![0-9])/
+// xhigh effort 지원 집합(효력 축) — 현행 문서 확정: Fable 5·Mythos 5·Opus 5·Opus 4.8/4.7·
+// Sonnet 5. **mythos-preview 는 max 는 지원하나 xhigh 는 미지원** — display 축과 갈리는 첫
+// 사례라 (구 OPUS_47_PLUS 를) 두 상수로 분리했다. 미지원 모델은 effort 생략(=서버 기본 high) 하향.
+const XHIGH_MODELS = /claude-(fable|mythos-5|opus-4-(7|8)|opus-5|sonnet-5)(?![0-9])/
+// thinking.display 필드 지원 집합(표시 축) — Opus 4.7 도입, 5세대 전부(프리뷰 포함) 지원.
+// 5세대는 display 기본이 omitted 라 summarized 를 동봉해야 thinking 텍스트가 캡처된다.
+// 4.6 세대는 summarized 가 기본 동작이라 생략이 행동 보존.
+const DISPLAY_MODELS = /claude-(fable|mythos|opus-4-(7|8)|opus-5|sonnet-5)(?![0-9])/
+// sampling 파라미터(temperature/top_p/top_k) 자체를 400 으로 거부하는 reasoning-native 세대 —
+// 현행 문서: Fable 5·Mythos 5·Mythos Preview·Opus 5·Opus 4.8/4.7·Sonnet 5 는 "400 on every
+// request"(thinking 사용 여부 무관). Sonnet 4.6·Opus 4.6 은 이 집합 밖(thinking 켜짐 가드만 적용).
+const NO_SAMPLING_MODELS = /claude-(fable|mythos|opus-4-(7|8)|opus-5|sonnet-5)(?![0-9])/
 
 /**
  * per-call/config thinking 노브를 모델 가용성으로 정규화한다.
  * 반환 undefined = thinking 미전송(off). 지원 모델에서 미지원 effort 티어는 생략으로 하향한다.
+ * always-on 세대(5세대)는 노브 부재에도 thinking-활성 취급 — 서버가 어차피 사고하므로
+ * off 경로의 기본값들(4096·temperature 전송)이 오히려 비정합이다.
  */
 function resolveThinking(
   model: string,
   knob: ApiCallOptions['thinking'],
 ): { effort?: ReasoningEffort } | undefined {
-  if (!knob || !ADAPTIVE_MODELS.test(model)) return undefined
-  const effort = knob.effort === 'xhigh' && !OPUS_47_PLUS.test(model) ? undefined : knob.effort
+  if (!ADAPTIVE_MODELS.test(model)) return undefined
+  if (!knob) return ALWAYS_THINKING_MODELS.test(model) ? {} : undefined
+  const effort = knob.effort === 'xhigh' && !XHIGH_MODELS.test(model) ? undefined : knob.effort
   return { effort }
 }
 
@@ -390,11 +403,10 @@ export function createAnthropicProvider(
           description: t.description,
           input_schema: t.parameters,
         }))
-        // 확장 thinking 은 강제 도구사용(tool_choice any/tool)과 비호환(400) → thinking 켜지면 'required'(any)를
-        // 기본 auto 로 낮춘다. 'none'/'auto' 는 thinking 과 호환되므로 유지.
-        const effectiveChoice =
-          thinking && opts.toolChoice === 'required' ? 'auto' : opts.toolChoice
-        const tc = mapToolChoice(effectiveChoice)
+        // 강제 도구사용(tool_choice any/tool)은 **manual** extended thinking 과만 비호환이고
+        // adaptive 와는 호환(현행 문서 명시). Fleet 은 adaptive 만 전송하므로 하향하지 않는다 —
+        // 과거의 required→auto 하향은 호출자 의도의 무성 폐기였다(2026-08 갭감사 정정).
+        const tc = mapToolChoice(opts.toolChoice)
         if (tc) body.tool_choice = tc
       }
       // output_config 는 responseSchema(format) 와 thinking(effort) 가 공유 → 단일 객체로 병합.
@@ -403,9 +415,10 @@ export function createAnthropicProvider(
         outputConfig.format = { type: 'json_schema', schema: opts.responseSchema.schema }
       }
       if (thinking) {
-        // display:'summarized' 는 4.7 도입 필드 — 4.7+ 에서만 동봉해 thinking 텍스트를 캡처한다(기본 omitted 보정).
-        // 4.6 세대는 summarized 가 기본 동작이라 생략이 행동 보존. signature 는 display 와 무관하게 항상 온다.
-        body.thinking = OPUS_47_PLUS.test(config.model)
+        // display:'summarized' 는 지원 집합(4.7+·5세대)에서만 동봉해 thinking 텍스트를 캡처한다
+        // (5세대는 기본 omitted 라 동봉이 필수 보정). 4.6 세대는 summarized 가 기본 동작이라 생략이
+        // 행동 보존. signature 는 display 와 무관하게 항상 온다.
+        body.thinking = DISPLAY_MODELS.test(config.model)
           ? { type: 'adaptive', display: 'summarized' }
           : { type: 'adaptive' }
         if (thinking.effort) outputConfig.effort = thinking.effort
