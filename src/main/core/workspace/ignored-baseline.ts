@@ -46,6 +46,10 @@ export interface ScanPolicy {
 }
 
 export const DEFAULT_IGNORED_POLICY: ScanPolicy = {
+  // allowlist 모듈은 내보내는 컨테이너에 **bare 식별자**를 담지 못한다(#282 · 16R) — raw fs 바인딩이
+  // 그 형태로 새면 소비자가 경계 밖에서 파일을 만진다. 여기 담기는 것은 fs 바인딩이 아니라
+  // **정규식 상수**(`safety/approval` 의 `SENSITIVE_FILE`)이고 능력을 전달하지 않는다.
+  // eslint-disable-next-line no-restricted-syntax
   sensitiveRe: SENSITIVE_FILE,
   denylistRe:
     /(^|\/)(node_modules|\.git|dist|out|build|\.next|coverage|\.cache|target|\.turbo)(\/|$)|(^|\/)\.fleet-wt-/,

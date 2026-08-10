@@ -387,6 +387,46 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
     expect(CORE_PROBES.every((f) => lastFor(f) !== undefined)).toBe(true)
   })
 
+  /**
+   * **정적 fs import 금지는 `no-restricted-syntax` 가 아니라 `no-restricted-imports` 가 한다**
+   * (Codex 16R). 위 감사는 `no-restricted-syntax` 만 봤으므로, 뒤에 오는 광범위 블록이
+   * `no-restricted-imports` 를 `'off'` 로 두거나 다른 제한으로 **교체**하면 allowlist 밖 코어의
+   * 평범한 `import { writeFileSync } from 'node:fs'` 가 합법이 되는데 이 스위트도 대조 테스트도
+   * green 이다(로더·재-export 셀렉터는 평범한 `ImportDeclaration` 을 잡지 않는다).
+   * 같은 「최종 적용 블록」 방식으로 이 룰도 감사한다.
+   */
+  it('allowlist 밖 코어의 정적 fs import 금지가 최종 적용 규칙에 살아 있다', () => {
+    const importBlocks = blocks.filter((c) => c.rules?.['no-restricted-imports'] !== undefined)
+    const lastImportFor = (file: string) =>
+      [...importBlocks].reverse().find((c) => appliesTo(c, file))
+
+    // allowlist 밖 코어 대표 — 여기서 fs import 가 합법이 되면 경계 자체가 사라진 것이다.
+    for (const file of ['src/main/core/engine.ts', 'src/main/core/workbench/journal.ts']) {
+      const rule = lastImportFor(file)?.rules?.['no-restricted-imports']
+      expect(rule, `${file} 에 적용되는 no-restricted-imports 블록이 없다`).toBeDefined()
+      expect(rule?.[0], `${file} 의 fs import 금지가 error 가 아니다`).toBe('error')
+      const opts = rule?.[1] as { patterns?: { group?: string[] }[] }
+      const groups = (opts?.patterns ?? []).flatMap((p) => p.group ?? [])
+      for (const m of ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']) {
+        expect(
+          groups,
+          `${file} 의 최종 적용 블록(files=${JSON.stringify(lastImportFor(file)?.files)})이 '${m}' 금지를 잃었다`,
+        ).toContain(m)
+      }
+    }
+
+    // allowlist 안이라도 electron 금지는 유지돼야 한다(코어 순수성 · #173).
+    for (const file of [...mutatingFiles, ...readonlyFiles]) {
+      const rule = lastImportFor(file)?.rules?.['no-restricted-imports']
+      expect(rule?.[0], `${file} 의 no-restricted-imports 가 error 가 아니다`).toBe('error')
+      const opts = rule?.[1] as { paths?: { name: string }[] }
+      expect(
+        (opts?.paths ?? []).map((p) => p.name),
+        `${file} 의 최종 적용 블록이 electron 금지를 잃었다`,
+      ).toContain('electron')
+    }
+  })
+
   /** 공통 묶음의 대표 셀렉터 — 하나라도 빠지면 그 블록에서 해당 방어가 사라진 것이다. */
   const REQUIRED = [
     "ImportExpression[source.value='electron']",

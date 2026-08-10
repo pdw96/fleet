@@ -68,8 +68,9 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
     - **`eslint.config.mjs` 의 `CORE_FS_ALLOWLIST`** 밖에서는 `src/main/core/**`(빌드가 컴파일·번들하는
       확장자 전부 — `.ts`·`.tsx`·`.mts`·`.cts`·`.js`·`.jsx`·`.mjs`·`.cjs`)가 fs 를
       **어떤 형태로도 얻을 수 없다** — 정적 import·동적 import·비-리터럴 동적 import·`require`·
-      `createRequire`·`process.getBuiltinModule`. 즉 fs 를 만지려면 반드시 이름을 올려야 하고, 그
-      편집이 리뷰 지점이다.
+      `createRequire`·`process.getBuiltinModule`·`process.binding`. 즉 fs 를 만지려면 반드시 이름을
+      올려야 하고, 그 편집이 리뷰 지점이다. 로더 이름을 하나씩 막는 방식은 끝나지 않으므로
+      (`Module._load`·`_resolveFilename`·…) **`node:module` 모듈 자체를 코어에 들이지 않는다**.
     - allowlist 는 **읽기 전용 / 변이** 두 티어로 나눠 적고, **읽기 전용 티어는 라벨이 아니라 집행**
       이다 — fs 변형 메서드 호출·구조분해·computed 접근·**별칭 import**(`{ writeFileSync as w }`)를
       전부 막는다. 변형이 필요해지면 변이 티어로 옮기고 이 문단·근거 절을 함께 고쳐야 한다.

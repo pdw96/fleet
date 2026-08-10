@@ -148,7 +148,9 @@ const CORE_FS_ALLOWLIST = [...CORE_FS_READONLY, ...CORE_FS_MUTATING]
  * `import('node:' + 'fs')`(비-리터럴 소스)가 전부 통과한다. tools/**(#174)가 이미 쓰는 가드를 코어
  * 경계에도 건다 — 메시지만 코어용으로 바꾼 동형이다.
  */
-const CORE_LOADER_NAMES = ['createRequire', 'require', 'getBuiltinModule']
+// `process.binding('fs')` 는 Node 24 에서도 여전히 쓰기 가능한 바인딩을 돌려준다(실측) — 로더 이름에
+// 포함한다. 코어의 `.binding` 사용은 0 건이라 비용 없음(Codex 16R 계열).
+const CORE_LOADER_NAMES = ['createRequire', 'require', 'getBuiltinModule', 'binding']
 const CORE_LOADER_PATTERN = `/^(${CORE_LOADER_NAMES.join('|')})$/`
 const CORE_LOADER_GUARD_SYNTAX = [
   `CallExpression[callee.name=${CORE_LOADER_PATTERN}]`,
@@ -167,10 +169,18 @@ const CORE_LOADER_GUARD_SYNTAX = [
   ...['ExportNamedDeclaration', 'ExportAllDeclaration'].flatMap((kind) =>
     ['module', 'node:module'].map((m) => `${kind}[source.value='${m}']`),
   ),
+  // **`node:module` 자체를 코어에 들이지 않는다**(Codex 16R). 이름만 막으면 끝이 없다 —
+  // `import Module from 'node:module'; Module._load('node:fs')` 는 기본 import 라 `ImportSpecifier`
+  // 셀렉터가 미매치이고 `_load` 는 로더 이름 집합에도 없다(실측: Node 24 에서 쓰기 가능한 fs 반환).
+  // `_resolveFilename`·`Module.prototype.require` 도 같은 계열이다. 모듈을 못 들이면 전부 닫힌다.
+  // 코어의 `node:module` import 는 0 건이라 비용 없음.
+  ...['ImportDeclaration', 'ImportExpression'].flatMap((kind) =>
+    ['module', 'node:module'].map((m) => `${kind}[source.value='${m}']`),
+  ),
 ].map((selector) => ({
   selector,
   message:
-    '코어(src/main/core)는 allowlist 밖에서 대체 로더로 모듈을 얻지 않는다(#282). createRequire·require·getBuiltinModule·비-리터럴 동적 import·로더 모듈 재-export 금지 — fs 경계 우회 차단.',
+    '코어(src/main/core)는 allowlist 밖에서 대체 로더로 모듈을 얻지 않는다(#282). createRequire·require·getBuiltinModule·process.binding·비-리터럴 동적 import·node:module import 및 재-export 금지 — fs 경계 우회 차단.',
 }))
 
 /**
@@ -387,6 +397,12 @@ const CORE_FS_EXPORT_FORM_SYNTAX = [
   ...['Identifier', 'MemberExpression'].map(
     (t) => `ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type='${t}']`,
   ),
+  // **컨테이너에 담아 내보내는 형태**(Codex 16R): `export const raw = { writeFileSync }` ·
+  // `export class X { static w = writeFileSync }`. 초기값이 ObjectExpression/클래스라 위 셀렉터가
+  // 미매치인데 능력은 그대로 나간다. 같은 원칙으로 **값이 bare 식별자인 항목**을 막는다 —
+  // 리터럴·객체·함수 표현식으로 구성한 정상 상수(`{ none: 0, … }`)는 영향받지 않는다.
+  'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator > ObjectExpression > Property[value.type=/^(Identifier|MemberExpression)$/]',
+  'ExportNamedDeclaration > ClassDeclaration ClassBody > PropertyDefinition[value.type=/^(Identifier|MemberExpression)$/]',
 ].map((selector) => ({
   selector,
   message:
