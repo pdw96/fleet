@@ -55,7 +55,7 @@
     "@types/safe-regex": "^1.1.6",
     "@types/which": "^3.0.4",
     "@types/ws": "^8.18.1",
-    "@vitejs/plugin-react": "^5.2.0",
+    "@vitejs/plugin-react": "^6.0.5",
     "@vitest/coverage-v8": "^4.1.10",
     "electron": "^43.3.0",
     "electron-builder": "^26.15.3",
