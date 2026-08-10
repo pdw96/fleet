@@ -54,13 +54,24 @@ updates:
       # 해제 조건: electron-vite 가 **stable**(dist-tag `latest`) 로 `vite ^8` peer 를 선언
       # (업스트림 #894 종결 + #906 수정). 그때 아래를 한 커밋으로 동반 처리한다.
       #  (1) vite 7→8 · electron-vite 5→6 · @vitejs/plugin-react 5→6 동반 범프.
-      #  (2) `electron.vite.config.ts:10` 의 `external: ['electron-updater']` **재검증**.
-      #      vite 8 은 외부화 모듈의 `require` 를 `import` 로 변환하지 않고 보존하므로 외부화
-      #      결과가 달라질 수 있다. 위 「빌드 green + 죽은 앱」이 정확히 이 축이고, build 게이트는
-      #      산출물을 기동하지 않으므로 **`npm run test:e2e`(실 Electron 기동)로만 확인된다.**
-      #      vite.server.config.ts 의 SSR 번들도 같은 이유로 함께 확인할 것.
-      #  (3) `overrides.vite.esbuild`(^0.28.1) 정리 — vite 8 은 esbuild 대신 rolldown·lightningcss
-      #      를 쓰므로 이 override 가 조용히 무효가 된다. 방치하면 보안 하한 소실을 늦게 안다.
+      #  (2) **외부화를 산출물에서 정적 검증**(결정적). 빌드 후 아래가 성립해야 한다.
+      #        out/main/index.js    → `require("electron")` **와** `require("electron-updater")`
+      #        out/preload/index.js → `require("electron")`
+      #      `electron.vite.config.ts:10` 이 명시 외부화하는 건 `electron-updater` 하나뿐이고
+      #      **`electron` 자체는 electron-vite 의 자동 처리에 의존**한다. 위에 적은 실측 실패
+      #      모드가 정확히 「electron 이 main 번들에 인라인」이라, updater 만 확인하면 같은 회귀를
+      #      놓친다. vite 8 은 외부화 모듈의 `require` 를 `import` 로 변환하지 않고 보존하므로
+      #      외부화 결과 자체가 달라질 수 있다. vite.server.config.ts 의 SSR 번들도 같이 볼 것.
+      #      ⚠ `npm run test:e2e` 로는 이 축을 못 잡는다 — e2e 는 `FLEET_E2E=1` 로 unpackaged
+      #      기동이라 `installAutoUpdate` 가 무장되지 않아(src/main/index.ts:269-274) updater
+      #      경로를 아예 타지 않는다. 인라인된 번들이 우연히 기동하면 통과한다. e2e 는 기동
+      #      검증으로 **병행**하되, 외부화 판정의 근거는 위 정적 검사다.
+      #  (3) esbuild 하한 **감사**(단순 삭제 아님). 현재 esbuild 인스턴스는 2개다 —
+      #      `vite/node_modules/esbuild`(override 적용) 와 `node_modules/esbuild`
+      #      (electron-vite 의 `^0.25.11` · **override 미적용**). vite 8 이 esbuild 의존을 버리면
+      #      `overrides.vite.esbuild` 는 그냥 무효 키가 될 뿐이고, 키를 지우는 것 자체는 보안
+      #      하한 유지가 아니다. 락파일의 **전체 esbuild 그래프**를 확인해 필요한 하한을 전역
+      #      또는 실제 부모에 다시 적용할 것. 인스턴스가 하나도 없을 때만 키 삭제는 단순 정리다.
       #  (4) [deprecation 정리 · 필수 아님] `build.rollupOptions`(electron.vite.config.ts 3곳 +
       #      vite.server.config.ts 1곳) → `build.rolldownOptions`. vite 8 은 `setupRollupOptionCompat`
       #      으로 구 이름을 프록시 별칭으로 유지해 동작은 계속되지만 향후 제거 예정이다.
