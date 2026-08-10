@@ -65,7 +65,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "force-graph": "^1.51.4",
     "husky": "^9.1.7",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "lint-staged": "^17.3.0",
     "prettier": "3.9.6",
     "react": "^19.2.8",
