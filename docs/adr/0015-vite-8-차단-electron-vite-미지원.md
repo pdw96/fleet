@@ -41,7 +41,16 @@ vite 8 을 지원하는 유일한 빌드 `electron-vite@6.0.0-beta.1` 은 2026-0
 **해제 시 한 커밋으로 동반 처리할 것**
 
 1. `vite` 7→8 · `electron-vite` 5→6 · `@vitejs/plugin-react` 5→6 동반 범프.
-   Node 엔진 변경은 불필요(`vite@8` engines `^20.19.0 || >=22.12.0` ⊇ 현행 `>=22.22.2`).
+
+   **Node engines floor 를 재감사한다 — "불필요" 로 단정하지 말 것.** 오늘 기준 `vite@8` 의
+   engines(`^20.19.0 || >=22.12.0`)는 현행 floor 를 넘지 않지만, 해제 시점의 electron-vite 6 과
+   신규 transitive(rolldown · lightningcss 및 각 네이티브 바인딩)는 아직 발행되지도 않았다.
+   `.npmrc` 의 `engine-strict=true` 때문에 선언 floor 와 트리의 *실제* 바닥이 어긋나면
+   `npm ci` 가 EBADENGINE 로 하드 실패한다(AGENTS.md 「engine-strict floor 정직성」). CI 는
+   핀된 Node 로 돌아 통과하는데 `engines` 가 계속 지원한다고 선언한 Node 22 에서만 깨지는
+   비대칭이 생긴다. → 범프 후 **락파일 전체의 실제 engine floor 를 감사**해 루트 `engines` 를
+   정직하게 상향하고, 락파일 루트 `engines` 드리프트는 `npm install --package-lock-only` 로
+   동기화한다. 최신 메이저를 다운그레이드해 회피하지 않는다.
 
 2. **외부화를 산출물에서 정적 검증**(결정적). 빌드 후 아래가 성립해야 한다.
 
@@ -70,6 +79,16 @@ vite 8 을 지원하는 유일한 빌드 `electron-vite@6.0.0-beta.1` 은 2026-0
      (외부화는 asar 동봉이 전제 — 현행 asar top-level = `node_modules`/`out`/`package.json`).
    - 패키지된 실행 파일을 `FLEET_SMOKE=1` 로 기동해 `main` 해석 성립 확인(2초 후 self-quit).
      단 `FLEET_SMOKE` 는 updater 를 무장 해제하므로 **기동 검증 전용**이다.
+   - **updater 바인딩 표면을 단언한다.** 위 두 검사만으로는 `require("electron-updater")` 는
+     남았는데 CJS interop 변화로 named `autoUpdater` 가 `undefined` 인 경우를 통과시킨다 —
+     asar 검사는 파일 존재만 보고, `FLEET_SMOKE` 는 `installAutoUpdate` 가 `!armed` 에서
+     **updater 를 역참조하기 전에 조기 return** 하기 때문이다(`src/main/auto-update.ts` 의
+     early-return 이 `const { updater } = deps` 보다 앞선다). 그 상태로 출하하면 실제 패키지
+     실행은 무장 분기에서 `updater.autoDownload` 대입 즉시 크래시한다. → smoke 중 import 한
+     `autoUpdater` 가 `UpdaterPort` 표면(`autoDownload` · `autoInstallOnAppQuit` ·
+     `allowPrerelease` · `allowDowngrade` · `channel` · `on` · `checkForUpdates` ·
+     `downloadUpdate` · `quitAndInstall`)을 갖는지 단언하거나, 네트워크를 차단한 채
+     updater-armed 패키지 검증을 별도로 둔다.
 
 4. **esbuild 하한 감사**(단순 삭제 아님). 현재 esbuild 인스턴스는 2개다 —
    `vite/node_modules/esbuild`(`overrides.vite.esbuild` 적용)와 `node_modules/esbuild`
