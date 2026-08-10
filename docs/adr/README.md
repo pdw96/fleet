@@ -23,3 +23,4 @@
 | [0013](0013-인스턴스-배타-커널-endpoint-우선-container_name-배포집행.md) | Accepted | 인스턴스 배타는 커널 endpoint 를 먼저 잡고, 그 안전 전제는 compose container_name 이 파일로 집행한다(#251) |
 | [0014](0014-자가리뷰-봇공백-렌즈-계층화-티어-하향.md) | Accepted | 자가 적대리뷰는 봇 공백 렌즈로 계층화(축소 전제=머지 전 Codex 완료 확인)하고 서브에이전트 fan-out 은 티어를 하향한다 |
 | [0015](0015-vite-8-차단-electron-vite-미지원.md) | Accepted | Vite 8(@vitejs/plugin-react 6) 은 electron-vite 가 stable 로 지원할 때까지 차단하고, 해제 조건과 동반 검증을 문서로 집행한다(#261) |
+| [0016](0016-engines-교집합-게이트-결정자-산문-제거.md) | Accepted | engines.node 정합은 범위 교집합으로 기계 강제하고, 범프마다 낡는 결정자 열거는 산문에서 제거한다(#283) |

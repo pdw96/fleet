@@ -73,56 +73,27 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
   (드라이브 루트)로 해석한다.** Git Bash 로 만든 파일을 네이티브 도구(예: 시스템 `python`)에
   넘길 땐 `/tmp` 대신 **절대 Windows 경로나 stdin 파이프**를 써라. 네이티브 Python 의 한글/
   이모지 입출력은 기본 cp949 라 깨짐 → `PYTHONUTF8=1`.
-- **engine-strict floor 정직성.** `.npmrc` 의 `engine-strict=true` 때문에 선언한
-  `engines.node`(현 `>=22.22.2 <23 || >=24.15.0 <25 || >=26.0.0`)가 의존성 트리의 *실제* 바닥과
-  어긋나면 `npm ci` 가 EBADENGINE 로 하드 실패한다(transitive 까지 강제). 현 바닥 결정자는
-  `^22.22.2 || ^24.15.0 || >=26.0.0` 을 선언한 **두 패키지** — **런타임 의존** `which@7` 와
-  **dev 의존** `jsdom@30` — 이고 둘의 범위는 동일하다. 두 floor(22.22.2·24.15.0)와 **Node 23·25
-  제외**를 이 둘이 정하며, 선언값은 그 범위를 그대로 전개한 것이다(Node 25 를 배제하는 항목도
-  트리에서 이 둘뿐). **`--omit=dev` 로도 dev 의존의 engines 는 회피되지 않는다** — Arborist 가
-  ideal tree 에서 engines 를 먼저 검사하고 omit 은 그 뒤 디스크 반영 단계라, dev 전용 패키지의
-  불만족도 그대로 EBADENGINE 이다(실측 확인). 반면 **optional 은 검사에서 빠진다**(불만족이어도
-  설치 성공). 차순위 `lint-staged@17`(`>=22.22.1`) · **jsdom 하위** `undici@8.10.0`(`>=22.19.0` —
-  루트의 `undici@6.28.0` 과 다른 사본이다)
-  · `electron@43`(`>= 22.12.0`) 과, Node 23 을 중복 배제하는 `eslint@10`/`eslint-visitor-keys@5`
-  (`^20.19.0 || ^22.13.0 || >=24`) 계열은 현재 전부 흡수돼 비구속이다. 즉 **dev-tool 뿐 아니라
-  런타임 의존도 floor 를 올린다**. 올라가면
-  **최신 메이저를 다운그레이드해 회피하지 말고 floor 를 정직하게 상향**하라(핀된 `.nvmrc`/CI 엔
-  무영향). lockfile 루트 `engines` 드리프트는 `npm install --package-lock-only` 로 동기화.
-  ⚠ 이 결정자 열거를 강제하는 자동 검사는 없다 — 의존성 범프마다 낡으므로, 손댈 땐 락파일의
-  `engines.node` 전체를 다시 교집합해 확인하고 이 문단도 같이 갱신할 것. 확인 수단:
-
-  ```js
-  // node -e — 각 Node 후보를 락파일의 engines.node 선언에 대해 실판정
-  const semver = require('semver')
-  const declared = require('./package.json').engines.node // 권위는 package.json 이다(락은 미러일 뿐)
-  const lock = require('./package-lock.json')
-  const mirror = lock.packages['']?.engines?.node
-  if (mirror !== declared) console.log('⚠ lockfile 루트 드리프트:', mirror, '≠', declared) // → --package-lock-only
-  const ent = Object.entries(lock.packages).filter(
-    // 루트는 비교 「대상」이라 트리 제약에서 뺀다 · optional 은 npm 이 engines 로 설치를 막지 않는다
-    ([k, v]) => k && v.engines?.node && !v.optional,
-  )
-  console.log('declared:', declared, '| 검사 대상 선언:', ent.length)
-  for (const v of ['22.22.1', '22.22.2', '23.0.0', '24.14.0', '24.15.0', '25.0.0', '26.0.0']) {
-    const blockers = ent.filter(([, p]) => !semver.satisfies(v, p.engines.node))
-    const label = semver.satisfies(v, declared) ? '허용' : '배제'
-    const bad = (label === '허용') === blockers.length > 0 ? ' ← 불일치' : '' // 허용+차단 or 배제+무차단
-    console.log(v, label, blockers.length, [...new Set(blockers.map(([k]) => k.split('node_modules/').pop()))], bad)
-  }
-  ```
-
-  읽는 법 — **이건 경계 스모크지 범위 증명이 아니다.** 허용/배제 라벨은 루트 선언에서 파생되므로
-  `engines` 를 바꾸면 라벨도 따라 움직인다(탐침 목록 자체는 수동이라, 경계를 옮겼으면 목록도 같이
-  고칠 것). **허용인데 차단 ≥1 = 과대선언 · 배제인데 차단 0 = 과소선언**이고, 둘 다 없으면 **그
-  경계들이** 맞다는 뜻일 뿐이다. 구간 내부(예: 22.23.0)나 상단에서 새로 거부하는 패키지가 생기면
-  이 표본은 못 잡는다 — tightness 를 실제로 증명하려면 전 선언의 범위 교집합을 계산해야 한다.
-  차단 목록도 **결정자 「후보」일 뿐 확정이 아니다.** floor 바로 아래 지점(22.22.1·24.14.0·
-  25.0.0)의 목록이 그나마 후보에 가깝지만 — 23.0.0 같은 지점은 중복 배제자가 20여 개 떠서
-  후보로도 못 쓴다 — 여기서도 오분류가 난다: 예컨대 `>=24.14.1` 을 요구하는 패키지는 탐침
-  24.14.0 에서 차단되지만 실제 하한은 24.14.1 이라 24.15.0 경계를 정하지 않는다. 25.0.0 만
-  거부하고 25.x 후속은 받는 패키지도 마찬가지다. **결정자 목록을 갱신할 땐 반드시 전 선언의
-  범위 교집합으로 확정**하고, 위 스니펫은 「달라졌는지」를 싸게 알아채는 용도로만 쓴다.
+- **engine-strict floor 정직성.** `.npmrc` 의 `engine-strict=true` 때문에 선언한 `engines.node` 가
+  의존성 트리의 *실제* 바닥과 어긋나면 `npm ci` 가 EBADENGINE 로 하드 실패한다(transitive 까지 강제).
+  **이 정합은 이제 `verify` 가 강제한다** — `scripts/engines-floor.test.ts` 가 락파일의 전
+  `engines.node` 선언을 구간으로 접어 **실제 범위 교집합**을 계산하고, 선언과의 차집합을 양방향으로
+  낸다: **과대선언**(선언은 허용하는데 트리가 거부 = EBADENGINE 예정) · **과소선언**(트리는 허용하는데
+  선언이 배제) · **락파일 루트 미러 드리프트**. 판정은 점 표본이 아니라 구간 대수라 구간 내부·상단에서
+  새로 거부하는 패키지도 잡는다. 결정 근거·감수 비용 = ADR-0016.
+  - **결정자·차순위 패키지 열거는 이 문서에 적지 않는다.** 의존성 범프마다 바뀌는 값이라 산문에 두면
+    반드시 낡고, 실제로 하루 안에 두 번 낡았다(#280 이 동기화한 지 20분 만에 #279 가 무효화 → #281).
+    지금 값이 필요하면 **`node scripts/engines-floor.mjs`** 를 돌려라 — 교집합·결정자·판정을 그 자리에서
+    낸다. (결정자는 leave-one-out 정의라 **서로 다른 두 선언이 같은 경계를 강제하면 둘 다 안 잡힌다** —
+    목록이 비어도 「제약이 없다」가 아니라 「단독 책임자가 없다」는 뜻이다.)
+  - 반면 **스코프 규칙 둘은 안정적이라 여기 남긴다**: **`--omit=dev` 로도 dev 의존의 engines 는 회피되지
+    않는다**(Arborist 가 ideal tree 에서 engines 를 먼저 검사하고 omit 은 그 뒤 디스크 반영 단계라, dev
+    전용 패키지의 불만족도 그대로 EBADENGINE 이다 — 실측). 반면 **optional 은 검사에서 빠진다**
+    (불만족이어도 설치 성공). 그래서 교집합 대상에서 optional 만 제외하고 dev 는 포함한다.
+  - floor 가 올라가면 **최신 메이저를 다운그레이드해 회피하지 말고 정직하게 상향**하라(핀된 `.nvmrc`/CI
+    엔 무영향). 게이트 실패 메시지가 붙여넣을 범위를 그대로 주며, 반영 후 락파일 루트 미러는
+    `npm install --package-lock-only` 로 동기화한다(권위는 `package.json`, 락은 미러일 뿐이다).
+  - 의도적으로 교집합보다 **좁게** 선언하려면 게이트가 과소선언으로 막는다 — 계약 자체를 고쳐야 하며
+    조용히 어긋난 채 두지 말 것(ADR-0016 이 그 긴장을 기록한다).
 
 ## 컨벤션
 
@@ -180,7 +151,10 @@ Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회
 - **IPC / `FleetBridge` drift** — `preload/index.ts` ↔ `shared/types.ts` 의 브리지·타입 불일치.
 - **provider / session 계약 위반** — `ApiProvider.chat()` 의 `ChatResult` 구조·`LlmSession` 하위호환 깨짐.
 - **`FLEET_E2E` 가드 완화** — E2E 픽스처·페이크 러너가 프로덕션 경로로 새는 변경.
-- **engine / lockfile drift** — `engines.node` floor ↔ 의존성 실제 바닥 불일치(EBADENGINE)·lockfile 루트 드리프트.
+- **engine / lockfile 게이트 후퇴** — `engines.node` floor ↔ 의존성 실제 바닥 정합은 `verify`
+  (`scripts/engines-floor.test.ts`)가 이미 강제한다(ADR-0016). 따라서 P1 은 드리프트 자체가 아니라
+  **그 게이트를 무르게 만드는 변경**이다 — 제약 스코프에서 dev 를 빼거나, 판정을 한 방향만 보게
+  바꾸거나, 파싱 실패를 throw 대신 무시로 돌리는 것.
 - **release / update 안전장치 약화** — 서명·attestation·`latest.yml` sha512 무결성·updater 채널 가드 후퇴.
 
 ## 백로그 착수 절차 (이슈 #27 기반)
