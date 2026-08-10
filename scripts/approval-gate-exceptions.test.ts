@@ -94,8 +94,8 @@ export const eslintPathConst = (config: string, name: string): string[] => {
  * 프로덕션 확장자 — `tsconfig.node.json` 이 `allowJs: true` 라 `.js`/`.mjs`/`.cjs` 도 컴파일·번들된다
  * (Codex 8R). `.ts` 만 훑으면 확장자만 바꿔 경계 밖에 서는 길이 남는다. eslint 경계 glob 과 같은 집합.
  */
-const PROD_EXT = /\.(?:tsx?|mjs|cjs|js)$/
-const TEST_EXT = /\.test\.(?:tsx?|mjs|cjs|js)$/
+const PROD_EXT = /\.(?:tsx?|mtsx?|ctsx?|mjs|cjs|js)$/
+const TEST_EXT = /\.test\.(?:tsx?|mtsx?|ctsx?|mjs|cjs|js)$/
 
 /** 코어 프로덕션 소스 전량(테스트·테스트 더블 제외). */
 const coreSources = (): string[] => {
@@ -203,7 +203,9 @@ describe('ApprovalGate 예외 — fs import 경계 게이트(#282)', () => {
     expect(eslintConfig).toContain('CORE_FS_READONLY_SYNTAX')
     expect(eslintConfig).toContain('getBuiltinModule')
     // 확장자 사각 차단 — 경계 블록이 .tsx 도 덮는다.
-    expect(eslintConfig).toMatch(/files: \['src\/main\/core\/\*\*\/\*\.\{ts,tsx,js,mjs,cjs\}'\]/)
+    expect(eslintConfig).toMatch(
+      /files: \['src\/main\/core\/\*\*\/\*\.\{ts,tsx,mts,cts,js,mjs,cjs\}'\]/,
+    )
   })
 
   it('allowlist == 실제 fs 소비자(목록이 낡지도, 과대하지도 않다)', () => {

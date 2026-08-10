@@ -1,4 +1,10 @@
-import { promises as fs } from 'node:fs'
+// ⚠ **named import 로 고정**(#282 · Codex 9R): `promises` 네임스페이스 바인딩은 `export { fs }`
+// 한 줄로 전체 fs 능력을 재-export 할 수 있다. 코어는 named 만 쓴다(읽기 API 만 들여온다).
+// `open` 은 read-mode(`open(abs, 'r')`) 전용이다 — #174 가드의 목적은 write-mode open 차단이고,
+// 같은 근거의 인라인 disable 이 호출부에도 이미 있다. 네임스페이스 형태를 named 로 바꾸면서
+// (#282 · 9R) importNames 가드에 걸린 것이라 계약 완화가 아니라 표기 전환의 부수효과다.
+// eslint-disable-next-line no-restricted-imports -- 위 근거: read-mode open 한정
+import { open, opendir, readdir, readFile, realpath, stat } from 'node:fs/promises'
 import * as path from 'node:path'
 import safe from 'safe-regex'
 import { SENSITIVE_FILE } from '../safety/approval'
@@ -33,7 +39,7 @@ type ResolvedLimits = Required<WorkspaceToolLimits>
  * 링크 파일은 yield 되지 않고 링크 디렉터리는 재귀하지 않는다(샌드박스 보장). symlink-follow 로 바꾸면 격리 재점검.
  */
 async function* walk(dir: string): AsyncGenerator<string> {
-  const handle = await fs.opendir(dir)
+  const handle = await opendir(dir)
   for await (const e of handle) {
     const full = path.join(dir, e.name)
     if (e.isDirectory()) {
@@ -74,21 +80,22 @@ function readFileTool(root: string, lim: ResolvedLimits): FleetTool {
       const p = asStr((input as { path?: unknown })?.path)
       if (!p) throw new Error('read_file: path 인자가 필요합니다.')
       const abs = resolveWithin(root, p)
-      const stat = await fs.stat(abs)
-      if (!stat.isFile()) throw new Error(`read_file: 파일이 아닙니다: ${p}`)
-      if (stat.size > lim.maxFileBytes) {
+      // 지역명이 import 한 `stat` 을 가리지 않게 `st` 로 둔다(named import 전환 · #282).
+      const st = await stat(abs)
+      if (!st.isFile()) throw new Error(`read_file: 파일이 아닙니다: ${p}`)
+      if (st.size > lim.maxFileBytes) {
         // 대형 파일은 전체를 메모리에 적재하지 않고 앞부분만 읽는다.
         // eslint-disable-next-line no-restricted-syntax -- read-mode open('r'): 비변형(가드는 write-mode open 차단 목적, #174)
-        const fh = await fs.open(abs, 'r')
+        const fh = await open(abs, 'r')
         try {
           const head = Buffer.alloc(lim.maxFileBytes)
           const { bytesRead } = await fh.read(head, 0, lim.maxFileBytes, 0)
-          return `${head.subarray(0, bytesRead).toString('utf8')}\n…(${stat.size}바이트 중 ${lim.maxFileBytes}바이트만 표시)`
+          return `${head.subarray(0, bytesRead).toString('utf8')}\n…(${st.size}바이트 중 ${lim.maxFileBytes}바이트만 표시)`
         } finally {
           await fh.close()
         }
       }
-      const buf = await fs.readFile(abs)
+      const buf = await readFile(abs)
       return buf.toString('utf8')
     },
   }
@@ -114,7 +121,7 @@ function listDirectoryTool(root: string, lim: ResolvedLimits): FleetTool {
     async execute(input) {
       const p = asStr((input as { path?: unknown })?.path) ?? '.'
       const abs = resolveWithin(root, p)
-      const entries = await fs.readdir(abs, { withFileTypes: true })
+      const entries = await readdir(abs, { withFileTypes: true })
       const lines = entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).sort()
       if (lines.length === 0) return '(빈 디렉터리)'
       // 거대 디렉터리의 무제한 출력(메인 프로세스 블록 + 거대 프롬프트) 방지 — 캡 + 절단 마커.
@@ -165,7 +172,7 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
           },
         )
       }
-      const rootReal = await fs.realpath(root)
+      const rootReal = await realpath(root)
       const start = resolveWithin(root, asStr((input as { path?: unknown })?.path) ?? '.')
       const out: string[] = []
       let scanned = 0
@@ -181,9 +188,9 @@ function grepTool(root: string, lim: ResolvedLimits): FleetTool {
         if (SENSITIVE_FILE.test(rel)) continue // 민감파일 제외
         let content: string
         try {
-          const st = await fs.stat(file)
+          const st = await stat(file)
           if (st.size > lim.maxFileBytes) continue // 대형/바이너리 추정 — 전체 적재 전에 스킵
-          content = (await fs.readFile(file)).toString('utf8')
+          content = (await readFile(file)).toString('utf8')
         } catch {
           continue
         }
@@ -319,7 +326,7 @@ function globTool(root: string, lim: ResolvedLimits): FleetTool {
     async execute(input, ctx) {
       const pattern = asStr((input as { pattern?: unknown })?.pattern)
       if (!pattern) throw new Error('glob: pattern 인자가 필요합니다.')
-      const rootReal = await fs.realpath(root)
+      const rootReal = await realpath(root)
       const out: string[] = []
       let scanned = 0
       let truncated = false

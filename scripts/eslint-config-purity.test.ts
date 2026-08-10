@@ -57,15 +57,15 @@ describe('코어 순수성 ESLint 게이트 회귀 가드 (#173)', () => {
 // (loop.ts:171) classify:'safe' 인 신규 도구가 raw fs 변형/spawn 하면 무프롬프트로 워크스페이스를
 // 바꾼다. 가드가 조용히 삭제/약화되면 lint 는 여전히 green(위반 0)이라 무신호 → 게이트 자체를 핀.
 const toolsBlock = blocks.find((c) =>
-  c.files?.includes('src/main/core/tools/**/*.{ts,tsx,js,mjs,cjs}'),
+  c.files?.includes('src/main/core/tools/**/*.{ts,tsx,mts,cts,js,mjs,cjs}'),
 )
 
 describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
   it('tools 블록 존재 + files/ignores 스코프', () => {
     expect(toolsBlock).toBeDefined()
-    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.{ts,tsx,js,mjs,cjs}')
+    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.{ts,tsx,mts,cts,js,mjs,cjs}')
     expect((toolsBlock as { ignores?: string[] })?.ignores).toContain(
-      'src/main/core/tools/**/*.test.{ts,tsx,js,mjs,cjs}',
+      'src/main/core/tools/**/*.test.{ts,tsx,mts,cts,js,mjs,cjs}',
     )
   })
 

@@ -159,7 +159,35 @@ const CORE_FS_REEXPORT_SYNTAX = [
   // **별칭 없이** import 해야 한다. 그러면 내보내는 로컬 이름이 곧 fs 이름이라 위 셀렉터가 잡는다.
   // (현행 allowlist 의 fs 별칭은 `promises as fs` 하나뿐이고 변형명이 아니라 비용 0 — 실측.)
   `ImportSpecifier[imported.name=${FS_MUTATION_PATTERN}]:not([local.name=${FS_MUTATION_PATTERN}])`,
+  // **네임스페이스·기본·`promises` 바인딩 금지**(Codex 8R→9R). `import * as fs from 'node:fs'` 나
+  // `import { promises as fs }` 는 `export { fs }` **한 줄로 fs 전체 능력을 재-export** 할 수 있고,
+  // 그 소비자는 fs 지정자도 seam 도 없이 변이한다 — 로컬 이름을 셀렉터로 쫓는 것은 데이터플로라
+  // 불가능하다. 그래서 **바인딩 형태 자체를 named 로 고정**해 재-export 추적을 성립시킨다
+  // (`path-guard.ts`·`workspace-tools.ts` 를 named 로 전환 완료 — 읽기 API 만 들여온다).
 ].map((selector) => ({ selector, message: CORE_FS_REEXPORT_MESSAGE }))
+
+/**
+ * **fs 바인딩 형태 고정**(Codex 9R) — allowlist 티어 **프로덕션 모듈에만** 건다.
+ *
+ * `import * as fs from 'node:fs'` · `import { promises as fs }` 는 `export { fs }` **한 줄로 fs
+ * 전체 능력을 재-export** 할 수 있고, 그 소비자는 fs 지정자도 seam 도 없이 변이한다. 로컬 이름을
+ * 셀렉터로 쫓는 것은 데이터플로라 불가능하므로 **바인딩 형태 자체를 named 로 고정**해 재-export
+ * 추적(`ExportSpecifier[local.name=…]`)이 성립하게 한다.
+ *
+ * ⚠ **코어 공통 묶음에 넣지 않는다**: 테스트는 임시 워크스페이스 준비로 `import * as fs` 를 정상
+ * 사용한다(실측: 공통 묶음에 넣자 `ignored-baseline.test.ts`·`path-guard.test.ts` 가 즉시 RED).
+ */
+const CORE_FS_BINDING_FORM_SYNTAX = TOOLS_FS_MODULES.flatMap((m) =>
+  [
+    `ImportDeclaration[source.value='${m}'] > ImportNamespaceSpecifier`,
+    `ImportDeclaration[source.value='${m}'] > ImportDefaultSpecifier`,
+    `ImportDeclaration[source.value='${m}'] > ImportSpecifier[imported.name='promises']`,
+  ].map((selector) => ({
+    selector,
+    message:
+      '코어 allowlist 모듈은 fs 를 **named import** 로만 들여온다(#282). 네임스페이스·기본·promises 바인딩은 `export { fs }` 한 줄로 전체 능력을 흘릴 수 있어 재-export 추적이 성립하지 않는다.',
+  })),
+)
 
 /** allowlist 밖 코어 모듈의 fs 동적 import 차단(정적 가드는 ImportExpression 을 미방문). */
 const CORE_FS_DYNAMIC_IMPORT_SYNTAX = TOOLS_FS_MODULES.map((m) => ({
@@ -495,8 +523,8 @@ export default tseslint.config(
   // **호출 지점**을 dot/computed[Literal·Template]/bare/구조분해[식별자·리터럴 키] 형태로 차단 →
   // 정적으로 표현 가능한(키가 상수 리터럴인) 모든 경로를 어떤 로더·별칭이든 포착한다.
   {
-    files: ['src/main/core/tools/**/*.{ts,tsx,js,mjs,cjs}'],
-    ignores: ['src/main/core/tools/**/*.test.{ts,tsx,js,mjs,cjs}'],
+    files: ['src/main/core/tools/**/*.{ts,tsx,mts,cts,js,mjs,cjs}'],
+    ignores: ['src/main/core/tools/**/*.test.{ts,tsx,mts,cts,js,mjs,cjs}'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -547,10 +575,10 @@ export default tseslint.config(
   // tools/** 는 자체 블록이 더 강한 계약(read-only)을 걸고 있어 제외 — 여기서 덮으면 그게 약화된다.
   // 테스트·테스트 더블은 임시 워크스페이스 준비로 fs 를 정상 사용 → 제외.
   {
-    files: ['src/main/core/**/*.{ts,tsx,js,mjs,cjs}'],
+    files: ['src/main/core/**/*.{ts,tsx,mts,cts,js,mjs,cjs}'],
     ignores: [
       ...CORE_FS_ALLOWLIST,
-      'src/main/core/**/*.test.{ts,tsx,js,mjs,cjs}',
+      'src/main/core/**/*.test.{ts,tsx,mts,cts,js,mjs,cjs}',
       'src/main/core/**/__testing__/**',
       'src/main/core/tools/**',
     ],
@@ -648,6 +676,7 @@ export default tseslint.config(
       'no-restricted-syntax': [
         'error',
         ...CORE_GUARD_SYNTAX,
+        ...CORE_FS_BINDING_FORM_SYNTAX,
         ...CORE_FS_READONLY_SYNTAX,
         // ⚠ 이 블록은 **설정 맨 끝**이라(앞에 두면 workbench 블록이 교체한다 — 프로브 0 error 실측)
         // 뒤따르는 블록이 없다. 대신 이 파일들이 잃게 되는 후속 가드를 여기서 직접 스프레드해야 한다
