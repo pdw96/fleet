@@ -3,8 +3,12 @@
 // `open` 은 read-mode(`open(abs, 'r')`) 전용이다 — #174 가드의 목적은 write-mode open 차단이고,
 // 같은 근거의 인라인 disable 이 호출부에도 이미 있다. 네임스페이스 형태를 named 로 바꾸면서
 // (#282 · 9R) importNames 가드에 걸린 것이라 계약 완화가 아니라 표기 전환의 부수효과다.
-// eslint-disable-next-line no-restricted-imports -- 위 근거: read-mode open 한정
-import { open, opendir, readdir, readFile, realpath, stat } from 'node:fs/promises'
+// ⚠ **선언을 쪼갠다**(Codex 17R): disable 지시어는 **선언 전체**에 걸리므로 한 줄로 두면 훗날
+// `writeFile` 을 이 목록에 끼워 넣어도 import 경계가 통과시킨다(그리고 `const save = writeFile`
+// 후 `save(...)` 는 bare-call 셀렉터의 호출명도 피한다). 예외는 `open` **한 이름만** 덮게 좁힌다.
+import { opendir, readdir, readFile, realpath, stat } from 'node:fs/promises'
+// eslint-disable-next-line no-restricted-imports -- 위 근거: read-mode open 한정(이 선언은 open 뿐)
+import { open } from 'node:fs/promises'
 import * as path from 'node:path'
 import safe from 'safe-regex'
 import { SENSITIVE_FILE } from '../safety/approval'
