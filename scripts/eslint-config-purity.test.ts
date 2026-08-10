@@ -57,15 +57,15 @@ describe('코어 순수성 ESLint 게이트 회귀 가드 (#173)', () => {
 // (loop.ts:171) classify:'safe' 인 신규 도구가 raw fs 변형/spawn 하면 무프롬프트로 워크스페이스를
 // 바꾼다. 가드가 조용히 삭제/약화되면 lint 는 여전히 green(위반 0)이라 무신호 → 게이트 자체를 핀.
 const toolsBlock = blocks.find((c) =>
-  c.files?.includes('src/main/core/tools/**/*.{ts,tsx,mts,cts,js,mjs,cjs}'),
+  c.files?.includes('src/main/core/tools/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'),
 )
 
 describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
   it('tools 블록 존재 + files/ignores 스코프', () => {
     expect(toolsBlock).toBeDefined()
-    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.{ts,tsx,mts,cts,js,mjs,cjs}')
+    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}')
     expect((toolsBlock as { ignores?: string[] })?.ignores).toContain(
-      'src/main/core/tools/**/*.test.{ts,tsx,mts,cts,js,mjs,cjs}',
+      'src/main/core/tools/**/*.test.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
     )
   })
 
@@ -331,53 +331,102 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
     }
   })
 
-  /**
-   * **8R 이 적발한 클래스**: 공통 묶음만 검사하면 「워크벤치를 덮는 블록이 소진 강제를 빠뜨린 것」을
-   * 못 잡는다 — 실제로 맨 끝 읽기 전용 블록이 주석·커밋 메시지의 주장과 달리 그 셀렉터를 스프레드하지
-   * 않고 있었고 이 테스트는 통과했다. 스코프가 겹치면 **그 스코프의 가드도** 요구한다.
-   */
-  it('워크벤치 파일에 **마지막으로 매칭되는** 블록이 소진 강제를 보유한다', () => {
-    // flat config 는 rule-key 를 교체하므로 실제로 적용되는 건 **마지막 매칭 블록**뿐이다.
-    // 이 레포가 쓰는 glob 형태만 다루는 최소 매처(`**/*.{a,b}` · 디렉터리 prefix · 리터럴 경로).
-    const matches = (glob: string, file: string): boolean => {
-      const braces = /\{([^}]*)\}/.exec(glob)
-      if (braces) {
-        return braces[1]
-          .split(',')
-          .some((ext) => matches(glob.replace(braces[0], ext.trim()), file))
-      }
-      if (!glob.includes('*')) return glob === file
-      // 이 레포의 glob 은 전부 `<dir>/**/*<ext>` 한 형태다 — 정규식 조립 없이 접두/접미로 판정한다.
-      const star = glob.indexOf('**/*')
-      if (star < 0) return false
-      const prefix = glob.slice(0, star)
-      const suffix = glob.slice(star + '**/*'.length)
-      return file.startsWith(prefix) && file.endsWith(suffix)
+  // flat config 는 rule-key 를 교체하므로 실제로 적용되는 건 **마지막 매칭 블록**뿐이다.
+  // 이 레포가 쓰는 glob 형태만 다루는 최소 매처(`**/*.{a,b}` · 디렉터리 prefix · 리터럴 경로).
+  const matches = (glob: string, file: string): boolean => {
+    const braces = /\{([^}]*)\}/.exec(glob)
+    if (braces) {
+      return braces[1].split(',').some((ext) => matches(glob.replace(braces[0], ext.trim()), file))
     }
-    const lastFor = (file: string) =>
-      [...coreSyntaxBlocks]
-        .reverse()
-        .find(
-          (c) =>
-            c.files?.some((f) => matches(f, file)) === true &&
-            (c as { ignores?: string[] }).ignores?.some((g) => matches(g, file)) !== true,
-        )
+    if (!glob.includes('*')) return glob === file
+    // 이 레포의 glob 은 전부 `<dir>/**/*<ext>` 한 형태다 — 정규식 조립 없이 접두/접미로 판정한다.
+    const star = glob.indexOf('**/*')
+    if (star < 0) return false
+    const prefix = glob.slice(0, star)
+    const suffix = glob.slice(star + '**/*'.length)
+    return file.startsWith(prefix) && file.endsWith(suffix)
+  }
+  const lastFor = (file: string) =>
+    [...coreSyntaxBlocks]
+      .reverse()
+      .find(
+        (c) =>
+          c.files?.some((f) => matches(f, file)) === true &&
+          (c as { ignores?: string[] }).ignores?.some((g) => matches(g, file)) !== true,
+      )
+  const effectiveSelectors = (file: string): string[] =>
+    (
+      (lastFor(file)?.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[]
+    ).map((e) => e.selector ?? '')
 
-    for (const file of [
-      'src/main/core/workbench/instance-marker-proc.ts', // 읽기 전용 티어 — 8R 이 짚은 파일
-      'src/main/core/workbench/coord-area.ts', // 변이 티어
-      'src/main/core/workbench/journal.ts', // fs 미import(seam 소비자)
-    ]) {
+  /** allowlist 티어 블록 = `files` 가 전부 리터럴 경로인 코어 블록(=`CORE_FS_*` 상수를 그대로 받은 것). */
+  const tierBlocks = coreSyntaxBlocks.filter(
+    (c) => c.files?.every((f) => !f.includes('*')) === true,
+  )
+  const tierFilesContaining = (probe: string): string[] =>
+    tierBlocks.find((c) => c.files?.includes(probe))?.files ?? []
+  const mutatingFiles = tierFilesContaining('src/main/core/store/json-file.ts')
+  const readonlyFiles = tierFilesContaining('src/main/core/workspace/path-guard.ts')
+
+  it('앵커: 두 allowlist 티어 블록이 실존하고 비어 있지 않다', () => {
+    expect(mutatingFiles.length).toBeGreaterThanOrEqual(4)
+    expect(readonlyFiles.length).toBeGreaterThanOrEqual(4)
+    expect(mutatingFiles.filter((f) => readonlyFiles.includes(f))).toEqual([])
+  })
+
+  /**
+   * **8R·11R 이 반복 적발한 클래스** — 같은 rule-key 교체 함정의 재발. 손으로 고른 파일 몇 개만
+   * 검사하면 다음 블록이 **다른 파일에서** 같은 방식으로 또 뚫는다(11R: 워크벤치 블록이 변이 티어의
+   * 바인딩 형태·동적 import 가드를 떨어뜨렸는데, 당시 이 테스트는 소진 강제만 봐서 green 이었다).
+   *
+   * 그래서 검사 단위를 **블록이 아니라 파일**로 바꾼다: allowlist 전 파일에 대해 「마지막 매칭 블록의
+   * 셀렉터 집합」이 그 파일의 티어가 요구하는 가드를 **전부** 갖는지 본다. 블록을 새로 추가하든 순서를
+   * 바꾸든, 실효 규칙이 약해지는 순간 RED 다.
+   */
+  it('allowlist 전 파일의 **최종 적용** 규칙이 티어 가드를 온전히 보유한다', () => {
+    /** 티어 공통(CORE_FS_TIER_SYNTAX) 대표 — 바인딩 형태·동적 import 는 10R 이 배선한 가드다. */
+    const TIER_REQUIRED = [
+      ...REQUIRED,
+      "ImportDeclaration[source.value='node:fs'] > ImportNamespaceSpecifier",
+      "ImportExpression[source.value='node:fs']",
+    ]
+    for (const file of [...mutatingFiles, ...readonlyFiles]) {
       const block = lastFor(file)
       expect(block, `${file} 에 매칭되는 no-restricted-syntax 블록이 없다`).toBeDefined()
-      const selectors = (
-        (block?.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[]
-      ).map((e) => e.selector ?? '')
-      expect(
-        selectors.some((sel) => sel.includes("callee.name='assertNever'")),
-        `${file} 의 최종 적용 블록(files=${JSON.stringify(block?.files)})이 소진 강제를 빠뜨렸다 — WORKBENCH_EXHAUSTIVE_SYNTAX 를 스프레드하라`,
-      ).toBe(true)
+      const selectors = effectiveSelectors(file)
+      for (const sel of TIER_REQUIRED) {
+        expect(
+          selectors,
+          `${file} 의 최종 적용 블록(files=${JSON.stringify(block?.files)})이 "${sel}" 를 잃었다 — CORE_FS_TIER_SYNTAX 를 스프레드하라(flat config 는 rule-key 를 교체한다)`,
+        ).toContain(sel)
+      }
+      // 읽기 전용 티어는 fs 변형 집행까지 받아야 라벨이 선언에 그치지 않는다(6R) —
+      // 변형 이름 집합은 자주 늘어나므로 셀렉터 **형태**로 핀한다(11R 이 추가한 생성자 형태 포함).
+      if (readonlyFiles.includes(file)) {
+        for (const [what, head] of [
+          ['변형 API import 차단', 'ImportSpecifier[imported.name=/^(writeFile'],
+          ['변형 생성자 차단', 'NewExpression[callee.name=/^(writeFile'],
+        ] as const) {
+          expect(
+            selectors.some((s) => s.startsWith(head)),
+            `${file}(읽기 전용 티어)의 최종 적용 블록이 ${what}를 잃었다 — CORE_FS_READONLY_SYNTAX 를 스프레드하라`,
+          ).toBe(true)
+        }
+      }
+      // 워크벤치를 덮으면 소진 강제도 함께 유지해야 한다(8R).
+      if (file.startsWith('src/main/core/workbench/')) {
+        expect(
+          selectors.some((sel) => sel.includes("callee.name='assertNever'")),
+          `${file} 의 최종 적용 블록이 소진 강제를 빠뜨렸다 — WORKBENCH_EXHAUSTIVE_SYNTAX 를 스프레드하라`,
+        ).toBe(true)
+      }
     }
+  })
+
+  /** seam 소비자(fs 미import)도 워크벤치 가드를 잃지 않는지 — allowlist 밖 경로의 대표 1건. */
+  it('fs 를 import 하지 않는 워크벤치 파일도 소진 강제를 받는다', () => {
+    const selectors = effectiveSelectors('src/main/core/workbench/journal.ts')
+    expect(selectors.some((sel) => sel.includes("callee.name='assertNever'"))).toBe(true)
   })
 
   it('로더 가드가 별칭·구조분해 형태까지 덮는다(7R)', () => {

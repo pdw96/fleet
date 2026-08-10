@@ -57,6 +57,11 @@ const FS_MUTATION_NAMES = [
   'write',
   'writev',
   'createWriteStream',
+  // **생성자 형태의 변형 능력**(Codex 11R). `new WriteStream(path)` 은 팩토리 `createWriteStream` 을
+  // 거치지 않고 직접 파일을 생성/기록하는데, 이름 집합에 없으면 import·member·재-export 셀렉터가
+  // 전부 통과시킨다. 호출 지점은 `CallExpression` 이 아니라 `NewExpression` 이라 별도 셀렉터가 필요하다
+  // (아래 `FS_MUTATION_NEW_SELECTOR`). 읽기 전용 `ReadStream` 은 의도적으로 제외한다.
+  'WriteStream',
   // open('w'/'a'/'wx' 등)은 첫 write* 전에 파일 생성/truncate → 변형. 읽기('r') open 은 각 site inline-disable.
   'open',
   // fd 기반 메타데이터 변형 + Node24 mkdtempDisposable(스냅샷이 mode/owner/times 미포함이라 행동테스트도 놓침).
@@ -73,6 +78,9 @@ const FS_MUTATION_COMPUTED_SELECTOR = `MemberExpression[computed=true][property.
 // bare 호출 writeFile(...) 봉쇄 — 정적 namespace import 에서 const { writeFile } = fs 구조분해(또는 named/동적
 // import 구조분해) 후 bare 호출은 MemberExpression 이 아니라 selector 미포착. callee.name 으로 포착(Codex P2).
 const FS_MUTATION_CALL_SELECTOR = `CallExpression[callee.name=${FS_MUTATION_PATTERN}]`
+// bare `new WriteStream(p)` 봉쇄(Codex 11R) — 생성자 호출은 CallExpression 이 아니라 NewExpression 이라
+// 위 셀렉터가 미포착이다. dot 형태 `new fs.WriteStream(p)` 는 FS_MUTATION_SELECTOR 가 이미 잡는다.
+const FS_MUTATION_NEW_SELECTOR = `NewExpression[callee.name=${FS_MUTATION_PATTERN}]`
 // import { writeFile } from 'node:fs/promises' 후 bare writeFile() 누락(MemberExpression 미포착) 봉쇄.
 const FS_MUTATION_IMPORT_NAMES = FS_MUTATION_NAMES.flatMap((n) => [n, `${n}Sync`])
 const TOOLS_FS_MODULES = ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']
@@ -97,6 +105,7 @@ const CORE_FS_READONLY = [
   'src/main/core/tools/workspace-tools.ts',
   'src/main/core/verify/run.ts',
   'src/main/core/workbench/instance-marker-proc.ts',
+  'src/main/core/workspace/git.ts',
   'src/main/core/workspace/path-guard.ts',
   'src/main/core/workspace/set-workspace.ts',
 ]
@@ -106,9 +115,20 @@ const CORE_FS_MUTATING = [
   'src/main/core/workbench/active-instance.ts',
   'src/main/core/workbench/coord-area.ts',
   'src/main/core/workbench/durable-fs.ts',
-  'src/main/core/workspace/git.ts',
   'src/main/core/workspace/ignored-baseline.ts',
 ]
+/**
+ * **fs 가 아니라 하위 프로세스로 워크스페이스를 변이하는 예외**(Codex 11R). `ApprovalGate` 예외 열거는
+ * 「게이트 없이 워크스페이스를 바꾸는 모듈」이고, fs 티어는 「fs 변형 API 를 직접 부르는 모듈」이다 —
+ * 두 개념은 이 PR 에서 `git.ts` 의 `rmSync` 를 제거하면서 **갈라졌다**. 그걸 같은 목록으로 계속 두면
+ * `git.ts` 가 fs 변형 티어에 남아 읽기 전용 가드를 못 받고, 훗날 `writeFileSync` 가 들어와도 lint 도
+ * 대조 테스트도 **무신호**다(티어 전이 리뷰 지점 소실).
+ *
+ * 그래서 `git.ts` 는 **fs 로는 읽기 전용 티어**로 내리고, 「게이트 없는 변이」라는 문서상 지위는 이
+ * 목록이 따로 들고 있는다 — `scripts/approval-gate-exceptions.test.ts` 의 열거 대조는
+ * `CORE_FS_MUTATING ∪ 이 목록 ∪ seam 소비자` 로 성립한다.
+ */
+const CORE_SUBPROCESS_MUTATING = ['src/main/core/workspace/git.ts']
 const CORE_FS_ALLOWLIST = [...CORE_FS_READONLY, ...CORE_FS_MUTATING]
 
 /**
@@ -162,6 +182,17 @@ const CORE_FS_REEXPORT_SYNTAX = [
   // **별칭 없이** import 해야 한다. 그러면 내보내는 로컬 이름이 곧 fs 이름이라 위 셀렉터가 잡는다.
   // (현행 allowlist 의 fs 별칭은 `promises as fs` 하나뿐이고 변형명이 아니라 비용 0 — 실측.)
   `ImportSpecifier[imported.name=${FS_MUTATION_PATTERN}]:not([local.name=${FS_MUTATION_PATTERN}])`,
+  // `import { writeFileSync } from 'node:fs'; export const write = writeFileSync` — `source` 도
+  // `ExportSpecifier` 도 없고 기본 내보내기도 아니라 위 셀렉터가 **전부** 미매치인데 능력은 그대로
+  // 흘러나간다(Codex 11R). 내보내는 **변수의 초기값**을 직접 본다: 식별자 별칭 · `fs.writeFileSync`
+  // dot 별칭 · `fs['writeFileSync']` computed 별칭 3형태.
+  // ⚠ 잔여 한계는 위 절에 적은 그대로다 — 「fs 를 **감싼 함수**를 export」 하는 것은 `DurableFs` 와
+  // 형태가 같아 구분 불가이고, Fleet 은 그런 의도적 seam 을 지정자 목록으로 추적한다.
+  ...[
+    `VariableDeclarator[init.name=${FS_MUTATION_PATTERN}]`,
+    `VariableDeclarator[init.property.name=${FS_MUTATION_PATTERN}]`,
+    `VariableDeclarator[init.property.value=${FS_MUTATION_PATTERN}]`,
+  ].map((d) => `ExportNamedDeclaration > VariableDeclaration > ${d}`),
   // **네임스페이스·기본·`promises` 바인딩 금지**(Codex 8R→9R). `import * as fs from 'node:fs'` 나
   // `import { promises as fs }` 는 `export { fs }` **한 줄로 fs 전체 능력을 재-export** 할 수 있고,
   // 그 소비자는 fs 지정자도 seam 도 없이 변이한다 — 로컬 이름을 셀렉터로 쫓는 것은 데이터플로라
@@ -258,6 +289,21 @@ const CORE_GUARD_SYNTAX = [
   ...CORE_FS_REEXPORT_SYNTAX,
 ]
 
+/**
+ * **allowlist 티어 공통 묶음**(Codex 11R). 10R 에서 바인딩 형태·동적 import 가드를 변이/읽기 전용
+ * 티어에 각각 손으로 스프레드했는데, 두 티어 **뒤에 오는** workbench 블록이 같은 rule-key 를 교체하며
+ * 그 둘을 다시 떨어뜨렸다 — 같은 함정(#174)의 세 번째 재발이다. 손으로 나열하는 한 계속 재발하므로
+ * **묶음 하나**로 만들고, 코어 allowlist 를 덮는 모든 블록이 이걸 스프레드하게 한다.
+ * `scripts/eslint-config-purity.test.ts` 가 **파일별 최종 적용 블록** 기준으로 이를 강제한다.
+ *
+ * ⚠ 테스트 스코프에는 들어가면 안 된다(바인딩 형태 가드가 테스트의 정상 `import * as fs` 를 오탐).
+ */
+const CORE_FS_TIER_SYNTAX = [
+  ...CORE_GUARD_SYNTAX,
+  ...CORE_FS_BINDING_FORM_SYNTAX,
+  ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
+]
+
 /** 읽기 전용 티어에 거는 fs 변형 차단(6R) — tools/**(#174)와 동형. 티어 라벨이 선언에 그치지 않게 한다. */
 const CORE_FS_READONLY_SYNTAX = [
   {
@@ -281,6 +327,11 @@ const CORE_FS_READONLY_SYNTAX = [
   {
     selector: FS_MUTATION_CALL_SELECTOR,
     message: '읽기 전용 티어는 구조분해된 fs 변형 함수의 bare 호출을 하지 않는다(#282).',
+  },
+  {
+    selector: FS_MUTATION_NEW_SELECTOR,
+    message:
+      '읽기 전용 티어는 fs 변형 생성자를 인스턴스화하지 않는다(#282 · 11R). `new WriteStream(p)` 은 팩토리를 거치지 않고 파일을 만든다.',
   },
   ...FS_MUTATION_DESTRUCTURE_SELECTORS.map((selector) => ({
     selector,
@@ -430,7 +481,7 @@ export default tseslint.config(
   },
   // JS/mjs 는 tsconfig 비포함이라 타입정보 없음 → 타입인지 룰 비활성.
   {
-    files: ['**/*.{js,mjs,cjs}'],
+    files: ['**/*.{js,jsx,mjs,cjs}'],
     extends: [tseslint.configs.disableTypeChecked],
   },
   // 테스트 파일은 파싱 JSON·부분 fixture 를 의도적으로 다룬다 → unsafe-* 완화(src 는 strict 유지).
@@ -526,8 +577,8 @@ export default tseslint.config(
   // **호출 지점**을 dot/computed[Literal·Template]/bare/구조분해[식별자·리터럴 키] 형태로 차단 →
   // 정적으로 표현 가능한(키가 상수 리터럴인) 모든 경로를 어떤 로더·별칭이든 포착한다.
   {
-    files: ['src/main/core/tools/**/*.{ts,tsx,mts,cts,js,mjs,cjs}'],
-    ignores: ['src/main/core/tools/**/*.test.{ts,tsx,mts,cts,js,mjs,cjs}'],
+    files: ['src/main/core/tools/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'],
+    ignores: ['src/main/core/tools/**/*.test.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -580,10 +631,10 @@ export default tseslint.config(
   // tools/** 는 자체 블록이 더 강한 계약(read-only)을 걸고 있어 제외 — 여기서 덮으면 그게 약화된다.
   // 테스트·테스트 더블은 임시 워크스페이스 준비로 fs 를 정상 사용 → 제외.
   {
-    files: ['src/main/core/**/*.{ts,tsx,mts,cts,js,mjs,cjs}'],
+    files: ['src/main/core/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'],
     ignores: [
       ...CORE_FS_ALLOWLIST,
-      'src/main/core/**/*.test.{ts,tsx,mts,cts,js,mjs,cjs}',
+      'src/main/core/**/*.test.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
       'src/main/core/**/__testing__/**',
       'src/main/core/tools/**',
     ],
@@ -614,15 +665,10 @@ export default tseslint.config(
         'error',
         { paths: ELECTRON_IMPORT_PATHS, patterns: ELECTRON_IMPORT_PATTERNS },
       ],
-      'no-restricted-syntax': [
-        'error',
-        ...CORE_GUARD_SYNTAX,
-        // 변이 티어도 named-only 전제와 동적 import 금지를 받는다(Codex 10R): 이 배선이 없으면
-        // allowlist **안에서** `import * as fs` 나 `const fs = await import('node:fs')` 뒤에
-        // `export { fs }` 로 능력을 흘릴 수 있고, 그 소비자는 fs 지정자도 seam 도 없이 변이한다.
-        ...CORE_FS_BINDING_FORM_SYNTAX,
-        ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
-      ],
+      // 변이 티어도 named-only 전제와 동적 import 금지를 받는다(Codex 10R): 이 배선이 없으면
+      // allowlist **안에서** `import * as fs` 나 `const fs = await import('node:fs')` 뒤에
+      // `export { fs }` 로 능력을 흘릴 수 있고, 그 소비자는 fs 지정자도 seam 도 없이 변이한다.
+      'no-restricted-syntax': ['error', ...CORE_FS_TIER_SYNTAX],
     },
   },
   // 브랜드 위조 차단(#251 PR1b · 스펙 §W-3/§W-4). `BenchLeaseToken`·`Held<L>` 은 미export
@@ -665,7 +711,12 @@ export default tseslint.config(
       'src/main/core/workbench/lock-order.ts',
     ],
     rules: {
-      'no-restricted-syntax': ['error', ...CORE_GUARD_SYNTAX, ...WORKBENCH_EXHAUSTIVE_SYNTAX],
+      // ⚠ **티어 묶음까지 스프레드해야 한다**(Codex 11R). 이 블록은 변이 티어 블록보다 **뒤**라
+      // `workbench/{active-instance,coord-area,durable-fs}.ts` 의 최종 적용 규칙이 되는데, 앞서
+      // 10R 로 배선한 바인딩 형태·동적 import 가드를 여기서 다시 떨어뜨리고 있었다(같은 rule-key 교체
+      // 함정의 세 번째 재발). allowlist 밖 워크벤치 파일에는 무해하다 — 그쪽은 fs import 자체가 금지라
+      // 이 셀렉터들이 도달할 수 없다.
+      'no-restricted-syntax': ['error', ...CORE_FS_TIER_SYNTAX, ...WORKBENCH_EXHAUSTIVE_SYNTAX],
     },
   },
   // 읽기 전용 티어 집행(#282 · Codex 6R). allowlist 를 「읽기 전용/변이」로 나눠 적어도, 읽기 전용
@@ -673,7 +724,11 @@ export default tseslint.config(
   // (티어 라벨이 수동 선언에 그침). tools/**(#174)와 동형 가드를 걸어 라벨을 집행으로 만든다.
   // tools/** 는 더 강한 자체 블록이 있어 제외(여기서 덮으면 약화된다).
   {
-    files: CORE_FS_READONLY.filter((f) => !f.startsWith('src/main/core/tools/')),
+    // 하위 프로세스 변이 예외(`git.ts`)도 **fs 로는 읽기 전용**으로 집행한다(Codex 11R) — 목록이
+    // 둘로 갈려도 집행이 빠지지 않도록 합집합으로 건다.
+    files: [...new Set([...CORE_FS_READONLY, ...CORE_SUBPROCESS_MUTATING])].filter(
+      (f) => !f.startsWith('src/main/core/tools/'),
+    ),
     rules: {
       'no-restricted-imports': [
         'error',
@@ -688,9 +743,7 @@ export default tseslint.config(
       ],
       'no-restricted-syntax': [
         'error',
-        ...CORE_GUARD_SYNTAX,
-        ...CORE_FS_BINDING_FORM_SYNTAX,
-        ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
+        ...CORE_FS_TIER_SYNTAX,
         ...CORE_FS_READONLY_SYNTAX,
         // ⚠ 이 블록은 **설정 맨 끝**이라(앞에 두면 workbench 블록이 교체한다 — 프로브 0 error 실측)
         // 뒤따르는 블록이 없다. 대신 이 파일들이 잃게 되는 후속 가드를 여기서 직접 스프레드해야 한다

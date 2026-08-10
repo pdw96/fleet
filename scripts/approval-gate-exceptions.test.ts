@@ -96,8 +96,10 @@ export const eslintPathConst = (config: string, name: string): string[] => {
  * 프로덕션 확장자 — `tsconfig.node.json` 이 `allowJs: true` 라 `.js`/`.mjs`/`.cjs` 도 컴파일·번들된다
  * (Codex 8R). `.ts` 만 훑으면 확장자만 바꿔 경계 밖에 서는 길이 남는다. eslint 경계 glob 과 같은 집합.
  */
-const PROD_EXT = /\.(?:tsx?|mtsx?|ctsx?|mjs|cjs|js)$/
-const TEST_EXT = /\.test\.(?:tsx?|mtsx?|ctsx?|mjs|cjs|js)$/
+// `.jsx` 도 포함한다(Codex 11R) — vite 의 기본 확장자 해석에 `.jsx` 가 들어 있고 `allowJs` 라 tsc 도
+// 받는다. 여기서 빠지면 코어 헬퍼를 `.jsx` 로 두는 것만으로 스캔·lint 양쪽 밖에 설 수 있다.
+const PROD_EXT = /\.(?:tsx?|mtsx?|ctsx?|mjs|cjs|jsx?)$/
+const TEST_EXT = /\.test\.(?:tsx?|mtsx?|ctsx?|mjs|cjs|jsx?)$/
 
 /** 코어 프로덕션 소스 전량(테스트·테스트 더블 제외). */
 const coreSources = (): string[] => {
@@ -146,6 +148,13 @@ const enumeratedModules = (): string[] => {
 const eslintConfig = read(ESLINT)
 const readonlyTier = eslintPathConst(eslintConfig, 'CORE_FS_READONLY').map(asModuleIdFromRepo)
 const mutatingTier = eslintPathConst(eslintConfig, 'CORE_FS_MUTATING').map(asModuleIdFromRepo)
+/**
+ * fs 가 아니라 **하위 프로세스**로 워크스페이스를 변이하는 예외(Codex 11R). `git.ts` 가 `rmSync` 를
+ * 잃으면서 「ApprovalGate 예외」와 「fs 변형 티어」가 갈라졌다 — 열거 대조는 이 목록까지 합쳐야 성립한다.
+ */
+const subprocessMutators = eslintPathConst(eslintConfig, 'CORE_SUBPROCESS_MUTATING').map(
+  asModuleIdFromRepo,
+)
 const allowlist = [...readonlyTier, ...mutatingTier].sort()
 
 const sources = coreSources()
@@ -206,7 +215,7 @@ describe('ApprovalGate 예외 — fs import 경계 게이트(#282)', () => {
     expect(eslintConfig).toContain('getBuiltinModule')
     // 확장자 사각 차단 — 경계 블록이 .tsx 도 덮는다.
     expect(eslintConfig).toMatch(
-      /files: \['src\/main\/core\/\*\*\/\*\.\{ts,tsx,mts,cts,js,mjs,cjs\}'\]/,
+      /files: \['src\/main\/core\/\*\*\/\*\.\{ts,tsx,mts,cts,js,jsx,mjs,cjs\}'\]/,
     )
   })
 
@@ -219,9 +228,30 @@ describe('ApprovalGate 예외 — fs import 경계 게이트(#282)', () => {
   })
 })
 
-describe('ApprovalGate 예외 — 열거 == 변이 티어 ∪ seam 소비자', () => {
+describe('ApprovalGate 예외 — 열거 == 변이 티어 ∪ 하위프로세스 변이 ∪ seam 소비자', () => {
   it('두 집합이 정확히 일치한다', () => {
-    expect([...new Set([...mutatingTier, ...seamConsumers])].sort()).toEqual(declared)
+    expect([...new Set([...mutatingTier, ...subprocessMutators, ...seamConsumers])].sort()).toEqual(
+      declared,
+    )
+  })
+
+  /**
+   * 하위프로세스 변이 목록이 비면 위 합집합은 조용히 「변이 티어 ∪ seam」 으로 되돌아가고, 이 층은
+   * 항진명제가 된다. 또 그 모듈들은 fs 를 읽기라도 하므로 **allowlist 안에** 있어야 한다 — 밖이면
+   * 경계 블록이 fs import 자체를 막아 빌드가 깨지거나, 목록만 남고 집행이 사라진다.
+   */
+  it('하위프로세스 변이 목록이 비어 있지 않고 allowlist 안에 있다', () => {
+    expect(subprocessMutators.length).toBeGreaterThanOrEqual(1)
+    expect(subprocessMutators.filter((m) => !allowlist.includes(m))).toEqual([])
+  })
+
+  /**
+   * **티어 분리의 실질**: 하위프로세스 변이 예외는 fs 로는 읽기 전용이어야 한다. 변이 티어에도
+   * 들어 있으면 읽기 전용 가드를 못 받아, 훗날 `writeFileSync` 가 들어와도 lint·대조 둘 다 무신호다
+   * (11R 이 짚은 티어 전이 리뷰 지점 소실).
+   */
+  it('하위프로세스 변이 예외는 fs 변이 티어에 있지 않다', () => {
+    expect(subprocessMutators.filter((m) => mutatingTier.includes(m))).toEqual([])
   })
 
   it('열거 == 근거 절 보유 모듈(양방향 잠금)', () => {

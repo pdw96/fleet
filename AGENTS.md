@@ -65,7 +65,8 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
     destructive 조작은 게이트가 아니라 **대상 고정·소유 확인·create-only 경합**으로 막는다.
     (이 구분을 문면에 두지 않아 리뷰에서 반복 지적된 항목 — ADR-0013.)
     이 열거는 산문이 아니라 **계약**이다. 강제는 **eslint 가 구조로, 테스트가 대조로** 나눠 한다:
-    - **`eslint.config.mjs` 의 `CORE_FS_ALLOWLIST`** 밖에서는 `src/main/core/**`(`.ts`·`.tsx`)가 fs 를
+    - **`eslint.config.mjs` 의 `CORE_FS_ALLOWLIST`** 밖에서는 `src/main/core/**`(빌드가 컴파일·번들하는
+      확장자 전부 — `.ts`·`.tsx`·`.mts`·`.cts`·`.js`·`.jsx`·`.mjs`·`.cjs`)가 fs 를
       **어떤 형태로도 얻을 수 없다** — 정적 import·동적 import·비-리터럴 동적 import·`require`·
       `createRequire`·`process.getBuiltinModule`. 즉 fs 를 만지려면 반드시 이름을 올려야 하고, 그
       편집이 리뷰 지점이다.
@@ -76,8 +77,9 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
       능력을 흘리면 소비자가 경계를 우회한다. 의도적 seam 은 `durable-fs` 처럼 **지정자로 추적 가능한
       모듈**로 만들고 테스트의 seam 판정에 등재한다.
     - **`scripts/approval-gate-exceptions.test.ts`** 가 대조한다: ①allowlist == 실제 fs 소비자(목록
-      staleness 차단) ②**변이 티어 ∪ `DurableFs` 소비자 == 위 열거** ③열거 == 근거 절 보유 모듈
-      (양방향) ④근거 절이 소비자 모듈을 삼키지 않는 형태인지 ⑤eslint 게이트 블록의 존재.
+      staleness 차단) ②**변이 티어 ∪ 하위프로세스 변이 티어 ∪ `DurableFs` 소비자 == 위 열거**
+      ③열거 == 근거 절 보유 모듈(양방향) ④근거 절이 소비자 모듈을 삼키지 않는 형태인지
+      ⑤eslint 게이트 블록의 존재.
 
     왜 「변이 API 이름을 탐지」하지 않는가 — 그 접근은 Codex 리뷰 5라운드 내내 새 회피 형태를 계속
     냈다(promise 형·`{ promises as fs }`·`fs.promises.x`·bare 지정자·동적 import·FileHandle·
@@ -85,6 +87,9 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
     유한하므로 거기서 막는다**(#282).
     ⚠ 이 계약은 fs API 경유 변이만 다룬다 — **자식 프로세스를 통한 변이**(git 하위 명령의 워크트리
     생성·삭제 등)는 import 경계 밖이고, spawn 은 위 「게이트의 소비자」 절이 다루는 별개 계약이다.
+    그래서 `workspace/git.ts` 는 **fs 로는 읽기 전용 티어**에 두고(변이 티어에 두면 읽기 전용 집행을
+    못 받아, 훗날 직접 `writeFileSync` 가 들어와도 lint·대조가 **무신호**다) 「게이트 없는 변이」라는
+    지위는 `CORE_SUBPROCESS_MUTATING` 이 따로 들고 있는다 — 위 ②의 세 번째 항이 그것이다.
     ⚠ 열거에 있다는 건 **「게이트 밖」이라는 사실의 기록이지 「안전하다」는 보증이 아니다.** 규칙을
     완전히 충족하지 못하는 예외가 생기면 근거 절에 **미충족을 명시**해 리뷰 가능하게 두고 추적
     이슈를 단다(선례: `workspace/git.ts` 의 `index.lock` 강제 삭제는 소유 확인이 불가능해 PR#282
