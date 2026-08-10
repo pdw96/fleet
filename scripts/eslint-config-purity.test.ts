@@ -56,14 +56,16 @@ describe('코어 순수성 ESLint 게이트 회귀 가드 (#173)', () => {
 // #174: 도구 실행 모듈 read-only 구조 가드. ApprovalGate 는 tool.classify() 자가신고만 신뢰하므로
 // (loop.ts:171) classify:'safe' 인 신규 도구가 raw fs 변형/spawn 하면 무프롬프트로 워크스페이스를
 // 바꾼다. 가드가 조용히 삭제/약화되면 lint 는 여전히 green(위반 0)이라 무신호 → 게이트 자체를 핀.
-const toolsBlock = blocks.find((c) => c.files?.includes('src/main/core/tools/**/*.{ts,tsx}'))
+const toolsBlock = blocks.find((c) =>
+  c.files?.includes('src/main/core/tools/**/*.{ts,tsx,js,mjs,cjs}'),
+)
 
 describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
   it('tools 블록 존재 + files/ignores 스코프', () => {
     expect(toolsBlock).toBeDefined()
-    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.{ts,tsx}')
+    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.{ts,tsx,js,mjs,cjs}')
     expect((toolsBlock as { ignores?: string[] })?.ignores).toContain(
-      'src/main/core/tools/**/*.test.{ts,tsx}',
+      'src/main/core/tools/**/*.test.{ts,tsx,js,mjs,cjs}',
     )
   })
 
@@ -326,6 +328,55 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
           `블록 files=${JSON.stringify(block.files)} 에 "${required}" 가 없다 — CORE_GUARD_SYNTAX 를 스프레드하라(flat config 는 rule-key 를 교체한다)`,
         ).toContain(required)
       }
+    }
+  })
+
+  /**
+   * **8R 이 적발한 클래스**: 공통 묶음만 검사하면 「워크벤치를 덮는 블록이 소진 강제를 빠뜨린 것」을
+   * 못 잡는다 — 실제로 맨 끝 읽기 전용 블록이 주석·커밋 메시지의 주장과 달리 그 셀렉터를 스프레드하지
+   * 않고 있었고 이 테스트는 통과했다. 스코프가 겹치면 **그 스코프의 가드도** 요구한다.
+   */
+  it('워크벤치 파일에 **마지막으로 매칭되는** 블록이 소진 강제를 보유한다', () => {
+    // flat config 는 rule-key 를 교체하므로 실제로 적용되는 건 **마지막 매칭 블록**뿐이다.
+    // 이 레포가 쓰는 glob 형태만 다루는 최소 매처(`**/*.{a,b}` · 디렉터리 prefix · 리터럴 경로).
+    const matches = (glob: string, file: string): boolean => {
+      const braces = /\{([^}]*)\}/.exec(glob)
+      if (braces) {
+        return braces[1]
+          .split(',')
+          .some((ext) => matches(glob.replace(braces[0], ext.trim()), file))
+      }
+      if (!glob.includes('*')) return glob === file
+      // 이 레포의 glob 은 전부 `<dir>/**/*<ext>` 한 형태다 — 정규식 조립 없이 접두/접미로 판정한다.
+      const star = glob.indexOf('**/*')
+      if (star < 0) return false
+      const prefix = glob.slice(0, star)
+      const suffix = glob.slice(star + '**/*'.length)
+      return file.startsWith(prefix) && file.endsWith(suffix)
+    }
+    const lastFor = (file: string) =>
+      [...coreSyntaxBlocks]
+        .reverse()
+        .find(
+          (c) =>
+            c.files?.some((f) => matches(f, file)) === true &&
+            (c as { ignores?: string[] }).ignores?.some((g) => matches(g, file)) !== true,
+        )
+
+    for (const file of [
+      'src/main/core/workbench/instance-marker-proc.ts', // 읽기 전용 티어 — 8R 이 짚은 파일
+      'src/main/core/workbench/coord-area.ts', // 변이 티어
+      'src/main/core/workbench/journal.ts', // fs 미import(seam 소비자)
+    ]) {
+      const block = lastFor(file)
+      expect(block, `${file} 에 매칭되는 no-restricted-syntax 블록이 없다`).toBeDefined()
+      const selectors = (
+        (block?.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[]
+      ).map((e) => e.selector ?? '')
+      expect(
+        selectors.some((sel) => sel.includes("callee.name='assertNever'")),
+        `${file} 의 최종 적용 블록(files=${JSON.stringify(block?.files)})이 소진 강제를 빠뜨렸다 — WORKBENCH_EXHAUSTIVE_SYNTAX 를 스프레드하라`,
+      ).toBe(true)
     }
   })
 

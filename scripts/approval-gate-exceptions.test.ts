@@ -69,7 +69,10 @@ export const importsFs = (src: string): boolean =>
  * `journal`·`authority` 가 정확히 그 형태이면서 실제로 변이한다.
  */
 export const usesDurableFs = (src: string): boolean =>
-  /from\s+'[^']*\/durable-fs'/.test(stripComments(src))
+  // ⚠ **동적 import 도 본다**(Codex 8R): `await import('../workbench/durable-fs')` + `createNodeDurableFs()`
+  // 는 정적 `from` 이 없어 seam 판정을 통과했다 — 공통 로더 가드는 리터럴 동적 import 를 허용하므로
+  // lint 도 안 잡는다. 여기서 잡아야 「seam 소비자 ∪ 변이 티어 == 열거」가 성립한다.
+  /(?:from|import)\s*\(?\s*'[^']*\/durable-fs'/.test(stripComments(src))
 
 /** 파일 머리 영역 = 첫 top-level `export` 이전. 그 뒤의 함수 JSDoc 은 「모듈 상단」이 아니다. */
 export const moduleHeader = (src: string): string => {
@@ -87,6 +90,13 @@ export const eslintPathConst = (config: string, name: string): string[] => {
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
 }
 
+/**
+ * 프로덕션 확장자 — `tsconfig.node.json` 이 `allowJs: true` 라 `.js`/`.mjs`/`.cjs` 도 컴파일·번들된다
+ * (Codex 8R). `.ts` 만 훑으면 확장자만 바꿔 경계 밖에 서는 길이 남는다. eslint 경계 glob 과 같은 집합.
+ */
+const PROD_EXT = /\.(?:tsx?|mjs|cjs|js)$/
+const TEST_EXT = /\.test\.(?:tsx?|mjs|cjs|js)$/
+
 /** 코어 프로덕션 소스 전량(테스트·테스트 더블 제외). */
 const coreSources = (): string[] => {
   const out: string[] = []
@@ -95,7 +105,7 @@ const coreSources = (): string[] => {
       const p = join(dir, e.name)
       if (e.isDirectory()) {
         if (e.name !== '__testing__') walk(p)
-      } else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) out.push(p)
+      } else if (PROD_EXT.test(e.name) && !TEST_EXT.test(e.name)) out.push(p)
       // ⚠ `.tsx` 도 센다(Codex PR#282 6R): 빌드는 컴파일하는데 스캔·lint 만 `.ts` 로 좁으면
       // 프로덕션 헬퍼를 `.tsx` 로 두는 것만으로 경계 밖이 된다.
     }
@@ -193,7 +203,7 @@ describe('ApprovalGate 예외 — fs import 경계 게이트(#282)', () => {
     expect(eslintConfig).toContain('CORE_FS_READONLY_SYNTAX')
     expect(eslintConfig).toContain('getBuiltinModule')
     // 확장자 사각 차단 — 경계 블록이 .tsx 도 덮는다.
-    expect(eslintConfig).toMatch(/files: \['src\/main\/core\/\*\*\/\*\.\{ts,tsx\}'\]/)
+    expect(eslintConfig).toMatch(/files: \['src\/main\/core\/\*\*\/\*\.\{ts,tsx,js,mjs,cjs\}'\]/)
   })
 
   it('allowlist == 실제 fs 소비자(목록이 낡지도, 과대하지도 않다)', () => {
