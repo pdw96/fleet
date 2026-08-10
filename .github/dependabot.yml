@@ -44,16 +44,26 @@ updates:
       # plugin-react 6.x 의 peer 는 `vite ^8.0.0` 하나뿐인데, 유일한 stable 인
       # electron-vite@5.0.0 의 peer 는 `vite ^5.0.0 || ^6.0.0 || ^7.0.0` 라 vite 8 을 배제한다.
       # → `npm ci` 가 ERESOLVE 로 하드 실패(#261 의 CI red 3잡이 정확히 이것).
-      # vite 8 을 지원하는 유일한 빌드는 electron-vite@6.0.0-beta.1(2026-04-12 이후 미발행)이고,
-      # 오픈 버그 alex8088/electron-vite#906 이 `vite:esm-shim` 으로 main 엔트리를 0.00 kB 로
+      # vite 8 을 지원하는 유일한 빌드는 electron-vite@6.0.0-beta.1 인데, 2026-04-12 에 발행된 뒤
+      # 2026-08-10 현재까지 신규 발행이 없다(dist-tags: latest=5.0.0 · beta=6.0.0-beta.1).
+      # 게다가 오픈 버그 alex8088/electron-vite#906 이 `vite:esm-shim` 으로 main 엔트리를 0.00 kB 로
       # 비운다 — 정확히 Fleet 의 main 타깃이다. 더 위험한 건 electron-vite@5 + vite 8 강제 조합이
       # **빌드는 green 인데 electron 이 외부화되지 않고 인라인돼 죽은 앱을 산출**한다는 점으로,
       # `npm run verify` 의 build 게이트가 못 잡는 유형이다(실측 재현).
+      #
       # 해제 조건: electron-vite 가 **stable**(dist-tag `latest`) 로 `vite ^8` peer 를 선언
-      # (업스트림 #894 종결 + #906 수정). 그때 vite 7→8 · electron-vite 5→6 · plugin-react 5→6 을
-      # 한 커밋으로 동반 범프하고, `build.rollupOptions`(electron.vite.config.ts 3곳 +
-      # vite.server.config.ts 1곳)를 `build.rolldownOptions` 로 개명하며, vite 8 에서 esbuild 가
-      # 더는 vite 의존이 아니게 되므로 `overrides.vite.esbuild` 도 함께 정리해야 한다.
+      # (업스트림 #894 종결 + #906 수정). 그때 아래를 한 커밋으로 동반 처리한다.
+      #  (1) vite 7→8 · electron-vite 5→6 · @vitejs/plugin-react 5→6 동반 범프.
+      #  (2) `electron.vite.config.ts:10` 의 `external: ['electron-updater']` **재검증**.
+      #      vite 8 은 외부화 모듈의 `require` 를 `import` 로 변환하지 않고 보존하므로 외부화
+      #      결과가 달라질 수 있다. 위 「빌드 green + 죽은 앱」이 정확히 이 축이고, build 게이트는
+      #      산출물을 기동하지 않으므로 **`npm run test:e2e`(실 Electron 기동)로만 확인된다.**
+      #      vite.server.config.ts 의 SSR 번들도 같은 이유로 함께 확인할 것.
+      #  (3) `overrides.vite.esbuild`(^0.28.1) 정리 — vite 8 은 esbuild 대신 rolldown·lightningcss
+      #      를 쓰므로 이 override 가 조용히 무효가 된다. 방치하면 보안 하한 소실을 늦게 안다.
+      #  (4) [deprecation 정리 · 필수 아님] `build.rollupOptions`(electron.vite.config.ts 3곳 +
+      #      vite.server.config.ts 1곳) → `build.rolldownOptions`. vite 8 은 `setupRollupOptionCompat`
+      #      으로 구 이름을 프록시 별칭으로 유지해 동작은 계속되지만 향후 제거 예정이다.
       - dependency-name: '@vitejs/plugin-react'
         update-types:
           - 'version-update:semver-major'
