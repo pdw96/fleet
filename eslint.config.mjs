@@ -77,6 +77,46 @@ const FS_MUTATION_CALL_SELECTOR = `CallExpression[callee.name=${FS_MUTATION_PATT
 const FS_MUTATION_IMPORT_NAMES = FS_MUTATION_NAMES.flatMap((n) => [n, `${n}Sync`])
 const TOOLS_FS_MODULES = ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']
 
+/**
+ * **코어에서 `fs` 를 만져도 되는 모듈 — 닫힌 allowlist**(#282 · Codex 5R).
+ *
+ * 여기 없는 `src/main/core/**` 파일은 정적·동적 어느 형태로도 fs 를 import 할 수 없다. 이 경계가
+ * 필요한 이유는 실측이다 — 「변이 API 이름을 정규식으로 분류」하는 접근은 5라운드 내내 회피 형태가
+ * 새로 나왔다(promise 형 · `{ promises as fs }` · `fs.promises.x` · bare 지정자 · 동적 import ·
+ * FileHandle · re-export 체인 · 네임스페이스 구조분해). 동적 언어에서 그 꼬리는 끝나지 않는다.
+ *
+ * **import 경계는 유한하다.** fs 가 코어에 들어오는 문은 import 하나뿐이므로(동적 import 도 함께
+ * 차단) 여기서 막으면 위 형태 전부가 한 번에 무의미해진다. 신규 모듈이 fs 를 쓰려면 반드시 이
+ * 목록에 이름을 올려야 하고, 그 편집이 곧 리뷰 지점이다.
+ *
+ * 두 티어로 나눠 선언하는 이유: `CORE_FS_MUTATING` 은 AGENTS.md 「ApprovalGate 예외」 열거와
+ * **교차 검증**된다(`scripts/approval-gate-exceptions.test.ts`). 읽기 전용 소비자를 같은 목록에
+ * 섞으면 그 교차 검증이 성립하지 않는다.
+ */
+const CORE_FS_READONLY = [
+  'src/main/core/tools/workspace-tools.ts',
+  'src/main/core/verify/run.ts',
+  'src/main/core/workbench/instance-marker-proc.ts',
+  'src/main/core/workspace/path-guard.ts',
+  'src/main/core/workspace/set-workspace.ts',
+]
+/** fs 를 **변이**하는 코어 모듈 = AGENTS.md 「ApprovalGate 예외」 중 fs 를 직접 import 하는 것들. */
+const CORE_FS_MUTATING = [
+  'src/main/core/store/json-file.ts',
+  'src/main/core/workbench/active-instance.ts',
+  'src/main/core/workbench/coord-area.ts',
+  'src/main/core/workbench/durable-fs.ts',
+  'src/main/core/workspace/git.ts',
+  'src/main/core/workspace/ignored-baseline.ts',
+]
+const CORE_FS_ALLOWLIST = [...CORE_FS_READONLY, ...CORE_FS_MUTATING]
+
+/** allowlist 밖 코어 모듈의 fs 동적 import 차단(정적 가드는 ImportExpression 을 미방문). */
+const CORE_FS_DYNAMIC_IMPORT_SYNTAX = TOOLS_FS_MODULES.map((m) => ({
+  selector: `ImportExpression[source.value='${m}']`,
+  message: `코어(src/main/core)는 allowlist 밖에서 fs 를 만지지 않는다(#282). 동적 import('${m}') 금지 — 필요하면 eslint.config.mjs 의 CORE_FS_ALLOWLIST 에 등재하고 AGENTS.md 예외 열거를 함께 갱신하라.`,
+}))
+
 // 프로세스 spawn 차단(#174, Codex P2): child_process/cross-spawn 을 어떤 경로로 얻든(static/dynamic
 // import·createRequire·process.getBuiltinModule) 실제 spawn/fork 등 **호출 지점**을 dot/computed/bare/
 // 구조분해 형태로 잡는다 → 로더 종류를 일일이 쫓을 필요 없음. import 금지는 흔한 경로의 조기 명확 에러용.
@@ -391,6 +431,41 @@ export default tseslint.config(
         ...CREATEREQUIRE_SYNTAX,
         ...OBFUSCATION_GUARD_SYNTAX,
         ...PROCESS_SPAWN_SYNTAX,
+      ],
+    },
+  },
+  // fs 접근 경계 게이트(#282 · Codex PR#282 5R). `ApprovalGate` 예외 열거가 실제와 어긋나지 않게
+  // 하는 **구조적 층** — 변이 API 를 이름으로 분류하는 대신 **fs 가 코어에 들어오는 문 자체**를 닫는다.
+  // core 블록보다 뒤라 no-restricted-imports/syntax 를 교체하므로 electron 보호를 재선언한다(유실 방지).
+  // tools/** 는 자체 블록이 더 강한 계약(read-only)을 걸고 있어 제외 — 여기서 덮으면 그게 약화된다.
+  // 테스트·테스트 더블은 임시 워크스페이스 준비로 fs 를 정상 사용 → 제외.
+  {
+    files: ['src/main/core/**/*.ts'],
+    ignores: [
+      ...CORE_FS_ALLOWLIST,
+      'src/main/core/**/*.test.ts',
+      'src/main/core/**/__testing__/**',
+      'src/main/core/tools/**',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: ELECTRON_IMPORT_PATHS,
+          patterns: [
+            ...ELECTRON_IMPORT_PATTERNS,
+            {
+              group: TOOLS_FS_MODULES,
+              message:
+                '코어(src/main/core)는 allowlist 밖에서 fs 를 만지지 않는다(#282). 필요하면 eslint.config.mjs 의 CORE_FS_ALLOWLIST 에 등재하고, 변이한다면 AGENTS.md 「ApprovalGate 예외」 열거와 모듈 근거 절을 함께 갱신하라.',
+            },
+          ],
+        },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
+        ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
       ],
     },
   },

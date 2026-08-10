@@ -11,228 +11,62 @@ import { describe, expect, it } from 'vitest'
  * 「목록에 없으니 새 예외」라고 말할 수 없게 된다. 실제로 #251 이 세 모듈을 추가하는 동안 열거는 넷에
  * 멈춰 있었다. 그래서 산문이 아니라 기계로 강제한다(#137·#140 의 「명문화는 집행이 아니다」).
  *
- * ## 계약 3층 — 왜 문서끼리 대조하는 것만으로는 부족한가
+ * ## 왜 「변이 API 탐지」가 아니라 「import 경계 allowlist」인가
  *
- * 1. **파생 후보 ⊆ 열거** — 코어 프로덕션 모듈 중 **실제로 파일시스템을 변이하는 것**(node:fs 변이 API
- *    직접 import, 또는 내구 쓰기 seam `DurableFs` 소비)을 소스에서 **독립적으로 유도**해, 전부 열거에
- *    들어 있는지 본다. 이 층이 없으면 근거 절을 *안 쓴* 신규 우회는 스캔에도 문서에도 안 잡혀
- *    **양쪽이 사이좋게 통과**한다(Codex PR#282 P1). 실제로 이 층을 넣자마자 미선언 변이자
- *    `workspace/git.ts`(`rmSync(index.lock)`)가 드러났다.
- * 2. **열거 == 근거 절 보유 모듈** — 문서 갱신 없이 예외를 늘릴 수도, 근거 없는 예외를 문서만으로
- *    정당화할 수도 없게 하는 양방향 잠금.
- * 3. **마커 판별력** — 근거 절은 **파일 머리 영역**(첫 top-level `export` 이전)의 블록 주석 `##` 헤딩
- *    이어야 한다. 「어딘가에 ApprovalGate 를 언급한다」로 두면 게이트를 *통과하는* 소비자 넷이 전부
- *    매치돼 열거가 무의미해지고, 파일 아무 데나 허용하면 함수 JSDoc 한 줄로 예외를 사후 정당화할 수
- *    있다(CodeRabbit PR#282).
+ * 초안은 변이 API 이름을 정규식으로 분류해 후보를 유도했다. 그 접근은 **Codex 리뷰 5라운드 내내 새
+ * 회피 형태를 계속 냈다** — promise 형 · `{ promises as fs }` · `fs.promises.x` · bare 지정자 ·
+ * 동적 import · FileHandle 경유 · re-export 체인 · 네임스페이스 구조분해. 동적 언어에서 그 꼬리는
+ * 끝나지 않는다(레포 교훈: 「패치가 번갈아 뚫리면 프리미티브를 의심하라」).
  *
- * **한계는 숨기지 않는다**: 1층은 *직접* fs 변이와 `DurableFs` 소비만 유도한다. git 하위 프로세스처럼
- * **자식 프로세스를 통한 변이**는 이 스캔 밖이다(spawn 은 별개 계약 — AGENTS.md 의 게이트 소비자 절이
- * 다룬다). 그래서 1층은 「모든 우회를 잡는다」가 아니라 「가장 흔한 형태의 신규 우회가 조용히 들어오지
- * 못한다」로 읽어야 한다.
+ * **import 경계는 유한하다.** fs 가 코어에 들어오는 문은 import 하나뿐이므로, `eslint.config.mjs` 의
+ * `CORE_FS_ALLOWLIST` 밖에서 fs import(정적·동적·re-export)를 **금지**하면 위 형태가 한 번에 전부
+ * 무의미해진다(#282 · 세 형태 프로브로 실측 차단 확인). 그래서 이 파일은 **탐지기가 아니라 대조기**다:
+ *
+ * 1. **allowlist == 실제 fs 소비자** — 목록이 낡거나 과대해지지 않게 파일시스템과 대조한다.
+ * 2. **변이 티어 ∪ `DurableFs` 소비자 == AGENTS.md 열거** — 문서 갱신 없이 예외를 늘릴 수도,
+ *    근거 없는 예외를 문서만으로 정당화할 수도 없다.
+ * 3. **근거 절의 형태** — 파일 머리 영역(첫 top-level `export` 이전)의 블록 주석 `##` 헤딩이어야
+ *    한다. 헐거우면 게이트를 *통과하는* 소비자 넷이 전부 매치돼 열거가 무의미해지고, 위치를 안 보면
+ *    함수 JSDoc 한 줄로 예외를 사후 정당화할 수 있다(CodeRabbit PR#282).
+ * 4. **게이트 존재 자체** — eslint 블록이 사라지면 1~3 이 전부 무신호가 되므로 블록을 핀한다.
+ *
+ * **남는 한계는 숨기지 않는다**: 이 계약은 fs API 경유 변이만 다룬다. `workspace/git.ts` 처럼 **git
+ * 하위 프로세스를 통한 변이**는 import 경계 밖이다(spawn 은 AGENTS.md 「게이트의 소비자」 절이 다루는
+ * 별개 계약). 그래서 이 층은 「모든 우회를 잡는다」가 아니라 **「fs 를 만지려면 반드시 이름을 올려야
+ * 한다」**로 읽어야 한다.
  */
 
 const CORE = join('src', 'main', 'core')
 const AGENTS = 'AGENTS.md'
+const ESLINT = 'eslint.config.mjs'
 
 /** 근거 절 헤딩 — 블록 주석 안의 `## ` 절 형태여야 한다. */
 const RATIONALE_HEADING = /^\s*\*\s*##\s*`ApprovalGate`\s*를 거치지 않는 이유/m
 
-/**
- * 파일시스템을 변이하는 node:fs API. 읽기 전용 API 는 일부러 뺀다.
- *
- * ⚠ **동기형만 넣으면 구멍이 남는다**(Codex PR#282 2R P1): `node:fs/promises` 의 `writeFile`·`rm`·
- * `unlink` 는 이름에 `Sync` 가 없어 동기 목록에 안 걸리는데 파일을 똑같이 변이한다. 1차 구현은 그
- * 구멍을 「`writeFile` 은 비변이자」라는 **단언으로 고정까지** 해 놓았었다 — 목록의 누락이 스펙으로
- * 굳는 형태라 특히 나쁘다. 동기·비동기 양쪽 이름을 모두 싣는다.
- */
-const SYNC_MUTATORS = [
-  'appendFileSync',
-  'chmodSync',
-  'chownSync',
-  'copyFileSync',
-  'cpSync',
-  'createWriteStream',
-  'fchmodSync',
-  'fchownSync',
-  'ftruncateSync',
-  'futimesSync',
-  'lchmodSync',
-  'lchownSync',
-  'linkSync',
-  'lutimesSync',
-  'mkdirSync',
-  'mkdtempSync',
-  'renameSync',
-  'rmSync',
-  'rmdirSync',
-  'symlinkSync',
-  'truncateSync',
-  'unlinkSync',
-  'utimesSync',
-  'writeFileSync',
-  'writeSync',
-  'writevSync',
-] as const
-
-/** 위의 비동기(콜백·promise) 대응물. `node:fs` 와 `node:fs/promises` 양쪽에서 같은 이름으로 나온다. */
-const ASYNC_MUTATORS = [
-  'appendFile',
-  'chmod',
-  'chown',
-  'copyFile',
-  'cp',
-  'fchmod',
-  'fchown',
-  'ftruncate',
-  'futimes',
-  'lchmod',
-  'lchown',
-  'link',
-  'lutimes',
-  'mkdir',
-  'mkdtemp',
-  'rename',
-  'rm',
-  'rmdir',
-  'symlink',
-  'truncate',
-  'unlink',
-  'utimes',
-  'write',
-  'writeFile',
-  'writev',
-] as const
-
-/**
- * **`open`/`openSync` 는 플래그로 판정한다**(Codex PR#282 3R→4R).
- *
- * 3R 대응에서 잠시 목록에서 뺐었는데, 그건 더 큰 구멍이었다 — `open(p,'w')` 로 얻은 `FileHandle` 은
- * `fh.write()`·`fh.truncate()` 로 얼마든지 변이할 수 있고 핸들은 fs 별칭이 아니라 스캔에 안 잡힌다.
- * 반대로 무조건 넣으면 **읽기 전용 소비자가 오탐**된다(`tools/workspace-tools.ts` 는
- * `fs.open(abs, 'r')` 로 *읽는다* — 게이트를 통과하는 도구 계층이지 인프라 예외가 아니다).
- *
- * 그래서 **호출 지점의 플래그 리터럴**을 본다: 모든 호출이 읽기 전용 리터럴(`'r'`·`'rs'`)이면 비변이,
- * 하나라도 아니면(쓰기 플래그든 **변수든**) 변이로 센다 = fail-closed.
- */
-const FLAG_DEPENDENT = ['open', 'openSync'] as const
-
-/** 읽기 전용 플래그 리터럴로 호출됐는가. 인자가 리터럴이 아니면 판정 불가 → 변이로 취급. */
-const READ_ONLY_OPEN = /\(\s*[^,()]+,\s*(['"])rs?\1\s*[),]/
-
-export const FS_MUTATION_APIS: readonly string[] = [
-  ...SYNC_MUTATORS,
-  ...ASYNC_MUTATORS,
-  ...FLAG_DEPENDENT,
-]
-
-/** `open` 계열이 이 소스에서 **쓰기 가능**하게 쓰였는가(호출 0건이면 판정할 게 없으므로 false). */
-const opensForWrite = (code: string, callee: string): boolean => {
-  const calls = [...code.matchAll(new RegExp(`\\b${callee}\\s*\\([^;]*?\\)`, 'g'))].map((m) => m[0])
-  if (calls.length === 0) return false
-  return calls.some((c) => !READ_ONLY_OPEN.test(c))
-}
+const read = (rel: string): string => readFileSync(rel, 'utf8')
 
 /**
  * 주석 제거 — 스캔이 **주석 속 산문**을 코드로 오인하지 않게 한다. 이 레포의 소스는 계약을 길게
- * 설명하므로 `renameSync` 같은 이름이 설명문에 흔히 등장하고, 실제로 주석을 안 벗긴 1차 스캔이
- * `authority.ts`·`journal.ts` 를 직접 변이자로 오분류했다(둘은 주입 `DurableFs` 로만 쓴다).
+ * 설명하므로 `node:fs` 같은 문자열이 설명문에 흔히 등장한다(초안 스캔이 실제로 `authority.ts`·
+ * `journal.ts` 를 fs 소비자로 오분류했다 — 둘은 주입 `DurableFs` 로만 쓴다).
  * 선례 = `deploy-workbench-pin.test.ts` · `boot-workbench.test.ts`.
  */
 export const stripComments = (src: string): string =>
   src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 
 /**
- * fs 모듈 지정자 — **`node:` 접두는 관례일 뿐 강제가 아니다**(Codex PR#282 4R). `'fs'`·`'fs/promises'`
- * 도 유효하고 코어 eslint 블록이 막지 않으므로, 접두를 요구하면 그 형태로 조용히 빠져나간다.
+ * fs 모듈을 어떤 형태로든 들여오는가 — `import … from` · `export … from` · `import()`.
+ * **분류하지 않는다**(읽기/쓰기 구분은 eslint allowlist 의 티어가 한다). `node:` 접두는 관례일 뿐이라
+ * bare 지정자도 함께 본다.
  */
-const FS_SPECIFIER = String.raw`(?:node:)?fs(?:\/promises)?`
-
-/**
- * `node:fs`(및 `/promises`)에서 들여온 **변이 증거**. 세 경로를 본다:
- * ① named 바인딩(`import { rmSync } …`) ② **별칭의 멤버 호출**(`fs.rmSync(…)`·`fs.promises.rm(…)`)
- * ③ **동적 import**(`const { rm } = await import('node:fs/promises')`).
- *
- * ②의 별칭은 형태를 열거하지 않고 **import 절을 뜯어** 모은다 — `* as fs` · 기본 import ·
- * `{ promises as fs }` 전부. 마지막 형태는 중괄호로 시작해 네임스페이스 정규식에 안 걸리고 named
- * 스캔은 `promises` 만 보므로 **양쪽 다 통과**했었다(4R 전까지의 실제 구멍 · 현행 코어의
- * `tools/workspace-tools.ts` 가 그 형태). `fs.promises.<api>` 중첩 접근도 같은 이유로 따로 본다.
- *
- * 반대로 「fs 를 import 하면 변이자」로 두면 읽기 전용 모듈이 오탐된다(`workspace/path-guard.ts` 는
- * `* as fs` 로 `lstatSync`·`realpathSync` 만 쓴다). 그래서 **멤버 호출까지 봐야** 맞다.
- */
-export const fsMutationBindings = (src: string): string[] => {
-  const code = stripComments(src)
-  const found = new Set<string>()
-  const aliases = new Set<string>()
-
-  const addNamed = (inner: string): void => {
-    for (const raw of inner.split(',')) {
-      const [imported, local] = raw
-        .trim()
-        .split(/[\s:]+as[\s:]+|:/)
-        .map((s) => s.trim())
-      if (!imported) continue
-      if (FLAG_DEPENDENT.includes(imported as (typeof FLAG_DEPENDENT)[number])) {
-        if (opensForWrite(code, local || imported)) found.add(imported)
-      } else if (FS_MUTATION_APIS.includes(imported)) found.add(imported)
-      // `{ promises as fs }` — promises 네임스페이스를 별칭으로 받는 형태.
-      if (imported === 'promises') aliases.add(local || imported)
-    }
-  }
-
-  // 정적 import 절 전체를 뜯어 named 스펙과 별칭을 함께 분류한다(형태별 정규식을 늘리면 새 형태가 샌다).
-  const clauses = new RegExp(
-    String.raw`import\s+(?!type\b)([^'";]+?)\s+from\s+'${FS_SPECIFIER}'`,
-    'g',
-  )
-  for (const m of code.matchAll(clauses)) {
-    const clause = m[1]
-    const braces = /\{([^}]*)\}/.exec(clause)
-    if (braces) addNamed(braces[1])
-    // 중괄호 밖에 남는 것 = `* as ns` 또는 기본 import.
-    for (const part of clause.replace(/\{[^}]*\}/g, '').split(',')) {
-      const bare = /^\s*(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*$/.exec(part)
-      if (bare) aliases.add(bare[1])
-    }
-  }
-
-  // 동적 import — `const { rm } = await import('fs/promises')` · `const fs = await import('node:fs')`.
-  const dynamic = new RegExp(
-    String.raw`(?:const|let|var)\s+(\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\s*\(\s*'${FS_SPECIFIER}'\s*\)`,
-    'g',
-  )
-  for (const m of code.matchAll(dynamic)) {
-    const target = m[1]
-    if (target.startsWith('{')) addNamed(target.slice(1, -1))
-    else aliases.add(target)
-  }
-
-  for (const alias of aliases) {
-    for (const api of FS_MUTATION_APIS) {
-      // `fs.rm(` 과 `fs.promises.rm(` 둘 다. 후자는 별칭이 `node:fs` 네임스페이스일 때의 정규 경로다.
-      const direct = new RegExp(`\\b${alias}\\.${api}\\s*\\(`)
-      const viaPromises = new RegExp(`\\b${alias}\\.promises\\.${api}\\s*\\(`)
-      if (FLAG_DEPENDENT.includes(api as (typeof FLAG_DEPENDENT)[number])) {
-        if (opensForWrite(code, `${alias}\\.${api}`)) found.add(`${alias}.${api}`)
-        if (opensForWrite(code, `${alias}\\.promises\\.${api}`))
-          found.add(`${alias}.promises.${api}`)
-        continue
-      }
-      if (direct.test(code)) found.add(`${alias}.${api}`)
-      if (viaPromises.test(code)) found.add(`${alias}.promises.${api}`)
-    }
-  }
-  return [...found].sort()
-}
+export const importsFs = (src: string): boolean =>
+  /(?:from|import)\s*\(?\s*'(?:node:)?fs(?:\/promises)?'/.test(stripComments(src))
 
 /**
  * 내구 쓰기 seam 소비 — `DurableFs` 를 받는(또는 실 어댑터를 만드는) 모듈은 fs 를 직접 import 하지
- * 않고도 변이한다.
- *
- * **식별자가 아니라 모듈 지정자로 판정한다**(Codex PR#282 4R): `\bDurableFs\b` 는
- * `createNodeDurableFs` 같은 **팩토리 이름 안의 부분 문자열을 못 잡아**, 실 어댑터를 만들어 쓰는
- * 부팅 모듈이 통째로 빠져나간다. type-only import 도 제외하지 않는다 — `journal`·`authority` 가
- * 정확히 그 형태(주입 타입만 import)이면서 실제로 변이한다.
+ * 않고도 변이한다. **식별자가 아니라 모듈 지정자로 판정한다**(Codex PR#282 4R): `\bDurableFs\b` 는
+ * `createNodeDurableFs` 같은 팩토리 이름 안의 부분 문자열을 못 잡는다. type-only import 도 포함 —
+ * `journal`·`authority` 가 정확히 그 형태이면서 실제로 변이한다.
  */
 export const usesDurableFs = (src: string): boolean =>
   /from\s+'[^']*\/durable-fs'/.test(stripComments(src))
@@ -246,7 +80,12 @@ export const moduleHeader = (src: string): string => {
 export const hasRationaleSection = (src: string): boolean =>
   RATIONALE_HEADING.test(moduleHeader(src))
 
-const read = (rel: string): string => readFileSync(rel, 'utf8')
+/** `eslint.config.mjs` 의 배열 리터럴 상수에서 경로 문자열을 뽑는다. */
+export const eslintPathConst = (config: string, name: string): string[] => {
+  const m = new RegExp(`const ${name} = \\[([^\\]]*)\\]`).exec(config)
+  if (!m) return []
+  return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
+}
 
 /** 코어 프로덕션 소스 전량(테스트·테스트 더블 제외). */
 const coreSources = (): string[] => {
@@ -265,6 +104,8 @@ const coreSources = (): string[] => {
 
 /** 코어 기준 posix 상대경로(`workbench/journal.ts`). */
 const asModuleId = (p: string): string => relative(CORE, p).split(sep).join('/')
+/** eslint allowlist 표기(`src/main/core/…`) → 코어 상대 id. */
+const asModuleIdFromRepo = (p: string): string => p.replace(/^src\/main\/core\//, '')
 
 /**
  * AGENTS.md 의 「예외 = 엔진 인프라 쓰기」 불릿만 도려낸다. 파일 전체 regex 로 `.ts` 를 긁으면
@@ -276,7 +117,6 @@ const exceptionBullet = (): string => {
   const start = lines.findIndex((l) => /^\s*- \*\*예외 = 엔진 인프라 쓰기\*\*/.test(l))
   if (start < 0) return ''
   const rest = lines.slice(start + 1)
-  // 다음 최상위 불릿(들여쓰기 0) 또는 헤딩까지.
   const end = rest.findIndex((l) => /^- /.test(l) || /^#/.test(l))
   return [lines[start], ...(end < 0 ? rest : rest.slice(0, end))].join('\n')
 }
@@ -287,19 +127,25 @@ const enumeratedModules = (): string[] => {
   return toks.filter((t) => /^(?:[a-z0-9-]+\/)*[a-z0-9-]+\.ts$/.test(t) && !t.endsWith('.test.ts'))
 }
 
+const eslintConfig = read(ESLINT)
+const readonlyTier = eslintPathConst(eslintConfig, 'CORE_FS_READONLY').map(asModuleIdFromRepo)
+const mutatingTier = eslintPathConst(eslintConfig, 'CORE_FS_MUTATING').map(asModuleIdFromRepo)
+const allowlist = [...readonlyTier, ...mutatingTier].sort()
+
 const sources = coreSources()
+const fsConsumers = sources
+  .filter((p) => importsFs(read(p)))
+  .map(asModuleId)
+  .sort()
+const seamConsumers = sources
+  .filter((p) => usesDurableFs(read(p)))
+  .map(asModuleId)
+  .sort()
 const withRationale = sources
   .filter((p) => hasRationaleSection(read(p)))
   .map(asModuleId)
   .sort()
 const declared = [...new Set(enumeratedModules())].sort()
-const mutators = sources
-  .filter((p) => {
-    const src = read(p)
-    return fsMutationBindings(src).length > 0 || usesDurableFs(src)
-  })
-  .map(asModuleId)
-  .sort()
 
 describe('ApprovalGate 예외 — 앵커(이하 단언이 vacuous 가 아님을 먼저 고정)', () => {
   it('코어 소스 스캔이 실제로 파일을 훑는다', () => {
@@ -312,35 +158,48 @@ describe('ApprovalGate 예외 — 앵커(이하 단언이 vacuous 가 아님을 
     expect(bullet.length).toBeGreaterThan(150)
   })
 
-  it('세 집합이 모두 비어 있지 않다(비면 이하 단언이 항진명제)', () => {
-    expect(withRationale.length).toBeGreaterThanOrEqual(4)
-    expect(declared.length).toBeGreaterThanOrEqual(4)
-    expect(mutators.length).toBeGreaterThanOrEqual(4)
+  it('네 집합이 모두 비어 있지 않다(비면 이하 단언이 항진명제)', () => {
+    for (const [name, set] of [
+      ['allowlist', allowlist],
+      ['fsConsumers', fsConsumers],
+      ['declared', declared],
+      ['withRationale', withRationale],
+    ] as const) {
+      expect(set.length, `${name} 이 비었다`).toBeGreaterThanOrEqual(4)
+    }
   })
 })
 
 /**
- * **1층** — 문서를 보지 않고 소스에서 독립 유도한 「실제 변이자」가 전부 열거 안에 있는가.
- * 근거 절을 안 쓴 신규 우회는 2층(문서↔문서)으로는 절대 안 잡힌다.
+ * **구조 층** — eslint 가 fs 의 문을 닫고 있는가, 그리고 그 allowlist 가 현실과 같은가.
+ * 이 층이 없으면 아래 대조는 「문서끼리 대조」로 되돌아가 근거 절을 *안 쓴* 우회를 못 잡는다.
  */
-describe('ApprovalGate 예외 — 파생 후보 ⊆ 열거(미선언 우회 탐지)', () => {
-  it('fs 를 변이하는 코어 모듈 중 열거에 없는 것이 없다', () => {
-    expect(mutators.filter((m) => !declared.includes(m))).toEqual([])
+describe('ApprovalGate 예외 — fs import 경계 게이트(#282)', () => {
+  it('eslint 가 allowlist 밖 코어의 fs import 를 정적·동적 양쪽으로 막는다', () => {
+    expect(eslintConfig).toContain(
+      'const CORE_FS_ALLOWLIST = [...CORE_FS_READONLY, ...CORE_FS_MUTATING]',
+    )
+    expect(eslintConfig).toContain('CORE_FS_DYNAMIC_IMPORT_SYNTAX')
+    // 게이트 블록이 allowlist 를 ignores 로 쓰고, 금지 패턴에 fs 모듈군을 건다.
+    expect(eslintConfig).toMatch(/ignores: \[\s*\.\.\.CORE_FS_ALLOWLIST/)
+    expect(eslintConfig).toMatch(/group: TOOLS_FS_MODULES/)
   })
 
-  it('변이 판정 근거를 실제로 잡아낸다(스캔이 무신호가 아님)', () => {
-    const evidence = sources
-      .map((p) => ({ id: asModuleId(p), apis: fsMutationBindings(read(p)) }))
-      .filter((e) => e.apis.length > 0)
-    expect(evidence.length).toBeGreaterThanOrEqual(4)
-    expect(evidence.map((e) => e.id)).toContain('store/json-file.ts')
-    // 주입 seam 경유 변이도 후보에 든다(fs 직접 import 가 없어도).
-    expect(mutators).toContain('workbench/journal.ts')
+  it('allowlist == 실제 fs 소비자(목록이 낡지도, 과대하지도 않다)', () => {
+    expect(allowlist).toEqual(fsConsumers)
+  })
+
+  it('두 티어가 서로 겹치지 않는다', () => {
+    expect(readonlyTier.filter((m) => mutatingTier.includes(m))).toEqual([])
   })
 })
 
-describe('ApprovalGate 예외 — 열거 == 근거 절 보유 모듈', () => {
+describe('ApprovalGate 예외 — 열거 == 변이 티어 ∪ seam 소비자', () => {
   it('두 집합이 정확히 일치한다', () => {
+    expect([...new Set([...mutatingTier, ...seamConsumers])].sort()).toEqual(declared)
+  })
+
+  it('열거 == 근거 절 보유 모듈(양방향 잠금)', () => {
     expect(withRationale).toEqual(declared)
   })
 
@@ -358,8 +217,8 @@ describe('ApprovalGate 예외 — 열거 == 근거 절 보유 모듈', () => {
 })
 
 /**
- * **3층** — 마커의 판별력. 게이트를 *통과하는* 소비자는 `ApprovalGate` 를 빈번히 언급하므로,
- * 헐거운 마커였다면 열거가 소비자까지 삼켜 아무것도 강제하지 못한다.
+ * 마커의 판별력. 게이트를 *통과하는* 소비자는 `ApprovalGate` 를 빈번히 언급하므로, 헐거운 마커였다면
+ * 열거가 소비자까지 삼켜 아무것도 강제하지 못한다.
  */
 describe('ApprovalGate 예외 — 마커 판별력(소비자 오염 0)', () => {
   const CONSUMERS = [
@@ -383,142 +242,27 @@ describe('ApprovalGate 예외 — 마커 판별력(소비자 오염 0)', () => {
   })
 })
 
-/**
- * 순수 함수 층 — 실제 트리는 지금 정합이라 위 단언들만으로는 **반증력이 있는지** 알 수 없다.
- * 합성 소스로 각 실패 모드를 직접 재현한다(뮤테이션 자기검사 규율).
- */
+/** 순수 술어 층 — 실제 트리가 정합이면 반증력을 알 수 없으므로 합성 소스로 실패 모드를 재현한다. */
 describe('스캔 술어 — 합성 소스로 반증력 실측', () => {
-  it('fs 변이 import 를 잡고, 읽기 전용 import 는 안 잡는다', () => {
-    expect(fsMutationBindings(`import { rmSync, readFileSync } from 'node:fs'`)).toEqual(['rmSync'])
-    expect(fsMutationBindings(`import { readFileSync, statSync } from 'node:fs'`)).toEqual([])
-    expect(fsMutationBindings(`import { writeFileSync as w } from 'node:fs'`)).toEqual([
-      'writeFileSync',
-    ])
+  it('fs import 를 형태와 무관하게 잡는다(정적·bare·re-export·동적·별칭)', () => {
+    expect(importsFs(`import { readFileSync } from 'node:fs'`)).toBe(true)
+    expect(importsFs(`import { writeFile } from 'fs/promises'`)).toBe(true)
+    expect(importsFs(`export { writeFile } from 'node:fs/promises'`)).toBe(true)
+    expect(importsFs(`const fs = await import('node:fs')`)).toBe(true)
+    expect(importsFs(`import { promises as fs } from 'node:fs'`)).toBe(true)
+    expect(importsFs(`import { join } from 'node:path'`)).toBe(false)
   })
 
-  /**
-   * **회귀 가드**(Codex PR#282 2R P1): 1차 구현은 동기 이름만 실어서 `node:fs/promises` 의 비동기
-   * 변이자를 통째로 놓쳤고, 심지어 「`writeFile` 은 비변이자」라는 **단언으로 그 구멍을 고정**했다.
-   */
-  it('promise·콜백형 비동기 변이자도 잡는다', () => {
-    expect(fsMutationBindings(`import { writeFile } from 'node:fs/promises'`)).toEqual([
-      'writeFile',
-    ])
-    expect(fsMutationBindings(`import { rm, unlink } from 'node:fs/promises'`)).toEqual([
-      'rm',
-      'unlink',
-    ])
-    expect(fsMutationBindings(`import { readFile, stat } from 'node:fs/promises'`)).toEqual([])
+  it('주석 속 산문·주석 처리된 import 는 fs 소비가 아니다', () => {
+    expect(
+      importsFs(`/** rename 을 조율한다(주입 DurableFs 가 실행). */\nexport const x = 1`),
+    ).toBe(false)
+    expect(importsFs(`// import { rmSync } from 'node:fs'`)).toBe(false)
   })
 
-  /**
-   * 네임스페이스 import 는 named 스캔의 완전 사각이다 — 한 줄로 전 계층이 시야에서 사라진다.
-   * 실측 근거: `workspace/path-guard.ts` 가 `import * as fs from 'node:fs'` 를 쓴다(읽기 전용이라
-   * 오탐이 나면 안 되므로, import 존재가 아니라 **멤버 호출**을 본다).
-   */
-  it('네임스페이스·기본 별칭의 멤버 호출을 잡되, 읽기 전용 사용은 안 잡는다', () => {
-    expect(fsMutationBindings(`import * as fs from 'node:fs'\nfs.rmSync(p)`)).toEqual(['fs.rmSync'])
-    expect(fsMutationBindings(`import fs from 'node:fs'\nawait fs.writeFile(p, s)`)).toEqual([
-      'fs.writeFile',
-    ])
-    expect(
-      fsMutationBindings(`import * as fs from 'node:fs'\nfs.lstatSync(p)\nfs.existsSync(p)`),
-    ).toEqual([])
-    expect(fsMutationBindings(`import type * as fs from 'node:fs'`)).toEqual([])
-  })
-
-  /**
-   * **회귀 가드**(Codex PR#282 3R P1): `{ promises as fs }` 는 중괄호로 시작해 네임스페이스 정규식에
-   * 안 걸리고, named 스캔은 `promises` 만 보므로 **양쪽 다 통과**한다. 현행 코어의
-   * `tools/workspace-tools.ts` 가 정확히 이 형태이며, 그 파일은 읽기 전용이라 오탐도 나면 안 된다.
-   */
-  it('`{ promises as fs }` 형태의 멤버 호출도 잡는다(읽기 전용은 제외)', () => {
-    expect(fsMutationBindings(`import { promises as fs } from 'node:fs'\nawait fs.rm(p)`)).toEqual([
-      'fs.rm',
-    ])
-    expect(
-      fsMutationBindings(
-        `import { promises as fs } from 'node:fs'\nawait fs.readFile(p)\nawait fs.open(p, 'r')`,
-      ),
-    ).toEqual([])
-    expect(
-      fsMutationBindings(`import { promises } from 'node:fs'\nawait promises.mkdir(p)`),
-    ).toEqual(['promises.mkdir'])
-  })
-
-  it('파일 서술자 계열 변이자도 목록에 있다(writev·fchmod·fchown·futimes)', () => {
-    for (const api of ['writev', 'writevSync', 'fchmod', 'fchownSync', 'futimes']) {
-      expect(FS_MUTATION_APIS, `${api} 누락`).toContain(api)
-    }
-  })
-
-  /**
-   * **회귀 가드**(Codex PR#282 4R): `open` 을 통째로 빼면 `FileHandle` 경유 변이(`fh.write()`·
-   * `fh.truncate()`)가 통째로 사각이 된다 — 핸들은 fs 별칭이 아니라 어떤 패턴에도 안 걸린다.
-   * 그래서 제외가 아니라 **플래그로 판정**하고, 판정 불가(변수 플래그)는 fail-closed 로 변이 처리한다.
-   */
-  it('open 은 플래그로 판정한다 — 쓰기·판정불가는 변이, 읽기 전용 리터럴은 비변이', () => {
-    expect(
-      fsMutationBindings(`import { open } from 'node:fs/promises'\nawait open(p, 'w')`),
-    ).toEqual(['open'])
-    expect(
-      fsMutationBindings(`import { open } from 'node:fs/promises'\nawait open(p, 'r')`),
-    ).toEqual([])
-    expect(
-      fsMutationBindings(`import { open } from 'node:fs/promises'\nawait open(p, flags)`),
-    ).toEqual(['open'])
-    expect(
-      fsMutationBindings(`import { promises as fs } from 'node:fs'\nawait fs.open(abs, 'r')`),
-    ).toEqual([])
-    expect(
-      fsMutationBindings(`import { promises as fs } from 'node:fs'\nawait fs.open(abs, 'r+')`),
-    ).toEqual(['fs.open'])
-  })
-
-  /** **회귀 가드**(4R): `node:` 접두는 관례일 뿐이고 코어 eslint 가 bare 지정자를 막지 않는다. */
-  it('bare 지정자와 동적 import 도 스캔한다', () => {
-    expect(fsMutationBindings(`import { writeFile } from 'fs/promises'`)).toEqual(['writeFile'])
-    expect(fsMutationBindings(`import { rmSync } from 'fs'`)).toEqual(['rmSync'])
-    expect(fsMutationBindings(`const { writeFile } = await import('node:fs/promises')`)).toEqual([
-      'writeFile',
-    ])
-    expect(fsMutationBindings(`const fs = await import('node:fs')\nfs.rmSync(p)`)).toEqual([
-      'fs.rmSync',
-    ])
-  })
-
-  /** **회귀 가드**(4R): `import * as fs` 뒤의 `fs.promises.writeFile(…)` 중첩 접근. */
-  it('fs.promises.<api> 중첩 접근도 잡는다', () => {
-    expect(
-      fsMutationBindings(`import * as fs from 'node:fs'\nawait fs.promises.writeFile(p, s)`),
-    ).toEqual(['fs.promises.writeFile'])
-    expect(
-      fsMutationBindings(`import * as fs from 'node:fs'\nawait fs.promises.readFile(p)`),
-    ).toEqual([])
-  })
-
-  /**
-   * **회귀 가드**(4R): seam 판정을 식별자(`\bDurableFs\b`)로 하면 팩토리 이름 안의 부분 문자열
-   * (`createNodeDurableFs`)을 못 잡아 실 어댑터를 만드는 부팅 모듈이 통째로 빠져나간다.
-   */
-  it('DurableFs seam 은 모듈 지정자로 판정한다(팩토리 import 포함·type-only 도 포함)', () => {
+  it('DurableFs seam 은 모듈 지정자로 판정한다(팩토리 import·type-only 포함)', () => {
     expect(usesDurableFs(`import { createNodeDurableFs } from './durable-fs'`)).toBe(true)
     expect(usesDurableFs(`import type { DurableFs } from '../workbench/durable-fs'`)).toBe(true)
-    expect(usesDurableFs(`/** DurableFs 얘기만 하는 주석 */\nexport const x = 1`)).toBe(false)
-    expect(usesDurableFs(`import { x } from './other'`)).toBe(false)
-  })
-
-  it('주석 속 산문은 변이자로 오인하지 않는다(1차 스캔이 실제로 낸 오분류)', () => {
-    const src = `/**\n * rename·unlinkSync 를 조율한다(주입 DurableFs 가 실행).\n */\nimport { readFileSync } from 'node:fs'`
-    expect(fsMutationBindings(src)).toEqual([])
-  })
-
-  it('주석 처리된 import 도 변이자가 아니다', () => {
-    expect(fsMutationBindings(`// import { rmSync } from 'node:fs'`)).toEqual([])
-  })
-
-  it('DurableFs 소비를 잡는다(fs 직접 import 없이 변이하는 경로)', () => {
-    expect(usesDurableFs(`import type { DurableFs } from './durable-fs'`)).toBe(true)
     expect(usesDurableFs(`/** DurableFs 얘기만 하는 주석 */\nexport const x = 1`)).toBe(false)
   })
 
@@ -534,5 +278,10 @@ describe('스캔 술어 — 합성 소스로 반증력 실측', () => {
       hasRationaleSection('// ## `ApprovalGate` 를 거치지 않는 이유\nexport const a = 1'),
     ).toBe(false)
     expect(hasRationaleSection('const s = "`ApprovalGate` 를 거치지 않는 이유"')).toBe(false)
+  })
+
+  it('eslint 배열 상수 파서가 경로를 뽑는다', () => {
+    expect(eslintPathConst(`const FOO = ['a/b.ts', 'c/d.ts']`, 'FOO')).toEqual(['a/b.ts', 'c/d.ts'])
+    expect(eslintPathConst(`const FOO = []`, 'BAR')).toEqual([])
   })
 })
