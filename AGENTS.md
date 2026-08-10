@@ -95,8 +95,10 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
   ```js
   // node -e — 각 Node 후보를 락파일의 engines.node 선언에 대해 실판정
   const semver = require('semver')
+  const declared = require('./package.json').engines.node // 권위는 package.json 이다(락은 미러일 뿐)
   const lock = require('./package-lock.json')
-  const declared = lock.packages[''].engines.node // 루트 선언(= package.json 미러). 탐침 판정의 기준
+  const mirror = lock.packages['']?.engines?.node
+  if (mirror !== declared) console.log('⚠ lockfile 루트 드리프트:', mirror, '≠', declared) // → --package-lock-only
   const ent = Object.entries(lock.packages).filter(
     // 루트는 비교 「대상」이라 트리 제약에서 뺀다 · optional 은 npm 이 engines 로 설치를 막지 않는다
     ([k, v]) => k && v.engines?.node && !v.optional,
