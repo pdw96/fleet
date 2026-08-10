@@ -234,6 +234,10 @@ project number `1`, owner `pdw96`).
      인라인/리뷰 없이 👍 리액션-only 가 흔하다** → `gh api repos/pdw96/fleet/issues/<pr>/reactions`
      도 확인하라(comments/reviews 만 보면 놓친다). 봇 로그인 = `chatgpt-codex-connector[bot]`
      (필터 `test("codex")`). ~4라운드 넘으면 레이트리밋 가능.
+     **대기는 수동 폴링 대신 `/loop`** (예: `/loop 5m` + "PR <N> 의 Codex 리뷰·👍 도착 확인,
+     도착하면 요약 보고" — 공식 scheduled-tasks 의 babysit-a-PR 용례). 머지 명령 자체는
+     `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 Codex
+     리뷰/👍 부재 시 기계 차단한다(fail-closed) — 산문 규율의 구조 강제라 우회 금지.
 5. **머지 후 동기화** — (a) 이슈 닫힘·#27 진행률 = `Closes #N` 으로 자동. (b) **보드 Status → Done**:
    보드 내장 워크플로(Item closed→Done · Auto-add(`tier:` 라벨) · Item added→Todo · Reopened→In Progress)가
    켜져 있어 자동. 예외 보정이 필요할 때만 `gh project item-edit`

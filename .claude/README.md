@@ -25,6 +25,14 @@
 재작성하던 비효율을 없앤다(14차 재랭킹에서 동일 템플릿 7회 수기 작성 실측). 산문 권위는
 여전히 AGENTS.md·각 SKILL.md — 에이전트는 실행 래퍼다.
 
+## hooks/ + settings.json (기계 게이트 — 프롬프트 규율의 구조화)
+
+`settings.json` 의 `PreToolUse` hook 이 머지 시도(`gh pr merge`·pulls API·GitHub MCP)를 가로채
+`hooks/require-codex-review.mjs` 로 **Codex 리뷰(또는 👍 clean) 존재를 검증, 없으면 차단**한다
+(exit 2 · 조회 실패 fail-closed). 「머지 전 Codex 대기」 실사고 2건(무응답 오판·페이지네이션
+누락)의 재발 방지 — 산문 규율(AGENTS.md 4단계·ADR-0014)을 기계 강제로 승격한 것. 수동 점검:
+`echo '{"tool_name":"Bash","tool_input":{"command":"gh pr merge <N>"}}' | node .claude/hooks/require-codex-review.mjs`
+
 ## workflows/ (예약 — Claude 로컬 가속 `.js`)
 
 `Workflow` DSL 가속본을 둘 **예약 위치**다. **현재 추적 `.js` 가속본 0**(디렉터리 미생성). 신규 시

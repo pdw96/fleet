@@ -40,6 +40,8 @@ brain.tmp.json
 !.claude/agents/**/*.md
 !.claude/skills/
 !.claude/workflows/
+!.claude/hooks/
+!.claude/settings.json
 
 # superpowers brainstorming visual-companion scratch
 .superpowers/
