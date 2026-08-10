@@ -42,39 +42,13 @@ updates:
           - 'version-update:semver-major'
       # @vitejs/plugin-react 메이저(6+) 차단 — 차단 요인은 우리 코드가 아니라 electron-vite 다(#261).
       # plugin-react 6.x 의 peer 는 `vite ^8.0.0` 하나뿐인데, 유일한 stable 인
-      # electron-vite@5.0.0 의 peer 는 `vite ^5.0.0 || ^6.0.0 || ^7.0.0` 라 vite 8 을 배제한다.
+      # electron-vite@5.0.0 의 peer 는 `vite ^5.0.0 || ^6.0.0 || ^7.0.0` 라 vite 8 을 배제한다
       # → `npm ci` 가 ERESOLVE 로 하드 실패(#261 의 CI red 3잡이 정확히 이것).
-      # vite 8 을 지원하는 유일한 빌드는 electron-vite@6.0.0-beta.1 인데, 2026-04-12 에 발행된 뒤
-      # 2026-08-10 현재까지 신규 발행이 없다(dist-tags: latest=5.0.0 · beta=6.0.0-beta.1).
-      # 게다가 오픈 버그 alex8088/electron-vite#906 이 `vite:esm-shim` 으로 main 엔트리를 0.00 kB 로
-      # 비운다 — 정확히 Fleet 의 main 타깃이다. 더 위험한 건 electron-vite@5 + vite 8 강제 조합이
-      # **빌드는 green 인데 electron 이 외부화되지 않고 인라인돼 죽은 앱을 산출**한다는 점으로,
-      # `npm run verify` 의 build 게이트가 못 잡는 유형이다(실측 재현).
-      #
-      # 해제 조건: electron-vite 가 **stable**(dist-tag `latest`) 로 `vite ^8` peer 를 선언
-      # (업스트림 #894 종결 + #906 수정). 그때 아래를 한 커밋으로 동반 처리한다.
-      #  (1) vite 7→8 · electron-vite 5→6 · @vitejs/plugin-react 5→6 동반 범프.
-      #  (2) **외부화를 산출물에서 정적 검증**(결정적). 빌드 후 아래가 성립해야 한다.
-      #        out/main/index.js    → `require("electron")` **와** `require("electron-updater")`
-      #        out/preload/index.js → `require("electron")`
-      #      `electron.vite.config.ts:10` 이 명시 외부화하는 건 `electron-updater` 하나뿐이고
-      #      **`electron` 자체는 electron-vite 의 자동 처리에 의존**한다. 위에 적은 실측 실패
-      #      모드가 정확히 「electron 이 main 번들에 인라인」이라, updater 만 확인하면 같은 회귀를
-      #      놓친다. vite 8 은 외부화 모듈의 `require` 를 `import` 로 변환하지 않고 보존하므로
-      #      외부화 결과 자체가 달라질 수 있다. vite.server.config.ts 의 SSR 번들도 같이 볼 것.
-      #      ⚠ `npm run test:e2e` 로는 이 축을 못 잡는다 — e2e 는 `FLEET_E2E=1` 로 unpackaged
-      #      기동이라 `installAutoUpdate` 가 무장되지 않아(src/main/index.ts:269-274) updater
-      #      경로를 아예 타지 않는다. 인라인된 번들이 우연히 기동하면 통과한다. e2e 는 기동
-      #      검증으로 **병행**하되, 외부화 판정의 근거는 위 정적 검사다.
-      #  (3) esbuild 하한 **감사**(단순 삭제 아님). 현재 esbuild 인스턴스는 2개다 —
-      #      `vite/node_modules/esbuild`(override 적용) 와 `node_modules/esbuild`
-      #      (electron-vite 의 `^0.25.11` · **override 미적용**). vite 8 이 esbuild 의존을 버리면
-      #      `overrides.vite.esbuild` 는 그냥 무효 키가 될 뿐이고, 키를 지우는 것 자체는 보안
-      #      하한 유지가 아니다. 락파일의 **전체 esbuild 그래프**를 확인해 필요한 하한을 전역
-      #      또는 실제 부모에 다시 적용할 것. 인스턴스가 하나도 없을 때만 키 삭제는 단순 정리다.
-      #  (4) [deprecation 정리 · 필수 아님] `build.rollupOptions`(electron.vite.config.ts 3곳 +
-      #      vite.server.config.ts 1곳) → `build.rolldownOptions`. vite 8 은 `setupRollupOptionCompat`
-      #      으로 구 이름을 프록시 별칭으로 유지해 동작은 계속되지만 향후 제거 예정이다.
+      # vitest 4 는 이미 `vite ^8` 를 허용하므로 단일 블로커는 electron-vite 하나다.
+      # ⚠ peer 만 무력화(--legacy-peer-deps 등)하면 **빌드는 green 인데 electron 이 인라인돼
+      # 죽은 앱**이 나온다 — `npm run verify` 의 build 게이트가 못 잡는 유형이다(실측 재현).
+      # 해제 조건(electron-vite stable 의 `vite ^8` peer)과 해제 시 동반 검증 5단계는
+      # docs/adr/0015-vite-8-차단-electron-vite-미지원.md 가 권위다. 해제 전 반드시 읽을 것.
       - dependency-name: '@vitejs/plugin-react'
         update-types:
           - 'version-update:semver-major'
