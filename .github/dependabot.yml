@@ -40,6 +40,23 @@ updates:
       - dependency-name: 'typescript'
         update-types:
           - 'version-update:semver-major'
+      # @vitejs/plugin-react 메이저(6+) 차단 — 차단 요인은 우리 코드가 아니라 electron-vite 다(#261).
+      # plugin-react 6.x 의 peer 는 `vite ^8.0.0` 하나뿐인데, 유일한 stable 인
+      # electron-vite@5.0.0 의 peer 는 `vite ^5.0.0 || ^6.0.0 || ^7.0.0` 라 vite 8 을 배제한다.
+      # → `npm ci` 가 ERESOLVE 로 하드 실패(#261 의 CI red 3잡이 정확히 이것).
+      # vite 8 을 지원하는 유일한 빌드는 electron-vite@6.0.0-beta.1(2026-04-12 이후 미발행)이고,
+      # 오픈 버그 alex8088/electron-vite#906 이 `vite:esm-shim` 으로 main 엔트리를 0.00 kB 로
+      # 비운다 — 정확히 Fleet 의 main 타깃이다. 더 위험한 건 electron-vite@5 + vite 8 강제 조합이
+      # **빌드는 green 인데 electron 이 외부화되지 않고 인라인돼 죽은 앱을 산출**한다는 점으로,
+      # `npm run verify` 의 build 게이트가 못 잡는 유형이다(실측 재현).
+      # 해제 조건: electron-vite 가 **stable**(dist-tag `latest`) 로 `vite ^8` peer 를 선언
+      # (업스트림 #894 종결 + #906 수정). 그때 vite 7→8 · electron-vite 5→6 · plugin-react 5→6 을
+      # 한 커밋으로 동반 범프하고, `build.rollupOptions`(electron.vite.config.ts 3곳 +
+      # vite.server.config.ts 1곳)를 `build.rolldownOptions` 로 개명하며, vite 8 에서 esbuild 가
+      # 더는 vite 의존이 아니게 되므로 `overrides.vite.esbuild` 도 함께 정리해야 한다.
+      - dependency-name: '@vitejs/plugin-react'
+        update-types:
+          - 'version-update:semver-major'
 
   - package-ecosystem: 'github-actions'
     directory: '/'
