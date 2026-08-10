@@ -79,8 +79,10 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
   `^22.22.2 || ^24.15.0 || >=26.0.0` 을 선언한 **두 패키지** — **런타임 의존** `which@7` 와
   **dev 의존** `jsdom@30` — 이고 둘의 범위는 동일하다. 두 floor(22.22.2·24.15.0)와 **Node 23·25
   제외**를 이 둘이 정하며, 선언값은 그 범위를 그대로 전개한 것이다(Node 25 를 배제하는 항목도
-  트리에서 이 둘뿐). **단 `--omit=dev` 프로덕션 설치에선 `which@7` 단독**이다 — jsdom 은 dev
-  트리에서만 공동 결정자다. 차순위 `lint-staged@17`(`>=22.22.1`) · `undici@8`(`>=22.19.0`, jsdom 하위)
+  트리에서 이 둘뿐). **`--omit=dev` 로도 dev 의존의 engines 는 회피되지 않는다** — Arborist 가
+  ideal tree 에서 engines 를 먼저 검사하고 omit 은 그 뒤 디스크 반영 단계라, dev 전용 패키지의
+  불만족도 그대로 EBADENGINE 이다(실측 확인). 반면 **optional 은 검사에서 빠진다**(불만족이어도
+  설치 성공). 차순위 `lint-staged@17`(`>=22.22.1`) · `undici@8`(`>=22.19.0`, jsdom 하위)
   · `electron@43`(`>= 22.12.0`) 과, Node 23 을 중복 배제하는 `eslint@10`/`eslint-visitor-keys@5`
   (`^20.19.0 || ^22.13.0 || >=24`) 계열은 현재 전부 흡수돼 비구속이다. 즉 **dev-tool 뿐 아니라
   런타임 의존도 floor 를 올린다**. 올라가면
@@ -90,17 +92,23 @@ advisory `test-node24` 잡(ubuntu·node24·`npm test`)이 잡는다(required 아
   `engines.node` 전체를 다시 교집합해 확인하고 이 문단도 같이 갱신할 것. 확인 수단:
 
   ```js
-  // node -e — 각 Node 후보를 락파일의 모든 engines.node 선언에 대해 실판정
+  // node -e — 각 Node 후보를 락파일의 engines.node 선언에 대해 실판정
   const semver = require('semver')
-  const ent = Object.entries(require('./package-lock.json').packages).filter(([k, v]) => k && v.engines?.node)
+  const ent = Object.entries(require('./package-lock.json').packages).filter(
+    ([k, v]) => k && v.engines?.node && !v.optional, // optional 은 npm 이 engines 로 설치를 막지 않는다
+  )
   for (const v of ['22.22.1', '22.22.2', '23.0.0', '24.14.0', '24.15.0', '25.0.0', '26.0.0']) {
     const blockers = ent.filter(([, p]) => !semver.satisfies(v, p.engines.node))
     console.log(v, blockers.length, [...new Set(blockers.map(([k]) => k.split('node_modules/').pop()))])
   }
   ```
 
-  선언이 허용하는 버전에서 차단 0건(과대선언 없음) · 배제하는 버전에서 차단 ≥1건(과소선언 없음)
-  이어야 하고, 차단 목록에 뜨는 이름이 곧 위 「결정자」다.
+  읽는 법 — **이건 경계 스모크지 범위 증명이 아니다.** 선언이 허용하는 버전(22.22.2·24.15.0·
+  26.0.0)에서 차단 0건 · 배제하는 버전(22.22.1·24.14.0·25.0.0)에서 차단 ≥1건이면 **그 경계들이**
+  맞다는 뜻일 뿐이다. 구간 내부(예: 22.23.0)나 상단에서 새로 거부하는 패키지가 생기면 이 표본은
+  못 잡는다 — tightness 를 실제로 증명하려면 전 선언의 범위 교집합을 계산해야 한다.
+  또 **floor 바로 아래 지점(22.22.1·24.14.0·25.0.0)의 차단 목록만이 그 경계의 최소 결정자**다.
+  23.0.0 같은 지점은 중복 배제자가 20여 개 떠서 결정자 식별에 쓸 수 없다.
 
 ## 컨벤션
 
