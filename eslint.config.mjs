@@ -160,10 +160,17 @@ const CORE_LOADER_GUARD_SYNTAX = [
   `ObjectPattern > Property[key.name=${CORE_LOADER_PATTERN}]`,
   `ObjectPattern > Property[key.value=${CORE_LOADER_PATTERN}]`,
   "ImportExpression[source.type!='Literal']",
+  // `export { createRequire as makeRequire } from 'node:module'` — 소스 있는 재-export 라
+  // `ImportSpecifier` 가 아예 없고, 호출·멤버·구조분해 셀렉터도 전부 미매치다(Codex 13R).
+  // 그걸 import 한 모듈은 `makeRequire(import.meta.url)('node:fs')` 로 fs 지정자 없이 변이할 수 있다.
+  // 로더 모듈 재-export 자체를 코어 전역에서 막는다(현 사용 0 — 실측).
+  ...['ExportNamedDeclaration', 'ExportAllDeclaration'].flatMap((kind) =>
+    ['module', 'node:module'].map((m) => `${kind}[source.value='${m}']`),
+  ),
 ].map((selector) => ({
   selector,
   message:
-    '코어(src/main/core)는 allowlist 밖에서 대체 로더로 모듈을 얻지 않는다(#282). createRequire·require·getBuiltinModule·비-리터럴 동적 import 금지 — fs 경계 우회 차단.',
+    '코어(src/main/core)는 allowlist 밖에서 대체 로더로 모듈을 얻지 않는다(#282). createRequire·require·getBuiltinModule·비-리터럴 동적 import·로더 모듈 재-export 금지 — fs 경계 우회 차단.',
 }))
 
 /**
@@ -327,6 +334,13 @@ const CORE_GUARD_SYNTAX = [
 const CORE_FS_EXPORT_FORM_SYNTAX = [
   'ExportNamedDeclaration:not([source]) > ExportSpecifier',
   'ExportDefaultDeclaration',
+  // `export const rawRead = readFileSync` — 선언 인라인이라 위 두 형태가 아니고, 이름 기반
+  // 초기값 셀렉터는 **변형** 이름만 본다(Codex 13R). 같은 이유로 여기서도 이름이 아니라 형태를
+  // 막는다: allowlist 모듈은 **import 한 바인딩을 그대로 재명명해 내보내지 않는다**. 자기 API 는
+  // 함수·객체·리터럴로 내보내면 되고, 현 스코프에서 이 형태의 사용은 0 건이다(실측).
+  ...['Identifier', 'MemberExpression'].map(
+    (t) => `ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type='${t}']`,
+  ),
 ].map((selector) => ({
   selector,
   message:
@@ -630,6 +644,9 @@ export default tseslint.config(
         ...TOOLS_FS_DYNAMIC_IMPORT_SYNTAX,
         // allowlist 의 `workspace-tools.ts` 도 named-only 전제를 받는다(Codex 10R).
         ...CORE_FS_BINDING_FORM_SYNTAX,
+        // 재-export 형태 금지도 함께 받는다(Codex 13R) — `workspace-tools.ts` 는 읽기 전용 티어인데
+        // tools 블록이 더 뒤라 여기서 스프레드하지 않으면 `export { readFile }` 로 읽기 능력이 샌다.
+        ...CORE_FS_EXPORT_FORM_SYNTAX,
         {
           selector: FS_MUTATION_SELECTOR,
           message:
@@ -671,7 +688,10 @@ export default tseslint.config(
     ignores: [
       ...CORE_FS_ALLOWLIST,
       'src/main/core/**/*.test.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
-      'src/main/core/**/__testing__/**',
+      // ⚠ `__testing__` 는 **제외하지 않는다**(Codex 13R). 여기를 blanket ignore 하면 프로덕션 모듈이
+      // `__testing__` 헬퍼를 import 하는 것만으로 fs 경계 밖에서 변이할 수 있고, 대조 스캔도 같은
+      // 디렉터리를 건너뛰어 무신호다 — `tsconfig.node.json` 이 이 디렉터리를 컴파일하므로 실제로
+      // 번들에 들어간다. 현 페이크 2개는 타입만 import 하므로 비용 0(실측).
       'src/main/core/tools/**',
     ],
     rules: {

@@ -69,6 +69,25 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     )
   })
 
+  /**
+   * `workspace-tools.ts` 는 fs allowlist 의 읽기 전용 티어인데, tools 블록이 읽기 전용 티어 블록보다
+   * **뒤**라 여기가 최종 적용이다 — 티어 가드를 여기서 스프레드하지 않으면 그 파일만 조용히 약해진다
+   * (Codex 13R: 재-export 형태 금지가 빠져 `export { readFile }` 로 읽기 능력이 샐 수 있었다).
+   */
+  it('tools 블록이 fs 티어 가드(바인딩 형태·재-export 형태)를 함께 보유한다', () => {
+    const selectors = (
+      (toolsBlock?.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[]
+    ).map((s) => s.selector ?? '')
+    expect(selectors).toContain(
+      "ImportDeclaration[source.value='node:fs'] > ImportNamespaceSpecifier",
+    )
+    expect(selectors).toContain('ExportNamedDeclaration:not([source]) > ExportSpecifier')
+    expect(selectors).toContain('ExportDefaultDeclaration')
+    expect(selectors).toContain(
+      "ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type='Identifier']",
+    )
+  })
+
   it('no-restricted-imports 가 child_process 와 fs 변형 importNames 를 금지', () => {
     const rule = toolsBlock?.rules?.['no-restricted-imports']
     expect(rule?.[0]).toBe('error')
@@ -389,9 +408,10 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
       ...REQUIRED,
       "ImportDeclaration[source.value='node:fs'] > ImportNamespaceSpecifier",
       "ImportExpression[source.value='node:fs']",
-      // 12R: 소스 없는 재-export 형태 금지 — 읽기 API 유출 경로까지 이름 검사 없이 닫는다.
+      // 12R·13R: 재-export **형태** 금지 — 읽기 API 유출 경로까지 이름 검사 없이 닫는다.
       'ExportNamedDeclaration:not([source]) > ExportSpecifier',
       'ExportDefaultDeclaration',
+      "ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type='Identifier']",
     ]
     for (const file of [...mutatingFiles, ...readonlyFiles]) {
       const block = lastFor(file)

@@ -23,8 +23,8 @@ import { describe, expect, it } from 'vitest'
  * 무의미해진다(#282 · 세 형태 프로브로 실측 차단 확인). 그래서 이 파일은 **탐지기가 아니라 대조기**다:
  *
  * 1. **allowlist == 실제 fs 소비자** — 목록이 낡거나 과대해지지 않게 파일시스템과 대조한다.
- * 2. **변이 티어 ∪ `DurableFs` 소비자 == AGENTS.md 열거** — 문서 갱신 없이 예외를 늘릴 수도,
- *    근거 없는 예외를 문서만으로 정당화할 수도 없다.
+ * 2. **변이 티어 ∪ 하위프로세스 변이 티어 ∪ `DurableFs` 소비자 == AGENTS.md 열거** — 문서 갱신 없이
+ *    예외를 늘릴 수도, 근거 없는 예외를 문서만으로 정당화할 수도 없다.
  * 3. **근거 절의 형태** — 파일 머리 영역(첫 top-level `export` 이전)의 블록 주석 `##` 헤딩이어야
  *    한다. 헐거우면 게이트를 *통과하는* 소비자 넷이 전부 매치돼 열거가 무의미해지고, 위치를 안 보면
  *    함수 JSDoc 한 줄로 예외를 사후 정당화할 수 있다(CodeRabbit PR#282).
@@ -101,20 +101,29 @@ export const eslintPathConst = (config: string, name: string): string[] => {
 const PROD_EXT = /\.(?:tsx?|mtsx?|ctsx?|mjs|cjs|jsx?)$/
 const TEST_EXT = /\.test\.(?:tsx?|mtsx?|ctsx?|mjs|cjs|jsx?)$/
 
-/** 코어 프로덕션 소스 전량(테스트·테스트 더블 제외). */
-const coreSources = (): string[] => {
+/**
+ * 코어 소스 스캔. `testing: false`(기본)는 프로덕션 전량(테스트·테스트 더블 제외) — 예외 열거 대조의
+ * 모집단이다. `testing: true` 는 **테스트 더블 디렉터리만** — 더블은 예외 열거의 대상이 아니지만
+ * fs 경계 **안**에는 있어야 하므로(Codex 13R) 별도 층에서 따로 검사한다.
+ */
+const coreSources = (opts: { testing?: boolean } = {}): string[] => {
   const out: string[] = []
-  const walk = (dir: string): void => {
+  const walk = (dir: string, inTesting: boolean): void => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name)
       if (e.isDirectory()) {
-        if (e.name !== '__testing__') walk(p)
-      } else if (PROD_EXT.test(e.name) && !TEST_EXT.test(e.name)) out.push(p)
+        walk(p, inTesting || e.name === '__testing__')
+      } else if (
+        inTesting === (opts.testing ?? false) &&
+        PROD_EXT.test(e.name) &&
+        !TEST_EXT.test(e.name)
+      )
+        out.push(p)
       // ⚠ `.tsx` 도 센다(Codex PR#282 6R): 빌드는 컴파일하는데 스캔·lint 만 `.ts` 로 좁으면
       // 프로덕션 헬퍼를 `.tsx` 로 두는 것만으로 경계 밖이 된다.
     }
   }
-  walk(CORE)
+  walk(CORE, false)
   return out
 }
 
@@ -221,6 +230,27 @@ describe('ApprovalGate 예외 — fs import 경계 게이트(#282)', () => {
 
   it('allowlist == 실제 fs 소비자(목록이 낡지도, 과대하지도 않다)', () => {
     expect(allowlist).toEqual(fsConsumers)
+  })
+
+  /**
+   * **테스트 더블도 경계 안이다**(Codex 13R). `__testing__` 를 lint 에서 blanket ignore 하고 대조
+   * 스캔에서도 건너뛰면, 프로덕션 모듈이 `__testing__` 헬퍼를 import 하는 것만으로 게이트 밖에서
+   * 파일을 쓸 수 있다 — `tsconfig.node.json` 이 이 디렉터리를 컴파일하므로 실제로 번들에 들어간다.
+   * 더블은 예외 **열거**의 대상이 아니므로 열거 대조에는 넣지 않고, 「fs 를 얻지 못한다」만 따로 건다.
+   */
+  it('테스트 더블(__testing__)이 fs 경계 안에 있다', () => {
+    const doubles = coreSources({ testing: true })
+    expect(
+      doubles.length,
+      '테스트 더블이 하나도 없으면 이 단언은 항진명제다',
+    ).toBeGreaterThanOrEqual(1)
+    // ① lint 경계가 `__testing__` 를 제외하지 않는다(blanket ignore 복귀 차단). glob 은 따옴표 문자열
+    //    이므로 **따옴표 안**에 이 이름이 나타나면 어떤 블록에서든 제외가 부활한 것이다(주석은 백틱).
+    //    (glob 문자열은 공백을 포함하지 않으므로 `\S` 로 제한해야 산문 주석까지 삼키지 않는다.)
+    expect(eslintConfig).not.toMatch(/['"][^'"\s]*__testing__[^'"\s]*['"]/)
+    // ② 실제로도 fs 를 만지지 않는다 — 만지려면 allowlist 에 이름을 올려야 하고 그게 리뷰 지점이다.
+    const offenders = doubles.filter((p) => importsFs(read(p))).map(asModuleId)
+    expect(offenders).toEqual([])
   })
 
   it('두 티어가 서로 겹치지 않는다', () => {
