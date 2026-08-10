@@ -389,6 +389,9 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
       ...REQUIRED,
       "ImportDeclaration[source.value='node:fs'] > ImportNamespaceSpecifier",
       "ImportExpression[source.value='node:fs']",
+      // 12R: 소스 없는 재-export 형태 금지 — 읽기 API 유출 경로까지 이름 검사 없이 닫는다.
+      'ExportNamedDeclaration:not([source]) > ExportSpecifier',
+      'ExportDefaultDeclaration',
     ]
     for (const file of [...mutatingFiles, ...readonlyFiles]) {
       const block = lastFor(file)
@@ -405,6 +408,8 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
       if (readonlyFiles.includes(file)) {
         for (const [what, head] of [
           ['변형 API import 차단', 'ImportSpecifier[imported.name=/^(writeFile'],
+          // 12R: `import { 'writeFileSync' as w }` 는 `imported` 가 Literal 이라 위 셀렉터가 미매치다.
+          ['문자열 이름 import 차단', 'ImportSpecifier[imported.value=/^(writeFile'],
           ['변형 생성자 차단', 'NewExpression[callee.name=/^(writeFile'],
         ] as const) {
           expect(

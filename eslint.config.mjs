@@ -83,6 +83,17 @@ const FS_MUTATION_CALL_SELECTOR = `CallExpression[callee.name=${FS_MUTATION_PATT
 const FS_MUTATION_NEW_SELECTOR = `NewExpression[callee.name=${FS_MUTATION_PATTERN}]`
 // import { writeFile } from 'node:fs/promises' 후 bare writeFile() 누락(MemberExpression 미포착) 봉쇄.
 const FS_MUTATION_IMPORT_NAMES = FS_MUTATION_NAMES.flatMap((n) => [n, `${n}Sync`])
+/**
+ * **ES2022 임의 문자열 모듈 export 이름**(Codex 12R). `import { 'writeFileSync' as w } from 'node:fs'`
+ * 는 유효 문법이고 tsc 를 통과하는데, 이때 `imported` 는 `Identifier` 가 아니라 `Literal` 이라
+ * `imported.name` 셀렉터가 **전부 미매치**다 — 뒤따르는 bare 호출도 별칭이라 못 잡는다.
+ * (실측: 이 형태로 읽기 전용 티어가 파일을 쓰는데 `tsc` 무에러 · `eslint` **0 error** 였다.)
+ * 그래서 `imported.*` 를 보는 셀렉터는 **항상 이름/문자열 두 형태를 함께** 만든다.
+ */
+const importedAs = (pattern, tail = '') => [
+  `ImportSpecifier[imported.name=${pattern}]${tail}`,
+  `ImportSpecifier[imported.value=${pattern}]${tail}`,
+]
 const TOOLS_FS_MODULES = ['fs', 'node:fs', 'fs/promises', 'node:fs/promises']
 
 /**
@@ -145,7 +156,7 @@ const CORE_LOADER_GUARD_SYNTAX = [
   `MemberExpression[computed=true][property.value=${CORE_LOADER_PATTERN}]`,
   // 별칭·구조분해 봉쇄(Codex PR#282 7R): `import { createRequire as cr }` · `const { getBuiltinModule: g } = process`
   // 는 호출명이 달라 위 셀렉터를 통과한다. 원 이름(`imported.name`·`key.*`)으로 잡는다.
-  `ImportSpecifier[imported.name=${CORE_LOADER_PATTERN}]`,
+  ...importedAs(CORE_LOADER_PATTERN),
   `ObjectPattern > Property[key.name=${CORE_LOADER_PATTERN}]`,
   `ObjectPattern > Property[key.value=${CORE_LOADER_PATTERN}]`,
   "ImportExpression[source.type!='Literal']",
@@ -181,7 +192,7 @@ const CORE_FS_REEXPORT_SYNTAX = [
   // 미매치다(Codex 8R). ESLint 셀렉터로 데이터플로를 못 쫓으므로 **전제를 고정**한다: fs 변형은
   // **별칭 없이** import 해야 한다. 그러면 내보내는 로컬 이름이 곧 fs 이름이라 위 셀렉터가 잡는다.
   // (현행 allowlist 의 fs 별칭은 `promises as fs` 하나뿐이고 변형명이 아니라 비용 0 — 실측.)
-  `ImportSpecifier[imported.name=${FS_MUTATION_PATTERN}]:not([local.name=${FS_MUTATION_PATTERN}])`,
+  ...importedAs(FS_MUTATION_PATTERN, `:not([local.name=${FS_MUTATION_PATTERN}])`),
   // `import { writeFileSync } from 'node:fs'; export const write = writeFileSync` — `source` 도
   // `ExportSpecifier` 도 없고 기본 내보내기도 아니라 위 셀렉터가 **전부** 미매치인데 능력은 그대로
   // 흘러나간다(Codex 11R). 내보내는 **변수의 초기값**을 직접 본다: 식별자 별칭 · `fs.writeFileSync`
@@ -216,6 +227,8 @@ const CORE_FS_BINDING_FORM_SYNTAX = TOOLS_FS_MODULES.flatMap((m) =>
     `ImportDeclaration[source.value='${m}'] > ImportNamespaceSpecifier`,
     `ImportDeclaration[source.value='${m}'] > ImportDefaultSpecifier`,
     `ImportDeclaration[source.value='${m}'] > ImportSpecifier[imported.name='promises']`,
+    // 문자열 이름 형태 `import { 'promises' as fs }`(12R) — `imported` 가 Literal 이라 위 셀렉터 미매치.
+    `ImportDeclaration[source.value='${m}'] > ImportSpecifier[imported.value='promises']`,
   ].map((selector) => ({
     selector,
     message:
@@ -298,23 +311,46 @@ const CORE_GUARD_SYNTAX = [
  *
  * ⚠ 테스트 스코프에는 들어가면 안 된다(바인딩 형태 가드가 테스트의 정상 `import * as fs` 를 오탐).
  */
+/**
+ * **allowlist 안에서는 「소스 없는 재-export」 형태 자체를 금지**(Codex 12R).
+ *
+ * 지금까지 재-export 봉쇄는 「내보내는 이름이 **변형** API 인가」로 판정했는데, 그러면
+ * `import { readFileSync } from 'node:fs'; export { readFileSync }` 가 통과한다 — 그 소비자는 fs
+ * 지정자 없이 임의 경로를 읽고, `fsConsumers` 스캔에도 잡히지 않아 allowlist 대조까지 무신호다.
+ * 읽기 API 이름을 또 열거하면 같은 술래잡기의 반복이므로(변형 이름 집합이 이미 12라운드를 끌었다)
+ * **이름이 아니라 형태**를 막는다: allowlist 티어 모듈은 `export { … }`(소스 없는 형태)와
+ * `export default` 를 쓰지 않는다. 자기 API 는 선언 인라인 `export` 로 내보내면 되고, 실제로
+ * 코어·서버·transport 전역에서 이 두 형태의 사용은 **0 건**이다(실측 — 비용 없이 클래스가 닫힌다).
+ *
+ * `export … from 'node:fs'`(소스 있는 형태)는 `CORE_FS_REEXPORT_SYNTAX` 가 코어 **전역**에서 막는다.
+ */
+const CORE_FS_EXPORT_FORM_SYNTAX = [
+  'ExportNamedDeclaration:not([source]) > ExportSpecifier',
+  'ExportDefaultDeclaration',
+].map((selector) => ({
+  selector,
+  message:
+    'fs allowlist 모듈은 소스 없는 재-export(`export { x }`)·기본 내보내기를 쓰지 않는다(#282 · 12R). 그 형태로는 fs 에서 온 바인딩이 이름 검사 없이 새어 나가고, 소비자는 fs 지정자도 seam 도 없이 파일을 만진다 — 자기 API 는 선언 인라인 `export` 로 내보내라.',
+}))
+
 const CORE_FS_TIER_SYNTAX = [
   ...CORE_GUARD_SYNTAX,
   ...CORE_FS_BINDING_FORM_SYNTAX,
   ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
+  ...CORE_FS_EXPORT_FORM_SYNTAX,
 ]
 
 /** 읽기 전용 티어에 거는 fs 변형 차단(6R) — tools/**(#174)와 동형. 티어 라벨이 선언에 그치지 않게 한다. */
 const CORE_FS_READONLY_SYNTAX = [
-  {
-    // ⚠ **별칭 import 봉쇄**(실측: 이게 없으면 `import { writeFileSync as w }` + `w(p, x)` 가 전 가드를
-    // 통과한다 — bare-call 셀렉터는 호출명 `w` 를 못 잡는다). `imported.name` 은 별칭과 무관하다.
-    // `no-restricted-imports` 의 `importNames` 로는 못 한다 — 그건 `import * as fs` 까지 막아
-    // 읽기 전용 네임스페이스 사용을 오탐한다.
-    selector: `ImportSpecifier[imported.name=${FS_MUTATION_PATTERN}]`,
+  // ⚠ **별칭 import 봉쇄**(실측: 이게 없으면 `import { writeFileSync as w }` + `w(p, x)` 가 전 가드를
+  // 통과한다 — bare-call 셀렉터는 호출명 `w` 를 못 잡는다). `imported.name` 은 별칭과 무관하다.
+  // `no-restricted-imports` 의 `importNames` 로는 못 한다 — 그건 `import * as fs` 까지 막아
+  // 읽기 전용 네임스페이스 사용을 오탐한다. 문자열 이름 형태(12R)까지 `importedAs` 가 함께 만든다.
+  ...importedAs(FS_MUTATION_PATTERN).map((selector) => ({
+    selector,
     message:
       '읽기 전용 티어(CORE_FS_READONLY)는 fs 변형 API 를 import 하지 않는다(#282 · 별칭 포함). 변형이 필요하면 CORE_FS_MUTATING 으로 옮기고 AGENTS.md 예외 열거·근거 절을 함께 갱신하라.',
-  },
+  })),
   {
     selector: FS_MUTATION_SELECTOR,
     message:

@@ -73,8 +73,11 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
     - allowlist 는 **읽기 전용 / 변이** 두 티어로 나눠 적고, **읽기 전용 티어는 라벨이 아니라 집행**
       이다 — fs 변형 메서드 호출·구조분해·computed 접근·**별칭 import**(`{ writeFileSync as w }`)를
       전부 막는다. 변형이 필요해지면 변이 티어로 옮기고 이 문단·근거 절을 함께 고쳐야 한다.
-    - **raw fs 재-export 는 allowlist 안에서도 금지**한다(`export { writeFileSync } from 'node:fs'`).
-      능력을 흘리면 소비자가 경계를 우회한다. 의도적 seam 은 `durable-fs` 처럼 **지정자로 추적 가능한
+    - **재-export 는 allowlist 안에서도 금지**한다. 소스 있는 형태(`export … from 'node:fs'`)는 코어
+      전역에서, 소스 **없는** 형태(`export { x }`)와 기본 내보내기는 allowlist 티어에서 **형태 자체로**
+      막는다 — 「내보내는 이름이 변형 API 인가」로 판정하면 `export { readFileSync }` 가 통과해 소비자가
+      fs 지정자 없이 임의 경로를 읽고 대조 스캔에도 안 잡힌다. 자기 API 는 선언 인라인 `export` 로
+      내보낸다(현재 코어 전역 사용 0). 의도적 seam 은 `durable-fs` 처럼 **지정자로 추적 가능한
       모듈**로 만들고 테스트의 seam 판정에 등재한다.
     - **`scripts/approval-gate-exceptions.test.ts`** 가 대조한다: ①allowlist == 실제 fs 소비자(목록
       staleness 차단) ②**변이 티어 ∪ 하위프로세스 변이 티어 ∪ `DurableFs` 소비자 == 위 열거**
