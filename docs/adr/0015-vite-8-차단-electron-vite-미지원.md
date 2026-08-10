@@ -32,15 +32,22 @@ vite 8 을 지원하는 유일한 빌드 `electron-vite@6.0.0-beta.1` 은 2026-0
 
 ## 결정
 
-`@vitejs/plugin-react` 의 semver-major 를 `.github/dependabot.yml` 의 `ignore` 로 차단하고
-(`@types/node`·`typescript` 와 동일 패턴), 해제 조건과 동반 검증 절차를 이 ADR 에 남긴다.
+`vite` **와** `@vitejs/plugin-react` 의 semver-major 를 `.github/dependabot.yml` 의 `ignore` 로
+차단하고(`@types/node`·`typescript` 와 동일 패턴), 해제 조건과 동반 검증 절차를 이 ADR 에 남긴다.
+
+둘 다 막아야 결정이 구현된다 — `npm-minor-patch` 그룹은 minor/patch 만 묶으므로 메이저는
+개별 PR 로 열리는데, `vite` 도 직접 devDependency 라 `vite` 8 제안이 따로 뜨고 그 PR 역시
+같은 이유로 ERESOLVE 다. 한쪽만 막으면 회수하려던 PR 슬롯을 다시 점유당한다.
 
 **해제 조건**: electron-vite 가 **stable**(dist-tag `latest`) 로 `vite ^8` peer 를 선언
 — 업스트림 `#894` 종결 **그리고** `#906` 수정. 둘 중 하나만으론 부족하다.
 
-**해제 시 한 커밋으로 동반 처리할 것**
+**해제 커밋의 필수 단계는 1–4 다. 5 는 후속 선택**(완료 조건 아님).
 
-1. `vite` 7→8 · `electron-vite` 5→6 · `@vitejs/plugin-react` 5→6 동반 범프.
+1. `.github/dependabot.yml` 의 `vite`·`@vitejs/plugin-react` **ignore 항목과 주석을 제거**한 뒤
+   `vite` 7→8 · `electron-vite` 5→6 · `@vitejs/plugin-react` 5→6 동반 범프.
+   ignore 를 남기면 `version-update:semver-major` 가 6.x 만 가리키는 규칙이 아니라서 다음
+   7.x 메이저까지 계속 숨겨지고, 「메이저는 개별 PR 로 적대검증」 정책으로 복귀하지 못한다.
 
    **Node engines floor 를 재감사한다 — "불필요" 로 단정하지 말 것.** 오늘 기준 `vite@8` 의
    engines(`^20.19.0 || >=22.12.0`)는 현행 floor 를 넘지 않지만, 해제 시점의 electron-vite 6 과
@@ -52,18 +59,33 @@ vite 8 을 지원하는 유일한 빌드 `electron-vite@6.0.0-beta.1` 은 2026-0
    정직하게 상향하고, 락파일 루트 `engines` 드리프트는 `npm install --package-lock-only` 로
    동기화한다. 최신 메이저를 다운그레이드해 회피하지 않는다.
 
+   **floor 를 올렸으면 `.nvmrc` 와 그보다 낮은 런타임 핀도 같이 올린다.** 현재 `.nvmrc` 는
+   `22.22.3` 이고 `ci.yml`(2곳)·`e2e.yml`·`release.yml` 이 전부 `node-version-file: '.nvmrc'`
+   로 읽는다. 루트 `engines` 만 올리고 `.nvmrc` 를 두면 그 잡들이 `npm ci` 에서 즉시
+   EBADENGINE 로 죽어 해제 커밋 자체가 통과하지 못한다. 새로 선언한 최저 Node 에서 설치와
+   `npm run verify` 를 실제로 돌려 확인할 것.
+
 2. **외부화를 산출물에서 정적 검증**(결정적). 빌드 후 아래가 성립해야 한다.
 
+   판정 기준은 **"외부 참조로 남았는가"** 이지 `require` 문자열이 아니다. electron-vite 6 이
+   `.mjs`(ESM)로 출력할 수 있으므로 CJS 의 외부 `require(...)` 와 ESM 의 외부 `import ... from`
+   **둘 다 합격**으로 인정하고, 해당 모듈 본문이 번들에 인라인되지 않았음을 판정한다.
+   (엔트리 확장자가 바뀌면 3번의 `package.json.main` 동기화가 함께 걸린다.)
+
    ```text
-   out/main/index.js    → require("electron")  ·  require("electron-updater")
-   out/preload/index.js → require("electron")
+   out/main/index.{js,mjs}    → electron  ·  electron-updater  가 외부 참조
+   out/preload/index.{js,mjs} → electron                        가 외부 참조
    ```
 
    `electron.vite.config.ts` 가 명시 외부화하는 건 `electron-updater` 하나뿐이고
    **`electron` 자체는 electron-vite 의 자동 처리에 의존**한다. 위에 적은 실측 실패 모드가
    정확히 「electron 인라인」이라 updater 만 검사하면 회귀를 놓친다. vite 8 은 외부화 모듈의
    `require` 를 `import` 로 변환하지 않고 보존하므로 외부화 결과 자체가 달라질 수 있다.
-   `vite.server.config.ts` 의 SSR 번들도 같이 볼 것.
+   **SSR 번들의 합격 조건도 명시한다**(모호하면 검사되지 않는다). `deploy/fleet/Dockerfile` 이
+   `CMD ["node", "out/server/index.mjs"]` 로 **엔트리명을 하드코딩**하므로 (a) `out/server/index.mjs`
+   가 그 이름 그대로 산출되고 (b) `ws`·`jose` 가 외부 참조로 남는지 단언한다. `npm run verify` 는
+   번들 생성까지만 보므로 여기서 갈린다. 가능하면 `deploy/smoke.sh`(fleet 서버 이미지를 실제
+   빌드·기동하는 `fleet-server-smoke` 섹션 포함)까지 돌려 이미지 레벨을 확인한다.
 
    ⚠ **`npm run test:e2e` 로는 이 축을 못 잡는다.** e2e 는 `FLEET_E2E=1` 로 unpackaged
    기동이라 `installAutoUpdate` 가 무장되지 않아(`src/main/index.ts` 의 `isPackaged`·`isE2E`
@@ -97,11 +119,13 @@ vite 8 을 지원하는 유일한 빌드 `electron-vite@6.0.0-beta.1` 은 2026-0
    **전체 esbuild 그래프**를 확인해 필요한 하한을 실제 부모/전역에 재적용할 것. 인스턴스가
    하나도 없을 때만 키 삭제가 단순 정리다.
 
-5. *(deprecation 정리 · 필수 아님)* `build.rollupOptions` → `build.rolldownOptions`
-   (`electron.vite.config.ts` 3곳 + `vite.server.config.ts` 1곳). vite 8 은
-   `setupRollupOptionCompat` 으로 구 이름을 프록시 별칭으로 유지해 동작은 계속되지만 향후
-   제거 예정이다. 또한 Lightning CSS 기본 CSS 최소화·`configLoader: 'native'` 전환 예고가
-   renderer 산출물과 `vite.server.config.ts` 에 영향을 주는지 이때 함께 확인한다.
+**후속 선택 (해제 커밋의 완료 조건 아님 — 별도 PR 로 빼도 된다)**
+
+5. `build.rollupOptions` → `build.rolldownOptions`(`electron.vite.config.ts` 3곳 +
+   `vite.server.config.ts` 1곳). vite 8 은 `setupRollupOptionCompat` 으로 구 이름을 프록시
+   별칭으로 유지해 **동작은 계속되므로 업그레이드 성립의 조건이 아니다**. 다만 향후 제거
+   예정이라 언젠가는 해야 한다. Lightning CSS 기본 CSS 최소화·`configLoader: 'native'` 전환
+   예고가 renderer 산출물과 `vite.server.config.ts` 에 영향을 주는지도 이때 함께 본다.
 
 ## 고려한 대안 / 기각 사유
 

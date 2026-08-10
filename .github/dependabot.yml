@@ -40,15 +40,23 @@ updates:
       - dependency-name: 'typescript'
         update-types:
           - 'version-update:semver-major'
-      # @vitejs/plugin-react 메이저(6+) 차단 — 차단 요인은 우리 코드가 아니라 electron-vite 다(#261).
+      # vite / @vitejs/plugin-react 메이저 차단 — 차단 요인은 우리 코드가 아니라 electron-vite 다(#261).
       # plugin-react 6.x 의 peer 는 `vite ^8.0.0` 하나뿐인데, 유일한 stable 인
       # electron-vite@5.0.0 의 peer 는 `vite ^5.0.0 || ^6.0.0 || ^7.0.0` 라 vite 8 을 배제한다
       # → `npm ci` 가 ERESOLVE 로 하드 실패(#261 의 CI red 3잡이 정확히 이것).
       # vitest 4 는 이미 `vite ^8` 를 허용하므로 단일 블로커는 electron-vite 하나다.
+      # **둘 다 막아야 결정이 구현된다**: `vite` 도 직접 devDependency 라 위 그룹(minor/patch)
+      # 밖의 메이저 제안이 별도 PR 로 열리고, 그 PR 도 같은 이유로 ERESOLVE 다 — 한쪽만
+      # 막으면 회수하려던 슬롯을 다시 점유당한다.
       # ⚠ peer 만 무력화(--legacy-peer-deps 등)하면 **빌드는 green 인데 electron 이 인라인돼
       # 죽은 앱**이 나온다 — `npm run verify` 의 build 게이트가 못 잡는 유형이다(실측 재현).
-      # 해제 조건(electron-vite stable 의 `vite ^8` peer)과 해제 시 동반 검증 5단계는
+      # 해제 조건(electron-vite stable 의 `vite ^8` peer)·해제 커밋의 필수 4단계·후속 선택 1건은
       # docs/adr/0015-vite-8-차단-electron-vite-미지원.md 가 권위다. 해제 전 반드시 읽을 것.
+      # 해제 커밋은 **아래 두 ignore 항목과 이 주석 제거로 시작**한다(안 지우면 다음 7.x 메이저까지
+      # 계속 숨겨져 「메이저는 개별 PR 로 적대검증」 정책으로 복귀하지 못한다).
+      - dependency-name: 'vite'
+        update-types:
+          - 'version-update:semver-major'
       - dependency-name: '@vitejs/plugin-react'
         update-types:
           - 'version-update:semver-major'
