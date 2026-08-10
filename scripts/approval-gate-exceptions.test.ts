@@ -52,14 +52,16 @@ const SYNC_MUTATORS = [
   'copyFileSync',
   'cpSync',
   'createWriteStream',
+  'fchmodSync',
+  'fchownSync',
   'ftruncateSync',
+  'futimesSync',
   'lchmodSync',
   'lchownSync',
   'linkSync',
   'lutimesSync',
   'mkdirSync',
   'mkdtempSync',
-  'openSync',
   'renameSync',
   'rmSync',
   'rmdirSync',
@@ -69,6 +71,7 @@ const SYNC_MUTATORS = [
   'utimesSync',
   'writeFileSync',
   'writeSync',
+  'writevSync',
 ] as const
 
 /** 위의 비동기(콜백·promise) 대응물. `node:fs` 와 `node:fs/promises` 양쪽에서 같은 이름으로 나온다. */
@@ -78,14 +81,16 @@ const ASYNC_MUTATORS = [
   'chown',
   'copyFile',
   'cp',
+  'fchmod',
+  'fchown',
   'ftruncate',
+  'futimes',
   'lchmod',
   'lchown',
   'link',
   'lutimes',
   'mkdir',
   'mkdtemp',
-  'open',
   'rename',
   'rm',
   'rmdir',
@@ -95,7 +100,23 @@ const ASYNC_MUTATORS = [
   'utimes',
   'write',
   'writeFile',
+  'writev',
 ] as const
+
+/**
+ * **`open`/`openSync` 는 의도적으로 뺐다**(잔여 한계 · Codex PR#282 3R 대응 중 실측).
+ *
+ * `open` 은 플래그에 따라 읽기도 쓰기도 된다. 넣으면 **읽기 전용 소비자가 오탐**된다 —
+ * `tools/workspace-tools.ts` 가 `import { promises as fs }` + `fs.open(abs, 'r')` 로 파일을 *읽는데*,
+ * 이 모듈은 게이트를 통과하는 도구 계층이지 인프라 예외가 아니다. 플래그 인자를 정적으로 판독하는
+ * 것은 오탐/미탐을 다른 자리로 옮길 뿐이라 채택하지 않았다.
+ *
+ * 대가로 남는 구멍: **`open(p,'w')` 만으로 절단하고 다른 쓰기 API 를 전혀 안 쓰는 모듈**은 이 스캔에
+ * 안 걸린다. 실제 쓰기는 `write`/`writev`/`truncate` 계열을 동반하므로 좁은 구멍이고, 현행 유일
+ * `openSync` 소비자 `workbench/durable-fs.ts` 도 `writeSync`·`renameSync`·`mkdirSync`·`unlinkSync` 로
+ * 이미 잡힌다(아래 테스트가 그 사실을 핀한다).
+ */
+const DELIBERATELY_OMITTED = ['open', 'openSync'] as const
 
 export const FS_MUTATION_APIS: readonly string[] = [...SYNC_MUTATORS, ...ASYNC_MUTATORS]
 
@@ -110,33 +131,48 @@ export const stripComments = (src: string): string =>
 
 /**
  * `node:fs`(및 `/promises`)에서 들여온 **변이 증거**. 두 경로를 모두 본다:
- * ① named 바인딩(`import { rmSync } …`) ② 네임스페이스·기본 별칭의 **멤버 호출**(`fs.rmSync(…)`).
+ * ① named 바인딩(`import { rmSync } …`) ② **별칭의 멤버 호출**(`fs.rmSync(…)`).
  *
- * ②가 필요한 이유는 실측이다 — `workspace/path-guard.ts` 가 `import * as fs from 'node:fs'` 를 쓴다.
- * named 스캔만으로는 네임스페이스 import 한 줄로 전 계층이 통째로 시야에서 사라진다. 반대로 「네임스페이스
- * import 자체를 변이자로 간주」하면 읽기 전용인 그 파일이 오탐이 되므로, **멤버 호출까지 봐야** 맞다.
+ * ②의 별칭은 세 형태 전부를 걷는다 — `* as fs` · 기본 import · **`{ promises as fs }`**.
+ * 세 번째가 특히 중요하다(Codex PR#282 3R): 중괄호로 시작하는 import 라 네임스페이스 정규식에
+ * 안 걸리고, named 스캔은 `promises` 만 보므로 **양쪽 다 통과**한다. 현행 코어의
+ * `tools/workspace-tools.ts` 가 정확히 그 형태다.
+ *
+ * 반대로 「fs 를 import 하면 변이자」로 두면 읽기 전용 모듈이 오탐된다(`workspace/path-guard.ts` 는
+ * `* as fs` 로 `lstatSync`·`realpathSync` 만 쓴다). 그래서 **멤버 호출까지 봐야** 맞다.
  */
 export const fsMutationBindings = (src: string): string[] => {
   const code = stripComments(src)
   const found = new Set<string>()
+  const aliases = new Set<string>()
 
-  const named = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*'node:fs(?:\/promises)?'/g
-  for (const m of code.matchAll(named)) {
-    for (const raw of m[1].split(',')) {
-      const name = raw
-        .trim()
-        .split(/\s+as\s+/)[0]
-        .trim()
-      if (FS_MUTATION_APIS.includes(name)) found.add(name)
+  // import 절 전체를 뜯어 named 스펙과 별칭을 함께 분류한다(형태별 정규식을 늘리면 새 형태가 샌다).
+  const clauses = /import\s+(?!type\b)([^'";]+?)\s+from\s+'node:fs(?:\/promises)?'/g
+  for (const m of code.matchAll(clauses)) {
+    const clause = m[1]
+    const braces = /\{([^}]*)\}/.exec(clause)
+    if (braces) {
+      for (const raw of braces[1].split(',')) {
+        const [imported, local] = raw
+          .trim()
+          .split(/\s+as\s+/)
+          .map((s) => s.trim())
+        if (!imported) continue
+        if (FS_MUTATION_APIS.includes(imported)) found.add(imported)
+        // `{ promises as fs }` — promises 네임스페이스를 별칭으로 받는 형태.
+        if (imported === 'promises') aliases.add(local || imported)
+      }
+    }
+    // 중괄호 밖에 남는 것 = `* as ns` 또는 기본 import.
+    for (const part of clause.replace(/\{[^}]*\}/g, '').split(',')) {
+      const bare = /^\s*(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*$/.exec(part)
+      if (bare) aliases.add(bare[1])
     }
   }
 
-  // `import * as fs from 'node:fs'` · `import fs from 'node:fs'` (type-only 는 호출 불가라 제외).
-  const alias =
-    /import\s+(?!type\b)(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*'node:fs(?:\/promises)?'/g
-  for (const m of code.matchAll(alias)) {
+  for (const alias of aliases) {
     for (const api of FS_MUTATION_APIS) {
-      if (new RegExp(`\\b${m[1]}\\.${api}\\s*\\(`).test(code)) found.add(`${m[1]}.${api}`)
+      if (new RegExp(`\\b${alias}\\.${api}\\s*\\(`).test(code)) found.add(`${alias}.${api}`)
     }
   }
   return [...found].sort()
@@ -333,6 +369,44 @@ describe('스캔 술어 — 합성 소스로 반증력 실측', () => {
       fsMutationBindings(`import * as fs from 'node:fs'\nfs.lstatSync(p)\nfs.existsSync(p)`),
     ).toEqual([])
     expect(fsMutationBindings(`import type * as fs from 'node:fs'`)).toEqual([])
+  })
+
+  /**
+   * **회귀 가드**(Codex PR#282 3R P1): `{ promises as fs }` 는 중괄호로 시작해 네임스페이스 정규식에
+   * 안 걸리고, named 스캔은 `promises` 만 보므로 **양쪽 다 통과**한다. 현행 코어의
+   * `tools/workspace-tools.ts` 가 정확히 이 형태이며, 그 파일은 읽기 전용이라 오탐도 나면 안 된다.
+   */
+  it('`{ promises as fs }` 형태의 멤버 호출도 잡는다(읽기 전용은 제외)', () => {
+    expect(fsMutationBindings(`import { promises as fs } from 'node:fs'\nawait fs.rm(p)`)).toEqual([
+      'fs.rm',
+    ])
+    expect(
+      fsMutationBindings(
+        `import { promises as fs } from 'node:fs'\nawait fs.readFile(p)\nawait fs.open(p, 'r')`,
+      ),
+    ).toEqual([])
+    expect(
+      fsMutationBindings(`import { promises } from 'node:fs'\nawait promises.mkdir(p)`),
+    ).toEqual(['promises.mkdir'])
+  })
+
+  it('파일 서술자 계열 변이자도 목록에 있다(writev·fchmod·fchown·futimes)', () => {
+    for (const api of ['writev', 'writevSync', 'fchmod', 'fchownSync', 'futimes']) {
+      expect(FS_MUTATION_APIS, `${api} 누락`).toContain(api)
+    }
+  })
+
+  /**
+   * `open`/`openSync` 제외는 **의도된 잔여 한계**다(위 `DELIBERATELY_OMITTED` 주석의 근거). 실수로
+   * 다시 들어오면 읽기 전용 소비자가 오탐되므로 부재를 핀하고, 동시에 그 대가(구멍)를 명시한다.
+   */
+  it('open/openSync 는 의도적으로 제외돼 있고, 그 한계가 durable-fs 를 놓치지는 않는다', () => {
+    expect(DELIBERATELY_OMITTED).toEqual(['open', 'openSync'])
+    for (const api of DELIBERATELY_OMITTED) expect(FS_MUTATION_APIS).not.toContain(api)
+    // 유일한 openSync 소비자는 다른 쓰기 API 로 여전히 잡힌다.
+    expect(
+      fsMutationBindings(read(join(CORE, 'workbench', 'durable-fs.ts'))).length,
+    ).toBeGreaterThan(0)
   })
 
   it('주석 속 산문은 변이자로 오인하지 않는다(1차 스캔이 실제로 낸 오분류)', () => {
