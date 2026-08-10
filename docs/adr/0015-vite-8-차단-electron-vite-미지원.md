@@ -142,9 +142,16 @@ vite 8 을 지원하는 유일한 빌드 `electron-vite@6.0.0-beta.1` 은 2026-0
 
 ## 결과 (Consequences)
 
-- `@vitejs/plugin-react` 5.x 의 마이너/패치는 `npm-minor-patch` 그룹으로 계속 추적되고
-  6.x 만 막힌다. 우리가 해제를 결정하기 전엔 봇이 재제안하지 않는다.
-- 비용: **차단 해제를 능동적으로 감시해야 한다.** 봇이 더는 알려주지 않으므로 electron-vite
-  릴리스를 주기적으로 확인하지 않으면 무기한 vite 7 에 머문다.
-- 재검토 트리거: electron-vite `6.0.0` stable 발행 · 업스트림 `#894`/`#906` 종결 ·
+- `vite` 7.x · `@vitejs/plugin-react` 5.x 의 마이너/패치는 `npm-minor-patch` 그룹으로 계속
+  추적된다. 반면 `version-update:semver-major` 는 6.x 만 가리키는 규칙이 아니라 **현재의
+  6.x 를 포함해 이후 모든 메이저**(7.x 이상)를 막는다 — 그래서 해제 커밋의 1단계가 ignore
+  제거인 것이고, 안 지우면 다음 메이저까지 조용히 숨는다.
+- **`electron-vite` 는 ignore 대상이 아니다** — 그룹이 minor/patch 만 묶으므로 `6.0.0` stable
+  이 발행되면 Dependabot 이 메이저 PR 을 열어 **해제 트리거를 자동으로 알려준다**. 따라서
+  "능동 감시" 부담은 생각보다 작다. 다만 그 PR 은 **해제 커밋과 별개의 수동 호환성 검증
+  대상**이다 — electron-vite 만 6 으로 올리면 vite 7 과의 조합을 새로 검증해야 하고, 반대로
+  그 PR 을 그대로 머지한다고 이 ADR 의 해제 절차가 수행되는 것도 아니다.
+- 비용: 감시가 완전히 자동은 아니다. 업스트림 `#894`/`#906` 종결 여부는 봇이 알려주지
+  않으므로 electron-vite 메이저 PR 이 떴을 때 그 두 조건을 직접 확인해야 한다.
+- 재검토 트리거: Dependabot 의 electron-vite 메이저 PR · 업스트림 `#894`/`#906` 종결 ·
   vite 7 이 보안 권고를 받고 vite 8 에서만 패치되는 경우(그때는 beta 리스크와 저울질).
