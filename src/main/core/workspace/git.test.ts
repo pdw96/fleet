@@ -381,7 +381,10 @@ describe('createWorkspace.removeWorktree', () => {
         }
       })
       const ws = createWorkspace(root, g.runner)
+      // ⚠ **해소된 경로 자체를 단언한다**(CodeRabbit PR#282): 힌트 문면만 보면 경로 보간이
+      // 사라져도 통과한다 — `lockPath()` 호출과 그 값의 사용을 함께 고정해야 반증력이 생긴다.
       await expect(ws.checkpoint()).rejects.toThrow(/락 파일이 남아 있다/)
+      await expect(ws.checkpoint()).rejects.toThrow(lock)
       expect(lockProbed).toBe(true)
     } finally {
       rmSync(root, { recursive: true, force: true })

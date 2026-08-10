@@ -117,12 +117,17 @@ const CORE_FS_ALLOWLIST = [...CORE_FS_READONLY, ...CORE_FS_MUTATING]
  * `import('node:' + 'fs')`(비-리터럴 소스)가 전부 통과한다. tools/**(#174)가 이미 쓰는 가드를 코어
  * 경계에도 건다 — 메시지만 코어용으로 바꾼 동형이다.
  */
+const CORE_LOADER_NAMES = ['createRequire', 'require', 'getBuiltinModule']
+const CORE_LOADER_PATTERN = `/^(${CORE_LOADER_NAMES.join('|')})$/`
 const CORE_LOADER_GUARD_SYNTAX = [
-  "CallExpression[callee.name='createRequire']",
-  "MemberExpression[property.name='createRequire']",
-  "CallExpression[callee.name='require']",
-  "MemberExpression[property.name='require']",
-  "MemberExpression[property.name='getBuiltinModule']",
+  `CallExpression[callee.name=${CORE_LOADER_PATTERN}]`,
+  `MemberExpression[property.name=${CORE_LOADER_PATTERN}]`,
+  `MemberExpression[computed=true][property.value=${CORE_LOADER_PATTERN}]`,
+  // 별칭·구조분해 봉쇄(Codex PR#282 7R): `import { createRequire as cr }` · `const { getBuiltinModule: g } = process`
+  // 는 호출명이 달라 위 셀렉터를 통과한다. 원 이름(`imported.name`·`key.*`)으로 잡는다.
+  `ImportSpecifier[imported.name=${CORE_LOADER_PATTERN}]`,
+  `ObjectPattern > Property[key.name=${CORE_LOADER_PATTERN}]`,
+  `ObjectPattern > Property[key.value=${CORE_LOADER_PATTERN}]`,
   "ImportExpression[source.type!='Literal']",
 ].map((selector) => ({
   selector,
@@ -139,13 +144,17 @@ const CORE_LOADER_GUARD_SYNTAX = [
  * 원리적으로 `DurableFs` 와 같은 형태이고, Fleet 은 그런 의도적 seam 을 **지정자 목록으로 추적**한다
  * (`scripts/approval-gate-exceptions.test.ts` 의 seam 판정). 새 seam 을 만들면 그 목록에 등재해야 한다.
  */
-const CORE_FS_REEXPORT_SYNTAX = ['ExportNamedDeclaration', 'ExportAllDeclaration'].flatMap((kind) =>
-  TOOLS_FS_MODULES.map((m) => ({
-    selector: `${kind}[source.value='${m}']`,
-    message:
-      '코어(src/main/core)는 raw fs 를 재-export 하지 않는다(#282). 능력을 흘리면 소비자가 allowlist 를 우회한다 — 의도적 seam 은 durable-fs 처럼 추적 가능한 모듈로 만들라.',
-  })),
-)
+const CORE_FS_REEXPORT_MESSAGE =
+  '코어(src/main/core)는 raw fs 를 재-export 하지 않는다(#282). 능력을 흘리면 소비자가 allowlist 를 우회한다 — 의도적 seam 은 durable-fs 처럼 추적 가능한 모듈로 만들라.'
+const CORE_FS_REEXPORT_SYNTAX = [
+  ...['ExportNamedDeclaration', 'ExportAllDeclaration'].flatMap((kind) =>
+    TOOLS_FS_MODULES.map((m) => `${kind}[source.value='${m}']`),
+  ),
+  // `import { writeFileSync } from 'node:fs'; export { writeFileSync }` — source 가 없어 위 셀렉터가
+  // 미매치인데 능력은 그대로 흘러나간다(Codex PR#282 7R). 내보내는 **로컬 이름**으로 잡는다
+  // (코어 전역 exact 일치 0 실측 — 오탐 없음).
+  `ExportSpecifier[local.name=${FS_MUTATION_PATTERN}]`,
+].map((selector) => ({ selector, message: CORE_FS_REEXPORT_MESSAGE }))
 
 /** allowlist 밖 코어 모듈의 fs 동적 import 차단(정적 가드는 ImportExpression 을 미방문). */
 const CORE_FS_DYNAMIC_IMPORT_SYNTAX = TOOLS_FS_MODULES.map((m) => ({
@@ -189,6 +198,29 @@ const FS_MUTATION_DESTRUCTURE_SELECTORS = [
 // 정적 템플릿 computed fs[`writeFile`]·cp[`exec`] 봉쇄 — property.value(Literal) selector 가 TemplateLiteral
 // 을 놓침. tools/** 는 템플릿 computed 멤버 접근을 쓰지 않으므로 blanket 차단(정적 키는 dot 표기로).
 const TEMPLATE_COMPUTED_SELECTOR = `MemberExpression[computed=true][property.type='TemplateLiteral']`
+
+/**
+ * **코어 공통 구문 가드**(#282 · Codex 7R). flat config 는 같은 rule-key 를 **교체**하므로, 뒤에 오는
+ * 어떤 코어 스코프 블록이 `no-restricted-syntax` 를 재선언하면 앞 블록의 가드가 통째로 사라진다 —
+ * 실제로 workbench 블록이 fs 경계 가드를 무력화하고 있었다(7R 이 적발). 그래서 electron·로더·재-export
+ * 가드를 **하나로 묶어** 모든 코어 스코프 블록이 같은 상수를 스프레드하게 하고,
+ * `scripts/eslint-config-purity.test.ts` 가 「코어 스코프 블록은 전부 이 묶음을 포함한다」를 강제한다.
+ */
+/** 워크벤치 소진 강제(#251 PR2a) — 읽기 전용 티어 블록이 뒤로 가면서 함께 스프레드해야 한다. */
+const WORKBENCH_EXHAUSTIVE_SYNTAX = [
+  {
+    selector:
+      "SwitchStatement:not(:has(SwitchCase[test=null] CallExpression[callee.name='assertNever']))",
+    message:
+      '판별 유니온 소비는 `default: assertNever(x)` 로 소진을 강제해야 한다(#251 §W-4) — 새 실패 종별이 추가돼도 미처리 분기가 조용히 통과한다.',
+  },
+]
+
+const CORE_GUARD_SYNTAX = [
+  ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
+  ...CORE_LOADER_GUARD_SYNTAX,
+  ...CORE_FS_REEXPORT_SYNTAX,
+]
 
 /** 읽기 전용 티어에 거는 fs 변형 차단(6R) — tools/**(#174)와 동형. 티어 라벨이 선언에 그치지 않게 한다. */
 const CORE_FS_READONLY_SYNTAX = [
@@ -440,7 +472,7 @@ export default tseslint.config(
       ],
       // no-restricted-imports 는 ImportExpression(동적 import())을 미방문 → 동적 import('electron')
       // 이 정적 import 가드를 우회한다(TS 도 electron 타입 보유라 컴파일 통과). no-restricted-syntax 로 보완.
-      'no-restricted-syntax': ['error', ...ELECTRON_DYNAMIC_IMPORT_SYNTAX],
+      'no-restricted-syntax': ['error', ...CORE_GUARD_SYNTAX],
     },
   },
   // 도구 read-only 구조 가드(#174). core 블록보다 뒤라 no-restricted-imports/syntax 를 교체하므로
@@ -458,8 +490,8 @@ export default tseslint.config(
   // **호출 지점**을 dot/computed[Literal·Template]/bare/구조분해[식별자·리터럴 키] 형태로 차단 →
   // 정적으로 표현 가능한(키가 상수 리터럴인) 모든 경로를 어떤 로더·별칭이든 포착한다.
   {
-    files: ['src/main/core/tools/**/*.ts'],
-    ignores: ['src/main/core/tools/**/*.test.ts'],
+    files: ['src/main/core/tools/**/*.{ts,tsx}'],
+    ignores: ['src/main/core/tools/**/*.test.{ts,tsx}'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -470,7 +502,7 @@ export default tseslint.config(
       ],
       'no-restricted-syntax': [
         'error',
-        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
+        ...CORE_GUARD_SYNTAX,
         ...CHILD_PROCESS_DYNAMIC_IMPORT_SYNTAX,
         ...TOOLS_FS_DYNAMIC_IMPORT_SYNTAX,
         {
@@ -532,40 +564,7 @@ export default tseslint.config(
           ],
         },
       ],
-      'no-restricted-syntax': [
-        'error',
-        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
-        ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
-        ...CORE_LOADER_GUARD_SYNTAX,
-        ...CORE_FS_REEXPORT_SYNTAX,
-      ],
-    },
-  },
-  // 읽기 전용 티어 집행(#282 · Codex 6R). allowlist 를 「읽기 전용/변이」로 나눠 적어도, 읽기 전용
-  // 항목이 어느 날 writeFileSync 를 부르기 시작하면 blanket ignore 라 lint 도 대조 테스트도 무신호였다
-  // (티어 라벨이 수동 선언에 그침). tools/**(#174)와 동형 가드를 걸어 라벨을 집행으로 만든다.
-  // tools/** 는 더 강한 자체 블록이 있어 제외(여기서 덮으면 약화된다).
-  {
-    files: CORE_FS_READONLY.filter((f) => !f.startsWith('src/main/core/tools/')),
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: ELECTRON_IMPORT_PATHS,
-          // ⚠ `importNames` 는 쓰지 않는다 — `import * as fs` 를 「전체 import」로 보고 무조건 막아
-          // 읽기 전용 네임스페이스 사용(`path-guard.ts` 의 `fs.lstatSync`)까지 오탐한다(실측).
-          // 집행은 아래 **호출 지점 셀렉터**(CORE_FS_READONLY_SYNTAX)가 한다 — 별칭·구조분해·computed
-          // 전 형태를 잡으므로 import 이름 제한보다 정확하다.
-          patterns: ELECTRON_IMPORT_PATTERNS,
-        },
-      ],
-      'no-restricted-syntax': [
-        'error',
-        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
-        ...CORE_FS_READONLY_SYNTAX,
-        ...CORE_FS_REEXPORT_SYNTAX,
-        ...CORE_LOADER_GUARD_SYNTAX,
-      ],
+      'no-restricted-syntax': ['error', ...CORE_GUARD_SYNTAX, ...CORE_FS_DYNAMIC_IMPORT_SYNTAX],
     },
   },
   // raw fs 재-export 는 allowlist 안에서도 금지(#282 · 6R). 변이 티어가 능력을 흘리면 소비자가
@@ -577,11 +576,7 @@ export default tseslint.config(
         'error',
         { paths: ELECTRON_IMPORT_PATHS, patterns: ELECTRON_IMPORT_PATTERNS },
       ],
-      'no-restricted-syntax': [
-        'error',
-        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
-        ...CORE_FS_REEXPORT_SYNTAX,
-      ],
+      'no-restricted-syntax': ['error', ...CORE_GUARD_SYNTAX],
     },
   },
   // 브랜드 위조 차단(#251 PR1b · 스펙 §W-3/§W-4). `BenchLeaseToken`·`Held<L>` 은 미export
@@ -624,16 +619,28 @@ export default tseslint.config(
       'src/main/core/workbench/lock-order.ts',
     ],
     rules: {
-      'no-restricted-syntax': [
+      'no-restricted-syntax': ['error', ...CORE_GUARD_SYNTAX, ...WORKBENCH_EXHAUSTIVE_SYNTAX],
+    },
+  },
+  // 읽기 전용 티어 집행(#282 · Codex 6R). allowlist 를 「읽기 전용/변이」로 나눠 적어도, 읽기 전용
+  // 항목이 어느 날 writeFileSync 를 부르기 시작하면 blanket ignore 라 lint 도 대조 테스트도 무신호였다
+  // (티어 라벨이 수동 선언에 그침). tools/**(#174)와 동형 가드를 걸어 라벨을 집행으로 만든다.
+  // tools/** 는 더 강한 자체 블록이 있어 제외(여기서 덮으면 약화된다).
+  {
+    files: CORE_FS_READONLY.filter((f) => !f.startsWith('src/main/core/tools/')),
+    rules: {
+      'no-restricted-imports': [
         'error',
-        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
         {
-          selector:
-            "SwitchStatement:not(:has(SwitchCase[test=null] CallExpression[callee.name='assertNever']))",
-          message:
-            '판별 유니온 소비는 `default: assertNever(x)` 로 소진을 강제해야 한다(#251 §W-4) — 새 실패 종별이 추가돼도 미처리 분기가 조용히 통과한다.',
+          paths: ELECTRON_IMPORT_PATHS,
+          // ⚠ `importNames` 는 쓰지 않는다 — `import * as fs` 를 「전체 import」로 보고 무조건 막아
+          // 읽기 전용 네임스페이스 사용(`path-guard.ts` 의 `fs.lstatSync`)까지 오탐한다(실측).
+          // 집행은 아래 **호출 지점 셀렉터**(CORE_FS_READONLY_SYNTAX)가 한다 — 별칭·구조분해·computed
+          // 전 형태를 잡으므로 import 이름 제한보다 정확하다.
+          patterns: ELECTRON_IMPORT_PATTERNS,
         },
       ],
+      'no-restricted-syntax': ['error', ...CORE_GUARD_SYNTAX, ...CORE_FS_READONLY_SYNTAX],
     },
   },
   // Prettier 와 충돌하는 ESLint 스타일룰 비활성 (반드시 last). 현재 스타일룰 0 이라 즉효는

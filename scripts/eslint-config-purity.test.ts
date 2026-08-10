@@ -56,14 +56,14 @@ describe('코어 순수성 ESLint 게이트 회귀 가드 (#173)', () => {
 // #174: 도구 실행 모듈 read-only 구조 가드. ApprovalGate 는 tool.classify() 자가신고만 신뢰하므로
 // (loop.ts:171) classify:'safe' 인 신규 도구가 raw fs 변형/spawn 하면 무프롬프트로 워크스페이스를
 // 바꾼다. 가드가 조용히 삭제/약화되면 lint 는 여전히 green(위반 0)이라 무신호 → 게이트 자체를 핀.
-const toolsBlock = blocks.find((c) => c.files?.includes('src/main/core/tools/**/*.ts'))
+const toolsBlock = blocks.find((c) => c.files?.includes('src/main/core/tools/**/*.{ts,tsx}'))
 
 describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
   it('tools 블록 존재 + files/ignores 스코프', () => {
     expect(toolsBlock).toBeDefined()
-    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.ts')
+    expect(toolsBlock?.files).toContain('src/main/core/tools/**/*.{ts,tsx}')
     expect((toolsBlock as { ignores?: string[] })?.ignores).toContain(
-      'src/main/core/tools/**/*.test.ts',
+      'src/main/core/tools/**/*.test.{ts,tsx}',
     )
   })
 
@@ -85,7 +85,13 @@ describe('도구 read-only 구조 가드 ESLint 게이트 (#174)', () => {
     const selectors = (rule?.slice(1) as { selector?: string }[])
       .map((s) => s.selector ?? '')
       .join('  ')
-    const dot = selectors.match(/MemberExpression\[property\.name=\/[^/]*\//)?.[0] ?? ''
+    // ⚠ **첫 매치를 집으면 안 된다**(#282): 공통 가드(`CORE_GUARD_SYNTAX`)가 앞에 스프레드되면서
+    // 로더용 `MemberExpression[property.name=/^(createRequire|…)/]` 이 먼저 나온다. fs 변형 셀렉터를
+    // **내용으로** 특정한다.
+    const dot =
+      (selectors.match(/MemberExpression\[property\.name=\/[^/]*\//g) ?? []).find((m) =>
+        m.includes('writeFile'),
+      ) ?? ''
     // write·delete·open(write-mode)·메타데이터(fchmod/lutimes) 경로를 각각 핀 — 하나만 남아도 통과하던 약점 보완.
     expect(dot).toContain('writeFile')
     expect(dot).toContain('rm')
@@ -277,5 +283,64 @@ describe('실패 종별 소진 강제 ESLint 게이트 (#251 PR2a)', () => {
     const selectors = ((syntax?.slice(1) ?? []) as { selector: string }[]).map((s) => s.selector)
     expect(selectors).toContain("ImportExpression[source.value='electron']")
     expect(selectors).toContain('ImportExpression[source.value=/^electron\\//]')
+  })
+})
+
+/**
+ * #282 — **fs 경계 가드가 후속 블록에 교체당하지 않는지** 전수로 핀한다.
+ *
+ * flat config 는 같은 rule-key 를 병합이 아니라 **교체**한다. 이 레포는 그 함정을 알고 electron 가드를
+ * 블록마다 재선언해 왔는데, #282 가 추가한 fs 경계 가드는 그 규율을 따르지 않아 **workbench 블록이
+ * 통째로 무력화**하고 있었다(Codex 7R 적발 — lint 는 green 이라 무신호). 개별 블록을 하나씩 핀하면
+ * **다음에 추가되는 블록이 같은 방식으로 또 뚫는다**. 그래서 「코어를 스코프로 `no-restricted-syntax`
+ * 를 선언하는 **모든** 블록은 공통 묶음을 포함한다」를 불변식으로 세운다.
+ */
+describe('fs 경계 가드 override 방지 (#282)', () => {
+  const CORE_SCOPED = /^src\/(main\/core|server|shared\/transport)\//
+  const coreSyntaxBlocks = blocks.filter(
+    (c) =>
+      c.files?.some((f) => CORE_SCOPED.test(f)) === true &&
+      c.rules?.['no-restricted-syntax'] !== undefined,
+  )
+
+  it('앵커: 코어 스코프에서 no-restricted-syntax 를 쓰는 블록이 복수다', () => {
+    expect(coreSyntaxBlocks.length).toBeGreaterThanOrEqual(4)
+  })
+
+  /** 공통 묶음의 대표 셀렉터 — 하나라도 빠지면 그 블록에서 해당 방어가 사라진 것이다. */
+  const REQUIRED = [
+    "ImportExpression[source.value='electron']",
+    "ImportExpression[source.type!='Literal']",
+    "ExportNamedDeclaration[source.value='node:fs']",
+  ]
+
+  it('모든 코어 스코프 블록이 공통 가드(electron·로더·fs 재-export)를 포함한다', () => {
+    for (const block of coreSyntaxBlocks) {
+      const entries = (block.rules?.['no-restricted-syntax'] ?? []).slice(1) as {
+        selector?: string
+      }[]
+      const selectors = entries.map((e) => e.selector)
+      for (const required of REQUIRED) {
+        expect(
+          selectors,
+          `블록 files=${JSON.stringify(block.files)} 에 "${required}" 가 없다 — CORE_GUARD_SYNTAX 를 스프레드하라(flat config 는 rule-key 를 교체한다)`,
+        ).toContain(required)
+      }
+    }
+  })
+
+  it('로더 가드가 별칭·구조분해 형태까지 덮는다(7R)', () => {
+    const boundary = coreSyntaxBlocks.flatMap(
+      (c) => (c.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[],
+    )
+    const selectors = boundary.map((e) => e.selector ?? '')
+    expect(
+      selectors.some((s) => s.startsWith('ImportSpecifier[imported.name=/^(createRequire')),
+    ).toBe(true)
+    expect(
+      selectors.some((s) => s.startsWith('ObjectPattern > Property[key.name=/^(createRequire')),
+    ).toBe(true)
+    // import-then-export 형태(source 없는 재-export)
+    expect(selectors.some((s) => s.startsWith('ExportSpecifier[local.name='))).toBe(true)
   })
 })
