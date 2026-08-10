@@ -358,12 +358,21 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
       return braces[1].split(',').some((ext) => matches(glob.replace(braces[0], ext.trim()), file))
     }
     if (!glob.includes('*')) return glob === file
-    // 이 레포의 glob 은 전부 `<dir>/**/*<ext>` 한 형태다 — 정규식 조립 없이 접두/접미로 판정한다.
+    // 이 레포의 glob 은 `<dir>/**/*<ext>` 와 `<dir>/**` 두 형태다 — 정규식 조립 없이 접두/접미로 판정.
     const star = glob.indexOf('**/*')
-    if (star < 0) return false
-    const prefix = glob.slice(0, star)
-    const suffix = glob.slice(star + '**/*'.length)
-    return file.startsWith(prefix) && file.endsWith(suffix)
+    if (star >= 0) {
+      const prefix = glob.slice(0, star)
+      const suffix = glob.slice(star + '**/*'.length)
+      return file.startsWith(prefix) && file.endsWith(suffix)
+    }
+    if (glob.endsWith('/**')) return file.startsWith(glob.slice(0, -'**'.length))
+    // ⚠ **조용히 false 를 반환하면 안 된다**(CodeRabbit PR#282). 미지원 형태를 미매치로 처리하면
+    // `lastFor` 가 엉뚱한 블록을 최종 블록으로 고르고, 그때 이 테스트는 RED 가 아니라 **잘못된 GREEN**
+    // 이 된다 — 이 파일이 강제하려는 것이 바로 「무신호로 약해지지 않는다」이므로 매처의 한계는
+    // 반드시 드러나야 한다.
+    throw new Error(
+      `미지원 glob 형태: ${glob} — 최소 매처를 확장하라(조용한 미매치는 잘못된 GREEN 을 만든다).`,
+    )
   }
   const lastFor = (file: string) =>
     [...coreSyntaxBlocks]
