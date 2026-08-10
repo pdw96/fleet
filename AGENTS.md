@@ -56,15 +56,21 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
 - **안전 우선.** **에이전트가 유발하는** 파일 쓰기/삭제/shell 은 `ApprovalGate` 를 통과해야 한다
   (`core/safety/`). 기본은 destructive 차단. 게이트의 소비자는 LLM 변이·툴 실행·프로세스 spawn 경로
   (`engine.ts`·`orchestrator/orchestrator.ts`·`mcp/host.ts`·`tools/loop.ts`)다.
-  - **예외 = 엔진 인프라 쓰기**(엔진 자신의 상태·메타데이터). 현재 **일곱 모듈**이다 —
-    `store/json-file.ts`·`workspace/ignored-baseline.ts`·`workbench/coord-area.ts`·
+  - **예외 = 엔진 인프라 쓰기**(엔진 자신의 상태·메타데이터). 현재 **여덟 모듈**이다 —
+    `store/json-file.ts`·`workspace/ignored-baseline.ts`·`workspace/git.ts`·`workbench/coord-area.ts`·
     `workbench/active-instance.ts`·`workbench/durable-fs.ts`·`workbench/authority.ts`·
-    `workbench/journal.ts`. 소비 지점이 **부팅·CAS 임계 구역**이라 승인자가 존재하지 않는다
-    (§W-3 L-5 와도 방향이 충돌한다). 예외를 새로 만들 때는 **모듈 독블록에 「`ApprovalGate` 를 거치지
-    않는 이유」 `##` 절로 근거를 명시**하고, destructive 조작은 게이트가 아니라 **소유 확인·create-only
-    경합**으로 막는다. (이 구분을 문면에 두지 않아 리뷰에서 반복 지적된 항목 — ADR-0013.)
-    이 열거는 산문이 아니라 **계약**이다 — `scripts/approval-gate-exceptions.test.ts` 가 「근거 절을 가진
-    모듈 집합 == 위 열거」를 양방향으로 강제하므로, 예외를 늘리면서 이 문단을 안 고치면 RED 다.
+    `workbench/journal.ts`. 소비 지점이 **부팅·태스크 준비·CAS 임계 구역**이라 승인자가 존재하지 않는다
+    (§W-3 L-5 와도 방향이 충돌한다). 예외를 새로 만들 때는 **파일 머리 영역**(첫 top-level `export`
+    이전)의 블록 주석에 「`ApprovalGate` 를 거치지 않는 이유」 `##` **절로 근거를 명시**하고,
+    destructive 조작은 게이트가 아니라 **대상 고정·소유 확인·create-only 경합**으로 막는다.
+    (이 구분을 문면에 두지 않아 리뷰에서 반복 지적된 항목 — ADR-0013.)
+    이 열거는 산문이 아니라 **계약**이다 — `scripts/approval-gate-exceptions.test.ts` 가 3층으로
+    강제한다: ①**소스에서 독립 유도한 실제 변이자**(node:fs 변이 API 직접 import 또는 `DurableFs`
+    소비) ⊆ 위 열거 ②위 열거 == 근거 절 보유 모듈(양방향) ③근거 절은 소비자 모듈을 삼키지 않는 형태.
+    ①이 없으면 **근거 절을 안 쓴 신규 우회는 문서에도 스캔에도 안 잡혀 양쪽이 사이좋게 통과**한다
+    (Codex PR#282 P1 — 이 층을 넣자 미선언 변이자 `workspace/git.ts` 가 드러났다).
+    ⚠ ①은 **자식 프로세스를 통한 변이는 못 잡는다**(git 하위 명령의 워크트리 생성·삭제 등). spawn 은
+    위 「게이트의 소비자」 절이 다루는 별개 계약이다.
 - **provider 계약.** `ApiProvider.chat()` 는 구조화된 `ChatResult`(text·toolCalls·finishReason·
   usage)를 반환한다. `LlmSession.send()` 는 하위호환을 위해 여전히 `string` 을 반환한다.
 
