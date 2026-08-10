@@ -111,6 +111,42 @@ const CORE_FS_MUTATING = [
 ]
 const CORE_FS_ALLOWLIST = [...CORE_FS_READONLY, ...CORE_FS_MUTATING]
 
+/**
+ * import 문 밖의 **대체 로더 경로**(Codex PR#282 6R). `no-restricted-imports`/ImportExpression 만으로는
+ * `process.getBuiltinModule('fs')` · `createRequire(import.meta.url)('node:fs')` · `require('fs')` ·
+ * `import('node:' + 'fs')`(비-리터럴 소스)가 전부 통과한다. tools/**(#174)가 이미 쓰는 가드를 코어
+ * 경계에도 건다 — 메시지만 코어용으로 바꾼 동형이다.
+ */
+const CORE_LOADER_GUARD_SYNTAX = [
+  "CallExpression[callee.name='createRequire']",
+  "MemberExpression[property.name='createRequire']",
+  "CallExpression[callee.name='require']",
+  "MemberExpression[property.name='require']",
+  "MemberExpression[property.name='getBuiltinModule']",
+  "ImportExpression[source.type!='Literal']",
+].map((selector) => ({
+  selector,
+  message:
+    '코어(src/main/core)는 allowlist 밖에서 대체 로더로 모듈을 얻지 않는다(#282). createRequire·require·getBuiltinModule·비-리터럴 동적 import 금지 — fs 경계 우회 차단.',
+}))
+
+/**
+ * **raw fs 재-export 금지**(6R): allowlist 안의 모듈이 `export { writeFileSync } from 'node:fs'` 로
+ * 능력을 흘리면, 그걸 import 하는 모듈은 fs 지정자를 안 쓰고도 변이할 수 있다. 재-export 는 정당한
+ * 용도가 없으므로 **코어 전역**에서 막는다(allowlist 안팎 모두).
+ *
+ * ⚠ **잔여 한계(은폐하지 않음)**: 「fs 를 감싼 *함수*를 export 」하는 것까지는 막지 못한다 — 그건
+ * 원리적으로 `DurableFs` 와 같은 형태이고, Fleet 은 그런 의도적 seam 을 **지정자 목록으로 추적**한다
+ * (`scripts/approval-gate-exceptions.test.ts` 의 seam 판정). 새 seam 을 만들면 그 목록에 등재해야 한다.
+ */
+const CORE_FS_REEXPORT_SYNTAX = ['ExportNamedDeclaration', 'ExportAllDeclaration'].flatMap((kind) =>
+  TOOLS_FS_MODULES.map((m) => ({
+    selector: `${kind}[source.value='${m}']`,
+    message:
+      '코어(src/main/core)는 raw fs 를 재-export 하지 않는다(#282). 능력을 흘리면 소비자가 allowlist 를 우회한다 — 의도적 seam 은 durable-fs 처럼 추적 가능한 모듈로 만들라.',
+  })),
+)
+
 /** allowlist 밖 코어 모듈의 fs 동적 import 차단(정적 가드는 ImportExpression 을 미방문). */
 const CORE_FS_DYNAMIC_IMPORT_SYNTAX = TOOLS_FS_MODULES.map((m) => ({
   selector: `ImportExpression[source.value='${m}']`,
@@ -153,6 +189,40 @@ const FS_MUTATION_DESTRUCTURE_SELECTORS = [
 // 정적 템플릿 computed fs[`writeFile`]·cp[`exec`] 봉쇄 — property.value(Literal) selector 가 TemplateLiteral
 // 을 놓침. tools/** 는 템플릿 computed 멤버 접근을 쓰지 않으므로 blanket 차단(정적 키는 dot 표기로).
 const TEMPLATE_COMPUTED_SELECTOR = `MemberExpression[computed=true][property.type='TemplateLiteral']`
+
+/** 읽기 전용 티어에 거는 fs 변형 차단(6R) — tools/**(#174)와 동형. 티어 라벨이 선언에 그치지 않게 한다. */
+const CORE_FS_READONLY_SYNTAX = [
+  {
+    // ⚠ **별칭 import 봉쇄**(실측: 이게 없으면 `import { writeFileSync as w }` + `w(p, x)` 가 전 가드를
+    // 통과한다 — bare-call 셀렉터는 호출명 `w` 를 못 잡는다). `imported.name` 은 별칭과 무관하다.
+    // `no-restricted-imports` 의 `importNames` 로는 못 한다 — 그건 `import * as fs` 까지 막아
+    // 읽기 전용 네임스페이스 사용을 오탐한다.
+    selector: `ImportSpecifier[imported.name=${FS_MUTATION_PATTERN}]`,
+    message:
+      '읽기 전용 티어(CORE_FS_READONLY)는 fs 변형 API 를 import 하지 않는다(#282 · 별칭 포함). 변형이 필요하면 CORE_FS_MUTATING 으로 옮기고 AGENTS.md 예외 열거·근거 절을 함께 갱신하라.',
+  },
+  {
+    selector: FS_MUTATION_SELECTOR,
+    message:
+      '읽기 전용 티어(CORE_FS_READONLY)는 raw fs 변형 메서드를 호출하지 않는다(#282). 변형이 필요하면 CORE_FS_MUTATING 으로 옮기고 AGENTS.md 예외 열거·근거 절을 함께 갱신하라.',
+  },
+  {
+    selector: FS_MUTATION_COMPUTED_SELECTOR,
+    message: '읽기 전용 티어는 computed fs 변형 호출(fs["writeFile"])을 하지 않는다(#282).',
+  },
+  {
+    selector: FS_MUTATION_CALL_SELECTOR,
+    message: '읽기 전용 티어는 구조분해된 fs 변형 함수의 bare 호출을 하지 않는다(#282).',
+  },
+  ...FS_MUTATION_DESTRUCTURE_SELECTORS.map((selector) => ({
+    selector,
+    message: '읽기 전용 티어는 fs 변형 함수를 구조분해하지 않는다(#282).',
+  })),
+  {
+    selector: TEMPLATE_COMPUTED_SELECTOR,
+    message: '읽기 전용 티어는 템플릿 computed 멤버 접근을 쓰지 않는다(#282).',
+  },
+]
 // createRequire 차단(#174, Codex P2): import('cross-spawn')/child_process 정적·동적 import 는 막히나
 // createRequire(import.meta.url)('cross-spawn') 로 임의 별칭 로드 후 호출하면 import 가드·callee 선택자
 // 모두 우회. tools 는 createRequire 가 불필요하므로 import·호출·멤버 전부 차단.
@@ -440,10 +510,10 @@ export default tseslint.config(
   // tools/** 는 자체 블록이 더 강한 계약(read-only)을 걸고 있어 제외 — 여기서 덮으면 그게 약화된다.
   // 테스트·테스트 더블은 임시 워크스페이스 준비로 fs 를 정상 사용 → 제외.
   {
-    files: ['src/main/core/**/*.ts'],
+    files: ['src/main/core/**/*.{ts,tsx}'],
     ignores: [
       ...CORE_FS_ALLOWLIST,
-      'src/main/core/**/*.test.ts',
+      'src/main/core/**/*.test.{ts,tsx}',
       'src/main/core/**/__testing__/**',
       'src/main/core/tools/**',
     ],
@@ -466,6 +536,51 @@ export default tseslint.config(
         'error',
         ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
         ...CORE_FS_DYNAMIC_IMPORT_SYNTAX,
+        ...CORE_LOADER_GUARD_SYNTAX,
+        ...CORE_FS_REEXPORT_SYNTAX,
+      ],
+    },
+  },
+  // 읽기 전용 티어 집행(#282 · Codex 6R). allowlist 를 「읽기 전용/변이」로 나눠 적어도, 읽기 전용
+  // 항목이 어느 날 writeFileSync 를 부르기 시작하면 blanket ignore 라 lint 도 대조 테스트도 무신호였다
+  // (티어 라벨이 수동 선언에 그침). tools/**(#174)와 동형 가드를 걸어 라벨을 집행으로 만든다.
+  // tools/** 는 더 강한 자체 블록이 있어 제외(여기서 덮으면 약화된다).
+  {
+    files: CORE_FS_READONLY.filter((f) => !f.startsWith('src/main/core/tools/')),
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: ELECTRON_IMPORT_PATHS,
+          // ⚠ `importNames` 는 쓰지 않는다 — `import * as fs` 를 「전체 import」로 보고 무조건 막아
+          // 읽기 전용 네임스페이스 사용(`path-guard.ts` 의 `fs.lstatSync`)까지 오탐한다(실측).
+          // 집행은 아래 **호출 지점 셀렉터**(CORE_FS_READONLY_SYNTAX)가 한다 — 별칭·구조분해·computed
+          // 전 형태를 잡으므로 import 이름 제한보다 정확하다.
+          patterns: ELECTRON_IMPORT_PATTERNS,
+        },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
+        ...CORE_FS_READONLY_SYNTAX,
+        ...CORE_FS_REEXPORT_SYNTAX,
+        ...CORE_LOADER_GUARD_SYNTAX,
+      ],
+    },
+  },
+  // raw fs 재-export 는 allowlist 안에서도 금지(#282 · 6R). 변이 티어가 능력을 흘리면 소비자가
+  // 경계를 우회한다. 코어 전역에 걸되 electron 가드를 함께 재선언한다(rule-key 교체 함정).
+  {
+    files: CORE_FS_MUTATING,
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { paths: ELECTRON_IMPORT_PATHS, patterns: ELECTRON_IMPORT_PATTERNS },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        ...ELECTRON_DYNAMIC_IMPORT_SYNTAX,
+        ...CORE_FS_REEXPORT_SYNTAX,
       ],
     },
   },

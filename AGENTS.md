@@ -65,9 +65,16 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
     destructive 조작은 게이트가 아니라 **대상 고정·소유 확인·create-only 경합**으로 막는다.
     (이 구분을 문면에 두지 않아 리뷰에서 반복 지적된 항목 — ADR-0013.)
     이 열거는 산문이 아니라 **계약**이다. 강제는 **eslint 가 구조로, 테스트가 대조로** 나눠 한다:
-    - **`eslint.config.mjs` 의 `CORE_FS_ALLOWLIST`** 밖에서는 `src/main/core/**` 가 fs 를 **어떤
-      형태로도 import 할 수 없다**(정적·동적·`export … from`). 즉 fs 를 만지려면 반드시 이름을
-      올려야 하고, 그 편집이 리뷰 지점이다. allowlist 는 **읽기 전용 / 변이** 두 티어로 나눠 적는다.
+    - **`eslint.config.mjs` 의 `CORE_FS_ALLOWLIST`** 밖에서는 `src/main/core/**`(`.ts`·`.tsx`)가 fs 를
+      **어떤 형태로도 얻을 수 없다** — 정적 import·동적 import·비-리터럴 동적 import·`require`·
+      `createRequire`·`process.getBuiltinModule`. 즉 fs 를 만지려면 반드시 이름을 올려야 하고, 그
+      편집이 리뷰 지점이다.
+    - allowlist 는 **읽기 전용 / 변이** 두 티어로 나눠 적고, **읽기 전용 티어는 라벨이 아니라 집행**
+      이다 — fs 변형 메서드 호출·구조분해·computed 접근·**별칭 import**(`{ writeFileSync as w }`)를
+      전부 막는다. 변형이 필요해지면 변이 티어로 옮기고 이 문단·근거 절을 함께 고쳐야 한다.
+    - **raw fs 재-export 는 allowlist 안에서도 금지**한다(`export { writeFileSync } from 'node:fs'`).
+      능력을 흘리면 소비자가 경계를 우회한다. 의도적 seam 은 `durable-fs` 처럼 **지정자로 추적 가능한
+      모듈**로 만들고 테스트의 seam 판정에 등재한다.
     - **`scripts/approval-gate-exceptions.test.ts`** 가 대조한다: ①allowlist == 실제 fs 소비자(목록
       staleness 차단) ②**변이 티어 ∪ `DurableFs` 소비자 == 위 열거** ③열거 == 근거 절 보유 모듈
       (양방향) ④근거 절이 소비자 모듈을 삼키지 않는 형태인지 ⑤eslint 게이트 블록의 존재.

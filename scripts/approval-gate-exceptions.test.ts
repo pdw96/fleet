@@ -95,7 +95,9 @@ const coreSources = (): string[] => {
       const p = join(dir, e.name)
       if (e.isDirectory()) {
         if (e.name !== '__testing__') walk(p)
-      } else if (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) out.push(p)
+      } else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) out.push(p)
+      // ⚠ `.tsx` 도 센다(Codex PR#282 6R): 빌드는 컴파일하는데 스캔·lint 만 `.ts` 로 좁으면
+      // 프로덕션 헬퍼를 `.tsx` 로 두는 것만으로 경계 밖이 된다.
     }
   }
   walk(CORE)
@@ -124,7 +126,9 @@ const exceptionBullet = (): string => {
 /** 불릿 안의 백틱 토큰 중 **코어 모듈 경로 형태**만. `.test.ts` 는 테스트 파일이라 제외. */
 const enumeratedModules = (): string[] => {
   const toks = [...exceptionBullet().matchAll(/`([^`]+)`/g)].map((m) => m[1])
-  return toks.filter((t) => /^(?:[a-z0-9-]+\/)*[a-z0-9-]+\.ts$/.test(t) && !t.endsWith('.test.ts'))
+  return toks.filter(
+    (t) => /^(?:[a-z0-9-]+\/)*[a-z0-9-]+\.tsx?$/.test(t) && !/\.test\.tsx?$/.test(t),
+  )
 }
 
 const eslintConfig = read(ESLINT)
@@ -183,6 +187,13 @@ describe('ApprovalGate 예외 — fs import 경계 게이트(#282)', () => {
     // 게이트 블록이 allowlist 를 ignores 로 쓰고, 금지 패턴에 fs 모듈군을 건다.
     expect(eslintConfig).toMatch(/ignores: \[\s*\.\.\.CORE_FS_ALLOWLIST/)
     expect(eslintConfig).toMatch(/group: TOOLS_FS_MODULES/)
+    // 6R: 대체 로더·raw 재-export·읽기 전용 티어 집행이 모두 걸려 있어야 한다.
+    expect(eslintConfig).toContain('CORE_LOADER_GUARD_SYNTAX')
+    expect(eslintConfig).toContain('CORE_FS_REEXPORT_SYNTAX')
+    expect(eslintConfig).toContain('CORE_FS_READONLY_SYNTAX')
+    expect(eslintConfig).toContain('getBuiltinModule')
+    // 확장자 사각 차단 — 경계 블록이 .tsx 도 덮는다.
+    expect(eslintConfig).toMatch(/files: \['src\/main\/core\/\*\*\/\*\.\{ts,tsx\}'\]/)
   })
 
   it('allowlist == 실제 fs 소비자(목록이 낡지도, 과대하지도 않다)', () => {
