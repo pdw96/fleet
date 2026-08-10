@@ -185,6 +185,27 @@ const CORE_LOADER_GUARD_SYNTAX = [
  * (런타임 능력이 없다). 실측 비용 0 — 코어·서버·transport 전체의 소스 있는 재-export 는
  * `export type { … } from '../../../shared/types'` **한 건**이고 상대경로 타입 전용이다.
  */
+/**
+ * **테스트 모듈은 프로덕션이 import 하지 않는다**(Codex 15R). fs 경계는 `*.test.*` 를 제외하고
+ * 대조 스캔도 같은 확장자를 건너뛰는데, 프로덕션 코어 파일이 테스트 모듈을 **사이드이펙트로**
+ * import 하면 그 모듈이 `writeFileSync` 를 들여와 모듈 초기화 시점에 실행할 수 있다 —
+ * `tsconfig.node.json` 이 `src/main` 전체를 포함하므로 번들에도 들어간다. lint 도 대조도 무신호다.
+ *
+ * `__testing__`(13R)은 「경계 안에 넣기」로 풀었지만 테스트 파일은 그럴 수 없다 — 임시 워크스페이스
+ * 준비로 fs 를 정상 사용하는 게 테스트의 본업이라 경계에 넣으면 전부 RED 다. 그래서 여기서는 반대편,
+ * 즉 **import 하는 쪽**을 막는다. 코어 전역(테스트 포함)에 걸며 실측 사용 0 건이라 비용이 없다.
+ */
+const CORE_TEST_IMPORT_SYNTAX = [
+  'ImportDeclaration',
+  'ImportExpression',
+  'ExportNamedDeclaration',
+  'ExportAllDeclaration',
+].map((kind) => ({
+  selector: `${kind}[source.value=/\\.test(\\..+)?$/]`,
+  message:
+    '코어는 테스트 모듈을 import·재-export 하지 않는다(#282 · 15R). 테스트는 fs 경계 밖이라, 프로덕션이 이를 끌어오면 모듈 초기화 시점에 게이트 없는 쓰기가 번들에 들어간다 — 공유가 필요하면 프로덕션 모듈이나 `__testing__` 더블로 옮겨라.',
+}))
+
 const CORE_BARE_REEXPORT_SYNTAX = ['ExportNamedDeclaration', 'ExportAllDeclaration'].map(
   (kind) => ({
     selector: `${kind}[source][exportKind!='type']:not([source.value=/^\\./])`,
@@ -331,6 +352,7 @@ const CORE_GUARD_SYNTAX = [
   // 의도한 중복이다 — 겹치는 줄은 어차피 금지된 줄이고, 흔한 경우에 더 구체적인 메시지를 주는 쪽이
   // 진단으로 낫다. 일반 규칙은 **아직 이름을 모르는** 빌트인까지 덮는 안전망이다.
   ...CORE_BARE_REEXPORT_SYNTAX,
+  ...CORE_TEST_IMPORT_SYNTAX,
 ]
 
 /**

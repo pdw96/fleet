@@ -317,41 +317,6 @@ describe('실패 종별 소진 강제 ESLint 게이트 (#251 PR2a)', () => {
  * 를 선언하는 **모든** 블록은 공통 묶음을 포함한다」를 불변식으로 세운다.
  */
 describe('fs 경계 가드 override 방지 (#282)', () => {
-  const CORE_SCOPED = /^src\/(main\/core|server|shared\/transport)\//
-  const coreSyntaxBlocks = blocks.filter(
-    (c) =>
-      c.files?.some((f) => CORE_SCOPED.test(f)) === true &&
-      c.rules?.['no-restricted-syntax'] !== undefined,
-  )
-
-  it('앵커: 코어 스코프에서 no-restricted-syntax 를 쓰는 블록이 복수다', () => {
-    expect(coreSyntaxBlocks.length).toBeGreaterThanOrEqual(4)
-  })
-
-  /** 공통 묶음의 대표 셀렉터 — 하나라도 빠지면 그 블록에서 해당 방어가 사라진 것이다. */
-  const REQUIRED = [
-    "ImportExpression[source.value='electron']",
-    "ImportExpression[source.type!='Literal']",
-    "ExportNamedDeclaration[source.value='node:fs']",
-    // 14R: 외부(bare) 모듈 재-export 금지 — 아직 이름을 모르는 빌트인의 로더 능력까지 덮는 안전망.
-    "ExportNamedDeclaration[source][exportKind!='type']:not([source.value=/^\\./])",
-  ]
-
-  it('모든 코어 스코프 블록이 공통 가드(electron·로더·fs 재-export)를 포함한다', () => {
-    for (const block of coreSyntaxBlocks) {
-      const entries = (block.rules?.['no-restricted-syntax'] ?? []).slice(1) as {
-        selector?: string
-      }[]
-      const selectors = entries.map((e) => e.selector)
-      for (const required of REQUIRED) {
-        expect(
-          selectors,
-          `블록 files=${JSON.stringify(block.files)} 에 "${required}" 가 없다 — CORE_GUARD_SYNTAX 를 스프레드하라(flat config 는 rule-key 를 교체한다)`,
-        ).toContain(required)
-      }
-    }
-  })
-
   // flat config 는 rule-key 를 교체하므로 실제로 적용되는 건 **마지막 매칭 블록**뿐이다.
   // 이 레포가 쓰는 glob 형태만 다루는 최소 매처(`**/*.{a,b}` · 디렉터리 prefix · 리터럴 경로).
   const matches = (glob: string, file: string): boolean => {
@@ -376,27 +341,77 @@ describe('fs 경계 가드 override 방지 (#282)', () => {
       `미지원 glob 형태: ${glob} — 최소 매처를 확장하라(조용한 미매치는 잘못된 GREEN 을 만든다).`,
     )
   }
+  /**
+   * 이 블록이 이 파일에 적용되는가 — **`files` 가 없으면 전 파일에 적용된다**(Codex 15R).
+   * 앞서 이 층은 「`files` 중 하나가 코어 경로 접두로 시작하는가」로 블록을 골랐는데, 그러면
+   * `files: ['**\/*.ts']` 같은 광범위 블록이나 `files` 자체가 없는 블록이 **선별에서 빠지면서도**
+   * 코어 파일의 `no-restricted-syntax` 를 실제로는 교체한다 — 경계가 사라져도 이 테스트는 green 이다.
+   */
+  const appliesTo = (c: (typeof blocks)[number], file: string): boolean =>
+    (c.files === undefined || c.files.some((f) => matches(f, file))) &&
+    (c as { ignores?: string[] }).ignores?.some((g) => matches(g, file)) !== true
+
+  /** `no-restricted-syntax` 를 선언하는 블록 전량 — 스코프 표기가 아니라 **실제 겹침**으로 고른다. */
+  const syntaxBlocks = blocks.filter((c) => c.rules?.['no-restricted-syntax'] !== undefined)
+
+  /** allowlist 티어 블록 = `files` 가 전부 리터럴 경로인 블록(=`CORE_FS_*` 상수를 그대로 받은 것). */
+  const tierFilesContaining = (probe: string): string[] =>
+    syntaxBlocks.find(
+      (c) => c.files?.every((f) => !f.includes('*')) === true && c.files.includes(probe),
+    )?.files ?? []
+  const mutatingFiles = tierFilesContaining('src/main/core/store/json-file.ts')
+  const readonlyFiles = tierFilesContaining('src/main/core/workspace/path-guard.ts')
+
+  /** 코어 대표 파일 — 티어 전량 + 비-allowlist 코어 + 게이트가 덮는 다른 두 스코프. */
+  const CORE_PROBES = [
+    ...mutatingFiles,
+    ...readonlyFiles,
+    'src/main/core/workbench/journal.ts',
+    'src/main/core/engine.ts',
+    'src/server/access-jwt.ts',
+    'src/shared/transport/channels.ts',
+  ]
+  const coreSyntaxBlocks = syntaxBlocks.filter((c) => CORE_PROBES.some((f) => appliesTo(c, f)))
+
   const lastFor = (file: string) =>
-    [...coreSyntaxBlocks]
-      .reverse()
-      .find(
-        (c) =>
-          c.files?.some((f) => matches(f, file)) === true &&
-          (c as { ignores?: string[] }).ignores?.some((g) => matches(g, file)) !== true,
-      )
+    // ⚠ **전체 블록에서 찾는다**(15R): 코어 스코프로 선별된 것만 보면, 뒤에 오는 광범위 블록이
+    // 실제 최종 규칙인데도 그 존재를 못 본다.
+    [...syntaxBlocks].reverse().find((c) => appliesTo(c, file))
   const effectiveSelectors = (file: string): string[] =>
     (
       (lastFor(file)?.rules?.['no-restricted-syntax'] ?? []).slice(1) as { selector?: string }[]
     ).map((e) => e.selector ?? '')
 
-  /** allowlist 티어 블록 = `files` 가 전부 리터럴 경로인 코어 블록(=`CORE_FS_*` 상수를 그대로 받은 것). */
-  const tierBlocks = coreSyntaxBlocks.filter(
-    (c) => c.files?.every((f) => !f.includes('*')) === true,
-  )
-  const tierFilesContaining = (probe: string): string[] =>
-    tierBlocks.find((c) => c.files?.includes(probe))?.files ?? []
-  const mutatingFiles = tierFilesContaining('src/main/core/store/json-file.ts')
-  const readonlyFiles = tierFilesContaining('src/main/core/workspace/path-guard.ts')
+  it('앵커: 코어에 적용되는 no-restricted-syntax 블록이 복수다', () => {
+    expect(coreSyntaxBlocks.length).toBeGreaterThanOrEqual(4)
+    expect(CORE_PROBES.every((f) => lastFor(f) !== undefined)).toBe(true)
+  })
+
+  /** 공통 묶음의 대표 셀렉터 — 하나라도 빠지면 그 블록에서 해당 방어가 사라진 것이다. */
+  const REQUIRED = [
+    "ImportExpression[source.value='electron']",
+    "ImportExpression[source.type!='Literal']",
+    "ExportNamedDeclaration[source.value='node:fs']",
+    // 14R: 외부(bare) 모듈 재-export 금지 — 아직 이름을 모르는 빌트인의 로더 능력까지 덮는 안전망.
+    "ExportNamedDeclaration[source][exportKind!='type']:not([source.value=/^\\./])",
+    // 15R: 프로덕션이 테스트 모듈을 끌어와 경계 밖 쓰기를 번들에 넣는 경로 차단.
+    'ImportDeclaration[source.value=/\\.test(\\..+)?$/]',
+  ]
+
+  it('코어에 적용되는 모든 블록이 공통 가드(electron·로더·재-export·테스트 import)를 포함한다', () => {
+    for (const block of coreSyntaxBlocks) {
+      const entries = (block.rules?.['no-restricted-syntax'] ?? []).slice(1) as {
+        selector?: string
+      }[]
+      const selectors = entries.map((e) => e.selector)
+      for (const required of REQUIRED) {
+        expect(
+          selectors,
+          `블록 files=${JSON.stringify(block.files)} 에 "${required}" 가 없다 — CORE_GUARD_SYNTAX 를 스프레드하라(flat config 는 rule-key 를 교체한다)`,
+        ).toContain(required)
+      }
+    }
+  })
 
   it('앵커: 두 allowlist 티어 블록이 실존하고 비어 있지 않다', () => {
     expect(mutatingFiles.length).toBeGreaterThanOrEqual(4)

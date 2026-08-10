@@ -82,6 +82,9 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
       더 나아가 코어는 **bare 지정자 재-export 자체를 하지 않는다** — `export { getBuiltinModule as f }
       from 'node:process'` 처럼 빌트인이 로더 능력을 named export 로 노출하면 모듈 이름을 하나씩
       막는 방식은 끝나지 않는다(`module`·`process`·다음 것). 상대경로·타입 전용은 허용한다.
+    - **테스트 모듈은 import 하지 않는다**(`*.test.*`). 테스트는 임시 워크스페이스 준비로 fs 를 정상
+      사용하므로 경계 밖에 두는데, 프로덕션이 이를 사이드이펙트로 끌어오면 모듈 초기화 시점의 게이트
+      없는 쓰기가 그대로 번들에 들어간다. 반면 `__testing__` 더블은 **경계 안**이다(fs 를 얻지 못한다).
     - **`scripts/approval-gate-exceptions.test.ts`** 가 대조한다: ①allowlist == 실제 fs 소비자(목록
       staleness 차단) ②**변이 티어 ∪ 하위프로세스 변이 티어 ∪ `DurableFs` 소비자 == 위 열거**
       ③열거 == 근거 절 보유 모듈(양방향) ④근거 절이 소비자 모듈을 삼키지 않는 형태인지
