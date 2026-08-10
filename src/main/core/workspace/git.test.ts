@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -358,45 +358,59 @@ describe('createWorkspace.removeWorktree', () => {
     ).toBe(true)
   })
 
-  it('resolves the lock path via --git-path for a linked worktree', async () => {
-    // 결함 ②: linked worktree 의 .git 은 gitdir 파일 → 락은 <main>/.git/worktrees/<id>/index.lock.
-    // ok() 의 stale-lock 제거가 rev-parse --git-path index.lock 으로 worktree 락을 동적으로 해소해야 한다.
-    //
-    // 시나리오: checkpoint()→rev-parse HEAD 의 첫 시도가 LOCK_RE 매치 에러를 반환.
-    // ok() 는 재시도(attempt=1)에 진입하고 attempt>=1 이므로 lockPath()를 호출한다.
-    // lockPath() 는 rev-parse --git-path index.lock 을 실행 → lockProbed=true.
-    // 두 번째 rev-parse HEAD 시도는 성공(code:0) → ok() 가 정상 반환.
-    const g = fakeGit()
-    let lockProbed = false
-    // addWorktree 내부의 worktree add 호출 횟수를 추적해 첫 rev-parse HEAD 시도를 구분한다
-    let revParseHeadCalls = 0
-    g.setReply((args) => {
-      // lockPath() 호출: rev-parse --git-path index.lock → 호출 여부 기록 + 유효 경로 반환
-      if (args[0] === 'rev-parse' && args.includes('--git-path')) {
-        lockProbed = true
-        return { code: 0, stdout: '/ws/../.git/worktrees/t1/index.lock', stderr: '' }
-      }
-      // checkpoint() 내부의 rev-parse HEAD: 첫 호출만 LOCK_RE 에러, 이후는 성공
-      if (args[0] === 'rev-parse' && args.includes('HEAD')) {
-        revParseHeadCalls++
-        if (revParseHeadCalls === 1) {
-          // LOCK_RE = /index\.lock|Another git process/i 에 매치 → ok() 가 재시도 경로 진입
-          return {
-            code: 128,
-            stdout: '',
-            stderr: "fatal: Unable to create '/ws/.git/index.lock': File exists.",
-          }
+  it('락으로 소진하면 --git-path 로 락 경로를 해소해 실패 메시지에 싣는다', async () => {
+    // linked worktree 의 .git 은 gitdir 파일 → 락은 <main>/.git/worktrees/<id>/index.lock 이다.
+    // 삭제는 하지 않지만(모듈 상단 근거), **어디가 막혔는지**는 알려줘야 하므로 실패 경로에서
+    // rev-parse --git-path index.lock 으로 실제 경로를 해소한다.
+    const root = mkdtempSync(join(tmpdir(), 'fleet-ws-lock-'))
+    const lock = join(root, 'index.lock')
+    writeFileSync(lock, '') // 실존해야 힌트가 붙는다
+    try {
+      const g = fakeGit()
+      let lockProbed = false
+      g.setReply((args) => {
+        if (args[0] === 'rev-parse' && args.includes('--git-path')) {
+          lockProbed = true
+          return { code: 0, stdout: lock, stderr: '' }
         }
-        return { code: 0, stdout: 'deadbeef', stderr: '' }
-      }
-      // worktree add 등 나머지 명령은 모두 성공
-      return { code: 0, stdout: '', stderr: '' }
-    })
-    const ws = createWorkspace('/ws', g.runner)
-    const wt = await ws.addWorktree('t1', 'base')
-    await wt.checkpoint()
-    // lockPath()가 실제로 호출됐음을 단언 — || true 없이 회귀 방지력 보장
-    expect(lockProbed).toBe(true)
+        // 모든 회차를 락 에러로 소진시킨다.
+        return {
+          code: 128,
+          stdout: '',
+          stderr: "fatal: Unable to create '" + lock + "': File exists.",
+        }
+      })
+      const ws = createWorkspace(root, g.runner)
+      await expect(ws.checkpoint()).rejects.toThrow(/락 파일이 남아 있다/)
+      expect(lockProbed).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * **회귀 가드**(PR#282 · Codex 2R P1 + CodeRabbit): 예전 `ok()` 는 2회차부터 `index.lock` 을
+   * 강제 삭제했다. 그 근거였던 「오케스트레이터 순차 실행」 전제는 ttyd 가 `/workspace` 를 공유하는
+   * 출하 형상에서 거짓이고, 살아있는 락을 지우면 staged 상태가 유실된다. **외부 락은 보존**한다.
+   */
+  it('락으로 소진해도 외부 index.lock 을 삭제하지 않는다', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fleet-ws-lock-keep-'))
+    const lock = join(root, 'index.lock')
+    writeFileSync(lock, 'foreign')
+    try {
+      const g = fakeGit()
+      g.setReply((args) => {
+        if (args[0] === 'rev-parse' && args.includes('--git-path'))
+          return { code: 0, stdout: lock, stderr: '' }
+        return { code: 128, stdout: '', stderr: 'fatal: Another git process seems to be running' }
+      })
+      const ws = createWorkspace(root, g.runner)
+      await expect(ws.checkpoint()).rejects.toThrow('git')
+      expect(existsSync(lock)).toBe(true)
+      expect(readFileSync(lock).toString()).toBe('foreign')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
