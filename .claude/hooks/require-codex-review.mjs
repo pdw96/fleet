@@ -50,14 +50,24 @@ export const FALLBACK_MARKER = '[codex-gate-fallback]'
  * gh 로 확장) → `${VAR}` 통째 제거(15R) → 따옴표·백슬래시·`$` 제거(g''h·g\h — 4R·5R,
  * `g$'h'` — 9R) → 퍼센트 디코드(REST `m%65rge` — 14R, 서버가 1회 디코드하므로 1회면 충분).
  */
-function scanVariants(s) {
-  const stripped = s
+/**
+ * 셸 확장·분절 표기를 걷어낸 형태(스캔용) — 연속행 쌍, ANSI-C 이스케이프(\xHH·\uHHHH·8진),
+ * 위치/특수 매개변수(`$@`·`$*`·`$1`… — 17R: `g$@h` 는 `$` 만 지우면 `g@h` 로 남아 미탐),
+ * `${VAR}`, 따옴표·백슬래시·`$` 를 제거한다. alias 확장의 이행 대조(17R)도 이 형태를 쓴다.
+ */
+export function stripShellExpansions(s) {
+  return s
     .replace(/\\\r?\n/g, '')
     .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
     .replace(/\\([0-7]{1,3})(?![0-9])/g, (_, o) => String.fromCharCode(parseInt(o, 8)))
+    .replace(/\$[@*#?!0-9-]/g, '')
     .replace(/\$\{[^}]*\}/g, '')
     .replace(/['"\\$]/g, '')
+}
+
+function scanVariants(s) {
+  const stripped = stripShellExpansions(s)
   const decoded = (x) => {
     try {
       return decodeURIComponent(x)
@@ -421,7 +431,9 @@ function main() {
         grew = false
         for (const [key, { exp }] of aliases) {
           if (mergey.has(key)) continue
-          const expTokens = exp.split(/\s+/)
+          // 확장 안의 alias 참조는 분절 표기를 담을 수 있다(17R P1: `!gh p''x "$@"`) —
+          // 신호 스캔과 같은 확장 제거 형태로 토큰화해 대조한다.
+          const expTokens = stripShellExpansions(exp).split(/\s+/)
           for (const mk of mergey) {
             if (containsSeq(expTokens, aliases.get(mk).name)) {
               mergey.add(key)

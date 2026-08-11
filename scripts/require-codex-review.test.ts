@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import {
   hasMergeSignal,
   hasMergeWord,
+  stripShellExpansions,
   parseCanonicalMerge,
   classifyHookInput,
   tokenizeSegments,
@@ -35,6 +36,8 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'gh api -X PUT repos/o/r/pulls/222/m%65rge', // 14R: 퍼센트 인코딩 REST 경로
       'g${EMPTY}h pr mer${EMPTY}ge 222 --squash', // 15R: 미설정 변수 확장 분절
       "$'\\x67\\x68' pr $'\\x6d\\x65\\x72\\x67\\x65' 222 --squash", // 16R: ANSI-C \xHH 확장
+      'g$@h pr mer$@ge 222 --squash', // 17R: 위치 매개변수 분절(무인자 시 빈 확장)
+      'g$*h pr mer$1ge 222 --squash', // 17R: $*·$N 변형
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -185,6 +188,11 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(hasMergeWord('!gh pr m\'\'erge "$@"')).toBe(true)
     expect(hasMergeWord('pr merge')).toBe(true)
     expect(hasMergeWord('pr view')).toBe(false)
+  })
+  it('stripShellExpansions — alias 이행 대조용 정규화(17R P1)', () => {
+    // `!gh p''x "$@"` 안의 분절 참조 p''x 가 px 토큰으로 복원돼 이행 전파가 잇는다
+    expect(stripShellExpansions('!gh p\'\'x "$@"').split(/\s+/)).toContain('px')
+    expect(stripShellExpansions('g$@h pr mer$@ge')).toBe('gh pr merge')
   })
   it('서브커맨드 자리의 셸 확장은 blocked — 병합 동사 은닉 가능(13R P1)', () => {
     expect(classify('. /tmp/action.env && gh pr $ACTION 222 --squash').kind).toBe('blocked')
