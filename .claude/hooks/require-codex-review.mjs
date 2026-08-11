@@ -84,6 +84,52 @@ export function stripShellExpansions(s) {
     .replace(/['"\\$]/g, '')
 }
 
+// 다문자 brace 확장(33R P1: `m{erg,x}e` — 단일문자 접기만으론 미탐)을 bash 시맨틱으로
+// 전개한다. 대안(`,`)과 범위(`..`)만 전개 대상 — 무대안 `{word}` 는 bash 도 리터럴로 남긴다.
+// 전개 수가 캡을 넘으면 정적 열거 불가 = overflow 로 보고하고, 신호 술어가 fail-closed 로
+// 흡수한다(능력 토큰 동반 시 병합 단어 존재로 간주).
+const BRACE_CAP = 512
+function expandBraceAlternations(s) {
+  const variants = [s]
+  let overflow = false
+  for (let steps = 0; ; steps++) {
+    if (steps > BRACE_CAP * 8) {
+      overflow = true
+      break
+    }
+    const idx = variants.findIndex((v) => /\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(v))
+    if (idx === -1) break
+    const v = variants[idx]
+    const m = v.match(/\{([^{}]*(?:,|\.\.)[^{}]*)\}/)
+    const body = m[1]
+    let alts
+    const range = body.match(/^(-?\d+)\.\.(-?\d+)$|^(.)\.\.(.)$/)
+    if (range) {
+      const [a, b] =
+        range[1] !== undefined
+          ? [parseInt(range[1], 10), parseInt(range[2], 10)]
+          : [range[3].codePointAt(0), range[4].codePointAt(0)]
+      const n = Math.abs(b - a) + 1
+      if (n > BRACE_CAP) {
+        overflow = true
+        break
+      }
+      const step = Math.sign(b - a) || 1
+      const render = range[1] !== undefined ? String : String.fromCodePoint
+      alts = Array.from({ length: n }, (_, i) => render(a + step * i))
+    } else {
+      alts = body.split(',')
+    }
+    const expanded = alts.map((alt) => v.slice(0, m.index) + alt + v.slice(m.index + m[0].length))
+    variants.splice(idx, 1, ...expanded)
+    if (variants.length > BRACE_CAP) {
+      overflow = true
+      break
+    }
+  }
+  return { variants, overflow }
+}
+
 function scanVariants(s) {
   const stripped = stripShellExpansions(s)
   // `${X:-h}` 류 매개변수 확장은 미설정 시 피연산자로 치환된다(21R P1) — 피연산자를 남긴
@@ -105,12 +151,22 @@ function scanVariants(s) {
       return x
     }
   }
-  return [s, stripped, defaulted, decoded(s), decoded(stripped)]
+  const bases = [s, stripped, defaulted, decoded(s), decoded(stripped)]
+  const out = new Set()
+  let overflow = false
+  for (const b of bases) {
+    const e = expandBraceAlternations(b)
+    overflow ||= e.overflow
+    out.add(b)
+    for (const v of e.variants) out.add(v)
+  }
+  return { variants: [...out], overflow }
 }
 
 /** 병합 능력 단어(merge·enqueuePullRequest — 13R) 존재 — gh 문맥 없이도 판단(alias 확장용). */
 export function hasMergeWord(s) {
-  return scanVariants(s).some((v) => /merge|enqueuepullrequest/i.test(v))
+  const { variants, overflow } = scanVariants(s)
+  return overflow || variants.some((v) => /merge|enqueuepullrequest/i.test(v))
 }
 
 /**
@@ -127,10 +183,13 @@ export function aliasIsSuspect(exp) {
 }
 
 export function hasMergeSignal(cmd) {
-  const signal = (s) =>
-    /merge|enqueuepullrequest/i.test(s) &&
-    (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s))
-  return scanVariants(cmd).some(signal)
+  const capability = (s) =>
+    /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s)
+  const signal = (s) => /merge|enqueuepullrequest/i.test(s) && capability(s)
+  const { variants, overflow } = scanVariants(cmd)
+  // brace 전개 overflow = 병합 단어 존재를 정적으로 배제할 수 없음 — 능력 토큰이 있으면
+  // 신호로 취급한다(fail-closed).
+  return variants.some(signal) || (overflow && variants.some(capability))
 }
 
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
@@ -425,6 +484,33 @@ export function classifyHookInput(input) {
       allSegments.some((seg) => seg.some((t) => /^(GH_[A-Z0-9_]*|PATH)=/.test(t.text)))
     )
       return { kind: 'blocked', reason: 'gh 호출과 GH_*/PATH 대입 동반 — 관측 환경 불일치' }
+    // argv/스크립트가 명령 밖에서 조립되는 실행 경유는 인자를 관측할 수 없다(33R P1:
+    // `printf 'pr m%crge …' e | xargs gh` — 원문에 연속 병합 단어가 없어 신호 미발동).
+    // 조립기(xargs·parallel)의 인자에 gh/GitHub 능력 토큰이 보이거나, 능력 토큰이 있는
+    // 명령에서 본문 없는 셸 인터프리터(stdin 스크립트)가 실행되면 차단한다.
+    const CAPABILITY = /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)|api\.github\.com|graphql/iu
+    for (const detailed of allSegments) {
+      const tokens = detailed.map((t) => t.text)
+      const exeIdx = tokens.findIndex((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t))
+      if (exeIdx === -1) continue
+      const exe = tokens[exeIdx].toLowerCase().replace(/^.*[\\/]/, '')
+      if (
+        (exe === 'xargs' || exe === 'parallel') &&
+        CAPABILITY.test(tokens.slice(exeIdx + 1).join(' '))
+      )
+        return {
+          kind: 'blocked',
+          reason: 'argv 를 명령 밖(stdin/파일)에서 조립하는 gh 호출 — 관측 불가',
+        }
+      if (/^(sh|bash|zsh|dash|ksh)(\.exe)?$/.test(exe) && CAPABILITY.test(cmd)) {
+        const rest = tokens.slice(exeIdx + 1)
+        if (!rest.includes('-c') && !rest.some((t) => !t.startsWith('-')))
+          return {
+            kind: 'blocked',
+            reason: '셸 인터프리터가 스크립트를 stdin 에서 읽음 — 관측 불가',
+          }
+      }
+    }
     for (const detailed of allSegments) {
       const tokens = detailed.map((t) => t.text)
       const hasGh = tokens.some((t) => {

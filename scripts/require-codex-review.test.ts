@@ -50,6 +50,12 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'gh pr m[e-e]rge 222 --squash', // 23R: 단일문자 범위 글롭
       'gh pr m@(e)rge 222 --squash', // 31R: extglob 분절
       "bash -O extglob -c 'gh pr m@(e)rge 222 --squash'", // 31R: 인터프리터 경유 extglob
+      'gh pr m{erg,x}e 222 --squash --match-head-commit abc', // 33R: 다문자 brace 대안
+      "bash -c 'gh pr m{erg,x}e 222 --squash --match-head-commit abc'", // 33R: 인터프리터 경유
+      'gh pr m{e..e}rge 222 --squash', // 33R: 다문자 문맥의 범위 brace
+      'gh pr m{x,e}{y,r}ge 222 --squash', // 33R: 병합 단어가 두 그룹에 걸침
+      // 33R: 전개 캡 초과(2^10)는 정적 열거 불가 — 능력 토큰 동반이면 fail-closed 발동
+      `gh x ${'{a,b}'.repeat(10)}`,
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -60,6 +66,8 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'gh pr create --title x',
       'npm run verify',
       'echo high merger', // "high"의 gh 는 단어 경계 밖
+      // 33R: jq 오브젝트의 brace 는 전개해도 병합 단어가 생기지 않는다(오탐 없음)
+      "gh api --paginate repos/o/r/pulls/288/reviews --jq '.[] | {id, state, commit_id, submitted_at}'",
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(false)
   })
@@ -209,6 +217,28 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('gh api -X PUT repos/pdw96/fleet/pulls/222/{branch}').kind).toBe('blocked')
     // {owner}/{repo} 는 레포 스코프 치환이라 리터럴 취급 유지(비병합 경로 pass)
     expect(classify('gh api repos/{owner}/{repo}/issues -f title=hi').kind).toBe('pass')
+  })
+  it('argv 를 명령 밖에서 조립하는 gh 호출은 신호 없어도 blocked — 관측 불가(33R P1)', () => {
+    // printf %c 로 조립된 인자를 xargs 가 gh 에 전달 — 원문에 연속 병합 단어 없음
+    expect(
+      classify("printf 'pr m%crge 222 --squash --match-head-commit abc' e | xargs gh").kind,
+    ).toBe('blocked')
+    expect(classify('cat /tmp/args.txt | xargs -I{} gh {}').kind).toBe('blocked')
+    expect(classify('parallel gh ::: a b').kind).toBe('blocked')
+    // 능력 토큰이 있는 명령의 stdin 스크립트 인터프리터도 동일 — 스크립트 관측 불가
+    expect(classify("printf 'gh pr m%crge 222' e | sh").kind).toBe('blocked')
+    expect(classify("printf 'gh pr m%crge 222' e | bash -s").kind).toBe('blocked')
+    // gh/GitHub 무관 조립·인라인 본문(-c)은 pass — 관할은 명령에 보이는 병합 능력만
+    expect(classify('ls *.txt | xargs rm -f').kind).toBe('pass')
+    expect(classify('echo hi | sh').kind).toBe('pass')
+  })
+  it('다문자 brace 전개는 신호를 거쳐 canonical 요구로 넘어간다(33R P1)', () => {
+    expect(classify('gh pr m{erg,x}e 222 --squash --match-head-commit abc').kind).toBe('blocked')
+    expect(classify("bash -c 'gh pr m{erg,x}e 222 --squash --match-head-commit abc'").kind).toBe(
+      'blocked',
+    )
+    // 전개 캡 초과 + 능력 토큰 = fail-closed blocked
+    expect(classify(`gh x ${'{a,b}'.repeat(10)}`).kind).toBe('blocked')
   })
   it('hasMergeWord — 셸 alias 확장의 분절 표기도 잡는다(16R P1)', () => {
     expect(hasMergeWord('!gh pr m\'\'erge "$@"')).toBe(true)
