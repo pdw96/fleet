@@ -119,6 +119,10 @@ describe('parseCanonicalMerge — 형태 이탈은 전부 null(차단)', () => {
     ['미지 전역 플래그', 'gh --hostname ghe.example pr merge 5'],
     ['셸 확장 타깃', 'gh pr merge $PR'],
     [
+      '값 플래그의 셸 확장(워드 분할로 --auto 주입 가능)',
+      'gh pr merge 5 --body $BODY --match-head-commit abc',
+    ],
+    [
       '비 github.com URL 타깃(엔터프라이즈 호스트 낙하 방지)',
       'gh pr merge https://ghe.example/o/r/pull/9',
     ],
@@ -150,6 +154,9 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('gh api graphql --input /tmp/q.json').kind).toBe('blocked')
     expect(classify('gh api graphql --input=- -H x').kind).toBe('blocked')
     expect(classify('gh api graphql -f query="$Q"').kind).toBe('blocked')
+    // 타입 필드의 @ 값은 파일/stdin 주입(12R P1) — 붙임 표기 포함 차단
+    expect(classify('gh api graphql -F query=@/tmp/m.graphql').kind).toBe('blocked')
+    expect(classify('gh api graphql -Fquery=@/tmp/m.graphql').kind).toBe('blocked')
     // 인라인 리터럴 본문(변수·--input 없음)은 신호 스캔 담당 — 비병합 쿼리는 pass
     expect(classify("gh api graphql -f query='query { viewer { login } }'").kind).toBe('pass')
   })
@@ -157,6 +164,8 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('. /tmp/endpoint.env && gh api -X PUT "$ENDPOINT"').kind).toBe('blocked')
     expect(classify('gh api --method=PUT "$E"').kind).toBe('blocked')
     expect(classify('gh api -X DELETE $E').kind).toBe('blocked')
+    // 붙임 표기(-XPUT)도 변이로 해석해야 한다(12R P1)
+    expect(classify('. /tmp/endpoint.env && gh api -XPUT "$ENDPOINT"').kind).toBe('blocked')
     // 리터럴 경로 GET·리터럴 경로 변이(비병합 — 병합 경로는 신호 스캔 담당)는 pass
     expect(classify('gh api repos/pdw96/fleet/pulls/288/comments --paginate').kind).toBe('pass')
     expect(classify('gh api repos/pdw96/fleet/issues -f title=hi').kind).toBe('pass')

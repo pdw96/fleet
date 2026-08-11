@@ -153,6 +153,9 @@ export function parseCanonicalMerge(cmd) {
   const segments = tokenizeSegments(cmd)
   if (segments.length !== 1) return null
   const tokens = segments[0]
+  // 어느 토큰이든 셸 확장 잔존(`$`)이면 비-canonical — 값 플래그의 비인용 변수는 워드
+  // 분할로 플래그를 주입할 수 있다(12R P1: `--body $BODY`, BODY='note --auto').
+  if (tokens.some((t) => t.includes('$'))) return null
   // 실행 파일 = bare `gh`/`gh.exe` 만(대소문자 무관 — win32, 3R P1). 경로 지정 실행은
   // PATH 의 gh 로 검증하고 다른 바이너리가 실행되는 불일치가 가능해 배제한다(4R P1).
   const exe = tokens[0]?.toLowerCase()
@@ -243,8 +246,12 @@ export function classifyHookInput(input) {
       const hasDollar = tokens.some((t) => t.includes('$'))
       const hasInput = tokens.some((t) => t.startsWith('--input'))
       if (tokens.includes('graphql')) {
-        if (hasInput || hasDollar)
-          return { kind: 'blocked', reason: 'GraphQL 본문이 명령 밖(--input/변수) — 관측 불가' }
+        // 타입 필드의 `@` 값은 파일/stdin 에서 읽는다(12R P1: `-F query=@/tmp/m.graphql`).
+        if (hasInput || hasDollar || tokens.some((t) => t.includes('=@')))
+          return {
+            kind: 'blocked',
+            reason: 'GraphQL 본문이 명령 밖(--input/파일 필드/변수) — 관측 불가',
+          }
         continue
       }
       // 엔드포인트 = `api` 다음의 첫 비플래그 토큰(값 플래그의 값은 건너뜀). 판정은 필드
@@ -272,7 +279,13 @@ export function classifyHookInput(input) {
       let mutating = hasInput
       let endpoint = null
       for (let i = tokens.indexOf('api') + 1; i < tokens.length; i++) {
-        const [flag, inline] = splitFlag(tokens[i])
+        let [flag, inline] = splitFlag(tokens[i])
+        // cobra 는 짧은 옵션에 값을 붙여 쓰는 표기를 허용한다(12R P1: `-XPUT`·`-Fk=v`).
+        const attached = flag.match(/^(-[XfFHqtp])(.+)$/)
+        if (attached) {
+          flag = attached[1]
+          inline = inline == null ? attached[2] : `${attached[2]}=${inline}`
+        }
         if (tokens[i].startsWith('-')) {
           const v = inline ?? (API_VALUE_FLAGS.has(flag) ? tokens[++i] : null) ?? ''
           if ((flag === '-X' || flag === '--method') && v.toUpperCase() !== 'GET') mutating = true
@@ -422,10 +435,12 @@ function main() {
   // TOCTOU 봉쇄: 검증한 head 를 GitHub 서버가 병합 조건으로 강제하게 한다(3R P1).
   // MCP 도 hook 과 실행 사이가 원자적이지 않으므로 sha 필수(4R P1).
   if (verdict.matchHead == null) {
+    // 재시도 안내는 원 명령을 보존해 SHA 만 덧붙인다(12R P2: --squash 강제 치환은 요청한
+    // 병합 전략을 조용히 바꾼다). 원 명령은 canonical 단일 세그먼트라 뒤에 덧붙여도 유효.
+    const originalCmd = String(input.tool_input?.command ?? '').trim()
     const hint = verdict.viaMcp
       ? `merge_pull_request 호출에 sha: "${headSha}" 를 포함해 재시도하라.`
-      : '이대로 재시도하라:\n' +
-        `  gh pr merge ${pr}${repo ? ` -R ${repo}` : ''} --squash --match-head-commit ${headSha}`
+      : '이대로 재시도하라:\n' + `  ${originalCmd} --match-head-commit ${headSha}`
     console.error(
       `[codex-gate] PR #${pr} 검증 통과 — 단, 검증 시점의 head 를 서버가 강제하도록 ` +
         `기대 head SHA 가 필수다. ${hint}`,
