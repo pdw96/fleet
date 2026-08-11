@@ -280,14 +280,32 @@ function main() {
         process.exit(2)
       }
       const tokens = new Set(tokenizeSegments(cmd).flat())
+      // alias 확장은 gh 접두 없이 나온다(`pm: pr merge`, 9R P1) — 확장 문자열은 이미 gh 명령
+      // 문맥이므로 merge 단어 단독을 신호로 보고, alias 가 다른 alias 로 확장되는 체인
+      // (`pm: px`·`px: pr merge`, 10R P1)은 고정점 전파로 이행적으로 물들인다.
+      const aliases = new Map()
       for (const line of r.stdout.split('\n')) {
         const m = line.match(/^([^\s:]+):\s*(.+)$/)
-        // alias 확장은 gh 접두 없이 나온다(`pm: pr merge`, 9R P1) — 확장 문자열은 이미
-        // gh 명령 문맥이므로 merge 단어 단독을 신호로 본다.
-        if (m && /merge/i.test(m[2]) && tokens.has(m[1])) {
+        if (m) aliases.set(m[1], m[2].trim())
+      }
+      const mergey = new Set(
+        [...aliases].filter(([, exp]) => /merge/i.test(exp)).map(([name]) => name),
+      )
+      let grew = true
+      while (grew) {
+        grew = false
+        for (const [name, exp] of aliases) {
+          if (!mergey.has(name) && exp.split(/\s+/).some((w) => mergey.has(w))) {
+            mergey.add(name)
+            grew = true
+          }
+        }
+      }
+      for (const name of mergey) {
+        if (tokens.has(name)) {
           console.error(
-            `[codex-gate] gh alias '${m[1]}' 는 병합으로 확장된다(${m[2].trim()}) — alias 경유 ` +
-              '병합은 차단. canonical 형태로 직접 실행하라.',
+            `[codex-gate] gh alias '${name}' 는 (이행적으로) 병합으로 확장된다` +
+              `(${aliases.get(name)}) — alias 경유 병합은 차단. canonical 형태로 직접 실행하라.`,
           )
           process.exit(2)
         }
