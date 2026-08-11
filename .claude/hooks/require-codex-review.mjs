@@ -274,15 +274,12 @@ const WRAPPER_NAMES = new Set([
 ])
 const INTERP_RE = /^(sh|bash|zsh|dash|ksh)(\.exe)?$/
 const tokNorm = (t) => t.toLowerCase().replace(/^.*[\\/]/, '')
-// 위험 토큰(조립기·인터프리터·gh) — 래퍼 옵션 값 소비를 여기서 멈춘다(악용해도 실효 실행
-// 파일로 잡히게). 실효 실행 판정의 세 지점(classify·extract·consumes)이 공유한다.
-const isDangerExe = (t) => {
-  const e = tokNorm(t)
-  return e === 'xargs' || e === 'parallel' || e === 'gh' || e === 'gh.exe' || INTERP_RE.test(e)
-}
+const isAssembler = (e) => e === 'xargs' || e === 'parallel'
 // 실효 실행 파일 토큰의 인덱스 — 대입·투명 래퍼·수치 인자·플래그(및 그 값)를 건너뛴 첫 토큰.
 // 래퍼 옵션의 필수값(`env -u FOO`, 37R→41R P1)을 실행 파일로 오인하지 않도록 `=` 미포함
-// 옵션의 다음 토큰을 값으로 소비하되, 위험 토큰이면 멈춰 실효 실행 파일로 잡는다.
+// 옵션의 다음 토큰을 값으로 소비한다 — 값이 위험 실행 토큰을 닮아도 소비한다(42R P1:
+// `env -u gh xargs gh` — `-u` 의 값 gh 를 안 먹으면 gh 를 실효로 오인). 값 소비로 인한
+// 과소비 우회(무값 옵션 `env -i xargs` 등)는 classify 의 래퍼-프리픽스 보수 규칙이 흡수한다.
 function effectiveExeIndex(tokens) {
   let i = 0
   for (; i < tokens.length; i++) {
@@ -292,12 +289,19 @@ function effectiveExeIndex(tokens) {
     if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
     if (t.startsWith('-')) {
       const nx = tokens[i + 1]
-      if (nx && !nx.startsWith('-') && !t.includes('=') && !isDangerExe(nx)) i++
+      if (nx && !nx.startsWith('-') && !t.includes('=')) i++
       continue
     }
     break
   }
   return i
+}
+
+// 세그먼트가 투명 래퍼로 시작하는가(대입 프리픽스는 건너뛴다) — 그렇다면 옵션 arity 불명으로
+// 실효 실행 위치를 오판할 수 있어, 조립기/stdin 인터프리터의 **존재**만으로 보수 차단한다.
+function startsWithWrapper(tokens) {
+  const first = tokens.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t))
+  return first !== undefined && WRAPPER_NAMES.has(tokNorm(first))
 }
 
 // 셸 인터프리터의 `-c '<script>'` 인자를 뽑는다(38R P1: `bash -c 'gh q graphql --input …'`
@@ -328,7 +332,7 @@ export function consumesExternalScript(text) {
     const i = effectiveExeIndex(tokens)
     const exe = tokens[i] !== undefined ? tokNorm(tokens[i]) : undefined
     if (!exe) continue
-    if (exe === 'xargs' || exe === 'parallel') return true
+    if (isAssembler(exe)) return true
     if (INTERP_RE.test(exe)) {
       const rest = tokens.slice(i + 1)
       if (!rest.includes('-c') && !rest.some((x) => !x.startsWith('-'))) return true
@@ -713,17 +717,28 @@ export function classifyHookInput(input, _depth = 0) {
     for (const detailed of allSegments) {
       const tokens = detailed.map((t) => t.text)
       const exeIdx = effectiveExeIndex(tokens)
+      // 래퍼 프리픽스 세그먼트는 옵션 arity 불명으로 실효 실행 위치를 오판할 수 있다(42R P1:
+      // `env -u gh xargs gh` — 과소비/과소비 반대 어느 쪽이든 오판 가능). 조립기(xargs·parallel)
+      // 나 stdin 인터프리터(-c 없는 sh/bash)가 세그먼트에 **존재**하면 능력 동반 시 보수 차단한다
+      // (-c 스크립트 인터프리터는 재귀 classify 가 정밀 판정하므로 제외).
+      if (startsWithWrapper(tokens) && CAPABILITY.test(cmd)) {
+        const hasAssembler = tokens.some((t) => isAssembler(tokNorm(t)))
+        const hasStdinInterp =
+          tokens.some((t) => INTERP_RE.test(tokNorm(t))) && !tokens.includes('-c')
+        if (hasAssembler || hasStdinInterp)
+          return {
+            kind: 'blocked',
+            reason: '래퍼 프리픽스에 조립기/stdin 인터프리터 — 실효 실행 위치 불명, 관측 불가',
+          }
+      }
       if (exeIdx >= tokens.length) continue
       const exe = tokNorm(tokens[exeIdx])
-      if (
-        (exe === 'xargs' || exe === 'parallel') &&
-        CAPABILITY.test(tokens.slice(exeIdx + 1).join(' '))
-      )
+      if (isAssembler(exe) && CAPABILITY.test(tokens.slice(exeIdx + 1).join(' ')))
         return {
           kind: 'blocked',
           reason: 'argv 를 명령 밖(stdin/파일)에서 조립하는 gh 호출 — 관측 불가',
         }
-      if (/^(sh|bash|zsh|dash|ksh)(\.exe)?$/.test(exe) && CAPABILITY.test(cmd)) {
+      if (INTERP_RE.test(exe) && CAPABILITY.test(cmd)) {
         const rest = tokens.slice(exeIdx + 1)
         if (!rest.includes('-c') && !rest.some((t) => !t.startsWith('-')))
           return {
@@ -1006,7 +1021,15 @@ function main() {
       const auditTexts = [cmd]
       for (let d = 0; d < auditTexts.length && d < 64; d++)
         auditTexts.push(...extractInterpreterScripts(auditTexts[d]))
-      for (const text of auditTexts) auditAliasesIn(text)
+      // brace 전개 변형에도 alias 검사를 적용한다(42R P1: `gh {pm,--squash} 222` 가 alias
+      // 호출 `gh pm …` 로 전개되는데 raw·singleton-stripped 형만 보면 pm 을 못 맞춘다).
+      // 다문자 brace 전개는 bash 시맨틱으로 펼친다(hasMergeSignal 과 같은 전개기 공유).
+      const withBrace = []
+      for (const text of auditTexts) {
+        withBrace.push(text)
+        for (const v of expandBraceAlternations(text).variants) if (v !== text) withBrace.push(v)
+      }
+      for (const text of withBrace) auditAliasesIn(text)
     }
     process.exit(0)
   }

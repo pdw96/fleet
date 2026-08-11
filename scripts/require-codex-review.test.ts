@@ -251,10 +251,16 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // 38R: 래퍼 옵션의 필수값(`env -u FOO`)을 실행 파일로 오인하지 않는다
     expect(classify("printf 'pr m%crge --help' e | env -u FOO xargs gh").kind).toBe('blocked')
     expect(classify("printf 'x' e | env -C /tmp -u BAR xargs gh").kind).toBe('blocked')
+    // 42R: 래퍼 옵션 값이 위험 실행 토큰을 닮아도(`env -u gh`) 소비해 실효 실행을 찾는다
+    expect(classify("printf 'pr m%crge --help' e | env -u gh xargs gh").kind).toBe('blocked')
+    // 42R: 무값 옵션 과소비(`env -i xargs`)로 실효 실행을 오판해도 래퍼-프리픽스 보수 규칙이 잡는다
+    expect(classify("printf 'pr m%crge --help' e | env -i xargs gh").kind).toBe('blocked')
+    expect(classify("printf 'gh pr m%crge 222' e | env -u gh sh").kind).toBe('blocked')
     // gh/GitHub 무관 조립·인라인 본문(-c)은 pass — 관할은 명령에 보이는 병합 능력만
     expect(classify('ls *.txt | xargs rm -f').kind).toBe('pass')
     expect(classify('echo hi | sh').kind).toBe('pass')
     expect(classify('env ls | xargs rm').kind).toBe('pass')
+    expect(classify("env bash -c 'gh pr view 1'").kind).toBe('pass') // -c 정상 조회는 재귀가 판정
   })
   it('인터프리터 -c 스크립트 내부의 gh 능력도 검사한다(38R P1)', () => {
     // 직접형: 스크립트 내 불투명 GraphQL — classify 재귀로 잡는다
