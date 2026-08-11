@@ -280,6 +280,13 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('eval "$(printf \'g%c pr m%crge 222 --squash\' h e)"').kind).toBe('blocked')
     expect(classify('eval "gh pr merge 222"').kind).toBe('blocked') // 리터럴 재분류 → 비canonical
     expect(classify('eval "gh pr view 1"')).toEqual({ kind: 'pass' }) // 리터럴 정상 조회는 통과
+    // 49R: builtin/exec 래퍼를 벗겨 eval 을 잡는다
+    expect(classify('builtin eval "$(printf \'g%c pr m%crge 222\' h e)"').kind).toBe('blocked')
+    // 49R: 경로 지정 gh api 도 basename 인식 — 불투명 GraphQL 차단
+    expect(classify('/usr/bin/gh api graphql --input /tmp/q.json').kind).toBe('blocked')
+    // 49R: `bash -c -- 'script'` 의 `--` 종결자 뒤 스크립트를 재귀 분류
+    expect(classify('bash -c -- \'eval "$(printf gh)" pr merge\'').kind).toBe('blocked')
+    expect(extractInterpreterScripts("bash -c -- 'gh api graphql'")).toEqual(['gh api graphql'])
   })
   it('resolveAliasExpansion — 인용을 벗기고 연쇄를 해석한다(43R P1)', () => {
     const m = parseAliasList('q: api\nqq: \'"q"\'')

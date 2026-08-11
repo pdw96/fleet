@@ -272,6 +272,8 @@ export function hasMergeSignal(cmd) {
 }
 
 // 투명 래퍼 — 실효 실행 파일을 가린다(37R P1: `env xargs gh`). 실행 파일 탐색에서 건너뛴다.
+// builtin/command 는 셸 빌트인·외부 명령을 그대로 실행하고, exec 는 현재 프로세스를 대체
+// 실행한다(49R P1: `builtin eval "$(…)"` — builtin 을 실효 실행으로 오인해 eval 을 놓쳤다).
 const WRAPPER_NAMES = new Set([
   'env',
   'nohup',
@@ -280,6 +282,8 @@ const WRAPPER_NAMES = new Set([
   'timeout',
   'time',
   'command',
+  'builtin',
+  'exec',
   'setsid',
   'ionice',
   'doas',
@@ -346,8 +350,13 @@ export function extractInterpreterScripts(cmd) {
     const exe = tokens[i] !== undefined ? tokNorm(tokens[i]) : undefined
     if (exe && INTERP_RE.test(exe)) {
       const ci = tokens.indexOf('-c', i + 1)
-      if (ci !== -1 && tokens[ci + 1] !== undefined && !tokens[ci + 1].startsWith('-'))
-        scripts.push(tokens[ci + 1])
+      if (ci !== -1) {
+        // `-c` 뒤 옵션(`--` 종결자·`-e` 등)을 건너뛴 첫 non-option 이 command string 이다
+        // (49R P1: `bash -c -- 'script'` — `--` 를 스크립트로 오인해 추출이 비었다).
+        let si = ci + 1
+        while (si < tokens.length && tokens[si].startsWith('-')) si++
+        if (si < tokens.length) scripts.push(tokens[si])
+      }
     }
   }
   return scripts
@@ -830,10 +839,8 @@ export function classifyHookInput(input, _depth = 0) {
     }
     for (const detailed of allSegments) {
       const tokens = detailed.map((t) => t.text)
-      const hasGh = tokens.some((t) => {
-        const exe = t.toLowerCase()
-        return exe === 'gh' || exe === 'gh.exe'
-      })
+      // gh 판정은 basename 기준(49R P1: `/usr/bin/gh api graphql --input …` 도 gh 실행).
+      const hasGh = tokens.some((t) => isGh(t))
       // 비-gh 클라이언트의 GitHub API 직접 호출은 전부 차단(20R curl → 21R wget·glob 로
       // 클라이언트·플래그 열거가 발산 — 구조 규칙으로 접는다): 본문/경로 표기를 클라이언트별로
       // 해석하지 않고, `api.github.com`(REST·GraphQL 공통 호스트)이 보이면 gh 로 하라고
@@ -846,10 +853,7 @@ export function classifyHookInput(input, _depth = 0) {
       if (!hasGh) continue
       // gh 앞의 어떤 env 대입 프리픽스도 실행 환경을 바꾼다(22R P1 일반화) — 차단.
       {
-        const gi = tokens.findIndex((t) => {
-          const exe = t.toLowerCase()
-          return exe === 'gh' || exe === 'gh.exe'
-        })
+        const gi = tokens.findIndex((t) => isGh(t))
         if (tokens.slice(0, gi).some((t) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)))
           return { kind: 'blocked', reason: 'gh 호출에 env 대입 프리픽스 — 관측 환경 불일치' }
       }
@@ -867,10 +871,7 @@ export function classifyHookInput(input, _depth = 0) {
       // `gh $CMD 222`) — gh 다음 첫 비플래그 토큰, 그리고 첫 토큰이 `api`(인자=엔드포인트)가
       // 아니면 둘째 비플래그 토큰까지 `$` 를 거부한다. 플래그 값(-F body=@$X)은 해당 없음.
       {
-        const gi = tokens.findIndex((t) => {
-          const exe = t.toLowerCase()
-          return exe === 'gh' || exe === 'gh.exe'
-        })
+        const gi = tokens.findIndex((t) => isGh(t))
         const positional = []
         for (let i = gi + 1; i < tokens.length && positional.length < 2; i++) {
           if (tokens[i].startsWith('-')) {
