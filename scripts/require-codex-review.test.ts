@@ -237,9 +237,14 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // 능력 토큰이 있는 명령의 stdin 스크립트 인터프리터도 동일 — 스크립트 관측 불가
     expect(classify("printf 'gh pr m%crge 222' e | sh").kind).toBe('blocked')
     expect(classify("printf 'gh pr m%crge 222' e | bash -s").kind).toBe('blocked')
+    // 37R: 투명 래퍼(env·timeout 등)를 벗겨 실효 실행 파일로 판정한다
+    expect(classify("printf 'pr m%crge --help' e | env xargs gh").kind).toBe('blocked')
+    expect(classify("printf 'gh pr m%crge 222' e | env sh").kind).toBe('blocked')
+    expect(classify('cat /tmp/a.txt | timeout 5 xargs gh').kind).toBe('blocked')
     // gh/GitHub 무관 조립·인라인 본문(-c)은 pass — 관할은 명령에 보이는 병합 능력만
     expect(classify('ls *.txt | xargs rm -f').kind).toBe('pass')
     expect(classify('echo hi | sh').kind).toBe('pass')
+    expect(classify('env ls | xargs rm').kind).toBe('pass')
   })
   it('다문자 brace 전개는 신호를 거쳐 canonical 요구로 넘어간다(33R P1)', () => {
     expect(classify('gh pr m{erg,x}e 222 --squash --match-head-commit abc').kind).toBe('blocked')
@@ -300,6 +305,13 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // 36R: 백틱 명령 치환도 실행 시점 계산 — $ 와 동일하게 동적 취급
     expect(aliasIsSuspect('!gh pr `printf m%crge e` 222 --squash')).toBe(true)
     expect(aliasIsSuspect('!gh pr view `date`')).toBe(true)
+    // 37R: 셸 alias 본문은 직접 명령과 동일 규칙으로 재분류 — stdin 인터프리터 조립도 의심
+    expect(aliasIsSuspect("!printf 'gh pr m%crge --help' e | sh")).toBe(true)
+    expect(aliasIsSuspect("!printf 'pr m%crge 5' e | xargs gh")).toBe(true)
+    expect(aliasIsSuspect('!gh pr view 1')).toBe(false) // 정적 비병합 본문은 비의심 유지
+    // 37R: gh alias list 의 YAML 작은따옴표 래핑(내부 '' 이스케이프)을 벗겨 판정한다
+    expect(aliasIsSuspect("'!printf ''gh pr m%crge --help'' e | sh'")).toBe(true)
+    expect(aliasIsSuspect("'pr view'")).toBe(false)
   })
   it('병합 단어 + 셸 확장 동반은 blocked — 실행 파일 조립 가능(23R·24R P1)', () => {
     expect(classify('$(printf g)h pr merge 222 --squash --match-head-commit abc').kind).toBe(

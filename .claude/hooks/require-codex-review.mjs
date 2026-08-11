@@ -206,13 +206,31 @@ export function hasMergeWord(s) {
  * 정적으로 비병합임을 증명할 수 없는 경우(20R P1: `!gh pr "$ACTION" "$@"`, ACTION=merge).
  * 위치 전달(`$@`·`$*`·`$N`)은 호출 인자 그대로라 명령 쪽 검사가 담당 — 의심 아님.
  */
-export function aliasIsSuspect(exp) {
+// `gh alias list` 는 확장을 YAML 작은따옴표로 감싼다(`pm: '!printf ...'`, 내부 `'`는 `''`)
+// — 래핑을 벗겨야 `!` 접두·`$` 등을 볼 수 있다(37R P1: 래핑 때문에 startsWith('!') 실패).
+export function unwrapYamlSingleQuote(s) {
+  const t = s.trim()
+  if (t.length >= 2 && t.startsWith("'") && t.endsWith("'"))
+    return t.slice(1, -1).replace(/''/g, "'")
+  return t
+}
+
+export function aliasIsSuspect(rawExp) {
+  const exp = unwrapYamlSingleQuote(rawExp)
   // `$@`·`$*` 전체 전달만 무해 — `$1` 등 선택/재배열 위치 인자는 호출부 인자를 동사 자리로
   // 옮길 수 있어(23R P1: `!gh pr "$1" …` + 인자 merge) 명명 변수와 같이 의심 처리.
   // 불투명 API 형태(--input·=@ 파일 필드·graphql)로 확장되는 alias 도 의심 — 직접 명령이면
   // 차단될 형태가 alias 를 거치면 통과했다(26R P1: `q: api graphql --input /tmp/q.graphql`).
   // 백틱 명령 치환도 `$(…)` 와 같은 실행 시점 계산이다(36R P1: `!gh pr \`printf m%crge e\``
   // — sh 가 백틱을 평가해 동사를 조립) — 동적 취급.
+  // 셸 alias(`!…`) 본문은 그 자체로 sh 가 실행하는 셸 명령이다 — 동적 문법 열거 대신 직접
+  // 명령과 동일 규칙으로 재분류한다(37R P1: `!printf 'gh pr m%crge --help' e | sh` —
+  // merge/$/백틱 어느 열거에도 안 걸리지만 stdin 인터프리터 규칙이 잡는다).
+  if (
+    exp.startsWith('!') &&
+    classifyHookInput({ tool_name: 'Bash', tool_input: { command: exp.slice(1) } }).kind !== 'pass'
+  )
+    return true
   return hasMergeWord(exp) || /\$(?![@*])|`/.test(exp) || /--input|=@|graphql/i.test(exp)
 }
 
@@ -542,10 +560,33 @@ export function classifyHookInput(input) {
     // 조립기(xargs·parallel)의 인자에 gh/GitHub 능력 토큰이 보이거나, 능력 토큰이 있는
     // 명령에서 본문 없는 셸 인터프리터(stdin 스크립트)가 실행되면 차단한다.
     const CAPABILITY = /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)|api\.github\.com|graphql/iu
+    // 투명 래퍼는 실효 실행 파일을 가린다(37R P1: `env xargs gh` — env 를 실행 파일로 보면
+    // xargs 분기를 건너뛴다) — 대입·래퍼·플래그·수치 인자(timeout 지속시간 등)를 건너뛴다.
+    const WRAPPERS = new Set([
+      'env',
+      'nohup',
+      'nice',
+      'stdbuf',
+      'timeout',
+      'time',
+      'command',
+      'setsid',
+      'ionice',
+      'doas',
+      'sudo',
+    ])
     for (const detailed of allSegments) {
       const tokens = detailed.map((t) => t.text)
-      const exeIdx = tokens.findIndex((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t))
-      if (exeIdx === -1) continue
+      let exeIdx = 0
+      for (; exeIdx < tokens.length; exeIdx++) {
+        const t = tokens[exeIdx]
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
+        if (WRAPPERS.has(t.toLowerCase().replace(/^.*[\\/]/, ''))) continue
+        if (t.startsWith('-')) continue
+        if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
+        break
+      }
+      if (exeIdx >= tokens.length) continue
       const exe = tokens[exeIdx].toLowerCase().replace(/^.*[\\/]/, '')
       if (
         (exe === 'xargs' || exe === 'parallel') &&
