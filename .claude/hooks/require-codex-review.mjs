@@ -244,7 +244,36 @@ function main() {
 
   const cwd = input.cwd || process.cwd()
   const verdict = classifyHookInput(input)
-  if (verdict.kind === 'pass') process.exit(0)
+  if (verdict.kind === 'pass') {
+    // gh alias 는 리터럴 merge 없이 병합으로 확장될 수 있다(7R P1: `gh pm 222`) — gh 토큰이
+    // 보이는 명령은 구성된 alias 목록을 실측해, 병합 신호를 담은 확장의 alias 이름이 명령에
+    // 등장하면 차단한다. alias 목록 조회 실패는 fail-closed(숨은 alias 를 배제 못 함).
+    const cmd = String(input.tool_input?.command ?? '')
+    if (
+      String(input.tool_name) === 'Bash' &&
+      /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(cmd)
+    ) {
+      const r = spawnSync('gh', ['alias', 'list'], { encoding: 'utf8', cwd, timeout: 45_000 })
+      if (r.error || r.status !== 0) {
+        console.error(
+          '[codex-gate] gh alias 목록 조회 실패 — 숨은 병합 alias 를 배제할 수 없어 차단.',
+        )
+        process.exit(2)
+      }
+      const tokens = new Set(tokenizeSegments(cmd).flat())
+      for (const line of r.stdout.split('\n')) {
+        const m = line.match(/^([^\s:]+):\s*(.+)$/)
+        if (m && hasMergeSignal(m[2]) && tokens.has(m[1])) {
+          console.error(
+            `[codex-gate] gh alias '${m[1]}' 는 병합으로 확장된다(${m[2].trim()}) — alias 경유 ` +
+              '병합은 차단. canonical 형태로 직접 실행하라.',
+          )
+          process.exit(2)
+        }
+      }
+    }
+    process.exit(0)
+  }
   if (verdict.kind === 'blocked') {
     console.error(
       `[codex-gate] 차단(${verdict.reason}). 머지는 canonical 형태만 허용된다:\n` +
@@ -265,9 +294,17 @@ function main() {
     return r.stdout
   }
 
-  // 실행 환경의 GH_REPO/GH_HOST 는 대상 레포·호스트를 조용히 바꾼다 — -R 명시 없으면 차단.
-  if (!verdict.repo && (process.env.GH_REPO || process.env.GH_HOST)) {
-    console.error('[codex-gate] GH_REPO/GH_HOST 환경변수 감지 — -R owner/repo 명시가 필요하다.')
+  // GH_HOST 는 검증 API 호출(gh api)의 호스트를 통째로 리다이렉트한다 — 병합은 github.com
+  // URL 을 겨냥하면서 검증은 타 호스트에서 이뤄지는 분열이 가능하므로(7R P1) 설정돼 있으면
+  // 무조건 차단. GH_REPO 는 명시 -R/URL 이 있으면 무해하나 없으면 대상이 조용히 바뀌므로 차단.
+  if (process.env.GH_HOST) {
+    console.error(
+      '[codex-gate] GH_HOST 환경변수 감지 — 검증과 병합의 호스트가 갈라질 수 있어 차단.',
+    )
+    process.exit(2)
+  }
+  if (!verdict.repo && process.env.GH_REPO) {
+    console.error('[codex-gate] GH_REPO 환경변수 감지 — -R owner/repo 명시가 필요하다.')
     process.exit(2)
   }
 
@@ -362,15 +399,17 @@ function validatePr(gh, base, pr) {
   // 인정한다. 마커 문자열 존재만 보면 「마커를 쓸까?」라는 질문 코멘트도 통과한다(6R P1) —
   // 정확한 head SHA 를 손으로 적어야 하는 형식이라 언급·질문과 의도 선언이 구조적으로 갈리고,
   // SHA 결속이라 시각 비교도 불필요하다(head 가 바뀌면 마커가 자동 실효).
+  // --paginate 는 jq 를 페이지별로 평가한다(7R P1: 집계 jq 는 `0\n1` 처럼 페이지 수만큼
+  // 출력돼 Number() 가 NaN) — 집계는 jq 가 아니라 JS 에서 한다(매칭 id 를 줄 단위로 방출).
   const fallbackToken = `${FALLBACK_MARKER} head=${headSha}`
-  const fallbackHit = gh([
+  const fallbackIds = gh([
     'api',
     `${base}/issues/${pr}/comments`,
     '--paginate',
     '--jq',
-    `[.[] | select(.author_association == "OWNER" and (.body | contains("${fallbackToken}")))] | length`,
+    `.[] | select(.author_association == "OWNER" and (.body | contains("${fallbackToken}"))) | .id`,
   ])
-  if (Number(fallbackHit.trim()) > 0) {
+  if (fallbackIds.split('\n').some((s) => s.trim())) {
     console.error(
       `[codex-gate] PR #${pr}: Codex 리뷰 부재이나 OWNER 의 head-결속 폴백 마커 확인 — ` +
         '풀 렌즈 자가리뷰 폴백으로 허용(AGENTS.md 4단계).',
@@ -422,14 +461,18 @@ function headArrivalTime(gh, base, pr, headSha) {
     }
     candidates.push(committed)
   }
-  const forced = gh([
+  // --paginate 는 jq 를 페이지별로 평가하므로(7R P1) last 집계를 jq 에 맡기면 페이지당
+  // 한 줄씩 나온다 — 이벤트 시각을 전부 방출하고 최댓값 선택은 JS 에서 한다.
+  const forcedTimes = gh([
     'api',
     `${base}/issues/${pr}/timeline`,
     '--paginate',
     '--jq',
-    '[.[] | select(.event == "head_ref_force_pushed") | .created_at] | sort | last // empty',
-  ]).trim()
-  if (/^\d{4}-\d{2}-\d{2}T/.test(forced)) candidates.push(forced)
+    '.[] | select(.event == "head_ref_force_pushed") | .created_at',
+  ])
+  for (const t of forcedTimes.split('\n')) {
+    if (/^\d{4}-\d{2}-\d{2}T/.test(t.trim())) candidates.push(t.trim())
+  }
   return candidates.sort().at(-1)
 }
 
