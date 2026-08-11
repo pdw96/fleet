@@ -237,13 +237,30 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(aliasIsSuspect('pr view "$@"')).toBe(false) // 전체 전달($@·$*)만 무해
     expect(aliasIsSuspect('pr merge')).toBe(true)
   })
-  it('병합 단어 + 명령 치환 동반은 blocked — 실행 파일 조립 가능(23R P1)', () => {
+  it('병합 단어 + 셸 확장 동반은 blocked — 실행 파일 조립 가능(23R·24R P1)', () => {
     expect(classify('$(printf g)h pr merge 222 --squash --match-head-commit abc').kind).toBe(
       'blocked',
     )
     expect(classify('echo `printf g`h pr merge').kind).toBe('blocked')
-    // 병합 단어 없는 치환은 무관
+    // 24R: 매개변수 확장이 실행 파일을 명명하는 형태(동일 명령 내 대입은 gh 리터럴이
+    // 신호에 걸리므로, 대입이 명령 밖(프로필 export 등)인 변형이 이 규칙의 고유 담당)
+    expect(classify('CLI=gh; "$CLI" pr merge 222 --squash --match-head-commit abc').kind).toBe(
+      'blocked',
+    )
+    expect(classify('"$CLI" pr merge 222 --squash --match-head-commit abc').kind).toBe('blocked')
+    // 병합 단어 없는 치환·확장은 무관
     expect(classify('echo $(date)').kind).toBe('pass')
+  })
+  it('gh 호출의 비인용 글롭은 blocked — 경로명 확장 조립(24R P1)', () => {
+    expect(classify('gh pr merg? 222 --squash --match-head-commit abc').kind).toBe('blocked')
+    expect(classify('gh pr vie* 288').kind).toBe('blocked')
+    // 인용된 쿼리스트링 ? 는 통과
+    expect(classify('gh api "repos/o/r/issues?per_page=10"').kind).toBe('pass')
+  })
+  it('parseAliasList — 콜론 담은 이름은 양쪽 분해를 모두 등록(24R P1)', () => {
+    const m = parseAliasList('pm:x: pr merge')
+    expect(m.get('pm:x')?.exp).toBe('pr merge')
+    expect(m.get('pm')?.exp).toContain('merge')
   })
   it('gh 호출에 env 대입 동반은 blocked — 관측 환경 불일치(22R P1)', () => {
     expect(classify('GH_CONFIG_DIR=/tmp/alt gh pm 222 --squash').kind).toBe('blocked')

@@ -33,6 +33,10 @@
 // 동형). 다만 수정 비용이 낮은 적대형 구멍(분절 표기·경로 실행 파일·force-push 재결속)은
 // 방어 심도로 함께 닫는다. 잔여 한계(일반 push 로 기존 커밋을 head 에 앉히는 시각 우회)는
 // 이 범위에서 수용 — SHA-결속 신호(공식 리뷰 commit_id)가 항상 우선 경로다.
+// 잔여 한계(24R): 검증과 실행 사이의 base 변경(head 불변)은 이 층에서 닫을 수 없다 —
+// gh pr merge 의 서버측 조건은 head(--match-head-commit)뿐이고 base 를 고정하는 플랫폼
+// 프리미티브가 없다. 단일 운영자 레포에서 base 변경은 OWNER 의 의도적 행위이므로 사고성
+// 위협 모델 밖으로 수용한다(base 변경 후에는 base_ref_changed 재결속이 새 신호를 요구).
 // 관할 경계(18R 확정): 게이트는 **명령 문자열에 보이는 병합 능력**만 관할한다. 파일/프로그램
 // 경유 실행(`bash script.sh`·`npm run`·`node x.js` 등)의 내용 검사는 비목표 — 파일은 hook
 // 과 실행 사이에 바뀔 수 있어 검사가 증명이 못 되고(TOCTOU), 실행의 이행 폐포 게이트는
@@ -143,12 +147,14 @@ export function tokenizeSegmentsDetailed(cmd) {
   let inToken = false
   let quoted = false
   let unquotedDollar = false
+  let unquotedGlob = false
   const push = () => {
-    if (inToken) tokens.push({ text: cur, quoted, unquotedDollar })
+    if (inToken) tokens.push({ text: cur, quoted, unquotedDollar, unquotedGlob })
     cur = ''
     inToken = false
     quoted = false
     unquotedDollar = false
+    unquotedGlob = false
   }
   const endSegment = () => {
     push()
@@ -185,8 +191,10 @@ export function tokenizeSegmentsDetailed(cmd) {
       endSegment()
     } else {
       // 인용 밖의 `$` 는 발생 단위로 기록한다(20R P1: `"$EMPTY"$ARGS` 처럼 인용·비인용이
-      // 한 토큰에 섞이면 토큰 단위 quoted 플래그로는 비인용 확장을 놓친다).
+      // 한 토큰에 섞이면 토큰 단위 quoted 플래그로는 비인용 확장을 놓친다). 비인용 글롭
+      // 문자(`?`·`*`)도 동일 — 경로명 확장이 동사를 조립한다(24R P1: `merg?`).
       if (ch === '$') unquotedDollar = true
+      if (ch === '?' || ch === '*') unquotedGlob = true
       cur += ch
       inToken = true
     }
@@ -307,21 +315,26 @@ function splitFlag(tok) {
  */
 export function parseAliasList(text) {
   const aliases = new Map()
-  let current = null
+  let currents = []
+  const register = (rawName, rawExp) => {
+    const name = rawName.trim().split(/\s+/)
+    const entry = { name, exp: rawExp.trim().replace(/^\|-?$/, '') }
+    aliases.set(name.join(' '), entry)
+    currents.push(entry)
+  }
   for (const line of text.split('\n')) {
     const cont = line.match(/^\s+(.*)$/)
-    if (cont && current) {
-      current.exp = `${current.exp} ${cont[1].trim()}`.trim()
+    if (cont && currents.length) {
+      for (const c of currents) c.exp = `${c.exp} ${cont[1].trim()}`.trim()
       continue
     }
-    const m = line.match(/^(.+?):\s*(.*)$/)
-    if (m) {
-      const name = m[1].trim().split(/\s+/)
-      current = { name, exp: m[2].trim().replace(/^\|-?$/, '') }
-      aliases.set(name.join(' '), current)
-    } else {
-      current = null
-    }
+    currents = []
+    // alias 이름은 콜론을 담을 수 있어(`pm:x: pr merge`, 24R P1) 분해가 모호하다 —
+    // 첫 콜론·마지막 콜론 양쪽 해석을 모두 등록해 어느 쪽으로 불려도 대조에 걸리게 한다.
+    const lazy = line.match(/^(.+?):\s*(.*)$/)
+    const greedy = line.match(/^(.+):\s*(.*)$/)
+    if (lazy) register(lazy[1], lazy[2])
+    if (greedy && greedy[1] !== lazy?.[1]) register(greedy[1], greedy[2])
   }
   return aliases
 }
@@ -344,11 +357,12 @@ export function classifyHookInput(input) {
   if (toolName !== 'Bash') return { kind: 'pass' }
   const cmd = String(input.tool_input?.command ?? '')
   if (!hasMergeSignal(cmd)) {
-    // 병합 단어가 보이는데 명령 치환/백틱이 함께 있으면 치환이 실행 파일을 조립할 수 있다
-    // (23R P1: `$(printf g)h pr merge …` — gh 토큰이 어느 변형에도 없어 신호 미발동).
-    // 정상 명령에서 병합 단어+치환 동반은 드물어 fail-closed 로 흡수한다(치환 없이 쓰라).
-    if (hasMergeWord(cmd) && /\$\(|`/.test(cmd))
-      return { kind: 'blocked', reason: '병합 단어와 명령 치환 동반 — 실행 파일 조립 가능' }
+    // 병합 단어가 보이는데 치환/확장(`$`·백틱)이 함께 있으면 실행 파일 자체가 동적으로
+    // 조립될 수 있다(23R: `$(printf g)h pr merge` · 24R: `CLI=gh; "$CLI" pr merge` — gh
+    // 토큰이 어느 변형에도 없어 신호 미발동). 정상 명령에서 병합 단어+확장 동반은 드물어
+    // fail-closed 로 흡수한다(확장 없이 리터럴로 쓰라).
+    if (hasMergeWord(cmd) && /[$`]/.test(cmd))
+      return { kind: 'blocked', reason: '병합 단어와 셸 확장 동반 — 실행 파일 조립 가능' }
     // 병합 능력이 명령 문자열 밖에 있으면 신호 스캔이 못 본다 — 불투명 gh api 호출은 차단:
     // ① GraphQL 본문이 --input 파일/stdin·셸 변수에 있는 경우(9R P1)
     // ② 변이 REST 호출(-X 비GET·--input·-f/-F 필드)의 엔드포인트가 셸 변수이거나 세그먼트에
@@ -399,6 +413,10 @@ export function classifyHookInput(input) {
       // 인용 여부 무관 차단 — 단어 하나로도 동사가 된다).
       if (detailed.some((t) => t.unquotedDollar))
         return { kind: 'blocked', reason: 'gh 호출에 비인용 셸 확장 — 워드 분할 주입 가능' }
+      // 비인용 글롭은 경로명 확장으로 동사를 조립할 수 있다(24R P1: `gh pr merg?` + 파일
+      // `merge` 존재 시). gh api 쿼리스트링의 `?` 는 인용하면 통과.
+      if (detailed.some((t) => t.unquotedGlob))
+        return { kind: 'blocked', reason: 'gh 호출에 비인용 글롭 — 경로명 확장 조립 가능' }
       // 서브커맨드 자리의 셸 확장은 병합 동사를 가릴 수 있다(13R P1: `gh pr $ACTION 222`·
       // `gh $CMD 222`) — gh 다음 첫 비플래그 토큰, 그리고 첫 토큰이 `api`(인자=엔드포인트)가
       // 아니면 둘째 비플래그 토큰까지 `$` 를 거부한다. 플래그 값(-F body=@$X)은 해당 없음.
