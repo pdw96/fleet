@@ -28,7 +28,8 @@
 ## hooks/ + settings.json (기계 게이트 — 프롬프트 규율의 구조화)
 
 `settings.json` 의 `PreToolUse` hook 이 머지 시도(`gh pr merge`·pulls API·GitHub MCP)를 가로채
-`hooks/require-codex-review.mjs` 로 **Codex 리뷰(또는 👍 clean) 존재를 검증, 없으면 차단**한다
+`hooks/require-codex-review.mjs` 로 **현재 head 에 결속된 Codex 신호(head 를 리뷰한 공식 리뷰
+또는 head 이후 👍 clean)를 검증, 없으면 차단**한다 — 낡은 라운드 신호는 새 커밋을 인가하지 않는다
 (exit 2 · 조회 실패 fail-closed). 「머지 전 Codex 대기」 실사고 2건(무응답 오판·페이지네이션
 누락)의 재발 방지 — 산문 규율(AGENTS.md 4단계·ADR-0014)을 기계 강제로 승격한 것. 명령 해석은
 토큰 단위 인자 파싱(플래그 선행·`-R`·URL·브랜치 타깃 지원, 해석 불능 = fail-closed)이고 파서는
