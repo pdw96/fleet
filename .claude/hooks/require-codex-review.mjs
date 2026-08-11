@@ -554,12 +554,16 @@ function splitFlag(tok) {
 export function resolveAliasExpansion(aliases, exp0) {
   let exp = exp0
   for (let depth = 0; depth <= aliases.size; depth++) {
-    if (exp.startsWith('!')) return exp // 셸 alias — gh 재확장 없음
-    const words = exp.trim().split(/\s+/)
+    const unwrapped = unwrapYamlSingleQuote(exp)
+    if (unwrapped.startsWith('!')) return unwrapped // 셸 alias — gh 재확장 없음
+    // gh 는 확장을 셸 인용 규칙으로 토크나이즈한 뒤 첫 단어의 alias 를 재귀 해석한다 —
+    // whitespace split 은 따옴표를 붙인 채 남겨 매칭을 놓친다(43R P1: `qq: '"q"'` → `"q"`
+    // 가 q 로 안 맞음). 따옴표 인지 토크나이저로 벗긴 토큰 열로 매칭한다.
+    const words = tokenizeSegments(unwrapped)[0] ?? []
     const hit = [...aliases.values()].find(({ name }) =>
       name.every((n, j) => words[j]?.toLowerCase() === n.toLowerCase()),
     )
-    if (!hit) return exp
+    if (!hit) return unwrapped
     exp = `${hit.exp} ${words.slice(hit.name.length).join(' ')}`.trim()
   }
   return null
@@ -718,17 +722,23 @@ export function classifyHookInput(input, _depth = 0) {
       const tokens = detailed.map((t) => t.text)
       const exeIdx = effectiveExeIndex(tokens)
       // 래퍼 프리픽스 세그먼트는 옵션 arity 불명으로 실효 실행 위치를 오판할 수 있다(42R P1:
-      // `env -u gh xargs gh` — 과소비/과소비 반대 어느 쪽이든 오판 가능). 조립기(xargs·parallel)
-      // 나 stdin 인터프리터(-c 없는 sh/bash)가 세그먼트에 **존재**하면 능력 동반 시 보수 차단한다
+      // `env -u gh xargs gh`). 세그먼트에 조립기/stdin 인터프리터가 **존재**하면 보수 차단한다
       // (-c 스크립트 인터프리터는 재귀 classify 가 정밀 판정하므로 제외).
-      if (startsWithWrapper(tokens) && CAPABILITY.test(cmd)) {
-        const hasAssembler = tokens.some((t) => isAssembler(tokNorm(t)))
+      if (startsWithWrapper(tokens)) {
         const hasStdinInterp =
           tokens.some((t) => INTERP_RE.test(tokNorm(t))) && !tokens.includes('-c')
-        if (hasAssembler || hasStdinInterp)
+        // stdin 인터프리터는 stdin 내용을 관측할 수 없어 능력 토큰 유무와 무관하게 차단
+        // (43R P1: `printf 'g%c …' | env -i sh` — gh 가 조립돼 원문엔 안 보인다).
+        if (hasStdinInterp)
           return {
             kind: 'blocked',
-            reason: '래퍼 프리픽스에 조립기/stdin 인터프리터 — 실효 실행 위치 불명, 관측 불가',
+            reason: '래퍼 프리픽스에 stdin 인터프리터 — stdin 관측 불가',
+          }
+        // 조립기(xargs·parallel)는 인자에 능력이 와야 위험 — CAPABILITY 동반 시만 차단.
+        if (tokens.some((t) => isAssembler(tokNorm(t))) && CAPABILITY.test(cmd))
+          return {
+            kind: 'blocked',
+            reason: '래퍼 프리픽스에 조립기 — 실효 실행 위치 불명, 관측 불가',
           }
       }
       if (exeIdx >= tokens.length) continue
@@ -738,7 +748,11 @@ export function classifyHookInput(input, _depth = 0) {
           kind: 'blocked',
           reason: 'argv 를 명령 밖(stdin/파일)에서 조립하는 gh 호출 — 관측 불가',
         }
-      if (INTERP_RE.test(exe) && CAPABILITY.test(cmd)) {
+      // stdin 인터프리터(-c 도 스크립트 파일 인자도 없음)는 stdin 내용을 관측할 수 없다 —
+      // 능력 토큰(cmd)이 동적 조립돼 안 보여도 차단한다(43R P1: `printf 'g%c pr m%crge …'
+      // | sh` — printf 가 gh 를 조립해 원문엔 gh 리터럴이 없다). 정상 `... | sh` 는 우리
+      // 워크플로에 없어 보수 차단 마찰이 없다.
+      if (INTERP_RE.test(exe)) {
         const rest = tokens.slice(exeIdx + 1)
         if (!rest.includes('-c') && !rest.some((t) => !t.startsWith('-')))
           return {

@@ -258,9 +258,17 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify("printf 'gh pr m%crge 222' e | env -u gh sh").kind).toBe('blocked')
     // gh/GitHub 무관 조립·인라인 본문(-c)은 pass — 관할은 명령에 보이는 병합 능력만
     expect(classify('ls *.txt | xargs rm -f').kind).toBe('pass')
-    expect(classify('echo hi | sh').kind).toBe('pass')
     expect(classify('env ls | xargs rm').kind).toBe('pass')
     expect(classify("env bash -c 'gh pr view 1'").kind).toBe('pass') // -c 정상 조회는 재귀가 판정
+    // 43R: stdin 인터프리터는 능력 토큰이 조립돼 안 보여도 차단(printf 가 gh 를 조립)
+    expect(classify("printf 'g%c pr m%crge 222 --squash\\n' h e | sh").kind).toBe('blocked')
+    expect(classify("printf 'g%c pr m%crge 222\\n' h e | env -i sh").kind).toBe('blocked')
+    // stdin 인터프리터는 stdin 관측 불가라 보수 차단(echo 리터럴이어도) — 워크플로 무마찰
+    expect(classify('echo hi | sh').kind).toBe('blocked')
+  })
+  it('resolveAliasExpansion — 인용을 벗기고 연쇄를 해석한다(43R P1)', () => {
+    const m = parseAliasList('q: api\nqq: \'"q"\'')
+    expect(resolveAliasExpansion(m, m.get('qq')!.exp)).toBe('api')
   })
   it('인터프리터 -c 스크립트 내부의 gh 능력도 검사한다(38R P1)', () => {
     // 직접형: 스크립트 내 불투명 GraphQL — classify 재귀로 잡는다
