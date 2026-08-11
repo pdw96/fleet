@@ -744,12 +744,14 @@ function validatePr(gh, base, pr) {
   // 👍」가 B 를 인가한다(27R P1). 트리거 체인으로 결속한다: head 도착 **이후** OWNER 의
   // `@codex review` 재트리거가 존재하고, 👍 가 그 트리거 이후일 때만 현재 head 의 신호로
   // 인정한다(트리거 없으면 👍 경로 무효 — 명시 재트리거 후 새 👍 를 받으라).
+  // 트리거는 **단독** `@codex review` 코멘트만 인정한다(28R: 산문 속 인용 — 예: 답글에서
+  // 명령을 설명하는 문장 — 이 contains 로 트리거가 되면 늦은 👍 를 오결속한다).
   const triggerTimes = gh([
     'api',
     `${base}/issues/${pr}/comments`,
     '--paginate',
     '--jq',
-    `.[] | select(.author_association == "OWNER" and (.body | contains("@codex review"))) | .created_at`,
+    `.[] | select(.author_association == "OWNER" and (.body | test("^\\\\s*@codex review\\\\s*$"))) | .created_at`,
   ])
   const latestTrigger = triggerTimes
     .split('\n')
