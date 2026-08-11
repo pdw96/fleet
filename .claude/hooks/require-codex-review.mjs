@@ -51,8 +51,17 @@ export function hasMergeSignal(cmd) {
     (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s))
   // 정규화본 병행 스캔 — 셸이 조각을 이어 실행하는 분절 표기에 대비한다: 연속행(백슬래시-개행
   // 쌍 제거 — 8R P1: 백슬래시만 지우면 개행이 남아 미탐) → 따옴표·백슬래시·`$` 제거
-  // (g''h·g\h — 4R·5R, ANSI-C `g$'h'` — 9R).
-  return signal(cmd) || signal(cmd.replace(/\\\r?\n/g, '').replace(/['"\\$]/g, ''))
+  // (g''h·g\h — 4R·5R, ANSI-C `g$'h'` — 9R) → 퍼센트 디코드(REST 경로 `m%65rge` — 14R,
+  // 서버 라우팅이 1회 디코드하므로 1회면 충분).
+  const stripped = cmd.replace(/\\\r?\n/g, '').replace(/['"\\$]/g, '')
+  const decoded = (s) => {
+    try {
+      return decodeURIComponent(s)
+    } catch {
+      return s
+    }
+  }
+  return signal(cmd) || signal(stripped) || signal(decoded(cmd)) || signal(decoded(stripped))
 }
 
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
