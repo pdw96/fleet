@@ -80,8 +80,15 @@ export function stripShellExpansions(s) {
 function scanVariants(s) {
   const stripped = stripShellExpansions(s)
   // `${X:-h}` 류 매개변수 확장은 미설정 시 피연산자로 치환된다(21R P1) — 피연산자를 남긴
-  // 변형도 병행 스캔한다(`:-`·`:=`·`:+`·`:?` 및 콜론 생략형).
-  const defaulted = stripShellExpansions(s.replace(/\$\{[^}]*?:?[-=+?]([^}]*)\}/g, '$1'))
+  // 변형도 병행 스캔한다(`:-`·`:=`·`:+`·`:?` 및 콜론 생략형). 중첩(`${X:-${Y:-h}}`, 22R P1)은
+  // 안쪽부터 고정점까지 반복 치환한다.
+  let unwrapped = s
+  for (let i = 0; i < 10; i++) {
+    const next = unwrapped.replace(/\$\{[^{}]*?:?[-=+?]([^{}]*)\}/g, '$1')
+    if (next === unwrapped) break
+    unwrapped = next
+  }
+  const defaulted = stripShellExpansions(unwrapped)
   const decoded = (x) => {
     try {
       return decodeURIComponent(x)
@@ -339,7 +346,21 @@ export function classifyHookInput(input) {
     // ② 변이 REST 호출(-X 비GET·--input·-f/-F 필드)의 엔드포인트가 셸 변수이거나 세그먼트에
     //    리터럴 경로가 아예 없는 경우(11R P1: `. env && gh api -X PUT "$ENDPOINT"`)
     // 인라인 리터럴 본문·경로의 병합은 여기 오기 전에 신호 스캔이 잡는다.
-    for (const detailed of tokenizeSegmentsDetailed(cmd)) {
+    const allSegments = tokenizeSegmentsDetailed(cmd)
+    const cmdHasGh = allSegments.some((seg) =>
+      seg.some((t) => {
+        const exe = t.text.toLowerCase()
+        return exe === 'gh' || exe === 'gh.exe'
+      }),
+    )
+    // gh 가 있는 명령에서 GH_*/PATH 대입은 alias 관측 소스·실행 바이너리를 바꾼다
+    // (22R P1: `GH_CONFIG_DIR=/tmp/alt gh pm 222` — hook 은 기본 환경의 alias 를 본다).
+    if (
+      cmdHasGh &&
+      allSegments.some((seg) => seg.some((t) => /^(GH_[A-Z0-9_]*|PATH)=/.test(t.text)))
+    )
+      return { kind: 'blocked', reason: 'gh 호출과 GH_*/PATH 대입 동반 — 관측 환경 불일치' }
+    for (const detailed of allSegments) {
       const tokens = detailed.map((t) => t.text)
       const hasGh = tokens.some((t) => {
         const exe = t.toLowerCase()
@@ -355,6 +376,15 @@ export function classifyHookInput(input) {
           reason: '비-gh 클라이언트의 GitHub API 직접 호출 — 관측 불가, gh CLI 로 실행하라',
         }
       if (!hasGh) continue
+      // gh 앞의 어떤 env 대입 프리픽스도 실행 환경을 바꾼다(22R P1 일반화) — 차단.
+      {
+        const gi = tokens.findIndex((t) => {
+          const exe = t.toLowerCase()
+          return exe === 'gh' || exe === 'gh.exe'
+        })
+        if (tokens.slice(0, gi).some((t) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)))
+          return { kind: 'blocked', reason: 'gh 호출에 env 대입 프리픽스 — 관측 환경 불일치' }
+      }
       // gh 호출 세그먼트의 **비인용** `$` 확장은 워드 분할로 서브커맨드·플래그를 주입할 수
       // 있다(19R P1: `gh -R $ARGS 222`, ARGS='o/r pr merge') — 위치 불문 차단. 인용된
       // 확장("$VAR")은 분할이 불가능해 값 위치에선 허용(단, 서브커맨드 자리는 아래에서

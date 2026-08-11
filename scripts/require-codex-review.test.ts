@@ -43,6 +43,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       "$'\\U00000067\\U00000068' pr $'\\U0000006d\\U00000065\\U00000072\\U00000067\\U00000065' 5", // 19R: 8자리 \U
       'g{h..h} pr mer{g..g}e 222 --squash', // 20R: 단일문자 brace 분절
       'g${X:-h} pr mer${X:-ge} 222 --squash', // 21R: 기본값 매개변수 확장 분절
+      'g${X:-${Y:-h}} pr mer${X:-${Y:-ge}} 222 --squash', // 22R: 중첩 기본값 확장
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -232,6 +233,12 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(aliasIsSuspect('!gh pr "$ACTION" "$@"')).toBe(true)
     expect(aliasIsSuspect('pr view "$@"')).toBe(false) // 위치 전달만은 무해
     expect(aliasIsSuspect('pr merge')).toBe(true)
+  })
+  it('gh 호출에 env 대입 동반은 blocked — 관측 환경 불일치(22R P1)', () => {
+    expect(classify('GH_CONFIG_DIR=/tmp/alt gh pm 222 --squash').kind).toBe('blocked')
+    expect(classify('export GH_CONFIG_DIR=/tmp/alt; gh pm 222 --squash').kind).toBe('blocked')
+    expect(classify('PATH=/tmp gh pr view 1').kind).toBe('blocked')
+    expect(classify('FOO=bar gh pr view 1').kind).toBe('blocked')
   })
   it('parseAliasList — 다중행(`|-`) 확장을 이어붙인다(19R P1)', () => {
     const m = parseAliasList('pm: |-\n  echo prep\n  gh pr merge "$@"\npx: pr view')
