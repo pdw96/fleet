@@ -29,6 +29,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       "g''h pr m''erge 222 --squash", // 4R: 인용 분절 연결(셸이 조각을 이어 실행)
       'g"h" pr "m"erge 222', // 4R: 이중따옴표 분절
       'g\\h pr mer\\ge 222 --squash', // 5R: 백슬래시 분절(셸이 \ 를 제거하고 실행)
+      'gh pr m\\\nerge 222 --squash', // 8R: 연속행 분절(셸이 \-개행 쌍을 제거하고 실행)
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })

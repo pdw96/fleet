@@ -48,8 +48,9 @@ export function hasMergeSignal(cmd) {
   const signal = (s) =>
     /merge/i.test(s) &&
     (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s))
-  // 따옴표·백슬래시 제거본 병행 스캔 — 셸이 조각을 이어 실행하는 분절 표기(g''h·g\h, 4R·5R)
-  return signal(cmd) || signal(cmd.replace(/['"\\]/g, ''))
+  // 정규화본 병행 스캔 — 셸이 조각을 이어 실행하는 분절 표기에 대비한다: 연속행(백슬래시-개행
+  // 쌍 제거 — 8R P1: 백슬래시만 지우면 개행이 남아 미탐) → 따옴표·백슬래시 제거(g''h·g\h, 4R·5R).
+  return signal(cmd) || signal(cmd.replace(/\\\r?\n/g, '').replace(/['"\\]/g, ''))
 }
 
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
