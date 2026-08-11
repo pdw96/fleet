@@ -273,6 +273,32 @@ const WRAPPER_NAMES = new Set([
   'sudo',
 ])
 const INTERP_RE = /^(sh|bash|zsh|dash|ksh)(\.exe)?$/
+const tokNorm = (t) => t.toLowerCase().replace(/^.*[\\/]/, '')
+// 위험 토큰(조립기·인터프리터·gh) — 래퍼 옵션 값 소비를 여기서 멈춘다(악용해도 실효 실행
+// 파일로 잡히게). 실효 실행 판정의 세 지점(classify·extract·consumes)이 공유한다.
+const isDangerExe = (t) => {
+  const e = tokNorm(t)
+  return e === 'xargs' || e === 'parallel' || e === 'gh' || e === 'gh.exe' || INTERP_RE.test(e)
+}
+// 실효 실행 파일 토큰의 인덱스 — 대입·투명 래퍼·수치 인자·플래그(및 그 값)를 건너뛴 첫 토큰.
+// 래퍼 옵션의 필수값(`env -u FOO`, 37R→41R P1)을 실행 파일로 오인하지 않도록 `=` 미포함
+// 옵션의 다음 토큰을 값으로 소비하되, 위험 토큰이면 멈춰 실효 실행 파일로 잡는다.
+function effectiveExeIndex(tokens) {
+  let i = 0
+  for (; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
+    if (WRAPPER_NAMES.has(tokNorm(t))) continue
+    if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
+    if (t.startsWith('-')) {
+      const nx = tokens[i + 1]
+      if (nx && !nx.startsWith('-') && !t.includes('=') && !isDangerExe(nx)) i++
+      continue
+    }
+    break
+  }
+  return i
+}
 
 // 셸 인터프리터의 `-c '<script>'` 인자를 뽑는다(38R P1: `bash -c 'gh q graphql --input …'`
 // — 인용 스크립트가 단일 토큰이라 상위 토큰 검사가 gh/alias 를 못 본다). 각 스크립트는
@@ -281,16 +307,8 @@ export function extractInterpreterScripts(cmd) {
   const scripts = []
   for (const detailed of tokenizeSegmentsDetailed(cmd)) {
     const tokens = detailed.map((t) => t.text)
-    let i = 0
-    for (; i < tokens.length; i++) {
-      const t = tokens[i]
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
-      if (WRAPPER_NAMES.has(t.toLowerCase().replace(/^.*[\\/]/, ''))) continue
-      if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
-      if (t.startsWith('-')) continue
-      break
-    }
-    const exe = tokens[i]?.toLowerCase().replace(/^.*[\\/]/, '')
+    const i = effectiveExeIndex(tokens)
+    const exe = tokens[i] !== undefined ? tokNorm(tokens[i]) : undefined
     if (exe && INTERP_RE.test(exe)) {
       const ci = tokens.indexOf('-c', i + 1)
       if (ci !== -1 && tokens[ci + 1] !== undefined && !tokens[ci + 1].startsWith('-'))
@@ -307,16 +325,8 @@ export function extractInterpreterScripts(cmd) {
 export function consumesExternalScript(text) {
   for (const detailed of tokenizeSegmentsDetailed(text)) {
     const tokens = detailed.map((t) => t.text)
-    let i = 0
-    for (; i < tokens.length; i++) {
-      const t = tokens[i]
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
-      if (WRAPPER_NAMES.has(t.toLowerCase().replace(/^.*[\\/]/, ''))) continue
-      if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
-      if (t.startsWith('-')) continue
-      break
-    }
-    const exe = tokens[i]?.toLowerCase().replace(/^.*[\\/]/, '')
+    const i = effectiveExeIndex(tokens)
+    const exe = tokens[i] !== undefined ? tokNorm(tokens[i]) : undefined
     if (!exe) continue
     if (exe === 'xargs' || exe === 'parallel') return true
     if (INTERP_RE.test(exe)) {
@@ -637,6 +647,34 @@ export function classifyHookInput(input, _depth = 0) {
     // 관측 불가. gh 인자에 명령 치환이 필요하면 리터럴로 펼치거나 --body-file 로 우회하라.
     if (cmdHasGh && /`/.test(cmd))
       return { kind: 'blocked', reason: 'gh 명령에 백틱 명령 치환 — 서브커맨드/인자 실행시점 계산' }
+    // 같은 명령 안에서 alias 를 만들고(gh alias set/import/delete) 또 다른 gh 를 호출하면,
+    // hook 의 alias 스냅샷은 실행 전에 찍혀 새 alias 를 못 본다(41R P1: `gh alias set pm
+    // 'pr m'"$(printf erge)"; gh pm 222` — 둘째 세그먼트가 갓 만든 pm 을 pr merge 로 확장).
+    // alias 변이 + 다른 gh 호출 동반이면 보수적으로 차단한다.
+    const ghSegs = allSegments.filter((seg) =>
+      seg.some((t) => t.text.toLowerCase() === 'gh' || t.text.toLowerCase() === 'gh.exe'),
+    )
+    const mutatesAlias = ghSegs.some((seg) => {
+      const texts = seg.map((t) => t.text)
+      const gi = texts.findIndex((t) => {
+        const e = t.toLowerCase()
+        return e === 'gh' || e === 'gh.exe'
+      })
+      let s = gi + 1
+      while (s < texts.length && texts[s].startsWith('-')) {
+        if (!texts[s].includes('=')) s++
+        s++
+      }
+      return (
+        texts[s]?.toLowerCase() === 'alias' &&
+        /^(set|import|delete|remove)$/i.test(texts[s + 1] ?? '')
+      )
+    })
+    if (mutatesAlias && ghSegs.length >= 2)
+      return {
+        kind: 'blocked',
+        reason: 'alias 변이와 다른 gh 호출 동반 — 사전 스냅샷이 갓 만든 alias 를 못 본다',
+      }
     // gh 가 있는 명령에서 GH_*/PATH 대입은 alias 관측 소스·실행 바이너리를 바꾼다
     // (22R P1: `GH_CONFIG_DIR=/tmp/alt gh pm 222` — hook 은 기본 환경의 alias 를 본다).
     if (
@@ -670,42 +708,13 @@ export function classifyHookInput(input, _depth = 0) {
           }
       }
     }
-    // 투명 래퍼는 실효 실행 파일을 가린다(37R P1: `env xargs gh` — env 를 실행 파일로 보면
-    // xargs 분기를 건너뛴다) — 대입·래퍼·플래그·수치 인자(timeout 지속시간 등)를 건너뛴다.
-    const WRAPPERS = WRAPPER_NAMES
-    const norm = (t) => t.toLowerCase().replace(/^.*[\\/]/, '')
-    // 위험 토큰(조립기·인터프리터·gh) — 래퍼 옵션 값 소비를 여기서 멈춘다(악용해도 실효
-    // 실행 파일로 잡히게). 이 토큰들이 실효 실행 파일이면 아래 분기가 차단한다.
-    const isDanger = (t) => {
-      const e = norm(t)
-      return (
-        e === 'xargs' ||
-        e === 'parallel' ||
-        e === 'gh' ||
-        e === 'gh.exe' ||
-        /^(sh|bash|zsh|dash|ksh)(\.exe)?$/.test(e)
-      )
-    }
+    // 투명 래퍼·대입·플래그값을 건너뛴 실효 실행 파일로 판정한다(37R·41R P1: `env -u FOO
+    // xargs gh` — 공용 effectiveExeIndex 가 래퍼 옵션 값까지 소비).
     for (const detailed of allSegments) {
       const tokens = detailed.map((t) => t.text)
-      let exeIdx = 0
-      for (; exeIdx < tokens.length; exeIdx++) {
-        const t = tokens[exeIdx]
-        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
-        if (WRAPPERS.has(norm(t))) continue
-        if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
-        if (t.startsWith('-')) {
-          // 래퍼 옵션의 값 인자를 소비한다(37R→38R P1: `env -u FOO xargs gh` — `-u` 의
-          // 필수값 FOO 를 실행 파일로 오인). `=` 미포함 옵션은 다음 토큰이 값일 수 있으므로
-          // 소비하되, 위험 토큰이면 소비하지 않고 멈춰 실효 실행 파일로 잡는다.
-          const nx = tokens[exeIdx + 1]
-          if (nx && !nx.startsWith('-') && !t.includes('=') && !isDanger(nx)) exeIdx++
-          continue
-        }
-        break
-      }
+      const exeIdx = effectiveExeIndex(tokens)
       if (exeIdx >= tokens.length) continue
-      const exe = norm(tokens[exeIdx])
+      const exe = tokNorm(tokens[exeIdx])
       if (
         (exe === 'xargs' || exe === 'parallel') &&
         CAPABILITY.test(tokens.slice(exeIdx + 1).join(' '))
@@ -1127,40 +1136,41 @@ function validatePr(gh, base, pr) {
     .sort()
     .at(-1)
 
-  const reviewLines = gh([
-    'api',
-    `${base}/pulls/${pr}/reviews`,
-    '--paginate',
-    '--jq',
-    `.[] | select(.user.login == "${CODEX_LOGIN}") | .commit_id + " " + .submitted_at`,
-  ])
-  // 공식 리뷰 수용 임계 — base 변경이 실제 있었으면 commit_id==head 이고 제출이 변경 이후여도
-  // in-flight(변경 전 시작·변경 후 제출) 리뷰는 옛 base diff 기준이라 인정할 수 없다(38R P1).
-  // base 변경 후 OWNER 재트리거(=새 base 로 시작된 리뷰) 이후 제출만 fresh base-bound 로
-  // 본다. base 변경이 없으면 head 가 그대로이므로 commit_id 결속으로 충분(임계='').
-  const reviewFloor = baseChangedAt ? latestTrigger : ''
-  if (
-    reviewFloor !== undefined &&
-    reviewLines.split('\n').some((line) => {
-      const [sha, at] = line.trim().split(/\s+/)
-      return sha === headSha && (at ?? '') >= reviewFloor
-    })
-  )
-    return headSha
-
-  // 👍 리액션은 commit 결속이 없다 — head 도착 시각만으로는 「A 리뷰 중 B push → A 의 늦은
-  // 👍」가 B 를 인가한다(27R P1). 트리거 체인으로 결속한다: head 도착 **이후** OWNER 의
-  // `@codex review` 재트리거가 존재하고, 👍 가 그 트리거 이후일 때만 현재 head 의 신호로
-  // 인정한다(트리거 없으면 👍 경로 무효 — 명시 재트리거 후 새 👍 를 받으라).
-  if (latestTrigger) {
-    const thumbTimes = gh([
+  // base 변경이 있었으면 시각 기반 자동 경로(공식 리뷰·👍)를 **전부 건너뛴다**(41R P1:
+  // 제출/리액션 시각은 리뷰를 새 base diff 에 인과 결속하지 못한다 — A base 리뷰가 in-flight
+  // 로 재트리거 이후 제출돼도 commit_id==head·시각 조건을 만족한다). base 변경 후엔 OWNER 가
+  // 새 base diff 를 보고 남긴 audited 폴백 마커(근거 서술 포함)만 유일 경로다.
+  if (!baseChangedAt) {
+    const reviewLines = gh([
       'api',
-      `${base}/issues/${pr}/reactions`,
+      `${base}/pulls/${pr}/reviews`,
       '--paginate',
       '--jq',
-      `.[] | select(.content == "+1" and .user.login == "${CODEX_LOGIN}") | .created_at`,
+      `.[] | select(.user.login == "${CODEX_LOGIN}") | .commit_id + " " + .submitted_at`,
     ])
-    if (thumbTimes.split('\n').some((t) => t.trim() && t.trim() >= latestTrigger)) return headSha
+    // head 가 그대로이므로 commit_id 결속으로 충분(base 변경 없음).
+    if (
+      reviewLines.split('\n').some((line) => {
+        const [sha] = line.trim().split(/\s+/)
+        return sha === headSha
+      })
+    )
+      return headSha
+
+    // 👍 리액션은 commit 결속이 없다 — head 도착 시각만으로는 「A 리뷰 중 B push → A 의 늦은
+    // 👍」가 B 를 인가한다(27R P1). 트리거 체인으로 결속한다: head 도착 **이후** OWNER 의
+    // `@codex review` 재트리거가 존재하고, 👍 가 그 트리거 이후일 때만 현재 head 의 신호로
+    // 인정한다(트리거 없으면 👍 경로 무효 — 명시 재트리거 후 새 👍 를 받으라).
+    if (latestTrigger) {
+      const thumbTimes = gh([
+        'api',
+        `${base}/issues/${pr}/reactions`,
+        '--paginate',
+        '--jq',
+        `.[] | select(.content == "+1" and .user.login == "${CODEX_LOGIN}") | .created_at`,
+      ])
+      if (thumbTimes.split('\n').some((t) => t.trim() && t.trim() >= latestTrigger)) return headSha
+    }
   }
 
   // 무응답 폴백 — OWNER 가 남긴 head-결속 마커(`[codex-gate-fallback] head=<현재 head SHA>`)를

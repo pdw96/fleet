@@ -266,6 +266,21 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // extractInterpreterScripts 계약
     expect(extractInterpreterScripts("bash -c 'gh api graphql'")).toEqual(['gh api graphql'])
     expect(extractInterpreterScripts('gh pr view 1')).toEqual([])
+    // 41R: 래퍼 옵션 값(`env -u FOO`)을 실행 파일로 오인하지 않고 안쪽 인터프리터를 찾는다
+    expect(
+      extractInterpreterScripts("env -u FOO bash -c 'gh api graphql --input /tmp/q.json'"),
+    ).toEqual(['gh api graphql --input /tmp/q.json'])
+    expect(classify("env -u FOO bash -c 'gh api graphql --input /tmp/q.json'").kind).toBe('blocked')
+  })
+  it('같은 명령 안의 alias 변이 + 다른 gh 호출은 blocked — 스냅샷이 못 본다(41R P1)', () => {
+    // merge 를 명령 치환으로 분리해 신호를 우회(신호 발동형은 canonical 경로가 이미 차단)
+    expect(classify('gh alias set pm \'pr m\'"$(printf erge)"; gh pm 222').kind).toBe('blocked')
+    expect(classify('gh alias import /tmp/a.yml; gh x 222').kind).toBe('blocked')
+    expect(classify('gh alias delete co && gh y 222').kind).toBe('blocked')
+    // alias set 단독(다른 gh 호출 없음)은 무해
+    expect(classify("gh alias set co 'pr checkout'").kind).toBe('pass')
+    // alias 변이 없는 이중 gh 조회는 무해
+    expect(classify('gh pr view 1 && gh pr view 2').kind).toBe('pass')
   })
   it('분류 상한 도달 시 남은 인터프리터 스크립트는 fail-closed(39R P1)', () => {
     // _depth=5 에서 -c 스크립트가 남아 있으면 **내용 무관** blocked — 정상 조회 스크립트여도
