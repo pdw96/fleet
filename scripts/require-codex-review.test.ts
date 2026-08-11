@@ -58,6 +58,11 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'gh pr m{e..e..1}rge 222 --squash --match-head-commit abc', // 34R: step 범위
       'gh pr me{r..r..0}ge 222 --squash', // 34R: step 0 은 bash 가 1 로 취급
       'gh x {a..Z9}', // 34R: 인식 불가 범위 표기는 정적 전개 불가 — fail-closed 발동
+      "bash -O extglob -c 'gh pr m@(er)ge 222 --squash --match-head-commit abc'", // 36R: 다문자 extglob
+      'gh pr m?(er)ge 222 --squash', // 36R: ?() 는 빈 문자열 포함 전개
+      'gh pr m+(er)ge 222 --squash', // 36R: +() 대안 전개
+      'gh pr m@(er|x)ge 222 --squash', // 36R: | 대안
+      'gh pr m!(x)erge 222 --squash', // 36R: !() 보집합은 정적 열거 불가 — fail-closed 발동
       // 33R: 전개 캡 초과(2^10)는 정적 열거 불가 — 능력 토큰 동반이면 fail-closed 발동
       `gh x ${'{a,b}'.repeat(10)}`,
     ])
@@ -292,6 +297,9 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(aliasIsSuspect('!gh pr "$1" 222 --squash')).toBe(true) // 23R: $1 재배열도 의심
     expect(aliasIsSuspect('pr view "$@"')).toBe(false) // 전체 전달($@·$*)만 무해
     expect(aliasIsSuspect('pr merge')).toBe(true)
+    // 36R: 백틱 명령 치환도 실행 시점 계산 — $ 와 동일하게 동적 취급
+    expect(aliasIsSuspect('!gh pr `printf m%crge e` 222 --squash')).toBe(true)
+    expect(aliasIsSuspect('!gh pr view `date`')).toBe(true)
   })
   it('병합 단어 + 셸 확장 동반은 blocked — 실행 파일 조립 가능(23R·24R P1)', () => {
     expect(classify('$(printf g)h pr merge 222 --squash --match-head-commit abc').kind).toBe(

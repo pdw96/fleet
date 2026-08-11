@@ -84,11 +84,15 @@ export function stripShellExpansions(s) {
     .replace(/['"\\$]/g, '')
 }
 
-// 다문자 brace 확장(33R P1: `m{erg,x}e` — 단일문자 접기만으론 미탐)을 bash 시맨틱으로
-// 전개한다. 대안(`,`)과 범위(`..`)만 전개 대상 — 무대안 `{word}` 는 bash 도 리터럴로 남긴다.
-// 전개 수가 캡을 넘으면 정적 열거 불가 = overflow 로 보고하고, 신호 술어가 fail-closed 로
-// 흡수한다(능력 토큰 동반 시 병합 단어 존재로 간주).
+// 다문자 brace 확장(33R P1: `m{erg,x}e` — 단일문자 접기만으론 미탐)과 다문자 extglob
+// (36R P1: `m@(er)ge` — 단일문자 접기만으론 미탐)을 bash 시맨틱으로 전개한다. brace 는
+// 대안(`,`)과 범위(`..`)만 전개 대상 — 무대안 `{word}` 는 bash 도 리터럴로 남긴다. extglob
+// 은 `@(…)`/`+(…)` = 각 대안, `?(…)`/`*(…)` = 빈 문자열 포함, `!(…)` = 보집합이라 정적
+// 열거 불가 = overflow. 전개 수가 캡을 넘어도 overflow 로 보고하고, 신호 술어가
+// fail-closed 로 흡수한다(능력 토큰 동반 시 병합 단어 존재로 간주).
 const BRACE_CAP = 512
+const BRACE_RE = /\{[^{}]*(?:,|\.\.)[^{}]*\}/
+const EXTGLOB_RE = /[?*+@!]\([^()]*\)/
 function expandBraceAlternations(s) {
   const variants = [s]
   let overflow = false
@@ -97,10 +101,31 @@ function expandBraceAlternations(s) {
       overflow = true
       break
     }
-    const idx = variants.findIndex((v) => /\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(v))
+    const idx = variants.findIndex((v) => BRACE_RE.test(v) || EXTGLOB_RE.test(v))
     if (idx === -1) break
     const v = variants[idx]
-    const m = v.match(/\{([^{}]*(?:,|\.\.)[^{}]*)\}/)
+    const eg = v.match(/([?*+@!])\(([^()]*)\)/)
+    const bm = v.match(/\{([^{}]*(?:,|\.\.)[^{}]*)\}/)
+    // 둘 다 있으면 앞선 것부터 — 어느 쪽이든 결국 고정점까지 처리된다.
+    const useEg = eg && (!bm || eg.index < bm.index)
+    if (useEg) {
+      if (eg[1] === '!') {
+        overflow = true // 보집합은 임의 문자열 매칭 가능 — 정적 열거 불가
+        break
+      }
+      const alts = eg[2].split('|')
+      if (eg[1] === '?' || eg[1] === '*') alts.push('')
+      const expanded = alts.map(
+        (alt) => v.slice(0, eg.index) + alt + v.slice(eg.index + eg[0].length),
+      )
+      variants.splice(idx, 1, ...expanded)
+      if (variants.length > BRACE_CAP) {
+        overflow = true
+        break
+      }
+      continue
+    }
+    const m = bm
     const body = m[1]
     let alts
     // 범위는 선택적 증분(step)까지 bash 시맨틱(34R P1: `{e..e..1}` — 2요소만 받으면 미탐).
@@ -186,7 +211,9 @@ export function aliasIsSuspect(exp) {
   // 옮길 수 있어(23R P1: `!gh pr "$1" …` + 인자 merge) 명명 변수와 같이 의심 처리.
   // 불투명 API 형태(--input·=@ 파일 필드·graphql)로 확장되는 alias 도 의심 — 직접 명령이면
   // 차단될 형태가 alias 를 거치면 통과했다(26R P1: `q: api graphql --input /tmp/q.graphql`).
-  return hasMergeWord(exp) || /\$(?![@*])/.test(exp) || /--input|=@|graphql/i.test(exp)
+  // 백틱 명령 치환도 `$(…)` 와 같은 실행 시점 계산이다(36R P1: `!gh pr \`printf m%crge e\``
+  // — sh 가 백틱을 평가해 동사를 조립) — 동적 취급.
+  return hasMergeWord(exp) || /\$(?![@*])|`/.test(exp) || /--input|=@|graphql/i.test(exp)
 }
 
 export function hasMergeSignal(cmd) {
