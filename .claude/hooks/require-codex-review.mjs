@@ -172,7 +172,7 @@ export function tokenizeSegmentsDetailed(cmd) {
       cur += cmd[i + 1] ?? ''
       inToken = true
       i++
-    } else if (ch === "'" || ch === '"') {
+    } else if (ch === "'") {
       const close = cmd.indexOf(ch, i + 1)
       quoted = true
       if (close === -1) {
@@ -184,6 +184,23 @@ export function tokenizeSegmentsDetailed(cmd) {
         inToken = true
         i = close
       }
+    } else if (ch === '"') {
+      // 이중따옴표 안 `\"` 는 닫힘이 아니다(29R P1: `--body "x\" --match-head-commit …"` 의
+      // 이스케이프를 닫힘으로 읽으면 body 내부 문구가 실제 플래그로 승격돼 head 가드가
+      // 조용히 소실된 채 통과한다) — 비이스케이프 따옴표까지 스캔한다.
+      quoted = true
+      let j = i + 1
+      while (j < cmd.length && cmd[j] !== '"') {
+        if (cmd[j] === '\\' && j + 1 < cmd.length) {
+          cur += cmd[j + 1]
+          j += 2
+        } else {
+          cur += cmd[j]
+          j++
+        }
+      }
+      inToken = true
+      i = j < cmd.length ? j : cmd.length
     } else if (/\s/.test(ch)) {
       if (ch === '\n') endSegment()
       else push()
@@ -253,10 +270,10 @@ export function parseCanonicalMerge(cmd) {
   const segments = tokenizeSegments(cmd)
   if (segments.length !== 1) return null
   const tokens = segments[0]
-  // 어느 토큰이든 셸 확장(`$`)·글롭(`?`·`*`·`[]`) 잔존이면 비-canonical — 확장은 워드 분할
-  // 주입(12R: `--body $BODY`), 글롭은 경로명 확장으로 값이 바뀐다(25R P1: `-R o/r?` 가
-  // 디렉터리 `o/rx` 존재 시 다른 레포로 확장 — 검증은 o/r, 병합은 o/rx).
-  if (tokens.some((t) => /[$?*[\]]/.test(t))) return null
+  // 어느 토큰이든 셸 확장(`$`)·글롭(`?`·`*`·`[]`)·brace(`{}`) 잔존이면 비-canonical — 확장은
+  // 워드 분할 주입(12R: `--body $BODY`), 글롭은 경로명 확장으로 값이 바뀌고(25R: `-R o/r?`),
+  // brace 는 한 값이 여러 인자로 갈라져 플래그를 주입한다(29R P1: `--body {x,--auto}`).
+  if (tokens.some((t) => /[$?*[\]{}]/.test(t))) return null
   // 실행 파일 = bare `gh`/`gh.exe` 만(대소문자 무관 — win32, 3R P1). 경로 지정 실행은
   // PATH 의 gh 로 검증하고 다른 바이너리가 실행되는 불일치가 가능해 배제한다(4R P1).
   const exe = tokens[0]?.toLowerCase()
@@ -345,10 +362,12 @@ export function parseAliasList(text) {
     currents = []
     // alias 이름은 콜론을 담을 수 있어(`pm:x: pr merge`, 24R P1) 분해가 모호하다 —
     // 첫 콜론·마지막 콜론 양쪽 해석을 모두 등록해 어느 쪽으로 불려도 대조에 걸리게 한다.
-    const lazy = line.match(/^(.+?):\s*(.*)$/)
-    const greedy = line.match(/^(.+):\s*(.*)$/)
-    if (lazy) register(lazy[1], lazy[2])
-    if (greedy && greedy[1] !== lazy?.[1]) register(greedy[1], greedy[2])
+    // 확장에도 콜론(URL 등)이 올 수 있어 첫/마지막 두 해석만으론 실제 이름을 놓친다
+    // (29R P1: `pm:x: pr merge https://…` — greedy 가 URL 콜론을 잡아 `pm:x` 미등록) —
+    // 모든 콜론 위치의 분해를 등록한다(같은 키는 합집합 병합, 콜론 수로 유계).
+    for (let ci = line.indexOf(':'); ci !== -1; ci = line.indexOf(':', ci + 1)) {
+      if (line.slice(0, ci).trim()) register(line.slice(0, ci), line.slice(ci + 1))
+    }
   }
   return aliases
 }
@@ -610,6 +629,27 @@ function main() {
               'alias 경유 병합은 차단. canonical 형태로 직접 실행하라.',
           )
           process.exit(2)
+        }
+      }
+      // 비병합 alias 라도 호출 직후 인자에 확장이 오면 그 인자가 동사 자리로 이어진다
+      // (29R P1: `pr x: pr` + `gh pr x "$ACTION" 222`, ACTION=merge — 인용 확장이라 비인용
+      // 규칙도 미발동) — gh 뒤 alias 이름 열 매칭 직후 토큰의 `$` 는 인용 무관 차단.
+      for (const seg of tokenizeSegmentsDetailed(cmd)) {
+        const texts = seg.map((t) => t.text)
+        const gi = texts.findIndex((t) => {
+          const exe = t.toLowerCase()
+          return exe === 'gh' || exe === 'gh.exe'
+        })
+        if (gi === -1) continue
+        for (const { name } of aliases.values()) {
+          const matches = name.every((n, j) => texts[gi + 1 + j]?.toLowerCase() === n.toLowerCase())
+          if (matches && texts[gi + 1 + name.length]?.includes('$')) {
+            console.error(
+              `[codex-gate] gh alias '${name.join(' ')}' 호출 직후 인자에 셸 확장 — 확장이 ` +
+                '동사 자리로 이어질 수 있어 차단. 리터럴 인자로 실행하라.',
+            )
+            process.exit(2)
+          }
         }
       }
     }

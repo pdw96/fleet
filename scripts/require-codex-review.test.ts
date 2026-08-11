@@ -110,6 +110,12 @@ describe('parseCanonicalMerge — 허용되는 단일 형태', () => {
       target: 'feature/x',
     })
   })
+  it('이스케이프 따옴표 body 의 가짜 플래그를 실제 플래그로 승격하지 않는다(29R P1)', () => {
+    // bash 는 한 개 body 값으로 전달 — match-head 는 실재하지 않으므로 null 이어야 한다
+    expect(
+      parseCanonicalMerge('gh pr merge 222 --body "x\\" --match-head-commit abc"'),
+    ).toMatchObject({ pr: 222, matchHead: null })
+  })
   it('--match-head-commit 값을 추출한다 (3R P1: TOCTOU 서버측 봉쇄의 입력)', () => {
     expect(parseCanonicalMerge('gh pr merge 5 -s --match-head-commit deadbeef')).toMatchObject({
       matchHead: 'deadbeef',
@@ -148,6 +154,10 @@ describe('parseCanonicalMerge — 형태 이탈은 전부 null(차단)', () => {
       'gh pr merge https://ghe.example/o/r/pull/9',
     ],
     ['--auto 이연 머지(일회 검증 게이트와 양립 불가)', 'gh pr merge 5 --auto --squash'],
+    [
+      '값의 brace 확장(한 값이 여러 인자로 갈라져 --auto 주입 — 29R)',
+      'gh pr merge 222 --body {x,--auto} --match-head-commit abc',
+    ],
     [
       '--admin 관리자 우회(플랫폼 사전 게이트와 상충)',
       'gh pr merge 5 --admin --match-head-commit abc',
@@ -276,6 +286,10 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     const m = parseAliasList('pm: pr merge\npm:x: pr view')
     expect(m.get('pm')?.exp).toContain('merge') // pm:x 의 lazy 해석(pm → "x: pr view")이 교체 금지
   })
+  it('parseAliasList — 확장에 콜론(URL)이 있어도 모든 분해를 등록(29R P1)', () => {
+    const m = parseAliasList('pm:x: pr merge https://github.com/o/r/pull/2 --squash')
+    expect(m.get('pm:x')?.exp).toContain('merge')
+  })
   it('실행 파일 자리 비인용 글롭은 blocked — 파일 gh 존재 시 g? 확장(26R P1)', () => {
     expect(classify('g? pr merge 222 --squash --match-head-commit abc').kind).toBe('blocked')
   })
@@ -347,6 +361,9 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
 describe('tokenizeSegments — 근사 셸 시맨틱', () => {
   it('따옴표 블록을 한 토큰으로 접는다', () => {
     expect(tokenizeSegments('a "b c" d')).toEqual([['a', 'b c', 'd']])
+  })
+  it('이중따옴표 안 이스케이프 따옴표는 닫힘이 아니다(29R P1)', () => {
+    expect(tokenizeSegments('a "x\\" y" b')).toEqual([['a', 'x" y', 'b']])
   })
   it('연산자·개행·그룹핑이 세그먼트를 가른다', () => {
     expect(tokenizeSegments('a && b; c\nd')).toEqual([['a'], ['b'], ['c'], ['d']])
