@@ -26,6 +26,8 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       "gh api graphql -f query='mutation { mergePullRequest(input: {}) {} }'", // 3R: GraphQL
       'gh.exe pr merge 222 --squash', // 3R: Windows 표기
       'git push origin x:y && gh pr merge 222', // 3R: TOCTOU 복합 명령
+      "g''h pr m''erge 222 --squash", // 4R: 인용 분절 연결(셸이 조각을 이어 실행)
+      'g"h" pr "m"erge 222', // 4R: 이중따옴표 분절
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -63,9 +65,12 @@ describe('parseCanonicalMerge — 허용되는 단일 형태', () => {
       parseCanonicalMerge('gh pr merge https://github.com/pdw96/fleet/pull/288 --squash'),
     ).toMatchObject({ pr: 288, repo: 'pdw96/fleet' })
   })
-  it('gh.exe·경로 표기를 정규화한다 (3R P1: bare gh.exe 미탐)', () => {
+  it('bare gh.exe·대소문자는 허용, 경로 지정 실행은 배제한다 (3R·4R P1)', () => {
     expect(parseCanonicalMerge('gh.exe pr merge 222 --squash')).toMatchObject({ pr: 222 })
-    expect(parseCanonicalMerge('C:/tools/GH.EXE pr merge 222')).toMatchObject({ pr: 222 })
+    expect(parseCanonicalMerge('GH.EXE pr merge 222')).toMatchObject({ pr: 222 })
+    // 경로 실행 파일은 PATH 의 gh 로 검증하고 딴 바이너리가 실행되는 불일치 가능 → null
+    expect(parseCanonicalMerge('/tmp/gh pr merge 222 --match-head-commit abc')).toBeNull()
+    expect(parseCanonicalMerge('C:/tools/GH.EXE pr merge 222')).toBeNull()
   })
   it('브랜치 타깃은 target 으로 넘긴다', () => {
     expect(parseCanonicalMerge('gh pr merge feature/x --merge')).toMatchObject({
@@ -98,6 +103,11 @@ describe('parseCanonicalMerge — 형태 이탈은 전부 null(차단)', () => {
     ['미지 플래그', 'gh pr merge --mystery-flag 5'],
     ['미지 전역 플래그', 'gh --hostname ghe.example pr merge 5'],
     ['셸 확장 타깃', 'gh pr merge $PR'],
+    [
+      '비 github.com URL 타깃(엔터프라이즈 호스트 낙하 방지)',
+      'gh pr merge https://ghe.example/o/r/pull/9',
+    ],
+    ['--auto 이연 머지(일회 검증 게이트와 양립 불가)', 'gh pr merge 5 --auto --squash'],
     ['잉여 인자', 'gh pr merge 5 6'],
     ['REST 경유', 'gh api -X PUT repos/pdw96/fleet/pulls/240/merge'],
     ['GraphQL 경유', "gh api graphql -f query='mutation { mergePullRequest(input: {}) {} }'"],
@@ -125,7 +135,7 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
       viaMcp: false,
     })
   })
-  it('MCP merge_pull_request 는 구조화 입력으로 분류된다(sha 있으면 동반)', () => {
+  it('MCP merge_pull_request 는 구조화 입력으로 분류된다(sha 는 main 에서 필수 강제)', () => {
     expect(
       classifyHookInput({
         tool_name: 'mcp__plugin_github_github__merge_pull_request',

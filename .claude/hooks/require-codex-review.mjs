@@ -24,6 +24,13 @@
 //
 // reviews/reactions/comments 조회는 --paginate 필수 — 페이지네이션 누락으로 리뷰 3건을 못 본
 // 실사고가 게이트 신설의 직접 배경이다. 조회 실패는 fail-closed(차단)한다.
+//
+// §위협 모델(4R 확정): 이 게이트는 **에이전트 세션의 사고성 미리뷰 머지 방지 장치**다.
+// 로컬 쓰기 권한을 가진 적대 행위자는 settings.json/hook 파일 자체를 고칠 수 있으므로
+// 적대 방어는 원리적으로 이 층의 비목표다(PR1a 11R 「사고성 방지·악성 방어는 경계 소관」과
+// 동형). 다만 수정 비용이 낮은 적대형 구멍(분절 표기·경로 실행 파일·force-push 재결속)은
+// 방어 심도로 함께 닫는다. 잔여 한계(일반 push 로 기존 커밋을 head 에 앉히는 시각 우회)는
+// 이 범위에서 수용 — SHA-결속 신호(공식 리뷰 commit_id)가 항상 우선 경로다.
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
@@ -32,13 +39,14 @@ export const FALLBACK_MARKER = '[codex-gate-fallback]'
 
 // ── 머지 능력 신호(raw 문자열 스캔) ──────────────────────────────────────────
 // 게이트 발동 조건: `merge` + (gh 실행 파일 | github.com | graphql). 인용·치환·래퍼 안에
-// 숨어도 raw 스캔에는 보이므로 미탐 방향의 우회가 없다. 대가는 오탐(머지 문구를 인용만 하는
-// 명령 — PR 본문 등)이며, 그쪽은 fail-closed 후 안내(--body-file 등)로 흡수한다.
+// 숨어도 raw 스캔에는 보이므로 미탐 방향의 우회가 없다. 셸이 인접 인용 조각을 연결하는
+// 분절 표기(`g''h`, 4R P1)에 대비해 따옴표 제거본도 함께 스캔한다. 대가는 오탐(머지 문구를
+// 인용만 하는 명령 — PR 본문 등)이며, 그쪽은 fail-closed 후 안내(--body-file 등)로 흡수한다.
 export function hasMergeSignal(cmd) {
-  return (
-    /merge/i.test(cmd) &&
-    (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(cmd) || /github\.com|graphql/i.test(cmd))
-  )
+  const signal = (s) =>
+    /merge/i.test(s) &&
+    (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s))
+  return signal(cmd) || signal(cmd.replace(/['"]/g, ''))
 }
 
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
@@ -105,9 +113,10 @@ const MERGE_VALUE_FLAGS = new Set([
   '--author-email',
   '--match-head-commit',
 ])
+// `--auto` 는 비허용 — 이연 머지는 활성화 이후의 push 가 이 hook 을 다시 거치지 않고
+// 병합될 수 있어(4R P1) 일회 검증 게이트와 양립하지 않는다. `--disable-auto`(해제)는 무해.
 const MERGE_BOOL_FLAGS = new Set([
   '--admin',
-  '--auto',
   '--disable-auto',
   '-d',
   '--delete-branch',
@@ -133,8 +142,9 @@ export function parseCanonicalMerge(cmd) {
   const segments = tokenizeSegments(cmd)
   if (segments.length !== 1) return null
   const tokens = segments[0]
-  // 실행 파일 = gh(경로·.exe·대소문자 표기 무관 — win32/Git Bash, 3R P1)
-  const exe = tokens[0]?.split(/[\\/]/).pop()?.toLowerCase()
+  // 실행 파일 = bare `gh`/`gh.exe` 만(대소문자 무관 — win32, 3R P1). 경로 지정 실행은
+  // PATH 의 gh 로 검증하고 다른 바이너리가 실행되는 불일치가 가능해 배제한다(4R P1).
+  const exe = tokens[0]?.toLowerCase()
   if (exe !== 'gh' && exe !== 'gh.exe') return null
   let i = 1
   let repo = null
@@ -168,9 +178,11 @@ export function parseCanonicalMerge(cmd) {
       else if (url) {
         repo = url[1]
         pr = Number(url[2])
-      } else if (/[$]/.test(tok))
-        return null // 셸 확장 잔존 타깃은 해석 불가
-      else target = tok
+      } else if (/[$]/.test(tok) || /:\/\//.test(tok)) {
+        // 셸 확장 잔존·비 github.com URL 타깃은 해석 불가(4R P1: 엔터프라이즈 호스트 URL 이
+        // 일반 타깃으로 낙하하면 로컬 레포 기준으로 오검증된다).
+        return null
+      } else target = tok
     } else {
       return null
     }
@@ -264,12 +276,15 @@ function main() {
   const headSha = validatePr(gh, base, pr)
 
   // TOCTOU 봉쇄: 검증한 head 를 GitHub 서버가 병합 조건으로 강제하게 한다(3R P1).
-  // MCP 는 구조화 단일 호출이라 sha 미지정을 허용한다(있으면 동일 검증).
-  if (verdict.matchHead == null && !verdict.viaMcp) {
+  // MCP 도 hook 과 실행 사이가 원자적이지 않으므로 sha 필수(4R P1).
+  if (verdict.matchHead == null) {
+    const hint = verdict.viaMcp
+      ? `merge_pull_request 호출에 sha: "${headSha}" 를 포함해 재시도하라.`
+      : '이대로 재시도하라:\n' +
+        `  gh pr merge ${pr}${repo ? ` -R ${repo}` : ''} --squash --match-head-commit ${headSha}`
     console.error(
       `[codex-gate] PR #${pr} 검증 통과 — 단, 검증 시점의 head 를 서버가 강제하도록 ` +
-        '--match-head-commit 이 필수다. 이대로 재시도하라:\n' +
-        `  gh pr merge ${pr}${repo ? ` -R ${repo}` : ''} --squash --match-head-commit ${headSha}`,
+        `기대 head SHA 가 필수다. ${hint}`,
     )
     process.exit(2)
   }
@@ -305,7 +320,7 @@ function validatePr(gh, base, pr) {
   ])
   if (reviewedShas.split('\n').some((s) => s.trim() === headSha)) return headSha
 
-  const headTime = headArrivalTime(gh, base, headSha)
+  const headTime = headArrivalTime(gh, base, pr, headSha)
 
   // 👍 리액션은 commit 결속이 없어 head 도착 시각으로 결속한다(ISO-8601 Z 는 사전순 비교 가능).
   const thumbTimes = gh([
@@ -343,8 +358,17 @@ function validatePr(gh, base, pr) {
   process.exit(2)
 }
 
-/** head SHA 의 도착 시각 — check-suite 최초 생성(서버 기록) 우선, 부재 시 committer date. */
-function headArrivalTime(gh, base, headSha) {
+/**
+ * 이 SHA 가 「이 PR 의 head 가 된」 시각의 보수적 하한 — 다음의 최댓값(4R P1: SHA 전역
+ * check-suite 시각만 보면 타 브랜치에서 이미 검사를 돌린 커밋을 force-push 로 head 에 앉혀
+ * 낡은 👍 를 통과시킬 수 있다):
+ *   (a) SHA 의 check-suite 최초 생성(서버 기록) — 부재 시 committer date 폴백(차선)
+ *   (b) PR 타임라인의 마지막 head_ref_force_pushed 이벤트 시각(서버 기록)
+ * 일반 push 로 기존 커밋을 head 에 앉히는 변형은 남는다 — §위협 모델(사고 방지) 범위에서
+ * 수용하고, SHA-결속 신호(공식 리뷰 commit_id)가 항상 우선 경로다.
+ */
+function headArrivalTime(gh, base, pr, headSha) {
+  const candidates = []
   const suites = gh(
     [
       'api',
@@ -355,18 +379,29 @@ function headArrivalTime(gh, base, headSha) {
     true,
   )
   const first = suites?.trim()
-  if (first && /^\d{4}-\d{2}-\d{2}T/.test(first)) return first
-  const committed = gh([
-    'api',
-    `${base}/commits/${headSha}`,
-    '--jq',
-    '.commit.committer.date',
-  ]).trim()
-  if (!/^\d{4}-\d{2}-\d{2}T/.test(committed)) {
-    console.error('[codex-gate] head 도착 시각 해석 실패 — fail-closed 차단.')
-    process.exit(2)
+  if (first && /^\d{4}-\d{2}-\d{2}T/.test(first)) candidates.push(first)
+  else {
+    const committed = gh([
+      'api',
+      `${base}/commits/${headSha}`,
+      '--jq',
+      '.commit.committer.date',
+    ]).trim()
+    if (!/^\d{4}-\d{2}-\d{2}T/.test(committed)) {
+      console.error('[codex-gate] head 도착 시각 해석 실패 — fail-closed 차단.')
+      process.exit(2)
+    }
+    candidates.push(committed)
   }
-  return committed
+  const forced = gh([
+    'api',
+    `${base}/issues/${pr}/timeline`,
+    '--paginate',
+    '--jq',
+    '[.[] | select(.event == "head_ref_force_pushed") | .created_at] | sort | last // empty',
+  ]).trim()
+  if (/^\d{4}-\d{2}-\d{2}T/.test(forced)) candidates.push(forced)
+  return candidates.sort().at(-1)
 }
 
 if (
