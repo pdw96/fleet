@@ -76,6 +76,7 @@ export function stripShellExpansions(s) {
     })
     .replace(/\{(.)(?:\.\.\1)?\}/g, '$1') // 단일문자 brace(`g{h..h}`·`g{h}`) 접기(20R P1)
     .replace(/\[(.)(?:-\1)?\]/g, '$1') // 단일문자 글롭 클래스(`m[e]rge`·`m[e-e]rge`) 접기(23R P1)
+    .replace(/[?*+@!]\((.)\)/g, '$1') // 단일문자 extglob(`m@(e)rge` 등 5형) 접기(31R P1)
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
     .replace(/\\([0-7]{1,3})(?![0-9])/g, (_, o) => String.fromCharCode(parseInt(o, 8)))
     .replace(/\$[@*#?!0-9-]/g, '')
@@ -649,12 +650,23 @@ function main() {
           if (!texts[start].includes('=')) start++
           start++
         }
-        for (const { name } of aliases.values()) {
+        for (const { name, exp } of aliases.values()) {
           const matches = name.every((n, j) => texts[start + j]?.toLowerCase() === n.toLowerCase())
-          if (matches && texts[start + name.length]?.includes('$')) {
+          if (!matches) continue
+          if (texts[start + name.length]?.includes('$')) {
             console.error(
               `[codex-gate] gh alias '${name.join(' ')}' 호출 직후 인자에 셸 확장 — 확장이 ` +
                 '동사 자리로 이어질 수 있어 차단. 리터럴 인자로 실행하라.',
+            )
+            process.exit(2)
+          }
+          // 확장+이어붙인 인자의 합성이 불투명 API 호출을 이루면 차단(31R P1: `q: api` +
+          // `gh q graphql --input /tmp/q.json` — 확장 단독으론 비의심).
+          const combined = `${exp} ${texts.slice(start + name.length).join(' ')}`
+          if (/graphql/i.test(combined) && /--input|=@|\$/.test(combined)) {
+            console.error(
+              `[codex-gate] gh alias '${name.join(' ')}' 호출이 불투명 GraphQL 호출로 합성된다 — ` +
+                '관측 불가라 차단. alias 없이 인라인 리터럴로 실행하라.',
             )
             process.exit(2)
           }

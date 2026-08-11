@@ -48,6 +48,8 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       `g${'${V:-'.repeat(12)}h${'}'.repeat(12)} pr mer${'${V:-'.repeat(12)}ge${'}'.repeat(12)} 5`,
       'gh pr m[e]rge 222 --squash', // 23R: 단일문자 글롭 클래스(경로명 확장)
       'gh pr m[e-e]rge 222 --squash', // 23R: 단일문자 범위 글롭
+      'gh pr m@(e)rge 222 --squash', // 31R: extglob 분절
+      "bash -O extglob -c 'gh pr m@(e)rge 222 --squash'", // 31R: 인터프리터 경유 extglob
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
