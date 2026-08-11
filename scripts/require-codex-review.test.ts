@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   hasMergeSignal,
+  hasMergeWord,
   parseCanonicalMerge,
   classifyHookInput,
   tokenizeSegments,
@@ -33,6 +34,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       "g$'h' pr m$'erge' 222 --squash", // 9R: ANSI-C 인용 분절
       'gh api -X PUT repos/o/r/pulls/222/m%65rge', // 14R: 퍼센트 인코딩 REST 경로
       'g${EMPTY}h pr mer${EMPTY}ge 222 --squash', // 15R: 미설정 변수 확장 분절
+      "$'\\x67\\x68' pr $'\\x6d\\x65\\x72\\x67\\x65' 222 --squash", // 16R: ANSI-C \xHH 확장
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -173,6 +175,16 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('gh api repos/pdw96/fleet/issues -f title=hi').kind).toBe('pass')
     // 판정 기준은 엔드포인트 토큰 — 필드 값의 $ 는 본문 내용(자기 오탐 실측)
     expect(classify('gh api repos/o/r/issues/1/comments -F "body=@$DIR/x.md"').kind).toBe('pass')
+  })
+  it('변이 REST 의 {branch} 류 플레이스홀더는 blocked — 브랜치명이 merge 일 수 있다(16R P1)', () => {
+    expect(classify('gh api -X PUT repos/pdw96/fleet/pulls/222/{branch}').kind).toBe('blocked')
+    // {owner}/{repo} 는 레포 스코프 치환이라 리터럴 취급 유지(비병합 경로 pass)
+    expect(classify('gh api repos/{owner}/{repo}/issues -f title=hi').kind).toBe('pass')
+  })
+  it('hasMergeWord — 셸 alias 확장의 분절 표기도 잡는다(16R P1)', () => {
+    expect(hasMergeWord('!gh pr m\'\'erge "$@"')).toBe(true)
+    expect(hasMergeWord('pr merge')).toBe(true)
+    expect(hasMergeWord('pr view')).toBe(false)
   })
   it('서브커맨드 자리의 셸 확장은 blocked — 병합 동사 은닉 가능(13R P1)', () => {
     expect(classify('. /tmp/action.env && gh pr $ACTION 222 --squash').kind).toBe('blocked')

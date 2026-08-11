@@ -44,29 +44,40 @@ export const FALLBACK_MARKER = '[codex-gate-fallback]'
 // 숨어도 raw 스캔에는 보이므로 미탐 방향의 우회가 없다. 셸이 인접 인용 조각을 연결하는
 // 분절 표기(`g''h`, 4R P1)에 대비해 따옴표 제거본도 함께 스캔한다. 대가는 오탐(머지 문구를
 // 인용만 하는 명령 — PR 본문 등)이며, 그쪽은 fail-closed 후 안내(--body-file 등)로 흡수한다.
+/**
+ * 스캔용 정규화 변형들 — 셸이 조각을 이어 실행하는 분절·인코딩 표기를 원문과 병행 검사한다:
+ * 연속행 쌍 제거(8R) → ANSI-C `\xHH`/`\uHHHH`/8진 이스케이프 디코드(16R: `$'\x67\x68'` 가
+ * gh 로 확장) → `${VAR}` 통째 제거(15R) → 따옴표·백슬래시·`$` 제거(g''h·g\h — 4R·5R,
+ * `g$'h'` — 9R) → 퍼센트 디코드(REST `m%65rge` — 14R, 서버가 1회 디코드하므로 1회면 충분).
+ */
+function scanVariants(s) {
+  const stripped = s
+    .replace(/\\\r?\n/g, '')
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\([0-7]{1,3})(?![0-9])/g, (_, o) => String.fromCharCode(parseInt(o, 8)))
+    .replace(/\$\{[^}]*\}/g, '')
+    .replace(/['"\\$]/g, '')
+  const decoded = (x) => {
+    try {
+      return decodeURIComponent(x)
+    } catch {
+      return x
+    }
+  }
+  return [s, stripped, decoded(s), decoded(stripped)]
+}
+
+/** 병합 능력 단어(merge·enqueuePullRequest — 13R) 존재 — gh 문맥 없이도 판단(alias 확장용). */
+export function hasMergeWord(s) {
+  return scanVariants(s).some((v) => /merge|enqueuepullrequest/i.test(v))
+}
+
 export function hasMergeSignal(cmd) {
-  // enqueuePullRequest 는 merge 단어 없이 병합 큐 등재로 이어진다(13R P1) — 신호에 편입.
   const signal = (s) =>
     /merge|enqueuepullrequest/i.test(s) &&
     (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s))
-  // 정규화본 병행 스캔 — 셸이 조각을 이어 실행하는 분절 표기에 대비한다: 연속행(백슬래시-개행
-  // 쌍 제거 — 8R P1: 백슬래시만 지우면 개행이 남아 미탐) → 따옴표·백슬래시·`$` 제거
-  // (g''h·g\h — 4R·5R, ANSI-C `g$'h'` — 9R) → 퍼센트 디코드(REST 경로 `m%65rge` — 14R,
-  // 서버 라우팅이 1회 디코드하므로 1회면 충분).
-  // `${VAR}` 는 통째로 제거(15R P1: 미설정 변수로 `g${EMPTY}h` 분절 — `$` 만 지우면
-  // `{EMPTY}` 가 남아 미탐) 후 잔여 특수문자 제거.
-  const stripped = cmd
-    .replace(/\\\r?\n/g, '')
-    .replace(/\$\{[^}]*\}/g, '')
-    .replace(/['"\\$]/g, '')
-  const decoded = (s) => {
-    try {
-      return decodeURIComponent(s)
-    } catch {
-      return s
-    }
-  }
-  return signal(cmd) || signal(stripped) || signal(decoded(cmd)) || signal(decoded(stripped))
+  return scanVariants(cmd).some(signal)
 }
 
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
@@ -330,7 +341,10 @@ export function classifyHookInput(input) {
           endpoint = tokens[i]
         }
       }
-      if (mutating && (endpoint == null || endpoint.includes('$')))
+      // `{owner}/{repo}` 외 플레이스홀더는 리터럴이 아니다(16R P1: `{branch}` 가 현재
+      // 브랜치명 — 예: `merge` — 으로 치환돼 병합 엔드포인트가 된다).
+      const scrubbed = endpoint?.replace(/\{owner\}|\{repo\}/g, '') ?? null
+      if (mutating && (scrubbed == null || /[${]/.test(scrubbed)))
         return { kind: 'blocked', reason: '변이 gh api 의 엔드포인트가 명령 밖(변수) — 관측 불가' }
     }
     return { kind: 'pass' }
@@ -397,7 +411,9 @@ function main() {
       }
       const mergey = new Set(
         [...aliases.values()]
-          .filter(({ exp }) => /merge/i.test(exp))
+          // 셸 alias(`!…`)는 분절 표기를 담을 수 있다(16R P1: `!gh pr m''erge "$@"`) —
+          // 확장도 신호 스캔과 같은 정규화 변형으로 검사한다.
+          .filter(({ exp }) => hasMergeWord(exp))
           .map(({ name }) => name.join(' ')),
       )
       let grew = true
