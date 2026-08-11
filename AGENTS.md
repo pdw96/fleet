@@ -238,8 +238,11 @@ project number `1`, owner `pdw96`).
      (필터 `test("codex")`). ~4라운드 넘으면 레이트리밋 가능.
      **대기는 수동 폴링 대신 `/loop`** (예: `/loop 5m` + "PR <N> 의 Codex 리뷰·👍 도착 확인,
      도착하면 요약 보고" — 공식 scheduled-tasks 의 babysit-a-PR 용례). 머지 명령 자체는
-     `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 Codex
-     리뷰/👍 부재 시 기계 차단한다(fail-closed) — 산문 규율의 구조 강제라 우회 금지.
+     `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 **현재
+     head 에 결속된** Codex 신호 부재 시 기계 차단한다(fail-closed·canonical allowlist —
+     허용 형태는 `gh pr merge <번호> … --match-head-commit <head SHA>` 단일 명령뿐, REST/
+     GraphQL/복합 명령 경유는 전부 차단) — 산문 규율의 구조 강제라 우회 금지. 차단 메시지가
+     복사 가능한 정확한 재시도 명령을 준다.
 5. **머지 후 동기화** — (a) 이슈 닫힘·#27 진행률 = `Closes #N` 으로 자동. (b) **보드 Status → Done**:
    보드 내장 워크플로(Item closed→Done · Auto-add(`tier:` 라벨) · Item added→Todo · Reopened→In Progress)가
    켜져 있어 자동. 예외 보정이 필요할 때만 `gh project item-edit`

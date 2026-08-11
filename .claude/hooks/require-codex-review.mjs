@@ -1,36 +1,50 @@
 #!/usr/bin/env node
 // PreToolUse hook — 머지 전 Codex 리뷰 게이트 (ADR-0014 전제의 기계 강제).
 //
-// 머지 시도(Bash `gh pr merge`·`…/pulls/N/merge` API·GitHub MCP merge_pull_request)를
-// 가로채, **현재 head 에 결속된** Codex 신호(head 커밋을 리뷰한 공식 리뷰, 또는 head 커밋
-// 이후의 👍 clean 리액션)가 없으면 exit 2 로 차단한다(AGENTS.md 4단계 · ADR-0014).
-// login 존재만 보면 낡은 라운드의 신호가 새 커밋을 인가한다(Codex PR#288 2R P1) — 리뷰는
-// commit_id == head, 리액션·폴백 마커는 head 커밋 시각 이후만 인정한다.
-// reviews/reactions 조회는 --paginate 필수 — 페이지네이션 누락으로 리뷰 3건을 못 본
+// 설계 = 「우회 형태 열거」가 아니라 「허용 형태 단일화」(canonical allowlist — 레포 교훈
+// "정적 가드는 이름이 아니라 형태로 막는다", Codex PR#288 1R P1 3건→2R 4건→3R 8건의 발산이
+// 전환 근거). 머지 능력 신호가 보이는 Bash 명령은 정확히 한 형태만 통과한다:
+//
+//   gh pr merge <번호|#번호|URL> [-R owner/repo] [병합 플래그] --match-head-commit <SHA>
+//
+// (단일 세그먼트 전체가 이 형태여야 함). 그 외 — REST `pulls/N/merge`·GraphQL mutation·
+// 서브셸/명령치환·인터프리터(sh -c 등)·cd 선행·env 리다이렉트·복합 명령 — 는 형태를 개별
+// 탐지하지 않고 전부 fail-closed 차단한다(우회 형태의 전수 열거는 수렴하지 않는다).
+// GitHub MCP merge_pull_request 는 구조화 입력이라 파싱 없이 검증한다.
+//
+// 인가 신호는 **현재 head 에 결속**된 것만 인정한다(2R P1):
+//   ① head 커밋을 리뷰한 Codex 공식 리뷰(commit_id == head SHA)
+//   ② head 도착 시각 이후의 Codex 👍 clean 리액션
+//   ③ head 도착 시각 이후의 OWNER `[codex-gate-fallback]` 마커 코멘트(무응답 폴백 — 풀 렌즈
+//      자가리뷰 완료 근거 서술 포함. env 오버라이드는 감사 불가라 두지 않는다)
+// head 도착 시각 = 해당 SHA 의 check-suite 최초 생성 시각(push 시 서버 기록 — 커밋 객체의
+// committer date 는 작성자 통제라 선일자 위조 가능, 3R P1). check-suite 부재 시에만 committer
+// date 폴백. `--match-head-commit` 필수화로 검증 시점과 실행 시점 사이 head 이동(TOCTOU,
+// 3R P1)은 GitHub 서버가 거부한다 — 차단 메시지가 복사 가능한 정확한 명령을 제공한다.
+//
+// reviews/reactions/comments 조회는 --paginate 필수 — 페이지네이션 누락으로 리뷰 3건을 못 본
 // 실사고가 게이트 신설의 직접 배경이다. 조회 실패는 fail-closed(차단)한다.
-//
-// 파싱은 위치 정규식이 아니라 토큰 단위 인자 해석이다(1R P1①) — 플래그 선행·`-R`·URL·
-// 브랜치 타깃을 해석하고, 해석 불능(미지 플래그·비정형·cd 이후 상대 해석·GH_REPO/GH_HOST
-// 리다이렉트)은 미탐이 아니라 ambiguous fail-closed 다. 복합 명령의 **모든** 머지 시도를
-// 수집해 각각 검증하며(2R P1), 서브셸 `(`·백틱·인터프리터(`sh -c '…'`) 경유도 잡는다.
-// 따옴표 인지 토크나이저라 인용 문자열 안의 머지 명령 문구(PR 본문 등)는 오탐하지 않는다.
-//
-// Codex 무응답 폴백(1R P1③): AGENTS.md 가 문서화한 「풀 렌즈 자가리뷰 선행 fallback 머지」는
-// 해당 PR 에 레포 OWNER 가 head 커밋 이후 남긴 감사 가능한 마커 코멘트
-// `[codex-gate-fallback]`(자가리뷰 완료 근거 서술 포함)로만 인정한다 — env 오버라이드는
-// 감사 불가라 두지 않는다.
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 const CODEX_LOGIN = 'chatgpt-codex-connector[bot]'
 export const FALLBACK_MARKER = '[codex-gate-fallback]'
 
+// ── 머지 능력 신호(raw 문자열 스캔) ──────────────────────────────────────────
+// 게이트 발동 조건: `merge` + (gh 실행 파일 | github.com | graphql). 인용·치환·래퍼 안에
+// 숨어도 raw 스캔에는 보이므로 미탐 방향의 우회가 없다. 대가는 오탐(머지 문구를 인용만 하는
+// 명령 — PR 본문 등)이며, 그쪽은 fail-closed 후 안내(--body-file 등)로 흡수한다.
+export function hasMergeSignal(cmd) {
+  return (
+    /merge/i.test(cmd) &&
+    (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(cmd) || /github\.com|graphql/i.test(cmd))
+  )
+}
+
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
-// 셸 시맨틱의 근사: '…'/"…" 는 한 토큰으로 접고, \ 는 다음 문자를 리터럴로. 연산자
-// (&& || ; | 개행)와 그룹핑 구문(`(` `)` 백틱 — 서브셸·명령치환도 실행 경계다, 2R P1)은
-// 세그먼트 경계다. 근사가 실패하는 입력(비닫힘 따옴표 등)은 남은 전체를 한 토큰으로 접어 —
-// 토큰이 이상해지면 미지 플래그/타깃 판정에서 fail-closed 로 흐르므로 우회가 아니라 차단
-// 쪽으로 넘어진다.
+// 셸 시맨틱의 근사: '…'/"…" 는 한 토큰으로 접고, \ 는 다음 문자를 리터럴로. 연산자·개행·
+// 그룹핑(`(` `)` 백틱)은 세그먼트 경계다. canonical 판정은 「세그먼트가 정확히 1개」를
+// 요구하므로 근사 오차는 전부 차단(비-canonical) 쪽으로 넘어진다.
 export function tokenizeSegments(cmd) {
   const segments = []
   let tokens = []
@@ -77,9 +91,7 @@ export function tokenizeSegments(cmd) {
   return segments
 }
 
-// gh pr merge 의 인자 문법(https://cli.github.com/manual/gh_pr_merge): 값을 갖는 플래그를
-// 열거해 그 값이 타깃으로 오인되지 않게 한다. 여기 없는 미지 플래그는 값 유무를 알 수
-// 없으므로 ambiguous → fail-closed.
+// gh pr merge 의 인자 문법(https://cli.github.com/manual/gh_pr_merge).
 const MERGE_VALUE_FLAGS = new Set([
   '-R',
   '--repo',
@@ -107,111 +119,63 @@ const MERGE_BOOL_FLAGS = new Set([
   '--rebase',
 ])
 
-// cwd 를 바꾸는 명령(2R P1: hook 은 원래 cwd 에서 조회하는데 셸은 이동한 곳에서 실행) —
-// 이후의 repo 미지정 머지는 상대 해석이 갈라지므로 ambiguous.
-const CWD_CHANGERS = new Set(['cd', 'pushd', 'popd', 'set-location', 'sl'])
-// 문자열 인자를 셸로 재실행하는 인터프리터 — 인자 토큰 내부를 재귀 해석한다(자체 발견 우회).
-const SHELL_INTERPRETERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'pwsh', 'powershell'])
-
 /**
- * Bash 명령 문자열에서 **모든** `gh pr merge` 시도를 인자 해석으로 수집한다(2R P1 —
- * 복합 명령의 첫 시도만 보면 두 번째가 무검증 통과한다).
- * @returns {{pr:number|null, repo:string|null, target:string|null, ambiguous:string|null}[]}
- *  pr — 명령이 지정한 PR 번호(URL 포함). target — 번호가 아닌 타깃(브랜치명 등, gh pr view 로
- *  해석할 것). repo — `-R/--repo` 또는 URL 이 지정한 `owner/repo`. ambiguous — 해석 불능
- *  사유(널 아니면 fail-closed 대상).
+ * 명령 전체가 canonical 머지 형태인지 판정한다. canonical = 단일 세그먼트이고, 그 세그먼트가
+ * `gh pr merge` + 알려진 플래그·타깃만으로 구성. 하나라도 벗어나면 null(= 차단 대상).
+ * @returns {{pr:number|null, repo:string|null, target:string|null, matchHead:string|null}|null}
+ *  pr/target — 번호(URL 포함)·비번호 타깃(브랜치명 등, gh pr view 로 해석).
+ *  matchHead — `--match-head-commit` 값(필수 검증은 main 에서).
  */
-export function parseMergeAttempts(cmd) {
-  const attempts = []
-  let cwdChanged = false
-  for (const tokens of tokenizeSegments(cmd)) {
-    const head = tokens[0]?.toLowerCase() ?? ''
-    if (CWD_CHANGERS.has(head)) cwdChanged = true
-    // 인터프리터 경유(`sh -c 'gh pr merge 5'`): 문자열 인자가 곧 실행 명령 — 재귀 해석.
-    if (SHELL_INTERPRETERS.has(head)) {
-      for (const arg of tokens.slice(1)) {
-        if (/\s/.test(arg)) attempts.push(...parseMergeAttempts(arg))
-      }
-    }
-    const envRedirect = tokens.find((t) => /^GH_(REPO|HOST)=/i.test(t))
-    const found = parseSegment(tokens)
-    for (const a of found) {
-      if (a.ambiguous == null && envRedirect)
-        a.ambiguous = `${envRedirect.split('=')[0]} env 로 대상 리다이렉트 — -R 명시 필요`
-      if (a.ambiguous == null && cwdChanged && a.repo == null)
-        a.ambiguous = 'cd 이후 repo 미지정 — 상대 해석이 갈라지므로 -R 명시 필요'
-      attempts.push(a)
-    }
-  }
-  return attempts
-}
-
-/** 한 세그먼트(토큰 배열)에서 gh pr merge 시도를 해석한다. */
-function parseSegment(tokens) {
-  for (let g = 0; g < tokens.length; g++) {
-    if (tokens[g] !== 'gh' && !/[\\/]gh(\.exe)?$/i.test(tokens[g])) continue
-    let i = g + 1
-    let repo = null
-    let ambiguous = null
-    // 전역 플래그(-R/--repo 만 값 보유로 인지, 그 외 `-…`는 미지 → ambiguous)
-    while (i < tokens.length && tokens[i].startsWith('-')) {
-      const [flag, inline] = splitFlag(tokens[i])
-      if (flag === '-R' || flag === '--repo') {
-        repo = inline ?? tokens[++i] ?? null
-      } else {
-        ambiguous = `미지 전역 플래그 ${flag}`
-      }
-      i++
-    }
-    // gh(cobra)는 서브커맨드 사이 플래그 삽입을 허용한다: `gh pr -R o/r merge 5`.
-    if (tokens[i] !== 'pr') continue
+export function parseCanonicalMerge(cmd) {
+  // 그룹핑 문자가 하나라도 있으면 비-canonical — 서브셸 `(…)`은 토큰화 후 단일 세그먼트로
+  // 접혀 canonical 과 구분이 안 되므로, 문자 존재 자체를 배제 조건으로 둔다(엄격한 쪽).
+  if (/[()`]/.test(cmd)) return null
+  const segments = tokenizeSegments(cmd)
+  if (segments.length !== 1) return null
+  const tokens = segments[0]
+  // 실행 파일 = gh(경로·.exe·대소문자 표기 무관 — win32/Git Bash, 3R P1)
+  const exe = tokens[0]?.split(/[\\/]/).pop()?.toLowerCase()
+  if (exe !== 'gh' && exe !== 'gh.exe') return null
+  let i = 1
+  let repo = null
+  // 전역 -R/--repo 만 허용(그 외 선행 플래그 = 비-canonical)
+  while (i < tokens.length && tokens[i].startsWith('-')) {
+    const [flag, inline] = splitFlag(tokens[i])
+    if (flag !== '-R' && flag !== '--repo') return null
+    repo = inline ?? tokens[++i] ?? null
     i++
-    while (i < tokens.length && tokens[i].startsWith('-')) {
-      const [flag, inline] = splitFlag(tokens[i])
-      if (flag === '-R' || flag === '--repo') repo = inline ?? tokens[++i] ?? null
-      else ambiguous = `미지 플래그 ${flag}`
-      i++
-    }
-    if (tokens[i] !== 'merge') continue
-    if (ambiguous) return [{ pr: null, repo, target: null, ambiguous }]
-    i++
-    let pr = null
-    let target = null
-    for (; i < tokens.length; i++) {
-      const tok = tokens[i]
-      if (tok.startsWith('-')) {
-        const [flag, inline] = splitFlag(tok)
-        if (MERGE_VALUE_FLAGS.has(flag)) {
-          const value = inline ?? tokens[++i] ?? null
-          if (flag === '-R' || flag === '--repo') repo = value
-        } else if (!MERGE_BOOL_FLAGS.has(flag)) {
-          return [{ pr: null, repo, target: null, ambiguous: `미지 플래그 ${flag}` }]
-        }
-      } else if (pr == null && target == null) {
-        const num = tok.match(/^#?(\d+)$/)
-        const url = tok.match(/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/)
-        if (num) pr = Number(num[1])
-        else if (url) {
-          repo = url[1]
-          pr = Number(url[2])
-        } else target = tok
-      } else {
-        return [{ pr: null, repo, target: null, ambiguous: `잉여 인자 ${tok}` }]
+  }
+  if (tokens[i] !== 'pr' || tokens[i + 1] !== 'merge') return null
+  i += 2
+  let pr = null
+  let target = null
+  let matchHead = null
+  for (; i < tokens.length; i++) {
+    const tok = tokens[i]
+    if (tok.startsWith('-')) {
+      const [flag, inline] = splitFlag(tok)
+      if (MERGE_VALUE_FLAGS.has(flag)) {
+        const value = inline ?? tokens[++i] ?? null
+        if (flag === '-R' || flag === '--repo') repo = value
+        if (flag === '--match-head-commit') matchHead = value
+      } else if (!MERGE_BOOL_FLAGS.has(flag)) {
+        return null
       }
+    } else if (pr == null && target == null) {
+      const num = tok.match(/^#?(\d+)$/)
+      const url = tok.match(/^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/)
+      if (num) pr = Number(num[1])
+      else if (url) {
+        repo = url[1]
+        pr = Number(url[2])
+      } else if (/[$]/.test(tok))
+        return null // 셸 확장 잔존 타깃은 해석 불가
+      else target = tok
+    } else {
+      return null
     }
-    return [{ pr, repo, target, ambiguous: null }]
   }
-  // 2차 느슨 센서 — 구조 파싱이 못 읽은 형태(미지 전역 플래그의 값이 서브커맨드를 가리는
-  // 경우 등)로 같은 세그먼트에 gh … pr … merge 토큰이 순서대로 존재하면 미탐(우회) 대신
-  // ambiguous 로 fail-closed 한다. 인용 문자열은 한 토큰으로 접혀 있어(PR 본문 인용 등)
-  // 이 센서에 걸리지 않는다.
-  const gi = tokens.findIndex((t) => t === 'gh' || /[\\/]gh(\.exe)?$/i.test(t))
-  if (gi !== -1) {
-    const pi = tokens.indexOf('pr', gi + 1)
-    if (pi !== -1 && tokens.indexOf('merge', pi + 1) !== -1)
-      return [{ pr: null, repo: null, target: null, ambiguous: '비정형 gh pr merge 형태' }]
-  }
-  return []
+  return { pr, repo, target, matchHead }
 }
 
 function splitFlag(tok) {
@@ -220,29 +184,27 @@ function splitFlag(tok) {
 }
 
 /**
- * hook 입력 전체(tool_name·tool_input)에서 머지 시도 전부를 수집한다.
- * Bash 는 `gh pr merge` CLI 와 REST `…/pulls/N/merge` 호출 둘 다 본다.
+ * hook 입력을 게이트 판정으로 환원한다.
+ * @returns {{kind:'pass'}|{kind:'blocked', reason:string}
+ *          |{kind:'merge', pr:number|null, repo:string|null, target:string|null,
+ *            matchHead:string|null, viaMcp:boolean}}
  */
-export function parseHookInput(input) {
+export function classifyHookInput(input) {
   const toolName = String(input.tool_name ?? '')
   if (/merge_pull_request/.test(toolName)) {
     const ti = input.tool_input ?? {}
     const pr = ti.pull_number ?? ti.pullNumber ?? null
+    if (pr == null) return { kind: 'blocked', reason: 'MCP 입력에 pull_number 없음' }
     const repo = ti.owner && ti.repo ? `${ti.owner}/${ti.repo}` : null
-    return [
-      { pr, repo, target: null, ambiguous: pr == null ? 'MCP 입력에 pull_number 없음' : null },
-    ]
+    return { kind: 'merge', pr, repo, target: null, matchHead: ti.sha ?? null, viaMcp: true }
   }
-  if (toolName !== 'Bash') return []
+  if (toolName !== 'Bash') return { kind: 'pass' }
   const cmd = String(input.tool_input?.command ?? '')
-  const attempts = []
-  for (const api of cmd.matchAll(
-    /repos\/(?:\{owner\}\/\{repo\}|([^/\s{}]+\/[^/\s{}]+))\/pulls\/(\d+)\/merge\b/g,
-  )) {
-    attempts.push({ pr: Number(api[2]), repo: api[1] ?? null, target: null, ambiguous: null })
-  }
-  attempts.push(...parseMergeAttempts(cmd))
-  return attempts
+  if (!hasMergeSignal(cmd)) return { kind: 'pass' }
+  const canonical = parseCanonicalMerge(cmd)
+  if (canonical == null)
+    return { kind: 'blocked', reason: '머지 능력 신호가 있으나 canonical 형태가 아님' }
+  return { ...canonical, kind: 'merge', viaMcp: false }
 }
 
 // ── main (직접 실행 시에만 — 테스트 import 시 stdin 을 읽지 않는다) ───────────
@@ -255,12 +217,22 @@ function main() {
   }
 
   const cwd = input.cwd || process.cwd()
-  const attempts = parseHookInput(input)
-  if (attempts.length === 0) process.exit(0)
+  const verdict = classifyHookInput(input)
+  if (verdict.kind === 'pass') process.exit(0)
+  if (verdict.kind === 'blocked') {
+    console.error(
+      `[codex-gate] 차단(${verdict.reason}). 머지는 canonical 형태만 허용된다:\n` +
+        '  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
+        '(REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
+        '거면 --body-file 로 우회하라.)',
+    )
+    process.exit(2)
+  }
 
-  const gh = (args) => {
+  const gh = (args, allowFail = false) => {
     const r = spawnSync('gh', args, { encoding: 'utf8', cwd, timeout: 45_000 })
     if (r.error || r.status !== 0) {
+      if (allowFail) return null
       const detail = (r.stderr || r.error?.message || '').trim().slice(0, 300)
       console.error(`[codex-gate] gh 조회 실패 — fail-closed 차단. ${detail}`)
       process.exit(2)
@@ -268,58 +240,59 @@ function main() {
     return r.stdout
   }
 
-  const validated = new Set()
-  for (const attempt of attempts) {
-    if (attempt.ambiguous) {
-      console.error(
-        `[codex-gate] 머지 명령 해석 불확실(${attempt.ambiguous}) — fail-closed 차단. ` +
-          '명시적 형태로 다시 시도하라(예: gh pr merge <번호> --squash -R <owner/repo>).',
-      )
+  // 실행 환경의 GH_REPO/GH_HOST 는 대상 레포·호스트를 조용히 바꾼다 — -R 명시 없으면 차단.
+  if (!verdict.repo && (process.env.GH_REPO || process.env.GH_HOST)) {
+    console.error('[codex-gate] GH_REPO/GH_HOST 환경변수 감지 — -R owner/repo 명시가 필요하다.')
+    process.exit(2)
+  }
+
+  let { pr, repo, target } = verdict
+  if (pr == null) {
+    const args = ['pr', 'view']
+    if (target) args.push(target)
+    if (repo) args.push('-R', repo)
+    args.push('--json', 'number', '--jq', '.number')
+    const out = gh(args).trim()
+    if (!/^\d+$/.test(out)) {
+      console.error('[codex-gate] PR 번호를 해석할 수 없어 fail-closed 차단.')
       process.exit(2)
     }
-    let { pr, repo, target } = attempt
-    // 번호가 없으면(현재 브랜치·브랜치명 타깃) gh 로 해석 — repo 지정도 함께 존중한다.
-    if (pr == null) {
-      const args = ['pr', 'view']
-      if (target) args.push(target)
-      if (repo) args.push('-R', repo)
-      args.push('--json', 'number', '--jq', '.number')
-      const out = gh(args).trim()
-      if (!/^\d+$/.test(out)) {
-        console.error('[codex-gate] PR 번호를 해석할 수 없어 fail-closed 차단.')
-        process.exit(2)
-      }
-      pr = Number(out)
-    }
-    const base = repo ? `repos/${repo}` : 'repos/{owner}/{repo}'
-    const key = `${base}#${pr}`
-    if (validated.has(key)) continue
-    validatePr(gh, base, pr)
-    validated.add(key)
+    pr = Number(out)
+  }
+
+  const base = repo ? `repos/${repo}` : 'repos/{owner}/{repo}'
+  const headSha = validatePr(gh, base, pr)
+
+  // TOCTOU 봉쇄: 검증한 head 를 GitHub 서버가 병합 조건으로 강제하게 한다(3R P1).
+  // MCP 는 구조화 단일 호출이라 sha 미지정을 허용한다(있으면 동일 검증).
+  if (verdict.matchHead == null && !verdict.viaMcp) {
+    console.error(
+      `[codex-gate] PR #${pr} 검증 통과 — 단, 검증 시점의 head 를 서버가 강제하도록 ` +
+        '--match-head-commit 이 필수다. 이대로 재시도하라:\n' +
+        `  gh pr merge ${pr}${repo ? ` -R ${repo}` : ''} --squash --match-head-commit ${headSha}`,
+    )
+    process.exit(2)
+  }
+  if (verdict.matchHead != null && verdict.matchHead.toLowerCase() !== headSha.toLowerCase()) {
+    console.error(
+      `[codex-gate] --match-head-commit(${verdict.matchHead.slice(0, 7)})이 검증된 현재 ` +
+        `head(${headSha.slice(0, 7)})와 다르다 — head 가 이동했으니 재검증 후 재시도하라.`,
+    )
+    process.exit(2)
   }
   process.exit(0)
 }
 
 /**
- * 한 PR 의 Codex 신호를 **현재 head 에 결속해** 검증한다(2R P1 — login 존재만 보면 낡은
- * 라운드 신호가 새 커밋을 인가한다). 통과하지 못하면 exit 2 로 프로세스를 끝낸다.
- * 인정 신호: ① head 커밋을 리뷰한 Codex 공식 리뷰(commit_id == head) ② head 커밋 시각
- * 이후의 Codex 👍 리액션 ③ head 커밋 시각 이후의 OWNER `[codex-gate-fallback]` 마커.
+ * 한 PR 의 Codex 신호를 **현재 head 에 결속해** 검증한다. 통과하면 head SHA 를 반환하고,
+ * 못 하면 exit 2. 인정 신호: ① head 를 리뷰한 공식 리뷰(commit_id == head) ② head 도착
+ * 이후 👍 ③ head 도착 이후 OWNER 폴백 마커. head 도착 시각 = check-suite 최초 생성(서버
+ * 기록·push 시각) → 부재 시 committer date 폴백(작성자 통제 시각이라 차선임을 명시).
  */
 function validatePr(gh, base, pr) {
   const headSha = gh(['api', `${base}/pulls/${pr}`, '--jq', '.head.sha']).trim()
-  if (!/^[0-9a-f]{40}$/.test(headSha)) {
+  if (!/^[0-9a-f]{40}$/i.test(headSha)) {
     console.error(`[codex-gate] PR #${pr} head SHA 해석 실패 — fail-closed 차단.`)
-    process.exit(2)
-  }
-  const headTime = gh([
-    'api',
-    `${base}/commits/${headSha}`,
-    '--jq',
-    '.commit.committer.date',
-  ]).trim()
-  if (!/^\d{4}-\d{2}-\d{2}T/.test(headTime)) {
-    console.error(`[codex-gate] PR #${pr} head 커밋 시각 해석 실패 — fail-closed 차단.`)
     process.exit(2)
   }
 
@@ -330,9 +303,11 @@ function validatePr(gh, base, pr) {
     '--jq',
     `.[] | select(.user.login == "${CODEX_LOGIN}") | .commit_id`,
   ])
-  if (reviewedShas.split('\n').some((s) => s.trim() === headSha)) return
+  if (reviewedShas.split('\n').some((s) => s.trim() === headSha)) return headSha
 
-  // 👍 리액션은 commit 결속이 없어 시각으로 결속한다(ISO-8601 Z 문자열은 사전순 비교 가능).
+  const headTime = headArrivalTime(gh, base, headSha)
+
+  // 👍 리액션은 commit 결속이 없어 head 도착 시각으로 결속한다(ISO-8601 Z 는 사전순 비교 가능).
   const thumbTimes = gh([
     'api',
     `${base}/issues/${pr}/reactions`,
@@ -340,9 +315,9 @@ function validatePr(gh, base, pr) {
     '--jq',
     `.[] | select(.content == "+1" and .user.login == "${CODEX_LOGIN}") | .created_at`,
   ])
-  if (thumbTimes.split('\n').some((t) => t.trim() >= headTime)) return
+  if (thumbTimes.split('\n').some((t) => t.trim() && t.trim() >= headTime)) return headSha
 
-  // 무응답 폴백 — head 이후 OWNER 가 남긴 감사 마커 코멘트만 인정(감사 흔적이 PR 에 남는다).
+  // 무응답 폴백 — head 도착 이후 OWNER 가 남긴 감사 마커 코멘트만 인정.
   const fallbackTimes = gh([
     'api',
     `${base}/issues/${pr}/comments`,
@@ -350,12 +325,12 @@ function validatePr(gh, base, pr) {
     '--jq',
     `.[] | select(.author_association == "OWNER" and (.body | contains("${FALLBACK_MARKER}"))) | .created_at`,
   ])
-  if (fallbackTimes.split('\n').some((t) => t.trim() >= headTime)) {
+  if (fallbackTimes.split('\n').some((t) => t.trim() && t.trim() >= headTime)) {
     console.error(
       `[codex-gate] PR #${pr}: Codex 리뷰 부재이나 head 이후 OWNER 의 ${FALLBACK_MARKER} 마커 ` +
         '확인 — 풀 렌즈 자가리뷰 폴백으로 허용(AGENTS.md 4단계).',
     )
-    return
+    return headSha
   }
 
   console.error(
@@ -366,6 +341,32 @@ function validatePr(gh, base, pr) {
       'head 커밋 이후 남기는 것이 조건이다(감사 가능 경로).',
   )
   process.exit(2)
+}
+
+/** head SHA 의 도착 시각 — check-suite 최초 생성(서버 기록) 우선, 부재 시 committer date. */
+function headArrivalTime(gh, base, headSha) {
+  const suites = gh(
+    [
+      'api',
+      `${base}/commits/${headSha}/check-suites`,
+      '--jq',
+      '[.check_suites[].created_at] | sort | .[0] // empty',
+    ],
+    true,
+  )
+  const first = suites?.trim()
+  if (first && /^\d{4}-\d{2}-\d{2}T/.test(first)) return first
+  const committed = gh([
+    'api',
+    `${base}/commits/${headSha}`,
+    '--jq',
+    '.commit.committer.date',
+  ]).trim()
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(committed)) {
+    console.error('[codex-gate] head 도착 시각 해석 실패 — fail-closed 차단.')
+    process.exit(2)
+  }
+  return committed
 }
 
 if (

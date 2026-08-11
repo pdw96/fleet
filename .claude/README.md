@@ -27,15 +27,20 @@
 
 ## hooks/ + settings.json (기계 게이트 — 프롬프트 규율의 구조화)
 
-`settings.json` 의 `PreToolUse` hook 이 머지 시도(`gh pr merge`·pulls API·GitHub MCP)를 가로채
-`hooks/require-codex-review.mjs` 로 **현재 head 에 결속된 Codex 신호(head 를 리뷰한 공식 리뷰
-또는 head 이후 👍 clean)를 검증, 없으면 차단**한다 — 낡은 라운드 신호는 새 커밋을 인가하지 않는다
-(exit 2 · 조회 실패 fail-closed). 「머지 전 Codex 대기」 실사고 2건(무응답 오판·페이지네이션
-누락)의 재발 방지 — 산문 규율(AGENTS.md 4단계·ADR-0014)을 기계 강제로 승격한 것. 명령 해석은
-토큰 단위 인자 파싱(플래그 선행·`-R`·URL·브랜치 타깃 지원, 해석 불능 = fail-closed)이고 파서는
-`scripts/require-codex-review.test.ts` 가 고정한다. Codex 무응답 폴백 = 풀 렌즈 자가리뷰 완료
-근거를 담은 OWNER 코멘트의 `[codex-gate-fallback]` 마커(해당 PR·감사 가능 경로). 수동 점검:
-`echo '{"tool_name":"Bash","tool_input":{"command":"gh pr merge <N>"}}' | node .claude/hooks/require-codex-review.mjs`
+`settings.json` 의 `PreToolUse` hook(`hooks/require-codex-review.mjs`)이 머지를 게이트한다.
+설계 = **canonical allowlist**(우회 형태 열거는 수렴하지 않는다 — 「이름이 아니라 형태」 교훈):
+머지 능력 신호(raw `merge`+`gh`/`github`/`graphql`)가 보이는 Bash 명령은 정확히 한 형태
+`gh pr merge <번호> [-R owner/repo] [플래그] --match-head-commit <SHA>`(단일 세그먼트)만
+통과 후보이고, 그 외(REST·GraphQL·서브셸·인터프리터·복합 명령·머지 문구 인용)는 전부
+fail-closed 차단한다(인용 오탐은 `--body-file` 로 우회). 인가 = **현재 head 결속 Codex 신호**
+(head 를 리뷰한 공식 리뷰 commit_id 일치 · head 도착 이후 👍 clean — 도착 시각은 check-suite
+최초 생성 = 서버 기록) 확인 후, `--match-head-commit` 을 검증 head 와 대조해 서버가 TOCTOU 를
+거부하게 한다(차단 메시지가 복사 가능한 정확한 명령 제공). GitHub MCP merge_pull_request 는
+구조화 입력이라 파싱 없이 동일 검증. Codex 무응답 폴백 = 풀 렌즈 자가리뷰 완료 근거를 담은
+OWNER 코멘트의 `[codex-gate-fallback]` 마커(head 이후·해당 PR·감사 가능 경로). 판정 계약은
+`scripts/require-codex-review.test.ts` 가 고정한다. 수동 점검은 hook 입력 JSON 을 파일로 만들어
+`node .claude/hooks/require-codex-review.mjs < input.json`(명령 문자열에 머지 문구를 직접 쓰면
+세션 라이브 hook 이 그 명령부터 차단한다 — 실측).
 
 ## workflows/ (예약 — Claude 로컬 가속 `.js`)
 
