@@ -229,20 +229,35 @@ export function classifyHookInput(input) {
   if (toolName !== 'Bash') return { kind: 'pass' }
   const cmd = String(input.tool_input?.command ?? '')
   if (!hasMergeSignal(cmd)) {
-    // GraphQL 요청 본문이 명령 밖(--input 파일/stdin·셸 변수)에 있으면 병합 mutation 여부를
-    // 관측할 수 없다(9R P1: `gh api graphql --input /tmp/q.json`) — 불투명 본문은 차단.
-    // 인라인 리터럴 본문은 여기 오기 전에 신호 스캔이 병합 mutation 을 잡는다.
+    // 병합 능력이 명령 문자열 밖에 있으면 신호 스캔이 못 본다 — 불투명 gh api 호출은 차단:
+    // ① GraphQL 본문이 --input 파일/stdin·셸 변수에 있는 경우(9R P1)
+    // ② 변이 REST 호출(-X 비GET·--input·-f/-F 필드)의 엔드포인트가 셸 변수이거나 세그먼트에
+    //    리터럴 경로가 아예 없는 경우(11R P1: `. env && gh api -X PUT "$ENDPOINT"`)
+    // 인라인 리터럴 본문·경로의 병합은 여기 오기 전에 신호 스캔이 잡는다.
     for (const tokens of tokenizeSegments(cmd)) {
       const hasGh = tokens.some((t) => {
         const exe = t.toLowerCase()
         return exe === 'gh' || exe === 'gh.exe'
       })
-      if (
-        hasGh &&
-        tokens.includes('graphql') &&
-        tokens.some((t) => t.startsWith('--input') || t.includes('$'))
-      )
-        return { kind: 'blocked', reason: 'GraphQL 본문이 명령 밖(--input/변수) — 관측 불가' }
+      if (!hasGh || !tokens.includes('api')) continue
+      const hasDollar = tokens.some((t) => t.includes('$'))
+      const hasInput = tokens.some((t) => t.startsWith('--input'))
+      if (tokens.includes('graphql')) {
+        if (hasInput || hasDollar)
+          return { kind: 'blocked', reason: 'GraphQL 본문이 명령 밖(--input/변수) — 관측 불가' }
+        continue
+      }
+      let mutating = hasInput
+      for (let i = 0; i < tokens.length; i++) {
+        const [flag, inline] = splitFlag(tokens[i])
+        if (flag === '-X' || flag === '--method') {
+          const v = inline ?? tokens[i + 1] ?? ''
+          if (v.toUpperCase() !== 'GET') mutating = true
+        } else if (/^(-f|-F|--field|--raw-field)$/.test(flag)) mutating = true
+      }
+      const literalPath = tokens.some((t) => !t.startsWith('-') && t.includes('/'))
+      if (mutating && (hasDollar || !literalPath))
+        return { kind: 'blocked', reason: '변이 gh api 의 엔드포인트가 명령 밖(변수) — 관측 불가' }
     }
     return { kind: 'pass' }
   }
@@ -279,33 +294,48 @@ function main() {
         )
         process.exit(2)
       }
-      const tokens = new Set(tokenizeSegments(cmd).flat())
       // alias 확장은 gh 접두 없이 나온다(`pm: pr merge`, 9R P1) — 확장 문자열은 이미 gh 명령
       // 문맥이므로 merge 단어 단독을 신호로 보고, alias 가 다른 alias 로 확장되는 체인
-      // (`pm: px`·`px: pr merge`, 10R P1)은 고정점 전파로 이행적으로 물들인다.
-      const aliases = new Map()
+      // (`pm: px`·`px: pr merge`, 10R P1)은 고정점 전파로 이행적으로 물들인다. 이름은 공백을
+      // 담을 수 있으므로(`pr land: pr merge`, 11R P1) 토큰 열로 다루고 연속 부분열로 대조한다.
+      const containsSeq = (arr, seq) =>
+        seq.length > 0 &&
+        arr.some((_, i) => seq.every((s, j) => arr[i + j]?.toLowerCase() === s.toLowerCase()))
+      const aliases = new Map() // key = 이름 토큰열 join, value = { name: string[], exp: string }
       for (const line of r.stdout.split('\n')) {
-        const m = line.match(/^([^\s:]+):\s*(.+)$/)
-        if (m) aliases.set(m[1], m[2].trim())
+        const m = line.match(/^(.+?):\s*(.+)$/)
+        if (m) {
+          const name = m[1].trim().split(/\s+/)
+          aliases.set(name.join(' '), { name, exp: m[2].trim() })
+        }
       }
       const mergey = new Set(
-        [...aliases].filter(([, exp]) => /merge/i.test(exp)).map(([name]) => name),
+        [...aliases.values()]
+          .filter(({ exp }) => /merge/i.test(exp))
+          .map(({ name }) => name.join(' ')),
       )
       let grew = true
       while (grew) {
         grew = false
-        for (const [name, exp] of aliases) {
-          if (!mergey.has(name) && exp.split(/\s+/).some((w) => mergey.has(w))) {
-            mergey.add(name)
-            grew = true
+        for (const [key, { exp }] of aliases) {
+          if (mergey.has(key)) continue
+          const expTokens = exp.split(/\s+/)
+          for (const mk of mergey) {
+            if (containsSeq(expTokens, aliases.get(mk).name)) {
+              mergey.add(key)
+              grew = true
+              break
+            }
           }
         }
       }
-      for (const name of mergey) {
-        if (tokens.has(name)) {
+      const segTokens = tokenizeSegments(cmd)
+      for (const mk of mergey) {
+        const { name, exp } = aliases.get(mk)
+        if (segTokens.some((seg) => containsSeq(seg, name))) {
           console.error(
-            `[codex-gate] gh alias '${name}' 는 (이행적으로) 병합으로 확장된다` +
-              `(${aliases.get(name)}) — alias 경유 병합은 차단. canonical 형태로 직접 실행하라.`,
+            `[codex-gate] gh alias '${mk}' 는 (이행적으로) 병합으로 확장된다(${exp}) — ` +
+              'alias 경유 병합은 차단. canonical 형태로 직접 실행하라.',
           )
           process.exit(2)
         }

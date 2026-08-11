@@ -153,6 +153,14 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // 인라인 리터럴 본문(변수·--input 없음)은 신호 스캔 담당 — 비병합 쿼리는 pass
     expect(classify("gh api graphql -f query='query { viewer { login } }'").kind).toBe('pass')
   })
+  it('엔드포인트가 명령 밖인 변이 REST 는 신호 없어도 blocked — 관측 불가(11R P1)', () => {
+    expect(classify('. /tmp/endpoint.env && gh api -X PUT "$ENDPOINT"').kind).toBe('blocked')
+    expect(classify('gh api --method=PUT "$E"').kind).toBe('blocked')
+    expect(classify('gh api -X DELETE $E').kind).toBe('blocked')
+    // 리터럴 경로 GET·리터럴 경로 변이(비병합 — 병합 경로는 신호 스캔 담당)는 pass
+    expect(classify('gh api repos/pdw96/fleet/pulls/288/comments --paginate').kind).toBe('pass')
+    expect(classify('gh api repos/pdw96/fleet/issues -f title=hi').kind).toBe('pass')
+  })
   it('신호 있으나 canonical 아님 = blocked (인용 오탐도 미탐 아닌 차단 쪽)', () => {
     expect(classify('gh pr create --body "예: gh pr merge 5 는 차단된다"').kind).toBe('blocked')
     expect(classify('gh api -X PUT repos/pdw96/fleet/pulls/240/merge').kind).toBe('blocked')
