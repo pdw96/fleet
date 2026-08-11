@@ -1221,8 +1221,11 @@ function validatePr(gh, base, pr) {
     '--jq',
     `.[] | select(.author_association == "OWNER" and (.body | startswith("${fallbackToken}"))) | {c: .created_at, b: .body} | @json`,
   ])
-  // SHA 결속이라 head 이동엔 자동 실효하나, base 변경은 head 를 안 움직이므로(13R P1)
-  // 마커도 마지막 base_ref_changed 이후만 인정한다. 그리고 마커 뒤 실증 텍스트가 있어야 한다.
+  // SHA 결속이라 head 이동엔 자동 실효하나, base 는 head 를 안 움직여도 diff 를 바꾼다 —
+  // 마커 작성이 마지막 base_ref_changed(13R P1) **및** base tip 전진(45R P1: 리타깃 없이
+  // base 브랜치가 전진하면 마커가 여전히 유효했다) 이후여야 한다. 공식 리뷰와 동일 하한.
+  // 그리고 마커 뒤 실증 텍스트가 있어야 한다(40R P1).
+  const fallbackFloor = [baseChangedAt, baseTipTime].sort().at(-1)
   const fallbackOk = fallbackRaw
     .split('\n')
     .filter(Boolean)
@@ -1233,7 +1236,7 @@ function validatePr(gh, base, pr) {
       } catch {
         return false
       }
-      return (o.c ?? '') >= baseChangedAt && fallbackMarkerHasEvidence(o.b ?? '', fallbackToken)
+      return (o.c ?? '') >= fallbackFloor && fallbackMarkerHasEvidence(o.b ?? '', fallbackToken)
     })
   if (fallbackOk) {
     console.error(

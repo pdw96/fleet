@@ -33,12 +33,14 @@
 `gh pr merge <번호> [-R owner/repo] [플래그] --match-head-commit <SHA>`(단일 세그먼트)만
 통과 후보이고, 그 외(REST·GraphQL·서브셸·인터프리터·복합 명령·머지 문구 인용)는 전부
 fail-closed 차단한다(인용 오탐은 `--body-file` 로 우회). 인가 = **현재 head 결속 Codex 신호**
-(head 를 리뷰한 공식 리뷰 commit_id 일치 · head 도착 이후 👍 clean — 도착 시각은 check-suite
-최초 생성 = 서버 기록) 확인 후, `--match-head-commit` 을 검증 head 와 대조해 서버가 TOCTOU 를
-거부하게 한다(차단 메시지가 복사 가능한 정확한 명령 제공). GitHub MCP merge_pull_request 는
-구조화 입력이라 파싱 없이 동일 검증. Codex 무응답 폴백 = 풀 렌즈 자가리뷰 완료 근거를 담은
-OWNER 코멘트의 head-결속 마커 `[codex-gate-fallback] head=<현재 head SHA>`(해당 PR·감사 가능·
-head 변경 시 자동 실효). 판정 계약은
+= head 를 리뷰한 공식 리뷰(commit_id 일치)만 인정하며, 그 제출이 base 리타깃·base tip 전진
+이후여야 한다(base 전진은 head 불변이어도 diff 를 바꾼다). **👍 리액션 경로는 폐기했다**
+(44R P1: 리액션은 commit 결속이 없어 head/base 전진을 인과 결속할 수 없다). 검증 후
+`--match-head-commit` 을 검증 head 와 대조해 서버가 TOCTOU 를 거부하게 한다(차단 메시지가
+복사 가능한 정확한 명령 제공). GitHub MCP merge_pull_request 는 구조화 입력이라 파싱 없이
+동일 검증. Codex 무응답/base 전진 폴백 = 풀 렌즈 자가리뷰 완료 근거를 담은 OWNER 코멘트의
+head-결속 마커 `[codex-gate-fallback] head=<현재 head SHA>`(해당 PR·감사 가능·head 변경 시
+자동 실효·마커 작성이 base tip 전진 이후여야 유효). 판정 계약은
 `scripts/require-codex-review.test.ts` 가 고정한다. 수동 점검은 hook 입력 JSON 을 파일로 만들어
 `node .claude/hooks/require-codex-review.mjs < input.json`(명령 문자열에 머지 문구를 직접 쓰면
 세션 라이브 hook 이 그 명령부터 차단한다 — 실측).

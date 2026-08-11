@@ -233,12 +233,16 @@ project number `1`, owner `pdw96`).
    **ruleset 이 required check 통과 + 미해결 리뷰 스레드 resolve 를 머지 전 강제** — Codex 인라인 지적은
    반영/반박 후 스레드를 resolve(`gh api graphql … resolveReviewThread`) 해야 머지 가능.
    - **Codex 봇 운영**: 자동리뷰가 항상 즉발은 아니다(보통 7~20분; 무응답 시 `@codex review`
-     코멘트로 명시 트리거, 인지하면 트리거 코멘트에 👀 리액션). **이슈가 없을 때 clean 승인은
-     인라인/리뷰 없이 👍 리액션-only 가 흔하다** → `gh api repos/pdw96/fleet/issues/<pr>/reactions`
-     도 확인하라(comments/reviews 만 보면 놓친다). 봇 로그인 = `chatgpt-codex-connector[bot]`
+     코멘트로 명시 트리거, 인지하면 트리거 코멘트에 👀 리액션). Codex 는 라운드마다 commit_id
+     결속 공식 리뷰(COMMENTED)를 남긴다 — clean 이면 인라인 지적이 0이고, 👍 리액션이 곁들여질
+     수 있다. **👍 는 clean 을 눈으로 확인하는 관측 보조일 뿐, 머지 게이트 통과 신호가 아니다**
+     (44R P1: 리액션은 commit 결속이 없어 hook 이 인가로 안 쓴다) → 머지 인가는 **commit_id 가
+     현재 head 인 공식 리뷰**(지적 0)이거나 head-결속 폴백 마커다. 관측 시엔 reviews·인라인·
+     이슈 코멘트·리액션 네 채널을 `gh api … --paginate` 로 보되(comments/reviews 만 보면 놓친다),
+     머지 판단은 commit_id 결속 리뷰 기준으로 한다. 봇 로그인 = `chatgpt-codex-connector[bot]`
      (필터 `test("codex")`). ~4라운드 넘으면 레이트리밋 가능.
-     **대기는 수동 폴링 대신 `/loop`** (예: `/loop 5m` + "PR <N> 의 Codex 리뷰·👍 도착 확인,
-     도착하면 요약 보고" — 공식 scheduled-tasks 의 babysit-a-PR 용례). 머지 명령 자체는
+     **대기는 수동 폴링 대신 `/loop`** (예: `/loop 5m` + "PR <N> 의 commit_id 결속 Codex 리뷰
+     도착 확인, 도착하면 요약 보고" — 공식 scheduled-tasks 의 babysit-a-PR 용례). 머지 명령 자체는
      `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 **현재
      head 에 결속된** Codex 신호 부재 시 기계 차단한다(fail-closed·canonical allowlist —
      허용 형태는 `gh pr merge <번호> … --match-head-commit <head SHA>` 단일 명령뿐, REST/
