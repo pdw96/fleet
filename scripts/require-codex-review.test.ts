@@ -15,6 +15,7 @@ import {
   parseCanonicalMerge,
   classifyHookInput,
   tokenizeSegments,
+  extractInterpreterScripts,
 } from '../.claude/hooks/require-codex-review.mjs'
 
 const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } })
@@ -241,10 +242,24 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify("printf 'pr m%crge --help' e | env xargs gh").kind).toBe('blocked')
     expect(classify("printf 'gh pr m%crge 222' e | env sh").kind).toBe('blocked')
     expect(classify('cat /tmp/a.txt | timeout 5 xargs gh').kind).toBe('blocked')
+    // 38R: 래퍼 옵션의 필수값(`env -u FOO`)을 실행 파일로 오인하지 않는다
+    expect(classify("printf 'pr m%crge --help' e | env -u FOO xargs gh").kind).toBe('blocked')
+    expect(classify("printf 'x' e | env -C /tmp -u BAR xargs gh").kind).toBe('blocked')
     // gh/GitHub 무관 조립·인라인 본문(-c)은 pass — 관할은 명령에 보이는 병합 능력만
     expect(classify('ls *.txt | xargs rm -f').kind).toBe('pass')
     expect(classify('echo hi | sh').kind).toBe('pass')
     expect(classify('env ls | xargs rm').kind).toBe('pass')
+  })
+  it('인터프리터 -c 스크립트 내부의 gh 능력도 검사한다(38R P1)', () => {
+    // 직접형: 스크립트 내 불투명 GraphQL — classify 재귀로 잡는다
+    expect(classify("bash -c 'gh api graphql --input /tmp/q.json'").kind).toBe('blocked')
+    expect(classify('sh -c \'gh api -X PUT "$E"\'').kind).toBe('blocked')
+    expect(classify("env bash -c 'gh api graphql --input /tmp/q.json'").kind).toBe('blocked')
+    // 스크립트 내부가 정상 조회면 통과
+    expect(classify("bash -c 'gh pr view 288 --json title'").kind).toBe('pass')
+    // extractInterpreterScripts 계약
+    expect(extractInterpreterScripts("bash -c 'gh api graphql'")).toEqual(['gh api graphql'])
+    expect(extractInterpreterScripts('gh pr view 1')).toEqual([])
   })
   it('다문자 brace 전개는 신호를 거쳐 canonical 요구로 넘어간다(33R P1)', () => {
     expect(classify('gh pr m{erg,x}e 222 --squash --match-head-commit abc').kind).toBe('blocked')

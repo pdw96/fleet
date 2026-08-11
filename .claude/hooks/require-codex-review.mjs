@@ -244,6 +244,48 @@ export function hasMergeSignal(cmd) {
   return variants.some(signal) || (overflow && variants.some(capability))
 }
 
+// 투명 래퍼 — 실효 실행 파일을 가린다(37R P1: `env xargs gh`). 실행 파일 탐색에서 건너뛴다.
+const WRAPPER_NAMES = new Set([
+  'env',
+  'nohup',
+  'nice',
+  'stdbuf',
+  'timeout',
+  'time',
+  'command',
+  'setsid',
+  'ionice',
+  'doas',
+  'sudo',
+])
+const INTERP_RE = /^(sh|bash|zsh|dash|ksh)(\.exe)?$/
+
+// 셸 인터프리터의 `-c '<script>'` 인자를 뽑는다(38R P1: `bash -c 'gh q graphql --input …'`
+// — 인용 스크립트가 단일 토큰이라 상위 토큰 검사가 gh/alias 를 못 본다). 각 스크립트는
+// 상위와 동일한 분류·alias 검사 파이프라인에 재투입한다. 재귀는 깊이로 유계.
+export function extractInterpreterScripts(cmd) {
+  const scripts = []
+  for (const detailed of tokenizeSegmentsDetailed(cmd)) {
+    const tokens = detailed.map((t) => t.text)
+    let i = 0
+    for (; i < tokens.length; i++) {
+      const t = tokens[i]
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
+      if (WRAPPER_NAMES.has(t.toLowerCase().replace(/^.*[\\/]/, ''))) continue
+      if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
+      if (t.startsWith('-')) continue
+      break
+    }
+    const exe = tokens[i]?.toLowerCase().replace(/^.*[\\/]/, '')
+    if (exe && INTERP_RE.test(exe)) {
+      const ci = tokens.indexOf('-c', i + 1)
+      if (ci !== -1 && tokens[ci + 1] !== undefined && !tokens[ci + 1].startsWith('-'))
+        scripts.push(tokens[ci + 1])
+    }
+  }
+  return scripts
+}
+
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
 // 셸 시맨틱의 근사: '…'/"…" 는 한 토큰으로 접고, \ 는 다음 문자를 리터럴로. 연산자·개행·
 // 그룹핑(`(` `)` 백틱)은 세그먼트 경계다. canonical 판정은 「세그먼트가 정확히 1개」를
@@ -509,7 +551,7 @@ export function parseAliasList(text) {
  *          |{kind:'merge', pr:number|null, repo:string|null, target:string|null,
  *            matchHead:string|null, viaMcp:boolean}}
  */
-export function classifyHookInput(input) {
+export function classifyHookInput(input, _depth = 0) {
   const toolName = String(input.tool_name ?? '')
   if (/merge_pull_request/.test(toolName)) {
     const ti = input.tool_input ?? {}
@@ -560,34 +602,57 @@ export function classifyHookInput(input) {
     // 조립기(xargs·parallel)의 인자에 gh/GitHub 능력 토큰이 보이거나, 능력 토큰이 있는
     // 명령에서 본문 없는 셸 인터프리터(stdin 스크립트)가 실행되면 차단한다.
     const CAPABILITY = /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)|api\.github\.com|graphql/iu
+    // 인터프리터 `-c '<script>'` 스크립트는 상위 토큰 검사가 못 본다(38R P1) — 재귀 분류로
+    // 스크립트 내부의 gh 능력을 검사한다(직접형 `bash -c 'gh api graphql --input …'`).
+    // alias 경유형(`gh q …`)은 main 의 alias 검사가 담당(classify 는 alias 미해석).
+    if (_depth < 5)
+      for (const script of extractInterpreterScripts(cmd)) {
+        const sv = classifyHookInput(
+          { tool_name: 'Bash', tool_input: { command: script } },
+          _depth + 1,
+        )
+        if (sv.kind !== 'pass')
+          return {
+            kind: 'blocked',
+            reason: `인터프리터 -c 스크립트가 차단 대상(${sv.reason ?? sv.kind})`,
+          }
+      }
     // 투명 래퍼는 실효 실행 파일을 가린다(37R P1: `env xargs gh` — env 를 실행 파일로 보면
     // xargs 분기를 건너뛴다) — 대입·래퍼·플래그·수치 인자(timeout 지속시간 등)를 건너뛴다.
-    const WRAPPERS = new Set([
-      'env',
-      'nohup',
-      'nice',
-      'stdbuf',
-      'timeout',
-      'time',
-      'command',
-      'setsid',
-      'ionice',
-      'doas',
-      'sudo',
-    ])
+    const WRAPPERS = WRAPPER_NAMES
+    const norm = (t) => t.toLowerCase().replace(/^.*[\\/]/, '')
+    // 위험 토큰(조립기·인터프리터·gh) — 래퍼 옵션 값 소비를 여기서 멈춘다(악용해도 실효
+    // 실행 파일로 잡히게). 이 토큰들이 실효 실행 파일이면 아래 분기가 차단한다.
+    const isDanger = (t) => {
+      const e = norm(t)
+      return (
+        e === 'xargs' ||
+        e === 'parallel' ||
+        e === 'gh' ||
+        e === 'gh.exe' ||
+        /^(sh|bash|zsh|dash|ksh)(\.exe)?$/.test(e)
+      )
+    }
     for (const detailed of allSegments) {
       const tokens = detailed.map((t) => t.text)
       let exeIdx = 0
       for (; exeIdx < tokens.length; exeIdx++) {
         const t = tokens[exeIdx]
         if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
-        if (WRAPPERS.has(t.toLowerCase().replace(/^.*[\\/]/, ''))) continue
-        if (t.startsWith('-')) continue
+        if (WRAPPERS.has(norm(t))) continue
         if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
+        if (t.startsWith('-')) {
+          // 래퍼 옵션의 값 인자를 소비한다(37R→38R P1: `env -u FOO xargs gh` — `-u` 의
+          // 필수값 FOO 를 실행 파일로 오인). `=` 미포함 옵션은 다음 토큰이 값일 수 있으므로
+          // 소비하되, 위험 토큰이면 소비하지 않고 멈춰 실효 실행 파일로 잡는다.
+          const nx = tokens[exeIdx + 1]
+          if (nx && !nx.startsWith('-') && !t.includes('=') && !isDanger(nx)) exeIdx++
+          continue
+        }
         break
       }
       if (exeIdx >= tokens.length) continue
-      const exe = tokens[exeIdx].toLowerCase().replace(/^.*[\\/]/, '')
+      const exe = norm(tokens[exeIdx])
       if (
         (exe === 'xargs' || exe === 'parallel') &&
         CAPABILITY.test(tokens.slice(exeIdx + 1).join(' '))
@@ -800,72 +865,86 @@ function main() {
           }
         }
       }
-      // brace 류 분절 호출(`gh p{m..m}`, 23R P1)도 잡도록 원문·정규화본 양쪽을 대조한다.
-      const segTokens = [...tokenizeSegments(cmd), ...tokenizeSegments(stripShellExpansions(cmd))]
-      for (const mk of mergey) {
-        const { name, exp } = aliases.get(mk)
-        if (segTokens.some((seg) => containsSeq(seg, name))) {
-          console.error(
-            `[codex-gate] gh alias '${mk}' 는 (이행적으로) 병합으로 확장된다(${exp}) — ` +
-              'alias 경유 병합은 차단. canonical 형태로 직접 실행하라.',
-          )
-          process.exit(2)
-        }
-      }
-      // 비병합 alias 라도 호출 직후 인자에 확장이 오면 그 인자가 동사 자리로 이어진다
-      // (29R P1: `pr x: pr` + `gh pr x "$ACTION" 222`, ACTION=merge — 인용 확장이라 비인용
-      // 규칙도 미발동) — gh 뒤 alias 이름 열 매칭 직후 토큰의 `$` 는 인용 무관 차단.
-      for (const seg of tokenizeSegmentsDetailed(cmd)) {
-        const texts = seg.map((t) => t.text)
-        const gi = texts.findIndex((t) => {
-          const exe = t.toLowerCase()
-          return exe === 'gh' || exe === 'gh.exe'
-        })
-        if (gi === -1) continue
-        // 전역 플래그(-R 값 등)를 건너뛴 위치에서 alias 이름을 맞춘다(30R P1: gh 바로 뒤
-        // 고정 매칭은 `gh -R o/r pr x "$ACTION"` 을 놓친다). 값 유무 미상 플래그는 보수적으로
-        // 다음 토큰을 값으로 소비한다.
-        let start = gi + 1
-        while (start < texts.length && texts[start].startsWith('-')) {
-          if (!texts[start].includes('=')) start++
-          start++
-        }
-        for (const { name, exp } of aliases.values()) {
-          const matches = name.every((n, j) => texts[start + j]?.toLowerCase() === n.toLowerCase())
-          if (!matches) continue
-          if (texts[start + name.length]?.includes('$')) {
+      // alias 검사를 임의 명령 문자열에 적용하는 함수 — cmd 와 인터프리터 -c 스크립트
+      // (38R P1: `bash -c 'gh q graphql --input …'`) 각각에 돌린다.
+      const auditAliasesIn = (text) => {
+        // brace 류 분절 호출(`gh p{m..m}`, 23R P1)도 잡도록 원문·정규화본 양쪽을 대조한다.
+        const segTokens = [
+          ...tokenizeSegments(text),
+          ...tokenizeSegments(stripShellExpansions(text)),
+        ]
+        for (const mk of mergey) {
+          const { name, exp } = aliases.get(mk)
+          if (segTokens.some((seg) => containsSeq(seg, name))) {
             console.error(
-              `[codex-gate] gh alias '${name.join(' ')}' 호출 직후 인자에 셸 확장 — 확장이 ` +
-                '동사 자리로 이어질 수 있어 차단. 리터럴 인자로 실행하라.',
+              `[codex-gate] gh alias '${mk}' 는 (이행적으로) 병합으로 확장된다(${exp}) — ` +
+                'alias 경유 병합은 차단. canonical 형태로 직접 실행하라.',
             )
             process.exit(2)
           }
-          // 확장+이어붙인 인자의 합성을 직접 명령과 동일 규칙으로 재분류(31R·32R P1:
-          // `q: api` 뒤 불투명 GraphQL/변이 REST 가 확장 단독 비의심으로 통과 — GraphQL
-          // 전용 패턴 대신 classifyHookInput 재투입으로 판정 일치를 만든다). 확장은
-          // 고정점까지 해석한다(35R P1: `qq: q` 연쇄가 api 를 숨김) — 순환/과깊이는 차단.
-          const resolved = resolveAliasExpansion(aliases, exp)
-          if (resolved == null) {
-            console.error(
-              `[codex-gate] gh alias '${name.join(' ')}' 확장이 순환/과깊이 — 정적 해석 불가라 차단.`,
-            )
-            process.exit(2)
-          }
-          const combined = `${resolved} ${texts.slice(start + name.length).join(' ')}`
-          const reVerdict = classifyHookInput({
-            tool_name: 'Bash',
-            tool_input: { command: `gh ${combined}` },
+        }
+        // 비병합 alias 라도 호출 직후 인자에 확장이 오면 그 인자가 동사 자리로 이어진다
+        // (29R P1: `pr x: pr` + `gh pr x "$ACTION" 222`, ACTION=merge — 인용 확장이라 비인용
+        // 규칙도 미발동) — gh 뒤 alias 이름 열 매칭 직후 토큰의 `$` 는 인용 무관 차단.
+        for (const seg of tokenizeSegmentsDetailed(text)) {
+          const texts = seg.map((t) => t.text)
+          const gi = texts.findIndex((t) => {
+            const exe = t.toLowerCase()
+            return exe === 'gh' || exe === 'gh.exe'
           })
-          if (reVerdict.kind !== 'pass') {
-            const why = reVerdict.reason ?? reVerdict.kind
-            console.error(
-              `[codex-gate] gh alias '${name.join(' ')}' 호출의 합성 형태가 차단 대상(${why}) — ` +
-                'alias 없이 인라인 리터럴로 실행하라.',
+          if (gi === -1) continue
+          // 전역 플래그(-R 값 등)를 건너뛴 위치에서 alias 이름을 맞춘다(30R P1: gh 바로 뒤
+          // 고정 매칭은 `gh -R o/r pr x "$ACTION"` 을 놓친다). 값 유무 미상 플래그는 보수적으로
+          // 다음 토큰을 값으로 소비한다.
+          let start = gi + 1
+          while (start < texts.length && texts[start].startsWith('-')) {
+            if (!texts[start].includes('=')) start++
+            start++
+          }
+          for (const { name, exp } of aliases.values()) {
+            const matches = name.every(
+              (n, j) => texts[start + j]?.toLowerCase() === n.toLowerCase(),
             )
-            process.exit(2)
+            if (!matches) continue
+            if (texts[start + name.length]?.includes('$')) {
+              console.error(
+                `[codex-gate] gh alias '${name.join(' ')}' 호출 직후 인자에 셸 확장 — 확장이 ` +
+                  '동사 자리로 이어질 수 있어 차단. 리터럴 인자로 실행하라.',
+              )
+              process.exit(2)
+            }
+            // 확장+이어붙인 인자의 합성을 직접 명령과 동일 규칙으로 재분류(31R·32R P1:
+            // `q: api` 뒤 불투명 GraphQL/변이 REST 가 확장 단독 비의심으로 통과 — GraphQL
+            // 전용 패턴 대신 classifyHookInput 재투입으로 판정 일치를 만든다). 확장은
+            // 고정점까지 해석한다(35R P1: `qq: q` 연쇄가 api 를 숨김) — 순환/과깊이는 차단.
+            const resolved = resolveAliasExpansion(aliases, exp)
+            if (resolved == null) {
+              console.error(
+                `[codex-gate] gh alias '${name.join(' ')}' 확장이 순환/과깊이 — 정적 해석 불가라 차단.`,
+              )
+              process.exit(2)
+            }
+            const combined = `${resolved} ${texts.slice(start + name.length).join(' ')}`
+            const reVerdict = classifyHookInput({
+              tool_name: 'Bash',
+              tool_input: { command: `gh ${combined}` },
+            })
+            if (reVerdict.kind !== 'pass') {
+              const why = reVerdict.reason ?? reVerdict.kind
+              console.error(
+                `[codex-gate] gh alias '${name.join(' ')}' 호출의 합성 형태가 차단 대상(${why}) — ` +
+                  'alias 없이 인라인 리터럴로 실행하라.',
+              )
+              process.exit(2)
+            }
           }
         }
       }
+      // cmd 와 그 안의 인터프리터 -c 스크립트들(중첩 포함, 깊이 유계)을 모두 검사한다.
+      const auditTexts = [cmd]
+      for (let d = 0; d < auditTexts.length && d < 64; d++)
+        auditTexts.push(...extractInterpreterScripts(auditTexts[d]))
+      for (const text of auditTexts) auditAliasesIn(text)
     }
     process.exit(0)
   }
@@ -977,27 +1056,8 @@ function validatePr(gh, base, pr) {
   // 신호(commit_id 일치 리뷰 포함)는 마지막 base_ref_changed 이벤트 이후여야 한다.
   const baseChangedAt = latestTimelineEvent(gh, base, pr, 'base_ref_changed') ?? ''
 
-  const reviewLines = gh([
-    'api',
-    `${base}/pulls/${pr}/reviews`,
-    '--paginate',
-    '--jq',
-    `.[] | select(.user.login == "${CODEX_LOGIN}") | .commit_id + " " + .submitted_at`,
-  ])
-  if (
-    reviewLines.split('\n').some((line) => {
-      const [sha, at] = line.trim().split(/\s+/)
-      return sha === headSha && (at ?? '') >= baseChangedAt
-    })
-  )
-    return headSha
-
   const headTime = [headArrivalTime(gh, base, pr, headSha), baseChangedAt].sort().at(-1)
 
-  // 👍 리액션은 commit 결속이 없다 — head 도착 시각만으로는 「A 리뷰 중 B push → A 의 늦은
-  // 👍」가 B 를 인가한다(27R P1). 트리거 체인으로 결속한다: head 도착 **이후** OWNER 의
-  // `@codex review` 재트리거가 존재하고, 👍 가 그 트리거 이후일 때만 현재 head 의 신호로
-  // 인정한다(트리거 없으면 👍 경로 무효 — 명시 재트리거 후 새 👍 를 받으라).
   // 트리거는 **단독** `@codex review` 코멘트만 인정한다(28R: 산문 속 인용 — 예: 답글에서
   // 명령을 설명하는 문장 — 이 contains 로 트리거가 되면 늦은 👍 를 오결속한다).
   const triggerTimes = gh([
@@ -1013,6 +1073,32 @@ function validatePr(gh, base, pr) {
     .filter((t) => /^\d{4}-\d{2}-\d{2}T/.test(t) && t >= headTime)
     .sort()
     .at(-1)
+
+  const reviewLines = gh([
+    'api',
+    `${base}/pulls/${pr}/reviews`,
+    '--paginate',
+    '--jq',
+    `.[] | select(.user.login == "${CODEX_LOGIN}") | .commit_id + " " + .submitted_at`,
+  ])
+  // 공식 리뷰 수용 임계 — base 변경이 실제 있었으면 commit_id==head 이고 제출이 변경 이후여도
+  // in-flight(변경 전 시작·변경 후 제출) 리뷰는 옛 base diff 기준이라 인정할 수 없다(38R P1).
+  // base 변경 후 OWNER 재트리거(=새 base 로 시작된 리뷰) 이후 제출만 fresh base-bound 로
+  // 본다. base 변경이 없으면 head 가 그대로이므로 commit_id 결속으로 충분(임계='').
+  const reviewFloor = baseChangedAt ? latestTrigger : ''
+  if (
+    reviewFloor !== undefined &&
+    reviewLines.split('\n').some((line) => {
+      const [sha, at] = line.trim().split(/\s+/)
+      return sha === headSha && (at ?? '') >= reviewFloor
+    })
+  )
+    return headSha
+
+  // 👍 리액션은 commit 결속이 없다 — head 도착 시각만으로는 「A 리뷰 중 B push → A 의 늦은
+  // 👍」가 B 를 인가한다(27R P1). 트리거 체인으로 결속한다: head 도착 **이후** OWNER 의
+  // `@codex review` 재트리거가 존재하고, 👍 가 그 트리거 이후일 때만 현재 head 의 신호로
+  // 인정한다(트리거 없으면 👍 경로 무효 — 명시 재트리거 후 새 👍 를 받으라).
   if (latestTrigger) {
     const thumbTimes = gh([
       'api',
