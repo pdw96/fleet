@@ -660,13 +660,19 @@ function main() {
             )
             process.exit(2)
           }
-          // 확장+이어붙인 인자의 합성이 불투명 API 호출을 이루면 차단(31R P1: `q: api` +
-          // `gh q graphql --input /tmp/q.json` — 확장 단독으론 비의심).
+          // 확장+이어붙인 인자의 합성을 직접 명령과 동일 규칙으로 재분류(31R·32R P1:
+          // `q: api` 뒤 불투명 GraphQL/변이 REST 가 확장 단독 비의심으로 통과 — GraphQL
+          // 전용 패턴 대신 classifyHookInput 재투입으로 판정 일치를 만든다).
           const combined = `${exp} ${texts.slice(start + name.length).join(' ')}`
-          if (/graphql/i.test(combined) && /--input|=@|\$/.test(combined)) {
+          const reVerdict = classifyHookInput({
+            tool_name: 'Bash',
+            tool_input: { command: `gh ${combined}` },
+          })
+          if (reVerdict.kind !== 'pass') {
+            const why = reVerdict.reason ?? reVerdict.kind
             console.error(
-              `[codex-gate] gh alias '${name.join(' ')}' 호출이 불투명 GraphQL 호출로 합성된다 — ` +
-                '관측 불가라 차단. alias 없이 인라인 리터럴로 실행하라.',
+              `[codex-gate] gh alias '${name.join(' ')}' 호출의 합성 형태가 차단 대상(${why}) — ` +
+                'alias 없이 인라인 리터럴로 실행하라.',
             )
             process.exit(2)
           }
