@@ -42,6 +42,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'g$*h pr mer$1ge 222 --squash', // 17R: $*·$N 변형
       "$'\\U00000067\\U00000068' pr $'\\U0000006d\\U00000065\\U00000072\\U00000067\\U00000065' 5", // 19R: 8자리 \U
       'g{h..h} pr mer{g..g}e 222 --squash', // 20R: 단일문자 brace 분절
+      'g${X:-h} pr mer${X:-ge} 222 --squash', // 21R: 기본값 매개변수 확장 분절
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -208,12 +209,21 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(() => hasMergeSignal("gh pr merge 222 --body $'\\UFFFFFFFF' --squash")).not.toThrow()
     expect(hasMergeSignal("gh pr merge 222 --body $'\\UFFFFFFFF' --squash")).toBe(true)
   })
-  it('curl 등 gh 외 클라이언트의 불투명 GitHub GraphQL 본문은 blocked(20R P1)', () => {
+  it('비-gh 클라이언트의 GitHub API 직접 호출은 전부 blocked(20R curl → 21R 구조 규칙)', () => {
     expect(
       classify('curl -X POST https://api.github.com/graphql --data-binary @/tmp/q.json').kind,
     ).toBe('blocked')
     expect(classify('curl https://api.github.com/graphql -d "$Q"').kind).toBe('blocked')
+    // 21R: wget body-file·curl glob — 클라이언트별 표기 해석 없이 api 호스트로 일괄 차단
+    expect(
+      classify('wget --method=POST --body-file=/tmp/q.json https://api.github.com/graphql').kind,
+    ).toBe('blocked')
+    expect(classify('curl -X PUT https://api.github.com/repos/o/r/pulls/222/m[e-e]rge').kind).toBe(
+      'blocked',
+    )
+    // 비 GitHub API 호스트·웹 URL 인용은 무관
     expect(classify('curl https://example.com/x -d @f.json').kind).toBe('pass')
+    expect(classify('echo https://github.com/pdw96/fleet/pull/288').kind).toBe('pass')
   })
   it('혼합 인용 확장("$EMPTY"$ARGS)의 비인용 부분을 잡는다(20R P1)', () => {
     expect(classify('gh -R "$EMPTY"$ARGS 222 --squash').kind).toBe('blocked')

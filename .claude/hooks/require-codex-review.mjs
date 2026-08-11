@@ -79,6 +79,9 @@ export function stripShellExpansions(s) {
 
 function scanVariants(s) {
   const stripped = stripShellExpansions(s)
+  // `${X:-h}` 류 매개변수 확장은 미설정 시 피연산자로 치환된다(21R P1) — 피연산자를 남긴
+  // 변형도 병행 스캔한다(`:-`·`:=`·`:+`·`:?` 및 콜론 생략형).
+  const defaulted = stripShellExpansions(s.replace(/\$\{[^}]*?:?[-=+?]([^}]*)\}/g, '$1'))
   const decoded = (x) => {
     try {
       return decodeURIComponent(x)
@@ -86,7 +89,7 @@ function scanVariants(s) {
       return x
     }
   }
-  return [s, stripped, decoded(s), decoded(stripped)]
+  return [s, stripped, defaulted, decoded(s), decoded(stripped)]
 }
 
 /** 병합 능력 단어(merge·enqueuePullRequest — 13R) 존재 — gh 문맥 없이도 판단(alias 확장용). */
@@ -338,18 +341,19 @@ export function classifyHookInput(input) {
     // 인라인 리터럴 본문·경로의 병합은 여기 오기 전에 신호 스캔이 잡는다.
     for (const detailed of tokenizeSegmentsDetailed(cmd)) {
       const tokens = detailed.map((t) => t.text)
-      // gh 외 HTTP 클라이언트의 GitHub GraphQL 호출도 명령에 보이는 병합 능력이다(20R P1:
-      // `curl … api.github.com/graphql --data-binary @/tmp/q.json`) — 본문이 파일(@)/변수($)로
-      // 불투명하면 gh api graphql --input 과 동치로 차단한다.
-      if (
-        tokens.some((t) => /github\.com\/graphql/i.test(t)) &&
-        tokens.some((t) => t.includes('@') || t.includes('$'))
-      )
-        return { kind: 'blocked', reason: 'GitHub GraphQL 호출의 본문이 명령 밖 — 관측 불가' }
       const hasGh = tokens.some((t) => {
         const exe = t.toLowerCase()
         return exe === 'gh' || exe === 'gh.exe'
       })
+      // 비-gh 클라이언트의 GitHub API 직접 호출은 전부 차단(20R curl → 21R wget·glob 로
+      // 클라이언트·플래그 열거가 발산 — 구조 규칙으로 접는다): 본문/경로 표기를 클라이언트별로
+      // 해석하지 않고, `api.github.com`(REST·GraphQL 공통 호스트)이 보이면 gh 로 하라고
+      // 안내한다. github.com 웹 URL(clone·PR 링크 인용)은 무관하므로 api 호스트만 본다.
+      if (!hasGh && tokens.some((t) => /api\.github\.com|github\.com\/graphql/i.test(t)))
+        return {
+          kind: 'blocked',
+          reason: '비-gh 클라이언트의 GitHub API 직접 호출 — 관측 불가, gh CLI 로 실행하라',
+        }
       if (!hasGh) continue
       // gh 호출 세그먼트의 **비인용** `$` 확장은 워드 분할로 서브커맨드·플래그를 주입할 수
       // 있다(19R P1: `gh -R $ARGS 222`, ARGS='o/r pr merge') — 위치 불문 차단. 인용된
