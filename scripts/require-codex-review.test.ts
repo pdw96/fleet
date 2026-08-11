@@ -32,6 +32,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'gh pr m\\\nerge 222 --squash', // 8R: 연속행 분절(셸이 \-개행 쌍을 제거하고 실행)
       "g$'h' pr m$'erge' 222 --squash", // 9R: ANSI-C 인용 분절
       'gh api -X PUT repos/o/r/pulls/222/m%65rge', // 14R: 퍼센트 인코딩 REST 경로
+      'g${EMPTY}h pr mer${EMPTY}ge 222 --squash', // 15R: 미설정 변수 확장 분절
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -195,6 +196,12 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
       matchHead: 'abc',
       viaMcp: false,
     })
+  })
+  it('타깃 생략·브랜치명 타깃은 blocked — 이중 해석 레이스(15R P1)', () => {
+    // hook 해석과 실행 시점 해석 사이에 워크트리가 다른 PR 로 이동할 수 있다(같은 head 면
+    // SHA 가드도 통과) — 안정 식별자(번호·URL)만 허용.
+    expect(classify('gh pr merge --squash --match-head-commit abc').kind).toBe('blocked')
+    expect(classify('gh pr merge feature/x --merge --match-head-commit abc').kind).toBe('blocked')
   })
   it('MCP merge_pull_request 는 구조화 입력으로 분류된다(sha 는 main 에서 필수 강제)', () => {
     expect(

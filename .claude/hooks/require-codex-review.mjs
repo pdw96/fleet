@@ -53,7 +53,12 @@ export function hasMergeSignal(cmd) {
   // 쌍 제거 — 8R P1: 백슬래시만 지우면 개행이 남아 미탐) → 따옴표·백슬래시·`$` 제거
   // (g''h·g\h — 4R·5R, ANSI-C `g$'h'` — 9R) → 퍼센트 디코드(REST 경로 `m%65rge` — 14R,
   // 서버 라우팅이 1회 디코드하므로 1회면 충분).
-  const stripped = cmd.replace(/\\\r?\n/g, '').replace(/['"\\$]/g, '')
+  // `${VAR}` 는 통째로 제거(15R P1: 미설정 변수로 `g${EMPTY}h` 분절 — `$` 만 지우면
+  // `{EMPTY}` 가 남아 미탐) 후 잔여 특수문자 제거.
+  const stripped = cmd
+    .replace(/\\\r?\n/g, '')
+    .replace(/\$\{[^}]*\}/g, '')
+    .replace(/['"\\$]/g, '')
   const decoded = (s) => {
     try {
       return decodeURIComponent(s)
@@ -333,6 +338,16 @@ export function classifyHookInput(input) {
   const canonical = parseCanonicalMerge(cmd)
   if (canonical == null)
     return { kind: 'blocked', reason: '머지 능력 신호가 있으나 canonical 형태가 아님' }
+  // 타깃 생략(현재 브랜치)·브랜치명 타깃은 hook 해석과 실행 시점 해석이 갈릴 수 있다
+  // (15R P1: 사이에 워크트리가 다른 PR 로 이동하면 같은 head SHA 로 SHA 가드도 통과) —
+  // 안정 식별자(번호·URL)만 허용한다.
+  if (canonical.pr == null)
+    return {
+      kind: 'blocked',
+      reason:
+        '명시적 PR 번호/URL 필수 — 현재 브랜치·브랜치명 해석은 검증과 실행 사이에 갈릴 수 있다' +
+        '(번호는 `gh pr view --json number` 로 확인)',
+    }
   return { ...canonical, kind: 'merge', viaMcp: false }
 }
 
@@ -342,7 +357,9 @@ function main() {
   try {
     input = JSON.parse(readFileSync(0, 'utf8'))
   } catch {
-    process.exit(0) // 입력이 hook 계약과 다르면 판단 불가 — 게이트 대상 아님
+    // 읽을 수 없는 호출은 비병합임을 증명할 수 없다(15R P1) — fail-closed.
+    console.error('[codex-gate] hook 입력(JSON) 해석 실패 — 판단 불가라 fail-closed 차단.')
+    process.exit(2)
   }
 
   const cwd = input.cwd || process.cwd()
@@ -446,18 +463,12 @@ function main() {
     process.exit(2)
   }
 
-  let { pr, repo, target } = verdict
+  // pr 은 항상 명시 번호다 — Bash 는 classify 가 번호/URL 을 강제하고(15R P1: 이중 해석
+  // 레이스 제거) MCP 는 pull_number 필수.
+  const { pr, repo } = verdict
   if (pr == null) {
-    const args = ['pr', 'view']
-    if (target) args.push(target)
-    if (repo) args.push('-R', repo)
-    args.push('--json', 'number', '--jq', '.number')
-    const out = gh(args).trim()
-    if (!/^\d+$/.test(out)) {
-      console.error('[codex-gate] PR 번호를 해석할 수 없어 fail-closed 차단.')
-      process.exit(2)
-    }
-    pr = Number(out)
+    console.error('[codex-gate] PR 번호 부재 — fail-closed 차단.')
+    process.exit(2)
   }
 
   const base = repo ? `repos/${repo}` : 'repos/{owner}/{repo}'
@@ -505,7 +516,15 @@ function validatePr(gh, base, pr) {
   // base 브랜치가 merge queue 를 요구하면 평문 병합 명령이 이연(auto) 병합을 암묵 활성화해
   // 이후 push 가 이 hook 을 재통과하지 않고 병합될 수 있다(6R P1) — 게이트가 검증할 수 없는
   // 상태이므로 차단한다. 조회 실패도 fail-closed(gh 헬퍼가 exit 2).
-  const rules = gh(['api', `${base}/rules/branches/${baseRef}`, '--paginate', '--jq', '.[].type'])
+  // baseRef 는 `#`·`?` 등을 담을 수 있는 유효 git ref — 인코딩 없이 삽입하면 URL 프래그먼트로
+  // 잘려 다른 브랜치의 룰을 조회한다(15R P1: `stable#queued` → `stable`).
+  const rules = gh([
+    'api',
+    `${base}/rules/branches/${encodeURIComponent(baseRef)}`,
+    '--paginate',
+    '--jq',
+    '.[].type',
+  ])
   if (rules.split('\n').some((t) => t.trim() === 'merge_queue')) {
     console.error(
       `[codex-gate] PR #${pr} 의 base(${baseRef})가 merge queue 를 요구한다 — 평문 병합이 ` +
