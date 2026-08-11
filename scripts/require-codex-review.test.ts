@@ -30,6 +30,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'g"h" pr "m"erge 222', // 4R: 이중따옴표 분절
       'g\\h pr mer\\ge 222 --squash', // 5R: 백슬래시 분절(셸이 \ 를 제거하고 실행)
       'gh pr m\\\nerge 222 --squash', // 8R: 연속행 분절(셸이 \-개행 쌍을 제거하고 실행)
+      "g$'h' pr m$'erge' 222 --squash", // 9R: ANSI-C 인용 분절
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -144,6 +145,13 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classifyHookInput({ tool_name: 'Read', tool_input: { file_path: 'x' } })).toEqual({
       kind: 'pass',
     })
+  })
+  it('본문이 명령 밖인 GraphQL 은 신호 없어도 blocked — 관측 불가(9R P1)', () => {
+    expect(classify('gh api graphql --input /tmp/q.json').kind).toBe('blocked')
+    expect(classify('gh api graphql --input=- -H x').kind).toBe('blocked')
+    expect(classify('gh api graphql -f query="$Q"').kind).toBe('blocked')
+    // 인라인 리터럴 본문(변수·--input 없음)은 신호 스캔 담당 — 비병합 쿼리는 pass
+    expect(classify("gh api graphql -f query='query { viewer { login } }'").kind).toBe('pass')
   })
   it('신호 있으나 canonical 아님 = blocked (인용 오탐도 미탐 아닌 차단 쪽)', () => {
     expect(classify('gh pr create --body "예: gh pr merge 5 는 차단된다"').kind).toBe('blocked')

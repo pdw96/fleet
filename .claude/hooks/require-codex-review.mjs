@@ -49,8 +49,9 @@ export function hasMergeSignal(cmd) {
     /merge/i.test(s) &&
     (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s))
   // 정규화본 병행 스캔 — 셸이 조각을 이어 실행하는 분절 표기에 대비한다: 연속행(백슬래시-개행
-  // 쌍 제거 — 8R P1: 백슬래시만 지우면 개행이 남아 미탐) → 따옴표·백슬래시 제거(g''h·g\h, 4R·5R).
-  return signal(cmd) || signal(cmd.replace(/\\\r?\n/g, '').replace(/['"\\]/g, ''))
+  // 쌍 제거 — 8R P1: 백슬래시만 지우면 개행이 남아 미탐) → 따옴표·백슬래시·`$` 제거
+  // (g''h·g\h — 4R·5R, ANSI-C `g$'h'` — 9R).
+  return signal(cmd) || signal(cmd.replace(/\\\r?\n/g, '').replace(/['"\\$]/g, ''))
 }
 
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
@@ -227,7 +228,24 @@ export function classifyHookInput(input) {
   }
   if (toolName !== 'Bash') return { kind: 'pass' }
   const cmd = String(input.tool_input?.command ?? '')
-  if (!hasMergeSignal(cmd)) return { kind: 'pass' }
+  if (!hasMergeSignal(cmd)) {
+    // GraphQL 요청 본문이 명령 밖(--input 파일/stdin·셸 변수)에 있으면 병합 mutation 여부를
+    // 관측할 수 없다(9R P1: `gh api graphql --input /tmp/q.json`) — 불투명 본문은 차단.
+    // 인라인 리터럴 본문은 여기 오기 전에 신호 스캔이 병합 mutation 을 잡는다.
+    for (const tokens of tokenizeSegments(cmd)) {
+      const hasGh = tokens.some((t) => {
+        const exe = t.toLowerCase()
+        return exe === 'gh' || exe === 'gh.exe'
+      })
+      if (
+        hasGh &&
+        tokens.includes('graphql') &&
+        tokens.some((t) => t.startsWith('--input') || t.includes('$'))
+      )
+        return { kind: 'blocked', reason: 'GraphQL 본문이 명령 밖(--input/변수) — 관측 불가' }
+    }
+    return { kind: 'pass' }
+  }
   const canonical = parseCanonicalMerge(cmd)
   if (canonical == null)
     return { kind: 'blocked', reason: '머지 능력 신호가 있으나 canonical 형태가 아님' }
@@ -264,7 +282,9 @@ function main() {
       const tokens = new Set(tokenizeSegments(cmd).flat())
       for (const line of r.stdout.split('\n')) {
         const m = line.match(/^([^\s:]+):\s*(.+)$/)
-        if (m && hasMergeSignal(m[2]) && tokens.has(m[1])) {
+        // alias 확장은 gh 접두 없이 나온다(`pm: pr merge`, 9R P1) — 확장 문자열은 이미
+        // gh 명령 문맥이므로 merge 단어 단독을 신호로 본다.
+        if (m && /merge/i.test(m[2]) && tokens.has(m[1])) {
           console.error(
             `[codex-gate] gh alias '${m[1]}' 는 병합으로 확장된다(${m[2].trim()}) — alias 경유 ` +
               '병합은 차단. canonical 형태로 직접 실행하라.',
