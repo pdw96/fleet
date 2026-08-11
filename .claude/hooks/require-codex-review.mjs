@@ -46,7 +46,8 @@ export function hasMergeSignal(cmd) {
   const signal = (s) =>
     /merge/i.test(s) &&
     (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s))
-  return signal(cmd) || signal(cmd.replace(/['"]/g, ''))
+  // 따옴표·백슬래시 제거본 병행 스캔 — 셸이 조각을 이어 실행하는 분절 표기(g''h·g\h, 4R·5R)
+  return signal(cmd) || signal(cmd.replace(/['"\\]/g, ''))
 }
 
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
@@ -88,6 +89,11 @@ export function tokenizeSegments(cmd) {
     } else if (/\s/.test(ch)) {
       if (ch === '\n') endSegment()
       else push()
+    } else if (ch === '#' && !inToken) {
+      // 비인용 # 가 단어 시작이면 셸 주석 — 줄 끝까지 버린다(5R P1: `#222` 를 인자로 읽으면
+      // 실제 실행(현재 브랜치 머지)과 다른 PR 을 검증한다). 인용된 "#N" 은 quote 분기로 보존.
+      while (i < cmd.length && cmd[i] !== '\n') i++
+      endSegment()
     } else if (ch === ';' || ch === '|' || ch === '&' || ch === '(' || ch === ')' || ch === '`') {
       endSegment()
     } else {
@@ -114,9 +120,10 @@ const MERGE_VALUE_FLAGS = new Set([
   '--match-head-commit',
 ])
 // `--auto` 는 비허용 — 이연 머지는 활성화 이후의 push 가 이 hook 을 다시 거치지 않고
-// 병합될 수 있어(4R P1) 일회 검증 게이트와 양립하지 않는다. `--disable-auto`(해제)는 무해.
+// 병합될 수 있어(4R P1) 일회 검증 게이트와 양립하지 않는다. `--admin` 도 비허용 —
+// 플랫폼 강제 사전 게이트(required checks·리뷰 스레드)를 관리자 권한으로 우회하는
+// 플래그라 게이트 층과 목적이 상충한다(5R P1). `--disable-auto`(해제)는 무해.
 const MERGE_BOOL_FLAGS = new Set([
-  '--admin',
   '--disable-auto',
   '-d',
   '--delete-branch',
@@ -147,12 +154,13 @@ export function parseCanonicalMerge(cmd) {
   const exe = tokens[0]?.toLowerCase()
   if (exe !== 'gh' && exe !== 'gh.exe') return null
   let i = 1
-  let repo = null
+  let repoFlag = null
+  let repoUrl = null
   // 전역 -R/--repo 만 허용(그 외 선행 플래그 = 비-canonical)
   while (i < tokens.length && tokens[i].startsWith('-')) {
     const [flag, inline] = splitFlag(tokens[i])
     if (flag !== '-R' && flag !== '--repo') return null
-    repo = inline ?? tokens[++i] ?? null
+    repoFlag = inline ?? tokens[++i] ?? null
     i++
   }
   if (tokens[i] !== 'pr' || tokens[i + 1] !== 'merge') return null
@@ -166,7 +174,7 @@ export function parseCanonicalMerge(cmd) {
       const [flag, inline] = splitFlag(tok)
       if (MERGE_VALUE_FLAGS.has(flag)) {
         const value = inline ?? tokens[++i] ?? null
-        if (flag === '-R' || flag === '--repo') repo = value
+        if (flag === '-R' || flag === '--repo') repoFlag = value
         if (flag === '--match-head-commit') matchHead = value
       } else if (!MERGE_BOOL_FLAGS.has(flag)) {
         return null
@@ -176,7 +184,7 @@ export function parseCanonicalMerge(cmd) {
       const url = tok.match(/^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/)
       if (num) pr = Number(num[1])
       else if (url) {
-        repo = url[1]
+        repoUrl = url[1]
         pr = Number(url[2])
       } else if (/[$]/.test(tok) || /:\/\//.test(tok)) {
         // 셸 확장 잔존·비 github.com URL 타깃은 해석 불가(4R P1: 엔터프라이즈 호스트 URL 이
@@ -187,7 +195,11 @@ export function parseCanonicalMerge(cmd) {
       return null
     }
   }
-  return { pr, repo, target, matchHead }
+  // URL 타깃과 -R 이 서로 다른 레포를 가리키면 거부 — gh 는 URL 의 레포를 우선하므로
+  // -R 로 덮어쓰면 실제 병합 대상과 검증 대상이 갈라진다(5R P1).
+  if (repoUrl != null && repoFlag != null && repoUrl.toLowerCase() !== repoFlag.toLowerCase())
+    return null
+  return { pr, repo: repoUrl ?? repoFlag, target, matchHead }
 }
 
 function splitFlag(tok) {

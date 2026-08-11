@@ -28,6 +28,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'git push origin x:y && gh pr merge 222', // 3R: TOCTOU 복합 명령
       "g''h pr m''erge 222 --squash", // 4R: 인용 분절 연결(셸이 조각을 이어 실행)
       'g"h" pr "m"erge 222', // 4R: 이중따옴표 분절
+      'g\\h pr mer\\ge 222 --squash', // 5R: 백슬래시 분절(셸이 \ 를 제거하고 실행)
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -47,11 +48,20 @@ describe('parseCanonicalMerge — 허용되는 단일 형태', () => {
   it('플래그가 타깃 앞에 와도 번호를 잡는다 (1R 원 결함: --squash 를 타깃으로 삼킴)', () => {
     expect(parseCanonicalMerge('gh pr merge --squash 222')).toMatchObject({ pr: 222 })
   })
-  it('`#N`·따옴표 번호·값 플래그 혼재를 해석한다', () => {
+  it('인용된 "#N"·값 플래그 혼재를 해석한다', () => {
     expect(parseCanonicalMerge('gh pr merge "#288" -s')).toMatchObject({ pr: 288 })
     expect(
       parseCanonicalMerge('gh pr merge --subject fix --match-head-commit abc 9'),
     ).toMatchObject({ pr: 9, matchHead: 'abc' })
+  })
+  it('비인용 #N 은 셸 주석 — 실제 실행과 동일하게 현재 브랜치 머지로 해석한다 (5R P1)', () => {
+    // bash 는 `#222` 이후를 버리고 `gh pr merge --squash` 만 실행한다. 파서가 222 를 읽으면
+    // 검증 대상(222)과 실행 대상(현재 브랜치)이 갈라진다 — 주석 시맨틱으로 일치시킨다.
+    expect(parseCanonicalMerge('gh pr merge --squash #222 --match-head-commit abc')).toMatchObject({
+      pr: null,
+      target: null,
+      matchHead: null,
+    })
   })
   it('-R 전역·중간·`=` 형을 존중한다 (1R 원 결함: 전역 플래그 형태 미매치 = 우회)', () => {
     expect(parseCanonicalMerge('gh -R pdw96/fleet pr merge 5 --squash')).toMatchObject({
@@ -60,9 +70,12 @@ describe('parseCanonicalMerge — 허용되는 단일 형태', () => {
     })
     expect(parseCanonicalMerge('gh pr merge 7 --repo=o/r')).toMatchObject({ pr: 7, repo: 'o/r' })
   })
-  it('URL 타깃에서 repo·번호를 함께 추출한다', () => {
+  it('URL 타깃에서 repo·번호를 함께 추출한다 — URL 레포가 권위(-R 동일 지정은 허용)', () => {
     expect(
       parseCanonicalMerge('gh pr merge https://github.com/pdw96/fleet/pull/288 --squash'),
+    ).toMatchObject({ pr: 288, repo: 'pdw96/fleet' })
+    expect(
+      parseCanonicalMerge('gh pr merge https://github.com/pdw96/fleet/pull/288 -R pdw96/fleet'),
     ).toMatchObject({ pr: 288, repo: 'pdw96/fleet' })
   })
   it('bare gh.exe·대소문자는 허용, 경로 지정 실행은 배제한다 (3R·4R P1)', () => {
@@ -108,6 +121,14 @@ describe('parseCanonicalMerge — 형태 이탈은 전부 null(차단)', () => {
       'gh pr merge https://ghe.example/o/r/pull/9',
     ],
     ['--auto 이연 머지(일회 검증 게이트와 양립 불가)', 'gh pr merge 5 --auto --squash'],
+    [
+      '--admin 관리자 우회(플랫폼 사전 게이트와 상충)',
+      'gh pr merge 5 --admin --match-head-commit abc',
+    ],
+    [
+      'URL 과 -R 이 다른 레포(gh 는 URL 우선 — 검증·실행 분열)',
+      'gh pr merge https://github.com/o/other/pull/9 -R pdw96/fleet --match-head-commit abc',
+    ],
     ['잉여 인자', 'gh pr merge 5 6'],
     ['REST 경유', 'gh api -X PUT repos/pdw96/fleet/pulls/240/merge'],
     ['GraphQL 경유', "gh api graphql -f query='mutation { mergePullRequest(input: {}) {} }'"],
