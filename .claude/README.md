@@ -33,9 +33,11 @@
 `gh pr merge <번호> [-R owner/repo] [플래그] --match-head-commit <SHA>`(단일 세그먼트)만
 통과 후보이고, 그 외(REST·GraphQL·서브셸·인터프리터·복합 명령·머지 문구 인용)는 전부
 fail-closed 차단한다(인용 오탐은 `--body-file` 로 우회). 인가 = **현재 head 결속 Codex 신호**
-= head 를 리뷰한 공식 리뷰(commit_id 일치)만 인정하며, 그 제출이 base 리타깃·base tip 전진
-이후여야 한다(base 전진은 head 불변이어도 diff 를 바꾼다). **👍 리액션 경로는 폐기했다**
-(44R P1: 리액션은 commit 결속이 없어 head/base 전진을 인과 결속할 수 없다). 검증 후
+= head 를 리뷰한 공식 리뷰(commit_id 일치)만 인정하며, 그 제출이 base tip 전진 이후여야 한다
+(base 전진은 head 불변이어도 diff 를 바꾼다). **단 base 리타깃(`base_ref_changed`)이 한 번이라도
+있었으면 공식 리뷰 경로를 통째로 건너뛰고 audited 폴백 마커만 인정한다**(41R P1: 시각으로는
+리뷰를 새 base diff 에 인과 결속할 수 없다 — 리타깃 PR 은 폴백 경로 필수). **👍 리액션 경로는
+폐기했다**(44R P1: 리액션은 commit 결속이 없어 head/base 전진을 인과 결속할 수 없다). 검증 후
 `--match-head-commit` 을 검증 head 와 대조해 서버가 TOCTOU 를 거부하게 한다(차단 메시지가
 복사 가능한 정확한 명령 제공). GitHub MCP merge_pull_request 는 구조화 입력이라 파싱 없이
 동일 검증. Codex 무응답/base 전진 폴백 = 풀 렌즈 자가리뷰 완료 근거를 담은 OWNER 코멘트의

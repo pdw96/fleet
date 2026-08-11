@@ -783,6 +783,31 @@ export function classifyHookInput(input, _depth = 0) {
             reason: 'source/. 가 process substitution·동적 입력을 소싱 — 관측 불가',
           }
       }
+      // eval 은 인자를 합쳐 실행한다(48R P1: `eval "$(printf 'g%c pr m%crge …')"` — 조립된
+      // gh pr merge 를 실행). 인자가 동적($·백틱·process-sub)이면 관측 불가로 차단하고,
+      // 리터럴이면 결합해 재분류한다(pass 가 아니면 차단). 상한 초과는 fail-closed.
+      if (exe === 'eval') {
+        const restD = detailed.slice(exeIdx + 1)
+        if (restD.some((t) => t.text.includes('$') || /[`<>]/.test(t.text)))
+          return { kind: 'blocked', reason: 'eval 인자가 동적(확장·치환) — 관측 불가' }
+        const inner = restD
+          .map((t) => t.text)
+          .join(' ')
+          .trim()
+        if (inner) {
+          if (_depth >= 5)
+            return { kind: 'blocked', reason: 'eval 중첩이 분류 상한 초과 — 정적 분류 불가' }
+          const sv = classifyHookInput(
+            { tool_name: 'Bash', tool_input: { command: inner } },
+            _depth + 1,
+          )
+          if (sv.kind !== 'pass')
+            return {
+              kind: 'blocked',
+              reason: `eval 대상 명령이 차단 대상(${sv.reason ?? sv.kind})`,
+            }
+        }
+      }
       if (isAssembler(exe) && CAPABILITY.test(tokens.slice(exeIdx + 1).join(' ')))
         return {
           kind: 'blocked',
