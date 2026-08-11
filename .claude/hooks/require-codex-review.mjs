@@ -33,6 +33,10 @@
 // 동형). 다만 수정 비용이 낮은 적대형 구멍(분절 표기·경로 실행 파일·force-push 재결속)은
 // 방어 심도로 함께 닫는다. 잔여 한계(일반 push 로 기존 커밋을 head 에 앉히는 시각 우회)는
 // 이 범위에서 수용 — SHA-결속 신호(공식 리뷰 commit_id)가 항상 우선 경로다.
+// 관할 경계(18R 확정): 게이트는 **명령 문자열에 보이는 병합 능력**만 관할한다. 파일/프로그램
+// 경유 실행(`bash script.sh`·`npm run`·`node x.js` 등)의 내용 검사는 비목표 — 파일은 hook
+// 과 실행 사이에 바뀔 수 있어 검사가 증명이 못 되고(TOCTOU), 실행의 이행 폐포 게이트는
+// 수렴하지 않으며, 병합을 파일에 숨기는 것은 로컬 쓰기 권한자 시나리오(위 비목표)와 동치다.
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
@@ -393,9 +397,12 @@ function main() {
     // 보이는 명령은 구성된 alias 목록을 실측해, 병합 신호를 담은 확장의 alias 이름이 명령에
     // 등장하면 차단한다. alias 목록 조회 실패는 fail-closed(숨은 alias 를 배제 못 함).
     const cmd = String(input.tool_input?.command ?? '')
+    // 트리거도 정규화본으로 판정한다(18R P1: `g''h pm 222` 는 raw 에 gh 토큰이 없어
+    // alias 스캔을 건너뛴다). 스캔 시 명령 토큰도 동일 정규화로 재토큰화.
+    const normCmd = stripShellExpansions(cmd)
     if (
       String(input.tool_name) === 'Bash' &&
-      /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(cmd)
+      /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(normCmd)
     ) {
       const r = spawnSync('gh', ['alias', 'list'], { encoding: 'utf8', cwd, timeout: 45_000 })
       if (r.error || r.status !== 0) {
