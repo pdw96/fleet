@@ -272,6 +272,17 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(m.get('pm:x')?.exp).toBe('pr merge')
     expect(m.get('pm')?.exp).toContain('merge')
   })
+  it('parseAliasList — 합성 해석이 실제 항목을 덮어쓰지 않는다(26R P1)', () => {
+    const m = parseAliasList('pm: pr merge\npm:x: pr view')
+    expect(m.get('pm')?.exp).toContain('merge') // pm:x 의 lazy 해석(pm → "x: pr view")이 교체 금지
+  })
+  it('실행 파일 자리 비인용 글롭은 blocked — 파일 gh 존재 시 g? 확장(26R P1)', () => {
+    expect(classify('g? pr merge 222 --squash --match-head-commit abc').kind).toBe('blocked')
+  })
+  it('aliasIsSuspect — 불투명 API 로 확장되는 alias 도 의심(26R P1)', () => {
+    expect(aliasIsSuspect('api graphql --input /tmp/q.graphql')).toBe(true)
+    expect(aliasIsSuspect('api graphql -F query=@x.graphql')).toBe(true)
+  })
   it('gh 호출에 env 대입 동반은 blocked — 관측 환경 불일치(22R P1)', () => {
     expect(classify('GH_CONFIG_DIR=/tmp/alt gh pm 222 --squash').kind).toBe('blocked')
     expect(classify('export GH_CONFIG_DIR=/tmp/alt; gh pm 222 --squash').kind).toBe('blocked')

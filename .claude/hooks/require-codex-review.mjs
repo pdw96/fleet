@@ -119,7 +119,9 @@ export function hasMergeWord(s) {
 export function aliasIsSuspect(exp) {
   // `$@`·`$*` 전체 전달만 무해 — `$1` 등 선택/재배열 위치 인자는 호출부 인자를 동사 자리로
   // 옮길 수 있어(23R P1: `!gh pr "$1" …` + 인자 merge) 명명 변수와 같이 의심 처리.
-  return hasMergeWord(exp) || /\$(?![@*])/.test(exp)
+  // 불투명 API 형태(--input·=@ 파일 필드·graphql)로 확장되는 alias 도 의심 — 직접 명령이면
+  // 차단될 형태가 alias 를 거치면 통과했다(26R P1: `q: api graphql --input /tmp/q.graphql`).
+  return hasMergeWord(exp) || /\$(?![@*])/.test(exp) || /--input|=@|graphql/i.test(exp)
 }
 
 export function hasMergeSignal(cmd) {
@@ -321,8 +323,15 @@ export function parseAliasList(text) {
   let currents = []
   const register = (rawName, rawExp) => {
     const name = rawName.trim().split(/\s+/)
-    const entry = { name, exp: rawExp.trim().replace(/^\|-?$/, '') }
-    aliases.set(name.join(' '), entry)
+    const key = name.join(' ')
+    const exp = rawExp.trim().replace(/^\|-?$/, '')
+    // 콜론 이름의 합성 해석이 실제 alias 항목을 덮어쓰면 안 된다(26R P1: `pm: pr merge` 뒤
+    // `pm:x: …` 의 lazy 해석이 pm 을 비병합 확장으로 교체) — 같은 키는 확장을 합집합으로
+    // 이어붙여 어느 해석이든 의심 판정에 남게 한다.
+    const existing = aliases.get(key)
+    const entry = existing ?? { name, exp: '' }
+    entry.exp = `${entry.exp} ${exp}`.trim()
+    if (!existing) aliases.set(key, entry)
     currents.push(entry)
   }
   for (const line of text.split('\n')) {
@@ -366,14 +375,14 @@ export function classifyHookInput(input) {
     // fail-closed 로 흡수한다(확장 없이 리터럴로 쓰라).
     if (hasMergeWord(cmd) && /[$`]/.test(cmd))
       return { kind: 'blocked', reason: '병합 단어와 셸 확장 동반 — 실행 파일 조립 가능' }
-    // 실행 파일 자리의 확장은 무엇이 실행되는지 자체를 알 수 없다(25R P1: 상속 `CLI=gh` +
-    // `"$CLI" pm 222` — 병합 단어도 gh 토큰도 없어 alias 검사까지 건너뛴다) — 대입 프리픽스
-    // (`NAME=…`)를 건너뛴 첫 토큰(실행 파일)의 `$` 는 인용 여부 무관 차단(리터럴로 쓰라).
+    // 실행 파일 자리의 확장·글롭은 무엇이 실행되는지 자체를 알 수 없다(25R: 상속 `CLI=gh` +
+    // `"$CLI" pm 222` · 26R: 파일 `gh` 존재 시 `g?` 경로명 확장) — 대입 프리픽스(`NAME=…`)를
+    // 건너뛴 첫 토큰(실행 파일)의 `$`(인용 무관)·비인용 글롭을 차단(리터럴로 쓰라).
     // 대입 값의 `$`(`SC="$TEMP/…"`)는 실행 파일이 아니므로 무관.
-    for (const seg of tokenizeSegments(cmd)) {
-      const exe = seg.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t))
-      if (exe?.includes('$'))
-        return { kind: 'blocked', reason: '실행 파일 자리 셸 확장 — 실행 대상 판별 불가' }
+    for (const seg of tokenizeSegmentsDetailed(cmd)) {
+      const exe = seg.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text))
+      if (exe && (exe.text.includes('$') || exe.unquotedGlob))
+        return { kind: 'blocked', reason: '실행 파일 자리 셸 확장/글롭 — 실행 대상 판별 불가' }
     }
     // 병합 능력이 명령 문자열 밖에 있으면 신호 스캔이 못 본다 — 불투명 gh api 호출은 차단:
     // ① GraphQL 본문이 --input 파일/stdin·셸 변수에 있는 경우(9R P1)
