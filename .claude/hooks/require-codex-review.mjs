@@ -13,13 +13,14 @@
 // GitHub MCP merge_pull_request 는 구조화 입력이라 파싱 없이 검증한다.
 //
 // 인가 신호는 **현재 head 에 결속**된 것만 인정한다(2R P1):
-//   ① head 커밋을 리뷰한 Codex 공식 리뷰(commit_id == head SHA)
-//   ② head 도착 이후의 OWNER `@codex review` 재트리거보다 늦은 Codex 👍 clean 리액션
-//      (시각 단독 결속은 「A 리뷰 중 B push → A 의 늦은 👍」를 오인가한다 — 27R P1)
-//   ③ OWNER 의 head-결속 폴백 마커 `[codex-gate-fallback] head=<현재 head SHA>` 코멘트
+//   ① head 커밋을 리뷰한 Codex 공식 리뷰(commit_id == head SHA), 단 base 리타깃이 없고
+//      제출이 base tip 커밋 시각 이후일 것(base 전진으로 diff 가 바뀐 리뷰 배제 — 44R P1)
+//   ② OWNER 의 head-결속 폴백 마커 `[codex-gate-fallback] head=<현재 head SHA>` 코멘트
 //      (무응답 폴백 — 풀 렌즈 자가리뷰 완료 근거 서술 동반. SHA 를 손으로 적는 형식이라
 //      단순 언급·질문과 구조적으로 갈리고, head 가 바뀌면 자동 실효. env 오버라이드는
 //      감사 불가라 두지 않는다)
+//   ※ 👍 clean 리액션 경로는 제거했다(44R P1: 리액션은 commit 결속이 없어 head/base 전진을
+//      인과 결속할 수 없다 — A 리뷰의 늦은 👍 가 B 를 인가). base 리타깃 시엔 폴백만(41R)
 // head 도착 시각 = 해당 SHA 의 check-suite 최초 생성 시각(push 시 서버 기록 — 커밋 객체의
 // committer date 는 작성자 통제라 선일자 위조 가능, 3R P1). check-suite 부재 시에만 committer
 // date 폴백. `--match-head-commit` 필수화로 검증 시점과 실행 시점 사이 head 이동(TOCTOU,
@@ -297,6 +298,24 @@ function effectiveExeIndex(tokens) {
   return i
 }
 
+// 리다이렉션 연산자 토큰(`<` `>` `>>` `<<` `<<<` `2>` `&>` `>&` 등) — 인터프리터의 진짜
+// 스크립트 파일 인자와 구분한다(44R P1: `bash <<< "…"` 의 here-string 을 스크립트 인자로
+// 오인해 stdin 판정을 놓쳤다).
+const REDIR_RE = /^(\d*<{1,3}|\d*>{1,2}|&>{1,2}|[<>]&\d*)$/
+// 인터프리터에 넘어간 스크립트 파일 인자(리다이렉션 피연산자·플래그 제외)를 추출한다.
+// 없으면 stdin(파이프·here-string·here-doc·터미널)에서 읽는 것 — 내용 관측 불가.
+function interpreterScriptArgs(rest) {
+  const out = []
+  for (let k = 0; k < rest.length; k++) {
+    if (REDIR_RE.test(rest[k])) {
+      k++ // 피연산자(파일/here-string 값) 소비
+      continue
+    }
+    if (!rest[k].startsWith('-')) out.push(rest[k])
+  }
+  return out
+}
+
 // 세그먼트가 투명 래퍼로 시작하는가(대입 프리픽스는 건너뛴다) — 그렇다면 옵션 arity 불명으로
 // 실효 실행 위치를 오판할 수 있어, 조립기/stdin 인터프리터의 **존재**만으로 보수 차단한다.
 function startsWithWrapper(tokens) {
@@ -335,7 +354,7 @@ export function consumesExternalScript(text) {
     if (isAssembler(exe)) return true
     if (INTERP_RE.test(exe)) {
       const rest = tokens.slice(i + 1)
-      if (!rest.includes('-c') && !rest.some((x) => !x.startsWith('-'))) return true
+      if (!rest.includes('-c') && interpreterScriptArgs(rest).length === 0) return true
     }
   }
   return false
@@ -754,7 +773,9 @@ export function classifyHookInput(input, _depth = 0) {
       // 워크플로에 없어 보수 차단 마찰이 없다.
       if (INTERP_RE.test(exe)) {
         const rest = tokens.slice(exeIdx + 1)
-        if (!rest.includes('-c') && !rest.some((t) => !t.startsWith('-')))
+        // here-string/here-doc/파이프(리다이렉션 피연산자는 스크립트 파일 인자가 아니다,
+        // 44R P1: `bash <<< "$(printf …)"`)로 stdin 을 받으면 관측 불가.
+        if (!rest.includes('-c') && interpreterScriptArgs(rest).length === 0)
           return {
             kind: 'blocked',
             reason: '셸 인터프리터가 스크립트를 stdin 에서 읽음 — 관측 불가',
@@ -1119,9 +1140,8 @@ function main() {
 
 /**
  * 한 PR 의 Codex 신호를 **현재 head 에 결속해** 검증한다. 통과하면 head SHA 를 반환하고,
- * 못 하면 exit 2. 인정 신호: ① head 를 리뷰한 공식 리뷰(commit_id == head) ② head 도착
- * 이후 👍 ③ head 도착 이후 OWNER 폴백 마커. head 도착 시각 = check-suite 최초 생성(서버
- * 기록·push 시각) → 부재 시 committer date 폴백(작성자 통제 시각이라 차선임을 명시).
+ * 못 하면 exit 2. 인정 신호: ① commit_id==head 공식 리뷰(base 리타깃 없고 제출이 base tip
+ * 시각 이후) ② OWNER head-결속 폴백 마커. 👍 리액션 경로는 제거(44R P1: commit 무결속).
  */
 function validatePr(gh, base, pr) {
   const headLine = gh(['api', `${base}/pulls/${pr}`, '--jq', '.head.sha + " " + .base.ref']).trim()
@@ -1151,32 +1171,23 @@ function validatePr(gh, base, pr) {
     process.exit(2)
   }
 
-  // base 변경(`pr edit -B`)은 head 를 안 움직이고 리뷰된 diff 를 바꾼다(13R P1) — 모든
-  // 신호(commit_id 일치 리뷰 포함)는 마지막 base_ref_changed 이벤트 이후여야 한다.
+  // base 변경(`pr edit -B`)은 head 를 안 움직이고 리뷰된 diff 를 바꾼다(13R P1) — 리타깃이
+  // 있었으면 시각 기반 자동 경로를 못 믿어 audited 폴백 마커만 인정한다(41R P1).
   const baseChangedAt = latestTimelineEvent(gh, base, pr, 'base_ref_changed') ?? ''
 
-  const headTime = [headArrivalTime(gh, base, pr, headSha), baseChangedAt].sort().at(-1)
-
-  // 트리거는 **단독** `@codex review` 코멘트만 인정한다(28R: 산문 속 인용 — 예: 답글에서
-  // 명령을 설명하는 문장 — 이 contains 로 트리거가 되면 늦은 👍 를 오결속한다).
-  const triggerTimes = gh([
+  // base 브랜치 tip 이 전진하면 .base.ref·head 가 같아도 effective diff 가 바뀐다(44R P1)
+  // — 리뷰는 그 이전 base 를 본 것이므로, 공식 리뷰 제출이 base tip 커밋 시각 이후여야 한다.
+  // committer date 는 base 브랜치 write 권한자가 조작 가능(신뢰 경계 밖)이라 그 잔여는 수용한다
+  // (base SHA 결속 리뷰라는 플랫폼 프리미티브가 없다 — base 리타깃 TOCTOU 와 동류).
+  const baseTipTime = gh([
     'api',
-    `${base}/issues/${pr}/comments`,
-    '--paginate',
+    `${base}/commits/${encodeURIComponent(baseRef)}`,
     '--jq',
-    `.[] | select(.author_association == "OWNER" and (.body | test("^\\\\s*@codex review\\\\s*$"))) | .created_at`,
-  ])
-  const latestTrigger = triggerTimes
-    .split('\n')
-    .map((t) => t.trim())
-    .filter((t) => /^\d{4}-\d{2}-\d{2}T/.test(t) && t >= headTime)
-    .sort()
-    .at(-1)
+    '.commit.committer.date',
+  ]).trim()
 
-  // base 변경이 있었으면 시각 기반 자동 경로(공식 리뷰·👍)를 **전부 건너뛴다**(41R P1:
-  // 제출/리액션 시각은 리뷰를 새 base diff 에 인과 결속하지 못한다 — A base 리뷰가 in-flight
-  // 로 재트리거 이후 제출돼도 commit_id==head·시각 조건을 만족한다). base 변경 후엔 OWNER 가
-  // 새 base diff 를 보고 남긴 audited 폴백 마커(근거 서술 포함)만 유일 경로다.
+  // 👍 리액션 경로는 제거했다(44R P1) — 리액션은 commit 결속이 없어 head/base 전진을 인과
+  // 결속할 수 없다(A 리뷰의 늦은 👍 가 B 를 인가). commit_id 결속 공식 리뷰 또는 폴백만 인정.
   if (!baseChangedAt) {
     const reviewLines = gh([
       'api',
@@ -1185,29 +1196,14 @@ function validatePr(gh, base, pr) {
       '--jq',
       `.[] | select(.user.login == "${CODEX_LOGIN}") | .commit_id + " " + .submitted_at`,
     ])
-    // head 가 그대로이므로 commit_id 결속으로 충분(base 변경 없음).
+    // head 는 commit_id 로 결속하고, base 전진은 제출 시각 하한(baseTipTime)으로 배제한다.
     if (
       reviewLines.split('\n').some((line) => {
-        const [sha] = line.trim().split(/\s+/)
-        return sha === headSha
+        const [sha, at] = line.trim().split(/\s+/)
+        return sha === headSha && (at ?? '') >= baseTipTime
       })
     )
       return headSha
-
-    // 👍 리액션은 commit 결속이 없다 — head 도착 시각만으로는 「A 리뷰 중 B push → A 의 늦은
-    // 👍」가 B 를 인가한다(27R P1). 트리거 체인으로 결속한다: head 도착 **이후** OWNER 의
-    // `@codex review` 재트리거가 존재하고, 👍 가 그 트리거 이후일 때만 현재 head 의 신호로
-    // 인정한다(트리거 없으면 👍 경로 무효 — 명시 재트리거 후 새 👍 를 받으라).
-    if (latestTrigger) {
-      const thumbTimes = gh([
-        'api',
-        `${base}/issues/${pr}/reactions`,
-        '--paginate',
-        '--jq',
-        `.[] | select(.content == "+1" and .user.login == "${CODEX_LOGIN}") | .created_at`,
-      ])
-      if (thumbTimes.split('\n').some((t) => t.trim() && t.trim() >= latestTrigger)) return headSha
-    }
   }
 
   // 무응답 폴백 — OWNER 가 남긴 head-결속 마커(`[codex-gate-fallback] head=<현재 head SHA>`)를
@@ -1249,52 +1245,13 @@ function validatePr(gh, base, pr) {
 
   console.error(
     `[codex-gate] PR #${pr} 의 현재 head(${headSha.slice(0, 7)})에 결속된 Codex 신호가 없다 — ` +
-      '머지 차단(ADR-0014 전제). 낡은 라운드의 리뷰·👍 는 새 커밋을 인가하지 않는다. ' +
+      '머지 차단(ADR-0014 전제). 낡은 라운드의 리뷰는 새 커밋을 인가하지 않는다. ' +
       '`@codex review` 로 재트리거 후 대기하라(보통 7~20분). 무응답 fallback 머지는 P1 신호 렌즈를 ' +
       '포함한 풀 렌즈 자가리뷰 완료 후, 마커(`[codex-gate-fallback] head=<현재 head 40자 SHA>`)로 ' +
       '**시작하는** OWNER 코멘트에 근거 서술을 담는 것이 조건이다(첫머리 앵커 — 인용·질문은 ' +
       '불인정, 감사 가능·head-결속 경로).',
   )
   process.exit(2)
-}
-
-/**
- * 이 SHA 가 「이 PR 의 head 가 된」 시각의 보수적 하한 — 다음의 최댓값(4R P1: SHA 전역
- * check-suite 시각만 보면 타 브랜치에서 이미 검사를 돌린 커밋을 force-push 로 head 에 앉혀
- * 낡은 👍 를 통과시킬 수 있다):
- *   (a) SHA 의 check-suite 최초 생성(서버 기록) — 부재 시 committer date 폴백(차선)
- *   (b) PR 타임라인의 마지막 head_ref_force_pushed 이벤트 시각(서버 기록)
- * 일반 push 로 기존 커밋을 head 에 앉히는 변형은 남는다 — §위협 모델(사고 방지) 범위에서
- * 수용하고, SHA-결속 신호(공식 리뷰 commit_id)가 항상 우선 경로다.
- */
-function headArrivalTime(gh, base, pr, headSha) {
-  const candidates = []
-  // 조회 실패는 gh 헬퍼가 fail-closed(exit 2) — allowFail 로 삼키면 「성공·suite 없음」과
-  // 「요청 실패」가 구분되지 않아 작성자 통제 시각(committer date)으로 조용히 강등된다(6R P1).
-  const suites = gh([
-    'api',
-    `${base}/commits/${headSha}/check-suites`,
-    '--jq',
-    '[.check_suites[].created_at] | sort | .[0] // empty',
-  ])
-  const first = suites?.trim()
-  if (first && /^\d{4}-\d{2}-\d{2}T/.test(first)) candidates.push(first)
-  else {
-    const committed = gh([
-      'api',
-      `${base}/commits/${headSha}`,
-      '--jq',
-      '.commit.committer.date',
-    ]).trim()
-    if (!/^\d{4}-\d{2}-\d{2}T/.test(committed)) {
-      console.error('[codex-gate] head 도착 시각 해석 실패 — fail-closed 차단.')
-      process.exit(2)
-    }
-    candidates.push(committed)
-  }
-  const forced = latestTimelineEvent(gh, base, pr, 'head_ref_force_pushed')
-  if (forced) candidates.push(forced)
-  return candidates.sort().at(-1)
 }
 
 /**

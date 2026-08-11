@@ -265,6 +265,12 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify("printf 'g%c pr m%crge 222\\n' h e | env -i sh").kind).toBe('blocked')
     // stdin 인터프리터는 stdin 관측 불가라 보수 차단(echo 리터럴이어도) — 워크플로 무마찰
     expect(classify('echo hi | sh').kind).toBe('blocked')
+    // 44R: here-string/here-doc 피연산자는 스크립트 파일 인자가 아니다 — stdin 으로 차단
+    expect(classify('bash <<< "$(printf \'g%c pr m%crge --help\' h e)"').kind).toBe('blocked')
+    expect(classify('sh <<EOF\ngh pr merge 222\nEOF').kind).toBe('blocked')
+    // 진짜 스크립트 파일 인자는 stdin 아님 — 리다이렉션과 구분한다
+    expect(classify('bash deploy.sh')).toEqual({ kind: 'pass' })
+    expect(classify('sh /tmp/x.sh arg1')).toEqual({ kind: 'pass' })
   })
   it('resolveAliasExpansion — 인용을 벗기고 연쇄를 해석한다(43R P1)', () => {
     const m = parseAliasList('q: api\nqq: \'"q"\'')
