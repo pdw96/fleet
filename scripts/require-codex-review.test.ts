@@ -81,6 +81,10 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(false)
   })
+  it('무관한 malformed percent(%ZZ)가 유효 escape(%65) 디코드를 막지 않는다(39R P1)', () => {
+    // 전체 decodeURIComponent 는 %ZZ 에서 throw — 유효 triplet 을 개별 디코드해야 merge 를 본다
+    expect(hasMergeSignal("gh api -X PUT repos/o/r/pulls/222/m%65rge -H 'X-Test: %ZZ'")).toBe(true)
+  })
 })
 
 describe('parseCanonicalMerge — 허용되는 단일 형태', () => {
@@ -261,6 +265,16 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(extractInterpreterScripts("bash -c 'gh api graphql'")).toEqual(['gh api graphql'])
     expect(extractInterpreterScripts('gh pr view 1')).toEqual([])
   })
+  it('분류 상한 도달 시 남은 인터프리터 스크립트는 fail-closed(39R P1)', () => {
+    // _depth=5 에서 -c 스크립트가 남아 있으면 **내용 무관** blocked — 정상 조회 스크립트여도
+    // 정적 분류 불가라 차단(6중 중첩이 상한을 넘겨 innermost 를 미분류로 통과시키던 결함).
+    // 내용을 pass 형으로 둬야 상한 로직 자체를 고유 검증한다(GraphQL 이면 상한 없이도 차단).
+    expect(classifyHookInput(bash("bash -c 'gh pr view 1'"), 5).kind).toBe('blocked')
+    // 스크립트가 없으면 상한과 무관하게 정상 판정
+    expect(classifyHookInput(bash('gh pr view 1'), 5).kind).toBe('pass')
+    // 상한 이내면 정상 스크립트는 통과
+    expect(classify("bash -c 'gh pr view 1'").kind).toBe('pass')
+  })
   it('다문자 brace 전개는 신호를 거쳐 canonical 요구로 넘어간다(33R P1)', () => {
     expect(classify('gh pr m{erg,x}e 222 --squash --match-head-commit abc').kind).toBe('blocked')
     expect(classify("bash -c 'gh pr m{erg,x}e 222 --squash --match-head-commit abc'").kind).toBe(
@@ -327,6 +341,12 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // 37R: gh alias list 의 YAML 작은따옴표 래핑(내부 '' 이스케이프)을 벗겨 판정한다
     expect(aliasIsSuspect("'!printf ''gh pr m%crge --help'' e | sh'")).toBe(true)
     expect(aliasIsSuspect("'pr view'")).toBe(false)
+    // 39R: 외부 stdin 스크립트를 소비하는 셸 alias(`!sh`)는 관측 불가 — 격리 본문이 능력
+    // 토큰을 안 담아도 의심(호출부 stdin 이 명령을 공급한다)
+    expect(aliasIsSuspect("'!sh'")).toBe(true)
+    expect(aliasIsSuspect('!bash')).toBe(true)
+    expect(aliasIsSuspect('!cat foo | xargs')).toBe(true)
+    expect(aliasIsSuspect('!bash -c "gh pr view 1"')).toBe(false) // -c 스크립트는 stdin 소비 아님
   })
   it('병합 단어 + 셸 확장 동반은 blocked — 실행 파일 조립 가능(23R·24R P1)', () => {
     expect(classify('$(printf g)h pr merge 222 --squash --match-head-commit abc').kind).toBe(

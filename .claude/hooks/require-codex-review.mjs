@@ -176,13 +176,17 @@ function scanVariants(s) {
     unwrapped = next
   }
   const defaulted = stripShellExpansions(unwrapped)
-  const decoded = (x) => {
-    try {
-      return decodeURIComponent(x)
-    } catch {
-      return x
-    }
-  }
+  // 유효 percent triplet 을 **개별** 디코드한다(39R P1: `m%65rge` 엔드포인트 + `%ZZ` 헤더 —
+  // 전체 decodeURIComponent 는 `%ZZ` 에서 throw 해 `%65` 까지 미디코드로 남겨 merge 미탐).
+  // `%ZZ` 처럼 hex 아닌 것은 정규식이 애초에 매칭 안 해 그대로 두고, 유효 것만 푼다.
+  const decoded = (x) =>
+    x.replace(/%[0-9a-fA-F]{2}/g, (m) => {
+      try {
+        return decodeURIComponent(m)
+      } catch {
+        return m
+      }
+    })
   const bases = [s, stripped, defaulted, decoded(s), decoded(stripped)]
   const out = new Set()
   let overflow = false
@@ -225,12 +229,15 @@ export function aliasIsSuspect(rawExp) {
   // — sh 가 백틱을 평가해 동사를 조립) — 동적 취급.
   // 셸 alias(`!…`) 본문은 그 자체로 sh 가 실행하는 셸 명령이다 — 동적 문법 열거 대신 직접
   // 명령과 동일 규칙으로 재분류한다(37R P1: `!printf 'gh pr m%crge --help' e | sh` —
-  // merge/$/백틱 어느 열거에도 안 걸리지만 stdin 인터프리터 규칙이 잡는다).
-  if (
-    exp.startsWith('!') &&
-    classifyHookInput({ tool_name: 'Bash', tool_input: { command: exp.slice(1) } }).kind !== 'pass'
-  )
-    return true
+  // merge/$/백틱 어느 열거에도 안 걸리지만 stdin 인터프리터 규칙이 잡는다). 또한 본문이
+  // 외부 stdin 스크립트를 소비하는 형태(`!sh` — 능력이 호출부 stdin 에서 옴)면 관측 불가로
+  // 의심 처리한다(39R P1: 격리 본문 `sh` 는 classify 가 pass 라 놓치던 결함).
+  if (exp.startsWith('!')) {
+    const body = exp.slice(1)
+    if (classifyHookInput({ tool_name: 'Bash', tool_input: { command: body } }).kind !== 'pass')
+      return true
+    if (consumesExternalScript(body)) return true
+  }
   return hasMergeWord(exp) || /\$(?![@*])|`/.test(exp) || /--input|=@|graphql/i.test(exp)
 }
 
@@ -284,6 +291,33 @@ export function extractInterpreterScripts(cmd) {
     }
   }
   return scripts
+}
+
+// 외부 stdin 스크립트를 소비할 수 있는 실효 실행이 있는가 — stdin 인터프리터(sh/bash 등,
+// `-c` 도 스크립트 파일 인자도 없음)나 조립기(xargs·parallel)(39R P1: alias `!sh` 가
+// 호출부 stdin 으로 임의 명령 실행 — 본문만 보면 능력 토큰이 없어 관측 불가). 능력 토큰
+// 유무를 보지 않는다: alias 문맥에선 능력이 호출부 stdin/인자에서 온다.
+export function consumesExternalScript(text) {
+  for (const detailed of tokenizeSegmentsDetailed(text)) {
+    const tokens = detailed.map((t) => t.text)
+    let i = 0
+    for (; i < tokens.length; i++) {
+      const t = tokens[i]
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
+      if (WRAPPER_NAMES.has(t.toLowerCase().replace(/^.*[\\/]/, ''))) continue
+      if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
+      if (t.startsWith('-')) continue
+      break
+    }
+    const exe = tokens[i]?.toLowerCase().replace(/^.*[\\/]/, '')
+    if (!exe) continue
+    if (exe === 'xargs' || exe === 'parallel') return true
+    if (INTERP_RE.test(exe)) {
+      const rest = tokens.slice(i + 1)
+      if (!rest.includes('-c') && !rest.some((x) => !x.startsWith('-'))) return true
+    }
+  }
+  return false
 }
 
 // ── 따옴표 인지 토크나이저 ────────────────────────────────────────────────────
@@ -605,8 +639,13 @@ export function classifyHookInput(input, _depth = 0) {
     // 인터프리터 `-c '<script>'` 스크립트는 상위 토큰 검사가 못 본다(38R P1) — 재귀 분류로
     // 스크립트 내부의 gh 능력을 검사한다(직접형 `bash -c 'gh api graphql --input …'`).
     // alias 경유형(`gh q …`)은 main 의 alias 검사가 담당(classify 는 alias 미해석).
-    if (_depth < 5)
-      for (const script of extractInterpreterScripts(cmd)) {
+    // 상한 도달 시 남은 스크립트가 있으면 fail-closed(39R P1: 6중 중첩으로 상한을 넘겨
+    // innermost 를 미분류로 통과시키던 결함) — 정적 분류 불가는 차단이다.
+    const nestedScripts = extractInterpreterScripts(cmd)
+    if (nestedScripts.length) {
+      if (_depth >= 5)
+        return { kind: 'blocked', reason: '인터프리터 중첩이 분류 상한 초과 — 정적 분류 불가' }
+      for (const script of nestedScripts) {
         const sv = classifyHookInput(
           { tool_name: 'Bash', tool_input: { command: script } },
           _depth + 1,
@@ -617,6 +656,7 @@ export function classifyHookInput(input, _depth = 0) {
             reason: `인터프리터 -c 스크립트가 차단 대상(${sv.reason ?? sv.kind})`,
           }
       }
+    }
     // 투명 래퍼는 실효 실행 파일을 가린다(37R P1: `env xargs gh` — env 를 실행 파일로 보면
     // xargs 분기를 건너뛴다) — 대입·래퍼·플래그·수치 인자(timeout 지속시간 등)를 건너뛴다.
     const WRAPPERS = WRAPPER_NAMES
