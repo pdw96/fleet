@@ -183,7 +183,8 @@ Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회
   미가용 대체 시에만 풀 렌즈로 확장한다. **축소 적용의 전제 = 머지 전 Codex 리뷰 완료(리뷰 또는
   👍 clean) 확인** — Codex 는 required check 가 아니므로(ADR-0001), 무응답 fallback 으로 머지하려면
   P1 신호 렌즈를 포함한 풀 렌즈 자가리뷰가 선행되어야 하고, 그 근거를 담은 OWNER 코멘트에
-  `[codex-gate-fallback]` 마커를 해당 PR 에 남겨야 머지 게이트 hook 이 통과시킨다(감사 가능 경로 —
+  head-결속 마커 `[codex-gate-fallback] head=<현재 head SHA>` 를 해당 PR 에 남겨야 머지 게이트
+  hook 이 통과시킨다(감사 가능 경로 —
   Codex PR#288 P1). find 규모는 diff 크기·위험도에 연동
   (소형은 렌즈 3~4로 충분 — C3/C5 선례), **refute(verify) 규율은 축소 금지**(오탐 제거 실효 실증).
   서브에이전트 fan-out 은 기계적 단계(스윕·수집·나열)를 하위 effort/모델로 디스패치하고 판정 단계

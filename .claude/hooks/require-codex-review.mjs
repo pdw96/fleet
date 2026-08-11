@@ -15,8 +15,10 @@
 // 인가 신호는 **현재 head 에 결속**된 것만 인정한다(2R P1):
 //   ① head 커밋을 리뷰한 Codex 공식 리뷰(commit_id == head SHA)
 //   ② head 도착 시각 이후의 Codex 👍 clean 리액션
-//   ③ head 도착 시각 이후의 OWNER `[codex-gate-fallback]` 마커 코멘트(무응답 폴백 — 풀 렌즈
-//      자가리뷰 완료 근거 서술 포함. env 오버라이드는 감사 불가라 두지 않는다)
+//   ③ OWNER 의 head-결속 폴백 마커 `[codex-gate-fallback] head=<현재 head SHA>` 코멘트
+//      (무응답 폴백 — 풀 렌즈 자가리뷰 완료 근거 서술 동반. SHA 를 손으로 적는 형식이라
+//      단순 언급·질문과 구조적으로 갈리고, head 가 바뀌면 자동 실효. env 오버라이드는
+//      감사 불가라 두지 않는다)
 // head 도착 시각 = 해당 SHA 의 check-suite 최초 생성 시각(push 시 서버 기록 — 커밋 객체의
 // committer date 는 작성자 통제라 선일자 위조 가능, 3R P1). check-suite 부재 시에만 committer
 // date 폴백. `--match-head-commit` 필수화로 검증 시점과 실행 시점 사이 head 이동(TOCTOU,
@@ -253,10 +255,9 @@ function main() {
     process.exit(2)
   }
 
-  const gh = (args, allowFail = false) => {
+  const gh = (args) => {
     const r = spawnSync('gh', args, { encoding: 'utf8', cwd, timeout: 45_000 })
     if (r.error || r.status !== 0) {
-      if (allowFail) return null
       const detail = (r.stderr || r.error?.message || '').trim().slice(0, 300)
       console.error(`[codex-gate] gh 조회 실패 — fail-closed 차단. ${detail}`)
       process.exit(2)
@@ -317,9 +318,22 @@ function main() {
  * 기록·push 시각) → 부재 시 committer date 폴백(작성자 통제 시각이라 차선임을 명시).
  */
 function validatePr(gh, base, pr) {
-  const headSha = gh(['api', `${base}/pulls/${pr}`, '--jq', '.head.sha']).trim()
-  if (!/^[0-9a-f]{40}$/i.test(headSha)) {
-    console.error(`[codex-gate] PR #${pr} head SHA 해석 실패 — fail-closed 차단.`)
+  const headLine = gh(['api', `${base}/pulls/${pr}`, '--jq', '.head.sha + " " + .base.ref']).trim()
+  const [headSha, baseRef] = headLine.split(/\s+/)
+  if (!/^[0-9a-f]{40}$/i.test(headSha ?? '') || !baseRef) {
+    console.error(`[codex-gate] PR #${pr} head SHA/base 해석 실패 — fail-closed 차단.`)
+    process.exit(2)
+  }
+
+  // base 브랜치가 merge queue 를 요구하면 평문 병합 명령이 이연(auto) 병합을 암묵 활성화해
+  // 이후 push 가 이 hook 을 재통과하지 않고 병합될 수 있다(6R P1) — 게이트가 검증할 수 없는
+  // 상태이므로 차단한다. 조회 실패도 fail-closed(gh 헬퍼가 exit 2).
+  const rules = gh(['api', `${base}/rules/branches/${baseRef}`, '--paginate', '--jq', '.[].type'])
+  if (rules.split('\n').some((t) => t.trim() === 'merge_queue')) {
+    console.error(
+      `[codex-gate] PR #${pr} 의 base(${baseRef})가 merge queue 를 요구한다 — 평문 병합이 ` +
+        '이연 병합을 암묵 활성화해 이후 push 를 이 게이트가 재검증할 수 없으므로 차단한다.',
+    )
     process.exit(2)
   }
 
@@ -344,18 +358,22 @@ function validatePr(gh, base, pr) {
   ])
   if (thumbTimes.split('\n').some((t) => t.trim() && t.trim() >= headTime)) return headSha
 
-  // 무응답 폴백 — head 도착 이후 OWNER 가 남긴 감사 마커 코멘트만 인정.
-  const fallbackTimes = gh([
+  // 무응답 폴백 — OWNER 가 남긴 head-결속 마커(`[codex-gate-fallback] head=<현재 head SHA>`)만
+  // 인정한다. 마커 문자열 존재만 보면 「마커를 쓸까?」라는 질문 코멘트도 통과한다(6R P1) —
+  // 정확한 head SHA 를 손으로 적어야 하는 형식이라 언급·질문과 의도 선언이 구조적으로 갈리고,
+  // SHA 결속이라 시각 비교도 불필요하다(head 가 바뀌면 마커가 자동 실효).
+  const fallbackToken = `${FALLBACK_MARKER} head=${headSha}`
+  const fallbackHit = gh([
     'api',
     `${base}/issues/${pr}/comments`,
     '--paginate',
     '--jq',
-    `.[] | select(.author_association == "OWNER" and (.body | contains("${FALLBACK_MARKER}"))) | .created_at`,
+    `[.[] | select(.author_association == "OWNER" and (.body | contains("${fallbackToken}")))] | length`,
   ])
-  if (fallbackTimes.split('\n').some((t) => t.trim() && t.trim() >= headTime)) {
+  if (Number(fallbackHit.trim()) > 0) {
     console.error(
-      `[codex-gate] PR #${pr}: Codex 리뷰 부재이나 head 이후 OWNER 의 ${FALLBACK_MARKER} 마커 ` +
-        '확인 — 풀 렌즈 자가리뷰 폴백으로 허용(AGENTS.md 4단계).',
+      `[codex-gate] PR #${pr}: Codex 리뷰 부재이나 OWNER 의 head-결속 폴백 마커 확인 — ` +
+        '풀 렌즈 자가리뷰 폴백으로 허용(AGENTS.md 4단계).',
     )
     return headSha
   }
@@ -364,8 +382,8 @@ function validatePr(gh, base, pr) {
     `[codex-gate] PR #${pr} 의 현재 head(${headSha.slice(0, 7)})에 결속된 Codex 신호가 없다 — ` +
       '머지 차단(ADR-0014 전제). 낡은 라운드의 리뷰·👍 는 새 커밋을 인가하지 않는다. ' +
       '`@codex review` 로 재트리거 후 대기하라(보통 7~20분). 무응답 fallback 머지는 P1 신호 렌즈를 ' +
-      `포함한 풀 렌즈 자가리뷰 완료 후, 그 근거를 담은 OWNER 코멘트에 ${FALLBACK_MARKER} 마커를 ` +
-      'head 커밋 이후 남기는 것이 조건이다(감사 가능 경로).',
+      '포함한 풀 렌즈 자가리뷰 완료 후, 그 근거 서술과 함께 OWNER 코멘트에 정확히 ' +
+      `\`${fallbackToken}\` 를 남기는 것이 조건이다(감사 가능·head-결속 경로).`,
   )
   process.exit(2)
 }
@@ -381,15 +399,14 @@ function validatePr(gh, base, pr) {
  */
 function headArrivalTime(gh, base, pr, headSha) {
   const candidates = []
-  const suites = gh(
-    [
-      'api',
-      `${base}/commits/${headSha}/check-suites`,
-      '--jq',
-      '[.check_suites[].created_at] | sort | .[0] // empty',
-    ],
-    true,
-  )
+  // 조회 실패는 gh 헬퍼가 fail-closed(exit 2) — allowFail 로 삼키면 「성공·suite 없음」과
+  // 「요청 실패」가 구분되지 않아 작성자 통제 시각(committer date)으로 조용히 강등된다(6R P1).
+  const suites = gh([
+    'api',
+    `${base}/commits/${headSha}/check-suites`,
+    '--jq',
+    '[.check_suites[].created_at] | sort | .[0] // empty',
+  ])
   const first = suites?.trim()
   if (first && /^\d{4}-\d{2}-\d{2}T/.test(first)) candidates.push(first)
   else {

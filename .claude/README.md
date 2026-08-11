@@ -37,7 +37,8 @@ fail-closed 차단한다(인용 오탐은 `--body-file` 로 우회). 인가 = **
 최초 생성 = 서버 기록) 확인 후, `--match-head-commit` 을 검증 head 와 대조해 서버가 TOCTOU 를
 거부하게 한다(차단 메시지가 복사 가능한 정확한 명령 제공). GitHub MCP merge_pull_request 는
 구조화 입력이라 파싱 없이 동일 검증. Codex 무응답 폴백 = 풀 렌즈 자가리뷰 완료 근거를 담은
-OWNER 코멘트의 `[codex-gate-fallback]` 마커(head 이후·해당 PR·감사 가능 경로). 판정 계약은
+OWNER 코멘트의 head-결속 마커 `[codex-gate-fallback] head=<현재 head SHA>`(해당 PR·감사 가능·
+head 변경 시 자동 실효). 판정 계약은
 `scripts/require-codex-review.test.ts` 가 고정한다. 수동 점검은 hook 입력 JSON 을 파일로 만들어
 `node .claude/hooks/require-codex-review.mjs < input.json`(명령 문자열에 머지 문구를 직접 쓰면
 세션 라이브 hook 이 그 명령부터 차단한다 — 실측).
