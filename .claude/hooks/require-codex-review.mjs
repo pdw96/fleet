@@ -660,12 +660,14 @@ export function classifyHookInput(input, _depth = 0) {
     if (hasMergeWord(cmd) && /[$`]/.test(cmd))
       return { kind: 'blocked', reason: '병합 단어와 셸 확장 동반 — 실행 파일 조립 가능' }
     // 실행 파일 자리의 확장·글롭은 무엇이 실행되는지 자체를 알 수 없다(25R: 상속 `CLI=gh` +
-    // `"$CLI" pm 222` · 26R: 파일 `gh` 존재 시 `g?` 경로명 확장) — 대입 프리픽스(`NAME=…`)를
-    // 건너뛴 첫 토큰(실행 파일)의 `$`(인용 무관)·비인용 글롭을 차단(리터럴로 쓰라).
-    // 대입 값의 `$`(`SC="$TEMP/…"`)는 실행 파일이 아니므로 무관.
-    for (const seg of tokenizeSegmentsDetailed(cmd)) {
-      const exe = seg.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text))
-      if (exe && (exe.text.includes('$') || exe.unquotedGlob))
+    // `"$CLI" pm 222` · 26R: 파일 `gh` 존재 시 `g?` 경로명 확장) — 대입·투명 래퍼(`command`
+    // 등, 47R P1: `command "$(printf 'g%c' h)" …` 는 command 를 실행 파일로 오인)·플래그값을
+    // 건너뛴 실효 실행 토큰의 `$`(인용 무관)·비인용 글롭을 차단(리터럴로 쓰라).
+    for (const detailed of tokenizeSegmentsDetailed(cmd)) {
+      const tokens = detailed.map((t) => t.text)
+      const idx = effectiveExeIndex(tokens)
+      const exeTok = detailed[idx]
+      if (exeTok && (exeTok.text.includes('$') || exeTok.unquotedGlob))
         return { kind: 'blocked', reason: '실행 파일 자리 셸 확장/글롭 — 실행 대상 판별 불가' }
     }
     // 병합 능력이 명령 문자열 밖에 있으면 신호 스캔이 못 본다 — 불투명 gh api 호출은 차단:
@@ -674,12 +676,13 @@ export function classifyHookInput(input, _depth = 0) {
     //    리터럴 경로가 아예 없는 경우(11R P1: `. env && gh api -X PUT "$ENDPOINT"`)
     // 인라인 리터럴 본문·경로의 병합은 여기 오기 전에 신호 스캔이 잡는다.
     const allSegments = tokenizeSegmentsDetailed(cmd)
-    const cmdHasGh = allSegments.some((seg) =>
-      seg.some((t) => {
-        const exe = t.text.toLowerCase()
-        return exe === 'gh' || exe === 'gh.exe'
-      }),
-    )
+    // gh 판정은 basename 기준(47R P1: `/usr/bin/gh` 도 실제 gh 실행) — canonical 머지 파서만
+    // 별개로 경로 실행을 배제한다(4R: PATH 의 gh 로 검증하는데 딴 바이너리가 실행될 수 있어).
+    const isGh = (text) => {
+      const e = tokNorm(text)
+      return e === 'gh' || e === 'gh.exe'
+    }
+    const cmdHasGh = allSegments.some((seg) => seg.some((t) => isGh(t.text)))
     // gh 능력 명령의 백틱 명령 치환은 서브커맨드·인자를 실행 시점에 계산한다(40R P1:
     // `gh pr \`printf m%crge e\` 222` — 백틱이 merge 를 숨겨 hasMergeWord 도 false). 백틱은
     // 세그먼트 경계라 토큰 플래그로 안 잡히므로 원문에서 본다 — $(…)/비인용 $ 와 대칭으로
@@ -690,15 +693,10 @@ export function classifyHookInput(input, _depth = 0) {
     // hook 의 alias 스냅샷은 실행 전에 찍혀 새 alias 를 못 본다(41R P1: `gh alias set pm
     // 'pr m'"$(printf erge)"; gh pm 222` — 둘째 세그먼트가 갓 만든 pm 을 pr merge 로 확장).
     // alias 변이 + 다른 gh 호출 동반이면 보수적으로 차단한다.
-    const ghSegs = allSegments.filter((seg) =>
-      seg.some((t) => t.text.toLowerCase() === 'gh' || t.text.toLowerCase() === 'gh.exe'),
-    )
+    const ghSegs = allSegments.filter((seg) => seg.some((t) => isGh(t.text)))
     const mutatesAlias = ghSegs.some((seg) => {
       const texts = seg.map((t) => t.text)
-      const gi = texts.findIndex((t) => {
-        const e = t.toLowerCase()
-        return e === 'gh' || e === 'gh.exe'
-      })
+      const gi = texts.findIndex((t) => isGh(t))
       let s = gi + 1
       while (s < texts.length && texts[s].startsWith('-')) {
         if (!texts[s].includes('=')) s++
@@ -1023,9 +1021,11 @@ function main() {
         // 규칙도 미발동) — gh 뒤 alias 이름 열 매칭 직후 토큰의 `$` 는 인용 무관 차단.
         for (const seg of tokenizeSegmentsDetailed(text)) {
           const texts = seg.map((t) => t.text)
+          // 경로 지정 gh(`/usr/bin/gh q …`, 47R P1)도 basename 으로 인식한다 — 실제 gh 를
+          // 실행하며 alias 를 확장하므로. (canonical 머지 파서는 별개로 경로 실행을 배제한다.)
           const gi = texts.findIndex((t) => {
-            const exe = t.toLowerCase()
-            return exe === 'gh' || exe === 'gh.exe'
+            const e = tokNorm(t)
+            return e === 'gh' || e === 'gh.exe'
           })
           if (gi === -1) continue
           // 전역 플래그(-R 값 등)를 건너뛴 위치에서 alias 이름을 맞춘다(30R P1: gh 바로 뒤

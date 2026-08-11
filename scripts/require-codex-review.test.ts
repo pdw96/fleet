@@ -412,6 +412,15 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(aliasIsSuspect('!cat foo | xargs')).toBe(true)
     expect(aliasIsSuspect('!bash -c "gh pr view 1"')).toBe(false) // -c 스크립트는 stdin 소비 아님
   })
+  it('투명 래퍼 뒤 동적 실행 파일도 blocked — command 를 실행 파일로 오인 방지(47R P1)', () => {
+    // command 가 gh 를 조립: 실효 실행(command 다음)의 $ 를 잡아야 한다(원문에 gh·merge 없음)
+    expect(
+      classify('command "$(printf \'g%c\' h)" pr "$(printf \'m%crge\' e)" 222 --squash').kind,
+    ).toBe('blocked')
+    expect(classify('env command "$(printf gh)" pr view').kind).toBe('blocked')
+    // 정적 실행 파일은 통과
+    expect(classify('command gh pr view 1')).toEqual({ kind: 'pass' })
+  })
   it('병합 단어 + 셸 확장 동반은 blocked — 실행 파일 조립 가능(23R·24R P1)', () => {
     expect(classify('$(printf g)h pr merge 222 --squash --match-head-commit abc').kind).toBe(
       'blocked',
