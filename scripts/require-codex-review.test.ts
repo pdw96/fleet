@@ -11,6 +11,7 @@ import {
   aliasIsSuspect,
   stripShellExpansions,
   parseAliasList,
+  resolveAliasExpansion,
   parseCanonicalMerge,
   classifyHookInput,
   tokenizeSegments,
@@ -349,6 +350,18 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     const m = parseAliasList('pm: |-\n  echo prep\n  gh pr merge "$@"\npx: pr view')
     expect(m.get('pm')?.exp).toContain('merge')
     expect(m.get('px')?.exp).toBe('pr view')
+  })
+  it('resolveAliasExpansion — 연쇄 alias 를 고정점까지 해석한다(35R P1)', () => {
+    const m = parseAliasList('q: api\nqq: q\nqg: q graphql')
+    expect(resolveAliasExpansion(m, m.get('q')!.exp)).toBe('api')
+    expect(resolveAliasExpansion(m, m.get('qq')!.exp)).toBe('api')
+    // 잔여 인자는 이어붙인다(gh 시맨틱)
+    expect(resolveAliasExpansion(m, m.get('qg')!.exp)).toBe('api graphql')
+    // 셸 alias(`!…`)는 gh 재확장 없음 — 그대로 반환
+    expect(resolveAliasExpansion(m, '!gh pr view')).toBe('!gh pr view')
+    // 순환은 정적 해석 불가 = null(호출부 fail-closed 차단)
+    const cyc = parseAliasList('a: b\nb: a')
+    expect(resolveAliasExpansion(cyc, cyc.get('a')!.exp)).toBeNull()
   })
   it('서브커맨드 자리의 셸 확장은 blocked — 병합 동사 은닉 가능(13R P1)', () => {
     expect(classify('. /tmp/action.env && gh pr $ACTION 222 --squash').kind).toBe('blocked')

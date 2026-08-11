@@ -404,6 +404,25 @@ function splitFlag(tok) {
  * 다중행 확장은 `name: |-` 뒤 들여쓴 연속행으로 나온다(19R P1: 개행 담은 셸 alias 의 병합
  * 행이 `|-` 만 기록되고 유실) — 연속행을 공백으로 이어 확장 전체를 본다.
  */
+/**
+ * alias 확장을 고정점까지 해석한다(35R P1: `q: api`+`qq: q` 연쇄 — 1단 확장만 재분류하면
+ * `gh qq graphql --input …` 이 api 를 숨긴 채 통과). gh 는 확장 첫 단어가 alias 면 재귀
+ * 해석하고 잔여 인자를 이어붙인다. 순환/과깊이는 정적 해석 불가 = null(호출부 fail-closed).
+ */
+export function resolveAliasExpansion(aliases, exp0) {
+  let exp = exp0
+  for (let depth = 0; depth <= aliases.size; depth++) {
+    if (exp.startsWith('!')) return exp // 셸 alias — gh 재확장 없음
+    const words = exp.trim().split(/\s+/)
+    const hit = [...aliases.values()].find(({ name }) =>
+      name.every((n, j) => words[j]?.toLowerCase() === n.toLowerCase()),
+    )
+    if (!hit) return exp
+    exp = `${hit.exp} ${words.slice(hit.name.length).join(' ')}`.trim()
+  }
+  return null
+}
+
 export function parseAliasList(text) {
   const aliases = new Map()
   let currents = []
@@ -755,8 +774,16 @@ function main() {
           }
           // 확장+이어붙인 인자의 합성을 직접 명령과 동일 규칙으로 재분류(31R·32R P1:
           // `q: api` 뒤 불투명 GraphQL/변이 REST 가 확장 단독 비의심으로 통과 — GraphQL
-          // 전용 패턴 대신 classifyHookInput 재투입으로 판정 일치를 만든다).
-          const combined = `${exp} ${texts.slice(start + name.length).join(' ')}`
+          // 전용 패턴 대신 classifyHookInput 재투입으로 판정 일치를 만든다). 확장은
+          // 고정점까지 해석한다(35R P1: `qq: q` 연쇄가 api 를 숨김) — 순환/과깊이는 차단.
+          const resolved = resolveAliasExpansion(aliases, exp)
+          if (resolved == null) {
+            console.error(
+              `[codex-gate] gh alias '${name.join(' ')}' 확장이 순환/과깊이 — 정적 해석 불가라 차단.`,
+            )
+            process.exit(2)
+          }
+          const combined = `${resolved} ${texts.slice(start + name.length).join(' ')}`
           const reVerdict = classifyHookInput({
             tool_name: 'Bash',
             tool_input: { command: `gh ${combined}` },
