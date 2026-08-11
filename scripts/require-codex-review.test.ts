@@ -279,6 +279,9 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
   it('실행 파일 자리 비인용 글롭은 blocked — 파일 gh 존재 시 g? 확장(26R P1)', () => {
     expect(classify('g? pr merge 222 --squash --match-head-commit abc').kind).toBe('blocked')
   })
+  it('다문자 브래킷 글롭도 blocked — 경로명 확장 동사 조립(27R P1)', () => {
+    expect(classify('gh pr mer[gG]e 222 --squash --match-head-commit abc').kind).toBe('blocked')
+  })
   it('aliasIsSuspect — 불투명 API 로 확장되는 alias 도 의심(26R P1)', () => {
     expect(aliasIsSuspect('api graphql --input /tmp/q.graphql')).toBe(true)
     expect(aliasIsSuspect('api graphql -F query=@x.graphql')).toBe(true)

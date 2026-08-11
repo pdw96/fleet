@@ -14,7 +14,8 @@
 //
 // 인가 신호는 **현재 head 에 결속**된 것만 인정한다(2R P1):
 //   ① head 커밋을 리뷰한 Codex 공식 리뷰(commit_id == head SHA)
-//   ② head 도착 시각 이후의 Codex 👍 clean 리액션
+//   ② head 도착 이후의 OWNER `@codex review` 재트리거보다 늦은 Codex 👍 clean 리액션
+//      (시각 단독 결속은 「A 리뷰 중 B push → A 의 늦은 👍」를 오인가한다 — 27R P1)
 //   ③ OWNER 의 head-결속 폴백 마커 `[codex-gate-fallback] head=<현재 head SHA>` 코멘트
 //      (무응답 폴백 — 풀 렌즈 자가리뷰 완료 근거 서술 동반. SHA 를 손으로 적는 형식이라
 //      단순 언급·질문과 구조적으로 갈리고, head 가 바뀌면 자동 실효. env 오버라이드는
@@ -196,9 +197,10 @@ export function tokenizeSegmentsDetailed(cmd) {
     } else {
       // 인용 밖의 `$` 는 발생 단위로 기록한다(20R P1: `"$EMPTY"$ARGS` 처럼 인용·비인용이
       // 한 토큰에 섞이면 토큰 단위 quoted 플래그로는 비인용 확장을 놓친다). 비인용 글롭
-      // 문자(`?`·`*`)도 동일 — 경로명 확장이 동사를 조립한다(24R P1: `merg?`).
+      // 문자(`?`·`*`·`[` — 브래킷식은 다문자 클래스도 경로명 확장한다, 27R P1: `mer[gG]e`)도
+      // 동일 — 경로명 확장이 동사를 조립한다(24R P1: `merg?`).
       if (ch === '$') unquotedDollar = true
-      if (ch === '?' || ch === '*') unquotedGlob = true
+      if (ch === '?' || ch === '*' || ch === '[') unquotedGlob = true
       cur += ch
       inToken = true
     }
@@ -738,15 +740,33 @@ function validatePr(gh, base, pr) {
 
   const headTime = [headArrivalTime(gh, base, pr, headSha), baseChangedAt].sort().at(-1)
 
-  // 👍 리액션은 commit 결속이 없어 head 도착 시각으로 결속한다(ISO-8601 Z 는 사전순 비교 가능).
-  const thumbTimes = gh([
+  // 👍 리액션은 commit 결속이 없다 — head 도착 시각만으로는 「A 리뷰 중 B push → A 의 늦은
+  // 👍」가 B 를 인가한다(27R P1). 트리거 체인으로 결속한다: head 도착 **이후** OWNER 의
+  // `@codex review` 재트리거가 존재하고, 👍 가 그 트리거 이후일 때만 현재 head 의 신호로
+  // 인정한다(트리거 없으면 👍 경로 무효 — 명시 재트리거 후 새 👍 를 받으라).
+  const triggerTimes = gh([
     'api',
-    `${base}/issues/${pr}/reactions`,
+    `${base}/issues/${pr}/comments`,
     '--paginate',
     '--jq',
-    `.[] | select(.content == "+1" and .user.login == "${CODEX_LOGIN}") | .created_at`,
+    `.[] | select(.author_association == "OWNER" and (.body | contains("@codex review"))) | .created_at`,
   ])
-  if (thumbTimes.split('\n').some((t) => t.trim() && t.trim() >= headTime)) return headSha
+  const latestTrigger = triggerTimes
+    .split('\n')
+    .map((t) => t.trim())
+    .filter((t) => /^\d{4}-\d{2}-\d{2}T/.test(t) && t >= headTime)
+    .sort()
+    .at(-1)
+  if (latestTrigger) {
+    const thumbTimes = gh([
+      'api',
+      `${base}/issues/${pr}/reactions`,
+      '--paginate',
+      '--jq',
+      `.[] | select(.content == "+1" and .user.login == "${CODEX_LOGIN}") | .created_at`,
+    ])
+    if (thumbTimes.split('\n').some((t) => t.trim() && t.trim() >= latestTrigger)) return headSha
+  }
 
   // 무응답 폴백 — OWNER 가 남긴 head-결속 마커(`[codex-gate-fallback] head=<현재 head SHA>`)를
   // **코멘트 첫머리 앵커**로만 인정한다(25R P1: 이 hook 의 안내문이 정확한 토큰을 출력하므로
