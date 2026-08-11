@@ -247,16 +247,41 @@ export function classifyHookInput(input) {
           return { kind: 'blocked', reason: 'GraphQL 본문이 명령 밖(--input/변수) — 관측 불가' }
         continue
       }
+      // 엔드포인트 = `api` 다음의 첫 비플래그 토큰(값 플래그의 값은 건너뜀). 판정은 필드
+      // 값이 아니라 엔드포인트 토큰 기준 — 필드 값의 `$`(예: -F body=@$DIR/x.md)는 본문
+      // 내용이지 대상 경로가 아니다(자기 오탐 실측으로 정밀화).
+      const API_VALUE_FLAGS = new Set([
+        '-X',
+        '--method',
+        '-H',
+        '--header',
+        '-f',
+        '--field',
+        '-F',
+        '--raw-field',
+        '--input',
+        '-q',
+        '--jq',
+        '-t',
+        '--template',
+        '--hostname',
+        '--cache',
+        '-p',
+        '--preview',
+      ])
       let mutating = hasInput
-      for (let i = 0; i < tokens.length; i++) {
+      let endpoint = null
+      for (let i = tokens.indexOf('api') + 1; i < tokens.length; i++) {
         const [flag, inline] = splitFlag(tokens[i])
-        if (flag === '-X' || flag === '--method') {
-          const v = inline ?? tokens[i + 1] ?? ''
-          if (v.toUpperCase() !== 'GET') mutating = true
-        } else if (/^(-f|-F|--field|--raw-field)$/.test(flag)) mutating = true
+        if (tokens[i].startsWith('-')) {
+          const v = inline ?? (API_VALUE_FLAGS.has(flag) ? tokens[++i] : null) ?? ''
+          if ((flag === '-X' || flag === '--method') && v.toUpperCase() !== 'GET') mutating = true
+          if (/^(-f|-F|--field|--raw-field)$/.test(flag)) mutating = true
+        } else if (endpoint == null) {
+          endpoint = tokens[i]
+        }
       }
-      const literalPath = tokens.some((t) => !t.startsWith('-') && t.includes('/'))
-      if (mutating && (hasDollar || !literalPath))
+      if (mutating && (endpoint == null || endpoint.includes('$')))
         return { kind: 'blocked', reason: '변이 gh api 의 엔드포인트가 명령 밖(변수) — 관측 불가' }
     }
     return { kind: 'pass' }

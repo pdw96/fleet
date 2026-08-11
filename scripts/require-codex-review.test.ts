@@ -160,6 +160,8 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // 리터럴 경로 GET·리터럴 경로 변이(비병합 — 병합 경로는 신호 스캔 담당)는 pass
     expect(classify('gh api repos/pdw96/fleet/pulls/288/comments --paginate').kind).toBe('pass')
     expect(classify('gh api repos/pdw96/fleet/issues -f title=hi').kind).toBe('pass')
+    // 판정 기준은 엔드포인트 토큰 — 필드 값의 $ 는 본문 내용(자기 오탐 실측)
+    expect(classify('gh api repos/o/r/issues/1/comments -F "body=@$DIR/x.md"').kind).toBe('pass')
   })
   it('신호 있으나 canonical 아님 = blocked (인용 오탐도 미탐 아닌 차단 쪽)', () => {
     expect(classify('gh pr create --body "예: gh pr merge 5 는 차단된다"').kind).toBe('blocked')
