@@ -172,6 +172,17 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     // 판정 기준은 엔드포인트 토큰 — 필드 값의 $ 는 본문 내용(자기 오탐 실측)
     expect(classify('gh api repos/o/r/issues/1/comments -F "body=@$DIR/x.md"').kind).toBe('pass')
   })
+  it('서브커맨드 자리의 셸 확장은 blocked — 병합 동사 은닉 가능(13R P1)', () => {
+    expect(classify('. /tmp/action.env && gh pr $ACTION 222 --squash').kind).toBe('blocked')
+    expect(classify('gh $CMD 222 --squash').kind).toBe('blocked')
+    // api 의 인자는 서브커맨드가 아니라 엔드포인트 — GET 은 mutating 규칙 소관(pass 유지)
+    expect(classify('gh api repos/$OWNER/r/issues --paginate').kind).toBe('pass')
+  })
+  it('enqueuePullRequest mutation 은 merge 단어 없이도 신호 발동 — blocked(13R P1)', () => {
+    expect(
+      classify("gh api graphql -f query='mutation { enqueuePullRequest(input: {}) {} }'").kind,
+    ).toBe('blocked')
+  })
   it('신호 있으나 canonical 아님 = blocked (인용 오탐도 미탐 아닌 차단 쪽)', () => {
     expect(classify('gh pr create --body "예: gh pr merge 5 는 차단된다"').kind).toBe('blocked')
     expect(classify('gh api -X PUT repos/pdw96/fleet/pulls/240/merge').kind).toBe('blocked')

@@ -45,8 +45,9 @@ export const FALLBACK_MARKER = '[codex-gate-fallback]'
 // 분절 표기(`g''h`, 4R P1)에 대비해 따옴표 제거본도 함께 스캔한다. 대가는 오탐(머지 문구를
 // 인용만 하는 명령 — PR 본문 등)이며, 그쪽은 fail-closed 후 안내(--body-file 등)로 흡수한다.
 export function hasMergeSignal(cmd) {
+  // enqueuePullRequest 는 merge 단어 없이 병합 큐 등재로 이어진다(13R P1) — 신호에 편입.
   const signal = (s) =>
-    /merge/i.test(s) &&
+    /merge|enqueuepullrequest/i.test(s) &&
     (/(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s))
   // 정규화본 병행 스캔 — 셸이 조각을 이어 실행하는 분절 표기에 대비한다: 연속행(백슬래시-개행
   // 쌍 제거 — 8R P1: 백슬래시만 지우면 개행이 남아 미탐) → 따옴표·백슬래시·`$` 제거
@@ -242,7 +243,28 @@ export function classifyHookInput(input) {
         const exe = t.toLowerCase()
         return exe === 'gh' || exe === 'gh.exe'
       })
-      if (!hasGh || !tokens.includes('api')) continue
+      if (!hasGh) continue
+      // 서브커맨드 자리의 셸 확장은 병합 동사를 가릴 수 있다(13R P1: `gh pr $ACTION 222`·
+      // `gh $CMD 222`) — gh 다음 첫 비플래그 토큰, 그리고 첫 토큰이 `api`(인자=엔드포인트)가
+      // 아니면 둘째 비플래그 토큰까지 `$` 를 거부한다. 플래그 값(-F body=@$X)은 해당 없음.
+      {
+        const gi = tokens.findIndex((t) => {
+          const exe = t.toLowerCase()
+          return exe === 'gh' || exe === 'gh.exe'
+        })
+        const positional = []
+        for (let i = gi + 1; i < tokens.length && positional.length < 2; i++) {
+          if (tokens[i].startsWith('-')) {
+            if (!tokens[i].includes('=')) i++ // 값 플래그로 보수 가정 — 다음 토큰은 값
+            continue
+          }
+          positional.push(tokens[i])
+        }
+        const depth = positional[0] === 'api' ? 1 : 2
+        if (positional.slice(0, depth).some((t) => t.includes('$')))
+          return { kind: 'blocked', reason: 'gh 서브커맨드 자리에 셸 확장 — 병합 동사 은닉 가능' }
+      }
+      if (!tokens.includes('api')) continue
       const hasDollar = tokens.some((t) => t.includes('$'))
       const hasInput = tokens.some((t) => t.startsWith('--input'))
       if (tokens.includes('graphql')) {
@@ -483,16 +505,26 @@ function validatePr(gh, base, pr) {
     process.exit(2)
   }
 
-  const reviewedShas = gh([
+  // base 변경(`pr edit -B`)은 head 를 안 움직이고 리뷰된 diff 를 바꾼다(13R P1) — 모든
+  // 신호(commit_id 일치 리뷰 포함)는 마지막 base_ref_changed 이벤트 이후여야 한다.
+  const baseChangedAt = latestTimelineEvent(gh, base, pr, 'base_ref_changed') ?? ''
+
+  const reviewLines = gh([
     'api',
     `${base}/pulls/${pr}/reviews`,
     '--paginate',
     '--jq',
-    `.[] | select(.user.login == "${CODEX_LOGIN}") | .commit_id`,
+    `.[] | select(.user.login == "${CODEX_LOGIN}") | .commit_id + " " + .submitted_at`,
   ])
-  if (reviewedShas.split('\n').some((s) => s.trim() === headSha)) return headSha
+  if (
+    reviewLines.split('\n').some((line) => {
+      const [sha, at] = line.trim().split(/\s+/)
+      return sha === headSha && (at ?? '') >= baseChangedAt
+    })
+  )
+    return headSha
 
-  const headTime = headArrivalTime(gh, base, pr, headSha)
+  const headTime = [headArrivalTime(gh, base, pr, headSha), baseChangedAt].sort().at(-1)
 
   // 👍 리액션은 commit 결속이 없어 head 도착 시각으로 결속한다(ISO-8601 Z 는 사전순 비교 가능).
   const thumbTimes = gh([
@@ -511,14 +543,16 @@ function validatePr(gh, base, pr) {
   // --paginate 는 jq 를 페이지별로 평가한다(7R P1: 집계 jq 는 `0\n1` 처럼 페이지 수만큼
   // 출력돼 Number() 가 NaN) — 집계는 jq 가 아니라 JS 에서 한다(매칭 id 를 줄 단위로 방출).
   const fallbackToken = `${FALLBACK_MARKER} head=${headSha}`
-  const fallbackIds = gh([
+  const fallbackTimes = gh([
     'api',
     `${base}/issues/${pr}/comments`,
     '--paginate',
     '--jq',
-    `.[] | select(.author_association == "OWNER" and (.body | contains("${fallbackToken}"))) | .id`,
+    `.[] | select(.author_association == "OWNER" and (.body | contains("${fallbackToken}"))) | .created_at`,
   ])
-  if (fallbackIds.split('\n').some((s) => s.trim())) {
+  // SHA 결속이라 head 이동엔 자동 실효하나, base 변경은 head 를 안 움직이므로(13R P1)
+  // 마커도 마지막 base_ref_changed 이후만 인정한다.
+  if (fallbackTimes.split('\n').some((t) => t.trim() && t.trim() >= baseChangedAt)) {
     console.error(
       `[codex-gate] PR #${pr}: Codex 리뷰 부재이나 OWNER 의 head-결속 폴백 마커 확인 — ` +
         '풀 렌즈 자가리뷰 폴백으로 허용(AGENTS.md 4단계).',
@@ -570,19 +604,29 @@ function headArrivalTime(gh, base, pr, headSha) {
     }
     candidates.push(committed)
   }
-  // --paginate 는 jq 를 페이지별로 평가하므로(7R P1) last 집계를 jq 에 맡기면 페이지당
-  // 한 줄씩 나온다 — 이벤트 시각을 전부 방출하고 최댓값 선택은 JS 에서 한다.
-  const forcedTimes = gh([
+  const forced = latestTimelineEvent(gh, base, pr, 'head_ref_force_pushed')
+  if (forced) candidates.push(forced)
+  return candidates.sort().at(-1)
+}
+
+/**
+ * PR 타임라인에서 해당 이벤트의 마지막 시각(서버 기록)을 반환한다. 없으면 null.
+ * --paginate 는 jq 를 페이지별로 평가하므로(7R P1) last 집계를 jq 에 맡기면 페이지당
+ * 한 줄씩 나온다 — 시각을 전부 방출하고 최댓값 선택은 JS 에서 한다.
+ */
+function latestTimelineEvent(gh, base, pr, event) {
+  const times = gh([
     'api',
     `${base}/issues/${pr}/timeline`,
     '--paginate',
     '--jq',
-    '.[] | select(.event == "head_ref_force_pushed") | .created_at',
+    `.[] | select(.event == "${event}") | .created_at`,
   ])
-  for (const t of forcedTimes.split('\n')) {
-    if (/^\d{4}-\d{2}-\d{2}T/.test(t.trim())) candidates.push(t.trim())
-  }
-  return candidates.sort().at(-1)
+  const valid = times
+    .split('\n')
+    .map((t) => t.trim())
+    .filter((t) => /^\d{4}-\d{2}-\d{2}T/.test(t))
+  return valid.sort().at(-1) ?? null
 }
 
 if (
