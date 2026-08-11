@@ -227,6 +227,18 @@ export function unwrapYamlSingleQuote(s) {
   return t
 }
 
+// YAML 키(alias 이름)의 인용을 벗긴다 — gh 는 YAML-민감 이름을 인용해 직렬화한다(46R P1:
+// `gh alias set true 'pr merge'` → `"true": pr merge`, 이름 `"true"` 가 true 로 안 맞음).
+// 이중따옴표(`\"`·`\\` 이스케이프)·작은따옴표(`''` 이스케이프) 둘 다 처리한다.
+export function unwrapYamlKey(s) {
+  const t = s.trim()
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"'))
+    return t.slice(1, -1).replace(/\\(["\\])/g, '$1')
+  if (t.length >= 2 && t.startsWith("'") && t.endsWith("'"))
+    return t.slice(1, -1).replace(/''/g, "'")
+  return t
+}
+
 export function aliasIsSuspect(rawExp) {
   const exp = unwrapYamlSingleQuote(rawExp)
   // `$@`·`$*` 전체 전달만 무해 — `$1` 등 선택/재배열 위치 인자는 호출부 인자를 동사 자리로
@@ -592,7 +604,7 @@ export function parseAliasList(text) {
   const aliases = new Map()
   let currents = []
   const register = (rawName, rawExp) => {
-    const name = rawName.trim().split(/\s+/)
+    const name = unwrapYamlKey(rawName).trim().split(/\s+/)
     const key = name.join(' ')
     const exp = rawExp.trim().replace(/^\|-?$/, '')
     // 콜론 이름의 합성 해석이 실제 alias 항목을 덮어쓰면 안 된다(26R P1: `pm: pr merge` 뒤
@@ -762,6 +774,17 @@ export function classifyHookInput(input, _depth = 0) {
       }
       if (exeIdx >= tokens.length) continue
       const exe = tokNorm(tokens[exeIdx])
+      // source/`.` 로 소싱하는 스크립트가 process substitution(`<(…)`)이나 동적 확장에서
+      // 오면 내용을 관측할 수 없다(46R P1: `source <(printf 'g%c pr m%crge …')` — gh 가
+      // 조립돼 원문엔 안 보인다). 토크나이저가 `(` 를 세그먼트 경계로 잘라 `<`/`>` 만 남긴다.
+      if (exe === 'source' || exe === '.') {
+        const restD = detailed.slice(exeIdx + 1)
+        if (restD.some((t) => /[<>]/.test(t.text) || t.unquotedDollar))
+          return {
+            kind: 'blocked',
+            reason: 'source/. 가 process substitution·동적 입력을 소싱 — 관측 불가',
+          }
+      }
       if (isAssembler(exe) && CAPABILITY.test(tokens.slice(exeIdx + 1).join(' ')))
         return {
           kind: 'blocked',
