@@ -70,6 +70,7 @@ export function stripShellExpansions(s) {
       return cp <= 0x10ffff ? String.fromCodePoint(cp) : ''
     })
     .replace(/\{(.)(?:\.\.\1)?\}/g, '$1') // 단일문자 brace(`g{h..h}`·`g{h}`) 접기(20R P1)
+    .replace(/\[(.)(?:-\1)?\]/g, '$1') // 단일문자 글롭 클래스(`m[e]rge`·`m[e-e]rge`) 접기(23R P1)
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
     .replace(/\\([0-7]{1,3})(?![0-9])/g, (_, o) => String.fromCharCode(parseInt(o, 8)))
     .replace(/\$[@*#?!0-9-]/g, '')
@@ -110,7 +111,9 @@ export function hasMergeWord(s) {
  * 위치 전달(`$@`·`$*`·`$N`)은 호출 인자 그대로라 명령 쪽 검사가 담당 — 의심 아님.
  */
 export function aliasIsSuspect(exp) {
-  return hasMergeWord(exp) || /\$(?![@*\d])/.test(exp)
+  // `$@`·`$*` 전체 전달만 무해 — `$1` 등 선택/재배열 위치 인자는 호출부 인자를 동사 자리로
+  // 옮길 수 있어(23R P1: `!gh pr "$1" …` + 인자 merge) 명명 변수와 같이 의심 처리.
+  return hasMergeWord(exp) || /\$(?![@*])/.test(exp)
 }
 
 export function hasMergeSignal(cmd) {
@@ -341,6 +344,11 @@ export function classifyHookInput(input) {
   if (toolName !== 'Bash') return { kind: 'pass' }
   const cmd = String(input.tool_input?.command ?? '')
   if (!hasMergeSignal(cmd)) {
+    // 병합 단어가 보이는데 명령 치환/백틱이 함께 있으면 치환이 실행 파일을 조립할 수 있다
+    // (23R P1: `$(printf g)h pr merge …` — gh 토큰이 어느 변형에도 없어 신호 미발동).
+    // 정상 명령에서 병합 단어+치환 동반은 드물어 fail-closed 로 흡수한다(치환 없이 쓰라).
+    if (hasMergeWord(cmd) && /\$\(|`/.test(cmd))
+      return { kind: 'blocked', reason: '병합 단어와 명령 치환 동반 — 실행 파일 조립 가능' }
     // 병합 능력이 명령 문자열 밖에 있으면 신호 스캔이 못 본다 — 불투명 gh api 호출은 차단:
     // ① GraphQL 본문이 --input 파일/stdin·셸 변수에 있는 경우(9R P1)
     // ② 변이 REST 호출(-X 비GET·--input·-f/-F 필드)의 엔드포인트가 셸 변수이거나 세그먼트에
@@ -551,7 +559,8 @@ function main() {
           }
         }
       }
-      const segTokens = tokenizeSegments(cmd)
+      // brace 류 분절 호출(`gh p{m..m}`, 23R P1)도 잡도록 원문·정규화본 양쪽을 대조한다.
+      const segTokens = [...tokenizeSegments(cmd), ...tokenizeSegments(stripShellExpansions(cmd))]
       for (const mk of mergey) {
         const { name, exp } = aliases.get(mk)
         if (segTokens.some((seg) => containsSeq(seg, name))) {

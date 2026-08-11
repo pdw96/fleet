@@ -44,6 +44,8 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'g{h..h} pr mer{g..g}e 222 --squash', // 20R: 단일문자 brace 분절
       'g${X:-h} pr mer${X:-ge} 222 --squash', // 21R: 기본값 매개변수 확장 분절
       'g${X:-${Y:-h}} pr mer${X:-${Y:-ge}} 222 --squash', // 22R: 중첩 기본값 확장
+      'gh pr m[e]rge 222 --squash', // 23R: 단일문자 글롭 클래스(경로명 확장)
+      'gh pr m[e-e]rge 222 --squash', // 23R: 단일문자 범위 글롭
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -229,10 +231,19 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
   it('혼합 인용 확장("$EMPTY"$ARGS)의 비인용 부분을 잡는다(20R P1)', () => {
     expect(classify('gh -R "$EMPTY"$ARGS 222 --squash').kind).toBe('blocked')
   })
-  it('aliasIsSuspect — 동적 동사 alias 는 정적 증명 불가로 의심 처리(20R P1)', () => {
+  it('aliasIsSuspect — 동적 동사 alias 는 정적 증명 불가로 의심 처리(20R·23R P1)', () => {
     expect(aliasIsSuspect('!gh pr "$ACTION" "$@"')).toBe(true)
-    expect(aliasIsSuspect('pr view "$@"')).toBe(false) // 위치 전달만은 무해
+    expect(aliasIsSuspect('!gh pr "$1" 222 --squash')).toBe(true) // 23R: $1 재배열도 의심
+    expect(aliasIsSuspect('pr view "$@"')).toBe(false) // 전체 전달($@·$*)만 무해
     expect(aliasIsSuspect('pr merge')).toBe(true)
+  })
+  it('병합 단어 + 명령 치환 동반은 blocked — 실행 파일 조립 가능(23R P1)', () => {
+    expect(classify('$(printf g)h pr merge 222 --squash --match-head-commit abc').kind).toBe(
+      'blocked',
+    )
+    expect(classify('echo `printf g`h pr merge').kind).toBe('blocked')
+    // 병합 단어 없는 치환은 무관
+    expect(classify('echo $(date)').kind).toBe('pass')
   })
   it('gh 호출에 env 대입 동반은 blocked — 관측 환경 불일치(22R P1)', () => {
     expect(classify('GH_CONFIG_DIR=/tmp/alt gh pm 222 --squash').kind).toBe('blocked')
