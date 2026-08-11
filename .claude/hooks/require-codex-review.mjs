@@ -48,6 +48,13 @@ import { readFileSync } from 'node:fs'
 const CODEX_LOGIN = 'chatgpt-codex-connector[bot]'
 export const FALLBACK_MARKER = '[codex-gate-fallback]'
 
+// 폴백 마커 코멘트가 근거를 담는가 — 마커 토큰으로 **시작**하고 그 뒤에 비공백 실증 텍스트가
+// 있어야 인가한다(40R P1: 마커만 있고 근거 서술이 전혀 없는 코멘트가 startswith 만으로
+// 통과해 유일한 감사 근거가 사라지던 결함). 무응답 폴백 경로의 감사성 요건.
+export function fallbackMarkerHasEvidence(body, token) {
+  return typeof body === 'string' && body.startsWith(token) && /\S/.test(body.slice(token.length))
+}
+
 // ── 머지 능력 신호(raw 문자열 스캔) ──────────────────────────────────────────
 // 게이트 발동 조건: `merge` + (gh 실행 파일 | github.com | graphql). 인용·치환·래퍼 안에
 // 숨어도 raw 스캔에는 보이므로 미탐 방향의 우회가 없다. 셸이 인접 인용 조각을 연결하는
@@ -624,6 +631,12 @@ export function classifyHookInput(input, _depth = 0) {
         return exe === 'gh' || exe === 'gh.exe'
       }),
     )
+    // gh 능력 명령의 백틱 명령 치환은 서브커맨드·인자를 실행 시점에 계산한다(40R P1:
+    // `gh pr \`printf m%crge e\` 222` — 백틱이 merge 를 숨겨 hasMergeWord 도 false). 백틱은
+    // 세그먼트 경계라 토큰 플래그로 안 잡히므로 원문에서 본다 — $(…)/비인용 $ 와 대칭으로
+    // 관측 불가. gh 인자에 명령 치환이 필요하면 리터럴로 펼치거나 --body-file 로 우회하라.
+    if (cmdHasGh && /`/.test(cmd))
+      return { kind: 'blocked', reason: 'gh 명령에 백틱 명령 치환 — 서브커맨드/인자 실행시점 계산' }
     // gh 가 있는 명령에서 GH_*/PATH 대입은 alias 관측 소스·실행 바이너리를 바꾼다
     // (22R P1: `GH_CONFIG_DIR=/tmp/alt gh pm 222` — hook 은 기본 환경의 alias 를 본다).
     if (
@@ -1156,16 +1169,30 @@ function validatePr(gh, base, pr) {
   // 텍스트가 붙는다). SHA 결속이라 head 가 바뀌면 자동 실효.
   // --paginate 는 jq 를 페이지별로 평가한다(7R P1) — 집계는 JS 에서 한다.
   const fallbackToken = `${FALLBACK_MARKER} head=${headSha}`
-  const fallbackTimes = gh([
+  // 마커로 시작하는 OWNER 코멘트를 @json 라인으로 받아 JS 에서 판정한다 — 근거(마커 뒤
+  // 비공백 텍스트, 40R P1) 검사를 순수 함수로 일원화한다. body 는 @json 으로 안전 인코딩.
+  const fallbackRaw = gh([
     'api',
     `${base}/issues/${pr}/comments`,
     '--paginate',
     '--jq',
-    `.[] | select(.author_association == "OWNER" and (.body | startswith("${fallbackToken}"))) | .created_at`,
+    `.[] | select(.author_association == "OWNER" and (.body | startswith("${fallbackToken}"))) | {c: .created_at, b: .body} | @json`,
   ])
   // SHA 결속이라 head 이동엔 자동 실효하나, base 변경은 head 를 안 움직이므로(13R P1)
-  // 마커도 마지막 base_ref_changed 이후만 인정한다.
-  if (fallbackTimes.split('\n').some((t) => t.trim() && t.trim() >= baseChangedAt)) {
+  // 마커도 마지막 base_ref_changed 이후만 인정한다. 그리고 마커 뒤 실증 텍스트가 있어야 한다.
+  const fallbackOk = fallbackRaw
+    .split('\n')
+    .filter(Boolean)
+    .some((line) => {
+      let o
+      try {
+        o = JSON.parse(line)
+      } catch {
+        return false
+      }
+      return (o.c ?? '') >= baseChangedAt && fallbackMarkerHasEvidence(o.b ?? '', fallbackToken)
+    })
+  if (fallbackOk) {
     console.error(
       `[codex-gate] PR #${pr}: Codex 리뷰 부재이나 OWNER 의 head-결속 폴백 마커 확인 — ` +
         '풀 렌즈 자가리뷰 폴백으로 허용(AGENTS.md 4단계).',

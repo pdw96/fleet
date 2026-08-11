@@ -16,6 +16,8 @@ import {
   classifyHookInput,
   tokenizeSegments,
   extractInterpreterScripts,
+  fallbackMarkerHasEvidence,
+  FALLBACK_MARKER,
 } from '../.claude/hooks/require-codex-review.mjs'
 
 const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } })
@@ -325,6 +327,21 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
   })
   it('혼합 인용 확장("$EMPTY"$ARGS)의 비인용 부분을 잡는다(20R P1)', () => {
     expect(classify('gh -R "$EMPTY"$ARGS 222 --squash').kind).toBe('blocked')
+  })
+  it('gh 능력 명령의 백틱 명령 치환은 blocked — 서브커맨드/인자 실행시점 계산(40R P1)', () => {
+    expect(classify('gh pr `printf m%crge e` 222 --squash --match-head-commit abc').kind).toBe(
+      'blocked',
+    )
+    expect(classify('gh `printf pr` merge 222').kind).toBe('blocked')
+    // 백틱 없는 정상 gh 조회는 통과
+    expect(classify("gh api repos/o/r/pulls/288 --jq '.title'").kind).toBe('pass')
+  })
+  it('fallbackMarkerHasEvidence — 마커 뒤 실증 텍스트를 요구한다(40R P1)', () => {
+    const tok = `${FALLBACK_MARKER} head=abc`
+    expect(fallbackMarkerHasEvidence(tok, tok)).toBe(false) // 마커만 — 근거 없음
+    expect(fallbackMarkerHasEvidence(`${tok}   \n  `, tok)).toBe(false) // 공백뿐
+    expect(fallbackMarkerHasEvidence(`${tok}\n렌즈 검토: 계약 drift 무·race 무`, tok)).toBe(true)
+    expect(fallbackMarkerHasEvidence(`다른 텍스트 ${tok}`, tok)).toBe(false) // 첫머리 앵커 아님
   })
   it('aliasIsSuspect — 동적 동사 alias 는 정적 증명 불가로 의심 처리(20R·23R P1)', () => {
     expect(aliasIsSuspect('!gh pr "$ACTION" "$@"')).toBe(true)
