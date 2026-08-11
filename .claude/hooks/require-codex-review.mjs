@@ -87,8 +87,10 @@ function scanVariants(s) {
   // `${X:-h}` 류 매개변수 확장은 미설정 시 피연산자로 치환된다(21R P1) — 피연산자를 남긴
   // 변형도 병행 스캔한다(`:-`·`:=`·`:+`·`:?` 및 콜론 생략형). 중첩(`${X:-${Y:-h}}`, 22R P1)은
   // 안쪽부터 고정점까지 반복 치환한다.
+  // 진짜 고정점까지 반복(25R P1: 고정 횟수 상한은 그보다 깊은 중첩이 우회) — 각 반복은
+  // `${…}` 를 최소 한 겹 벗기므로 반복 수는 입력 길이로 자연 유계다.
   let unwrapped = s
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i <= s.length; i++) {
     const next = unwrapped.replace(/\$\{[^{}]*?:?[-=+?]([^{}]*)\}/g, '$1')
     if (next === unwrapped) break
     unwrapped = next
@@ -247,9 +249,10 @@ export function parseCanonicalMerge(cmd) {
   const segments = tokenizeSegments(cmd)
   if (segments.length !== 1) return null
   const tokens = segments[0]
-  // 어느 토큰이든 셸 확장 잔존(`$`)이면 비-canonical — 값 플래그의 비인용 변수는 워드
-  // 분할로 플래그를 주입할 수 있다(12R P1: `--body $BODY`, BODY='note --auto').
-  if (tokens.some((t) => t.includes('$'))) return null
+  // 어느 토큰이든 셸 확장(`$`)·글롭(`?`·`*`·`[]`) 잔존이면 비-canonical — 확장은 워드 분할
+  // 주입(12R: `--body $BODY`), 글롭은 경로명 확장으로 값이 바뀐다(25R P1: `-R o/r?` 가
+  // 디렉터리 `o/rx` 존재 시 다른 레포로 확장 — 검증은 o/r, 병합은 o/rx).
+  if (tokens.some((t) => /[$?*[\]]/.test(t))) return null
   // 실행 파일 = bare `gh`/`gh.exe` 만(대소문자 무관 — win32, 3R P1). 경로 지정 실행은
   // PATH 의 gh 로 검증하고 다른 바이너리가 실행되는 불일치가 가능해 배제한다(4R P1).
   const exe = tokens[0]?.toLowerCase()
@@ -363,6 +366,15 @@ export function classifyHookInput(input) {
     // fail-closed 로 흡수한다(확장 없이 리터럴로 쓰라).
     if (hasMergeWord(cmd) && /[$`]/.test(cmd))
       return { kind: 'blocked', reason: '병합 단어와 셸 확장 동반 — 실행 파일 조립 가능' }
+    // 실행 파일 자리의 확장은 무엇이 실행되는지 자체를 알 수 없다(25R P1: 상속 `CLI=gh` +
+    // `"$CLI" pm 222` — 병합 단어도 gh 토큰도 없어 alias 검사까지 건너뛴다) — 대입 프리픽스
+    // (`NAME=…`)를 건너뛴 첫 토큰(실행 파일)의 `$` 는 인용 여부 무관 차단(리터럴로 쓰라).
+    // 대입 값의 `$`(`SC="$TEMP/…"`)는 실행 파일이 아니므로 무관.
+    for (const seg of tokenizeSegments(cmd)) {
+      const exe = seg.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t))
+      if (exe?.includes('$'))
+        return { kind: 'blocked', reason: '실행 파일 자리 셸 확장 — 실행 대상 판별 불가' }
+    }
     // 병합 능력이 명령 문자열 밖에 있으면 신호 스캔이 못 본다 — 불투명 gh api 호출은 차단:
     // ① GraphQL 본문이 --input 파일/stdin·셸 변수에 있는 경우(9R P1)
     // ② 변이 REST 호출(-X 비GET·--input·-f/-F 필드)의 엔드포인트가 셸 변수이거나 세그먼트에
@@ -727,19 +739,18 @@ function validatePr(gh, base, pr) {
   ])
   if (thumbTimes.split('\n').some((t) => t.trim() && t.trim() >= headTime)) return headSha
 
-  // 무응답 폴백 — OWNER 가 남긴 head-결속 마커(`[codex-gate-fallback] head=<현재 head SHA>`)만
-  // 인정한다. 마커 문자열 존재만 보면 「마커를 쓸까?」라는 질문 코멘트도 통과한다(6R P1) —
-  // 정확한 head SHA 를 손으로 적어야 하는 형식이라 언급·질문과 의도 선언이 구조적으로 갈리고,
-  // SHA 결속이라 시각 비교도 불필요하다(head 가 바뀌면 마커가 자동 실효).
-  // --paginate 는 jq 를 페이지별로 평가한다(7R P1: 집계 jq 는 `0\n1` 처럼 페이지 수만큼
-  // 출력돼 Number() 가 NaN) — 집계는 jq 가 아니라 JS 에서 한다(매칭 id 를 줄 단위로 방출).
+  // 무응답 폴백 — OWNER 가 남긴 head-결속 마커(`[codex-gate-fallback] head=<현재 head SHA>`)를
+  // **코멘트 첫머리 앵커**로만 인정한다(25R P1: 이 hook 의 안내문이 정확한 토큰을 출력하므로
+  // 그 문자열을 인용한 질문·진단 코멘트가 contains 로 통과했다 — 인용/질문은 항상 앞에 다른
+  // 텍스트가 붙는다). SHA 결속이라 head 가 바뀌면 자동 실효.
+  // --paginate 는 jq 를 페이지별로 평가한다(7R P1) — 집계는 JS 에서 한다.
   const fallbackToken = `${FALLBACK_MARKER} head=${headSha}`
   const fallbackTimes = gh([
     'api',
     `${base}/issues/${pr}/comments`,
     '--paginate',
     '--jq',
-    `.[] | select(.author_association == "OWNER" and (.body | contains("${fallbackToken}"))) | .created_at`,
+    `.[] | select(.author_association == "OWNER" and (.body | startswith("${fallbackToken}"))) | .created_at`,
   ])
   // SHA 결속이라 head 이동엔 자동 실효하나, base 변경은 head 를 안 움직이므로(13R P1)
   // 마커도 마지막 base_ref_changed 이후만 인정한다.
@@ -755,8 +766,9 @@ function validatePr(gh, base, pr) {
     `[codex-gate] PR #${pr} 의 현재 head(${headSha.slice(0, 7)})에 결속된 Codex 신호가 없다 — ` +
       '머지 차단(ADR-0014 전제). 낡은 라운드의 리뷰·👍 는 새 커밋을 인가하지 않는다. ' +
       '`@codex review` 로 재트리거 후 대기하라(보통 7~20분). 무응답 fallback 머지는 P1 신호 렌즈를 ' +
-      '포함한 풀 렌즈 자가리뷰 완료 후, 그 근거 서술과 함께 OWNER 코멘트에 정확히 ' +
-      `\`${fallbackToken}\` 를 남기는 것이 조건이다(감사 가능·head-결속 경로).`,
+      '포함한 풀 렌즈 자가리뷰 완료 후, 마커(`[codex-gate-fallback] head=<현재 head 40자 SHA>`)로 ' +
+      '**시작하는** OWNER 코멘트에 근거 서술을 담는 것이 조건이다(첫머리 앵커 — 인용·질문은 ' +
+      '불인정, 감사 가능·head-결속 경로).',
   )
   process.exit(2)
 }

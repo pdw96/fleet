@@ -44,6 +44,8 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'g{h..h} pr mer{g..g}e 222 --squash', // 20R: 단일문자 brace 분절
       'g${X:-h} pr mer${X:-ge} 222 --squash', // 21R: 기본값 매개변수 확장 분절
       'g${X:-${Y:-h}} pr mer${X:-${Y:-ge}} 222 --squash', // 22R: 중첩 기본값 확장
+      // 25R: 고정 횟수 상한을 넘는 깊은 중첩(12단계)도 고정점까지 풀린다
+      `g${'${V:-'.repeat(12)}h${'}'.repeat(12)} pr mer${'${V:-'.repeat(12)}ge${'}'.repeat(12)} 5`,
       'gh pr m[e]rge 222 --squash', // 23R: 단일문자 글롭 클래스(경로명 확장)
       'gh pr m[e-e]rge 222 --squash', // 23R: 단일문자 범위 글롭
     ])
@@ -133,6 +135,10 @@ describe('parseCanonicalMerge — 형태 이탈은 전부 null(차단)', () => {
     ['미지 플래그', 'gh pr merge --mystery-flag 5'],
     ['미지 전역 플래그', 'gh --hostname ghe.example pr merge 5'],
     ['셸 확장 타깃', 'gh pr merge $PR'],
+    [
+      '-R 값의 글롭(경로명 확장으로 다른 레포 — 25R)',
+      'gh -R o/r? pr merge 222 --match-head-commit abc',
+    ],
     [
       '값 플래그의 셸 확장(워드 분할로 --auto 주입 가능)',
       'gh pr merge 5 --body $BODY --match-head-commit abc',
@@ -248,6 +254,10 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
       'blocked',
     )
     expect(classify('"$CLI" pr merge 222 --squash --match-head-commit abc').kind).toBe('blocked')
+    // 25R: 병합 단어 없이 alias 로 가려진 형태도 실행 파일 자리 확장으로 차단
+    expect(classify('"$CLI" pm 222 --squash').kind).toBe('blocked')
+    // 대입 값의 $ 는 실행 파일이 아니다(일상 대입 세그먼트 오탐 방지 — 자기 실측)
+    expect(classify('SC="$TEMP/gate"; echo ok').kind).toBe('pass')
     // 병합 단어 없는 치환·확장은 무관
     expect(classify('echo $(date)').kind).toBe('pass')
   })
