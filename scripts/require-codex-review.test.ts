@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import {
   hasMergeSignal,
   hasMergeWord,
+  aliasIsSuspect,
   stripShellExpansions,
   parseAliasList,
   parseCanonicalMerge,
@@ -40,6 +41,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       'g$@h pr mer$@ge 222 --squash', // 17R: 위치 매개변수 분절(무인자 시 빈 확장)
       'g$*h pr mer$1ge 222 --squash', // 17R: $*·$N 변형
       "$'\\U00000067\\U00000068' pr $'\\U0000006d\\U00000065\\U00000072\\U00000067\\U00000065' 5", // 19R: 8자리 \U
+      'g{h..h} pr mer{g..g}e 222 --squash', // 20R: 단일문자 brace 분절
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -201,6 +203,25 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('gh -R $ARGS 222 --squash').kind).toBe('blocked')
     // 인용 확장은 워드 분할 불가 — 값 위치는 허용(기존 -F "body=@$DIR" pass 와 일관)
     expect(classify('gh api repos/o/r/issues/1/comments -F "body=@$DIR/x.md"').kind).toBe('pass')
+  })
+  it('범위 밖 \\U 이스케이프에 throw 하지 않는다(20R P1 — 크래시 exit 1 = 우회)', () => {
+    expect(() => hasMergeSignal("gh pr merge 222 --body $'\\UFFFFFFFF' --squash")).not.toThrow()
+    expect(hasMergeSignal("gh pr merge 222 --body $'\\UFFFFFFFF' --squash")).toBe(true)
+  })
+  it('curl 등 gh 외 클라이언트의 불투명 GitHub GraphQL 본문은 blocked(20R P1)', () => {
+    expect(
+      classify('curl -X POST https://api.github.com/graphql --data-binary @/tmp/q.json').kind,
+    ).toBe('blocked')
+    expect(classify('curl https://api.github.com/graphql -d "$Q"').kind).toBe('blocked')
+    expect(classify('curl https://example.com/x -d @f.json').kind).toBe('pass')
+  })
+  it('혼합 인용 확장("$EMPTY"$ARGS)의 비인용 부분을 잡는다(20R P1)', () => {
+    expect(classify('gh -R "$EMPTY"$ARGS 222 --squash').kind).toBe('blocked')
+  })
+  it('aliasIsSuspect — 동적 동사 alias 는 정적 증명 불가로 의심 처리(20R P1)', () => {
+    expect(aliasIsSuspect('!gh pr "$ACTION" "$@"')).toBe(true)
+    expect(aliasIsSuspect('pr view "$@"')).toBe(false) // 위치 전달만은 무해
+    expect(aliasIsSuspect('pr merge')).toBe(true)
   })
   it('parseAliasList — 다중행(`|-`) 확장을 이어붙인다(19R P1)', () => {
     const m = parseAliasList('pm: |-\n  echo prep\n  gh pr merge "$@"\npx: pr view')

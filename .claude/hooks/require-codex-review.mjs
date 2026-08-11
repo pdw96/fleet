@@ -63,7 +63,13 @@ export function stripShellExpansions(s) {
   return s
     .replace(/\\\r?\n/g, '')
     .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/\\U([0-9a-fA-F]{8})/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/\\U([0-9a-fA-F]{8})/g, (_, h) => {
+      // 범위 밖 코드포인트는 fromCodePoint 가 throw — 크래시(exit 1)는 차단(exit 2)이
+      // 아니라 우회가 된다(20R P1). 유효 범위만 디코드, 그 외는 제거.
+      const cp = parseInt(h, 16)
+      return cp <= 0x10ffff ? String.fromCodePoint(cp) : ''
+    })
+    .replace(/\{(.)(?:\.\.\1)?\}/g, '$1') // 단일문자 brace(`g{h..h}`·`g{h}`) 접기(20R P1)
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
     .replace(/\\([0-7]{1,3})(?![0-9])/g, (_, o) => String.fromCharCode(parseInt(o, 8)))
     .replace(/\$[@*#?!0-9-]/g, '')
@@ -86,6 +92,15 @@ function scanVariants(s) {
 /** 병합 능력 단어(merge·enqueuePullRequest — 13R) 존재 — gh 문맥 없이도 판단(alias 확장용). */
 export function hasMergeWord(s) {
   return scanVariants(s).some((v) => /merge|enqueuepullrequest/i.test(v))
+}
+
+/**
+ * alias 확장이 병합 의심인가 — 병합 단어를 담거나(9R~17R), **동사가 실행 시점에 계산**되어
+ * 정적으로 비병합임을 증명할 수 없는 경우(20R P1: `!gh pr "$ACTION" "$@"`, ACTION=merge).
+ * 위치 전달(`$@`·`$*`·`$N`)은 호출 인자 그대로라 명령 쪽 검사가 담당 — 의심 아님.
+ */
+export function aliasIsSuspect(exp) {
+  return hasMergeWord(exp) || /\$(?![@*\d])/.test(exp)
 }
 
 export function hasMergeSignal(cmd) {
@@ -114,11 +129,13 @@ export function tokenizeSegmentsDetailed(cmd) {
   let cur = ''
   let inToken = false
   let quoted = false
+  let unquotedDollar = false
   const push = () => {
-    if (inToken) tokens.push({ text: cur, quoted })
+    if (inToken) tokens.push({ text: cur, quoted, unquotedDollar })
     cur = ''
     inToken = false
     quoted = false
+    unquotedDollar = false
   }
   const endSegment = () => {
     push()
@@ -154,6 +171,9 @@ export function tokenizeSegmentsDetailed(cmd) {
     } else if (ch === ';' || ch === '|' || ch === '&' || ch === '(' || ch === ')' || ch === '`') {
       endSegment()
     } else {
+      // 인용 밖의 `$` 는 발생 단위로 기록한다(20R P1: `"$EMPTY"$ARGS` 처럼 인용·비인용이
+      // 한 토큰에 섞이면 토큰 단위 quoted 플래그로는 비인용 확장을 놓친다).
+      if (ch === '$') unquotedDollar = true
       cur += ch
       inToken = true
     }
@@ -318,6 +338,14 @@ export function classifyHookInput(input) {
     // 인라인 리터럴 본문·경로의 병합은 여기 오기 전에 신호 스캔이 잡는다.
     for (const detailed of tokenizeSegmentsDetailed(cmd)) {
       const tokens = detailed.map((t) => t.text)
+      // gh 외 HTTP 클라이언트의 GitHub GraphQL 호출도 명령에 보이는 병합 능력이다(20R P1:
+      // `curl … api.github.com/graphql --data-binary @/tmp/q.json`) — 본문이 파일(@)/변수($)로
+      // 불투명하면 gh api graphql --input 과 동치로 차단한다.
+      if (
+        tokens.some((t) => /github\.com\/graphql/i.test(t)) &&
+        tokens.some((t) => t.includes('@') || t.includes('$'))
+      )
+        return { kind: 'blocked', reason: 'GitHub GraphQL 호출의 본문이 명령 밖 — 관측 불가' }
       const hasGh = tokens.some((t) => {
         const exe = t.toLowerCase()
         return exe === 'gh' || exe === 'gh.exe'
@@ -327,7 +355,7 @@ export function classifyHookInput(input) {
       // 있다(19R P1: `gh -R $ARGS 222`, ARGS='o/r pr merge') — 위치 불문 차단. 인용된
       // 확장("$VAR")은 분할이 불가능해 값 위치에선 허용(단, 서브커맨드 자리는 아래에서
       // 인용 여부 무관 차단 — 단어 하나로도 동사가 된다).
-      if (detailed.some((t) => !t.quoted && t.text.includes('$')))
+      if (detailed.some((t) => t.unquotedDollar))
         return { kind: 'blocked', reason: 'gh 호출에 비인용 셸 확장 — 워드 분할 주입 가능' }
       // 서브커맨드 자리의 셸 확장은 병합 동사를 가릴 수 있다(13R P1: `gh pr $ACTION 222`·
       // `gh $CMD 222`) — gh 다음 첫 비플래그 토큰, 그리고 첫 토큰이 `api`(인자=엔드포인트)가
@@ -469,7 +497,7 @@ function main() {
         [...aliases.values()]
           // 셸 alias(`!…`)는 분절 표기를 담을 수 있다(16R P1: `!gh pr m''erge "$@"`) —
           // 확장도 신호 스캔과 같은 정규화 변형으로 검사한다.
-          .filter(({ exp }) => hasMergeWord(exp))
+          .filter(({ exp }) => aliasIsSuspect(exp))
           .map(({ name }) => name.join(' ')),
       )
       let grew = true
@@ -735,5 +763,12 @@ if (
   import.meta.url === `file://${process.argv[1]}` ||
   process.argv[1]?.endsWith('require-codex-review.mjs')
 ) {
-  main()
+  try {
+    main()
+  } catch (e) {
+    // 미처리 예외의 exit 1 은 차단(exit 2)이 아니라 우회다(20R P1: 범위 밖 \U 이스케이프가
+    // 정규화에서 throw → 게이트 전체 무력화) — 어떤 실패도 fail-closed 로 끝낸다.
+    console.error(`[codex-gate] 내부 오류 — fail-closed 차단. ${e?.message ?? e}`)
+    process.exit(2)
+  }
 }
