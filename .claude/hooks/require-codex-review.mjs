@@ -103,22 +103,29 @@ function expandBraceAlternations(s) {
     const m = v.match(/\{([^{}]*(?:,|\.\.)[^{}]*)\}/)
     const body = m[1]
     let alts
-    const range = body.match(/^(-?\d+)\.\.(-?\d+)$|^(.)\.\.(.)$/)
+    // 범위는 선택적 증분(step)까지 bash 시맨틱(34R P1: `{e..e..1}` — 2요소만 받으면 미탐).
+    // bash 는 |step| 을 쓰고 0 은 1 로 취급한다.
+    const range = body.match(/^(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?$|^(.)\.\.(.)(?:\.\.(-?\d+))?$/)
     if (range) {
-      const [a, b] =
-        range[1] !== undefined
-          ? [parseInt(range[1], 10), parseInt(range[2], 10)]
-          : [range[3].codePointAt(0), range[4].codePointAt(0)]
-      const n = Math.abs(b - a) + 1
+      const numeric = range[1] !== undefined
+      const [a, b] = numeric
+        ? [parseInt(range[1], 10), parseInt(range[2], 10)]
+        : [range[4].codePointAt(0), range[5].codePointAt(0)]
+      const inc = Math.max(1, Math.abs(parseInt((numeric ? range[3] : range[6]) ?? '1', 10) || 1))
+      const n = Math.floor(Math.abs(b - a) / inc) + 1
       if (n > BRACE_CAP) {
         overflow = true
         break
       }
-      const step = Math.sign(b - a) || 1
-      const render = range[1] !== undefined ? String : String.fromCodePoint
-      alts = Array.from({ length: n }, (_, i) => render(a + step * i))
-    } else {
+      const dir = Math.sign(b - a) || 1
+      const render = numeric ? String : String.fromCodePoint
+      alts = Array.from({ length: n }, (_, i) => render(a + dir * inc * i))
+    } else if (body.includes(',')) {
       alts = body.split(',')
+    } else {
+      // `..` 를 담지만 인식 불가한 범위 표기 — 정적 전개 불가 = fail-closed(34R P1)
+      overflow = true
+      break
     }
     const expanded = alts.map((alt) => v.slice(0, m.index) + alt + v.slice(m.index + m[0].length))
     variants.splice(idx, 1, ...expanded)

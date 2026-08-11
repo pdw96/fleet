@@ -54,6 +54,9 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       "bash -c 'gh pr m{erg,x}e 222 --squash --match-head-commit abc'", // 33R: 인터프리터 경유
       'gh pr m{e..e}rge 222 --squash', // 33R: 다문자 문맥의 범위 brace
       'gh pr m{x,e}{y,r}ge 222 --squash', // 33R: 병합 단어가 두 그룹에 걸침
+      'gh pr m{e..e..1}rge 222 --squash --match-head-commit abc', // 34R: step 범위
+      'gh pr me{r..r..0}ge 222 --squash', // 34R: step 0 은 bash 가 1 로 취급
+      'gh x {a..Z9}', // 34R: 인식 불가 범위 표기는 정적 전개 불가 — fail-closed 발동
       // 33R: 전개 캡 초과(2^10)는 정적 열거 불가 — 능력 토큰 동반이면 fail-closed 발동
       `gh x ${'{a,b}'.repeat(10)}`,
     ])
@@ -239,6 +242,10 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     )
     // 전개 캡 초과 + 능력 토큰 = fail-closed blocked
     expect(classify(`gh x ${'{a,b}'.repeat(10)}`).kind).toBe('blocked')
+    // 34R: step 범위 전개도 canonical 요구로 넘어간다
+    expect(classify('gh pr m{e..e..1}rge 222 --squash --match-head-commit abc').kind).toBe(
+      'blocked',
+    )
   })
   it('hasMergeWord — 셸 alias 확장의 분절 표기도 잡는다(16R P1)', () => {
     expect(hasMergeWord('!gh pr m\'\'erge "$@"')).toBe(true)
