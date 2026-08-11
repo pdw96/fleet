@@ -641,9 +641,17 @@ function main() {
           return exe === 'gh' || exe === 'gh.exe'
         })
         if (gi === -1) continue
+        // 전역 플래그(-R 값 등)를 건너뛴 위치에서 alias 이름을 맞춘다(30R P1: gh 바로 뒤
+        // 고정 매칭은 `gh -R o/r pr x "$ACTION"` 을 놓친다). 값 유무 미상 플래그는 보수적으로
+        // 다음 토큰을 값으로 소비한다.
+        let start = gi + 1
+        while (start < texts.length && texts[start].startsWith('-')) {
+          if (!texts[start].includes('=')) start++
+          start++
+        }
         for (const { name } of aliases.values()) {
-          const matches = name.every((n, j) => texts[gi + 1 + j]?.toLowerCase() === n.toLowerCase())
-          if (matches && texts[gi + 1 + name.length]?.includes('$')) {
+          const matches = name.every((n, j) => texts[start + j]?.toLowerCase() === n.toLowerCase())
+          if (matches && texts[start + name.length]?.includes('$')) {
             console.error(
               `[codex-gate] gh alias '${name.join(' ')}' 호출 직후 인자에 셸 확장 — 확장이 ` +
                 '동사 자리로 이어질 수 있어 차단. 리터럴 인자로 실행하라.',
