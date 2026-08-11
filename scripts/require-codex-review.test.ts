@@ -9,6 +9,7 @@ import {
   hasMergeSignal,
   hasMergeWord,
   stripShellExpansions,
+  parseAliasList,
   parseCanonicalMerge,
   classifyHookInput,
   tokenizeSegments,
@@ -38,6 +39,7 @@ describe('hasMergeSignal — 게이트 발동 조건(raw 스캔·미탐 불가)'
       "$'\\x67\\x68' pr $'\\x6d\\x65\\x72\\x67\\x65' 222 --squash", // 16R: ANSI-C \xHH 확장
       'g$@h pr mer$@ge 222 --squash', // 17R: 위치 매개변수 분절(무인자 시 빈 확장)
       'g$*h pr mer$1ge 222 --squash', // 17R: $*·$N 변형
+      "$'\\U00000067\\U00000068' pr $'\\U0000006d\\U00000065\\U00000072\\U00000067\\U00000065' 5", // 19R: 8자리 \U
     ])
       expect(hasMergeSignal(cmd), cmd).toBe(true)
   })
@@ -194,11 +196,24 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(stripShellExpansions('!gh p\'\'x "$@"').split(/\s+/)).toContain('px')
     expect(stripShellExpansions('g$@h pr mer$@ge')).toBe('gh pr merge')
   })
+  it('gh 호출의 비인용 $ 확장은 blocked — 워드 분할 주입(19R P1), 인용 확장 값은 pass', () => {
+    // ARGS='o/r pr merge' 면 비인용 확장이 서브커맨드까지 주입한다
+    expect(classify('gh -R $ARGS 222 --squash').kind).toBe('blocked')
+    // 인용 확장은 워드 분할 불가 — 값 위치는 허용(기존 -F "body=@$DIR" pass 와 일관)
+    expect(classify('gh api repos/o/r/issues/1/comments -F "body=@$DIR/x.md"').kind).toBe('pass')
+  })
+  it('parseAliasList — 다중행(`|-`) 확장을 이어붙인다(19R P1)', () => {
+    const m = parseAliasList('pm: |-\n  echo prep\n  gh pr merge "$@"\npx: pr view')
+    expect(m.get('pm')?.exp).toContain('merge')
+    expect(m.get('px')?.exp).toBe('pr view')
+  })
   it('서브커맨드 자리의 셸 확장은 blocked — 병합 동사 은닉 가능(13R P1)', () => {
     expect(classify('. /tmp/action.env && gh pr $ACTION 222 --squash').kind).toBe('blocked')
     expect(classify('gh $CMD 222 --squash').kind).toBe('blocked')
-    // api 의 인자는 서브커맨드가 아니라 엔드포인트 — GET 은 mutating 규칙 소관(pass 유지)
-    expect(classify('gh api repos/$OWNER/r/issues --paginate').kind).toBe('pass')
+    // 19R 전면 규칙으로 비인용 $ 는 GET 엔드포인트라도 차단(워드 분할 주입 가능) —
+    // 인용하면 분할 불가라 통과(값 위치 인용 확장 허용과 일관)
+    expect(classify('gh api repos/$OWNER/r/issues --paginate').kind).toBe('blocked')
+    expect(classify('gh api "repos/$OWNER/r/issues" --paginate').kind).toBe('pass')
   })
   it('enqueuePullRequest mutation 은 merge 단어 없이도 신호 발동 — blocked(13R P1)', () => {
     expect(

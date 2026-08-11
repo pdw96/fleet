@@ -63,6 +63,7 @@ export function stripShellExpansions(s) {
   return s
     .replace(/\\\r?\n/g, '')
     .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\U([0-9a-fA-F]{8})/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
     .replace(/\\([0-7]{1,3})(?![0-9])/g, (_, o) => String.fromCharCode(parseInt(o, 8)))
     .replace(/\$[@*#?!0-9-]/g, '')
@@ -99,14 +100,25 @@ export function hasMergeSignal(cmd) {
 // 그룹핑(`(` `)` 백틱)은 세그먼트 경계다. canonical 판정은 「세그먼트가 정확히 1개」를
 // 요구하므로 근사 오차는 전부 차단(비-canonical) 쪽으로 넘어진다.
 export function tokenizeSegments(cmd) {
+  return tokenizeSegmentsDetailed(cmd).map((seg) => seg.map((t) => t.text))
+}
+
+/**
+ * tokenizeSegments 와 동일하되 토큰별로 인용 포함 여부를 남긴다 — 인용된 확장("$VAR")은
+ * 워드 분할이 불가능해 플래그·서브커맨드 주입이 안 되지만, 비인용 확장($VAR)은 가능하다
+ * (19R P1: `gh -R $ARGS`, ARGS='o/r pr merge').
+ */
+export function tokenizeSegmentsDetailed(cmd) {
   const segments = []
   let tokens = []
   let cur = ''
   let inToken = false
+  let quoted = false
   const push = () => {
-    if (inToken) tokens.push(cur)
+    if (inToken) tokens.push({ text: cur, quoted })
     cur = ''
     inToken = false
+    quoted = false
   }
   const endSegment = () => {
     push()
@@ -121,6 +133,7 @@ export function tokenizeSegments(cmd) {
       i++
     } else if (ch === "'" || ch === '"') {
       const close = cmd.indexOf(ch, i + 1)
+      quoted = true
       if (close === -1) {
         cur += cmd.slice(i + 1)
         inToken = true
@@ -255,6 +268,32 @@ function splitFlag(tok) {
 }
 
 /**
+ * `gh alias list` 출력 파싱 — key = 이름 토큰열 join, value = { name: string[], exp: string }.
+ * 다중행 확장은 `name: |-` 뒤 들여쓴 연속행으로 나온다(19R P1: 개행 담은 셸 alias 의 병합
+ * 행이 `|-` 만 기록되고 유실) — 연속행을 공백으로 이어 확장 전체를 본다.
+ */
+export function parseAliasList(text) {
+  const aliases = new Map()
+  let current = null
+  for (const line of text.split('\n')) {
+    const cont = line.match(/^\s+(.*)$/)
+    if (cont && current) {
+      current.exp = `${current.exp} ${cont[1].trim()}`.trim()
+      continue
+    }
+    const m = line.match(/^(.+?):\s*(.*)$/)
+    if (m) {
+      const name = m[1].trim().split(/\s+/)
+      current = { name, exp: m[2].trim().replace(/^\|-?$/, '') }
+      aliases.set(name.join(' '), current)
+    } else {
+      current = null
+    }
+  }
+  return aliases
+}
+
+/**
  * hook 입력을 게이트 판정으로 환원한다.
  * @returns {{kind:'pass'}|{kind:'blocked', reason:string}
  *          |{kind:'merge', pr:number|null, repo:string|null, target:string|null,
@@ -277,12 +316,19 @@ export function classifyHookInput(input) {
     // ② 변이 REST 호출(-X 비GET·--input·-f/-F 필드)의 엔드포인트가 셸 변수이거나 세그먼트에
     //    리터럴 경로가 아예 없는 경우(11R P1: `. env && gh api -X PUT "$ENDPOINT"`)
     // 인라인 리터럴 본문·경로의 병합은 여기 오기 전에 신호 스캔이 잡는다.
-    for (const tokens of tokenizeSegments(cmd)) {
+    for (const detailed of tokenizeSegmentsDetailed(cmd)) {
+      const tokens = detailed.map((t) => t.text)
       const hasGh = tokens.some((t) => {
         const exe = t.toLowerCase()
         return exe === 'gh' || exe === 'gh.exe'
       })
       if (!hasGh) continue
+      // gh 호출 세그먼트의 **비인용** `$` 확장은 워드 분할로 서브커맨드·플래그를 주입할 수
+      // 있다(19R P1: `gh -R $ARGS 222`, ARGS='o/r pr merge') — 위치 불문 차단. 인용된
+      // 확장("$VAR")은 분할이 불가능해 값 위치에선 허용(단, 서브커맨드 자리는 아래에서
+      // 인용 여부 무관 차단 — 단어 하나로도 동사가 된다).
+      if (detailed.some((t) => !t.quoted && t.text.includes('$')))
+        return { kind: 'blocked', reason: 'gh 호출에 비인용 셸 확장 — 워드 분할 주입 가능' }
       // 서브커맨드 자리의 셸 확장은 병합 동사를 가릴 수 있다(13R P1: `gh pr $ACTION 222`·
       // `gh $CMD 222`) — gh 다음 첫 비플래그 토큰, 그리고 첫 토큰이 `api`(인자=엔드포인트)가
       // 아니면 둘째 비플래그 토큰까지 `$` 를 거부한다. 플래그 값(-F body=@$X)은 해당 없음.
@@ -418,14 +464,7 @@ function main() {
       const containsSeq = (arr, seq) =>
         seq.length > 0 &&
         arr.some((_, i) => seq.every((s, j) => arr[i + j]?.toLowerCase() === s.toLowerCase()))
-      const aliases = new Map() // key = 이름 토큰열 join, value = { name: string[], exp: string }
-      for (const line of r.stdout.split('\n')) {
-        const m = line.match(/^(.+?):\s*(.+)$/)
-        if (m) {
-          const name = m[1].trim().split(/\s+/)
-          aliases.set(name.join(' '), { name, exp: m[2].trim() })
-        }
-      }
+      const aliases = parseAliasList(r.stdout)
       const mergey = new Set(
         [...aliases.values()]
           // 셸 alias(`!…`)는 분절 표기를 담을 수 있다(16R P1: `!gh pr m''erge "$@"`) —
