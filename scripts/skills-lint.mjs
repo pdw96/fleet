@@ -170,6 +170,8 @@ import { argv, exit } from 'node:process'
 export const DEFAULT_GLOBS = [
   '.claude/*.md',
   '.claude/agents/**/*.md',
+  '.claude/hooks/*.mjs',
+  '.claude/settings.json',
   '.claude/skills/**/*.md',
   '.claude/workflows/**/*.js',
   '.github/workflows/*.yml',

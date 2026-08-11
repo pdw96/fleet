@@ -30,7 +30,10 @@
 `settings.json` 의 `PreToolUse` hook 이 머지 시도(`gh pr merge`·pulls API·GitHub MCP)를 가로채
 `hooks/require-codex-review.mjs` 로 **Codex 리뷰(또는 👍 clean) 존재를 검증, 없으면 차단**한다
 (exit 2 · 조회 실패 fail-closed). 「머지 전 Codex 대기」 실사고 2건(무응답 오판·페이지네이션
-누락)의 재발 방지 — 산문 규율(AGENTS.md 4단계·ADR-0014)을 기계 강제로 승격한 것. 수동 점검:
+누락)의 재발 방지 — 산문 규율(AGENTS.md 4단계·ADR-0014)을 기계 강제로 승격한 것. 명령 해석은
+토큰 단위 인자 파싱(플래그 선행·`-R`·URL·브랜치 타깃 지원, 해석 불능 = fail-closed)이고 파서는
+`scripts/require-codex-review.test.ts` 가 고정한다. Codex 무응답 폴백 = 풀 렌즈 자가리뷰 완료
+근거를 담은 OWNER 코멘트의 `[codex-gate-fallback]` 마커(해당 PR·감사 가능 경로). 수동 점검:
 `echo '{"tool_name":"Bash","tool_input":{"command":"gh pr merge <N>"}}' | node .claude/hooks/require-codex-review.mjs`
 
 ## workflows/ (예약 — Claude 로컬 가속 `.js`)
