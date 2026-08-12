@@ -318,9 +318,11 @@ describe('전이 불변식 — 증거·세대 동결', () => {
         draft({ lifecycle: 'integrated', completedIntegrationTxnId: T2 }),
       ),
     ).toEqual([expect.stringContaining('완결 귀속')])
-    expect(checkTransitionInvariants(prev, draft({ lifecycle: 'open' }))).toEqual([
-      expect.stringContaining('완결 귀속'),
-    ])
+    // ⚠ `integrated → open` 은 이제 **두 사유**가 함께 발화한다(완결 귀속 소거 + lifecycle 회귀 ·
+    //    Codex PR#289 5R P1). 축이 다르므로 둘 다 남기고, 이 행은 **완결 귀속 축**만 단언한다.
+    expect(checkTransitionInvariants(prev, draft({ lifecycle: 'open' }))).toContain(
+      '전이: 완결 귀속(completedIntegrationTxnId)의 교체·소거 금지',
+    )
   })
 
   /**
@@ -349,6 +351,51 @@ describe('전이 불변식 — 증거·세대 동결', () => {
       expect.stringContaining('완결 귀속은 직전 레코드의 current txn'),
     ])
     expect(checkTransitionInvariants(prev, complete(T1))).toEqual([])
+  })
+
+  /**
+   * **Codex PR#289 5R P1** — txn 이 같다는 것만으로는 부족하다. `prepared` 상태의 T1 을 그대로
+   * `integrated` + `completed: T1` 로 커밋해도 두 층이 통과해 **결과가 존재한 적 없는 bench 가
+   * 완결로 기록**된다. §W-8 의 완결 정의(`resultOid` 의 base 도달성)는 결과 증거를 전제한다.
+   */
+  it('결과 증거 없는 txn 은 완결로 기록할 수 없다', () => {
+    const prev = base({
+      currentIntegrationTxnId: T1,
+      currentIntegrationStage: 'prepared',
+      currentIntegrationTxnGeneration: 3,
+    })
+    const next = draft({
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: T1,
+      currentIntegrationTxnId: T1,
+      currentIntegrationStage: 'prepared',
+      currentIntegrationTxnGeneration: 3,
+    })
+    expect(checkTransitionInvariants(prev, next)).toEqual([
+      expect.stringContaining('결과 증거 없는 txn'),
+    ])
+  })
+
+  /**
+   * **Codex PR#289 5R P1** — 통합 축을 건드리지 않는 CAS 는 통합 검사를 통째로 건너뛰므로,
+   * archived 를 `archivedBranch` 만 떼고 `open` 으로 되돌리는 제출이 **어느 층에도 걸리지 않았다.**
+   */
+  it('lifecycle 은 회귀하지 않는다(archived → open · integrated → open)', () => {
+    const archived = base({ lifecycle: 'archived', archivedBranch: 'preserved' })
+    expect(checkTransitionInvariants(archived, draft({ lifecycle: 'open' }))).toEqual([
+      expect.stringContaining('lifecycle 회귀 금지'),
+    ])
+    expect(checkTransitionInvariants(archived, draft({ lifecycle: 'integrated' }))).toContain(
+      '전이: lifecycle 회귀 금지(archived → integrated)',
+    )
+    // 전진은 허용된다 — open → integrated · open → archived · 같은 값 유지.
+    expect(checkTransitionInvariants(base(), draft({ lifecycle: 'open' }))).toEqual([])
+    expect(
+      checkTransitionInvariants(
+        archived,
+        draft({ lifecycle: 'archived', archivedBranch: 'preserved' }),
+      ),
+    ).toEqual([])
   })
 
   /**

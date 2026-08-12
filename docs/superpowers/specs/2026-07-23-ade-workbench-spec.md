@@ -906,10 +906,20 @@ superseded txn ref · digest 불일치 · 열거·파싱·identity 검증 실패
 `revision === expected + 1` ∧ 권위가 든 `resultOid`·세대가 저널의 증언과 일치). 그 외는 손상이며,
 ref 유무와 **무관하게** reconciliation 이다(초안은 ref 가 없으면 `no-mutation` 을 답했다).
 
-**저널이 든 `resultRef` 이름 자체를 검증한다**(Codex PR#289 4R P1) — 문법·bench·txn 결속은 **모든**
-저널에, revision 산술(`= expected + 1`)은 **`composed` 저널에만** 건다(ref 는 composed CAS **앞**에서
-발행되므로 같은 파일이 `published` 로 전진하면 `expected` 가 올라가 등식이 깨진다). 그 값은 **불변
-필드**라 git ref 가 아직 없어도 잘못된 이름이 살아남아 **나중에 그대로 발행**된다.
+**저널이 든 `resultRef` 이름 자체를 검증한다**(Codex PR#289 4R·5R P1) — 문법·bench·txn 결속에 더해
+**revision 산술을 stage 전수에 건다**: `resultRef` 는 불변이고 ref 는 composed CAS **앞**에서 한 번만
+발행되므로, `prepared` 저널이 관측한 revision 을 `R0` 라 하면 **ref = `R0 + 2` 고정**이고
+`expected = R0 + stageIndex` 다 — 즉 **`ref = expected + 2 - stageIndex`**(prepared +2 · composed +1 ·
+published +0 · finalized −1). ⚠ `abandoned` 는 정의역 밖이다(포기 시점에 따라 `expected` 가 달라진다).
+그 값은 **불변 필드**라 git ref 가 아직 없어도 잘못된 이름이 살아남아 **나중에 그대로 발행**된다.
+
+**ref 발행 이후의 상태는 ref 를 요구한다**(Codex PR#289 5R P1) — post-CAS `composed`·`published`·
+`finalized` 에서 결과 ref 가 **없는 것**은 프로토콜상 불가능하므로 `no-mutation` 이 아니라
+`result-ref-missing` 이다(`abandoned` 제외 — `prepared` 에서 포기하면 ref 가 존재한 적 없다).
+
+⚠ **복구표의 「`prepared` ∧ ref 존재」 행은 전용 분기 없이 답한다**(위 산술의 연쇄): 그 상태의 ref 는
+구조적으로 `revision + 1` 이라 **항상 앵커 후보**이고, 표가 요구하는 결과(reconciliation)를 앵커가
+그대로 보장한다. 도달 불가 분기를 남기지 않는다(정정 183·189).
 
 **현재 txn 의 ref 이름·OID 대조는 stage 와 무관하다**(Codex PR#289 4R P1) — `published` 저널의 ref 는
 revision 이 권위 이하라 앵커 후보가 아니므로, 그 분기에서 대조를 빼면 **교체·손상된 ref 위에서 게시가
@@ -1407,7 +1417,7 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T79** | **앵커 게이트가 승격 판정보다 먼저(신설 · PR3c)** — 저널이 승격 조건을 전부 만족해도 **설명되지 않는 더 높은 ref** 가 하나라도 있으면 승격이 아니라 reconciliation 이다(순서를 뒤집으면 롤백된 stage 위에서 승격한다). 저널은 게이트 **앞에서 읽되**(읽기·검증만) 권위 CAS·저널 변이는 게이트 뒤다(계획 정정 200) | verify |
 | **T80** | **blocker 존재 중 행동 인가 전면 차단(신설 · PR3c)** — blocker 가 하나라도 있으면 판정은 **어떤 입력 조합에서도** `no-mutation`·`resume-composed-cas`·`normal-wait` 를 답하지 않는다(조합 전수 성질). ⚠ 이 행의 **행동** 단언(복구기가 실제로 인가를 막는지)은 소비자 부재로 PR5·PR7 귀속 | verify |
 | **T81** | **앵커 검사의 결속 구간(신설 · PR3c)** — 판정은 「새 리스 획득 후 fresh read」와 **같은 임계 구역**에 결속하며 통과 결과를 장기 캐시로 재사용하지 않는다. PR3c 는 그 구조적 seam(면제가 의존한 입력 전체의 증거 다이제스트 + 재검증 동치 판정)만 착지시키고 **행동 단언은 PR5·PR7 귀속**(정직 표기) | verify |
-| **T82** | **신·구 레코드 전이 불변식 계층(신설 · PR3c)** — 현행 `checkInvariants` 는 단일 레코드 전용이라 `published → prepared` 역행·단계 건너뛰기·미종결 txn 위의 새 시도가 **어느 층에서도** 차단되지 않았다. 계획 정정 142 가 저널에 세운 전이 강제를 권위 쪽에 세우고, **복구 판정의 면제 조건 8**(후속 전이 일치)이 이 계층을 재사용한다. ⓐ**최초 레코드(`prev` 부재)도 시작 단계를 본다** — `prepared` 외의 stage 로 태어나는 첫 CAS 는 거부다(WAL 1단계와 그 크래시 안전 순서를 건너뛴다). 「단일 레코드 불변식이 막는다」는 **거짓**이었다(Codex PR#289 P1 — `checkInvariants` 어디에도 그 규칙이 없다) ⓔ**`abandoned` 는 종결이라 숫자 stage 비교의 정의역 밖이다**(Codex PR#289 4R P1) — 파서는 그 값을 여전히 읽는데 `indexOf` 가 **-1** 이라 `abandoned → prepared` 가 역행·건너뛰기 **두 검사를 모두 통과**해 포기된 txn 을 부활시킨다. 숫자 비교 앞에서 잘라내되 **소거(청소 복구)는 계속 허용**한다 ⓒ**새 txn 시작 인가는 stage 가 아니라 `lifecycle` 에 건다**(Codex PR#289 3R P1) — `integrated` ∧ current stage `finalized` 인 레코드는 「미종결 아님」을 통과해 **종결된 bench 를 다시 연다**. §5 「lifecycle 회귀(재개) 없음 · `integrated` 후 추가 작업은 새 bench」와 정면 충돌이다 ⓓ**완결 귀속의 「도입」도 검사한다**(Codex PR#289 3R P1) — 교체 금지만 있으면 첫 도입이 무제한이라 current 가 T1 인데 `completedIntegrationTxnId: T2` 로 커밋해도 두 층이 다 통과하고 **부분 통합이 숨는다**. §W-8 의 「완결은 권위 시도만 · 관측 CAS 는 txn 동일」을 코드로 세운다(도달성·stage 전제는 외부 관측이라 여기서 보지 않는다 — 정직 표기) ⓑ`completedIntegrationTxnId` 소거 금지의 **예외는 보관 전이**다(`lifecycle → 'archived'`) — 불변식 ②가 그 필드를 `integrated` 에만 허용하므로 예외가 없으면 `integrated → archived` 가 **전부 `invariant-violation`** 이 된다. 예외는 「소거」가 아니라 **lifecycle 에 결속**한다(귀속 교체는 계속 거부) | verify |
+| **T82** | **신·구 레코드 전이 불변식 계층(신설 · PR3c)** — 현행 `checkInvariants` 는 단일 레코드 전용이라 `published → prepared` 역행·단계 건너뛰기·미종결 txn 위의 새 시도가 **어느 층에서도** 차단되지 않았다. 계획 정정 142 가 저널에 세운 전이 강제를 권위 쪽에 세우고, **복구 판정의 면제 조건 8**(후속 전이 일치)이 이 계층을 재사용한다. ⓐ**최초 레코드(`prev` 부재)도 시작 단계를 본다** — `prepared` 외의 stage 로 태어나는 첫 CAS 는 거부다(WAL 1단계와 그 크래시 안전 순서를 건너뛴다). 「단일 레코드 불변식이 막는다」는 **거짓**이었다(Codex PR#289 P1 — `checkInvariants` 어디에도 그 규칙이 없다) ⓕ**완결 귀속은 결과 증거를 전제한다**(Codex PR#289 5R P1) — txn identity 만 보면 `prepared` 상태의 T1 을 그대로 `integrated`+`completed: T1` 로 커밋해 **결과가 존재한 적 없는 bench 를 완결로 기록**한다 ⓖ**lifecycle 은 통합 축과 독립으로 단조다**(`open → integrated → archived` · Codex PR#289 5R P1) — 통합 축을 건드리지 않는 CAS 는 그 축의 검사를 통째로 건너뛰므로, archived 를 `archivedBranch` 만 떼고 `open` 으로 되돌리는 제출이 **어느 층에도 걸리지 않았다** ⓔ**`abandoned` 는 종결이라 숫자 stage 비교의 정의역 밖이다**(Codex PR#289 4R P1) — 파서는 그 값을 여전히 읽는데 `indexOf` 가 **-1** 이라 `abandoned → prepared` 가 역행·건너뛰기 **두 검사를 모두 통과**해 포기된 txn 을 부활시킨다. 숫자 비교 앞에서 잘라내되 **소거(청소 복구)는 계속 허용**한다 ⓒ**새 txn 시작 인가는 stage 가 아니라 `lifecycle` 에 건다**(Codex PR#289 3R P1) — `integrated` ∧ current stage `finalized` 인 레코드는 「미종결 아님」을 통과해 **종결된 bench 를 다시 연다**. §5 「lifecycle 회귀(재개) 없음 · `integrated` 후 추가 작업은 새 bench」와 정면 충돌이다 ⓓ**완결 귀속의 「도입」도 검사한다**(Codex PR#289 3R P1) — 교체 금지만 있으면 첫 도입이 무제한이라 current 가 T1 인데 `completedIntegrationTxnId: T2` 로 커밋해도 두 층이 다 통과하고 **부분 통합이 숨는다**. §W-8 의 「완결은 권위 시도만 · 관측 CAS 는 txn 동일」을 코드로 세운다(도달성·stage 전제는 외부 관측이라 여기서 보지 않는다 — 정직 표기) ⓑ`completedIntegrationTxnId` 소거 금지의 **예외는 보관 전이**다(`lifecycle → 'archived'`) — 불변식 ②가 그 필드를 `integrated` 에만 허용하므로 예외가 없으면 `integrated → archived` 가 **전부 `invariant-violation`** 이 된다. 예외는 「소거」가 아니라 **lifecycle 에 결속**한다(귀속 교체는 계속 거부) | verify |
 | **T83** | **정상 crash window(신설 · PR3c)** — 권위 `N` · 유효 `composed` 저널(expected `N`) · matching ref `N+1` → **`resume-composed-cas`** 이며 전역 reconciliation **아님**. 픽스처 인터리브는 (A) 로 고정한다: composed 저널 acknowledged → 결과 ref create-only 발행 → **composed 권위 CAS**(그 직전 crash) | verify |
 | **T84** | **저널 없는 `N+1` ref(신설 · PR3c)** → reconciliation. 대응 저널이 없으면 그 ref 를 설명할 증거가 없다 | verify |
 | **T85** | **result OID 불일치(신설 · PR3c)** — ref 가 가리키는 OID ≠ `journal.resultOid` → reconciliation(`result-ref-mismatch`) | verify |

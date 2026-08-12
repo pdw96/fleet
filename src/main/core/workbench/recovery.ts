@@ -133,8 +133,9 @@ export type RecoveryBlockerKind =
   | 'journal-result-ref-invalid'
   /** 설명되지 않는 `refRevision > record.revision` — 앵커 발화. */
   | 'anchor-rollback'
-  | 'result-ref-unattributed'
   | 'result-ref-mismatch'
+  /** ref 발행 이후의 상태(post-CAS composed·published·finalized)인데 그 ref 가 없다. */
+  | 'result-ref-missing'
   | 'expected-revision-mismatch'
   | 'current-txn-journal-missing'
   /** 완결 귀속 txn 의 저널이 활성 stage 로 남아 있다 — 정상이면 `finalized` 다. */
@@ -415,13 +416,22 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       const named = parseResultRef(j.resultRef)
       const nameBound =
         named.kind === 'ok' && named.benchId === obs.identity.benchId && named.txnId === j.txnId
-      // ⚠ **revision 산술은 `composed` 에서만 고정된다**(부분 수용 · 근거는 계획 정정 219): ref 는
-      //    composed CAS **앞**에서 발행되므로 `refRevision = composed 저널의 expected + 1` 이고,
-      //    같은 파일이 `published` 로 전진하면 expected 가 그만큼 올라가 등식이 성립하지 않는다.
-      //    모든 stage 에 `expected + 1` 을 요구하면 **정상 published 저널이 전부 RED** 다.
+      // **revision 산술은 stage 마다 다르지만 stage 전수에 고정된다**(Codex PR#289 5R P1 이 4R 의
+      // 내 부분 수용을 좁혔다 — 「composed 에서만」이 아니라 **stage 별 정확한 식**이 있다).
+      //
+      // `resultRef` 는 불변 필드이고 ref 는 **composed CAS 앞**에서 딱 한 번 발행된다. 단계가 전진할
+      // 때마다 `expectedAuthorityRevision` 만 `+1` 되므로, 기준 revision 을 `R0`(prepared 저널의
+      // expected)라 하면 **ref = R0 + 2** 로 고정이고 `expected = R0 + stageIndex` 다:
+      //
+      //   prepared(0) → ref = expected + 2 · composed(1) → +1 · published(2) → +0 · finalized(3) → -1
+      //
+      // ⚠ `abandoned` 는 **정의역 밖**이다 — 어느 단계에서 포기했는지에 따라 expected 가 달라져 식이
+      //    하나로 고정되지 않는다(포기 시점의 관측 revision 을 싣는다).
+      const stageIndex = WAL_STAGE_ORDER.indexOf(j.stage)
       const revisionBound =
-        j.stage !== 'composed' ||
-        (named.kind === 'ok' && named.resultingRevision === j.expectedAuthorityRevision + 1)
+        stageIndex < 0 ||
+        (named.kind === 'ok' &&
+          named.resultingRevision === j.expectedAuthorityRevision + 2 - stageIndex)
       if (!nameBound || !revisionBound) {
         blockers.push(blocker('journal-result-ref-invalid', entry.txnId))
         continue
@@ -476,6 +486,7 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   // ref 가 없을 때 복구표가 `no-mutation`(= 포기·재준비 적격)을 답했다. 결속은 **두 배치 중 하나**를
   // 만족해야 한다 — ⓐ**CAS 전**(권위가 아직 `previousAuthorityStage` · `expected === revision`)
   // ⓑ**CAS 후**(권위가 `nextAuthorityStage` · `revision === expected + 1`). 그 외는 전부 손상이다.
+  let binding: 'pre-cas' | 'post-cas' | undefined
   if (record !== undefined && current !== undefined) {
     const preCas =
       record.currentIntegrationStage === current.previousAuthorityStage &&
@@ -496,6 +507,8 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
           digestAuthorityDraft(toDraft(record)) === current.draftDigest))
     if ((!preCas && !postCas) || !evidenceOk) {
       blockers.push(blocker('journal-authority-binding', current.txnId))
+    } else {
+      binding = postCas ? 'post-cas' : 'pre-cas'
     }
   }
 
@@ -572,26 +585,37 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
     }
   }
 
+  // **ref 발행 이후의 상태는 ref 를 요구한다**(Codex PR#289 5R P1). 발행은 composed CAS **앞**이므로
+  // ⓐpost-CAS composed ⓑ`published` ⓒ`finalized` 에서 ref 가 **사라진 것**은 프로토콜상 불가능하고,
+  // 그것을 `no-mutation`(= 포기·재준비 적격)으로 답하면 **ref 롤백·손상이 그대로 숨는다**.
+  // ⚠ `abandoned` 는 제외한다 — `prepared` 에서 포기하면 ref 는 애초에 존재한 적이 없다.
+  const refRequired =
+    current.stage === 'published' ||
+    current.stage === 'finalized' ||
+    (current.stage === 'composed' && binding === 'post-cas')
+  if (refRequired && ownRefs.length === 0) {
+    return {
+      kind: 'reconciliation-required',
+      blockers: [blocker('result-ref-missing', current.resultRef)],
+    }
+  }
+
   switch (current.stage) {
     case 'prepared':
       // (A) 에서 결과 ref 는 **composed 저널 뒤**에만 발행된다 — `prepared` 상태의 ref 는 설명되지 않는다.
-      if (ownRefs.length > 0) {
-        return {
-          kind: 'reconciliation-required',
-          blockers: ownRefs.map((r) => blocker('result-ref-unattributed', r.refName)),
-        }
-      }
+      //
+      // ⚠ 그 상태를 위한 **전용 arm 은 두지 않는다**(도달 불가 · Codex PR#289 5R 의 연쇄): `prepared`
+      //   저널이 현재 txn 을 가리키려면 결속이 post-CAS 여야 하고(`revision = expected + 1`), 그 저널의
+      //   ref 는 `expected + 2 = revision + 1` 이라 **항상 앵커 후보**다. 이름이 다르면 그건 위의
+      //   mismatch 축이 답한다. 복구표가 요구하는 **결과**(reconciliation)는 앵커가 그대로 보장한다.
       return { kind: 'no-mutation' }
     case 'composed':
-      // ref 발행 전 크래시 = 되돌릴 것이 없다. 그 외는 **완료 확인**이다(정정 204ⓑ · 재실행 아님).
+      // ref 발행 전(pre-CAS) 크래시 = 되돌릴 것이 없다. 그 외는 **완료 확인**이다(정정 204ⓑ).
       //
       // ⚠ **이름·OID·산술 대조가 여기 없는 것은 누락이 아니라 배치다**(Codex PR#289 4R P1):
       // ⓐ이름·OID 는 **stage 와 무관하게** 위에서 대조했다(`published` 분기가 그것을 빠뜨렸던 것이
-      //   4R 지적이다) ⓑ산술(`refRevision === expected + 1`)은 **③ 저널 검증**이 `composed` 저널의
-      //   `resultRef` 이름 자체에 강제하고 ⓐ 가 관측 ref 를 그 이름에 묶으므로 재검사는 가려진다.
-      // 따라서 여기 남은 상태는 **`post-cas` 하나뿐**이다(도달성 증명): ownRefs 는 전부
-      // `refRevision = expected + 1` 이면서 `≤ record.revision`(초과분은 ⑤ 가 면제·차단) 이므로
-      // `expected + 1 ≤ revision` 이고, 이는 `pre-cas`(= `expected === revision`)와 양립하지 않는다.
+      //   4R 지적이다) ⓑ산술은 **③ 저널 검증**이 `resultRef` 이름 자체에 stage 별 식으로 강제하고
+      //   ⓐ 가 관측 ref 를 그 이름에 묶으므로 재검사는 가려진다.
       return ownRefs.length === 0 ? { kind: 'no-mutation' } : { kind: 'normal-wait' }
     case 'published':
       // C6 — `published` 는 활성이 아니고 차단하지 않는다. 다음 단계 전진은 시퀀서의 정상 경로다.

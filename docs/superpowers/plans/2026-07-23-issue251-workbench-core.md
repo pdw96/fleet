@@ -1385,6 +1385,27 @@ U+0000 이 섞였고 발견 경로는 게이트가 아니라 `grep` 이 그 파�
 보이고**, 반대로 그 방어가 없을 때의 구멍은 **테스트가 증명해 주지 않는다.** 픽스처는 「통과시키려고
 맞추는 값」이 아니라 **프로토콜이 실제로 만들 수 있는 상태**여야 한다.
 
+**Codex 5R — P1×4 · 전부 실재 · 전부 수용**(4R 에서 내가 **부분 수용으로 좁힌 축**이 정확한 식으로
+되돌아왔다).
+
+| # | 지적 → 확정 | 근거 |
+|---|---|---|
+| 223 | **결과 ref 의 revision 산술은 stage 전수에 고정된다** — `ref = expected + 2 - stageIndex` | 4R 에서 나는 「`expected+1` 은 composed 에서만 성립」이라며 **다른 stage 를 면제**했는데, 정확한 답은 면제가 아니라 **stage 별 식**이었다. `resultRef` 는 불변이고 ref 는 composed CAS 앞에서 한 번만 발행되므로, `prepared` 저널이 관측한 revision 을 `R0` 라 하면 **ref = R0 + 2 고정**이고 `expected = R0 + stageIndex` 다. ⚠ `abandoned` 만 정의역 밖이다(포기 시점에 따라 expected 가 달라진다) |
+| 224 | **ref 발행 이후의 상태는 ref 를 요구한다** — post-CAS composed · `published` · `finalized` | 발행이 composed CAS **앞**이므로 그 상태에서 ref 가 **사라진 것**은 프로토콜상 불가능한데, 초안은 `no-mutation`(포기·재준비 적격)을 답해 **ref 롤백·손상을 그대로 숨겼다** → 신설 종별 `result-ref-missing`. `abandoned` 는 제외(`prepared` 에서 포기하면 ref 가 존재한 적 없다) |
+| 225 | **완결 귀속은 결과 증거를 전제한다** — `prev.currentIntegrationResultOid` 부재면 거부 | 3R 정정 217 은 **txn identity 만** 봤다. `prepared` 상태의 T1 을 그대로 `integrated`+`completed: T1` 로 커밋해도 두 층이 통과해 **결과가 존재한 적 없는 bench 가 완결로 기록**된다. ⚠ 도달성 자체는 여전히 §W-8 소관(정직 표기 유지) |
+| 226 | **lifecycle 은 통합 축과 독립으로 단조다**(`open → integrated → archived`) | 통합 축을 건드리지 않는 CAS 는 그 축의 검사를 **통째로 건너뛴다**(정정 195 의 no-op 규칙). 그래서 archived 레코드를 `archivedBranch` 만 떼고 `open` 으로 되돌리는 제출이 **어느 층에도 걸리지 않았다** — 종결된 bench 가 되살아난다. lifecycle 검사를 통합 축 **밖**에 세운다 |
+
+**이 라운드가 만든 연쇄**: 223 이 서면서 복구표의 「`prepared` ∧ ref 존재」 행이 **도달 불가**가 됐다 —
+그 저널이 현재 txn 을 가리키려면 결속이 post-CAS 여야 하고(`revision = expected + 1`), 그 ref 는
+`expected + 2 = revision + 1` 이라 **항상 앵커 후보**다. 전용 arm(`result-ref-unattributed`)을 제거하고
+「표가 요구하는 **결과**는 앵커가 보장한다」를 코드·스펙에 적었다. **뮤테이션 5차 6/6 잡힘.**
+
+**교훈(5R) — 「stage 마다 다르다」는 관찰은 면제의 근거가 아니라 식을 찾으라는 신호다.** 4R 에서 나는
+`published` 저널이 RED 가 되는 것을 보고 **검사를 면제**했는데, 옳은 처방은 **stage 를 변수로 넣은 하나의
+식**이었다. 면제는 그 자리에 구멍을 남기고(잘못된 `prepared` ref 이름이 통과했다) 식은 남기지 않는다.
+픽스처도 같은 축에서 정리됐다 — stage 별 산술을 **`walBound` 헬퍼 한 곳**으로 옮기니 「존재할 수 없는 쌍」이
+구조적으로 만들어지지 않는다.
+
 **교훈 — 「다른 층이 막는다」는 문장은 그 층을 열어 확인하기 전까지 주장이 아니라 가설이다.** 이번에
 두 번 다 내가 **같은 파일 안의 함수**(`checkInvariants`)를 열어보지 않고 적었다. 이 레포는 이미 같은
 형태로 세 번 학습했다(정정 133·152·156 의 「검증 안 된 안전 주장의 문서화」 · [[static-guard-form-over-name]]).

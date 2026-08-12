@@ -40,6 +40,29 @@ const TREE = 'c'.repeat(40)
 /** 관측된 권위 revision. 결과 ref 는 `N+1` 을 이름에 싣는다(계획 정정 196). */
 const N = 5
 
+/**
+ * **프로토콜이 실제로 만들 수 있는 저널**을 만든다(Codex PR#289 5R P1 이후 · 계획 정정 223).
+ *
+ * `resultRef` 는 불변이고 ref 는 composed CAS **앞**에서 한 번만 발행되므로, `prepared` 저널이 관측한
+ * revision 을 `R0` 라 하면 **ref = R0 + 2** 로 고정이고 `expected = R0 + stageIndex` 다. 이 산술을
+ * 픽스처마다 손으로 맞추면 **결속상 존재할 수 없는 쌍**이 정상으로 고정된다(4R·5R 에서 실제로 그랬다).
+ *
+ * 기본 레코드(`revision: N` · current T1 `prepared`)를 만든 저널의 `R0` 는 **`N - 1`** 이다 —
+ * `prepared` CAS 가 `R0 → R0+1 = N` 으로 커밋했기 때문이다.
+ */
+const R0 = N - 1
+const STAGE_IDX = { prepared: 0, composed: 1, published: 2, finalized: 3 } as const
+
+const walBound = (stage: keyof typeof STAGE_IDX): Partial<IntegrationTxnRecord> => ({
+  stage,
+  expectedAuthorityRevision: R0 + STAGE_IDX[stage],
+  resultRef: formatResultRef(BENCH, R0 + 2, T1),
+  previousAuthorityStage: stage === 'prepared' ? undefined : WAL_ORDER[STAGE_IDX[stage] - 1],
+  nextAuthorityStage: stage,
+})
+
+const WAL_ORDER = ['prepared', 'composed', 'published', 'finalized'] as const
+
 const record = (over: Partial<BenchAuthorityRecord> = {}): BenchAuthorityRecord =>
   ({
     schemaVersion: 1,
@@ -177,7 +200,7 @@ describe('T73 — 앵커 발화(권위 단독 롤백)', () => {
         prefixRefs: refs([REF_N1, OID]),
         journal: entries(
           journal({
-            stage: 'published',
+            ...walBound('published'),
             publishedAt: 9,
             expectedAuthorityRevision: N + 1,
             previousAuthorityStage: 'composed',
@@ -221,7 +244,7 @@ describe('T74 — 음성 통제(오탐 0)', () => {
         prefixRefs: refs([REF_N1, OID]),
         journal: entries(
           journal({
-            stage: 'published',
+            ...walBound('published'),
             publishedAt: 9,
             expectedAuthorityRevision: N + 1,
             previousAuthorityStage: 'composed',
@@ -271,7 +294,12 @@ describe('T76·T90 — 보존된 전 결과 ref 에 같은 식을 적용한다',
           [formatResultRef(BENCH, N, T2), OID2],
         ),
         journal: entries(
-          journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined }),
+          journal({
+            ...walBound('prepared'),
+            resultTree: undefined,
+            resultOid: undefined,
+            draftDigest: draftDigestOf(record()),
+          }),
         ),
       }),
     )
@@ -514,7 +542,12 @@ describe('면제 10조건 — 하나라도 깨지면 승격이 아니다', () =>
       obs({
         prefixRefs: refs([REF_N1, OID]),
         journal: entries(
-          journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined }),
+          journal({
+            ...walBound('prepared'),
+            resultTree: undefined,
+            resultOid: undefined,
+            draftDigest: draftDigestOf(record()),
+          }),
         ),
       }),
     )
@@ -578,34 +611,46 @@ describe('면제 10조건 — 하나라도 깨지면 승격이 아니다', () =>
  * ============================================================================================= */
 
 describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () => {
-  const prepared = journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined })
+  const prepared = journal({
+    ...walBound('prepared'),
+    resultTree: undefined,
+    resultOid: undefined,
+    draftDigest: draftDigestOf(record()),
+  })
 
   it('prepared ∧ ref 부재 → no-mutation(포기·재준비 적격)', () => {
     expect(classifyRecovery(obs({ journal: entries(prepared) })).kind).toBe('no-mutation')
   })
 
-  it('prepared ∧ ref 존재 → result-ref-unattributed', () => {
-    // (A) 에서 ref 는 **composed 저널 뒤**에만 발행된다 — prepared 상태의 ref 는 설명되지 않는다.
-    // ⚠ 픽스처는 **결속된 쌍**이어야 한다: `prepared` 저널은 「진행 중 통합 없음 → prepared」 전이를
-    //    선기록하므로 previous 는 부재이고 next 가 `prepared` 다(post-cas: revision === expected + 1).
+  /**
+   * **복구표의 「`prepared` ∧ ref 존재」 행은 전용 arm 없이 답한다**(Codex PR#289 5R P1 의 연쇄).
+   *
+   * stage 별 ref 산술이 서면서 그 상태는 **구조적으로 앵커 후보**가 됐다: `prepared` 저널이 현재 txn 을
+   * 가리키려면 결속이 post-CAS 여야 하고(`revision = expected + 1`), 그 저널의 ref 는 `expected + 2`
+   * = `revision + 1` 이라 **항상 `> revision`** 이다. 이름이 다르면 그건 mismatch 라는 다른 축이다.
+   * 그래서 전용 `result-ref-unattributed` arm 은 **도달 불가**가 되어 제거했다(정정 183·189) —
+   * 표가 요구하는 **결과**(reconciliation)는 앵커가 그대로 보장한다.
+   */
+  it('prepared ∧ ref 존재 → reconciliation(앵커가 답한다 · 전용 arm 없음)', () => {
     const rec = record({ revision: N + 3 })
     const boundPrepared = journal({
-      stage: 'prepared',
+      ...walBound('prepared'),
       resultTree: undefined,
       resultOid: undefined,
-      previousAuthorityStage: undefined,
-      nextAuthorityStage: 'prepared',
       expectedAuthorityRevision: N + 2,
+      resultRef: formatResultRef(BENCH, N + 4, T1),
       draftDigest: draftDigestOf(rec),
     })
     const v = classifyRecovery(
       obs({
         authority: { kind: 'found', record: rec },
-        prefixRefs: refs([REF_N1, OID]),
+        // 존재하는 ref 는 **그 저널이 이름 붙인 바로 그것**이어야 한다(아니면 mismatch 라는 다른 축).
+        prefixRefs: refs([formatResultRef(BENCH, N + 4, T1), OID]),
         journal: entries(boundPrepared),
       }),
     )
-    expect(kinds(v)).toContain('result-ref-unattributed')
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('anchor-rollback')
   })
 
   it('composed ∧ ref 부재 → no-mutation(ref 발행 전 크래시)', () => {
@@ -651,7 +696,7 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
 
   it('published 저널은 차단하지 않는다(C6 · 정상 대기)', () => {
     const pub = journal({
-      stage: 'published',
+      ...walBound('published'),
       publishedAt: 9,
       expectedAuthorityRevision: N + 1,
       previousAuthorityStage: 'composed',
@@ -665,6 +710,7 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
     const v = classifyRecovery(
       obs({
         authority: { kind: 'found', record: rec },
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID]),
         journal: entries(journal({ ...pub, draftDigest: draftDigestOf(rec) })),
       }),
     )
@@ -674,31 +720,40 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
   it('finalized·abandoned 잔존 → 청소 복구(멱등 종결 · 삭제 아님)', () => {
     // ⚠ 권위 stage 는 저널보다 한 단계 뒤까지만 허용된다(WAL 교차 결속) — `finalized` 저널의 짝은
     // `published` 권위다. `abandoned` 는 종결 기록이라 그 결속의 정의역 밖이다(포기 CAS 가 pending).
-    const cases = [
-      [
-        'finalized',
-        record({
-          revision: N + 3,
-          currentIntegrationStage: 'published',
-          currentIntegrationResultOid: OID,
-        }),
-      ],
-      ['abandoned', record({ revision: N + 3 })],
-    ] as const
-    for (const [stage, rec] of cases) {
-      const j = journal({
-        stage,
-        // 결속된 pre-cas 쌍 — 종결 CAS 가 아직 커밋되지 않은 상태(expected === 관측 revision).
-        expectedAuthorityRevision: N + 3,
-        ...(stage === 'finalized'
-          ? { publishedAt: 9, previousAuthorityStage: 'published', nextAuthorityStage: 'finalized' }
-          : { abandonedAt: 9, abandonReason: 'user-abandon', nextAuthorityStage: undefined }),
-      })
-      const v = classifyRecovery(
-        obs({ authority: { kind: 'found', record: rec }, journal: entries(j) }),
-      )
-      expect(v.kind).toBe('idempotent-cleanup')
-    }
+    // 결속된 **pre-CAS** 쌍 — 종결 CAS 가 아직 커밋되지 않은 상태(expected === 관측 revision).
+    // ⚠ `finalized` 는 ref 를 **요구**하고(5R P1) `abandoned` 는 요구하지 않는다(prepared 에서
+    //    포기하면 ref 가 존재한 적이 없다).
+    const finalizedRec = record({
+      revision: R0 + 3,
+      currentIntegrationStage: 'published',
+      currentIntegrationResultOid: OID,
+    })
+    const finalized = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: finalizedRec },
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID]),
+        journal: entries(journal({ ...walBound('finalized'), publishedAt: 9 })),
+      }),
+    )
+    expect(finalized.kind).toBe('idempotent-cleanup')
+
+    const abandonedRec = record({ revision: N + 3 })
+    const abandoned = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: abandonedRec },
+        journal: entries(
+          journal({
+            stage: 'abandoned',
+            expectedAuthorityRevision: N + 3,
+            previousAuthorityStage: 'prepared',
+            nextAuthorityStage: undefined,
+            abandonedAt: 9,
+            abandonReason: 'user-abandon',
+          }),
+        ),
+      }),
+    )
+    expect(abandoned.kind).toBe('idempotent-cleanup')
   })
 
   it('권위가 이미 N+1 이어도 반영된 결과 증거가 다르면 완료 확인이 아니다(정정 204ⓒ)', () => {
@@ -796,6 +851,30 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
    * **Codex PR#289 4R P1** — `published` 저널의 ref 는 revision 이 권위 이하라 앵커 후보가 아니다.
    * 그 분기가 OID 를 대조하지 않으면, 교체·손상된 ref 위에서 시퀀서가 게시를 계속한다.
    */
+  /**
+   * **Codex PR#289 5R P1** — ref 발행은 composed CAS **앞**이므로 post-CAS 상태에서 ref 가 **사라진
+   * 것**은 프로토콜상 불가능하다. 그것을 `no-mutation`(포기·재준비 적격)으로 답하면 **ref 롤백·손상이
+   * 그대로 숨는다.** ⚠ pre-CAS composed(= 발행 전 크래시)는 그대로 `no-mutation` 이어야 한다.
+   */
+  it('post-CAS 인데 결과 ref 가 사라졌으면 무변이 적격이 아니다', () => {
+    const rec = record({
+      revision: N + 1,
+      currentIntegrationStage: 'composed',
+      currentIntegrationResultOid: OID,
+    })
+    const gone = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        journal: entries(journal({ draftDigest: draftDigestOf(rec) })),
+      }),
+    )
+    expect(gone.kind).toBe('reconciliation-required')
+    expect(kinds(gone)).toContain('result-ref-missing')
+
+    // 대조군 — pre-CAS(권위가 아직 `prepared`)는 ref 가 없는 것이 **정상 크래시 창**이다.
+    expect(classifyRecovery(obs({ journal: entries(journal()) })).kind).toBe('no-mutation')
+  })
+
   it('published 저널이어도 ref 가 교체됐으면 정상 대기가 아니다', () => {
     const rec = record({
       revision: N + 2,
@@ -803,7 +882,7 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
       currentIntegrationResultOid: OID,
     })
     const pub = journal({
-      stage: 'published',
+      ...walBound('published'),
       publishedAt: 9,
       expectedAuthorityRevision: N + 1,
       previousAuthorityStage: 'composed',
@@ -824,7 +903,7 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
   it('고아 published 저널은 차단하지 않는다(활성 집합 = prepared·composed 뿐 · §3-T33)', () => {
     const orphanPublished = journal({
       txnId: T2,
-      stage: 'published',
+      ...walBound('published'),
       publishedAt: 9,
       resultRef: formatResultRef(BENCH, N + 1, T2),
       expectedAuthorityRevision: N + 1,
@@ -857,7 +936,12 @@ describe('I11 — 고아 활성 저널은 활성 집합 정의가 아니라 복�
       obs({
         authority: { kind: 'found', record: record(noCurrent) },
         journal: entries(
-          journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined }),
+          journal({
+            ...walBound('prepared'),
+            resultTree: undefined,
+            resultOid: undefined,
+            draftDigest: draftDigestOf(record()),
+          }),
         ),
       }),
     )
@@ -881,7 +965,12 @@ describe('I11 — 고아 활성 저널은 활성 집합 정의가 아니라 복�
         authority: { kind: 'found', record: record({ revision: N + 3, ...noCurrent }) },
         prefixRefs: refs([REF_N1, OID]),
         journal: entries(
-          journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined }),
+          journal({
+            ...walBound('prepared'),
+            resultTree: undefined,
+            resultOid: undefined,
+            draftDigest: draftDigestOf(record()),
+          }),
         ),
       }),
     )
@@ -903,7 +992,7 @@ describe('P1 — 저널 identity 는 권위 유무와 무관하게 검증한다'
         authority: { kind: 'absent' },
         journal: entries(
           journal({
-            stage: 'prepared',
+            ...walBound('prepared'),
             resultTree: undefined,
             resultOid: undefined,
             repoCommonGitDir: '/other/.git',
@@ -941,7 +1030,12 @@ describe('P1 — 권위와 저널의 교차 순서 결속(WAL 선기록)', () =>
           }),
         },
         journal: entries(
-          journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined }),
+          journal({
+            ...walBound('prepared'),
+            resultTree: undefined,
+            resultOid: undefined,
+            draftDigest: draftDigestOf(record()),
+          }),
         ),
       }),
     )
@@ -956,7 +1050,7 @@ describe('P1 — 권위와 저널의 교차 순서 결속(WAL 선기록)', () =>
       obs({
         journal: entries(
           journal({
-            stage: 'published',
+            ...walBound('published'),
             publishedAt: 9,
             expectedAuthorityRevision: N + 1,
             previousAuthorityStage: 'composed',
@@ -984,7 +1078,7 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
     // 그대로 내주고 있었다.
     const orphanT2 = journal({
       txnId: T2,
-      stage: 'prepared',
+      ...walBound('prepared'),
       resultTree: undefined,
       resultOid: undefined,
       resultRef: formatResultRef(BENCH, N + 1, T2),
@@ -1021,7 +1115,7 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
         journal: entries(
           journal({
             txnId: T2,
-            stage: 'prepared',
+            ...walBound('prepared'),
             resultTree: undefined,
             resultOid: undefined,
             resultRef: formatResultRef(BENCH, N + 1, T2),
@@ -1045,7 +1139,12 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
           }),
         },
         journal: entries(
-          journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined }),
+          journal({
+            ...walBound('prepared'),
+            resultTree: undefined,
+            resultOid: undefined,
+            draftDigest: draftDigestOf(record()),
+          }),
         ),
       }),
     )

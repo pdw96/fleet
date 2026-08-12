@@ -1004,6 +1004,12 @@ const AUTHORITY_STAGE_ORDER: readonly IntegrationStage[] = [
   'finalized',
 ]
 
+/**
+ * lifecycle 의 **단조 순서**(스펙 §5 「lifecycle 회귀(재개) 없음」). `open → integrated → archived` 이며
+ * 뒤로 가는 전이는 없다(`open → archived` 처럼 건너뛰는 전진은 허용 — 통합 없이 보관할 수 있다).
+ */
+const LIFECYCLE_ORDER: readonly BenchLifecycle[] = ['open', 'integrated', 'archived']
+
 /** 미종결 = 아직 `finalized` 에 도달하지 않은 진행 중 통합. 새 시도의 시작을 막는 기준이다. */
 const isPendingStage = (s: IntegrationStage | undefined): boolean =>
   s !== undefined && s !== 'finalized'
@@ -1113,6 +1119,14 @@ export function checkTransitionInvariants(
     }
   }
 
+  // **lifecycle 회귀 없음**(Codex PR#289 5R P1 · 스펙 §5). 통합 축을 건드리지 않는 CAS 는 위에서
+  // 통째로 건너뛰므로, archived 레코드를 `archivedBranch` 만 떼고 `open` 으로 되돌리는 제출이 **어느
+  // 층에도 걸리지 않았다** — 종결된 bench 가 되살아나 이후 작업이 가능해진다. lifecycle 은 통합 축과
+  // **독립**이므로 그 검사도 독립으로 세운다.
+  const li = (l: BenchLifecycle): number => LIFECYCLE_ORDER.indexOf(l)
+  if (li(next.lifecycle) < li(prev.lifecycle)) {
+    v.push(`전이: lifecycle 회귀 금지(${prev.lifecycle} → ${next.lifecycle})`)
+  }
   if (next.sourceGeneration < prev.sourceGeneration) {
     v.push(`전이: sourceGeneration 은 단조다(${prev.sourceGeneration} → ${next.sourceGeneration})`)
   }
@@ -1121,16 +1135,23 @@ export function checkTransitionInvariants(
   // 커밋해도 단일 레코드·전이 검사가 **둘 다 통과**했고, 무관한 txn 이 완결로 기록되면서 부분 통합이
   // 숨는다. 스펙 §W-8 은 「완결은 **권위 시도만**(`currentIntegrationTxnId` 의 도달성) · 관측 CAS 는
   // **txn 동일**」이므로 그 결속을 여기서 코드로 세운다.
-  // ⚠ 정직 표기: **stage·도달성 전제는 여기서 보지 않는다** — `resultOid` 가 base 에서 도달 가능한지는
-  //    외부 관측(§W-8)이고 이 순수 함수의 입력에 없다. 여기서 세우는 것은 **귀속 identity** 뿐이다.
+  // ⚠ 정직 표기: **도달성 전제는 여기서 보지 않는다** — `resultOid` 가 base 에서 도달 가능한지는
+  //    외부 관측(§W-8)이고 이 순수 함수의 입력에 없다.
   if (
     prev.completedIntegrationTxnId === undefined &&
-    next.completedIntegrationTxnId !== undefined &&
-    next.completedIntegrationTxnId !== prev.currentIntegrationTxnId
+    next.completedIntegrationTxnId !== undefined
   ) {
-    v.push(
-      '전이: 완결 귀속은 직전 레코드의 current txn 이어야 한다(무관한 txn 을 완결로 기록 금지)',
-    )
+    if (next.completedIntegrationTxnId !== prev.currentIntegrationTxnId) {
+      v.push(
+        '전이: 완결 귀속은 직전 레코드의 current txn 이어야 한다(무관한 txn 을 완결로 기록 금지)',
+      )
+    } else if (prev.currentIntegrationResultOid === undefined) {
+      // ⚠ **txn 이 같다는 것만으로는 부족하다**(Codex PR#289 5R P1). `prepared` 상태의 T1 을 그대로
+      // `integrated` + `completed: T1` 로 커밋해도 두 층이 통과해 **결과가 존재한 적 없는 bench 를
+      // 완결로 기록**한다. §W-8 의 완결 정의는 「`resultOid` 의 base 도달성」이므로 **결과 증거의
+      // 존재**가 최소 전제다(불변식 ③d 가 그것을 `stage >= composed` 와 등가로 만든다).
+      v.push('전이: 결과 증거 없는 txn 을 완결로 기록할 수 없다(resultOid 부재)')
+    }
   }
   if (
     prev.completedIntegrationTxnId !== undefined &&
