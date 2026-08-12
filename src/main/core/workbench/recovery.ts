@@ -50,6 +50,7 @@ import {
 } from './authority'
 import {
   digestAuthorityDraft,
+  digestJournalRecord,
   isActiveJournalStage,
   type IntegrationTxnRecord,
   type JournalReadResult,
@@ -126,8 +127,10 @@ export type RecoveryBlockerKind =
   | 'journal-behind-authority'
   /** 저널이 권위보다 두 단계 이상 앞섰다 — 정정 204 불변식 ① 위반. */
   | 'journal-too-far-ahead'
-  /** stage 는 맞는데 revision·결과 증거·세대 결속이 어긋났다(같은 단계 손상 쌍). */
+  /** stage 는 맞는데 revision·결과 증거·세대·draft 결속이 어긋났다(같은 단계 손상 쌍). */
   | 'journal-authority-binding'
+  /** 저널이 든 `resultRef` 이름 자체가 문법·bench·txn·revision 결속을 깬다(git ref 유무와 무관). */
+  | 'journal-result-ref-invalid'
   /** 설명되지 않는 `refRevision > record.revision` — 앵커 발화. */
   | 'anchor-rollback'
   | 'result-ref-unattributed'
@@ -146,7 +149,9 @@ export type ExemptionFailure =
   | 'terminal-evidence-present'
   | 'ref-name-mismatch'
   | 'oid-mismatch'
-  | 'arithmetic-binding'
+  // ⚠ `arithmetic-binding` 은 **폐기**했다(Codex PR#289 4R P1 의 연쇄) — ③ 저널 검증이 `composed`
+  //    저널의 `resultRef` 이름에 `= expected + 1` 을 강제하고 ④ 가 관측 ref 를 그 이름에 묶으므로
+  //    이 자리의 산술 재검사는 **생산자가 없다**. 어휘만 남기면 「검사한다」로 읽힌다.
   | 'expected-revision-mismatch'
   | 'stage-binding-mismatch'
   | 'transition-illegal'
@@ -216,6 +221,12 @@ function assertNever(x: never): never {
   throw new Error(`복구 판정: 미처리 판별 종별 ${JSON.stringify(x)}`)
 }
 
+/** 권위 레코드에서 CAS 가 배정한 두 필드를 떼어낸 **draft 투영**. `draftDigest` 대조의 정의역이다. */
+const toDraft = (record: BenchAuthorityRecord): BenchAuthorityDraft => {
+  const { revision: _revision, writtenBy: _writtenBy, ...rest } = record
+  return rest as BenchAuthorityDraft
+}
+
 /** 후속 CAS 가 제출할 draft 의 **재구성**(면제 조건 ⑧). 현재 권위 레코드 위에 저널의 의도를 얹는다. */
 const reconstructComposedDraft = (
   record: BenchAuthorityRecord,
@@ -257,7 +268,10 @@ const evaluateExemption = (
   }
   if (j.resultRef !== ref.refName) failures.push('ref-name-mismatch') // ④
   if (j.resultOid !== ref.oid) failures.push('oid-mismatch') // ⑤
-  if (ref.resultingRevision !== j.expectedAuthorityRevision + 1) failures.push('arithmetic-binding') // ⑥
+  // ⑥ 산술 결속(`refRevision === expected + 1`)은 **여기 없다** — ③ 저널 검증이 `composed` 저널의
+  //    `resultRef` **이름 자체**에 그 등식을 이미 강제하고, ④ 가 관측 ref 이름을 그것과 동일하게
+  //    묶으므로 이 자리의 재검사는 **완전히 가려진다**(뮤테이션으로 확인 · 정정 189·183 의 규율).
+  //    강제자가 사라지면 이름 검증 쪽이 RED 가 된다.
   if (j.expectedAuthorityRevision !== record.revision) failures.push('expected-revision-mismatch') // ⑦
 
   // ⑧ 결속 4필드가 **현재 권위에서 재구성되는 후속 전이**와 일치하는가.
@@ -291,7 +305,10 @@ const sealEvidence = (
     ref.oid,
     ref.txnId,
     String(journal.expectedAuthorityRevision),
-    journal.draftDigest,
+    // ⚠ `draftDigest` 는 **권위 draft 투영**만 덮는다(Codex PR#289 4R P1). 저널의 통합 입력
+    //    (`sourceSnapshot`·`targetBranch`·`targetHeadBeforeIntegration`·`resultTree` …)은 그 투영 밖이라,
+    //    그것만 실으면 **바뀐 통합 의도가 같은 증거로** 재검증을 통과한다. 레코드 **전체**를 봉인한다.
+    digestJournalRecord(journal),
     ...refs.map((r) => `${r.refName} ${r.oid}`).sort(),
   ]
   // 구분자는 **필드 경계**다 — 붙여 이으면 `["ab","c"]` 와 `["a","bc"]` 가 같은 다이제스트를 낸다.
@@ -391,6 +408,24 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
         blockers.push(blocker('journal-identity-mismatch', entry.txnId))
         continue
       }
+      // **저널이 든 `resultRef` 이름 자체를 검증한다**(Codex PR#289 4R P1). PR3b 는 「비어 있지 않은
+      // 문자열」까지만 봤고 문법 소유가 이 PR 로 넘어왔는데, 초안은 **관측된 git ref** 만 파싱하고
+      // 저널이 든 이름은 한 번도 보지 않았다 — 그 값은 **불변 필드**라, 아직 ref 가 없는 `prepared`
+      // 저널의 잘못된 이름이 `no-mutation` 을 타고 살아남아 나중에 **그대로 발행**된다.
+      const named = parseResultRef(j.resultRef)
+      const nameBound =
+        named.kind === 'ok' && named.benchId === obs.identity.benchId && named.txnId === j.txnId
+      // ⚠ **revision 산술은 `composed` 에서만 고정된다**(부분 수용 · 근거는 계획 정정 219): ref 는
+      //    composed CAS **앞**에서 발행되므로 `refRevision = composed 저널의 expected + 1` 이고,
+      //    같은 파일이 `published` 로 전진하면 expected 가 그만큼 올라가 등식이 성립하지 않는다.
+      //    모든 stage 에 `expected + 1` 을 요구하면 **정상 published 저널이 전부 RED** 다.
+      const revisionBound =
+        j.stage !== 'composed' ||
+        (named.kind === 'ok' && named.resultingRevision === j.expectedAuthorityRevision + 1)
+      if (!nameBound || !revisionBound) {
+        blockers.push(blocker('journal-result-ref-invalid', entry.txnId))
+        continue
+      }
       journals.set(j.txnId, j)
     }
   }
@@ -448,12 +483,17 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
     const postCas =
       record.currentIntegrationStage === current.nextAuthorityStage &&
       record.revision === current.expectedAuthorityRevision + 1
-    // CAS 가 이미 커밋됐다면 권위는 저널이 증언한 **그 결과**를 들고 있어야 한다.
+    // CAS 가 이미 커밋됐다면 권위는 저널이 증언한 **그 결과**를 들고 있어야 하고, **draft 전체**가
+    // 저널이 선기록한 의도와 같아야 한다(Codex PR#289 4R P1). stage·revision·세대·resultOid 만 보면
+    // `lifecycle`·`sourceGeneration`·`activeActivity` 처럼 **draft 투영 안의 나머지 필드**가 롤백·손상
+    // 돼도 통과해, 결과 ref 까지 맞는 상태에서 `normal-wait` 이 나온다. `draftDigest` 는 저널이 이미
+    // 들고 있는 값이므로 **추가 입력 없이** 그 구멍을 닫는다.
     const evidenceOk =
       record.currentIntegrationTxnGeneration === current.integrationGeneration &&
       (!postCas ||
-        current.resultOid === undefined ||
-        record.currentIntegrationResultOid === current.resultOid)
+        ((current.resultOid === undefined ||
+          record.currentIntegrationResultOid === current.resultOid) &&
+          digestAuthorityDraft(toDraft(record)) === current.draftDigest))
     if ((!preCas && !postCas) || !evidenceOk) {
       blockers.push(blocker('journal-authority-binding', current.txnId))
     }
@@ -513,6 +553,25 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   if (record === undefined || current === undefined) return { kind: 'no-mutation' }
 
   const ownRefs = parsedRefs.filter((r) => r.txnId === current.txnId)
+
+  // **현재 txn 의 ref 는 stage 와 무관하게 저널의 증언과 같아야 한다**(Codex PR#289 4R P1).
+  // `published` 저널의 ref 는 revision 이 권위 이하라 앵커 후보가 아니고, 초안은 그 분기에서 OID 를
+  // 한 번도 대조하지 않은 채 `normal-wait` 을 답했다 — ref 가 다른 커밋으로 교체·손상됐어도 시퀀서가
+  // **잘못된 결과로 게시를 계속**한다. 이름·OID 대조를 **표 앞으로** 끌어올려 한 곳에서만 판정한다.
+  // ⚠ OID 대조는 **저널이 결과를 증언할 때만** 성립한다 — `prepared` 는 `resultOid` 가 아직 없고(그
+  //    값은 `composed` 에서 선기록된다), 무조건 비교하면 정상 `prepared` 상태가 전부 RED 다.
+  const refMismatch = ownRefs.filter(
+    (r) =>
+      r.refName !== current.resultRef ||
+      (current.resultOid !== undefined && r.oid !== current.resultOid),
+  )
+  if (refMismatch.length > 0) {
+    return {
+      kind: 'reconciliation-required',
+      blockers: refMismatch.map((r) => blocker('result-ref-mismatch', r.refName)),
+    }
+  }
+
   switch (current.stage) {
     case 'prepared':
       // (A) 에서 결과 ref 는 **composed 저널 뒤**에만 발행된다 — `prepared` 상태의 ref 는 설명되지 않는다.
@@ -524,7 +583,16 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       }
       return { kind: 'no-mutation' }
     case 'composed':
-      return classifyComposed(current, ownRefs)
+      // ref 발행 전 크래시 = 되돌릴 것이 없다. 그 외는 **완료 확인**이다(정정 204ⓑ · 재실행 아님).
+      //
+      // ⚠ **이름·OID·산술 대조가 여기 없는 것은 누락이 아니라 배치다**(Codex PR#289 4R P1):
+      // ⓐ이름·OID 는 **stage 와 무관하게** 위에서 대조했다(`published` 분기가 그것을 빠뜨렸던 것이
+      //   4R 지적이다) ⓑ산술(`refRevision === expected + 1`)은 **③ 저널 검증**이 `composed` 저널의
+      //   `resultRef` 이름 자체에 강제하고 ⓐ 가 관측 ref 를 그 이름에 묶으므로 재검사는 가려진다.
+      // 따라서 여기 남은 상태는 **`post-cas` 하나뿐**이다(도달성 증명): ownRefs 는 전부
+      // `refRevision = expected + 1` 이면서 `≤ record.revision`(초과분은 ⑤ 가 면제·차단) 이므로
+      // `expected + 1 ≤ revision` 이고, 이는 `pre-cas`(= `expected === revision`)와 양립하지 않는다.
+      return ownRefs.length === 0 ? { kind: 'no-mutation' } : { kind: 'normal-wait' }
     case 'published':
       // C6 — `published` 는 활성이 아니고 차단하지 않는다. 다음 단계 전진은 시퀀서의 정상 경로다.
       return { kind: 'normal-wait' }
@@ -535,54 +603,4 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
     default:
       return assertNever(current.stage)
   }
-}
-
-/**
- * `composed` 저널 × 현재 이하의 ref. **여기 도달한 ref 는 전부 `refRevision ≤ record.revision`** 이다
- * (초과분은 ⑤ 가 이미 면제하거나 blocker 로 답했다).
- *
- * 정정 204 의 **수렴 규칙 3분기**가 이 함수다: ⓐ권위가 여전히 `N` → 동일 composed CAS 재실행(그 갈래는
- * ⑤ 의 면제로 이미 답했다) ⓑ권위가 이미 `N+1` ∧ composed 전이가 **정확히** 반영 → 재실행 없이
- * **완료 확인** ⓒ그 외 → 자동 전진 금지.
- */
-const classifyComposed = (
-  journal: IntegrationTxnRecord,
-  ownRefs: readonly ParsedRef[],
-): RecoveryVerdict => {
-  if (ownRefs.length === 0) return { kind: 'no-mutation' } // ref 발행 전 크래시.
-
-  const mismatched = ownRefs.filter((r) => r.oid !== journal.resultOid)
-  if (mismatched.length > 0) {
-    return {
-      kind: 'reconciliation-required',
-      blockers: mismatched.map((r) => blocker('result-ref-mismatch', r.refName)),
-    }
-  }
-
-  const arithmetic = ownRefs.filter(
-    (r) => r.resultingRevision !== journal.expectedAuthorityRevision + 1,
-  )
-  if (arithmetic.length > 0) {
-    // `refRevision = expectedAuthorityRevision` 으로 발행한 off-by-one(계획 정정 196 이 폐기한 정의)은
-    // **ref 발행에 결속된 바로 그 CAS 가 롤백돼도 앵커가 침묵**하게 만든다. fail-closed 로 답한다.
-    return {
-      kind: 'reconciliation-required',
-      blockers: arithmetic.map((r) =>
-        blocker('expected-revision-mismatch', r.refName, ['arithmetic-binding']),
-      ),
-    }
-  }
-
-  // ⓑ **완료 확인** — 재실행이 아니다.
-  //
-  // 여기 도달했다는 것은 **결속이 `post-cas` 라는 뜻**이고, 그 사실을 다시 검사하지 않는다(도달성 증명):
-  // ⓐ blocker 가 하나라도 있으면 이 함수에 오지 않으므로 결속은 `pre-cas` 또는 `post-cas` 다
-  // ⓑ `pre-cas` 는 `expected === record.revision` 이므로 산술 결속이 요구하는 `refRevision =
-  //    expected + 1 = revision + 1` 인 ref 가 필요한데, 그런 ref 는 **앵커 후보**라 ⑤ 에서 면제(→
-  //    `resume-composed-cas` 조기 반환)되거나 blocker 가 된다 — 즉 여기 남은 ownRefs 는 전부
-  //    `≤ revision` 이고 위 산술 검사가 이미 걸러냈다.
-  // 따라서 `binding === 'post-cas'` 재검사와 그 else 분기는 **도달 불가**다. 뮤테이션 자기검사가
-  // 그것을 실측으로 확인했고(조건을 `true` 로 바꿔도 아무 테스트도 깨지지 않았다), 이 레포는 그런
-  // 「완전히 가려진 방어」를 남기지 않는다(정정 183·189 · 직전 커밋의 「자기 전이 금지」 삭제와 같은 규율).
-  return { kind: 'normal-wait' }
 }

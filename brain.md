@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 102 files · 246 import wires · 47 IPC channels · 생성 2026-08-12T09:55 UTC
+> 102 files · 246 import wires · 47 IPC channels · 생성 2026-08-12T10:17 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -108,9 +108,9 @@
 - **workbench/locks**
   - →의존: workbench/authority, workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/authority, workbench/journal, workbench/lock-backend-uds, workbench/lock-order · 467줄
 - **workbench/authority**
-  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/journal, workbench/locks, workbench/recovery · 1820줄
+  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/journal, workbench/locks, workbench/recovery · 1832줄
 - **workbench/journal**
-  - →의존: workbench/authority, workbench/durable-fs, workbench/locks, workbench/ulid · ←피의존: workbench/recovery · 1026줄
+  - →의존: workbench/authority, workbench/durable-fs, workbench/locks, workbench/ulid · ←피의존: workbench/recovery · 1038줄
 - **workbench/active-instance**
   - →의존: workbench/instance-marker, workbench/locks, workspace/path-guard · ←피의존: — · 397줄
 - **workbench/coord-area**
@@ -118,7 +118,7 @@
 - **workbench/durable-fs**
   - →의존: — · ←피의존: workbench/__testing__/durable-fs-fake, workbench/authority, workbench/journal · 214줄
 - **workbench/recovery**
-  - →의존: workbench/authority, workbench/journal, workbench/result-ref · ←피의존: — · 589줄
+  - →의존: workbench/authority, workbench/journal, workbench/result-ref · ←피의존: — · 607줄
 - **workbench/ulid**
   - →의존: — · ←피의존: workbench/journal, workbench/locks, workbench/result-ref · 86줄
 - **workbench/instance-marker**

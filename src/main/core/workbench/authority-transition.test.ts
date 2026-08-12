@@ -162,6 +162,32 @@ describe('전이 불변식 — 통합 stage', () => {
     expect(checkTransitionInvariants(prev, next)).toEqual([expect.stringContaining('abandoned')])
   })
 
+  /**
+   * **Codex PR#289 4R P1** — 파서는 `abandoned` 권위 레코드를 **여전히 읽을 수 있는데**(레거시·손상)
+   * `AUTHORITY_STAGE_ORDER.indexOf('abandoned')` 가 **-1** 이라 `abandoned → prepared` 가
+   * `fi=-1 · ti=0` 으로 역행·건너뛰기 두 검사를 **모두 통과**해 포기된 txn 을 부활시켰다.
+   */
+  it('abandoned 권위 상태에서 같은 txn 을 되살릴 수 없다', () => {
+    const prev = base({
+      currentIntegrationTxnId: T1,
+      currentIntegrationStage: 'abandoned',
+      currentIntegrationTxnGeneration: 3,
+    })
+    for (const to of ['prepared', 'composed', 'published', 'finalized'] as const) {
+      const next = draft({
+        currentIntegrationTxnId: T1,
+        currentIntegrationStage: to,
+        currentIntegrationTxnGeneration: 3,
+        ...(to === 'prepared' ? {} : { currentIntegrationResultOid: 'a'.repeat(40) }),
+      })
+      expect(checkTransitionInvariants(prev, next), to).toEqual([
+        expect.stringContaining('abandoned 는 종결'),
+      ])
+    }
+    // 소거(청소 복구)는 그대로 허용된다 — 막다른 길을 만들지 않는다.
+    expect(checkTransitionInvariants(prev, draft())).toEqual([])
+  })
+
   it('소거(포기)는 어느 단계에서나 허용된다', () => {
     for (const from of ['prepared', 'composed', 'published'] as const) {
       const prev = base({

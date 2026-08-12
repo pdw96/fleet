@@ -66,6 +66,16 @@ const composedDraft = (r: BenchAuthorityRecord, txnId = T1, oid = OID): BenchAut
   } as BenchAuthorityDraft
 }
 
+/**
+ * **post-CAS 픽스처의 draftDigest** — 권위가 이미 저널의 후속 단계를 커밋한 상태에서는 저널이 든
+ * digest 가 **그 권위 레코드의 draft 투영**과 같아야 한다(Codex PR#289 4R P1). 이 헬퍼가 없으면
+ * 픽스처가 「stage·revision 은 맞는데 draft 는 딴 것」이라는 **존재할 수 없는 쌍**이 된다.
+ */
+const draftDigestOf = (r: BenchAuthorityRecord): string => {
+  const { revision: _rev, writtenBy: _w, ...rest } = r
+  return digestAuthorityDraft(rest as BenchAuthorityDraft)
+}
+
 const journal = (over: Partial<IntegrationTxnRecord> = {}): IntegrationTxnRecord =>
   ({
     schemaVersion: 1,
@@ -193,7 +203,7 @@ describe('T74 — 음성 통제(오탐 0)', () => {
       obs({
         authority: { kind: 'found', record: advanced },
         prefixRefs: refs([REF_N1, OID]),
-        journal: entries(journal()),
+        journal: entries(journal({ draftDigest: draftDigestOf(advanced) })),
       }),
     )
     expect(v.kind).toBe('normal-wait')
@@ -216,6 +226,7 @@ describe('T74 — 음성 통제(오탐 0)', () => {
             expectedAuthorityRevision: N + 1,
             previousAuthorityStage: 'composed',
             nextAuthorityStage: 'published',
+            draftDigest: draftDigestOf(advanced),
           }),
         ),
       }),
@@ -471,7 +482,8 @@ describe('면제 10조건 — 하나라도 깨지면 승격이 아니다', () =>
       obs({ prefixRefs: refs([wrong, OID]), journal: entries(journal({ resultRef: wrong })) }),
     )
     expect(v.kind).toBe('reconciliation-required')
-    expect(reasons(v)).toContain('arithmetic-binding')
+    // 판정 위치가 **저널 검증**으로 올라갔다(Codex PR#289 4R P1) — git ref 가 아직 없어도 잡힌다.
+    expect(kinds(v)).toContain('journal-result-ref-invalid')
   })
 
   it('T75 — 앵커 후보 쪽 산술 결속도 같은 식으로 본다(expected+2 를 실은 이름)', () => {
@@ -483,14 +495,15 @@ describe('면제 10조건 — 하나라도 깨지면 승격이 아니다', () =>
       obs({ prefixRefs: refs([ahead, OID]), journal: entries(journal({ resultRef: ahead })) }),
     )
     expect(v.kind).toBe('reconciliation-required')
-    expect(reasons(v)).toEqual(['arithmetic-binding'])
+    expect(kinds(v)).toContain('journal-result-ref-invalid')
   })
 
   it('journal.resultRef 와 실제 ref 이름이 다르면 승격하지 않는다', () => {
     const v = classifyRecovery(
       obs({
-        prefixRefs: refs([REF_N1, OID]),
-        journal: entries(journal({ resultRef: formatResultRef(BENCH, N + 1, T2) })),
+        // 저널이 든 이름은 유효하지만(문법·bench·txn·산술 전부 통과) **관측된 ref 가 다르다**.
+        prefixRefs: refs([formatResultRef(BENCH, N + 2, T1), OID]),
+        journal: entries(journal()),
       }),
     )
     expect(reasons(v)).toContain('ref-name-mismatch')
@@ -575,6 +588,7 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
     // (A) 에서 ref 는 **composed 저널 뒤**에만 발행된다 — prepared 상태의 ref 는 설명되지 않는다.
     // ⚠ 픽스처는 **결속된 쌍**이어야 한다: `prepared` 저널은 「진행 중 통합 없음 → prepared」 전이를
     //    선기록하므로 previous 는 부재이고 next 가 `prepared` 다(post-cas: revision === expected + 1).
+    const rec = record({ revision: N + 3 })
     const boundPrepared = journal({
       stage: 'prepared',
       resultTree: undefined,
@@ -582,10 +596,11 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
       previousAuthorityStage: undefined,
       nextAuthorityStage: 'prepared',
       expectedAuthorityRevision: N + 2,
+      draftDigest: draftDigestOf(rec),
     })
     const v = classifyRecovery(
       obs({
-        authority: { kind: 'found', record: record({ revision: N + 3 }) },
+        authority: { kind: 'found', record: rec },
         prefixRefs: refs([REF_N1, OID]),
         journal: entries(boundPrepared),
       }),
@@ -603,10 +618,35 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
         authority: { kind: 'found', record: record({ revision: N + 3 }) },
         prefixRefs: refs([REF_N1, OID2]),
         // 결속된 pre-cas 쌍(권위 `prepared` · expected === revision)에서 ref 의 OID 만 어긋난다.
-        journal: entries(journal({ expectedAuthorityRevision: N + 3 })),
+        journal: entries(
+          journal({
+            expectedAuthorityRevision: N + 3,
+            resultRef: formatResultRef(BENCH, N + 4, T1),
+          }),
+        ),
       }),
     )
     expect(kinds(v)).toContain('result-ref-mismatch')
+  })
+
+  it('OID 가 같아도 ref **이름**이 저널의 증언과 다르면 mismatch 다(축 분리)', () => {
+    // ⚠ 이름과 OID 를 **한 픽스처에서 함께** 어긋내면 어느 쪽이 잡았는지 알 수 없다 — 뮤테이션에서
+    //    이름 대조를 지워도 OID 대조가 가려버렸다(생존). 여기서는 OID 를 **일치**시켜 축을 분리한다.
+    const rec = record({ revision: N + 3 })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        prefixRefs: refs([REF_N1, OID]),
+        journal: entries(
+          journal({
+            expectedAuthorityRevision: N + 3,
+            resultRef: formatResultRef(BENCH, N + 4, T1),
+          }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toEqual(['result-ref-mismatch'])
   })
 
   it('published 저널은 차단하지 않는다(C6 · 정상 대기)', () => {
@@ -617,17 +657,15 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
       previousAuthorityStage: 'composed',
       nextAuthorityStage: 'published',
     })
+    const rec = record({
+      revision: N + 2,
+      currentIntegrationStage: 'published',
+      currentIntegrationResultOid: OID,
+    })
     const v = classifyRecovery(
       obs({
-        authority: {
-          kind: 'found',
-          record: record({
-            revision: N + 2,
-            currentIntegrationStage: 'published',
-            currentIntegrationResultOid: OID,
-          }),
-        },
-        journal: entries(pub),
+        authority: { kind: 'found', record: rec },
+        journal: entries(journal({ ...pub, draftDigest: draftDigestOf(rec) })),
       }),
     )
     expect(v.kind).toBe('normal-wait')
@@ -706,6 +744,81 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
     )
     expect(v.kind).toBe('reconciliation-required')
     expect(kinds(v)).toContain('journal-authority-binding')
+  })
+
+  /**
+   * **Codex PR#289 4R P1** — post-CAS 결속이 stage·revision·세대·resultOid 만 보면 **draft 투영 안의
+   * 나머지 필드**(`lifecycle`·`sourceGeneration`·`activeActivity` …)가 롤백·손상돼도 통과한다.
+   * 저널은 그 전체를 `draftDigest` 로 이미 증언하고 있으므로 **추가 입력 없이** 대조할 수 있다.
+   */
+  it('post-CAS 인데 권위 draft 가 저널의 draftDigest 와 다르면 결속 위반이다', () => {
+    const advanced = record({
+      revision: N + 1,
+      currentIntegrationStage: 'composed',
+      currentIntegrationResultOid: OID,
+    })
+    // 저널이 증언한 draft 는 `sourceGeneration: 3` 인데 권위는 4 로 전진했다 — stage·revision·세대·
+    // resultOid 는 전부 맞지만 **의도가 다른 draft** 다.
+    const rolled = record({
+      revision: N + 1,
+      currentIntegrationStage: 'composed',
+      currentIntegrationResultOid: OID,
+      sourceGeneration: 4,
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rolled },
+        prefixRefs: refs([REF_N1, OID]),
+        journal: entries(journal({ draftDigest: draftDigestOf(advanced) })),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-authority-binding')
+  })
+
+  /**
+   * **Codex PR#289 4R P1** — 저널이 든 `resultRef` 는 **불변 필드**라, git ref 가 아직 없어도
+   * 잘못된 이름이 살아남아 나중에 그대로 발행된다. 문법 소유가 이 PR 로 온 이상 여기서 잡아야 한다.
+   */
+  it('저널이 든 resultRef 가 다른 bench·txn 을 가리키면 blocker 다(git ref 유무와 무관)', () => {
+    for (const bad of [
+      formatResultRef(T2, N + 1, T1),
+      formatResultRef(BENCH, N + 1, T2),
+      'refs/heads/x',
+    ]) {
+      const v = classifyRecovery(obs({ journal: entries(journal({ resultRef: bad })) }))
+      expect(v.kind).toBe('reconciliation-required')
+      expect(kinds(v)).toContain('journal-result-ref-invalid')
+    }
+  })
+
+  /**
+   * **Codex PR#289 4R P1** — `published` 저널의 ref 는 revision 이 권위 이하라 앵커 후보가 아니다.
+   * 그 분기가 OID 를 대조하지 않으면, 교체·손상된 ref 위에서 시퀀서가 게시를 계속한다.
+   */
+  it('published 저널이어도 ref 가 교체됐으면 정상 대기가 아니다', () => {
+    const rec = record({
+      revision: N + 2,
+      currentIntegrationStage: 'published',
+      currentIntegrationResultOid: OID,
+    })
+    const pub = journal({
+      stage: 'published',
+      publishedAt: 9,
+      expectedAuthorityRevision: N + 1,
+      previousAuthorityStage: 'composed',
+      nextAuthorityStage: 'published',
+      draftDigest: draftDigestOf(rec),
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        prefixRefs: refs([REF_N1, OID2]), // 같은 이름 · **다른 커밋**
+        journal: entries(pub),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('result-ref-mismatch')
   })
 
   it('고아 published 저널은 차단하지 않는다(활성 집합 = prepared·composed 뿐 · §3-T33)', () => {
@@ -980,6 +1093,24 @@ describe('T81·T92 — 면제 증거는 봉인되고 재검증은 동치로 판�
       prefixRefs: refs([REF_N1, OID], [formatResultRef(BENCH, 2, TPREV), OID2]),
     })
     expect(isSameRecoveryEvidence(before, evidenceOf(withSibling))).toBe(false)
+  })
+
+  /**
+   * **Codex PR#289 4R P1** — `draftDigest` 는 **권위 draft 투영**만 덮는다. 저널의 통합 입력
+   * (`sourceSnapshot`·`targetBranch`·`targetHeadBeforeIntegration`·`resultTree`)은 그 투영 밖이라,
+   * 그것만 실으면 **바뀐 통합 의도가 같은 증거로** 재검증을 통과한다.
+   */
+  it('저널의 통합 입력이 바뀌면 같은 증거가 아니다', () => {
+    const before = evidenceOf(promotable())
+    for (const changed of [
+      { sourceSnapshot: 'f'.repeat(40) },
+      { targetBranch: 'release' },
+      { targetHeadBeforeIntegration: 'f'.repeat(40) },
+      { resultTree: 'f'.repeat(40) },
+    ]) {
+      const after = evidenceOf(promotable({ journal: entries(journal(changed)) }))
+      expect(isSameRecoveryEvidence(before, after), JSON.stringify(changed)).toBe(false)
+    }
   })
 
   it('증거 다이제스트는 순수 함수의 산출물이라 관측 밖 값에 의존하지 않는다', () => {

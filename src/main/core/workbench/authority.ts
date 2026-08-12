@@ -1078,13 +1078,25 @@ export function checkTransitionInvariants(
       v.push(`전이: 새 txn 은 prepared 로 시작해야 한다(관측: ${to})`)
     }
   } else {
+    // ⚠ **`abandoned` 는 종결이다**(Codex PR#289 4R P1). 파서는 그 값을 여전히 읽을 수 있는데
+    // (레거시·손상 레코드) `AUTHORITY_STAGE_ORDER.indexOf('abandoned')` 가 **-1** 이라, 아래 숫자
+    // 비교에서 `abandoned → prepared` 가 `fi=-1 · ti=0` 으로 **두 검사를 모두 통과**해 포기된 txn 을
+    // 부활시킨다(저널 전이 그래프가 금지하는 바로 그것). 숫자 비교 **앞에서** 잘라낸다.
+    // ⚠ 소거(`to === undefined` · 청소 복구)는 위 분기가 이미 처리했으므로 여기 걸리지 않는다.
     const fi = from === undefined ? -1 : AUTHORITY_STAGE_ORDER.indexOf(from)
     const ti = AUTHORITY_STAGE_ORDER.indexOf(to)
     // ⚠ **「자기 전이 금지」 규칙은 두지 않는다.** stage 가 같은데 여기 도달했다는 것은 통합 4필드 중
     // 무언가가 바뀌었다는 뜻인데, 바뀔 수 있는 나머지 둘(`TxnGeneration`·`ResultOid`)은 **아래 동결
     // 규칙이 이름을 짚어 거부**한다. 별도 규칙을 두면 같은 입력에 두 방어가 함께 발화해 **가림**이
     // 기본값이 되고(정정 189 가 실측한 형태), 독립 반증력은 0 이다(정정 183 의 「도달 불가 arm」 규율).
-    if (ti < fi) v.push(`전이: stage 역행 금지(${String(from)} → ${to})`)
+    // ⚠ **`abandoned` 는 종결이라 숫자 비교의 정의역 밖이다**(Codex PR#289 4R P1). 파서는 그 값을
+    // 여전히 읽을 수 있는데(레거시·손상 레코드) `indexOf('abandoned')` 가 **-1** 이라
+    // `abandoned → prepared` 가 `fi=-1 · ti=0` 으로 **두 검사를 모두 통과**해 포기된 txn 을 부활시킨다.
+    // `else` 로 묶어 **한 입력에 한 사유만** 발화시킨다(가림 방지 · 정정 189).
+    // ⚠ 소거(`to === undefined` · 청소 복구)는 위 분기가 이미 처리했으므로 여기 오지 않는다.
+    if (from === 'abandoned') {
+      v.push('전이: abandoned 는 종결이다 — 같은 txn 을 되살릴 수 없다(정정 177)')
+    } else if (ti < fi) v.push(`전이: stage 역행 금지(${String(from)} → ${to})`)
     else if (ti > fi + 1) v.push(`전이: 단계 건너뛰기 금지(${String(from)} → ${to})`)
 
     if (
