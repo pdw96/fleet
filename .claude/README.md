@@ -33,8 +33,13 @@
 `gh pr merge <번호> [-R owner/repo] [플래그] --match-head-commit <SHA>`(단일 세그먼트)만
 통과 후보이고, 그 외(REST·GraphQL·서브셸·인터프리터·복합 명령·머지 문구 인용)는 전부
 fail-closed 차단한다(인용 오탐은 `--body-file` 로 우회). 인가 = **현재 head 결속 Codex 신호**
-= head 를 리뷰한 공식 리뷰(commit_id 일치)만 인정하며, 그 제출이 base tip 전진 이후여야 한다
-(base 전진은 head 불변이어도 diff 를 바꾼다). **단 base 리타깃(`base_ref_changed`)이 한 번이라도
+= head 를 리뷰한 공식 리뷰(commit_id 일치) **또는 head 를 본문으로 지목한 Codex 무결 리뷰
+코멘트**이며, 그 게시가 base tip 전진 이후여야 한다(base 전진은 head 불변이어도 diff 를 바꾼다).
+무결 코멘트 경로는 51R 추가 — **지적 0건 라운드는 공식 리뷰가 아예 발행되지 않고**
+`Codex Review: Didn't find any major issues` + `**Reviewed commit:** <축약 SHA>` 코멘트로만
+오므로, 공식 리뷰만 보면 리뷰가 깨끗할수록 머지가 막혔다(PR#288 자기 자신에서 실측). 인정 조건은
+첫머리 앵커 + 무결 문구 + 본문의 모든 결속 SHA 가 현재 head 접두(7~40 hex)일 것 — 전부
+fail-closed 방향이라 봇 문구가 바뀌면 막히는 쪽으로 넘어진다. **단 base 리타깃(`base_ref_changed`)이 한 번이라도
 있었으면 공식 리뷰 경로를 통째로 건너뛰고 audited 폴백 마커만 인정한다**(41R P1: 시각으로는
 리뷰를 새 base diff 에 인과 결속할 수 없다 — 리타깃 PR 은 폴백 경로 필수). **👍 리액션 경로는
 폐기했다**(44R P1: 리액션은 commit 결속이 없어 head/base 전진을 인과 결속할 수 없다). 검증 후

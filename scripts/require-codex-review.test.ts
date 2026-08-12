@@ -17,6 +17,7 @@ import {
   tokenizeSegments,
   extractInterpreterScripts,
   fallbackMarkerHasEvidence,
+  codexCleanReviewBindsHead,
   FALLBACK_MARKER,
 } from '../.claude/hooks/require-codex-review.mjs'
 
@@ -405,6 +406,38 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(fallbackMarkerHasEvidence(`${tok}   \n  `, tok)).toBe(false) // 공백뿐
     expect(fallbackMarkerHasEvidence(`${tok}\n렌즈 검토: 계약 drift 무·race 무`, tok)).toBe(true)
     expect(fallbackMarkerHasEvidence(`다른 텍스트 ${tok}`, tok)).toBe(false) // 첫머리 앵커 아님
+  })
+  it('codexCleanReviewBindsHead — 무결(0건) 리뷰 코멘트의 head 결속(51R)', () => {
+    const head = '3d93b8d23b89c988b8c2920a861d20234c0cb01d'
+    const clean = (sha: string) =>
+      `Codex Review: Didn't find any major issues. :rocket:\n\n**Reviewed commit:** \`${sha}\`\n`
+    // 현재 head 를 축약 SHA 로 지목한 무결 리뷰 — 인가
+    expect(codexCleanReviewBindsHead(clean('3d93b8d23b'), head)).toBe(true)
+    expect(codexCleanReviewBindsHead(clean(head), head)).toBe(true)
+    expect(codexCleanReviewBindsHead(clean('3D93B8D23B'), head)).toBe(true) // 대소문자 무관
+    // 다른 커밋을 지목 — 낡은 라운드는 새 head 를 인가하지 않는다
+    expect(codexCleanReviewBindsHead(clean('f7dc92d533'), head)).toBe(false)
+    // 결속 문구 부재 / 과단축(≥7 hex 요구)
+    expect(codexCleanReviewBindsHead("Codex Review: Didn't find any major issues.", head)).toBe(
+      false,
+    )
+    expect(codexCleanReviewBindsHead(clean('3d93b8'), head)).toBe(false)
+    // 첫머리 앵커 — 인용·질문 코멘트는 불인정(25R P1 과 동형)
+    expect(codexCleanReviewBindsHead(`이게 뭐죠? ${clean(head)}`, head)).toBe(false)
+    // 무결 문구가 없으면 불인정 — 지적이 있는 라운드는 공식 리뷰 경로로만 인가된다
+    expect(
+      codexCleanReviewBindsHead(
+        `Codex Review: found 3 issues.\n\n**Reviewed commit:** \`${head}\`\n`,
+        head,
+      ),
+    ).toBe(false)
+    // 결속 문구가 둘 이상이고 하나라도 head 가 아니면 모호 — fail-closed
+    expect(
+      codexCleanReviewBindsHead(`${clean(head)}\n**Reviewed commit:** \`f7dc92d533\`\n`, head),
+    ).toBe(false)
+    // 입력 방어
+    expect(codexCleanReviewBindsHead(clean(head), 'not-a-sha')).toBe(false)
+    expect(codexCleanReviewBindsHead(undefined as unknown as string, head)).toBe(false)
   })
   it('aliasIsSuspect — 동적 동사 alias 는 정적 증명 불가로 의심 처리(20R·23R P1)', () => {
     expect(aliasIsSuspect('!gh pr "$ACTION" "$@"')).toBe(true)

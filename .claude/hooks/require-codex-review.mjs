@@ -15,6 +15,8 @@
 // 인가 신호는 **현재 head 에 결속**된 것만 인정한다(2R P1):
 //   ① head 커밋을 리뷰한 Codex 공식 리뷰(commit_id == head SHA), 단 base 리타깃이 없고
 //      제출이 base tip 커밋 시각 이후일 것(base 전진으로 diff 가 바뀐 리뷰 배제 — 44R P1)
+//   ①' 같은 조건의 Codex **무결 리뷰 코멘트**(본문 `**Reviewed commit:** <head 축약 SHA>`,
+//      51R: 지적 0건 라운드는 공식 리뷰가 발행되지 않아 ① 만으론 클린 리뷰가 영영 안 보였다)
 //   ② OWNER 의 head-결속 폴백 마커 `[codex-gate-fallback] head=<현재 head SHA>` 코멘트
 //      (무응답 폴백 — 풀 렌즈 자가리뷰 완료 근거 서술 동반. SHA 를 손으로 적는 형식이라
 //      단순 언급·질문과 구조적으로 갈리고, head 가 바뀌면 자동 실효. env 오버라이드는
@@ -54,6 +56,28 @@ export const FALLBACK_MARKER = '[codex-gate-fallback]'
 // 통과해 유일한 감사 근거가 사라지던 결함). 무응답 폴백 경로의 감사성 요건.
 export function fallbackMarkerHasEvidence(body, token) {
   return typeof body === 'string' && body.startsWith(token) && /\S/.test(body.slice(token.length))
+}
+
+// Codex 가 **지적 0건**인 라운드는 공식 리뷰(commit_id 결속)가 아니라 일반 issue 코멘트로만
+// 응답한다(51R: PR#288 head 3d93b8d 를 리뷰하고 통과시켰는데 reviews 채널엔 아무것도 없어
+// 게이트가 자기 자신의 클린 리뷰를 못 보고 막았다 — 리뷰가 깨끗할수록 막히는 역설).
+// 그 코멘트는 commit_id 필드가 없는 대신 본문에 `**Reviewed commit:** \`<축약 SHA>\`` 로
+// head 를 명시하므로, **본문 결속**을 SHA 결속으로 인정한다. 작성자는 jq 단계에서 봇 login
+// 으로 이미 한정되므로 여기서는 형태만 판정한다(순수 함수).
+// 조건 4개 — 전부 fail-closed 방향:
+//   ① `Codex Review:` 첫머리 앵커(25R P1 과 동형 — 인용·질문 코멘트 배제)
+//   ② 무결 문구 존재(지적이 있는 라운드는 공식 리뷰 경로로만 인가 — 문구가 바뀌면 막히는
+//      쪽으로 넘어진다)
+//   ③ 결속 문구가 1개 이상이고 **전부** 현재 head 의 접두(둘 이상이 서로 다르면 모호 → 거부)
+//   ④ 축약 SHA 는 7~40 hex(git 관례 하한 — 더 짧은 접두는 결속으로 인정하지 않는다)
+const CODEX_CLEAN_ANCHOR = 'Codex Review:'
+const CODEX_REVIEWED_COMMIT_RE = /\*\*Reviewed commit:\*\*\s*`([0-9a-fA-F]{7,40})`/g
+export function codexCleanReviewBindsHead(body, headSha) {
+  if (typeof body !== 'string' || !/^[0-9a-f]{40}$/i.test(headSha ?? '')) return false
+  if (!body.startsWith(CODEX_CLEAN_ANCHOR)) return false
+  if (!/didn['’]t find any major issues/i.test(body)) return false
+  const shas = [...body.matchAll(CODEX_REVIEWED_COMMIT_RE)].map((m) => m[1].toLowerCase())
+  return shas.length > 0 && shas.every((s) => headSha.toLowerCase().startsWith(s))
 }
 
 // ── 머지 능력 신호(raw 문자열 스캔) ──────────────────────────────────────────
@@ -1269,6 +1293,37 @@ function validatePr(gh, base, pr) {
       })
     )
       return headSha
+
+    // 지적 0건 라운드는 공식 리뷰가 아예 없다(51R) — 봇 login 의 issue 코멘트 중 본문이
+    // 현재 head 를 지목한 무결 리뷰를 동급 신호로 인정한다. 시각 하한은 공식 리뷰와 동일
+    // (base tip 전진 이후) — head 결속만으론 base 전진으로 바뀐 diff 를 배제 못 하므로.
+    // --paginate 는 jq 를 페이지별로 평가하므로(7R P1) 집계·판정은 JS 에서 한다.
+    const cleanRaw = gh([
+      'api',
+      `${base}/issues/${pr}/comments`,
+      '--paginate',
+      '--jq',
+      `.[] | select(.user.login == "${CODEX_LOGIN}") | {c: .created_at, b: .body} | @json`,
+    ])
+    const cleanOk = cleanRaw
+      .split('\n')
+      .filter(Boolean)
+      .some((line) => {
+        let o
+        try {
+          o = JSON.parse(line)
+        } catch {
+          return false
+        }
+        return (o.c ?? '') >= baseTipTime && codexCleanReviewBindsHead(o.b ?? '', headSha)
+      })
+    if (cleanOk) {
+      console.error(
+        `[codex-gate] PR #${pr}: head(${headSha.slice(0, 7)})에 결속된 Codex 무결 리뷰 코멘트 ` +
+          '확인(지적 0건 라운드는 공식 리뷰가 발행되지 않는다 — 51R).',
+      )
+      return headSha
+    }
   }
 
   // 무응답 폴백 — OWNER 가 남긴 head-결속 마커(`[codex-gate-fallback] head=<현재 head SHA>`)를
