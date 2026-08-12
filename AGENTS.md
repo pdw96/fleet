@@ -182,7 +182,10 @@ Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회
   검증 — Codex 502건 실측 분류의 공백 축)만 기본 가동하고, 위 P1 신호(계약·보안) 접점 또는 Codex
   미가용 대체 시에만 풀 렌즈로 확장한다. **축소 적용의 전제 = 머지 전 Codex 리뷰 완료(리뷰 또는
   👍 clean) 확인** — Codex 는 required check 가 아니므로(ADR-0001), 무응답 fallback 으로 머지하려면
-  P1 신호 렌즈를 포함한 풀 렌즈 자가리뷰가 선행되어야 한다. find 규모는 diff 크기·위험도에 연동
+  P1 신호 렌즈를 포함한 풀 렌즈 자가리뷰가 선행되어야 하고, 그 근거를 담은 OWNER 코멘트에
+  head-결속 마커 `[codex-gate-fallback] head=<현재 head SHA>` 로 **시작하는** 코멘트를 해당 PR 에
+  남겨야 머지 게이트 hook 이 통과시킨다(첫머리 앵커 — 인용·질문 불인정, 감사 가능 경로 —
+  Codex PR#288 P1). find 규모는 diff 크기·위험도에 연동
   (소형은 렌즈 3~4로 충분 — C3/C5 선례), **refute(verify) 규율은 축소 금지**(오탐 제거 실효 실증).
   서브에이전트 fan-out 은 기계적 단계(스윕·수집·나열)를 하위 effort/모델로 디스패치하고 판정 단계
   (refute·judge·합성)만 세션 티어를 유지한다. 근거 실측 = 자가리뷰 19~22 에이전트가 확정 0~5건
@@ -230,10 +233,23 @@ project number `1`, owner `pdw96`).
    **ruleset 이 required check 통과 + 미해결 리뷰 스레드 resolve 를 머지 전 강제** — Codex 인라인 지적은
    반영/반박 후 스레드를 resolve(`gh api graphql … resolveReviewThread`) 해야 머지 가능.
    - **Codex 봇 운영**: 자동리뷰가 항상 즉발은 아니다(보통 7~20분; 무응답 시 `@codex review`
-     코멘트로 명시 트리거, 인지하면 트리거 코멘트에 👀 리액션). **이슈가 없을 때 clean 승인은
-     인라인/리뷰 없이 👍 리액션-only 가 흔하다** → `gh api repos/pdw96/fleet/issues/<pr>/reactions`
-     도 확인하라(comments/reviews 만 보면 놓친다). 봇 로그인 = `chatgpt-codex-connector[bot]`
+     코멘트로 명시 트리거, 인지하면 트리거 코멘트에 👀 리액션). Codex 는 라운드마다 commit_id
+     결속 공식 리뷰(COMMENTED)를 남긴다 — **단 지적이 0건이면 공식 리뷰를 발행하지 않고**
+     이슈 코멘트 `Codex Review: Didn't find any major issues` + `**Reviewed commit:** <축약 SHA>`
+     만 남긴다(51R 실측). 👍 리액션이 곁들여질 수 있다.
+     **👍 는 clean 을 눈으로 확인하는 관측 보조일 뿐, 머지 게이트 통과 신호가 아니다**
+     (44R P1: 리액션은 commit 결속이 없어 hook 이 인가로 안 쓴다) → 머지 인가는 **commit_id 가
+     현재 head 인 공식 리뷰**이거나 **head 를 지목한 무결 리뷰 코멘트**이거나 head-결속 폴백 마커다. 관측 시엔 reviews·인라인·
+     이슈 코멘트·리액션 네 채널을 `gh api … --paginate` 로 보되(comments/reviews 만 보면 놓친다),
+     머지 판단은 head 결속(공식 리뷰 commit_id · 무결 코멘트 본문 SHA) 기준으로 한다. 봇 로그인 = `chatgpt-codex-connector[bot]`
      (필터 `test("codex")`). ~4라운드 넘으면 레이트리밋 가능.
+     **대기는 수동 폴링 대신 `/loop`** (예: `/loop 5m` + "PR <N> 의 commit_id 결속 Codex 리뷰
+     도착 확인, 도착하면 요약 보고" — 공식 scheduled-tasks 의 babysit-a-PR 용례). 머지 명령 자체는
+     `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 **현재
+     head 에 결속된** Codex 신호 부재 시 기계 차단한다(fail-closed·canonical allowlist —
+     허용 형태는 `gh pr merge <번호> … --match-head-commit <head SHA>` 단일 명령뿐, REST/
+     GraphQL/복합 명령 경유는 전부 차단) — 산문 규율의 구조 강제라 우회 금지. 차단 메시지가
+     복사 가능한 정확한 재시도 명령을 준다.
 5. **머지 후 동기화** — (a) 이슈 닫힘·#27 진행률 = `Closes #N` 으로 자동. (b) **보드 Status → Done**:
    보드 내장 워크플로(Item closed→Done · Auto-add(`tier:` 라벨) · Item added→Todo · Reopened→In Progress)가
    켜져 있어 자동. 예외 보정이 필요할 때만 `gh project item-edit`

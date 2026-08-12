@@ -40,6 +40,12 @@ brain.tmp.json
 !.claude/agents/**/*.md
 !.claude/skills/
 !.claude/workflows/
+# hooks/ 는 mjs 만 재포함(agents/ 와 동일 패턴) — 디렉터리 전체를 열면 향후 캐시·크레덴셜·
+# 스크래치 파일이 skills:lint 스캔 없이 git add -A 로 staged 된다(Codex PR#288 P1).
+!.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/*.mjs
+!.claude/settings.json
 
 # superpowers brainstorming visual-companion scratch
 .superpowers/

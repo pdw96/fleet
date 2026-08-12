@@ -90,6 +90,12 @@
     ".claude/agents/**/*.md": [
       "node scripts/skills-lint.mjs"
     ],
+    ".claude/hooks/*.mjs": [
+      "node scripts/skills-lint.mjs"
+    ],
+    ".claude/settings.json": [
+      "node scripts/skills-lint.mjs"
+    ],
     ".claude/skills/**/*.md": [
       "node scripts/skills-lint.mjs"
     ],

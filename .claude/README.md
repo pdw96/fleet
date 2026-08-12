@@ -25,6 +25,33 @@
 재작성하던 비효율을 없앤다(14차 재랭킹에서 동일 템플릿 7회 수기 작성 실측). 산문 권위는
 여전히 AGENTS.md·각 SKILL.md — 에이전트는 실행 래퍼다.
 
+## hooks/ + settings.json (기계 게이트 — 프롬프트 규율의 구조화)
+
+`settings.json` 의 `PreToolUse` hook(`hooks/require-codex-review.mjs`)이 머지를 게이트한다.
+설계 = **canonical allowlist**(우회 형태 열거는 수렴하지 않는다 — 「이름이 아니라 형태」 교훈):
+머지 능력 신호(raw `merge`+`gh`/`github`/`graphql`)가 보이는 Bash 명령은 정확히 한 형태
+`gh pr merge <번호> [-R owner/repo] [플래그] --match-head-commit <SHA>`(단일 세그먼트)만
+통과 후보이고, 그 외(REST·GraphQL·서브셸·인터프리터·복합 명령·머지 문구 인용)는 전부
+fail-closed 차단한다(인용 오탐은 `--body-file` 로 우회). 인가 = **현재 head 결속 Codex 신호**
+= head 를 리뷰한 공식 리뷰(commit_id 일치) **또는 head 를 본문으로 지목한 Codex 무결 리뷰
+코멘트**이며, 그 게시가 base tip 전진 이후여야 한다(base 전진은 head 불변이어도 diff 를 바꾼다).
+무결 코멘트 경로는 51R 추가 — **지적 0건 라운드는 공식 리뷰가 아예 발행되지 않고**
+`Codex Review: Didn't find any major issues` + `**Reviewed commit:** <축약 SHA>` 코멘트로만
+오므로, 공식 리뷰만 보면 리뷰가 깨끗할수록 머지가 막혔다(PR#288 자기 자신에서 실측). 인정 조건은
+첫머리 앵커 + 무결 문구 + 본문의 모든 결속 SHA 가 현재 head 접두(7~40 hex)일 것 — 전부
+fail-closed 방향이라 봇 문구가 바뀌면 막히는 쪽으로 넘어진다. **단 base 리타깃(`base_ref_changed`)이 한 번이라도
+있었으면 공식 리뷰 경로를 통째로 건너뛰고 audited 폴백 마커만 인정한다**(41R P1: 시각으로는
+리뷰를 새 base diff 에 인과 결속할 수 없다 — 리타깃 PR 은 폴백 경로 필수). **👍 리액션 경로는
+폐기했다**(44R P1: 리액션은 commit 결속이 없어 head/base 전진을 인과 결속할 수 없다). 검증 후
+`--match-head-commit` 을 검증 head 와 대조해 서버가 TOCTOU 를 거부하게 한다(차단 메시지가
+복사 가능한 정확한 명령 제공). GitHub MCP merge_pull_request 는 구조화 입력이라 파싱 없이
+동일 검증. Codex 무응답/base 전진 폴백 = 풀 렌즈 자가리뷰 완료 근거를 담은 OWNER 코멘트의
+head-결속 마커 `[codex-gate-fallback] head=<현재 head SHA>`(해당 PR·감사 가능·head 변경 시
+자동 실효·마커 작성이 base tip 전진 이후여야 유효). 판정 계약은
+`scripts/require-codex-review.test.ts` 가 고정한다. 수동 점검은 hook 입력 JSON 을 파일로 만들어
+`node .claude/hooks/require-codex-review.mjs < input.json`(명령 문자열에 머지 문구를 직접 쓰면
+세션 라이브 hook 이 그 명령부터 차단한다 — 실측).
+
 ## workflows/ (예약 — Claude 로컬 가속 `.js`)
 
 `Workflow` DSL 가속본을 둘 **예약 위치**다. **현재 추적 `.js` 가속본 0**(디렉터리 미생성). 신규 시
