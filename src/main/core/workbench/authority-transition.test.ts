@@ -193,6 +193,38 @@ describe('전이 불변식 — pending 중 새 시도 금지 (정정 204 불변�
     }
   })
 
+  /**
+   * **Codex PR#289 3R P1** — stage 종결만 보면 **종결된 bench 가 다시 열린다.** `lifecycle==='integrated'`
+   * ∧ current stage `finalized` 인 레코드는 pending 검사를 통과하는데, 스펙 §5 는 「lifecycle 회귀(재개)
+   * 없음 · `integrated` 후 추가 작업은 **새 bench**」다. 시작 인가를 stage 가 아니라 lifecycle 에 건다.
+   */
+  it('integrated·archived bench 에서는 새 txn 을 시작할 수 없다', () => {
+    for (const lifecycle of ['integrated', 'archived'] as const) {
+      const prev = base({
+        lifecycle,
+        ...(lifecycle === 'integrated'
+          ? { completedIntegrationTxnId: T1 }
+          : { archivedBranch: 'preserved' as const }),
+        currentIntegrationTxnId: T1,
+        currentIntegrationStage: 'finalized',
+        currentIntegrationTxnGeneration: 3,
+        currentIntegrationResultOid: 'a'.repeat(40),
+      })
+      const next = draft({
+        lifecycle,
+        ...(lifecycle === 'integrated'
+          ? { completedIntegrationTxnId: T1 }
+          : { archivedBranch: 'preserved' as const }),
+        currentIntegrationTxnId: T2,
+        currentIntegrationStage: 'prepared',
+        currentIntegrationTxnGeneration: 3,
+      })
+      expect(checkTransitionInvariants(prev, next)).toEqual([
+        expect.stringContaining('새 통합 txn 을 시작할 수 없다'),
+      ])
+    }
+  })
+
   it('finalized 뒤에는 새 txn 을 시작할 수 있다', () => {
     const prev = base({
       currentIntegrationTxnId: T1,
@@ -263,6 +295,34 @@ describe('전이 불변식 — 증거·세대 동결', () => {
     expect(checkTransitionInvariants(prev, draft({ lifecycle: 'open' }))).toEqual([
       expect.stringContaining('완결 귀속'),
     ])
+  })
+
+  /**
+   * **Codex PR#289 3R P1** — 초안은 **이미 귀속이 있을 때만** 돌아서 **첫 도입이 무제한**이었다.
+   * current 가 T1 인 레코드를 `completedIntegrationTxnId: T2` 로 커밋해도 단일 레코드·전이 검사가
+   * 둘 다 통과했고, 무관한 txn 이 완결로 기록되면서 **부분 통합이 숨는다.** 스펙 §W-8 은 「완결은
+   * **권위 시도만** · 관측 CAS 는 **txn 동일**」이다.
+   */
+  it('완결 귀속의 도입은 직전 레코드의 current txn 이어야 한다', () => {
+    const prev = base({
+      currentIntegrationTxnId: T1,
+      currentIntegrationStage: 'published',
+      currentIntegrationTxnGeneration: 3,
+      currentIntegrationResultOid: 'a'.repeat(40),
+    })
+    const complete = (completedIntegrationTxnId: string) =>
+      draft({
+        lifecycle: 'integrated',
+        completedIntegrationTxnId,
+        currentIntegrationTxnId: T1,
+        currentIntegrationStage: 'published',
+        currentIntegrationTxnGeneration: 3,
+        currentIntegrationResultOid: 'a'.repeat(40),
+      })
+    expect(checkTransitionInvariants(prev, complete(T2))).toEqual([
+      expect.stringContaining('완결 귀속은 직전 레코드의 current txn'),
+    ])
+    expect(checkTransitionInvariants(prev, complete(T1))).toEqual([])
   })
 
   /**

@@ -126,6 +126,8 @@ export type RecoveryBlockerKind =
   | 'journal-behind-authority'
   /** 저널이 권위보다 두 단계 이상 앞섰다 — 정정 204 불변식 ① 위반. */
   | 'journal-too-far-ahead'
+  /** stage 는 맞는데 revision·결과 증거·세대 결속이 어긋났다(같은 단계 손상 쌍). */
+  | 'journal-authority-binding'
   /** 설명되지 않는 `refRevision > record.revision` — 앵커 발화. */
   | 'anchor-rollback'
   | 'result-ref-unattributed'
@@ -434,6 +436,29 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
     else if (jIdx > aIdx + 1) blockers.push(blocker('journal-too-far-ahead', current.txnId))
   }
 
+  // **stage 가 같아도 결속은 따로 본다**(Codex PR#289 3R P1). 위 검사는 **순서(인덱스)만** 비교하므로
+  // 「둘 다 `composed` 인데 `resultOid`·expected revision·세대가 어긋난」 손상 쌍이 그대로 통과해,
+  // ref 가 없을 때 복구표가 `no-mutation`(= 포기·재준비 적격)을 답했다. 결속은 **두 배치 중 하나**를
+  // 만족해야 한다 — ⓐ**CAS 전**(권위가 아직 `previousAuthorityStage` · `expected === revision`)
+  // ⓑ**CAS 후**(권위가 `nextAuthorityStage` · `revision === expected + 1`). 그 외는 전부 손상이다.
+  if (record !== undefined && current !== undefined) {
+    const preCas =
+      record.currentIntegrationStage === current.previousAuthorityStage &&
+      current.expectedAuthorityRevision === record.revision
+    const postCas =
+      record.currentIntegrationStage === current.nextAuthorityStage &&
+      record.revision === current.expectedAuthorityRevision + 1
+    // CAS 가 이미 커밋됐다면 권위는 저널이 증언한 **그 결과**를 들고 있어야 한다.
+    const evidenceOk =
+      record.currentIntegrationTxnGeneration === current.integrationGeneration &&
+      (!postCas ||
+        current.resultOid === undefined ||
+        record.currentIntegrationResultOid === current.resultOid)
+    if ((!preCas && !postCas) || !evidenceOk) {
+      blockers.push(blocker('journal-authority-binding', current.txnId))
+    }
+  }
+
   // 미종결 txn 이 있으면 **새 txn 의 저널 자체가 쓰이지 말았어야 한다**(전이 불변식이 그 시작을
   // 금지한다). 그래서 benign 창은 「권위에 pending 통합이 없을 때」에만 열린다(Codex PR#289 P1).
   const authorityPending = authorityStage !== undefined && authorityStage !== 'finalized'
@@ -499,7 +524,7 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       }
       return { kind: 'no-mutation' }
     case 'composed':
-      return classifyComposed(current, ownRefs, record)
+      return classifyComposed(current, ownRefs)
     case 'published':
       // C6 — `published` 는 활성이 아니고 차단하지 않는다. 다음 단계 전진은 시퀀서의 정상 경로다.
       return { kind: 'normal-wait' }
@@ -523,7 +548,6 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
 const classifyComposed = (
   journal: IntegrationTxnRecord,
   ownRefs: readonly ParsedRef[],
-  record: BenchAuthorityRecord,
 ): RecoveryVerdict => {
   if (ownRefs.length === 0) return { kind: 'no-mutation' } // ref 발행 전 크래시.
 
@@ -549,18 +573,16 @@ const classifyComposed = (
     }
   }
 
-  const reflected =
-    record.revision === journal.expectedAuthorityRevision + 1 &&
-    record.currentIntegrationStage === 'composed' &&
-    record.currentIntegrationTxnId === journal.txnId &&
-    record.currentIntegrationResultOid === journal.resultOid
-  if (reflected) return { kind: 'normal-wait' } // ⓑ 완료 확인 — 재실행이 아니다.
-
-  // ⓒ CAS 가 성공했는지 **불확실**하고 결속도 어긋난다. 자동 전진은 금지다.
-  return {
-    kind: 'reconciliation-required',
-    blockers: [
-      blocker('expected-revision-mismatch', journal.txnId, ['expected-revision-mismatch']),
-    ],
-  }
+  // ⓑ **완료 확인** — 재실행이 아니다.
+  //
+  // 여기 도달했다는 것은 **결속이 `post-cas` 라는 뜻**이고, 그 사실을 다시 검사하지 않는다(도달성 증명):
+  // ⓐ blocker 가 하나라도 있으면 이 함수에 오지 않으므로 결속은 `pre-cas` 또는 `post-cas` 다
+  // ⓑ `pre-cas` 는 `expected === record.revision` 이므로 산술 결속이 요구하는 `refRevision =
+  //    expected + 1 = revision + 1` 인 ref 가 필요한데, 그런 ref 는 **앵커 후보**라 ⑤ 에서 면제(→
+  //    `resume-composed-cas` 조기 반환)되거나 blocker 가 된다 — 즉 여기 남은 ownRefs 는 전부
+  //    `≤ revision` 이고 위 산술 검사가 이미 걸러냈다.
+  // 따라서 `binding === 'post-cas'` 재검사와 그 else 분기는 **도달 불가**다. 뮤테이션 자기검사가
+  // 그것을 실측으로 확인했고(조건을 `true` 로 바꿔도 아무 테스트도 깨지지 않았다), 이 레포는 그런
+  // 「완전히 가려진 방어」를 남기지 않는다(정정 183·189 · 직전 커밋의 「자기 전이 금지」 삭제와 같은 규율).
+  return { kind: 'normal-wait' }
 }

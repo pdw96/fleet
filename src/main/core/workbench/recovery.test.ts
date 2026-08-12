@@ -573,11 +573,21 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
 
   it('prepared ∧ ref 존재 → result-ref-unattributed', () => {
     // (A) 에서 ref 는 **composed 저널 뒤**에만 발행된다 — prepared 상태의 ref 는 설명되지 않는다.
+    // ⚠ 픽스처는 **결속된 쌍**이어야 한다: `prepared` 저널은 「진행 중 통합 없음 → prepared」 전이를
+    //    선기록하므로 previous 는 부재이고 next 가 `prepared` 다(post-cas: revision === expected + 1).
+    const boundPrepared = journal({
+      stage: 'prepared',
+      resultTree: undefined,
+      resultOid: undefined,
+      previousAuthorityStage: undefined,
+      nextAuthorityStage: 'prepared',
+      expectedAuthorityRevision: N + 2,
+    })
     const v = classifyRecovery(
       obs({
         authority: { kind: 'found', record: record({ revision: N + 3 }) },
         prefixRefs: refs([REF_N1, OID]),
-        journal: entries(prepared),
+        journal: entries(boundPrepared),
       }),
     )
     expect(kinds(v)).toContain('result-ref-unattributed')
@@ -592,7 +602,8 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
       obs({
         authority: { kind: 'found', record: record({ revision: N + 3 }) },
         prefixRefs: refs([REF_N1, OID2]),
-        journal: entries(journal()),
+        // 결속된 pre-cas 쌍(권위 `prepared` · expected === revision)에서 ref 의 OID 만 어긋난다.
+        journal: entries(journal({ expectedAuthorityRevision: N + 3 })),
       }),
     )
     expect(kinds(v)).toContain('result-ref-mismatch')
@@ -639,6 +650,8 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
     for (const [stage, rec] of cases) {
       const j = journal({
         stage,
+        // 결속된 pre-cas 쌍 — 종결 CAS 가 아직 커밋되지 않은 상태(expected === 관측 revision).
+        expectedAuthorityRevision: N + 3,
         ...(stage === 'finalized'
           ? { publishedAt: 9, previousAuthorityStage: 'published', nextAuthorityStage: 'finalized' }
           : { abandonedAt: 9, abandonReason: 'user-abandon', nextAuthorityStage: undefined }),
@@ -667,7 +680,32 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
       }),
     )
     expect(v.kind).toBe('reconciliation-required')
-    expect(kinds(v)).toContain('expected-revision-mismatch')
+    // ⑥ 의 결속 판정이 **복구표보다 먼저** 답한다 — 「post-cas 인데 권위가 든 결과가 저널의 증언과
+    // 다르다」는 stage 순서가 아니라 결속의 문제다(Codex PR#289 3R P1).
+    expect(kinds(v)).toContain('journal-authority-binding')
+  })
+
+  /**
+   * **Codex PR#289 3R P1** — 같은 stage 끼리도 결속을 본다. 이전 판은 stage **인덱스만** 비교해서
+   * 「둘 다 composed 인데 결과·revision·세대가 어긋난」 손상 쌍이 그대로 복구표에 도달했고, ref 가
+   * 없으면 `no-mutation`(= 포기·재준비 적격)이 나왔다.
+   */
+  it('같은 stage 여도 결속이 어긋나면 ref 가 없어도 reconciliation 이다', () => {
+    const v = classifyRecovery(
+      obs({
+        authority: {
+          kind: 'found',
+          record: record({
+            revision: N + 1,
+            currentIntegrationStage: 'composed',
+            currentIntegrationResultOid: OID2,
+          }),
+        },
+        journal: entries(journal()),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-authority-binding')
   })
 
   it('고아 published 저널은 차단하지 않는다(활성 집합 = prepared·composed 뿐 · §3-T33)', () => {

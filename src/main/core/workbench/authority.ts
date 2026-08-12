@@ -1065,6 +1065,15 @@ export function checkTransitionInvariants(
         `전이: 미종결 txn(${String(prev.currentIntegrationTxnId)} · ${String(from)}) 위에 새 txn 을 시작할 수 없다`,
       )
     }
+    // ⚠ **stage 종결만으로는 부족하다**(Codex PR#289 3R P1). `lifecycle==='integrated'` ∧ current
+    // stage `finalized` 인 레코드는 위 pending 검사를 통과해 **종결된 bench 를 다시 열어버린다** —
+    // 스펙 §5 「lifecycle 회귀(재개) 없음 · `integrated` 후 추가 작업은 **새 bench**」와 정면 충돌이다.
+    // 시작 인가를 stage 가 아니라 **lifecycle** 에 건다.
+    if (prev.lifecycle !== 'open') {
+      v.push(
+        `전이: ${prev.lifecycle} bench 에서는 새 통합 txn 을 시작할 수 없다(추가 작업은 새 bench)`,
+      )
+    }
     if (to !== 'prepared') {
       v.push(`전이: 새 txn 은 prepared 로 시작해야 한다(관측: ${to})`)
     }
@@ -1094,6 +1103,22 @@ export function checkTransitionInvariants(
 
   if (next.sourceGeneration < prev.sourceGeneration) {
     v.push(`전이: sourceGeneration 은 단조다(${prev.sourceGeneration} → ${next.sourceGeneration})`)
+  }
+  // ⚠ **완결 귀속의 「도입」도 검사한다**(Codex PR#289 3R P1). 아래 규칙은 **이미 귀속이 있을 때**만
+  // 돌아서, 첫 도입이 무제한이었다 — current 가 T1 인 레코드를 `completedIntegrationTxnId: T2` 로
+  // 커밋해도 단일 레코드·전이 검사가 **둘 다 통과**했고, 무관한 txn 이 완결로 기록되면서 부분 통합이
+  // 숨는다. 스펙 §W-8 은 「완결은 **권위 시도만**(`currentIntegrationTxnId` 의 도달성) · 관측 CAS 는
+  // **txn 동일**」이므로 그 결속을 여기서 코드로 세운다.
+  // ⚠ 정직 표기: **stage·도달성 전제는 여기서 보지 않는다** — `resultOid` 가 base 에서 도달 가능한지는
+  //    외부 관측(§W-8)이고 이 순수 함수의 입력에 없다. 여기서 세우는 것은 **귀속 identity** 뿐이다.
+  if (
+    prev.completedIntegrationTxnId === undefined &&
+    next.completedIntegrationTxnId !== undefined &&
+    next.completedIntegrationTxnId !== prev.currentIntegrationTxnId
+  ) {
+    v.push(
+      '전이: 완결 귀속은 직전 레코드의 current txn 이어야 한다(무관한 txn 을 완결로 기록 금지)',
+    )
   }
   if (
     prev.completedIntegrationTxnId !== undefined &&
