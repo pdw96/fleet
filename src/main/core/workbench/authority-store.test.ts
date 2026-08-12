@@ -1812,9 +1812,14 @@ describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
     const fx = await setup()
     const target = over.currentIntegrationStage
     const climb =
-      target === undefined || target === 'prepared' || target === 'abandoned'
+      target === undefined || target === 'prepared'
         ? []
-        : STAGE_PATH.slice(0, STAGE_PATH.indexOf(target))
+        : // ⚠ `abandoned` 도 **prepared 를 먼저 커밋한 뒤** 제출한다(CodeRabbit PR#289): 첫 CAS 로
+          //   내면 「최초는 prepared 로만」이 먼저 답해서, 이 행이 겨냥한 「권위는 abandoned 를 갖지
+          //   않는다」(정정 177)를 **한 번도 검증하지 못한다**(가림).
+          target === 'abandoned'
+          ? (['prepared'] as const)
+          : STAGE_PATH.slice(0, STAGE_PATH.indexOf(target))
     for (const stage of climb) {
       const step = await fx.store.withAuthority(fx.lease, async (tx) => {
         const read = tx.readFresh()
@@ -1888,6 +1893,31 @@ describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
   })
 
   /**
+   * **CodeRabbit PR#289** — 「최초 레코드가 완결 귀속을 들고 태어나는」 축에 행이 없었다. 전이 계층은
+   * `prev === undefined` 에서 lifecycle 만 보므로(정정 227) 그 조합을 막는 것은 **단일 레코드 불변식
+   * ②**(`completedIntegrationTxnId` 존재 ⟺ `lifecycle==='integrated'`)다. 이 세션의 규율대로
+   * **「다른 층이 막는다」를 주석이 아니라 행으로** 남긴다 — 규칙 이름을 문면까지 단언한다.
+   */
+  it('최초 CAS 는 완결 상태를 직접 만들 수 없다(②와 정정 227 이 각각 답한다)', async () => {
+    // ⓐ `open` + 완결 귀속 → 불변식 ② 가 답한다.
+    const openWithCompleted = await casWith({ completedIntegrationTxnId: 'T1' })
+    expect(openWithCompleted.kind).toBe('invariant-violation')
+    expect(
+      openWithCompleted.kind === 'invariant-violation' && openWithCompleted.violations.join(),
+    ).toContain('②')
+
+    // ⓑ `integrated` + 완결 귀속 → 전이 계층(정정 227)이 답한다.
+    const integrated = await casWith({
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: 'T1',
+    })
+    expect(integrated.kind).toBe('invariant-violation')
+    expect(integrated.kind === 'invariant-violation' && integrated.violations.join()).toContain(
+      '최초 레코드의 lifecycle 은 open',
+    )
+  })
+
+  /**
    * ⚠ **기대가 뒤집혔다**(Codex PR#289 P1 의 파급 · 은폐하지 않는다). 이전 판은 첫 CAS 로
    * `abandoned` 레코드를 만들어 「resultOid 를 요구하지 않는다」를 보였는데, 계획 정정 177 은
    * **권위 레코드가 `abandoned` 를 갖지 않는다**고 못박았다 — 포기는 단계를 남기는 게 아니라 통합
@@ -1901,5 +1931,8 @@ describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
       currentIntegrationTxnGeneration: 1,
     })
     expect(r.kind).toBe('invariant-violation')
+    expect(r.kind === 'invariant-violation' && r.violations.join()).toContain(
+      'abandoned 를 가질 수 없다',
+    )
   })
 })
