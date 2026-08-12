@@ -1221,6 +1221,30 @@ anchor blocker 존재 중 **행동 인가 전부 차단** · **T81** 앵커 검�
 단일 레코드 전용이라 `published → prepared` 역행·`abandoned → composed` 부활이 어느 층에서도 안 막힌다 ·
 정정 142 가 저널 쪽에만 세운 것을 권위 쪽에 세우는 행).
 
+#### 체크포인트 리뷰 2R 반영 (2026-08-12 · 회부한 모순 확인 + 내 유력안 2종 전부 기각)
+
+| # | 지적 → 확정 | 근거 |
+|---|---|---|
+| 199 | **회부한 모순은 실재**(`promote-published` 도달 불가) — 확정 처방은 **「현재 txn 기계적 제외」가 아니라 「유효한 `composed` 저널이 정확히 설명하는 단 하나의 next-revision ref 만 조건부 면제」** | ⓐ**내 유력안 1(`currentIntegrationTxnId` 제외) 기각** — 면제 대상을 **롤백 가능한 권위 파일 하나로** 결정한다. 실패 경로: T1 정상 완료 → 권위가 T2 를 current 로 전진 → 파일 롤백으로 current 가 **다시 T1** → 복구기가 롤백된 슬롯을 믿고 T1 ref 를 면제 → **롤백을 증명하는 가장 높은 ref 가 바로 그 이유로 숨는다**. 「정의역 축소는 앵커 값이 아니다」라는 내 논증은 틀렸다 — **정의역 축소도 판정의 일부**이고 그 입력이 롤백 가능하다는 사실을 무시할 수 없다. ⓑ**내 유력안 2(`record.revision + 1` 하나만 면제) 기각** — `+1` 은 필요조건이지 충분조건이 아니다(`<N+1>-T1`·`<N+1>-T2` 동시 주장 · 손상 ref 의 우연 일치). ⓒ**확정 면제 조건 10항**: 대응 저널 존재·런타임 검증 통과 / stage 정확히 `composed` / `journal.resultRef === R.refName` / `journal.resultOid === R.oid` / `parsedRefRevision === journal.expectedAuthorityRevision + 1` / `journal.expectedAuthorityRevision === authority.revision` / `previousAuthorityStage`·`nextAuthorityStage`·`integrationGeneration`·`draftDigest` 가 현재 권위에서 **재구성되는 후속 전이와 일치** / superseded·abandoned·finalized 아님 / **같은 revision 을 주장하는 promotable ref 가 정확히 하나** / repo 락 + bench 리스 재획득 후 **fresh read 재검증**. ⓓ**계속 전역 blocker 인 것**: 대응 저널 없는 높은 ref · stage 가 `published`/`finalized`/`abandoned` 인 높은 ref · OID 불일치 · expected revision 불일치 · **두 단계 이상 높은 ref** · 복수 주장 · superseded txn ref · digest 불일치 · 열거·파싱·identity 검증 실패 |
+| 200 | **정정 197 의 판정 순서를 개정한다** — 저널을 앵커 **앞에서 읽되(읽기·검증만)**, 변이는 앵커 게이트 뒤 | 정정 197 은 「앵커 판정 **전에 저널 바이트조차 읽지 않는다**」로 고정했는데, 그러면 **정상 크래시와 롤백을 구분할 정보가 3단계에 없다**. 안전 목표는 「앵커보다 먼저 저널을 **변이**하지 않는다」이지 「읽지 않는다」가 아니었다. 개정 순서: `①권위 fresh read → ②결과 ref 전수 열거·문법·identity·OID 검증 → ③저널 전수 열거·schema·identity 검증 → ④ref↔저널 설명 관계 **순수 분류** → ⑤anchor gate(설명 불가능한 `refRevision > authority.revision` 존재 = reconciliation · 정확히 하나의 valid composed pending ref 만 promote 후보) → ⑥귀속·전이 불변식 재검증 → ⑦repo 락 + 리스 아래 fresh read·재열거 → ⑧조건 유지 시에만 promote-published CAS`. 「롤백된 권위 위에서 먼저 승격한다」는 위험은 재도입되지 않는다 — 승격 **변이**는 여전히 ⑤ 뒤다 |
+| 201 | **정정 196 불변식 ③ 의 의미를 좁힌다** — 「무조건 reconciliation」이 아니라 **「복구 개입 없이 `published` 정상 대기로 취급하지 않는다」** | `promote-published` 도 **적극적 복구 개입**이므로 ③ 을 만족한다. ③ 을 「항상 reconciliation」으로 읽으면 복구표의 그 arm 을 폐기하는 결과가 되어 정정 167 의 2분과 충돌한다. 결속이 정확하면 `promote-published`, 아니면 `reconciliation-required` |
+
+**§3 신설 행을 T73~T82 에서 확대**(Codex 2R 이 열거한 12축) — 기존 10행에 다음을 명시 추가:
+**T83** 정상 crash window(권위 `N` · valid `composed` 저널 expected `N` · matching ref `N+1` → `promote-published`
+이며 전역 reconciliation **아님**) · **T84** 저널 없는 `N+1` ref → reconciliation · **T85** result OID 불일치 →
+reconciliation · **T86** expected revision 불일치(`N-1`·`N+1`) → promote **금지** · **T87** 두 단계 이상 롤백
+(권위 `N-1` · 저널 expected `N` · ref `N+1`) → reconciliation · **T88** 복수 next-revision ref → reconciliation ·
+**T89** **롤백된 current 슬롯** — current 라는 이유만으로 면제되지 않음(정정 199ⓐ 의 회귀 핀) · **T90**
+superseded/abandoned ref(현재 이하 = 정상 보존 · 현재 초과 = current 여부 무관 reconciliation) · **T91**
+anchor-before-**mutation**(저널은 판정 전에 읽지만 권위 CAS·저널 stage 변이는 게이트 전 **0건**) · **T92**
+재검증 race(최초 분류 후 락·리스 획득 사이 변경 → fresh 재검증 실패 · promotion 0건) · **T93** 정확한
+promotion(CAS 성공 후 `record.revision === parsedRefRevision` · 저널은 **그 뒤에만** `published` 전진) ·
+**T94** CAS 실패 시 ref 보존 · 정상 대기로 숨기지 않음.
+
+**교훈(2R)**: **내가 낸 두 대안이 전부 「검사의 입력이 검사 대상과 같은 매체」라는 같은 결함을 공유했다.**
+앵커의 존재 이유가 「권위 파일 밖의 독립 증거」인데, 면제 규칙을 그 권위 파일에서 읽어오면 독립성이
+그 지점에서만 조용히 끊긴다. 처방은 **면제를 독립 매체 두 개(ref + 저널)의 교차검증으로 세우는 것**이었다.
+
 **교훈**: **「두 매체가 같은 값을 증언한다」고 적을 때 그 값의 정의를 양쪽 소스에서 각각 확인하라.**
 나는 저널 필드 주석(`journal.ts:115`)과 CAS 배정(`authority.ts:1307`)을 **둘 다 이번 정찰에서 읽고도**
 `+1` 경계를 놓쳤다 — 두 곳을 읽은 것과 두 값을 **뺄셈해 본 것**은 다르다. 이 결함은 코드 0행 시점에
