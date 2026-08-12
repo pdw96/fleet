@@ -1241,6 +1241,30 @@ anchor-before-**mutation**(저널은 판정 전에 읽지만 권위 CAS·저널 
 promotion(CAS 성공 후 `record.revision === parsedRefRevision` · 저널은 **그 뒤에만** `published` 전진) ·
 **T94** CAS 실패 시 ref 보존 · 정상 대기로 숨기지 않음.
 
+#### 체크포인트 리뷰 3R — ✅**Approved with required wording fixes · 추가 P0/P1 없음** (2026-08-12)
+
+회부한 질문 3건 전부 닫혔다. **착수 전 라운드 종료** — 총 3라운드 · P1 2건(196·199) · 문면 확정 3건.
+
+| # | 확정 |
+|---|---|
+| 202 | **인터리브 = (A) 확정.** `composed` 전이는 일반 규율의 예외가 아니라 **그 단계가 소유하는 명시적 3단계 프로토콜**이다: **`composed` 저널 acknowledged → 결과 ref create-only 발행 → `composed` 권위 CAS.** 결과 ref 발행은 「composed CAS 가 커밋됐다」가 아니라 **「그 CAS 에 필요한 결과 증거와 외부 부수효과가 준비됐다」**는 뜻이다. (B) 는 조건 6(`journal.expected === authority.revision`)을 **구조적으로 거짓**으로 만들어 면제 조건과 공존 불가. (A) 는 「`resultOid` 는 `composed` 부터 필수」인 현행 권위 불변식과도 양립한다 — ref 를 만들 결과 증거는 composed 저널에 이미 내구 기록됐고 권위의 composed 전이만 pending 인 상태다. **일반 WAL 문구도 함께 좁힌다**: 「각 단계는 원칙적으로 저널 선기록 후 권위 CAS 로 커밋한다. 단 `composed` 단계는 결과 ref 발행을 그 CAS **앞**에 두며, 이 사이의 크래시는 조건부 면제 검증 후 **동일 composed CAS 를 재개**한다」 |
+| 203 | **verdict 이름 `promote-published` → `resume-composed-cas`**(지금 변경 — 폐기 어휘 재유입 가드가 걸리기 전에). 그 verdict 가 받는 디스크 상태에서 복구기가 당장 커밋할 것은 `published` 권위 상태가 아니라 **저널이 이미 선기록한 `composed` 권위 CAS** 다. ⚠ **내가 제시한 ⓑ(이름 유지 + 「published 로 가는 여정의 승격」으로 문면에 못박기)는 기각** — 그 설명은 「composed CAS 를 **건너뛰고** 곧바로 published 권위를 기록」하는 구현도 **이름상 허용**하고, 그러면 `previousAuthorityStage`·`nextAuthorityStage`·draft digest 결속이 통째로 무력화된다. 저널이 두 단계를 별도로 두고 `publishedAt` 을 `composed` 에서 금지하는 이상 **이름도 그 단계성을 보존**해야 한다 |
+| 204 | **ref 가 권위보다 두 단계 앞서는 창 = 정상으로 인정하지 않는다**(내 질문 ⓐ 채택 · **T87 그대로 유지**). ⚠ 다만 문안은 「같은 revision 을 다시 겨냥한다」보다 엄밀해야 한다 — **CAS 가 실제로 성공했는데 응답·후속 durability acknowledgement 만 유실**됐을 수 있기 때문이다. **확정 수렴 규칙 3분기**: ⓐ권위가 여전히 `N` ∧ 전 결속 동일 → **동일 composed CAS 재실행** ⓑ권위가 이미 `N+1` ∧ composed 전이가 **정확히** 반영 → 재실행 없이 **완료 확인** 후 다음 stage ⓒ그 외(revision > `N+1` · stage/txn/digest/resultOid 불일치) → 자동 전진 금지 · **reconciliation-required**. **추가 불변식 6**: ①stage `S` 의 권위 커밋이 확인되기 전 stage `S+1` 저널 기록 금지 ②**txn 당 결과 ref 단일** ③current txn 이 composed pending 이면 새 prepare/re-prepare 시작 금지 ④같은 resulting revision 을 주장하는 promotable ref 가 둘 이상 = reconciliation ⑤**composed CAS 의 실패·불확실은 published 전진의 인가가 아니다** ⑥retry 는 이전 응답을 믿지 않고 fresh read 후 `expected N` 또는 **정확한** `N+1` 중 하나로만 수렴. **정상 프로토콜에서 ref 는 txn 당 한 번만 만들어지므로**(published 로 갈 때 새 `N+2` ref 를 만들지 않는다) 완료 후에는 오히려 `refRevision(N+1) < authority.revision(N+2)` 이다 — 두 단계 앞섬은 위 4경로를 금지하면 발생하지 않는다 |
+
+**T83 픽스처의 확정 인터리브**(구현자가 창작하지 않도록 10단계로 고정): ①권위 `N` fresh read →
+②composed next draft·전이 불변식 **선검증** → ③composed 저널(`expectedAuthorityRevision=N`) acknowledged →
+④결과 ref `<N+1>-<txnId>` create-only 발행 성공 → ⑤**composed 권위 CAS 호출 직전 crash 주입** → ⑥재부팅 →
+⑦`권위 N` + `저널 composed expected N` + `matching ref N+1` 관측 → ⑧면제 조건 1~10 교차검증 →
+⑨verdict = **`resume-composed-cas`** → ⑩같은 composed 권위 CAS 를 수행해 revision `N+1`.
+⚠ **(B) 로 만들면 안 된다** — (B) 면 ④ 시점에 권위가 이미 `N+1` 이라 T83 의 「권위 `N`」과 모순이다.
+
+**폐기 어휘에 추가**(재유입 금지): **`promote-published`**(→ `resume-composed-cas`).
+
+**교훈(3R)**: **verdict 이름이 계약이다.** 내가 낸 ⓑ(이름 유지 + 문면 보강)는 「문서로 막는다」의 전형이고,
+이 레포가 이미 세 번 학습한 실패 형태다([[static-guard-form-over-name]] · 정정 44 「배포 계약으로 명문화한다는
+문장은 집행이 아니다」). 이름이 두 구현을 모두 허용하면 **문면은 그중 하나만 금지할 뿐 컴파일러도 리뷰어도
+나머지를 못 잡는다.** 단계성을 이름에 넣으면 그 오답이 **말이 안 되는 코드**가 된다.
+
 **교훈(2R)**: **내가 낸 두 대안이 전부 「검사의 입력이 검사 대상과 같은 매체」라는 같은 결함을 공유했다.**
 앵커의 존재 이유가 「권위 파일 밖의 독립 증거」인데, 면제 규칙을 그 권위 파일에서 읽어오면 독립성이
 그 지점에서만 조용히 끊긴다. 처방은 **면제를 독립 매체 두 개(ref + 저널)의 교차검증으로 세우는 것**이었다.
