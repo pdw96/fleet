@@ -264,22 +264,61 @@ describe('전이 불변식 — 증거·세대 동결', () => {
       expect.stringContaining('완결 귀속'),
     ])
   })
+
+  /**
+   * **Codex PR#289 P1** — 이 규칙의 초안은 보관 워크플로를 통째로 막았다. 단일 레코드 불변식 ②가
+   * 「`completedIntegrationTxnId` 존재 ⟺ `lifecycle==='integrated'`」이므로 `integrated → archived` 는
+   * **반드시 그 필드를 소거**해야 하는데, 「소거 금지」가 그 정상 전이를 `invariant-violation` 으로 답했다.
+   */
+  it('보관 전이(integrated → archived)의 완결 귀속 소거는 허용한다', () => {
+    const prev = base({ lifecycle: 'integrated', completedIntegrationTxnId: T1 })
+    expect(
+      checkTransitionInvariants(
+        prev,
+        draft({ lifecycle: 'archived', archivedBranch: 'preserved' }),
+      ),
+    ).toEqual([])
+    // 보관이 아닌 소거는 여전히 거부다 — 예외는 lifecycle 에 결속한다.
+    expect(checkTransitionInvariants(prev, draft({ lifecycle: 'integrated' }))).toEqual([
+      expect.stringContaining('완결 귀속'),
+    ])
+  })
 })
 
 describe('전이 불변식 — 최초 레코드', () => {
-  it('이전 레코드 부재(최초 생성)에서는 전이 검사가 침묵한다', () => {
+  it('이전 레코드 부재(최초 생성)에서 통합 없는 레코드는 통과한다', () => {
     expect(checkTransitionInvariants(undefined, draft())).toEqual([])
-    // 단 최초 레코드가 곧바로 미종결 통합을 들고 태어나는 것은 막지 않는다 — 그것은 단일 레코드
-    // 불변식(③ 계열)의 소관이며, 여기서 이중으로 잡으면 **같은 종별을 두 방어가 공유**해 가림이 생긴다
-    // (PR3b 정정 189 가 실측한 형태).
+  })
+
+  /**
+   * **Codex PR#289 P1** — 초안은 「최초 레코드가 미종결 통합을 들고 태어나는 것은 단일 레코드 불변식
+   * ③ 계열의 소관」이라고 적고 침묵했는데, **그 주장이 거짓이었다.** `checkInvariants` 의 ③·③b·③c·③d
+   * 어디에도 「최초 stage 는 `prepared`」가 없어서, 첫 CAS 가 `composed`·`published`·`finalized` 로
+   * 곧바로 태어나 **WAL 의 `prepared` 단계와 그 크래시 안전 순서를 통째로 건너뛸 수 있었다**.
+   *
+   * 「다른 층이 막는다」는 검증 없는 안전 주장이 코드 주석으로 착지한 형태(PR#266 교훈)의 재발이다.
+   */
+  it('최초 레코드는 prepared 로만 통합을 시작할 수 있다', () => {
+    for (const stage of ['composed', 'published', 'finalized'] as const) {
+      expect(
+        checkTransitionInvariants(
+          undefined,
+          draft({
+            currentIntegrationTxnId: T1,
+            currentIntegrationStage: stage,
+            currentIntegrationTxnGeneration: 3,
+            currentIntegrationResultOid: 'a'.repeat(40),
+          }),
+        ),
+      ).toEqual([expect.stringContaining('prepared')])
+    }
     expect(
       checkTransitionInvariants(
         undefined,
         draft({
           currentIntegrationTxnId: T1,
-          currentIntegrationStage: 'composed',
+          currentIntegrationStage: 'prepared',
           currentIntegrationTxnGeneration: 3,
-          currentIntegrationResultOid: 'a'.repeat(40),
         }),
       ),
     ).toEqual([])

@@ -93,7 +93,7 @@ const journal = (over: Partial<IntegrationTxnRecord> = {}): IntegrationTxnRecord
   }) as IntegrationTxnRecord
 
 const obs = (over: Partial<RecoveryObservation> = {}): RecoveryObservation => ({
-  benchId: BENCH,
+  identity: IDENTITY,
   authority: { kind: 'found', record: record() },
   prefixRefs: { kind: 'ok', refs: [] },
   exactRefs: { kind: 'ok', refs: [] },
@@ -623,7 +623,20 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
   })
 
   it('finalized·abandoned 잔존 → 청소 복구(멱등 종결 · 삭제 아님)', () => {
-    for (const stage of ['finalized', 'abandoned'] as const) {
+    // ⚠ 권위 stage 는 저널보다 한 단계 뒤까지만 허용된다(WAL 교차 결속) — `finalized` 저널의 짝은
+    // `published` 권위다. `abandoned` 는 종결 기록이라 그 결속의 정의역 밖이다(포기 CAS 가 pending).
+    const cases = [
+      [
+        'finalized',
+        record({
+          revision: N + 3,
+          currentIntegrationStage: 'published',
+          currentIntegrationResultOid: OID,
+        }),
+      ],
+      ['abandoned', record({ revision: N + 3 })],
+    ] as const
+    for (const [stage, rec] of cases) {
       const j = journal({
         stage,
         ...(stage === 'finalized'
@@ -631,10 +644,7 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
           : { abandonedAt: 9, abandonReason: 'user-abandon', nextAuthorityStage: undefined }),
       })
       const v = classifyRecovery(
-        obs({
-          authority: { kind: 'found', record: record({ revision: N + 3 }) },
-          journal: entries(j),
-        }),
+        obs({ authority: { kind: 'found', record: rec }, journal: entries(j) }),
       )
       expect(v.kind).toBe('idempotent-cleanup')
     }
@@ -725,6 +735,136 @@ describe('I11 — 고아 활성 저널은 활성 집합 정의가 아니라 복�
       }),
     )
     expect(v.kind).toBe('reconciliation-required')
+  })
+})
+
+/* ================================================================================================
+ * Codex PR#289 P1 — 관측 계약의 구멍 3건
+ * ============================================================================================= */
+
+describe('P1 — 저널 identity 는 권위 유무와 무관하게 검증한다', () => {
+  it('권위 부재 + 다른 레포에서 복사된 저널은 benign 이 아니다', () => {
+    // benchId 가 같아도(영역 통째 복사·클론) `repoCommonGitDir`·`benchRoot` 는 다르다. 권위가 없다는
+    // 이유로 그 대조를 건너뛰면 **남의 레포 저널이 재준비 적격으로 통과**한다 — 권위가 없을수록 더
+    // 엄격해야 한다(fail-closed).
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'absent' },
+        journal: entries(
+          journal({
+            stage: 'prepared',
+            resultTree: undefined,
+            resultOid: undefined,
+            repoCommonGitDir: '/other/.git',
+          }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-identity-mismatch')
+  })
+
+  it('권위 부재 + benchRoot 불일치도 같은 종별이다', () => {
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'absent' },
+        journal: entries(journal({ benchRoot: '/elsewhere/.fleet-wb' })),
+      }),
+    )
+    expect(kinds(v)).toContain('journal-identity-mismatch')
+  })
+})
+
+describe('P1 — 권위와 저널의 교차 순서 결속(WAL 선기록)', () => {
+  it('권위가 저널보다 앞선 상태는 불가능하다 → reconciliation', () => {
+    // WAL 은 저널 선기록 → 권위 CAS 이므로 `authority stage ≤ journal stage` 다. 뒤집힌 관측은
+    // **저널 단독 롤백·손상**의 증거이고, 저널 stage 만 보고 분기하면 그 상태가 `no-mutation` 으로
+    // 통과해 손상 위에서 포기·재준비가 인가된다.
+    const v = classifyRecovery(
+      obs({
+        authority: {
+          kind: 'found',
+          record: record({
+            currentIntegrationStage: 'published',
+            currentIntegrationResultOid: OID,
+          }),
+        },
+        journal: entries(
+          journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-behind-authority')
+  })
+
+  it('저널이 권위보다 두 단계 앞선 상태도 불가능하다(정정 204 불변식 ①)', () => {
+    // 「stage S 의 권위 커밋이 확인되기 전 stage S+1 저널 기록 금지」 → `journal ≤ authority + 1`.
+    // ref 를 두지 않아 **앵커가 침묵하는 구간**에서 이 결속만으로 잡히는지 본다.
+    const v = classifyRecovery(
+      obs({
+        journal: entries(
+          journal({
+            stage: 'published',
+            publishedAt: 9,
+            expectedAuthorityRevision: N + 1,
+            previousAuthorityStage: 'composed',
+            nextAuthorityStage: 'published',
+          }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-too-far-ahead')
+  })
+
+  it('정상 창(권위 prepared · 저널 composed)은 여전히 통과한다', () => {
+    const v = classifyRecovery(
+      obs({ prefixRefs: refs([REF_N1, OID]), journal: entries(journal()) }),
+    )
+    expect(v.kind).toBe('resume-composed-cas')
+  })
+})
+
+describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
+  it('다른 txn 이 pending 이면 prepared 고아는 benign 이 아니다', () => {
+    // 전이 불변식이 「미종결 T1 위에 T2 시작」을 금지하므로 저널-선기록 프로토콜은 T2 를 **애초에
+    // 쓰지 말았어야 한다**. 그 존재 자체가 이상 신호인데, benign 규칙이 그것을 삼키고 T1 승격까지
+    // 그대로 내주고 있었다.
+    const orphanT2 = journal({
+      txnId: T2,
+      stage: 'prepared',
+      resultTree: undefined,
+      resultOid: undefined,
+      resultRef: formatResultRef(BENCH, N + 1, T2),
+    })
+    const v = classifyRecovery(
+      obs({
+        prefixRefs: refs([REF_N1, OID]),
+        journal: entries(journal(), orphanT2),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('orphan-active-journal')
+  })
+
+  it('미종결 txn 이 없으면(권위에 통합 없음) prepared 고아는 그대로 benign 이다', () => {
+    const v = classifyRecovery(
+      obs({
+        authority: {
+          kind: 'found',
+          record: record({
+            currentIntegrationTxnId: undefined,
+            currentIntegrationStage: undefined,
+            currentIntegrationTxnGeneration: undefined,
+          }),
+        },
+        journal: entries(
+          journal({ stage: 'prepared', resultTree: undefined, resultOid: undefined }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('no-mutation')
   })
 })
 

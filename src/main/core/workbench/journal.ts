@@ -231,7 +231,19 @@ export interface JournalStore {
  * 순수 술어 — 소비자(PR3c·PR5·PR7)보다 먼저 서는 부분
  * ============================================================================================= */
 
-const STAGE_ORDER: readonly IntegrationStage[] = ['prepared', 'composed', 'published', 'finalized']
+/**
+ * WAL 단계의 **순서**(종결 `abandoned` 는 순서 밖이다). 소비자가 둘이 되면서 export 한다 — PR3c 의
+ * 복구 판정이 「권위 stage ≤ 저널 stage ≤ 권위 stage + 1」 교차 결속을 이 순서로 판정하므로, 사본을
+ * 만들면 두 곳이 조용히 갈린다.
+ */
+export const WAL_STAGE_ORDER: readonly IntegrationStage[] = [
+  'prepared',
+  'composed',
+  'published',
+  'finalized',
+]
+
+const STAGE_ORDER = WAL_STAGE_ORDER
 
 /**
  * 합법 전이 그래프(계획 정정 142). 타입·스펙·코드 어디에도 없어 **역행·부활이 어느 층에서도 차단되지

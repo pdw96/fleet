@@ -887,6 +887,22 @@ promotable ref 가 **정확히 하나** — 그리고 ⑪**repo 락 + bench 리�
 `abandoned` 인 높은 ref · OID 불일치 · expected revision 불일치 · **두 단계 이상 높은 ref** · 복수 주장 ·
 superseded txn ref · digest 불일치 · 열거·파싱·identity 검증 실패.
 
+**관측 입력의 identity 는 호출자가 독립으로 싣는다**(Codex PR#289 P1) — 판정은 `benchId` 뿐 아니라
+`commonGitDir`·`benchRoot` 를 **관측자에게서** 받아 ⓐ권위 레코드 ⓑ**모든 저널 엔트리**를 그것과 대조한다.
+레포 identity 를 **권위 레코드에서 꺼내** 저널과 대조하면 권위가 부재·손상일 때 대조가 통째로 사라져
+**다른 레포에서 복사된 저널**(같은 benchId · 영역 통째 복사)이 재준비 적격으로 통과한다. 권위가
+없을수록 더 엄격해야 하고, 대조 기준은 **롤백 가능한 매체 밖**에 있어야 한다(정정 205 와 같은 논거).
+
+**권위 stage ≤ 저널 stage ≤ 권위 stage + 1**(Codex PR#289 P1 · 현재 txn 정의역). 앞 부등식은 WAL
+선기록에서, 뒤 부등식은 정정 204 불변식 ①에서 나온다. **저널 stage 만 보고 복구표를 분기하면**
+권위가 앞선 관측(= 저널 단독 롤백·손상)이 `no-mutation` 으로 통과해 **손상 위에서 포기·재준비가
+인가**된다. 어긋난 두 방향은 각각 다른 종별로 답한다. ⚠ 저널 `abandoned` 는 종결 기록이라 이 결속의
+정의역 밖이다(포기 CAS 가 pending 일 뿐이다).
+
+**고아 활성 저널의 benign 창은 「권위에 미종결 통합이 없을 때」에만 열린다**(Codex PR#289 P1) —
+전이 불변식이 「미종결 T1 위에 T2 시작」을 금지하므로 저널-선기록 프로토콜은 T2 저널을 **애초에 쓰지
+말았어야 한다.** 그 존재 자체가 이상 신호인데 benign 규칙이 그것을 삼키면 T1 승격까지 그대로 나간다.
+
 ⚠ **면제 판정의 입력을 권위 파일 하나로 좁히지 않는다**(정정 199ⓐ 의 회귀 핀 · §3-T89): 「현재 txn 이니
 면제」는 T1 완료 → 권위가 T2 로 전진 → 파일 롤백으로 current 가 **다시 T1** 인 사슬에서 **롤백을 증명하는
 가장 높은 ref 를 바로 그 이유로 숨긴다.** 정의역 축소도 판정의 일부이고 그 입력이 롤백 가능하다는 사실을
@@ -1364,7 +1380,7 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T79** | **앵커 게이트가 승격 판정보다 먼저(신설 · PR3c)** — 저널이 승격 조건을 전부 만족해도 **설명되지 않는 더 높은 ref** 가 하나라도 있으면 승격이 아니라 reconciliation 이다(순서를 뒤집으면 롤백된 stage 위에서 승격한다). 저널은 게이트 **앞에서 읽되**(읽기·검증만) 권위 CAS·저널 변이는 게이트 뒤다(계획 정정 200) | verify |
 | **T80** | **blocker 존재 중 행동 인가 전면 차단(신설 · PR3c)** — blocker 가 하나라도 있으면 판정은 **어떤 입력 조합에서도** `no-mutation`·`resume-composed-cas`·`normal-wait` 를 답하지 않는다(조합 전수 성질). ⚠ 이 행의 **행동** 단언(복구기가 실제로 인가를 막는지)은 소비자 부재로 PR5·PR7 귀속 | verify |
 | **T81** | **앵커 검사의 결속 구간(신설 · PR3c)** — 판정은 「새 리스 획득 후 fresh read」와 **같은 임계 구역**에 결속하며 통과 결과를 장기 캐시로 재사용하지 않는다. PR3c 는 그 구조적 seam(면제가 의존한 입력 전체의 증거 다이제스트 + 재검증 동치 판정)만 착지시키고 **행동 단언은 PR5·PR7 귀속**(정직 표기) | verify |
-| **T82** | **신·구 레코드 전이 불변식 계층(신설 · PR3c)** — 현행 `checkInvariants` 는 단일 레코드 전용이라 `published → prepared` 역행·단계 건너뛰기·미종결 txn 위의 새 시도가 **어느 층에서도** 차단되지 않았다. 계획 정정 142 가 저널에 세운 전이 강제를 권위 쪽에 세우고, **복구 판정의 면제 조건 8**(후속 전이 일치)이 이 계층을 재사용한다 | verify |
+| **T82** | **신·구 레코드 전이 불변식 계층(신설 · PR3c)** — 현행 `checkInvariants` 는 단일 레코드 전용이라 `published → prepared` 역행·단계 건너뛰기·미종결 txn 위의 새 시도가 **어느 층에서도** 차단되지 않았다. 계획 정정 142 가 저널에 세운 전이 강제를 권위 쪽에 세우고, **복구 판정의 면제 조건 8**(후속 전이 일치)이 이 계층을 재사용한다. ⓐ**최초 레코드(`prev` 부재)도 시작 단계를 본다** — `prepared` 외의 stage 로 태어나는 첫 CAS 는 거부다(WAL 1단계와 그 크래시 안전 순서를 건너뛴다). 「단일 레코드 불변식이 막는다」는 **거짓**이었다(Codex PR#289 P1 — `checkInvariants` 어디에도 그 규칙이 없다) ⓑ`completedIntegrationTxnId` 소거 금지의 **예외는 보관 전이**다(`lifecycle → 'archived'`) — 불변식 ②가 그 필드를 `integrated` 에만 허용하므로 예외가 없으면 `integrated → archived` 가 **전부 `invariant-violation`** 이 된다. 예외는 「소거」가 아니라 **lifecycle 에 결속**한다(귀속 교체는 계속 거부) | verify |
 | **T83** | **정상 crash window(신설 · PR3c)** — 권위 `N` · 유효 `composed` 저널(expected `N`) · matching ref `N+1` → **`resume-composed-cas`** 이며 전역 reconciliation **아님**. 픽스처 인터리브는 (A) 로 고정한다: composed 저널 acknowledged → 결과 ref create-only 발행 → **composed 권위 CAS**(그 직전 crash) | verify |
 | **T84** | **저널 없는 `N+1` ref(신설 · PR3c)** → reconciliation. 대응 저널이 없으면 그 ref 를 설명할 증거가 없다 | verify |
 | **T85** | **result OID 불일치(신설 · PR3c)** — ref 가 가리키는 OID ≠ `journal.resultOid` → reconciliation(`result-ref-mismatch`) | verify |

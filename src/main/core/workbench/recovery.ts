@@ -44,6 +44,7 @@ import { createHash } from 'node:crypto'
 
 import {
   type BenchAuthorityDraft,
+  type BenchAuthorityIdentity,
   type BenchAuthorityRecord,
   checkTransitionInvariants,
 } from './authority'
@@ -52,6 +53,7 @@ import {
   isActiveJournalStage,
   type IntegrationTxnRecord,
   type JournalReadResult,
+  WAL_STAGE_ORDER,
 } from './journal'
 import { parseResultRef, RESULT_REF_ROOT } from './result-ref'
 
@@ -86,7 +88,13 @@ export type JournalObservation =
   | { readonly kind: 'failed'; readonly detail?: string }
 
 export interface RecoveryObservation {
-  readonly benchId: string
+  /**
+   * **관측 대상의 identity 를 호출자가 독립으로 싣는다**(Codex PR#289 P1). 초안은 `benchId` 만 받고
+   * 레포 identity 는 **권위 레코드에서** 가져다 저널과 대조했는데, 그러면 권위가 부재·손상일 때 대조가
+   * 통째로 사라져 **다른 레포에서 복사된 저널**(같은 benchId · 영역 통째 복사)이 재준비 적격으로
+   * 통과한다. 권위가 없을수록 더 엄격해야 하고, 대조 기준은 롤백 가능한 매체 밖에 있어야 한다.
+   */
+  readonly identity: BenchAuthorityIdentity
   readonly authority: AuthorityObservation
   /** 접두 `refs/fleet/integrated/<benchId>/` 열거. */
   readonly prefixRefs: RefObservation
@@ -114,6 +122,10 @@ export type RecoveryBlockerKind =
   | 'journal-enumeration-failed'
   | 'journal-unreadable'
   | 'journal-identity-mismatch'
+  /** 권위가 저널보다 앞섰다 — WAL 선기록 위반(저널 단독 롤백·손상). */
+  | 'journal-behind-authority'
+  /** 저널이 권위보다 두 단계 이상 앞섰다 — 정정 204 불변식 ① 위반. */
+  | 'journal-too-far-ahead'
   /** 설명되지 않는 `refRevision > record.revision` — 앵커 발화. */
   | 'anchor-rollback'
   | 'result-ref-unattributed'
@@ -301,12 +313,17 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   if (obs.authority.kind === 'unreadable') {
     blockers.push(blocker('authority-unreadable', obs.authority.detail ?? 'authority'))
   }
-  if (record !== undefined && record.identity.benchId !== obs.benchId) {
+  if (
+    record !== undefined &&
+    (record.identity.benchId !== obs.identity.benchId ||
+      record.identity.commonGitDir !== obs.identity.commonGitDir ||
+      record.identity.benchRoot !== obs.identity.benchRoot)
+  ) {
     blockers.push(blocker('authority-identity-mismatch', record.identity.benchId))
   }
 
   // ② 결과 ref 전수 열거·문법·identity. 정확 이름 질의는 **이름이 정확히 같은 항목만** 본다.
-  const bare = `${RESULT_REF_ROOT}/${obs.benchId}`
+  const bare = `${RESULT_REF_ROOT}/${obs.identity.benchId}`
   if (obs.exactRefs.kind === 'failed') {
     blockers.push(blocker('ref-enumeration-failed', obs.exactRefs.detail ?? 'exact'))
   } else if (obs.exactRefs.refs.some((r) => r.ref === bare)) {
@@ -321,7 +338,7 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       const parsed = parseResultRef(entry.ref)
       switch (parsed.kind) {
         case 'ok':
-          if (parsed.benchId !== obs.benchId) {
+          if (parsed.benchId !== obs.identity.benchId) {
             blockers.push(blocker('ref-foreign-bench', entry.ref))
             break
           }
@@ -356,12 +373,13 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
         continue
       }
       const j = entry.read.record
+      // ⚠ 대조 기준은 **관측자가 실어온 identity** 다 — 권위 레코드가 아니다(Codex PR#289 P1).
+      // 권위에서 가져오면 권위 부재·손상 시 대조가 통째로 사라진다.
       const identityOk =
         j.txnId === entry.txnId &&
-        j.benchId === obs.benchId &&
-        (record === undefined ||
-          (j.repoCommonGitDir === record.identity.commonGitDir &&
-            j.benchRoot === record.identity.benchRoot))
+        j.benchId === obs.identity.benchId &&
+        j.repoCommonGitDir === obs.identity.commonGitDir &&
+        j.benchRoot === obs.identity.benchRoot
       if (!identityOk) {
         blockers.push(blocker('journal-identity-mismatch', entry.txnId))
         continue
@@ -398,13 +416,30 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   if (obs.journal.kind === 'ok' && currentTxnId !== undefined && current === undefined) {
     blockers.push(blocker('current-txn-journal-missing', currentTxnId))
   }
+  // **권위 stage ≤ 저널 stage ≤ 권위 stage + 1**(Codex PR#289 P1). 앞의 부등식은 WAL 선기록에서,
+  // 뒤의 부등식은 정정 204 불변식 ①(「stage S 의 권위 커밋이 확인되기 전 S+1 저널 기록 금지」)에서
+  // 나온다. 초안은 **저널 stage 만 보고 분기**해서, 권위가 앞선 관측(= 저널 단독 롤백·손상)이
+  // `no-mutation` 으로 통과했다 — 손상 위에서 포기·재준비가 인가되는 경로였다.
+  // ⚠ 저널 `abandoned` 는 종결 기록이라 순서 결속의 정의역 밖이다(포기 CAS 가 pending 일 뿐이다).
+  const authorityStage = record?.currentIntegrationStage
+  if (current !== undefined && current.stage !== 'abandoned' && authorityStage !== undefined) {
+    const jIdx = WAL_STAGE_ORDER.indexOf(current.stage)
+    const aIdx = WAL_STAGE_ORDER.indexOf(authorityStage)
+    if (aIdx > jIdx) blockers.push(blocker('journal-behind-authority', current.txnId))
+    else if (jIdx > aIdx + 1) blockers.push(blocker('journal-too-far-ahead', current.txnId))
+  }
+
+  // 미종결 txn 이 있으면 **새 txn 의 저널 자체가 쓰이지 말았어야 한다**(전이 불변식이 그 시작을
+  // 금지한다). 그래서 benign 창은 「권위에 pending 통합이 없을 때」에만 열린다(Codex PR#289 P1).
+  const authorityPending = authorityStage !== undefined && authorityStage !== 'finalized'
   for (const j of journals.values()) {
     if (!isActiveJournalStage(j.stage)) continue
     if (j.txnId === currentTxnId || j.txnId === record?.completedIntegrationTxnId) continue
     // (A) 프로토콜상 **정상 크래시 창은 하나뿐**이다 — 저널 선기록 후 `prepared` CAS 전. 그 창의
     // 엔트리는 결과 ref 를 가질 수 없으므로, ref 를 동반한 고아·`composed` 고아는 전부 reconciliation 이다
     // (계획 정정 194 의 2분 — 활성 집합의 **정의**는 stage 단독으로 유지한다).
-    const benign = j.stage === 'prepared' && !parsedRefs.some((r) => r.txnId === j.txnId)
+    const benign =
+      j.stage === 'prepared' && !authorityPending && !parsedRefs.some((r) => r.txnId === j.txnId)
     if (!benign) blockers.push(blocker('orphan-active-journal', j.txnId))
   }
 
@@ -424,7 +459,13 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
           resultOid: exempt.oid,
           expectedAuthorityRevision: j.expectedAuthorityRevision,
           resultingRevision: exempt.resultingRevision,
-          evidenceDigest: sealEvidence(obs.benchId, observedRevision, parsedRefs, exempt, j),
+          evidenceDigest: sealEvidence(
+            obs.identity.benchId,
+            observedRevision,
+            parsedRefs,
+            exempt,
+            j,
+          ),
         },
       }
     }

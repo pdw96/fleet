@@ -1015,9 +1015,11 @@ const isPendingStage = (s: IntegrationStage | undefined): boolean =>
  * 건너뛰기가 어느 층에서도 차단되지 않았다 — 계획 정정 142 가 저널 쪽에 세운 전이 강제를 권위 쪽에
  * 세우는 것이 이 함수다.
  *
- * ⚠ **최초 레코드(`prev === undefined`)에서는 침묵**한다. 「최초인데 미종결 통합을 들고 태어난다」는
- * 단일 레코드 불변식 ③ 계열의 소관이고, 여기서 이중으로 잡으면 **두 방어가 같은 종별을 공유**해
- * 가림이 기본값이 된다(PR3b 정정 189 가 실측한 형태).
+ * ⚠ **최초 레코드(`prev === undefined`)에서도 시작 단계는 본다**(Codex PR#289 P1). 초안은 「그것은 단일
+ * 레코드 불변식 ③ 계열의 소관」이라며 침묵했는데 **그 주장이 거짓이었다** — `checkInvariants` 어디에도
+ * 「최초 stage 는 `prepared`」가 없어서 첫 CAS 가 `composed`·`published`·`finalized` 로 곧바로 태어나
+ * **WAL 의 `prepared` 단계와 그 크래시 안전 순서를 건너뛸 수 있었다.** 검증 없는 안전 주장을 주석으로
+ * 착지시킨 형태(PR#266 교훈)의 재발이라 그 자리에서 규칙으로 바꾼다.
  *
  * 정정 204 의 불변식 ①③⑤(단계 커밋 전진 금지 · pending 중 새 시도 금지 · CAS 실패는 published
  * 전진의 인가가 아님)가 여기서 **문면이 아니라 코드**가 된다.
@@ -1026,7 +1028,12 @@ export function checkTransitionInvariants(
   prev: BenchAuthorityRecord | undefined,
   next: BenchAuthorityDraft,
 ): string[] {
-  if (prev === undefined) return []
+  if (prev === undefined) {
+    const to = next.currentIntegrationStage
+    // 통합을 아예 들고 있지 않은 최초 레코드는 정상(생성 직후)이다.
+    if (to === undefined || to === 'prepared') return []
+    return [`전이: 최초 레코드는 prepared 로만 통합을 시작할 수 있다(관측: ${to})`]
+  }
   const v: string[] = []
 
   const from = prev.currentIntegrationStage
@@ -1092,7 +1099,12 @@ export function checkTransitionInvariants(
     prev.completedIntegrationTxnId !== undefined &&
     next.completedIntegrationTxnId !== prev.completedIntegrationTxnId
   ) {
-    v.push('전이: 완결 귀속(completedIntegrationTxnId)의 교체·소거 금지')
+    // ⚠ **보관은 예외다**(Codex PR#289 P1). 단일 레코드 불변식 ②가 「`completedIntegrationTxnId` 존재
+    // ⟺ `lifecycle==='integrated'`」이므로 `integrated → archived` 는 **반드시** 그 필드를 소거한다.
+    // 초안은 그 정상 전이를 `invariant-violation` 으로 답해 **보관 워크플로를 통째로 막았다.**
+    // 예외를 「소거」가 아니라 **lifecycle 에 결속**시킨다 — 그래야 귀속 교체는 계속 거부된다.
+    const archiving = next.completedIntegrationTxnId === undefined && next.lifecycle === 'archived'
+    if (!archiving) v.push('전이: 완결 귀속(completedIntegrationTxnId)의 교체·소거 금지')
   }
 
   return v

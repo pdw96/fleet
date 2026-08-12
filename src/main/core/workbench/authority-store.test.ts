@@ -639,12 +639,27 @@ describe('§3-T13 revision-CAS', () => {
   it('ⓑ 첫 draft 가 세운 옵셔널이 두 번째 커밋에 살아남지 않는다(LWW 병합이면 RED)', async () => {
     const { store, lease, benchId, fs, path } = await setup()
 
+    // 4필드를 전부 세우려면 `composed` 가 필요한데(`prepared` 는 `resultOid` 를 실을 수 없다 ·
+    // 불변식 ③c), **최초 레코드는 `prepared` 로만 시작할 수 있다**(Codex PR#289 P1). 그래서 두 단계로
+    // 올라간 뒤 4필드가 전부 선 상태를 만든다 — 지름길이 막힌 것이지 시나리오가 바뀐 것은 아니다.
     await store.withAuthority(lease, async (tx) => {
       const read = tx.readFresh()
       if (read.kind !== 'absent') throw new Error('absent 예상')
       return tx.compareAndSwap(
         read.read,
-        // `composed` 를 쓴다 — `prepared` 는 `resultOid` 를 실을 수 없다(불변식 ③c · Codex 2R P1-E).
+        draft(benchId, {
+          currentIntegrationTxnId: 'T1',
+          currentIntegrationStage: 'prepared',
+          currentIntegrationTxnGeneration: 1,
+        }),
+      )
+    })
+
+    await store.withAuthority(lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'found') throw new Error('found 예상')
+      return tx.compareAndSwap(
+        read.read,
         draft(benchId, {
           currentIntegrationTxnId: 'T1',
           currentIntegrationStage: 'composed',
@@ -1782,11 +1797,43 @@ describe('store 옵션은 생성 시점 스냅샷이다(Codex 2R P1-C)', () => {
  * 그래서 그 규칙은 **WAL 이 첫 단계에 진입조차 못 하게** 만들었다.
  */
 describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
+  const STAGE_PATH = ['prepared', 'composed', 'published', 'finalized'] as const
+
+  /**
+   * 목표 stage 까지 **WAL 순서대로 올라간 뒤** 마지막 draft 를 커밋한다.
+   *
+   * ⚠ 이전 판은 **첫 CAS 로 곧바로 목표 stage 를 만들었다**(픽스처 지름길). Codex PR#289 P1 이후
+   * 「최초 레코드는 `prepared` 로만 통합을 시작한다」가 전이 불변식으로 서면서 그 지름길은 표현
+   * 불가능해졌고, **지름길이 성립했다는 사실 자체가 결함**이었다 — 첫 CAS 가 `composed` 로 태어나면
+   * WAL 의 `prepared` 단계와 그 크래시 안전 순서를 통째로 건너뛴다. 이 describe 가 검증하는 것은
+   * **resultOid 규칙**이지 진입 경로가 아니므로, 경로만 합법으로 바꿔 의도를 보존한다.
+   */
   const casWith = async (over: Partial<BenchAuthorityDraft>): Promise<CasResult> => {
     const fx = await setup()
+    const target = over.currentIntegrationStage
+    const climb =
+      target === undefined || target === 'prepared' || target === 'abandoned'
+        ? []
+        : STAGE_PATH.slice(0, STAGE_PATH.indexOf(target))
+    for (const stage of climb) {
+      const step = await fx.store.withAuthority(fx.lease, async (tx) => {
+        const read = tx.readFresh()
+        if (read.kind !== 'absent' && read.kind !== 'found') throw new Error(read.kind)
+        return tx.compareAndSwap(
+          read.read,
+          draft(fx.benchId, {
+            currentIntegrationTxnId: 'T1',
+            currentIntegrationStage: stage,
+            currentIntegrationTxnGeneration: 1,
+            ...(stage === 'prepared' ? {} : { currentIntegrationResultOid: 'oid1' }),
+          }),
+        )
+      })
+      if (step.kind !== 'committed') return step
+    }
     return fx.store.withAuthority(fx.lease, async (tx) => {
       const read = tx.readFresh()
-      if (read.kind !== 'absent') throw new Error('absent 예상')
+      if (read.kind !== 'absent' && read.kind !== 'found') throw new Error(read.kind)
       return tx.compareAndSwap(read.read, draft(fx.benchId, over))
     })
   }
@@ -1840,12 +1887,19 @@ describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
     expect(r.kind).toBe('invariant-violation')
   })
 
-  it('abandoned 는 resultOid 를 요구하지 않는다', async () => {
+  /**
+   * ⚠ **기대가 뒤집혔다**(Codex PR#289 P1 의 파급 · 은폐하지 않는다). 이전 판은 첫 CAS 로
+   * `abandoned` 레코드를 만들어 「resultOid 를 요구하지 않는다」를 보였는데, 계획 정정 177 은
+   * **권위 레코드가 `abandoned` 를 갖지 않는다**고 못박았다 — 포기는 단계를 남기는 게 아니라 통합
+   * 4필드를 **소거**하는 것이다. 즉 이전 기대는 **어떤 생산자도 만들지 않는 상태**를 정상으로
+   * 고정하고 있었고, 「최초는 prepared 로만」이 서면서 그 모순이 드러났다.
+   */
+  it('abandoned 는 권위 레코드가 가질 수 있는 단계가 아니다(정정 177)', async () => {
     const r = await casWith({
       currentIntegrationTxnId: 'T1',
       currentIntegrationStage: 'abandoned',
       currentIntegrationTxnGeneration: 1,
     })
-    expect(r.kind).toBe('committed')
+    expect(r.kind).toBe('invariant-violation')
   })
 })
