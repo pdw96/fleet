@@ -1144,7 +1144,7 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
    * blocker 없이 통과시켰다. 다른 경로(`current-txn-journal-missing`)가 같은 계열의 매체 불일치를
    * 발화하는 것과 **비대칭**이었다.
    */
-  it('완결 귀속 txn 의 저널이 활성 stage 로 남아 있으면 blocker 다', () => {
+  it('완결 귀속 txn 의 저널이 finalized 가 아니면 blocker 다(활성 게이트 밖 · 정정 234)', () => {
     const v = classifyRecovery(
       obs({
         authority: {
@@ -1169,7 +1169,7 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
       }),
     )
     expect(v.kind).toBe('reconciliation-required')
-    expect(kinds(v)).toContain('completed-txn-journal-active')
+    expect(kinds(v)).toContain('completed-txn-journal-unfinalized')
   })
 
   /**
@@ -1396,5 +1396,218 @@ describe('T91 — 판정은 순수하다(입력 무변이)', () => {
     const snapshot = JSON.stringify(o)
     classifyRecovery(o)
     expect(JSON.stringify(o)).toBe(snapshot)
+  })
+})
+
+/* ================================================================================================
+ * 로컬 적대 리뷰(Codex 한도 소진 대체) — 정정 233~235
+ * ============================================================================================= */
+
+describe('정정 233 — 열린 창의 개입 CAS 는 정상이다(설계급 P1 회귀)', () => {
+  /**
+   * `revision` 은 **모든 CAS** 가 +1 하는 전역 카운터다. `published` 는 활성이 아니어서 그 창에서
+   * 실행·보관이 **계약상 허용**되고(C6 · §3-T33 · I8), 그 CAS 들이 revision·`sourceGeneration`·
+   * `activeActivity` 를 바꾼다. tight 등식·전체 draft digest 는 그 정상 상태를 손상으로 오분류했다.
+   */
+  const publishedJournal = journal({ ...walBound('published'), publishedAt: 9 })
+
+  it('published 뒤 활동 CAS 3회가 끼어들어도 정상 대기다', () => {
+    const drifted = record({
+      revision: R0 + 2 + 3, // publish CAS(R0+2) 이후 gated·running·종료 3회
+      currentIntegrationStage: 'published',
+      currentIntegrationResultOid: OID,
+      sourceGeneration: 4,
+      activeActivity: {
+        activityId: 'act',
+        kind: 'run',
+        generation: 4,
+        ownerToken: 'ow',
+        execGate: 'running',
+        startedAt: 1,
+      },
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: drifted },
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID]),
+        journal: entries(publishedJournal),
+      }),
+    )
+    expect(v.kind).toBe('normal-wait')
+  })
+
+  it('보관된 integration-ready bench 도 정상 대기다(I8)', () => {
+    const archived = record({
+      revision: R0 + 4,
+      lifecycle: 'archived',
+      archivedBranch: 'preserved',
+      currentIntegrationStage: 'published',
+      currentIntegrationResultOid: OID,
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: archived },
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID]),
+        journal: entries(publishedJournal),
+      }),
+    )
+    expect(v.kind).toBe('normal-wait')
+  })
+
+  it('finalized 저널의 ref revision 은 등식이 아니라 상한이다(정정 233 · 1-B)', () => {
+    // 완결 관측은 외부 소비자 머지 **이후**라 그 사이 개입 CAS 가 expected 를 올린다.
+    const rec = record({
+      revision: R0 + 8,
+      currentIntegrationStage: 'finalized',
+      currentIntegrationResultOid: OID,
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID]),
+        journal: entries(
+          journal({
+            ...walBound('finalized'),
+            expectedAuthorityRevision: R0 + 7, // 드리프트
+            publishedAt: 9,
+          }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('idempotent-cleanup')
+  })
+
+  it('⚠ 닫힌 창은 여전히 tight 다 — composed 에서 드리프트는 손상이다(음성 통제)', () => {
+    // `prepared`·`composed` 는 **활성 저널**이라 실행이 차단되고, 복구 판정은 모든 권위 CAS 보다
+    // 먼저 돈다(정정 197ⓐ) → 개입 CAS 가 불가하므로 완화하지 않는다.
+    const drifted = record({
+      revision: N + 2,
+      currentIntegrationStage: 'composed',
+      currentIntegrationResultOid: OID,
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: drifted },
+        prefixRefs: refs([REF_N1, OID]),
+        journal: entries(journal()),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-authority-binding')
+  })
+})
+
+describe('정정 235 — 승격 경로도 현재 txn ref 대조를 받는다', () => {
+  it('면제가 성립해도 같은 txn 의 여분 ref 는 blocker 다', () => {
+    // 4R 은 이 대조를 「표 앞」으로 올렸는데 그 「앞」이 **면제 반환 뒤**였다 — 승격 경로에서만 침묵했다.
+    const v = classifyRecovery(
+      obs({
+        prefixRefs: refs([REF_N1, OID], [formatResultRef(BENCH, 3, T1), OID2]),
+        journal: entries(journal()),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('result-ref-mismatch')
+  })
+})
+
+describe('반증력 복원 — 측정으로 확정된 공백(로컬 적대 리뷰 L4)', () => {
+  const preparedOrphan = (txnId: string) =>
+    journal({
+      ...walBound('prepared'),
+      txnId,
+      resultTree: undefined,
+      resultOid: undefined,
+      resultRef: formatResultRef(BENCH, R0 + 2, txnId),
+      draftDigest: draftDigestOf(record()),
+    })
+
+  it('A — 권위 부재 + 유효 prepared 저널은 benign 이 아니다', () => {
+    const v = classifyRecovery(
+      obs({ authority: { kind: 'absent' }, journal: entries(preparedOrphan(T2)) }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('orphan-active-journal')
+  })
+
+  it('B — 권위가 finalized 면 다른 txn 의 prepared 고아는 benign 이다', () => {
+    // finalized 저널의 **post-CAS** 짝 = revision 이 expected(R0+3) 보다 1 앞선 상태.
+    const done = record({
+      revision: R0 + 4,
+      currentIntegrationStage: 'finalized',
+      currentIntegrationResultOid: OID,
+      currentIntegrationTxnId: T1,
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: done },
+        journal: entries(
+          journal({ ...walBound('finalized'), publishedAt: 9, draftDigest: draftDigestOf(done) }),
+          preparedOrphan(T2),
+        ),
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID]),
+      }),
+    )
+    expect(v.kind).toBe('idempotent-cleanup')
+  })
+
+  it('C — 종결 증거는 abandonedAt 만으로도 blocker 다(축 분리)', () => {
+    const v = classifyRecovery(obs({ journal: entries(journal({ abandonedAt: 7 })) }))
+    expect(kinds(v)).toContain('journal-terminal-evidence')
+  })
+
+  it('D — 종결 증거는 abandonReason 만으로도 blocker 다(축 분리)', () => {
+    const v = classifyRecovery(obs({ journal: entries(journal({ abandonReason: 'superseded' })) }))
+    expect(kinds(v)).toContain('journal-terminal-evidence')
+  })
+
+  it('F — 권위 부재 시 면제 실패 사유는 authority-unavailable 이다', () => {
+    const v = classifyRecovery(
+      obs({ authority: { kind: 'absent' }, prefixRefs: refs([REF_N1, OID]) }),
+    )
+    expect(reasons(v)).toContain('authority-unavailable')
+  })
+
+  it('G — 세대 동치만 어긋나도 결속 위반이다(축 분리)', () => {
+    // draftDigest 를 **저널의 세대(2)로 정확히 재구성**해 draft 축을 통과시킨다 → 세대 축만 남는다.
+    const rec = record()
+    const { revision: _r, writtenBy: _w, ...rest } = rec
+    const digestWithGen2 = digestAuthorityDraft({
+      ...rest,
+      currentIntegrationTxnId: T1,
+      currentIntegrationStage: 'composed',
+      currentIntegrationTxnGeneration: 2,
+      currentIntegrationResultOid: OID,
+    } as BenchAuthorityDraft)
+    const v = classifyRecovery(
+      obs({
+        journal: entries(journal({ integrationGeneration: 2, draftDigest: digestWithGen2 })),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toEqual(['journal-authority-binding'])
+  })
+
+  it('L — 정확 이름 질의가 자식 ref 를 답해도 충돌이 아니다', () => {
+    // 실측: `for-each-ref refs/…/<benchId>` 는 자식도 함께 답한다. 이름이 **정확히 같은** 항목만 본다.
+    const v = classifyRecovery(
+      obs({
+        prefixRefs: refs([REF_N1, OID]),
+        exactRefs: refs([REF_N1, OID]),
+        journal: entries(journal()),
+      }),
+    )
+    expect(v.kind).toBe('resume-composed-cas')
+  })
+
+  it('M — 저널 열거 실패는 current-txn-journal-missing 을 덧붙이지 않는다', () => {
+    const v = classifyRecovery(obs({ journal: { kind: 'failed', detail: 'EIO' } }))
+    expect(kinds(v)).toEqual(['journal-enumeration-failed'])
+  })
+
+  it('N — blocker 는 진단 앵커(subject)를 싣는다', () => {
+    const v = classifyRecovery(obs({ prefixRefs: { kind: 'failed', detail: 'exit 128' } }))
+    if (v.kind !== 'reconciliation-required') throw new Error(v.kind)
+    expect(v.blockers[0]?.subject).toBe('exit 128')
   })
 })

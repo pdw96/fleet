@@ -861,7 +861,7 @@ PR7 부팅)의 계약이다.
 |---|---|---|
 | — | `refs/fleet/integrated/<benchId>` 가 ref 로 존재 | `ref-namespace-conflict` **최우선** fail-closed |
 | `prepared` | 부재 | `no-mutation`(포기·재준비 적격) |
-| `prepared` | 존재 | `result-ref-unattributed` → reconciliation ((A) 에서 ref 는 **composed 저널 뒤**에만 발행된다) |
+| `prepared` | 존재 | **앵커가 답한다**(전용 종별 없음) — 그 ref 는 구조적으로 `revision + 1` 이라 항상 앵커 후보다. `result-ref-unattributed` 는 **폐기 어휘**다(재유입 금지) |
 | `composed` | 부재 | `no-mutation`(ref 발행 전 크래시) |
 | `composed` | `=== resultOid` ∧ **면제 10조건 충족** | **`resume-composed-cas`**(= 저널이 이미 선기록한 composed 권위 CAS 재개) |
 | `composed` | `=== resultOid` ∧ 권위가 이미 `N+1` ∧ 전이 **정확 반영** | **정상 대기**(재실행 아님 · 완료 확인 · 정정 204ⓑ) |
@@ -906,11 +906,27 @@ superseded txn ref · digest 불일치 · 열거·파싱·identity 검증 실패
 `revision === expected + 1` ∧ 권위가 든 `resultOid`·세대가 저널의 증언과 일치). 그 외는 손상이며,
 ref 유무와 **무관하게** reconciliation 이다(초안은 ref 가 없으면 `no-mutation` 을 답했다).
 
-**저널이 든 `resultRef` 이름 자체를 검증한다**(Codex PR#289 4R·5R P1) — 문법·bench·txn 결속에 더해
+**결속은 「창」에 따라 강도가 다르다**(로컬 적대 리뷰 P1 · 계획 정정 233) — 이 절의 revision·draft
+결속은 **개입 CAS 가 불가한 구간에서만** tight 하다.
+
+| 창 | stage | 개입 CAS | 결속 |
+|---|---|---|---|
+| **닫힌 창** | `prepared`·`composed` | 불가(활성 저널 = 실행 차단 · 복구 판정이 모든 권위 CAS 보다 먼저) | `expected === revision`(pre) · `revision === expected + 1`(post) · draft **전체** digest |
+| **열린 창** | `published`·`finalized` | **정상**(C6 · §3-T33 · I8) | pre 는 동일 · post 는 **`revision >= expected + 1`** · draft 전체 digest **폐기** |
+
+⚠ `revision` 은 **모든 CAS** 가 +1 하는 전역 카운터이고, 통합 4필드를 보존하는 CAS(활동 시작/종료 ·
+gated-orphan 회수 · lifecycle 변경)는 전이 검사의 **no-op** 으로 통과한다. 그 개입을 스펙이 **요구**하므로
+(C6 「`published` 저널은 소비자 완결까지 무기한 열려 있는 정상 상태」) 열린 창에 tight 등식을 걸면
+**정상 상태가 영구 `reconciliation-required`** 가 되고 `resume-composed-cas` 가 도달 불가가 된다.
+⚠ 열린 창의 draft 전체 digest 대조를 **폐기한 것은 탐지력 감소**다(정직 표기): 그것으로 잡으려던
+「`lifecycle`·`sourceGeneration`·`activeActivity` 롤백」은 무기한 창에서 **정상 변화와 구분 불가**다.
+그 축의 탐지는 revision 단조(§W-4)와 앵커가 나눠 진다.
+
+**저널이 든 `resultRef` 이름 자체를 검증한다**(Codex PR#289 4R·5R P1 · 로컬 적대 리뷰 P1) — 문법·bench·txn 결속에 더해
 **revision 산술을 stage 전수에 건다**: `resultRef` 는 불변이고 ref 는 composed CAS **앞**에서 한 번만
 발행되므로, `prepared` 저널이 관측한 revision 을 `R0` 라 하면 **ref = `R0 + 2` 고정**이고
 `expected = R0 + stageIndex` 다 — 즉 **`ref = expected + 2 - stageIndex`**(prepared +2 · composed +1 ·
-published +0 · finalized −1). ⚠ `abandoned` 는 정의역 밖이다(포기 시점에 따라 `expected` 가 달라진다).
+published +0). ⚠ **`finalized` 는 등식이 아니라 상한**(`ref ≤ expected`)이다 — 그 저널은 외부 소비자 머지 관측 **이후**에 기록되고 그 사이 개입 CAS 가 `expected` 를 올린다. ⚠ `abandoned` 는 정의역 밖이다(포기 시점에 따라 `expected` 가 달라진다).
 그 값은 **불변 필드**라 git ref 가 아직 없어도 잘못된 이름이 살아남아 **나중에 그대로 발행**된다.
 
 **ref 발행 이후의 상태는 ref 를 요구한다**(Codex PR#289 5R P1) — post-CAS `composed`·`published`·
@@ -932,7 +948,14 @@ revision 이 권위 이하라 앵커 후보가 아니므로, 그 분기에서 �
 `draftDigest` 는 권위 draft 투영만 덮으므로 `sourceSnapshot`·`targetBranch`·
 `targetHeadBeforeIntegration`·`resultTree` 가 바뀌어도 같은 값이 나온다.
 
-**완결 귀속 txn 의 저널이 활성 stage 로 남아 있으면 blocker 다**(CodeRabbit PR#289) — 완결된 txn 의
+**6R·로컬 리뷰 반영분**(계획 정정 227~235) — ⓐ최초 레코드의 `lifecycle` 은 `open`(첫 CAS 가 완결을
+주장하는 종결 bench 를 만들 수 없다) ⓑ새 txn 시작은 **출발지·목적지 둘 다** `open` ⓒ종결 증거
+(`abandonedAt`·`abandonReason`)는 **admitted 저널 전수**에서 본다(`journal-terminal-evidence`) ⓓpre-CAS
+도 결과 상속·draft 결속을 본다 ⓔ`composed` 이후의 포기는 ref 를 요구한다 ⓕ**종결 bench 에는 고아
+benign 창이 없다** ⓖ현재 txn ref 이름·OID 대조는 **승격 경로에도** 적용된다(면제 반환 앞) ⓗ완결 귀속
+검사는 **활성 게이트 밖**이며 판정은 「`finalized` 가 아니다」다(`completed-txn-journal-unfinalized`).
+
+**완결 귀속 txn 의 저널이 `finalized` 가 아니면 blocker 다**(CodeRabbit PR#289 · 정정 234) — 완결된 txn 의
 저널은 정상 상태에서 `finalized` 다. 「귀속돼 있으니 고아가 아니다」로 제외하면 매체 손상의 증거가
 조용히 통과한다.
 
@@ -1281,7 +1304,7 @@ reconciliation 아니라 미인가 · `abandon` = 액션 목록 부재).
 | **I4** | **`broken ∧ busy` 는 도달 가능** — 이때 설계 357행 "삭제만 허용"은 성립하지 않는다 | **전 액션 거부 + 리스 해제 대기 안내** |
 | I6 | `partially-integrated ⟹ lifecycle==='open'` | reconciliation 승격 |
 | I8 | `archived ∧ integration-ready` 도달 가능(결과 ref 보존 · "결과 미적용" 명시) | 정상 |
-| **I11** | **고아 저널을 새로 만들지 않는다** — **활성 저널**(stage ∈ {`prepared`,`composed`})이 있는 bench 레코드는 제거 불가. `published` 는 활성이 아니므로 **integration-ready bench 의 `delete-record` 는 허용**. ⚠ 활성 판정은 **stage 단독 순수 술어**이며 귀속 조건을 더하지 않는다(계획 정정 194 — 귀속은 활성 집합의 *정의*가 아니라 복구 판정의 *입력 특성*이다). **권위가 가리키지 않는 활성 stage 엔트리 = 고아 저널**이고 그 처분은 복구 판정이 **2분**한다: (A) 프로토콜상 정상 크래시 창인 `prepared` 고아(대응 ref 없음) = `no-mutation`(재준비 적격) · 그 외(고아 `composed` · ref 를 동반한 고아 `prepared`) = `reconciliation-required`. 이 2분이 없으면 정정 154ⓐ 가 닫은 영구 고착이 `delete-record` 표면에서 재현된다 | `delete-record` 거부(`journal-pending`) |
+| **I11** | **고아 저널을 새로 만들지 않는다** — **활성 저널**(stage ∈ {`prepared`,`composed`})이 있는 bench 레코드는 제거 불가. `published` 는 활성이 아니므로 **integration-ready bench 의 `delete-record` 는 허용**. ⚠ 활성 판정은 **stage 단독 순수 술어**이며 귀속 조건을 더하지 않는다(계획 정정 194 — 귀속은 활성 집합의 *정의*가 아니라 복구 판정의 *입력 특성*이다). **권위가 가리키지 않는 활성 stage 엔트리 = 고아 저널**이고 그 처분은 복구 판정이 **2분**한다: (A) 프로토콜상 정상 크래시 창인 `prepared` 고아 = `no-mutation`(재준비 적격) — 단 **ⓐ대응 ref 없음 ∧ ⓑ권위에 미종결 통합 없음 ∧ ⓒ`lifecycle === 'open'`** 을 모두 만족할 때만이다(계획 정정 212·232 — 종결 bench 나 pending txn 위에서는 그 저널이 애초에 쓰일 수 없다). 그 외(고아 `composed` · ref 를 동반한 고아 `prepared` · 종결 bench 의 고아) = `reconciliation-required`. 이 2분이 없으면 정정 154ⓐ 가 닫은 영구 고착이 `delete-record` 표면에서 재현된다 | `delete-record` 거부(`journal-pending`) |
 | **I12** | **`incompatible-version`(지원 범위 초과 schemaVersion) bench 는 `reconciliation-required` 로만 노출하고 `delete-record` 를 포함한 모든 파괴 액션을 거부**(사유 `newer-schema` · 안내 = "더 새 버전의 Fleet 으로 열 것") | 파괴 액션 거부 |
 
 - **`incompatible-version` 을 `invalid` 로 분류하지 않는 이유(반증 반영)**: `invalid` → broken → "삭제만

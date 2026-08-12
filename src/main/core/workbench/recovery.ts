@@ -138,10 +138,12 @@ export type RecoveryBlockerKind =
   | 'result-ref-mismatch'
   /** ref 발행 이후의 상태(post-CAS composed·published·finalized)인데 그 ref 가 없다. */
   | 'result-ref-missing'
-  | 'expected-revision-mismatch'
+  // ⚠ `expected-revision-mismatch` 는 blocker 종별에서 **삭제**했다(로컬 적대 리뷰 P3 · 정정 234) —
+  //    생산자가 0 이었고, 진단은 `anchor-rollback.reasons` 가 진다. 같은 파일이 `arithmetic-binding` 을
+  //    지운 잣대를 여기에도 적용한다.
   | 'current-txn-journal-missing'
-  /** 완결 귀속 txn 의 저널이 활성 stage 로 남아 있다 — 정상이면 `finalized` 다. */
-  | 'completed-txn-journal-active'
+  /** 완결 귀속 txn 의 저널이 `finalized` 가 아니다(활성·published·abandoned 전부 손상 증거). */
+  | 'completed-txn-journal-unfinalized'
   | 'orphan-active-journal'
 
 /** 앵커 후보가 **면제**에 실패한 조건(계획 정정 199ⓒ). 전수를 싣는다 — 첫 사유만 남기면 진단이 좁아진다. */
@@ -278,11 +280,13 @@ const evaluateExemption = (
 
   const failures: ExemptionFailure[] = []
   if (j.stage !== 'composed') failures.push('stage-not-composed') // ③
-  // ⑨ 종결 증거 — `abandonedAt`·`abandonReason` 은 **③ 저널 검증이 admitted 전수에** 이미 본다
-  //    (Codex PR#289 6R P1). 여기 남기는 것은 `publishedAt` 뿐이다: 그 값은 `published`·`finalized`
-  //    에서 **정상**이므로 전수 검사의 대상이 아니고, 「composed 인데 게시 시각을 든다」는 이 자리의
-  //    stage 전제 위에서만 모순이다.
-  if (j.publishedAt !== undefined) failures.push('terminal-evidence-present')
+  // ⑨ 종결 증거 — **여기서 보지 않는다**(로컬 적대 리뷰 P3 · 정정 234).
+  //    ⓐ`abandonedAt`·`abandonReason` 은 ③ 저널 검증이 **admitted 전수**에 본다(6R 정정 229).
+  //    ⓑ`publishedAt` 은 `prepared`·`composed` 에서 **형태 층이 이미 거부**한다 —
+  //       `journal.ts` 의 「stage=… 인데 publishedAt 이 있다(게시 전 게시 시각)」 규칙(T71 · Codex
+  //       PR#269 6R). 그래서 `stage === 'composed'` 전제 위에서 그 값을 든 관측은 **표현 불가**이고,
+  //       다른 stage 후보에서는 ③ 의 `stage-not-composed` 와 **항상 동반**으로만 실렸다.
+  //    측정 결과 이 줄을 지워도 어떤 판정도 바뀌지 않았다 → `arithmetic-binding` 과 같은 처분.
   if (j.resultRef !== ref.refName) failures.push('ref-name-mismatch') // ④
   if (j.resultOid !== ref.oid) failures.push('oid-mismatch') // ⑤
   // ⑥ 산술 결속(`refRevision === expected + 1`)은 **여기 없다** — ③ 저널 검증이 `composed` 저널의
@@ -309,7 +313,6 @@ const evaluateExemption = (
 /** 관측 전체의 봉인. 순서 의존을 없애려고 ref 집합은 **정렬해** 싣는다. */
 const sealEvidence = (
   benchId: string,
-  observedRevision: number,
   refs: readonly ParsedRef[],
   ref: ParsedRef,
   journal: IntegrationTxnRecord,
@@ -317,7 +320,9 @@ const sealEvidence = (
   const parts = [
     'fleet-recovery-evidence/1',
     benchId,
-    String(observedRevision),
+    // ⚠ `observedRevision` 은 **싣지 않는다**(로컬 적대 리뷰 P3 · 정정 234): 면제가 성립한 관측은
+    //   면제 조건 ⑦ 이 `expected === record.revision` 을 강제하고 그 `expected` 는 아래
+    //   `digestJournalRecord` 가 이미 덮는다 — 측정에서도 제거가 어떤 테스트도 깨지 않았다.
     ref.refName,
     ref.oid,
     ref.txnId,
@@ -329,6 +334,10 @@ const sealEvidence = (
     ...refs.map((r) => `${r.refName} ${r.oid}`).sort(),
   ]
   // 구분자는 **필드 경계**다 — 붙여 이으면 `["ab","c"]` 와 `["a","bc"]` 가 같은 다이제스트를 낸다.
+  // ⚠ 정직 표기(측정): 이 구분자를 제거해도 **테스트가 잡지 못한다.** 봉인에 실리는 값이 전부 고정
+  //   길이·고정 문법(ULID 26 · OID 40 hex · sha256 64 hex · `refs/…` 접두)이라 유효 입력으로는 경계
+  //   충돌을 **구성할 수 없다** — 즉 이 방어는 미래에 가변 길이 필드가 추가될 때를 위한 것이고 현재
+  //   독립 반증력은 0 이다. 어휘·검사를 삭제하지 않는 이유는 그 추가가 **조용히** 일어나기 때문이다.
   // ref 이름·OID·다이제스트 어디에도 나타날 수 없는 C0 제어문자를 쓰되 **이스케이프 표기로 적는다** —
   // raw 제어문자는 소스에서 보이지 않고, 이 PR 이 실제로 그 오염을 두 번 만들었다(U+0000 · U+0001).
   return createHash('sha256').update(parts.join('\u0001'), 'utf8').digest('hex')
@@ -449,11 +458,18 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       // `normal-wait` 이 나왔다. 파서는 그 필드를 abandoned 밖에서도 허용하므로 여기서 형태로 막는다.
       const terminalEvidence =
         j.stage !== 'abandoned' && (j.abandonedAt !== undefined || j.abandonReason !== undefined)
+      // ⚠ **`finalized` 는 등식이 아니라 상한이다**(로컬 적대 리뷰 P1 · 정정 233). `prepared`·
+      //   `composed`·`published` 저널은 **창이 닫힌 동안**(활성 저널 = 실행 차단) 기록되므로 단계마다
+      //   revision 이 정확히 +1 이고 등식이 성립한다. 그런데 `finalized` 저널은 **외부 소비자 머지 관측
+      //   이후**에 기록되고 그 사이의 활동·회수·보관 CAS 가 `expected` 를 올리므로, 불변 필드인
+      //   `resultRef` 의 revision 은 `expected` **이하**로만 보장된다.
       const stageIndex = WAL_STAGE_ORDER.indexOf(j.stage)
       const revisionBound =
         stageIndex < 0 ||
         (named.kind === 'ok' &&
-          named.resultingRevision === j.expectedAuthorityRevision + 2 - stageIndex)
+          (j.stage === 'finalized'
+            ? named.resultingRevision <= j.expectedAuthorityRevision
+            : named.resultingRevision === j.expectedAuthorityRevision + 2 - stageIndex))
       if (!nameBound || !revisionBound) {
         blockers.push(blocker('journal-result-ref-invalid', entry.txnId))
         continue
@@ -514,12 +530,32 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   // ⓑ**CAS 후**(권위가 `nextAuthorityStage` · `revision === expected + 1`). 그 외는 전부 손상이다.
   let binding: 'pre-cas' | 'post-cas' | undefined
   if (record !== undefined && current !== undefined) {
+    // ⚠ **열린 창에서는 전역 revision·전체 draft 로 결속하지 않는다**(로컬 적대 리뷰 P1 · 정정 233).
+    //
+    // `revision` 은 **모든 CAS** 가 +1 하는 전역 카운터이고(`authority.ts` 의 유일 배정 지점), 통합
+    // 4필드를 보존하는 CAS(활동 시작/종료·gated-orphan 회수·lifecycle 변경)는 전이 검사의 **no-op**
+    // 으로 통과한다. 스펙은 그 개입을 **요구**한다 — C6(「`published` 저널은 소비자 완결까지 무기한
+    // 열려 있는 정상 상태 … 문자대로 구현하면 모든 integration-ready bench 가 즉시 차단」) ·
+    // §3-T33(그 창에서 **실행** 가능) · I8(`archived ∧ integration-ready` 도 정상).
+    //
+    // ⓐ**닫힌 창**(`prepared`·`composed`)에서는 tight 하게 결속한다 — 그 stage 는 **활성 저널**이라
+    //   실행이 차단되고, 복구 판정은 **모든 권위 CAS 보다 먼저** 돈다(정정 197ⓐ). 그래서 저널 선기록과
+    //   그 CAS 사이에 개입 CAS 가 들어올 수 없고, `resultRef` 가 prepare 시점에 revision 을 실을 수
+    //   있다는 정정 196 의 전제도 이 사실 위에 선다.
+    // ⓑ**열린 창**(`published`·`finalized`)의 **post-CAS** 는 방향으로만 결속한다 — 그 CAS 가 커밋된
+    //   뒤로는 개입이 정상이므로 `revision === expected + 1` 은 정상 상태를 손상으로 오분류한다.
+    // ⓒ그 창의 **draft 전체 digest 대조는 폐기**한다(정직 표기): 4R 정정 218 이 그것으로 잡으려던
+    //   「`lifecycle`·`sourceGeneration`·`activeActivity` 롤백」은 무기한 창에서 **정상 변화와 구분
+    //   불가**다. 그 자리에는 통합 축 결속(txn·stage·세대·`resultOid`)과 앵커만 남는다.
+    const openWindow = current.stage === 'published' || current.stage === 'finalized'
     const preCas =
       record.currentIntegrationStage === current.previousAuthorityStage &&
       current.expectedAuthorityRevision === record.revision
     const postCas =
       record.currentIntegrationStage === current.nextAuthorityStage &&
-      record.revision === current.expectedAuthorityRevision + 1
+      (openWindow
+        ? record.revision >= current.expectedAuthorityRevision + 1
+        : record.revision === current.expectedAuthorityRevision + 1)
     // CAS 가 이미 커밋됐다면 권위는 저널이 증언한 **그 결과**를 들고 있어야 하고, **draft 전체**가
     // 저널이 선기록한 의도와 같아야 한다(Codex PR#289 4R P1). stage·revision·세대·resultOid 만 보면
     // `lifecycle`·`sourceGeneration`·`activeActivity` 처럼 **draft 투영 안의 나머지 필드**가 롤백·손상
@@ -531,9 +567,12 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
     // ⓐ**결과 상속**: 권위가 이미 든 결과가 있으면 저널의 증언과 같아야 한다(둘 다 있을 때)
     // ⓑ**draft 결속**: post-CAS 는 권위 draft 투영 자체를, pre-CAS 는 **저널이 낼 다음 draft 의
     //   재구성**을 `draftDigest` 와 대조한다(면제 조건 ⑧ 을 전 stage 로 일반화한 것이다).
-    const draftBound = postCas
-      ? digestAuthorityDraft(toDraft(record)) === current.draftDigest
-      : digestAuthorityDraft(reconstructNextDraft(record, current)) === current.draftDigest
+    const draftBound =
+      openWindow && postCas
+        ? true // ⓒ — 폐기 근거는 위 주석. 통합 축은 아래 `resultInherited`·세대·stage 가 계속 진다.
+        : postCas
+          ? digestAuthorityDraft(toDraft(record)) === current.draftDigest
+          : digestAuthorityDraft(reconstructNextDraft(record, current)) === current.draftDigest
     const resultInherited =
       record.currentIntegrationResultOid === undefined ||
       current.resultOid === undefined ||
@@ -551,18 +590,40 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
 
   // 미종결 txn 이 있으면 **새 txn 의 저널 자체가 쓰이지 말았어야 한다**(전이 불변식이 그 시작을
   // 금지한다). 그래서 benign 창은 「권위에 pending 통합이 없을 때」에만 열린다(Codex PR#289 P1).
+  // **현재 txn 의 ref 는 stage·경로와 무관하게 저널의 증언과 같아야 한다**(Codex PR#289 4R P1 +
+  // 로컬 적대 리뷰 P2 · 정정 235). 4R 은 이 대조를 「표 앞」으로 올렸는데 그 「앞」이 **면제 반환 뒤**
+  // 였다 — 승격(`resume-composed-cas`) 경로에서만 같은 txn 의 여분·손상 ref 가 무검사로 통과했고,
+  // 그 상태가 `sealEvidence` 봉인에 실려 **손상이 정당한 증거로 고정**됐다. blocker 수집 구간으로
+  // 올려 「한 곳에서만 판정한다」를 실제로 만족시킨다(T80 blocker 지배와도 통일).
+  // ⚠ OID 대조는 **저널이 결과를 증언할 때만** 성립한다 — `prepared` 는 `resultOid` 가 아직 없다.
+  if (current !== undefined) {
+    for (const r of parsedRefs.filter((x) => x.txnId === current.txnId)) {
+      if (
+        r.refName !== current.resultRef ||
+        (current.resultOid !== undefined && r.oid !== current.resultOid)
+      ) {
+        blockers.push(blocker('result-ref-mismatch', r.refName))
+      }
+    }
+  }
+
   const authorityPending = authorityStage !== undefined && authorityStage !== 'finalized'
+
+  // ⚠ **완결 귀속 검사는 활성 게이트 밖이다**(로컬 적대 리뷰 P3 · 정정 234). 스펙 §W-7 은 「완결된
+  // txn 의 저널은 정상 상태에서 `finalized` 다」인데, 초안은 이 검사를 **활성 stage 루프 안**에 둬서
+  // 그 txn 의 저널이 `published`·`abandoned` 로 남은 경우를 놓쳤다 — 6R 정정 229 가 지적한 「검사의
+  // 위치가 곧 정의역」의 같은 형태다. 종별도 그 사실에 맞춰 개명한다.
+  const completedTxnId = record?.completedIntegrationTxnId
+  if (completedTxnId !== undefined) {
+    const completedJournal = journals.get(completedTxnId)
+    if (completedJournal !== undefined && completedJournal.stage !== 'finalized') {
+      blockers.push(blocker('completed-txn-journal-unfinalized', completedTxnId))
+    }
+  }
+
   for (const j of journals.values()) {
     if (!isActiveJournalStage(j.stage)) continue
-    if (j.txnId === currentTxnId) continue
-    // ⚠ **완결 귀속은 면죄부가 아니다**(CodeRabbit PR#289). 완결된 txn 의 저널은 정상 상태에서
-    // `finalized` 이므로, 활성 stage 로 남아 있다는 것은 매체 손상·순서 위반의 증거다. 초안은 「귀속돼
-    // 있으니 고아가 아니다」로 제외해 그 증거를 blocker 없이 통과시켰다 — `current-txn-journal-missing`
-    // 이 같은 계열의 매체 불일치를 발화하는 것과 **비대칭**이었다.
-    if (j.txnId === record?.completedIntegrationTxnId) {
-      blockers.push(blocker('completed-txn-journal-active', j.txnId))
-      continue
-    }
+    if (j.txnId === currentTxnId || j.txnId === completedTxnId) continue
     // (A) 프로토콜상 **정상 크래시 창은 하나뿐**이다 — 저널 선기록 후 `prepared` CAS 전. 그 창의
     // 엔트리는 결과 ref 를 가질 수 없으므로, ref 를 동반한 고아·`composed` 고아는 전부 reconciliation 이다
     // (계획 정정 194 의 2분 — 활성 집합의 **정의**는 stage 단독으로 유지한다).
@@ -593,13 +654,7 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
           resultOid: exempt.oid,
           expectedAuthorityRevision: j.expectedAuthorityRevision,
           resultingRevision: exempt.resultingRevision,
-          evidenceDigest: sealEvidence(
-            obs.identity.benchId,
-            observedRevision,
-            parsedRefs,
-            exempt,
-            j,
-          ),
+          evidenceDigest: sealEvidence(obs.identity.benchId, parsedRefs, exempt, j),
         },
       }
     }
@@ -610,24 +665,6 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
 
   const ownRefs = parsedRefs.filter((r) => r.txnId === current.txnId)
 
-  // **현재 txn 의 ref 는 stage 와 무관하게 저널의 증언과 같아야 한다**(Codex PR#289 4R P1).
-  // `published` 저널의 ref 는 revision 이 권위 이하라 앵커 후보가 아니고, 초안은 그 분기에서 OID 를
-  // 한 번도 대조하지 않은 채 `normal-wait` 을 답했다 — ref 가 다른 커밋으로 교체·손상됐어도 시퀀서가
-  // **잘못된 결과로 게시를 계속**한다. 이름·OID 대조를 **표 앞으로** 끌어올려 한 곳에서만 판정한다.
-  // ⚠ OID 대조는 **저널이 결과를 증언할 때만** 성립한다 — `prepared` 는 `resultOid` 가 아직 없고(그
-  //    값은 `composed` 에서 선기록된다), 무조건 비교하면 정상 `prepared` 상태가 전부 RED 다.
-  const refMismatch = ownRefs.filter(
-    (r) =>
-      r.refName !== current.resultRef ||
-      (current.resultOid !== undefined && r.oid !== current.resultOid),
-  )
-  if (refMismatch.length > 0) {
-    return {
-      kind: 'reconciliation-required',
-      blockers: refMismatch.map((r) => blocker('result-ref-mismatch', r.refName)),
-    }
-  }
-
   // **ref 발행 이후의 상태는 ref 를 요구한다**(Codex PR#289 5R P1). 발행은 composed CAS **앞**이므로
   // ⓐpost-CAS composed ⓑ`published` ⓒ`finalized` 에서 ref 가 **사라진 것**은 프로토콜상 불가능하고,
   // 그것을 `no-mutation`(= 포기·재준비 적격)으로 답하면 **ref 롤백·손상이 그대로 숨는다**.
@@ -635,9 +672,10 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   // ⚠ `abandoned` 를 **통째로** 면제하면 안 된다(Codex PR#289 6R P1): `previousAuthorityStage` 가
   //   `composed` 이상인 포기는 **이미 ref 가 발행된 뒤**라 그 부재는 손상이고, 청소 CAS 가 남은 통합
   //   상태를 지우면서 **사라진 불변 결과를 숨긴다**. 면제는 「`prepared` 에서의 포기」에만 준다.
-  const abandonedAfterCompose =
-    current.stage === 'abandoned' &&
-    (current.resultOid !== undefined || current.previousAuthorityStage !== 'prepared')
+  // ⚠ 조건은 **하나**다(로컬 적대 리뷰 P2 · 정정 234): 증거 동결(`journal.ts` `EVIDENCE_FIELDS`)상
+  //   `previousAuthorityStage` 가 `composed` 이상이면 `resultOid` 존재가 **함의**되므로, 두 조건을
+  //   `||` 로 두면 둘을 분리 반증하는 **합법 픽스처가 존재하지 않는다**(측정: 어느 쪽을 지워도 초록).
+  const abandonedAfterCompose = current.stage === 'abandoned' && current.resultOid !== undefined
   const refRequired =
     current.stage === 'published' ||
     current.stage === 'finalized' ||
