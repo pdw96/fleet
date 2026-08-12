@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 100 files · 242 import wires · 47 IPC channels · 생성 2026-08-10T16:31 UTC
+> 101 files · 243 import wires · 47 IPC channels · 생성 2026-08-12T08:05 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -108,7 +108,7 @@
 - **workbench/locks**
   - →의존: workbench/authority, workbench/coord-area, workbench/ulid · ←피의존: workbench/__testing__/lock-backend-fake, workbench/active-instance, workbench/authority, workbench/journal, workbench/lock-backend-uds, workbench/lock-order · 467줄
 - **workbench/authority**
-  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/journal, workbench/locks · 1664줄
+  - →의존: shared/types, workbench/durable-fs, workbench/locks · ←피의존: workbench/journal, workbench/locks · 1778줄
 - **workbench/journal**
   - →의존: workbench/authority, workbench/durable-fs, workbench/locks, workbench/ulid · ←피의존: — · 1014줄
 - **workbench/active-instance**
@@ -117,10 +117,10 @@
   - →의존: workspace/git, workspace/path-guard · ←피의존: workbench/locks · 372줄
 - **workbench/durable-fs**
   - →의존: — · ←피의존: workbench/__testing__/durable-fs-fake, workbench/authority, workbench/journal · 214줄
+- **workbench/ulid**
+  - →의존: — · ←피의존: workbench/journal, workbench/locks, workbench/result-ref · 86줄
 - **workbench/instance-marker**
   - →의존: — · ←피의존: workbench/active-instance, workbench/instance-marker-proc · 116줄
-- **workbench/ulid**
-  - →의존: — · ←피의존: workbench/journal, workbench/locks · 86줄
 - **workbench/__testing__/durable-fs-fake**
   - →의존: workbench/durable-fs · ←피의존: — · 277줄
 - **workbench/__testing__/lock-backend-fake**
@@ -131,6 +131,8 @@
   - →의존: workbench/locks · ←피의존: — · 82줄
 - **workbench/lock-order**
   - →의존: workbench/locks · ←피의존: — · 181줄
+- **workbench/result-ref**
+  - →의존: workbench/ulid · ←피의존: — · 119줄
 
 ### providers · core — 클로드·제미니·GPT 같은 여러 AI 서비스의 서로 다른 대화 방식을 똑같은 형태로 맞춰주고, 인터넷 장애에도 잘 견디게 해주는 'AI 통역·연결 창구' 모음.
 - **providers/types** — 모든 AI 창구가 똑같이 쓰는 공통 약속(데이터 모양)과 기본 도구를 모아 둔 규격집 _대화 한 마디, 답변 결과, 도구 호출, 토큰 사용량 같은 데이터의 표준 모양을 정의해 어떤 AI든 같은 형태로 주고받게 한다. 또 API 키 확인, 인터넷 통신 기본 도구, 오류 표현 같은 공용 부품도 함께 담고 있다._
