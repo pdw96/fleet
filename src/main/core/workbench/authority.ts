@@ -988,6 +988,111 @@ const checkInvariants = (r: BenchAuthorityRecord): string[] => {
   return v
 }
 
+/**
+ * 권위 레코드가 **가질 수 있는** 통합 단계의 순서. `abandoned` 는 **없다** — 포기는 권위에 단계를
+ * 남기지 않고 통합 4필드를 함께 소거하는 것으로 표현한다(계획 정정 177 · `reclaimDraft` 선례).
+ */
+const AUTHORITY_STAGE_ORDER: readonly IntegrationStage[] = [
+  'prepared',
+  'composed',
+  'published',
+  'finalized',
+]
+
+/** 미종결 = 아직 `finalized` 에 도달하지 않은 진행 중 통합. 새 시도의 시작을 막는 기준이다. */
+const isPendingStage = (s: IntegrationStage | undefined): boolean =>
+  s !== undefined && s !== 'finalized'
+
+/**
+ * **신·구 레코드 전이 불변식 계층**(#251 PR3c · 계획 정정 195·204 · §3-T82).
+ *
+ * `checkInvariants` 는 신 레코드를 **단독으로만** 본다. 그래서 `published → prepared` 역행이나 단계
+ * 건너뛰기가 어느 층에서도 차단되지 않았다 — 계획 정정 142 가 저널 쪽에 세운 전이 강제를 권위 쪽에
+ * 세우는 것이 이 함수다.
+ *
+ * ⚠ **최초 레코드(`prev === undefined`)에서는 침묵**한다. 「최초인데 미종결 통합을 들고 태어난다」는
+ * 단일 레코드 불변식 ③ 계열의 소관이고, 여기서 이중으로 잡으면 **두 방어가 같은 종별을 공유**해
+ * 가림이 기본값이 된다(PR3b 정정 189 가 실측한 형태).
+ *
+ * 정정 204 의 불변식 ①③⑤(단계 커밋 전진 금지 · pending 중 새 시도 금지 · CAS 실패는 published
+ * 전진의 인가가 아님)가 여기서 **문면이 아니라 코드**가 된다.
+ */
+export function checkTransitionInvariants(
+  prev: BenchAuthorityRecord | undefined,
+  next: BenchAuthorityDraft,
+): string[] {
+  if (prev === undefined) return []
+  const v: string[] = []
+
+  const from = prev.currentIntegrationStage
+  const to = next.currentIntegrationStage
+  const sameTxn =
+    prev.currentIntegrationTxnId !== undefined &&
+    prev.currentIntegrationTxnId === next.currentIntegrationTxnId
+
+  // **통합 축을 건드리지 않는 CAS 는 이 축의 no-op 이다.** gated-orphan 회수(`reclaimDraft`)·활동
+  // 시작/종료·lifecycle 변경은 통합 4필드를 **보존한 채** 커밋되므로, 「stage 가 같다」를 자기 전이로
+  // 읽으면 정상 경로가 전부 거부된다(기존 무회귀 핀 `authority-node.test.ts` 가 내 초안을 그렇게 잡았다).
+  const integrationUnchanged =
+    prev.currentIntegrationTxnId === next.currentIntegrationTxnId &&
+    prev.currentIntegrationStage === next.currentIntegrationStage &&
+    prev.currentIntegrationTxnGeneration === next.currentIntegrationTxnGeneration &&
+    prev.currentIntegrationResultOid === next.currentIntegrationResultOid
+
+  if (integrationUnchanged) {
+    // 통합 축 검사를 통째로 건너뛴다.
+  } else if (to === 'abandoned') {
+    v.push('전이: 권위 레코드는 abandoned 를 가질 수 없다(포기 = 통합 4필드 소거 · 정정 177)')
+  } else if (to === undefined) {
+    // 소거 = 포기. 어느 단계에서나 허용한다(§W-7 「포기 의미론」).
+  } else if (!sameTxn) {
+    // 새 txn 의 시작. 직전 txn 이 미종결이면 거부한다(정정 204 불변식 ③) — 허용하면 pending CAS 를
+    // 둔 채 다음 시도가 시작돼 결과 ref 가 권위보다 두 단계 앞서는 창이 열린다.
+    if (isPendingStage(from)) {
+      v.push(
+        `전이: 미종결 txn(${String(prev.currentIntegrationTxnId)} · ${String(from)}) 위에 새 txn 을 시작할 수 없다`,
+      )
+    }
+    if (to !== 'prepared') {
+      v.push(`전이: 새 txn 은 prepared 로 시작해야 한다(관측: ${to})`)
+    }
+  } else {
+    const fi = from === undefined ? -1 : AUTHORITY_STAGE_ORDER.indexOf(from)
+    const ti = AUTHORITY_STAGE_ORDER.indexOf(to)
+    // ⚠ **「자기 전이 금지」 규칙은 두지 않는다.** stage 가 같은데 여기 도달했다는 것은 통합 4필드 중
+    // 무언가가 바뀌었다는 뜻인데, 바뀔 수 있는 나머지 둘(`TxnGeneration`·`ResultOid`)은 **아래 동결
+    // 규칙이 이름을 짚어 거부**한다. 별도 규칙을 두면 같은 입력에 두 방어가 함께 발화해 **가림**이
+    // 기본값이 되고(정정 189 가 실측한 형태), 독립 반증력은 0 이다(정정 183 의 「도달 불가 arm」 규율).
+    if (ti < fi) v.push(`전이: stage 역행 금지(${String(from)} → ${to})`)
+    else if (ti > fi + 1) v.push(`전이: 단계 건너뛰기 금지(${String(from)} → ${to})`)
+
+    if (
+      prev.currentIntegrationResultOid !== undefined &&
+      next.currentIntegrationResultOid !== prev.currentIntegrationResultOid
+    ) {
+      v.push('전이: currentIntegrationResultOid 는 한 번 나타나면 동결이다(증거 교체 금지)')
+    }
+    if (
+      prev.currentIntegrationTxnGeneration !== undefined &&
+      next.currentIntegrationTxnGeneration !== prev.currentIntegrationTxnGeneration
+    ) {
+      v.push('전이: 같은 txn 안에서 currentIntegrationTxnGeneration 변경 금지')
+    }
+  }
+
+  if (next.sourceGeneration < prev.sourceGeneration) {
+    v.push(`전이: sourceGeneration 은 단조다(${prev.sourceGeneration} → ${next.sourceGeneration})`)
+  }
+  if (
+    prev.completedIntegrationTxnId !== undefined &&
+    next.completedIntegrationTxnId !== prev.completedIntegrationTxnId
+  ) {
+    v.push('전이: 완결 귀속(completedIntegrationTxnId)의 교체·소거 금지')
+  }
+
+  return v
+}
+
 const sameIdentity = (a: BenchAuthorityIdentity, b: BenchAuthorityIdentity): boolean =>
   a.commonGitDir === b.commonGitDir && a.benchRoot === b.benchRoot && a.benchId === b.benchId
 
@@ -1302,6 +1407,15 @@ export function createBenchAuthorityStore(
           }
         default:
           return assertNever(fresh)
+      }
+
+      // ④b **전이 불변식 계층**(#251 PR3c · §3-T82). ④ 가 방금 읽은 **디스크 레코드**와 대조한다 —
+      //    토큰이 실어온 값이 아니라 디스크여야 한다(④ 가 재독을 강제한 것과 같은 이유). 이 층이 없으면
+      //    `published → prepared` 역행·단계 건너뛰기가 **어느 층에서도** 차단되지 않는다.
+      const prevRecord = fresh.kind === 'found' ? fresh.record : undefined
+      const transitionViolations = checkTransitionInvariants(prevRecord, next)
+      if (transitionViolations.length > 0) {
+        return { kind: 'invariant-violation', violations: transitionViolations }
       }
 
       const revision = minted.observedRevision + 1
