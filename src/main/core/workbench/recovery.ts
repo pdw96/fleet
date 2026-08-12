@@ -1,0 +1,512 @@
+/**
+ * 통합 WAL **복구 판정**(#251 PR3c · 스펙 §W-7 「복구 판정」) — 순수 함수 · 무변이 관찰 · git 변이 0.
+ *
+ * ## 이것은 first-match 표가 아니라 **계층**이다
+ *
+ * ```text
+ * ① 권위 fresh read                       ⑤ anchor gate  ← 여기까지 변이 0
+ * ② 결과 ref 전수 열거·문법·identity·OID    ⑥ 귀속·전이 불변식 재검증
+ * ③ 저널 전수 열거·schemaVersion·identity   ⑦ repo 락 + 리스 아래 fresh read·재열거   ← 소비자(PR5·PR7)
+ * ④ ref↔저널 설명 관계 **순수 분류**         ⑧ 조건 유지 시에만 resume-composed-cas CAS ← 소비자
+ * ```
+ *
+ * 저널은 앵커 **앞에서 읽되 읽기·검증만** 한다(계획 정정 200) — 안전 목표는 「앵커보다 먼저 저널을
+ * **변이**하지 않는다」이지 「읽지 않는다」가 아니었다. 안 읽으면 **정상 크래시와 롤백을 구분할 정보가
+ * ⑤ 에 없다.**
+ *
+ * ## 앵커 = `refRevision > record.revision`
+ *
+ * 정렬 키가 권위 `revision` 인 이유(계획 정정 190): CAS 마다 정확히 `+1` 이라 단조가 **이미 기계
+ * 집행**된다. ULID 사전순은 같은 ms 20,000건 중 **50.1% 역전**이라 정렬 키로 부적격이었고,
+ * `integrationGeneration` 은 `prepared` 마다만 +1 이라 통합 시도 **사이**의 롤백에 침묵한다.
+ *
+ * 「권위 레코드의 어느 txnId 에도 귀속되지 않는 ref = reconciliation」식은 **폐기**됐다(정정 191):
+ * 포기는 결과 ref 를 **보존**하고 §3-T29 는 형제 시도 ref 의 영구 공존을 정상으로 요구하므로 그 식은
+ * **영구 오탐**이었다. revision 비교로 바꾸면 보존된 과거 ref 의 revision 은 항상 현재 이하라 그 모순이
+ * 구조적으로 사라진다.
+ *
+ * ⚠ **`durability` 값으로 게이트하지 않는다**(구현 중 확정). 발화가 필요한 표면은 `file-only`(C3)이지만
+ * 그 값은 **롤백 대상인 권위 파일 안에** 있다 — 검사의 활성화 조건을 검사 대상과 같은 매체에서 읽으면
+ * 독립성이 그 지점에서 조용히 끊긴다(계획 정정 199 2R 교훈의 동형). 판정은 **항상** 돌고, `file+dir`
+ * 표면에서는 정상 프로토콜상 발화 입력 자체가 만들어지지 않는다.
+ *
+ * ## 이 PR 에서 **하지 않는** 것 (정직 표기 · 계획 정정 137 의 규율)
+ *
+ * - **행동 단언 0.** 「복구기가 인가를 막는다」(§3-T80)·「게이트 전 변이 0건」(T91)·「CAS 후 revision
+ *   일치」(T93)·「CAS 실패 시 ref 보존」(T94)·「락 아래 fresh 재검증」(T81·T92)의 **행동** 연언은
+ *   생산자(PR5 시퀀서 · PR7 부팅)가 없어 이 PR 에서 **vacuous** 하다. 여기 있는 것은 그 행동이 딛고 설
+ *   판정 계층과 **증거 봉인 seam**(`ResumeEvidence.evidenceDigest`)뿐이다.
+ * - **열거를 하지 않는다.** ref 열거는 `GitRepo.listRefs`(PR3a), 저널 디렉터리 순회는 PR3d 소관이고
+ *   이 모듈은 **주어진 관측**만 본다. 「열거가 있다」로 읽지 말 것.
+ */
+
+import { createHash } from 'node:crypto'
+
+import {
+  type BenchAuthorityDraft,
+  type BenchAuthorityRecord,
+  checkTransitionInvariants,
+} from './authority'
+import {
+  digestAuthorityDraft,
+  isActiveJournalStage,
+  type IntegrationTxnRecord,
+  type JournalReadResult,
+} from './journal'
+import { parseResultRef, RESULT_REF_ROOT } from './result-ref'
+
+/* ================================================================================================
+ * 관측 입력 — **실패도 값**이다(§3-T78)
+ * ============================================================================================= */
+
+export type AuthorityObservation =
+  | { readonly kind: 'found'; readonly record: BenchAuthorityRecord }
+  /** 레코드 부재 = 비교 기준 revision `0`. 「판정 없음」이 아니다(§3-T77). */
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable'; readonly detail?: string }
+
+export interface ObservedRef {
+  readonly ref: string
+  readonly oid: string
+}
+
+export type RefObservation =
+  | { readonly kind: 'ok'; readonly refs: readonly ObservedRef[] }
+  /** git 실패를 **빈 집합으로 축소하지 않는다** — 「발행된 ref 없음」과 정반대 판정을 낸다. */
+  | { readonly kind: 'failed'; readonly detail?: string }
+
+export interface ObservedJournalEntry {
+  readonly txnId: string
+  /** PR3b 의 읽기 결과를 **그대로** 싣는다 — 버전 스큐·손상·IO 실패가 각각 다른 사실로 남는다. */
+  readonly read: JournalReadResult
+}
+
+export type JournalObservation =
+  | { readonly kind: 'ok'; readonly entries: readonly ObservedJournalEntry[] }
+  | { readonly kind: 'failed'; readonly detail?: string }
+
+export interface RecoveryObservation {
+  readonly benchId: string
+  readonly authority: AuthorityObservation
+  /** 접두 `refs/fleet/integrated/<benchId>/` 열거. */
+  readonly prefixRefs: RefObservation
+  /**
+   * **정확 이름** `refs/fleet/integrated/<benchId>` 질의(계획 정정 157 · 실측). 접두 질의는 bare 부모를
+   * **0건**으로 답하므로 접두만 쓰면 D/F 충돌 bench 가 「발행된 ref 없음」과 구분되지 않아 최우선
+   * 분기가 **도달 불가**가 된다. ⚠ 이 질의는 자식 ref 도 함께 답하므로 **이름이 정확히 같은 항목만** 본다.
+   */
+  readonly exactRefs: RefObservation
+  readonly journal: JournalObservation
+}
+
+/* ================================================================================================
+ * 판정 출력 — 어휘는 **kebab 통일**(계획 정정 141)
+ * ============================================================================================= */
+
+export type RecoveryBlockerKind =
+  /** 최우선 fail-closed — 다른 사유에 가려지지 않도록 목록의 **맨 앞**에 온다. */
+  | 'ref-namespace-conflict'
+  | 'ref-enumeration-failed'
+  | 'ref-syntax-invalid'
+  | 'ref-foreign-bench'
+  | 'authority-unreadable'
+  | 'authority-identity-mismatch'
+  | 'journal-enumeration-failed'
+  | 'journal-unreadable'
+  | 'journal-identity-mismatch'
+  /** 설명되지 않는 `refRevision > record.revision` — 앵커 발화. */
+  | 'anchor-rollback'
+  | 'result-ref-unattributed'
+  | 'result-ref-mismatch'
+  | 'expected-revision-mismatch'
+  | 'current-txn-journal-missing'
+  | 'orphan-active-journal'
+
+/** 앵커 후보가 **면제**에 실패한 조건(계획 정정 199ⓒ). 전수를 싣는다 — 첫 사유만 남기면 진단이 좁아진다. */
+export type ExemptionFailure =
+  | 'authority-unavailable'
+  | 'journal-missing'
+  | 'stage-not-composed'
+  | 'terminal-evidence-present'
+  | 'ref-name-mismatch'
+  | 'oid-mismatch'
+  | 'arithmetic-binding'
+  | 'expected-revision-mismatch'
+  | 'stage-binding-mismatch'
+  | 'transition-illegal'
+  | 'digest-mismatch'
+
+export interface RecoveryBlocker {
+  readonly kind: RecoveryBlockerKind
+  /** 앵커 후보의 면제 실패 사유 전수. 다른 종별에서는 빈 배열이다. */
+  readonly reasons: readonly ExemptionFailure[]
+  /** 진단 앵커(ref 이름 · txnId · 관측 단서). **판정 동치성에 쓰지 않는다.** */
+  readonly subject: string
+}
+
+/**
+ * ⑦⑧ 이 재검증할 **봉인된 증거**. 소비자는 락·리스 아래에서 다시 관측해 `classifyRecovery` 를 돌리고,
+ * 여전히 `resume-composed-cas` 이며 `isSameRecoveryEvidence` 가 참일 때만 CAS 한다(§3-T81·T92).
+ */
+export interface ResumeEvidence {
+  readonly txnId: string
+  readonly refName: string
+  readonly resultOid: string
+  readonly expectedAuthorityRevision: number
+  readonly resultingRevision: number
+  /** 관측 전체(권위 revision · ref 집합 · 저널 결속)의 봉인. 하나라도 바뀌면 값이 바뀐다. */
+  readonly evidenceDigest: string
+}
+
+export type RecoveryVerdict =
+  /** 포기·재준비 적격. 디스크에 되돌릴 것도 이어갈 것도 없다. */
+  | { readonly kind: 'no-mutation' }
+  /** 차단 아님(C6) — 정상 진행 중이거나 이미 반영된 상태다. */
+  | { readonly kind: 'normal-wait' }
+  /** `finalized`·`abandoned` 잔존의 **멱등 종결**(삭제 아님 · §W-7 「복구 중 삭제 금지」). */
+  | { readonly kind: 'idempotent-cleanup' }
+  /**
+   * 저널이 **이미 선기록한 `composed` 권위 CAS** 를 재개한다.
+   *
+   * ⚠ 이름이 계약이다(계획 정정 203). 폐기된 `promote-published` 는 「composed CAS 를 **건너뛰고**
+   * 곧바로 published 권위를 기록」하는 구현도 이름상 허용해 결속 필드를 통째로 무력화했다.
+   */
+  | { readonly kind: 'resume-composed-cas'; readonly resume: ResumeEvidence }
+  | { readonly kind: 'reconciliation-required'; readonly blockers: readonly RecoveryBlocker[] }
+
+/* ================================================================================================
+ * 내부 표현
+ * ============================================================================================= */
+
+interface ParsedRef {
+  readonly refName: string
+  readonly oid: string
+  readonly resultingRevision: number
+  readonly txnId: string
+}
+
+const blocker = (
+  kind: RecoveryBlockerKind,
+  subject: string,
+  reasons: readonly ExemptionFailure[] = [],
+): RecoveryBlocker => ({ kind, reasons, subject })
+
+/**
+ * 전수화 강제 — **이 모듈 전용**이다(형제 `authority.ts` 와 같은 근거). 공용 `assertNever` 는
+ * `Unhandled ContentBlock variant: …` 를 던져 복구 판정에서 발화하면 진단이 **엉뚱한 층**을 가리킨다.
+ * eslint `no-restricted-syntax` selector 가 `assertNever` **이름**을 요구하므로 이름은 유지한다.
+ */
+function assertNever(x: never): never {
+  throw new Error(`복구 판정: 미처리 판별 종별 ${JSON.stringify(x)}`)
+}
+
+/** 후속 CAS 가 제출할 draft 의 **재구성**(면제 조건 ⑧). 현재 권위 레코드 위에 저널의 의도를 얹는다. */
+const reconstructComposedDraft = (
+  record: BenchAuthorityRecord,
+  journal: IntegrationTxnRecord,
+): BenchAuthorityDraft => {
+  const { revision: _revision, writtenBy: _writtenBy, ...rest } = record
+  return {
+    ...rest,
+    currentIntegrationTxnId: journal.txnId,
+    currentIntegrationStage: 'composed',
+    currentIntegrationTxnGeneration: record.currentIntegrationTxnGeneration,
+    currentIntegrationResultOid: journal.resultOid,
+  } as BenchAuthorityDraft
+}
+
+/**
+ * 면제 조건 ①~⑨ 의 **전수 평가**(⑩ 은 아래 `classifyRecovery` 가 「통과 후보가 정확히 하나」로 본다).
+ *
+ * ⚠ **면제 판정의 입력을 권위 파일 하나로 좁히지 않는다**(계획 정정 199ⓐ · §3-T89). 「현재 txn 이니
+ * 면제」는 T1 완료 → 권위가 T2 로 전진 → 파일 롤백으로 current 가 **다시 T1** 인 사슬에서 **롤백을
+ * 증명하는 가장 높은 ref 를 바로 그 이유로 숨긴다.** 면제는 독립 매체 두 개(ref + 저널)의 교차검증으로만
+ * 서고, 「그 txn 이 현재 txn 인가」는 별도 조건이 아니라 **전이 불변식 계층**(§3-T82)이 답한다.
+ */
+const evaluateExemption = (
+  ref: ParsedRef,
+  record: BenchAuthorityRecord | undefined,
+  journals: ReadonlyMap<string, IntegrationTxnRecord>,
+): readonly ExemptionFailure[] => {
+  if (record === undefined) return ['authority-unavailable']
+  const j = journals.get(ref.txnId)
+  if (j === undefined) return ['journal-missing'] // ① 대응 저널 존재 · ② 런타임 검증 통과
+
+  const failures: ExemptionFailure[] = []
+  if (j.stage !== 'composed') failures.push('stage-not-composed') // ③
+  // ⑨ superseded·abandoned·finalized 아님 — stage 검사만으로는 **손상 레코드**를 못 막는다(종결 증거를
+  //    실은 채 stage 만 composed 인 파일). 그래서 증거 필드 자체를 본다.
+  if (j.abandonedAt !== undefined || j.abandonReason !== undefined || j.publishedAt !== undefined) {
+    failures.push('terminal-evidence-present')
+  }
+  if (j.resultRef !== ref.refName) failures.push('ref-name-mismatch') // ④
+  if (j.resultOid !== ref.oid) failures.push('oid-mismatch') // ⑤
+  if (ref.resultingRevision !== j.expectedAuthorityRevision + 1) failures.push('arithmetic-binding') // ⑥
+  if (j.expectedAuthorityRevision !== record.revision) failures.push('expected-revision-mismatch') // ⑦
+
+  // ⑧ 결속 4필드가 **현재 권위에서 재구성되는 후속 전이**와 일치하는가.
+  if (
+    j.previousAuthorityStage !== record.currentIntegrationStage ||
+    j.nextAuthorityStage !== 'composed' ||
+    j.integrationGeneration !== record.currentIntegrationTxnGeneration
+  ) {
+    failures.push('stage-binding-mismatch')
+  }
+  const draft = reconstructComposedDraft(record, j)
+  if (checkTransitionInvariants(record, draft).length > 0) failures.push('transition-illegal')
+  if (digestAuthorityDraft(draft) !== j.draftDigest) failures.push('digest-mismatch')
+
+  return failures
+}
+
+/** 관측 전체의 봉인. 순서 의존을 없애려고 ref 집합은 **정렬해** 싣는다. */
+const sealEvidence = (
+  benchId: string,
+  observedRevision: number,
+  refs: readonly ParsedRef[],
+  ref: ParsedRef,
+  journal: IntegrationTxnRecord,
+): string => {
+  const parts = [
+    'fleet-recovery-evidence/1',
+    benchId,
+    String(observedRevision),
+    ref.refName,
+    ref.oid,
+    ref.txnId,
+    String(journal.expectedAuthorityRevision),
+    journal.draftDigest,
+    ...refs.map((r) => `${r.refName} ${r.oid}`).sort(),
+  ]
+  return createHash('sha256').update(parts.join(''), 'utf8').digest('hex')
+}
+
+/** ⑦ 재검증의 판정 계층 — 「같은 증거인가」는 봉인값의 동치다. */
+export function isSameRecoveryEvidence(a: ResumeEvidence, b: ResumeEvidence): boolean {
+  return a.evidenceDigest === b.evidenceDigest
+}
+
+/* ================================================================================================
+ * 판정
+ * ============================================================================================= */
+
+export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
+  /** 최우선 종별 전용 버킷 — 다른 사유와 같은 배열에 섞으면 순서가 우연에 맡겨진다. */
+  const conflicts: RecoveryBlocker[] = []
+  const blockers: RecoveryBlocker[] = []
+
+  // ① 권위 fresh read. **부재는 revision `0`** 이고 「판정 없음」이 아니다.
+  const record = obs.authority.kind === 'found' ? obs.authority.record : undefined
+  const observedRevision = record?.revision ?? 0
+  if (obs.authority.kind === 'unreadable') {
+    blockers.push(blocker('authority-unreadable', obs.authority.detail ?? 'authority'))
+  }
+  if (record !== undefined && record.identity.benchId !== obs.benchId) {
+    blockers.push(blocker('authority-identity-mismatch', record.identity.benchId))
+  }
+
+  // ② 결과 ref 전수 열거·문법·identity. 정확 이름 질의는 **이름이 정확히 같은 항목만** 본다.
+  const bare = `${RESULT_REF_ROOT}/${obs.benchId}`
+  if (obs.exactRefs.kind === 'failed') {
+    blockers.push(blocker('ref-enumeration-failed', obs.exactRefs.detail ?? 'exact'))
+  } else if (obs.exactRefs.refs.some((r) => r.ref === bare)) {
+    conflicts.push(blocker('ref-namespace-conflict', bare))
+  }
+
+  const parsedRefs: ParsedRef[] = []
+  if (obs.prefixRefs.kind === 'failed') {
+    blockers.push(blocker('ref-enumeration-failed', obs.prefixRefs.detail ?? 'prefix'))
+  } else {
+    for (const entry of obs.prefixRefs.refs) {
+      const parsed = parseResultRef(entry.ref)
+      switch (parsed.kind) {
+        case 'ok':
+          if (parsed.benchId !== obs.benchId) {
+            blockers.push(blocker('ref-foreign-bench', entry.ref))
+            break
+          }
+          parsedRefs.push({
+            refName: entry.ref,
+            oid: entry.oid,
+            resultingRevision: parsed.resultingRevision,
+            txnId: parsed.txnId,
+          })
+          break
+        case 'namespace-conflict':
+          conflicts.push(blocker('ref-namespace-conflict', entry.ref))
+          break
+        case 'invalid':
+          // 문법 위반을 **무시하지 않는다** — 「해석할 수 없는 이름」은 「없음」이 아니다(§3-T78).
+          blockers.push(blocker('ref-syntax-invalid', entry.ref))
+          break
+        default:
+          assertNever(parsed)
+      }
+    }
+  }
+
+  // ③ 저널 전수 열거·schemaVersion·identity. 읽기 실패·버전 스큐는 **각각 다른 사실**로 남는다.
+  const journals = new Map<string, IntegrationTxnRecord>()
+  if (obs.journal.kind === 'failed') {
+    blockers.push(blocker('journal-enumeration-failed', obs.journal.detail ?? 'journal'))
+  } else {
+    for (const entry of obs.journal.entries) {
+      if (entry.read.kind !== 'found') {
+        blockers.push(blocker('journal-unreadable', `${entry.txnId}:${entry.read.kind}`))
+        continue
+      }
+      const j = entry.read.record
+      const identityOk =
+        j.txnId === entry.txnId &&
+        j.benchId === obs.benchId &&
+        (record === undefined ||
+          (j.repoCommonGitDir === record.identity.commonGitDir &&
+            j.benchRoot === record.identity.benchRoot))
+      if (!identityOk) {
+        blockers.push(blocker('journal-identity-mismatch', entry.txnId))
+        continue
+      }
+      journals.set(j.txnId, j)
+    }
+  }
+
+  // ④⑤ ref↔저널 설명 관계 분류 → anchor gate. **현재 이하의 ref 는 정상 보존**이다(§3-T76·T90).
+  const candidates = parsedRefs.filter((r) => r.resultingRevision > observedRevision)
+  const evaluated = candidates.map((ref) => ({
+    ref,
+    reasons: evaluateExemption(ref, record, journals),
+  }))
+  const promotable = evaluated.filter((c) => c.reasons.length === 0)
+  // **정확히 하나**(조건 ⑩)일 때만 면제한다. `0` 과 `≥2` 는 같은 처분 — 후보 전부가 blocker 다.
+  //
+  // ⚠ **정직 표기(뮤테이션 자기검사 실측)**: 이 `=== 1` 을 `>= 1` 로 바꿔도 **테스트가 잡지 못한다.**
+  // 조건 ⑧(전이 불변식)이 「composed 는 새 txn 을 시작할 수 없다」를 강제하므로 통과 후보는 **현재 txn
+  // 하나**로 이미 좁혀져 `≥2` 가 도달 불가이기 때문이다. 그래도 남겨 두는 이유는 조건 ⑩ 이 승인된 계약
+  // 조항(계획 정정 199ⓒ)이고, ⑧ 이 약해지는 미래 편집에서 **이 줄이 마지막 방어**가 되기 때문이다 —
+  // 대신 「이 PR 에서 독립 반증력 0」임을 숨기지 않는다. 복수 주장(§3-T88)의 **관측 가능한** 계약은
+  // 이 줄이 아니라 「면제되지 않은 모든 후보가 blocker」라는 아래 루프가 진다.
+  const exempt = promotable.length === 1 ? promotable[0]?.ref : undefined
+  for (const c of evaluated) {
+    if (c.ref !== exempt) blockers.push(blocker('anchor-rollback', c.ref.refName, c.reasons))
+  }
+
+  // ⑥ 귀속. 정의역은 **현재 txn 1건**이고, 권위가 가리키지 않는 활성 엔트리는 고아 저널이다.
+  const currentTxnId = record?.currentIntegrationTxnId
+  const current = currentTxnId === undefined ? undefined : journals.get(currentTxnId)
+  // WAL 은 **선기록**이다 — 권위가 가리키는 txn 에 저널이 없다는 것은 매체 하나가 사라졌다는 뜻이다.
+  // ⚠ 열거 자체가 실패했을 때는 발화하지 않는다(그 사실은 이미 `journal-enumeration-failed` 다).
+  if (obs.journal.kind === 'ok' && currentTxnId !== undefined && current === undefined) {
+    blockers.push(blocker('current-txn-journal-missing', currentTxnId))
+  }
+  for (const j of journals.values()) {
+    if (!isActiveJournalStage(j.stage)) continue
+    if (j.txnId === currentTxnId || j.txnId === record?.completedIntegrationTxnId) continue
+    // (A) 프로토콜상 **정상 크래시 창은 하나뿐**이다 — 저널 선기록 후 `prepared` CAS 전. 그 창의
+    // 엔트리는 결과 ref 를 가질 수 없으므로, ref 를 동반한 고아·`composed` 고아는 전부 reconciliation 이다
+    // (계획 정정 194 의 2분 — 활성 집합의 **정의**는 stage 단독으로 유지한다).
+    const benign = j.stage === 'prepared' && !parsedRefs.some((r) => r.txnId === j.txnId)
+    if (!benign) blockers.push(blocker('orphan-active-journal', j.txnId))
+  }
+
+  if (conflicts.length > 0 || blockers.length > 0) {
+    return { kind: 'reconciliation-required', blockers: [...conflicts, ...blockers] }
+  }
+
+  if (exempt !== undefined) {
+    const j = journals.get(exempt.txnId)
+    // 면제가 성립했다는 것은 저널이 있다는 뜻이다(조건 ①). 타입 폭을 좁히는 것 이상은 하지 않는다.
+    if (j !== undefined) {
+      return {
+        kind: 'resume-composed-cas',
+        resume: {
+          txnId: exempt.txnId,
+          refName: exempt.refName,
+          resultOid: exempt.oid,
+          expectedAuthorityRevision: j.expectedAuthorityRevision,
+          resultingRevision: exempt.resultingRevision,
+          evidenceDigest: sealEvidence(obs.benchId, observedRevision, parsedRefs, exempt, j),
+        },
+      }
+    }
+  }
+
+  // 현재 txn 이 없으면(또는 권위 자체가 없으면) 복구표의 정의역이 비어 있다 = 무변이 적격.
+  if (record === undefined || current === undefined) return { kind: 'no-mutation' }
+
+  const ownRefs = parsedRefs.filter((r) => r.txnId === current.txnId)
+  switch (current.stage) {
+    case 'prepared':
+      // (A) 에서 결과 ref 는 **composed 저널 뒤**에만 발행된다 — `prepared` 상태의 ref 는 설명되지 않는다.
+      if (ownRefs.length > 0) {
+        return {
+          kind: 'reconciliation-required',
+          blockers: ownRefs.map((r) => blocker('result-ref-unattributed', r.refName)),
+        }
+      }
+      return { kind: 'no-mutation' }
+    case 'composed':
+      return classifyComposed(current, ownRefs, record)
+    case 'published':
+      // C6 — `published` 는 활성이 아니고 차단하지 않는다. 다음 단계 전진은 시퀀서의 정상 경로다.
+      return { kind: 'normal-wait' }
+    case 'finalized':
+    case 'abandoned':
+      // `finalized`·`abandoned` 잔존 = **멱등 종결**이지 삭제가 아니다(§W-7 「복구 중 삭제 금지」).
+      return { kind: 'idempotent-cleanup' }
+    default:
+      return assertNever(current.stage)
+  }
+}
+
+/**
+ * `composed` 저널 × 현재 이하의 ref. **여기 도달한 ref 는 전부 `refRevision ≤ record.revision`** 이다
+ * (초과분은 ⑤ 가 이미 면제하거나 blocker 로 답했다).
+ *
+ * 정정 204 의 **수렴 규칙 3분기**가 이 함수다: ⓐ권위가 여전히 `N` → 동일 composed CAS 재실행(그 갈래는
+ * ⑤ 의 면제로 이미 답했다) ⓑ권위가 이미 `N+1` ∧ composed 전이가 **정확히** 반영 → 재실행 없이
+ * **완료 확인** ⓒ그 외 → 자동 전진 금지.
+ */
+const classifyComposed = (
+  journal: IntegrationTxnRecord,
+  ownRefs: readonly ParsedRef[],
+  record: BenchAuthorityRecord,
+): RecoveryVerdict => {
+  if (ownRefs.length === 0) return { kind: 'no-mutation' } // ref 발행 전 크래시.
+
+  const mismatched = ownRefs.filter((r) => r.oid !== journal.resultOid)
+  if (mismatched.length > 0) {
+    return {
+      kind: 'reconciliation-required',
+      blockers: mismatched.map((r) => blocker('result-ref-mismatch', r.refName)),
+    }
+  }
+
+  const arithmetic = ownRefs.filter(
+    (r) => r.resultingRevision !== journal.expectedAuthorityRevision + 1,
+  )
+  if (arithmetic.length > 0) {
+    // `refRevision = expectedAuthorityRevision` 으로 발행한 off-by-one(계획 정정 196 이 폐기한 정의)은
+    // **ref 발행에 결속된 바로 그 CAS 가 롤백돼도 앵커가 침묵**하게 만든다. fail-closed 로 답한다.
+    return {
+      kind: 'reconciliation-required',
+      blockers: arithmetic.map((r) =>
+        blocker('expected-revision-mismatch', r.refName, ['arithmetic-binding']),
+      ),
+    }
+  }
+
+  const reflected =
+    record.revision === journal.expectedAuthorityRevision + 1 &&
+    record.currentIntegrationStage === 'composed' &&
+    record.currentIntegrationTxnId === journal.txnId &&
+    record.currentIntegrationResultOid === journal.resultOid
+  if (reflected) return { kind: 'normal-wait' } // ⓑ 완료 확인 — 재실행이 아니다.
+
+  // ⓒ CAS 가 성공했는지 **불확실**하고 결속도 어긋난다. 자동 전진은 금지다.
+  return {
+    kind: 'reconciliation-required',
+    blockers: [
+      blocker('expected-revision-mismatch', journal.txnId, ['expected-revision-mismatch']),
+    ],
+  }
+}
