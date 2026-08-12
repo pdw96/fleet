@@ -131,6 +131,8 @@ export type RecoveryBlockerKind =
   | 'journal-authority-binding'
   /** 저널이 든 `resultRef` 이름 자체가 문법·bench·txn·revision 결속을 깬다(git ref 유무와 무관). */
   | 'journal-result-ref-invalid'
+  /** 활성·진행 stage 인데 종결 증거(`abandonedAt`·`abandonReason`)를 들고 있다(모순 레코드). */
+  | 'journal-terminal-evidence'
   /** 설명되지 않는 `refRevision > record.revision` — 앵커 발화. */
   | 'anchor-rollback'
   | 'result-ref-mismatch'
@@ -228,18 +230,32 @@ const toDraft = (record: BenchAuthorityRecord): BenchAuthorityDraft => {
   return rest as BenchAuthorityDraft
 }
 
-/** 후속 CAS 가 제출할 draft 의 **재구성**(면제 조건 ⑧). 현재 권위 레코드 위에 저널의 의도를 얹는다. */
-const reconstructComposedDraft = (
+/**
+ * 후속 CAS 가 제출할 draft 의 **재구성**(면제 조건 ⑧ 을 **전 stage 로 일반화** · Codex PR#289 6R P1).
+ * 현재 권위 레코드 위에 저널이 선기록한 의도를 얹는다 — `nextAuthorityStage` 부재는 **포기**이므로
+ * 통합 4필드를 소거한다(계획 정정 177).
+ */
+const reconstructNextDraft = (
   record: BenchAuthorityRecord,
   journal: IntegrationTxnRecord,
 ): BenchAuthorityDraft => {
-  const { revision: _revision, writtenBy: _writtenBy, ...rest } = record
+  const base = toDraft(record)
+  if (journal.nextAuthorityStage === undefined) {
+    const {
+      currentIntegrationTxnId: _t,
+      currentIntegrationStage: _s,
+      currentIntegrationTxnGeneration: _g,
+      currentIntegrationResultOid: _o,
+      ...cleared
+    } = base
+    return cleared as BenchAuthorityDraft
+  }
   return {
-    ...rest,
+    ...base,
     currentIntegrationTxnId: journal.txnId,
-    currentIntegrationStage: 'composed',
-    currentIntegrationTxnGeneration: record.currentIntegrationTxnGeneration,
-    currentIntegrationResultOid: journal.resultOid,
+    currentIntegrationStage: journal.nextAuthorityStage,
+    currentIntegrationTxnGeneration: journal.integrationGeneration,
+    ...(journal.resultOid === undefined ? {} : { currentIntegrationResultOid: journal.resultOid }),
   } as BenchAuthorityDraft
 }
 
@@ -262,11 +278,11 @@ const evaluateExemption = (
 
   const failures: ExemptionFailure[] = []
   if (j.stage !== 'composed') failures.push('stage-not-composed') // ③
-  // ⑨ superseded·abandoned·finalized 아님 — stage 검사만으로는 **손상 레코드**를 못 막는다(종결 증거를
-  //    실은 채 stage 만 composed 인 파일). 그래서 증거 필드 자체를 본다.
-  if (j.abandonedAt !== undefined || j.abandonReason !== undefined || j.publishedAt !== undefined) {
-    failures.push('terminal-evidence-present')
-  }
+  // ⑨ 종결 증거 — `abandonedAt`·`abandonReason` 은 **③ 저널 검증이 admitted 전수에** 이미 본다
+  //    (Codex PR#289 6R P1). 여기 남기는 것은 `publishedAt` 뿐이다: 그 값은 `published`·`finalized`
+  //    에서 **정상**이므로 전수 검사의 대상이 아니고, 「composed 인데 게시 시각을 든다」는 이 자리의
+  //    stage 전제 위에서만 모순이다.
+  if (j.publishedAt !== undefined) failures.push('terminal-evidence-present')
   if (j.resultRef !== ref.refName) failures.push('ref-name-mismatch') // ④
   if (j.resultOid !== ref.oid) failures.push('oid-mismatch') // ⑤
   // ⑥ 산술 결속(`refRevision === expected + 1`)은 **여기 없다** — ③ 저널 검증이 `composed` 저널의
@@ -283,7 +299,7 @@ const evaluateExemption = (
   ) {
     failures.push('stage-binding-mismatch')
   }
-  const draft = reconstructComposedDraft(record, j)
+  const draft = reconstructNextDraft(record, j)
   if (checkTransitionInvariants(record, draft).length > 0) failures.push('transition-illegal')
   if (digestAuthorityDraft(draft) !== j.draftDigest) failures.push('digest-mismatch')
 
@@ -427,6 +443,12 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       //
       // ⚠ `abandoned` 는 **정의역 밖**이다 — 어느 단계에서 포기했는지에 따라 expected 가 달라져 식이
       //    하나로 고정되지 않는다(포기 시점의 관측 revision 을 싣는다).
+      // **종결 증거는 모든 admitted 저널에서 본다**(Codex PR#289 6R P1). 초안은 이 검사를 **앵커
+      // 면제 평가 안에만** 뒀는데, post-CAS `composed` 저널의 ref 는 revision 이 권위와 같아 후보가
+      // 되지 않으므로 그 경로에 **영영 도달하지 않는다** — `abandonedAt`·`abandonReason` 을 든 채
+      // `normal-wait` 이 나왔다. 파서는 그 필드를 abandoned 밖에서도 허용하므로 여기서 형태로 막는다.
+      const terminalEvidence =
+        j.stage !== 'abandoned' && (j.abandonedAt !== undefined || j.abandonReason !== undefined)
       const stageIndex = WAL_STAGE_ORDER.indexOf(j.stage)
       const revisionBound =
         stageIndex < 0 ||
@@ -434,6 +456,10 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
           named.resultingRevision === j.expectedAuthorityRevision + 2 - stageIndex)
       if (!nameBound || !revisionBound) {
         blockers.push(blocker('journal-result-ref-invalid', entry.txnId))
+        continue
+      }
+      if (terminalEvidence) {
+        blockers.push(blocker('journal-terminal-evidence', entry.txnId))
         continue
       }
       journals.set(j.txnId, j)
@@ -499,12 +525,23 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
     // `lifecycle`·`sourceGeneration`·`activeActivity` 처럼 **draft 투영 안의 나머지 필드**가 롤백·손상
     // 돼도 통과해, 결과 ref 까지 맞는 상태에서 `normal-wait` 이 나온다. `draftDigest` 는 저널이 이미
     // 들고 있는 값이므로 **추가 입력 없이** 그 구멍을 닫는다.
+    // **pre-CAS 도 결과·draft 결속을 본다**(Codex PR#289 6R P1). 초안은 `!postCas` 가지에서 **세대만**
+    // 봐서, 「결과 A 를 든 composed 권위 + 결과 B 를 든 published 저널·같은 revision ref」가 순서·산술·
+    // ref 대조를 전부 통과해 `normal-wait` 이 나왔다 — **같은 txn 이 불변 결과를 갈아치운** 것이다.
+    // ⓐ**결과 상속**: 권위가 이미 든 결과가 있으면 저널의 증언과 같아야 한다(둘 다 있을 때)
+    // ⓑ**draft 결속**: post-CAS 는 권위 draft 투영 자체를, pre-CAS 는 **저널이 낼 다음 draft 의
+    //   재구성**을 `draftDigest` 와 대조한다(면제 조건 ⑧ 을 전 stage 로 일반화한 것이다).
+    const draftBound = postCas
+      ? digestAuthorityDraft(toDraft(record)) === current.draftDigest
+      : digestAuthorityDraft(reconstructNextDraft(record, current)) === current.draftDigest
+    const resultInherited =
+      record.currentIntegrationResultOid === undefined ||
+      current.resultOid === undefined ||
+      record.currentIntegrationResultOid === current.resultOid
     const evidenceOk =
       record.currentIntegrationTxnGeneration === current.integrationGeneration &&
-      (!postCas ||
-        ((current.resultOid === undefined ||
-          record.currentIntegrationResultOid === current.resultOid) &&
-          digestAuthorityDraft(toDraft(record)) === current.draftDigest))
+      resultInherited &&
+      draftBound
     if ((!preCas && !postCas) || !evidenceOk) {
       blockers.push(blocker('journal-authority-binding', current.txnId))
     } else {
@@ -529,8 +566,14 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
     // (A) 프로토콜상 **정상 크래시 창은 하나뿐**이다 — 저널 선기록 후 `prepared` CAS 전. 그 창의
     // 엔트리는 결과 ref 를 가질 수 없으므로, ref 를 동반한 고아·`composed` 고아는 전부 reconciliation 이다
     // (계획 정정 194 의 2분 — 활성 집합의 **정의**는 stage 단독으로 유지한다).
+    // ⚠ **종결 bench 에는 benign 창이 없다**(Codex PR#289 6R P1): `integrated`·`archived` 권위는
+    //   current txn 이 없어 `authorityPending` 이 거짓이지만, 그 위에서는 새 txn 을 **시작할 수 없으므로**
+    //   (전이 불변식) 그 저널이 애초에 쓰일 수 없었다. stage 의 pending 여부만 보면 그 사실을 놓친다.
     const benign =
-      j.stage === 'prepared' && !authorityPending && !parsedRefs.some((r) => r.txnId === j.txnId)
+      j.stage === 'prepared' &&
+      !authorityPending &&
+      record?.lifecycle === 'open' &&
+      !parsedRefs.some((r) => r.txnId === j.txnId)
     if (!benign) blockers.push(blocker('orphan-active-journal', j.txnId))
   }
 
@@ -589,9 +632,16 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   // ⓐpost-CAS composed ⓑ`published` ⓒ`finalized` 에서 ref 가 **사라진 것**은 프로토콜상 불가능하고,
   // 그것을 `no-mutation`(= 포기·재준비 적격)으로 답하면 **ref 롤백·손상이 그대로 숨는다**.
   // ⚠ `abandoned` 는 제외한다 — `prepared` 에서 포기하면 ref 는 애초에 존재한 적이 없다.
+  // ⚠ `abandoned` 를 **통째로** 면제하면 안 된다(Codex PR#289 6R P1): `previousAuthorityStage` 가
+  //   `composed` 이상인 포기는 **이미 ref 가 발행된 뒤**라 그 부재는 손상이고, 청소 CAS 가 남은 통합
+  //   상태를 지우면서 **사라진 불변 결과를 숨긴다**. 면제는 「`prepared` 에서의 포기」에만 준다.
+  const abandonedAfterCompose =
+    current.stage === 'abandoned' &&
+    (current.resultOid !== undefined || current.previousAuthorityStage !== 'prepared')
   const refRequired =
     current.stage === 'published' ||
     current.stage === 'finalized' ||
+    abandonedAfterCompose ||
     (current.stage === 'composed' && binding === 'post-cas')
   if (refRequired && ownRefs.length === 0) {
     return {

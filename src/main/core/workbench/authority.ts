@@ -1010,6 +1010,10 @@ const AUTHORITY_STAGE_ORDER: readonly IntegrationStage[] = [
  */
 const LIFECYCLE_ORDER: readonly BenchLifecycle[] = ['open', 'integrated', 'archived']
 
+// ⚠ 유니온 밖 값은 이 계층의 소관이 아니다 — 형태 오류는 왕복 검증이 답해야 하는데 전이 검사가
+//    먼저 발화하면 더 근본적인 진단을 가린다(기존 무회귀 핀이 실제로 잡았다). 판정은 파일 위쪽의
+//    `isLifecycle`(LIFECYCLES 기반)을 **재사용**한다 — 사본을 만들지 않는다.
+
 /** 미종결 = 아직 `finalized` 에 도달하지 않은 진행 중 통합. 새 시도의 시작을 막는 기준이다. */
 const isPendingStage = (s: IntegrationStage | undefined): boolean =>
   s !== undefined && s !== 'finalized'
@@ -1035,10 +1039,21 @@ export function checkTransitionInvariants(
   next: BenchAuthorityDraft,
 ): string[] {
   if (prev === undefined) {
+    const v0: string[] = []
     const to = next.currentIntegrationStage
     // 통합을 아예 들고 있지 않은 최초 레코드는 정상(생성 직후)이다.
-    if (to === undefined || to === 'prepared') return []
-    return [`전이: 최초 레코드는 prepared 로만 통합을 시작할 수 있다(관측: ${to})`]
+    if (to !== undefined && to !== 'prepared') {
+      v0.push(`전이: 최초 레코드는 prepared 로만 통합을 시작할 수 있다(관측: ${to})`)
+    }
+    // ⚠ **최초 레코드는 `open` 이다**(Codex PR#289 6R P1). bench 는 열린 상태로 태어난다 —
+    // 이 early return 이 아래 완결 귀속 검사들을 통째로 건너뛰므로, `lifecycle: 'integrated'` +
+    // 임의의 `completedIntegrationTxnId` 를 든 **첫 CAS** 가 두 층을 다 통과해 **트랜잭션도 결과도
+    // 없이 완결을 주장하는 종결 bench** 를 만들 수 있었다. 최초 쓰기에는 대조할 출처가 없으므로
+    // 형태로 막는다.
+    if (isLifecycle(next.lifecycle) && next.lifecycle !== 'open') {
+      v0.push(`전이: 최초 레코드의 lifecycle 은 open 이어야 한다(관측: ${next.lifecycle})`)
+    }
+    return v0
   }
   const v: string[] = []
 
@@ -1075,9 +1090,12 @@ export function checkTransitionInvariants(
     // stage `finalized` 인 레코드는 위 pending 검사를 통과해 **종결된 bench 를 다시 열어버린다** —
     // 스펙 §5 「lifecycle 회귀(재개) 없음 · `integrated` 후 추가 작업은 **새 bench**」와 정면 충돌이다.
     // 시작 인가를 stage 가 아니라 **lifecycle** 에 건다.
-    if (prev.lifecycle !== 'open') {
+    // ⚠ **출발지와 목적지 둘 다** `open` 이어야 한다(Codex PR#289 6R P1). `prev` 만 보면 **한 CAS 가**
+    //    T2 를 시작하면서 동시에 bench 를 `integrated`·`archived` 로 넘길 수 있고, 그 뒤의 같은-T2
+    //    단계 전이는 이 게이트를 **아예 지나지 않아** 종결 bench 위에서 작업이 계속된다.
+    if (prev.lifecycle !== 'open' || next.lifecycle !== 'open') {
       v.push(
-        `전이: ${prev.lifecycle} bench 에서는 새 통합 txn 을 시작할 수 없다(추가 작업은 새 bench)`,
+        `전이: 새 통합 txn 은 open bench 에서만 시작한다(${prev.lifecycle} → ${next.lifecycle})`,
       )
     }
     if (to !== 'prepared') {
@@ -1124,7 +1142,7 @@ export function checkTransitionInvariants(
   // 층에도 걸리지 않았다** — 종결된 bench 가 되살아나 이후 작업이 가능해진다. lifecycle 은 통합 축과
   // **독립**이므로 그 검사도 독립으로 세운다.
   const li = (l: BenchLifecycle): number => LIFECYCLE_ORDER.indexOf(l)
-  if (li(next.lifecycle) < li(prev.lifecycle)) {
+  if (isLifecycle(next.lifecycle) && li(next.lifecycle) < li(prev.lifecycle)) {
     v.push(`전이: lifecycle 회귀 금지(${prev.lifecycle} → ${next.lifecycle})`)
   }
   if (next.sourceGeneration < prev.sourceGeneration) {

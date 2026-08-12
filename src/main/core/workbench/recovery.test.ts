@@ -99,6 +99,39 @@ const draftDigestOf = (r: BenchAuthorityRecord): string => {
   return digestAuthorityDraft(rest as BenchAuthorityDraft)
 }
 
+/**
+ * **pre-CAS 픽스처의 draftDigest** — 저널이 낼 **다음 draft** 의 재구성(Codex PR#289 6R P1 이후
+ * 전 stage 로 일반화됐다). `composedDraft` 는 그 특수 경우다.
+ */
+const nextDraftDigestOf = (
+  r: BenchAuthorityRecord,
+  stage: 'prepared' | 'composed' | 'published' | 'finalized',
+  oid: string = OID,
+): string => {
+  const { revision: _rev, writtenBy: _w, ...rest } = r
+  return digestAuthorityDraft({
+    ...rest,
+    currentIntegrationTxnId: T1,
+    currentIntegrationStage: stage,
+    currentIntegrationTxnGeneration: r.currentIntegrationTxnGeneration,
+    currentIntegrationResultOid: oid,
+  } as BenchAuthorityDraft)
+}
+
+/** **포기 CAS 가 제출할 draft** — 통합 4필드 소거(정정 177). pre-CAS 결속이 이것과 대조한다. */
+const abandonDraftDigestOf = (r: BenchAuthorityRecord): string => {
+  const {
+    revision: _rev,
+    writtenBy: _w,
+    currentIntegrationTxnId: _t,
+    currentIntegrationStage: _s,
+    currentIntegrationTxnGeneration: _g,
+    currentIntegrationResultOid: _o,
+    ...rest
+  } = r
+  return digestAuthorityDraft(rest as BenchAuthorityDraft)
+}
+
 const journal = (over: Partial<IntegrationTxnRecord> = {}): IntegrationTxnRecord =>
   ({
     schemaVersion: 1,
@@ -561,7 +594,9 @@ describe('면제 10조건 — 하나라도 깨지면 승격이 아니다', () =>
         journal: entries(journal({ abandonedAt: 7, abandonReason: 'superseded' })),
       }),
     )
-    expect(reasons(v)).toContain('terminal-evidence-present')
+    // ⚠ 판정 위치가 **저널 검증**으로 올라갔다(Codex PR#289 6R P1) — 종결 증거는 앵커 후보가 아닌
+    //    저널에서도 모순이므로 admitted 전수에서 본다.
+    expect(kinds(v)).toContain('journal-terminal-evidence')
   })
 
   it('draftDigest 가 현재 권위에서 재구성한 값과 다르면 승격하지 않는다', () => {
@@ -732,7 +767,13 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
       obs({
         authority: { kind: 'found', record: finalizedRec },
         prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID]),
-        journal: entries(journal({ ...walBound('finalized'), publishedAt: 9 })),
+        journal: entries(
+          journal({
+            ...walBound('finalized'),
+            publishedAt: 9,
+            draftDigest: nextDraftDigestOf(finalizedRec, 'finalized'),
+          }),
+        ),
       }),
     )
     expect(finalized.kind).toBe('idempotent-cleanup')
@@ -747,8 +788,12 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
             expectedAuthorityRevision: N + 3,
             previousAuthorityStage: 'prepared',
             nextAuthorityStage: undefined,
+            // `prepared` 에서의 포기라 결과 증거가 **없다** — 그래야 ref 를 요구하지 않는다(6R P1).
+            resultTree: undefined,
+            resultOid: undefined,
             abandonedAt: 9,
             abandonReason: 'user-abandon',
+            draftDigest: abandonDraftDigestOf(abandonedRec),
           }),
         ),
       }),
@@ -1125,6 +1170,120 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
     )
     expect(v.kind).toBe('reconciliation-required')
     expect(kinds(v)).toContain('completed-txn-journal-active')
+  })
+
+  /**
+   * **Codex PR#289 6R P1** — `integrated`·`archived` 권위는 current txn 이 없어 `authorityPending`
+   * 이 거짓이지만, 그 위에서 새 txn 을 **시작할 수 없으므로**(전이 불변식) 그 저널은 애초에 쓰일 수
+   * 없었다. stage 의 pending 여부만 보면 그 사실을 놓친다.
+   */
+  it('종결 bench(integrated·archived)에는 benign 창이 없다', () => {
+    for (const lifecycle of ['integrated', 'archived'] as const) {
+      const rec = record({
+        lifecycle,
+        ...(lifecycle === 'integrated'
+          ? { completedIntegrationTxnId: T2 }
+          : { archivedBranch: 'preserved' as const }),
+        currentIntegrationTxnId: undefined,
+        currentIntegrationStage: undefined,
+        currentIntegrationTxnGeneration: undefined,
+      })
+      const v = classifyRecovery(
+        obs({
+          authority: { kind: 'found', record: rec },
+          journal: entries(
+            journal({ ...walBound('prepared'), resultTree: undefined, resultOid: undefined }),
+          ),
+        }),
+      )
+      expect(v.kind, lifecycle).toBe('reconciliation-required')
+      expect(kinds(v)).toContain('orphan-active-journal')
+    }
+  })
+
+  /**
+   * **Codex PR#289 6R P1** — `previousAuthorityStage` 가 `composed` 이상인 포기는 **이미 ref 가
+   * 발행된 뒤**라 그 부재는 손상이고, 청소 CAS 가 남은 통합 상태를 지우면서 **사라진 불변 결과를
+   * 숨긴다.** 면제는 「`prepared` 에서의 포기」에만 준다.
+   */
+  it('composed 이후의 포기는 결과 ref 를 요구한다', () => {
+    const rec = record({
+      revision: N + 3,
+      currentIntegrationStage: 'composed',
+      currentIntegrationResultOid: OID,
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        journal: entries(
+          journal({
+            stage: 'abandoned',
+            expectedAuthorityRevision: N + 3,
+            previousAuthorityStage: 'composed',
+            nextAuthorityStage: undefined,
+            abandonedAt: 9,
+            abandonReason: 'user-abandon',
+            draftDigest: abandonDraftDigestOf(rec),
+          }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('result-ref-missing')
+  })
+
+  /**
+   * **Codex PR#289 6R P1** — pre-CAS 가지가 **세대만** 보면 「결과 A 를 든 composed 권위 + 결과 B 를
+   * 든 published 저널」이 순서·산술·ref 대조를 전부 통과해 `normal-wait` 이 나온다 — 같은 txn 이
+   * **불변 결과를 갈아치운** 것이다.
+   */
+  it('pre-CAS 에서 불변 결과를 갈아치우면 결속 위반이다', () => {
+    const rec = record({
+      revision: R0 + 2,
+      currentIntegrationStage: 'composed',
+      currentIntegrationResultOid: OID, // 권위가 든 결과 = A
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID2]),
+        journal: entries(
+          journal({
+            ...walBound('published'),
+            publishedAt: 9,
+            resultOid: OID2, // 저널이 든 결과 = B
+            // ⚠ **축을 분리한다** — digest 는 B 로 정확히 재구성해 둔다. 그러지 않으면 draft 결속이
+            //    함께 깨져 「둘 중 뭔가 잡았다」가 되고, 뮤테이션에서 두 검사가 서로를 가린다(실측).
+            draftDigest: nextDraftDigestOf(rec, 'published', OID2),
+          }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-authority-binding')
+  })
+
+  /**
+   * **Codex PR#289 6R P1(축 분리)** — 결과는 상속되는데 **draft 전체**가 다른 경우. 위 행과 반대로
+   * 이쪽은 `resultInherited` 를 통과시키고 `draftBound` 만 깨뜨린다.
+   */
+  it('pre-CAS 에서 draft 결속이 깨지면 결과가 같아도 위반이다', () => {
+    const rec = record({
+      revision: R0 + 2,
+      currentIntegrationStage: 'composed',
+      currentIntegrationResultOid: OID,
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T1), OID]),
+        journal: entries(
+          journal({ ...walBound('published'), publishedAt: 9, draftDigest: 'f'.repeat(64) }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-authority-binding')
   })
 
   it('미종결 txn 이 없으면(권위에 통합 없음) prepared 고아는 그대로 benign 이다', () => {

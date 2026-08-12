@@ -246,9 +246,32 @@ describe('전이 불변식 — pending 중 새 시도 금지 (정정 204 불변�
         currentIntegrationTxnGeneration: 3,
       })
       expect(checkTransitionInvariants(prev, next)).toEqual([
-        expect.stringContaining('새 통합 txn 을 시작할 수 없다'),
+        expect.stringContaining('새 통합 txn 은 open bench 에서만 시작한다'),
       ])
     }
+  })
+
+  /**
+   * **Codex PR#289 6R P1** — `prev` 만 보면 **한 CAS 가** T2 를 시작하면서 동시에 bench 를
+   * `integrated` 로 넘길 수 있고, 그 뒤의 같은-T2 단계 전이는 이 게이트를 **아예 지나지 않는다**.
+   */
+  it('새 txn 을 시작하면서 동시에 bench 를 종결시킬 수 없다', () => {
+    const prev = base({
+      currentIntegrationTxnId: T1,
+      currentIntegrationStage: 'finalized',
+      currentIntegrationTxnGeneration: 3,
+      currentIntegrationResultOid: 'a'.repeat(40),
+    })
+    const next = draft({
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: T1,
+      currentIntegrationTxnId: T2,
+      currentIntegrationStage: 'prepared',
+      currentIntegrationTxnGeneration: 3,
+    })
+    expect(checkTransitionInvariants(prev, next)).toContain(
+      '전이: 새 통합 txn 은 open bench 에서만 시작한다(open → integrated)',
+    )
   })
 
   it('finalized 뒤에는 새 txn 을 시작할 수 있다', () => {
@@ -431,6 +454,25 @@ describe('전이 불변식 — 최초 레코드', () => {
    *
    * 「다른 층이 막는다」는 검증 없는 안전 주장이 코드 주석으로 착지한 형태(PR#266 교훈)의 재발이다.
    */
+  /**
+   * **Codex PR#289 6R P1** — 이 early return 이 아래 완결 귀속 검사들을 **통째로 건너뛴다.** 그래서
+   * `lifecycle: 'integrated'` + 임의의 `completedIntegrationTxnId` 를 든 **첫 CAS** 가 두 층을 다
+   * 통과해 **트랜잭션도 결과도 없이 완결을 주장하는 종결 bench** 를 만들 수 있었다.
+   */
+  it('최초 레코드의 lifecycle 은 open 이어야 한다', () => {
+    for (const lifecycle of ['integrated', 'archived'] as const) {
+      const next = draft({
+        lifecycle,
+        ...(lifecycle === 'integrated'
+          ? { completedIntegrationTxnId: T2 }
+          : { archivedBranch: 'preserved' as const }),
+      })
+      expect(checkTransitionInvariants(undefined, next), lifecycle).toEqual([
+        expect.stringContaining('최초 레코드의 lifecycle 은 open'),
+      ])
+    }
+  })
+
   it('최초 레코드는 prepared 로만 통합을 시작할 수 있다', () => {
     for (const stage of ['composed', 'published', 'finalized'] as const) {
       expect(
