@@ -1188,14 +1188,44 @@ rename EPERM 재시도 실측 완료)·tmp 문법과 배치·열거 필터(접�
 |---|---|---|
 | 190 | **앵커 정렬 키 = 권위 `revision`**(ULID 사전순·`integrationGeneration` 기각) | ⓐULID 는 **정렬 키로 부적격**이 실측으로 확정됐다(PR3b 실측 ⓐ: 같은 ms 20,000건 중 **50.1% 역전** · monotonic counter 부재). 정정 149 가 `max` 를 폐기하고 strict 전진으로 간 것은 이 사실의 우회였는데, 우회가 아니라 **키를 바꾸는 것**이 정답이다. ⓑ`integrationGeneration`(정정 166)은 `prepared` 마다만 +1 이라 **통합 시도 사이의 권위 롤백에 침묵**한다 — 활동 시작·종료·회수 CAS 가 전부 그 구간에 있다. ⓒ`revision` 은 `authority.ts:1307`(`minted.observedRevision + 1`)이 **CAS 마다 정확히 +1** 로 단조를 이미 기계 집행하므로 시계 역행 계열(정정 146·149·153 을 파생시킨 축)이 **원천 소멸**한다 — 정정 169(Codex 3R)가 이 안의 성립 조건을 이미 확정해 줬다. ⚠ `integrationGeneration` 은 **폐기하지 않는다** — 그것은 §W-8 세대 모델(supersede·stale-attempt)의 축이지 앵커가 아니다. 정정 166 은 「앵커 = 세대」 부분만 정정 169 로 **교체**된다 |
 | 191 | **§W-7:842-845 의 현행 확정 판정식(「귀속 없는 결과 ref 존재 = reconciliation」)을 폐기**하고 **`refRevision > record.revision` 비교**로 대체 | 현행 판정식은 **영구 오탐**이다 — 포기는 결과 ref 를 **보존**하고(spec:861) §3-T29 는 형제 시도 ref 의 **영구 공존을 정상 시나리오로 요구**하므로, `abandoned`·`superseded` 잔여분이 두 슬롯(`current`·`completed`) 어디에도 귀속되지 않은 채 영원히 남는다. 정정 150ⓐ 가 이 모순을 「카디널리티」로 제기했고 정정 163 이 「ref 예외 조항」이라는 **덧대기**로 부분 대응했는데, revision 비교로 바꾸면 **보존된 과거 ref 의 revision 은 항상 현재 이하**라 그 모순이 **구조적으로 사라진다**(예외 조항 불요 → 정정 163 의 처방도 함께 폐기). 비교 정의역 = **보존된 전 결과 ref**(정정 169) · 권위 부재 = revision 0 취급(모든 잔존 ref 가 발화) · **열거 실패도 fail-closed**(git 실패·문법 오류·D/F 충돌은 「결과 없음」이 아니다 · 정정 169) |
-| 192 | **`resultRef` 문법 확정** = `refs/fleet/integrated/<benchId>/<revision>-<txnId>` · **10진 가변폭 · 선행 0 금지 · 파싱 실패 fail-closed**. 정정 166 의 「**고정폭** 세대」는 **폐기** | 우리는 ref 이름을 **문자열 정렬하지 않는다** — 파싱해 숫자로 비교한다. 그러면 고정폭은 이득이 0 이면서 **자릿수 상한**(초과 시 문법 붕괴)이라는 실패 모드만 새로 만든다. 선행 0 금지는 `01`·`1` 두 이름이 같은 revision 을 가리키는 **비단사 매핑**을 막는다(PR1a `ulid.ts` 의 「정규화 금지·거부」와 같은 규율). ref 이름의 revision = **그 ref 를 발행한 시점에 이어질 권위 CAS 의 revision** = 저널의 `expectedAuthorityRevision` — 두 매체가 같은 값을 증언하므로 대조가 성립한다. spec §W-7:753-754 의 「문법 소유 = PR3c」 주석을 이 문법으로 치환 |
+| 192 | **`resultRef` 문법 확정** = `refs/fleet/integrated/<benchId>/<revision>-<txnId>` · **10진 가변폭 · 선행 0 금지 · 파싱 실패 fail-closed**. 정정 166 의 「**고정폭** 세대」는 **폐기** | 우리는 ref 이름을 **문자열 정렬하지 않는다** — 파싱해 숫자로 비교한다. 그러면 고정폭은 이득이 0 이면서 **자릿수 상한**(초과 시 문법 붕괴)이라는 실패 모드만 새로 만든다. 선행 0 금지는 `01`·`1` 두 이름이 같은 revision 을 가리키는 **비단사 매핑**을 막는다(PR1a `ulid.ts` 의 「정규화 금지·거부」와 같은 규율). ⚠ **ref 이름에 실을 값의 정의는 정정 196 이 대체한다**(초안은 `expectedAuthorityRevision` 이라 적었고 그것이 off-by-one 이었다). spec §W-7:753-754 의 「문법 소유 = PR3c」 주석을 이 문법으로 치환 |
 | 193 | **회수 어휘 `never-applied` 신설 기각**(정정 164 번복) | 그 어휘가 필요했던 유일한 이유는 **귀속 기반 판정**이었고, 정정 191 이 귀속 판정을 폐기하면 통합 WAL 복구 verdict 는 복구표의 기존 어휘(`no-mutation`·`promote-published`·`RESULT_REF_UNATTRIBUTED`·`RESULT_REF_MISMATCH`·`REF_NAMESPACE_CONFLICT`·`reconciliation-required`)로 **전수 표현된다**. `never-applied` 는 §W-9 **생성 저널 전용**으로 유지한다(spec:898 — 거기서는 3채널 열거가 결정론적이라 정당하다). ⚠ 정정 164 의 「**회수는 삭제가 아니라 기록**이며 §W-7:778 「복구 중 삭제 금지」에 걸리지 않는다」 문면은 **유지**한다(어휘가 아니라 행동 규율이다) |
 | 194 | **활성 저널 집합 = stage 단독 유지**(PR3b `isActiveJournalStage` **무변경** · 정정 164 의 「귀속 조건 도입」 기각) | 귀속은 활성 집합의 **정의**가 아니라 판정 함수의 **입력 특성**이다. 정정 164 가 이중 정의를 지적한 것은 옳았으나 처방 방향이 반대였다 — ⓕ 를 ⓓ 에 맞추는 게 아니라 **ⓓ 를 유지하고 ⓕ 를 판정 함수로 흡수**한다. 그러면 정정 154ⓐ 가 닫은 영구 고착이 `delete-record` 표면에서 재현되지 않는다(활성 판정이 여전히 순수·stage 단독). §W-7 I11·§3-T33 문면 개정은 **범위를 좁혀** 수행: 「귀속 조건」이 아니라 **「권위가 가리키지 않는 활성 stage 엔트리 = 고아 저널 → 정정 167 의 승격가능/reconciliation-required 2분」** |
 | 195 | ⚠ **범위 재분할(사용자 결정 2026-08-12) — PR3c 를 PR3c / PR3c′ 로 쪼갠다.** 정정 187 이 크레덴셜·임계 구역 결속 축을 PR3b→PR3c 로 이관했는데, 그것을 앵커·복구 판정과 합치면 **PR3c 가 불변식 표면을 둘** 진다 | 정정 187 자신이 내건 기준(「분량이 근거가 아니다 — 근거는 **한 PR 이 지는 불변식 표면**이다」)의 **일관 적용**이다. 그 축은 PR3b 에서만 Codex P1 16건을 냈고 **매 라운드가 직전 라운드에서 넣은 방어의 구멍**이었다 — 발산 패턴이 관측된 축을 다른 비가역 축과 합장하지 않는다. 분할이 성립하는 이유: 크레덴셜 축의 **유일한 소비자가 이미 착지한 저널 `append`** 라 자기 revert 단위가 선다(PR0 이 확립한 기준). **PR3c** = 앵커(revision) · 복구 판정 · 전이 불변식 계층 · `resultRef` 문법 소유 · §3-T34·T18b·I11·T33 문면 개정 / **PR3c′** = 구역 capability 민팅 · 크레덴셜 관측 통합 상태(txn·stage·세대) 결속 · §3-T69 재문안 · 저널 `append` 인가 복원. **순서 = PR3c → PR3c′**(크레덴셜이 결속할 관측 상태 필드를 PR3c 가 소유). **총 PR 13.** 부수: 이 둘이 **진짜 stacked PR** 이라 운영감사 ③(stacked PR 시험 1회 · Codex 봇이 스택 각 PR 에 정상 트리거되는지 확인)의 대상으로 삼는다 |
 
 **이 라운드가 폐기한 것**(재유입 금지 — PR3b 승인 시 Codex 가 명시 경고한 「폐기된 API 이름 재유입」 가드의
 연장): `highestIntegrationTxnId` 필드명 · ULID 사전순 앵커 · 「고정폭 세대」 ref 문법 ·
-「귀속 없는 ref = reconciliation」 판정식 · 정정 163 의 ref 예외 조항 · 통합 WAL 의 `never-applied` 어휘.
+「귀속 없는 ref = reconciliation」 판정식 · 정정 163 의 ref 예외 조항 · 통합 WAL 의 `never-applied` 어휘 ·
+**`refRevision = expectedAuthorityRevision`**(정정 196 이 off-by-one 으로 폐기).
+
+#### 체크포인트 리뷰 1R 반영 (2026-08-12 · `Changes requested` P1×1 · 나머지 전부 승인)
+
+Codex 판정: 190·191·192(문법)·193·194·195 **승인** + 「앵커 → 고아 저널 판정 순서」 승인.
+**P1 1건**이 정정 192 의 값 정의에 있었고 **실재**했다. 판정 2·3·4 는 조건부 승인이라 그 조건을 아래에 고정한다.
+
+| # | 지적 → 확정 | 근거 |
+|---|---|---|
+| 196 | **P1 — `refRevision = expectedAuthorityRevision` 은 off-by-one 이다.** 확정: **`refRevision = resultingRevision = expectedAuthorityRevision + 1`** (= 후속 권위 CAS 가 성공하면 **기록할** revision) | **코드 실측으로 재현**: `journal.ts:115` 는 `expectedAuthorityRevision` 을 「이어질 CAS 가 **맞출** revision」(= 현재값 `N`)으로 정의하고, `authority.ts:1307` 은 `minted.observedRevision + 1` 로 **`N+1`** 을 발행한다. 내 초안대로 ref 를 `N-<txnId>` 로 발행하면 ⓐrecord 가 `N+1` 로 전진 → ⓑ`file-only` 크래시로 권위만 `N` 으로 롤백 → ⓒ판정이 `N > N` = **false** → **ref 발행에 결속된 바로 그 CAS 가 사라졌는데 앵커가 침묵**한다. 정정 169 가 막으려던 revision 재사용의 **가장 짧은 형태**를 내 정의가 그대로 열어놨다. ⚠ 대안(「`expectedAuthorityRevision` 의 의미를 resulting 으로 재정의」)은 **기각** — 저널·권위의 expected-revision CAS 의미와 충돌하고 착지한 레코드 문면을 뒤집는다. **조립 시점에 `+1` 을 명시**하는 쪽이 안전하다. 함께 고정할 불변식 6: ①`resultingRevision === expectedAuthorityRevision + 1` ②안전 정수 ∧ 현재 revision 보다 **정확히 1 큼** ③**ref 발행이 CAS 보다 먼저 가능**하므로 발행 후 CAS 실패 = 정상 대기가 아니라 **reconciliation 대상** ④**ref 생성 실패 시 후속 권위 CAS 를 실행하지 않는다** ⑤CAS 성공 시 `record.revision === parsedRefRevision` ⑥`refRevision > record.revision` 비교는 **보존된 전 결과 ref** 에 적용 |
+| 197 | **앵커 검사의 시점·형태 확정**(판정 1ⓐ·4 조건부 승인분) — 「부팅 시 한 번」은 **불충분**하다 | ⓐ앵커는 **모든 권위 CAS 보다 먼저**이며 **새 리스 획득 후 fresh read 와 같은 임계 구역**에 결속한다(통과 캐시의 장기 재사용 금지 — 다른 프로세스·복구·파일 교체 후 revision 재사용이 되살아난다). ⓑ**계층형 판정**(first-match 표 금지 · 정정 150ⓐ 가 지적한 위험의 재발 지점): `authority fresh read → 결과 ref 전수 열거·문법·identity 검증 → global anchor gate → (통과 후에만) 저널 전수 열거 → 귀속 판정 → 고아 활성 저널의 승격가능/reconciliation 2분`. 근거 = **앵커 실패는 권위 레코드의 시간 기준 자체를 신뢰할 수 없다는 증거**라, 그 상태에서 「승격 가능한가」를 먼저 물으면 **잘못된 revision·stage 를 기준으로 승격**한다. ⓒverdict 를 단일 문자열이 아니라 **blockers 집합**으로 수집해도 되지만, **anchor blocker 존재 중에는 행동 인가가 항상 전부 차단**이어야 한다. ⓓ앵커 통과 후에는 정정 194 대로 stage 단독 활성 집합 유지 |
+| 198 | **PR3c ↔ PR3c′ 사이 커밋의 안전 조건 6**(판정 3 조건부 승인분) — 분할 방향은 「생산자 선착지」로 정상이라 정정 159 안티패턴의 역방향 재발은 없다 | ①PR3c 가 추가한 관측 상태 필드는 PR3c′ 전까지 **인가 capability 로 간주되지 않는다** ②PR3c 의 복구 판정은 PR3c′ 크레덴셜의 **존재를 가정하지 않는다** ③현행 lease-only 인가가 새 필드를 부분적으로 읽어 **「절반 집행」하지 않는다** ④PR3c′ 크레덴셜이 증언할 것 = bench identity · 관측 authority revision · current txnId · current stage · 세대(또는 sourceGeneration) · 임계 구역 identity/liveness ⑤크레덴셜 검증 실패는 **append 이전**에 나며 tmp 생성·rename 등 **부수효과 0** ⑥stacked PR 로 운영하면 **PR3c′ 의 base 를 PR3c head 에 명시 결속**. ⚠ **「PR3c′ 까지 저널 인가는 lease-only 로 남는다」를 PR3c 본문에 정직 표기**한다 |
+
+**이 라운드가 신설한 §3 행 10건**(§1 전제 1 게이트 · RED 목록 — Codex 가 최소 회귀로 열거한 것을 그대로
+계약화): **T73** 앵커 발화(권위 `N` → ref `<N+1>` 발행 → CAS 로 `N+1` → 권위만 `N` 으로 롤백 →
+`refRevision > record.revision` 참 → reconciliation) · **T74** 음성 통제(권위가 `N+1` **이상**이면 같은 ref 가
+오탐 0) · **T75** 잘못된 `<N>-<txnId>` ref = 저널 `expectedAuthorityRevision` 과 **산술 결속 불일치** →
+fail-closed · **T76** 보존된 **전** 결과 ref 에 동일 판정 적용 · **T77** 권위 부재 + ref 잔존 = revision `0`
+→ reconciliation · **T78** **ref 열거 실패를 empty set 으로 축소하지 않음**(D/F 충돌·문법 오류·git 실패
+포함) · **T79** 앵커 게이트가 저널 승격 판정보다 **먼저**(순서 뒤집으면 롤백된 stage 로 승격) · **T80**
+anchor blocker 존재 중 **행동 인가 전부 차단** · **T81** 앵커 검사가 **새 리스 획득 후 fresh read 와 같은
+구간**(통과 캐시 재사용 시 RED) · **T82** 신·구 레코드 **전이 불변식 계층**(현행 `checkInvariants` 는
+단일 레코드 전용이라 `published → prepared` 역행·`abandoned → composed` 부활이 어느 층에서도 안 막힌다 ·
+정정 142 가 저널 쪽에만 세운 것을 권위 쪽에 세우는 행).
+
+**교훈**: **「두 매체가 같은 값을 증언한다」고 적을 때 그 값의 정의를 양쪽 소스에서 각각 확인하라.**
+나는 저널 필드 주석(`journal.ts:115`)과 CAS 배정(`authority.ts:1307`)을 **둘 다 이번 정찰에서 읽고도**
+`+1` 경계를 놓쳤다 — 두 곳을 읽은 것과 두 값을 **뺄셈해 본 것**은 다르다. 이 결함은 코드 0행 시점에
+잡혔으므로 비용이 문면 한 줄이었지만, 구현 후였다면 「전 게이트 GREEN + 앵커는 영원히 침묵」이라는
+**가장 나쁜 위양성**(PR3b 정정 189 와 같은 형태)이 됐을 것이다.
 
 ### PR3 — `GitRepo` 완성 · 통합 WAL 저널
 
