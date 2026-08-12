@@ -848,6 +848,40 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
     expect(kinds(v)).toContain('orphan-active-journal')
   })
 
+  /**
+   * **CodeRabbit PR#289** — 완결 귀속 txn 의 저널은 정상 상태에서 `finalized` 다. 그것이 활성 stage 로
+   * 남아 있으면 매체 손상·순서 위반의 증거인데, 초안은 「귀속돼 있으니 고아가 아니다」로 **제외**해
+   * blocker 없이 통과시켰다. 다른 경로(`current-txn-journal-missing`)가 같은 계열의 매체 불일치를
+   * 발화하는 것과 **비대칭**이었다.
+   */
+  it('완결 귀속 txn 의 저널이 활성 stage 로 남아 있으면 blocker 다', () => {
+    const v = classifyRecovery(
+      obs({
+        authority: {
+          kind: 'found',
+          record: record({
+            lifecycle: 'integrated',
+            completedIntegrationTxnId: T2,
+            currentIntegrationTxnId: undefined,
+            currentIntegrationStage: undefined,
+            currentIntegrationTxnGeneration: undefined,
+          }),
+        },
+        journal: entries(
+          journal({
+            txnId: T2,
+            stage: 'prepared',
+            resultTree: undefined,
+            resultOid: undefined,
+            resultRef: formatResultRef(BENCH, N + 1, T2),
+          }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('completed-txn-journal-active')
+  })
+
   it('미종결 txn 이 없으면(권위에 통합 없음) prepared 고아는 그대로 benign 이다', () => {
     const v = classifyRecovery(
       obs({

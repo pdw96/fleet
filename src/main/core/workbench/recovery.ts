@@ -132,6 +132,8 @@ export type RecoveryBlockerKind =
   | 'result-ref-mismatch'
   | 'expected-revision-mismatch'
   | 'current-txn-journal-missing'
+  /** 완결 귀속 txn 의 저널이 활성 stage 로 남아 있다 — 정상이면 `finalized` 다. */
+  | 'completed-txn-journal-active'
   | 'orphan-active-journal'
 
 /** 앵커 후보가 **면제**에 실패한 조건(계획 정정 199ⓒ). 전수를 싣는다 — 첫 사유만 남기면 진단이 좁아진다. */
@@ -290,7 +292,10 @@ const sealEvidence = (
     journal.draftDigest,
     ...refs.map((r) => `${r.refName} ${r.oid}`).sort(),
   ]
-  return createHash('sha256').update(parts.join(''), 'utf8').digest('hex')
+  // 구분자는 **필드 경계**다 — 붙여 이으면 `["ab","c"]` 와 `["a","bc"]` 가 같은 다이제스트를 낸다.
+  // ref 이름·OID·다이제스트 어디에도 나타날 수 없는 C0 제어문자를 쓰되 **이스케이프 표기로 적는다** —
+  // raw 제어문자는 소스에서 보이지 않고, 이 PR 이 실제로 그 오염을 두 번 만들었다(U+0000 · U+0001).
+  return createHash('sha256').update(parts.join('\u0001'), 'utf8').digest('hex')
 }
 
 /** ⑦ 재검증의 판정 계층 — 「같은 증거인가」는 봉인값의 동치다. */
@@ -434,7 +439,15 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   const authorityPending = authorityStage !== undefined && authorityStage !== 'finalized'
   for (const j of journals.values()) {
     if (!isActiveJournalStage(j.stage)) continue
-    if (j.txnId === currentTxnId || j.txnId === record?.completedIntegrationTxnId) continue
+    if (j.txnId === currentTxnId) continue
+    // ⚠ **완결 귀속은 면죄부가 아니다**(CodeRabbit PR#289). 완결된 txn 의 저널은 정상 상태에서
+    // `finalized` 이므로, 활성 stage 로 남아 있다는 것은 매체 손상·순서 위반의 증거다. 초안은 「귀속돼
+    // 있으니 고아가 아니다」로 제외해 그 증거를 blocker 없이 통과시켰다 — `current-txn-journal-missing`
+    // 이 같은 계열의 매체 불일치를 발화하는 것과 **비대칭**이었다.
+    if (j.txnId === record?.completedIntegrationTxnId) {
+      blockers.push(blocker('completed-txn-journal-active', j.txnId))
+      continue
+    }
     // (A) 프로토콜상 **정상 크래시 창은 하나뿐**이다 — 저널 선기록 후 `prepared` CAS 전. 그 창의
     // 엔트리는 결과 ref 를 가질 수 없으므로, ref 를 동반한 고아·`composed` 고아는 전부 reconciliation 이다
     // (계획 정정 194 의 2분 — 활성 집합의 **정의**는 stage 단독으로 유지한다).

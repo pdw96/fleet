@@ -1226,7 +1226,7 @@ anchor blocker 존재 중 **행동 인가 전부 차단** · **T81** 앵커 검�
 | # | 지적 → 확정 | 근거 |
 |---|---|---|
 | 199 | **회부한 모순은 실재**(`promote-published` 도달 불가) — 확정 처방은 **「현재 txn 기계적 제외」가 아니라 「유효한 `composed` 저널이 정확히 설명하는 단 하나의 next-revision ref 만 조건부 면제」** | ⓐ**내 유력안 1(`currentIntegrationTxnId` 제외) 기각** — 면제 대상을 **롤백 가능한 권위 파일 하나로** 결정한다. 실패 경로: T1 정상 완료 → 권위가 T2 를 current 로 전진 → 파일 롤백으로 current 가 **다시 T1** → 복구기가 롤백된 슬롯을 믿고 T1 ref 를 면제 → **롤백을 증명하는 가장 높은 ref 가 바로 그 이유로 숨는다**. 「정의역 축소는 앵커 값이 아니다」라는 내 논증은 틀렸다 — **정의역 축소도 판정의 일부**이고 그 입력이 롤백 가능하다는 사실을 무시할 수 없다. ⓑ**내 유력안 2(`record.revision + 1` 하나만 면제) 기각** — `+1` 은 필요조건이지 충분조건이 아니다(`<N+1>-T1`·`<N+1>-T2` 동시 주장 · 손상 ref 의 우연 일치). ⓒ**확정 면제 조건 10항**: 대응 저널 존재·런타임 검증 통과 / stage 정확히 `composed` / `journal.resultRef === R.refName` / `journal.resultOid === R.oid` / `parsedRefRevision === journal.expectedAuthorityRevision + 1` / `journal.expectedAuthorityRevision === authority.revision` / `previousAuthorityStage`·`nextAuthorityStage`·`integrationGeneration`·`draftDigest` 가 현재 권위에서 **재구성되는 후속 전이와 일치** / superseded·abandoned·finalized 아님 / **같은 revision 을 주장하는 promotable ref 가 정확히 하나** / repo 락 + bench 리스 재획득 후 **fresh read 재검증**. ⓓ**계속 전역 blocker 인 것**: 대응 저널 없는 높은 ref · stage 가 `published`/`finalized`/`abandoned` 인 높은 ref · OID 불일치 · expected revision 불일치 · **두 단계 이상 높은 ref** · 복수 주장 · superseded txn ref · digest 불일치 · 열거·파싱·identity 검증 실패 |
-| 200 | **정정 197 의 판정 순서를 개정한다** — 저널을 앵커 **앞에서 읽되(읽기·검증만)**, 변이는 앵커 게이트 뒤 | 정정 197 은 「앵커 판정 **전에 저널 바이트조차 읽지 않는다**」로 고정했는데, 그러면 **정상 크래시와 롤백을 구분할 정보가 3단계에 없다**. 안전 목표는 「앵커보다 먼저 저널을 **변이**하지 않는다」이지 「읽지 않는다」가 아니었다. 개정 순서: `①권위 fresh read → ②결과 ref 전수 열거·문법·identity·OID 검증 → ③저널 전수 열거·schema·identity 검증 → ④ref↔저널 설명 관계 **순수 분류** → ⑤anchor gate(설명 불가능한 `refRevision > authority.revision` 존재 = reconciliation · 정확히 하나의 valid composed pending ref 만 promote 후보) → ⑥귀속·전이 불변식 재검증 → ⑦repo 락 + 리스 아래 fresh read·재열거 → ⑧조건 유지 시에만 promote-published CAS`. 「롤백된 권위 위에서 먼저 승격한다」는 위험은 재도입되지 않는다 — 승격 **변이**는 여전히 ⑤ 뒤다 |
+| 200 | **정정 197 의 판정 순서를 개정한다** — 저널을 앵커 **앞에서 읽되(읽기·검증만)**, 변이는 앵커 게이트 뒤 | 정정 197 은 「앵커 판정 **전에 저널 바이트조차 읽지 않는다**」로 고정했는데, 그러면 **정상 크래시와 롤백을 구분할 정보가 3단계에 없다**. 안전 목표는 「앵커보다 먼저 저널을 **변이**하지 않는다」이지 「읽지 않는다」가 아니었다. 개정 순서: `①권위 fresh read → ②결과 ref 전수 열거·문법·identity·OID 검증 → ③저널 전수 열거·schema·identity 검증 → ④ref↔저널 설명 관계 **순수 분류** → ⑤anchor gate(설명 불가능한 refRevision > authority.revision 존재 = reconciliation · 정확히 하나의 valid composed pending ref 만 promote 후보) → ⑥귀속·전이 불변식 재검증 → ⑦repo 락 + 리스 아래 fresh read·재열거 → ⑧조건 유지 시에만 promote-published CAS`. 「롤백된 권위 위에서 먼저 승격한다」는 위험은 재도입되지 않는다 — 승격 **변이**는 여전히 ⑤ 뒤다 |
 | 201 | **정정 196 불변식 ③ 의 의미를 좁힌다** — 「무조건 reconciliation」이 아니라 **「복구 개입 없이 `published` 정상 대기로 취급하지 않는다」** | `promote-published` 도 **적극적 복구 개입**이므로 ③ 을 만족한다. ③ 을 「항상 reconciliation」으로 읽으면 복구표의 그 arm 을 폐기하는 결과가 되어 정정 167 의 2분과 충돌한다. 결속이 정확하면 `promote-published`, 아니면 `reconciliation-required` |
 
 **§3 신설 행을 T73~T82 에서 확대**(Codex 2R 이 열거한 12축) — 기존 10행에 다음을 명시 추가:
@@ -1325,6 +1325,20 @@ U+0000 이 섞인 채로 **prettier · tsc · eslint · vitest · build 가 전�
 
 **뮤테이션 재실측**: 뮤턴트를 16 → **23** 으로 늘려 **22 잡힘**. 생존은 여전히 정정 206 한 건뿐이다.
 새 방어 5개(M17~M21)와 authority 축 2개(M22·M23) 전부 독립 반증력이 확인됐다.
+
+**CodeRabbit 동시 라운드(같은 커밋 `670af27`) — Major 1 · Minor 4.** Major 는 Codex P1(보관 전이)과
+**동일 건**이라 이미 닫혔다(처방은 내 쪽이 더 좁다 — CodeRabbit 안은 「`next.lifecycle !== 'integrated'`
+면 소거 허용」이라 `open` 으로의 소거까지 열린다). 나머지에서 **2건이 실재**였다.
+
+| # | 지적 → 확정 | 근거 |
+|---|---|---|
+| 213 | **완결 귀속 txn 의 활성 저널은 blocker 다** — 「귀속돼 있으니 고아가 아니다」 제외를 폐기 | 완결된 txn 의 저널은 정상 상태에서 `finalized` 다. 활성 stage 로 남아 있으면 **매체 손상·순서 위반의 증거**인데 초안이 그것을 조용히 통과시켰다. 같은 계열의 매체 불일치를 `current-txn-journal-missing` 으로 발화하면서 이쪽만 면제한 **비대칭**이었다 → 신설 종별 `completed-txn-journal-active` |
+| 214 | **raw 제어문자 오염이 재발했다**(U+0001 · `sealEvidence` 구분자) — 이스케이프 표기로 치환 | 착지 실측 절이 「verify 는 NUL 을 보지 않는다」로 적은 축의 **두 번째 사례**이고, 이번에도 발견자는 게이트가 아니라 **외부 리뷰어**였다(prettier·tsc·eslint·vitest·build 전부 통과). ⚠ 축은 NUL 이 아니라 **C0/C1 제어문자 전반**이다. 브랜치 전 변경분을 스캔해 1건 확인·치환했고, 구분자 자체는 **의도적으로 유지**한다(붙여 이으면 `["ab","c"]` 와 `["a","bc"]` 가 같은 다이제스트를 낸다) |
+
+**후속 후보 갱신(#251 밖)** — 제어문자 게이트. 재발 2회(U+0000 · U+0001)로 「우발 1회」가 아님이
+확인됐다. 탐지 레시피는 확정돼 있다: 변경분 전수에 대해 `[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]`
+스캔(탭·개행 허용). ⚠ 스캐너 자신의 패턴을 **이스케이프 문자열**로 쓸 것 — 문자 클래스에 raw 제어문자를
+넣으면 그 스캐너가 같은 오염을 재생산한다.
 
 **교훈 — 「다른 층이 막는다」는 문장은 그 층을 열어 확인하기 전까지 주장이 아니라 가설이다.** 이번에
 두 번 다 내가 **같은 파일 안의 함수**(`checkInvariants`)를 열어보지 않고 적었다. 이 레포는 이미 같은
