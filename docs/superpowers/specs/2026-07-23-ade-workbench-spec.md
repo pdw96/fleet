@@ -71,7 +71,7 @@
 
 | # | 설계 원문 | 실측 | 정정 계약 |
 |---|---|---|---|
-| **C1** | 결과 ref = `refs/fleet/integrated/<benchId>`(428·440·388·803·824행) **와** `.../<benchId>/<txnId>`(456행) 공존 | git 은 같은 이름이 ref이자 ref-디렉터리일 수 없다 — `fatal: '…/<benchId>' exists; cannot create '…/<benchId>/<txnId>'` **exit 128**(loose·packed·reftable 전부). `check-ref-format` 은 둘 다 통과시켜 문법검증으로 못 잡음 | **`refs/fleet/integrated/<benchId>/<txnId>` 단일 문법.** `<benchId>` 는 **ref 로 절대 생성하지 않는 디렉터리 전용 접두사**. 발행 전 프로브에 "`<benchId>` 가 ref 로 해석됨" 검사 추가 → 존재 시 `REF_NAMESPACE_CONFLICT` fail-closed(자동 삭제 금지). 소비자 명령·§5 완료정의 문자열 전부 txn 형태로 정정 |
+| **C1** | 결과 ref = `refs/fleet/integrated/<benchId>`(428·440·388·803·824행) **와** `.../<benchId>/<txnId>`(456행) 공존 | git 은 같은 이름이 ref이자 ref-디렉터리일 수 없다 — `fatal: '…/<benchId>' exists; cannot create '…/<benchId>/<txnId>'` **exit 128**(loose·packed·reftable 전부). `check-ref-format` 은 둘 다 통과시켜 문법검증으로 못 잡음 | **`refs/fleet/integrated/<benchId>/<resultingRevision>-<txnId>` 단일 문법**(PR3c 가 leaf 를 revision 결속으로 확정 — 계획 정정 192·196). `<benchId>` 는 **ref 로 절대 생성하지 않는 디렉터리 전용 접두사**. 발행 전 프로브에 "`<benchId>` 가 ref 로 해석됨" 검사 추가 → 존재 시 `ref-namespace-conflict` fail-closed(자동 삭제 금지). 소비자 명령·§5 완료정의 문자열 전부 txn 형태로 정정 |
 | **C2** | "OS 자문 락은 프로세스 종료 시 자동 해제 → 획득 가능 = 소유자 부재 증명"(408-410행), 메커니즘 = "파일 락" | Node 24.16.0 에 `fs.flock`/`fs.constants.LOCK_EX`/`O_EXLOCK` **전부 부재**. 의존성 6종 전부 순수 JS. `wx`/mkdir 은 자동 해제 없음 → "연령 삭제 금지"와 결합 시 영구 고착. **POSIX AF_UNIX 는 SIGKILL 후 소켓 파일이 남아 `listen` 이 계속 EADDRINUSE** — 설계가 실제로 의존하는 **역명제(획득 실패 ⇒ 소유자 생존)가 거짓** | 메커니즘 = **`node:net` 엔드포인트 배타 바인딩**(win32 named pipe / POSIX 유닉스 도메인 소켓). 부재 증명식을 백엔드별로 분리(§W-3). stale 회수 근거는 **연령이 아니라 커널의 ECONNREFUSED(거절 증거)** — 408행 금지 원칙 유지 |
 | **C3** | "파일 + **부모 디렉터리** fsync 를 요건으로 한다"(697-700행) | win32: `fs.openSync(dir,'r')` 은 성공하나 `fsyncSync(dirFd)` = **EPERM**. libuv `fs__fsync`=`FlushFileBuffers`, `O_DIRECTORY` 부재. rename 도 `MOVEFILE_WRITE_THROUGH` 미지정 | **`DurabilityLevel = 'file+dir' | 'file-only'`** 를 레코드에 기록. 부팅 1회 실측 프로브로 결정, win32 = `'file-only'` **명시 강등**(조용한 스킵 금지·UI/런북 노출). **복구 4번째 분기 신설**(§W-7-복구). ⚠ **이는 Codex 3항의 충족이 아니라 회피이며 win32 의 안전 등급은 실제로 낮다** — 그 파급(revision 단조 미보장·탐지 앵커를 권위 파일 밖 git ref 로 이동)을 §W-4·§W-7 에 명시한다 |
 | **C4** | "확인-응답 쓰기 = 원자적 rename + 오류 전파"(665-667행) | win32 `rename` 은 **대상에 열린 핸들이 하나라도 있으면 EPERM**(읽기 전용·동일 프로세스 포함). 설계가 요구하는 다중 부팅 표면 공유 저널이 정확히 그 조건 | rename 실패 코드 `{EPERM,EBUSY,EACCES}` **유한 재시도**(4회·백오프) 후 `io-failure` 승격. **리더 규율 불변식**: 권위·저널 파일은 `readFileSync` 즉시-close 만 허용, 장기 핸들·watch 금지 |
@@ -724,8 +724,23 @@ worktree-less 프라이빗 계산**으로 축소한다(설계 대비 더 강한 
 ② baseRef OID 캡처 → targetHeadBeforeIntegration
 ③ merge-tree --write-tree <base> <sourceSnapshot>   → resultTree (충돌 시 값으로 보고 · **ref 변이 0**)
 ④ commit-tree resultTree -p <base> -p <sourceSnapshot>  → resultOid
-⑤ casUpdateRef(refs/fleet/integrated/<benchId>/<txnId>, resultOid, null)  ← create-if-absent CAS
+⑤ casUpdateRef(refs/fleet/integrated/<benchId>/<resultingRevision>-<txnId>, resultOid, null)
+                                                            ← create-if-absent CAS · **composed 권위 CAS 앞**
 ```
+**`composed` 단계의 3단계 프로토콜(A · 계획 정정 202 · Codex 3R 확정)** — 위 ⑤ 는 「composed CAS 가
+커밋됐다」가 아니라 **「그 CAS 에 필요한 결과 증거와 외부 부수효과가 준비됐다」**는 뜻이다.
+
+```text
+composed 저널 acknowledged  →  결과 ref create-only 발행  →  composed 권위 CAS
+```
+- 일반 WAL 문구도 이 단계에서만 좁아진다: 「각 단계는 원칙적으로 저널 선기록 후 권위 CAS 로 커밋한다.
+  단 **`composed` 단계는 결과 ref 발행을 그 CAS 앞**에 두며, 이 사이의 크래시는 **조건부 면제 검증 후
+  동일 composed CAS 를 재개**한다(`resume-composed-cas`)」.
+- 반대 배치(ref 발행을 composed CAS **뒤**에 두는 (B))는 **채택하지 않는다** — 면제 조건 6
+  (`journal.expectedAuthorityRevision === authority.revision`)을 구조적으로 거짓으로 만들어
+  조건부 면제와 공존할 수 없다.
+- (A) 는 「`resultOid` 는 `composed` 부터 필수」인 현행 권위 불변식과 양립한다: ref 를 만들 결과 증거는
+  composed 저널에 **이미 내구 기록**됐고 권위의 composed 전이만 pending 인 상태다.
 - `cherry-pick` 계열 기각: 증분·N커밋·sequencer 잔존. `merge --squash` 기각: 프라이빗 worktree 필요 ·
   `MERGE_HEAD` 미기록으로 `merge --abort` 불가 → reset-only 복구 = 설계 696행 금지 조항과 충돌.
 - 결과가 2-parent 머지 커밋이므로 소비자 `merge --ff-only <resultRef>` 가 성립하고, bench 전체 스냅숏
@@ -750,8 +765,16 @@ export interface IntegrationTxnRecord {
   readonly sourceBranch: string; readonly sourceSnapshot: string  // auto-keep OID
   readonly sourceGeneration: number
   readonly targetBranch: string; readonly targetHeadBeforeIntegration: string
-  readonly resultRef: string        // 문법 소유 = PR3c(정정 166 이 세대 결속으로 바꾼다) —
-                                    // 저널은 비어 있지 않은 문자열까지만 본다(정정 174)
+  readonly resultRef: string        // `refs/fleet/integrated/<benchId>/<resultingRevision>-<txnId>`
+                                    // **문법 소유 = PR3c**(`result-ref.ts`) · 10진 가변폭 · 선행 0 거부.
+                                    // **불변 필드**라 값은 `prepared` 때 한 번 정해진다 — 그 저널의
+                                    // `expectedAuthorityRevision` 을 `R0` 라 하면 `resultingRevision = R0 + 2`
+                                    // **고정**(= 이 ref 에 결속된 composed CAS 가 **기록할** revision)이고,
+                                    // 관측 저널 기준 상대식은 `expected + 2 - stageIndex` 다(정정 223).
+                                    // ⚠ 정정 196 의 고정식 `+1` 은 **`composed` 한 stage 로 정의역이 좁혀졌다**
+                                    // · `finalized` 는 등식이 아니라 상한(정정 233 · 아래 「저널이 든
+                                    // `resultRef` 이름 자체를 검증한다」 문단이 권위).
+                                    // 저널(PR3b)은 비어 있지 않은 문자열까지만 본다(정정 174)
   readonly startedAt: number; readonly ownerEngineId: string      // 진단용
   readonly stage: IntegrationStage  // 단계 전진 = **같은 파일 덮어쓰기**(txn 당 1파일 · 정정 178)
   readonly resultTree?: string; readonly resultOid?: string   // stage >= 'composed' 필수
@@ -823,26 +846,169 @@ export interface IntegrationTxnRecord {
 
 **복구 판정(순수 함수 · 무변이 관찰만 · git 변이 0)**
 
-| stage | resultRef 값 | 판정 |
+**계층형이며 first-match 표가 아니다**(PR3c · 계획 정정 197·200). 순서 자체가 계약이다:
+
+```text
+① 권위 fresh read                       ⑤ anchor gate  ← 여기까지 **변이 0**
+② 결과 ref 전수 열거·문법·identity·OID    ⑥ 귀속·전이 불변식 재검증
+③ 저널 전수 열거·schemaVersion·identity   ⑦ repo 락 + 리스 아래 fresh read·재열거
+④ ref↔저널 설명 관계 **순수 분류**         ⑧ 조건 유지 시에만 resume-composed-cas CAS
+```
+저널은 앵커 **앞에서 읽되 읽기·검증만** 한다 — 안전 목표는 「앵커보다 먼저 저널을 **변이**하지 않는다」
+이지 「읽지 않는다」가 아니다(안 읽으면 정상 크래시와 롤백을 구분할 정보가 ⑤ 에 없다).
+**①~⑥ 은 순수 함수**(`recovery.ts` · 무변이 관찰 · git 변이 0)이고 **⑦⑧ 은 그 소비자**(PR5 시퀀서 ·
+PR7 부팅)의 계약이다.
+
+**⑤ anchor gate — 판정식 = `refRevision > record.revision`**(계획 정정 190·191 이 「귀속」식을 폐기).
+권위 부재 = 비교 기준 `0`. 정렬 키가 `revision` 인 이유: CAS 마다 정확히 `+1` 이라 단조가 **이미 기계
+집행**돼 시계 역행 계열이 원천 소멸한다(ULID 사전순은 같은 ms 20,000건 중 50.1% 역전 — 실측 폐기).
+
+| 저널 stage | 결과 ref | 판정 |
 |---|---|---|
-| — | (`refs/fleet/integrated/<benchId>` 가 ref 로 존재) | `REF_NAMESPACE_CONFLICT` **최우선** fail-closed |
+| — | `refs/fleet/integrated/<benchId>` 가 ref 로 존재 | `ref-namespace-conflict` **최우선** fail-closed |
 | `prepared` | 부재 | `no-mutation`(포기·재준비 적격) |
-| `prepared` | 존재 | `RESULT_REF_UNATTRIBUTED` → reconciliation |
-| `composed` | 부재 | `no-mutation` |
-| `composed` | `=== resultOid` | `promote-published` |
-| `composed` | `!== resultOid` | `RESULT_REF_MISMATCH` → reconciliation |
+| `prepared` | 존재 | **앵커가 답한다**(전용 종별 없음) — 그 ref 는 구조적으로 `revision + 1` 이라 항상 앵커 후보다. ⚠ 도출은 **post-CAS 결속**으로만 선다: 이 표의 정의역인 **현재 txn** 에서 `prepared` 저널은 `previousAuthorityStage` 가 `undefined` 라 pre-CAS 결속이 **표현 불가**이고(권위 불변식 ③ 이 `currentIntegrationStage` 를 TxnId 와 묶는다), 따라서 `expected = revision - 1` ∧ `ref = expected + 2`(정정 223) ⇒ `revision + 1` 이다. `result-ref-unattributed` 는 **폐기 어휘**다(재유입 금지) |
+| `composed` | 부재 | `no-mutation`(ref 발행 전 크래시) |
+| `composed` | `=== resultOid` ∧ **면제 10조건 충족** | **`resume-composed-cas`**(= 저널이 이미 선기록한 composed 권위 CAS 재개) |
+| `composed` | `=== resultOid` ∧ 권위가 이미 `N+1` ∧ 전이 **정확 반영** | **정상 대기**(재실행 아님 · 완료 확인 · 정정 204ⓑ) |
+| `composed` | `!== resultOid` | `result-ref-mismatch` → reconciliation |
 | `published` | — | **정상 대기**(차단 아님 · C6) |
-| `finalized`/`abandoned` 잔존 | — | 청소 복구(멱등) |
-| **ref-앵커 재조정 불일치** | — | **reconciliation(win32 `file-only` 전용 4번째 분기 · C3/U4)** |
+| `finalized`/`abandoned` 잔존 | — | 청소 복구(**멱등 종결** · 삭제 아님) |
+| **설명되지 않는 `refRevision > revision`** | — | **reconciliation-required**(⑤ 가 표보다 먼저 답한다) |
+
+⚠ **`promote-published` 는 폐기 어휘다**(정정 203 · 재유입 금지). 그 verdict 가 받는 디스크 상태에서
+복구기가 당장 커밋할 것은 `published` 권위 상태가 아니라 **저널이 이미 선기록한 `composed` 권위 CAS** 다.
+이름이 두 구현을 모두 허용하면 문면은 그중 하나만 금지할 뿐 컴파일러도 리뷰어도 나머지를 못 잡는다.
+
+**조건부 면제 10항**(정정 199ⓒ — 이 전부를 만족하는 **단 하나의** next-revision ref 만 ⑤ 를 통과한다):
+①대응 저널 존재 ②런타임 검증 통과 ③stage 정확히 `composed` ④`journal.resultRef === refName`
+⑤`journal.resultOid === ref oid` ⑥`refRevision === journal.expectedAuthorityRevision + 1`
+⑦`journal.expectedAuthorityRevision === authority.revision` ⑧`previousAuthorityStage`·
+`nextAuthorityStage`·`integrationGeneration`·`draftDigest` 가 **현재 권위에서 재구성되는 후속 전이와
+일치**(전이 불변식 계층 재사용) ⑨superseded·abandoned·finalized 아님 ⑩같은 revision 을 주장하는
+promotable ref 가 **정확히 하나** — 그리고 ⑪**repo 락 + bench 리스 재획득 후 fresh read 재검증**(⑦⑧ 단계 ·
+소비자 계약).
+
+**계속 전역 blocker 인 것**(정정 199ⓓ): 대응 저널 없는 높은 ref · stage 가 `published`/`finalized`/
+`abandoned` 인 높은 ref · OID 불일치 · expected revision 불일치 · **두 단계 이상 높은 ref** · 복수 주장 ·
+superseded txn ref · digest 불일치 · 열거·파싱·identity 검증 실패.
+
+**관측 입력의 identity 는 호출자가 독립으로 싣는다**(Codex PR#289 P1) — 판정은 `benchId` 뿐 아니라
+`commonGitDir`·`benchRoot` 를 **관측자에게서** 받아 ⓐ권위 레코드 ⓑ**모든 저널 엔트리**를 그것과 대조한다.
+레포 identity 를 **권위 레코드에서 꺼내** 저널과 대조하면 권위가 부재·손상일 때 대조가 통째로 사라져
+**다른 레포에서 복사된 저널**(같은 benchId · 영역 통째 복사)이 재준비 적격으로 통과한다. 권위가
+없을수록 더 엄격해야 하고, 대조 기준은 **롤백 가능한 매체 밖**에 있어야 한다(정정 205 와 같은 논거).
+
+**권위 stage ≤ 저널 stage ≤ 권위 stage + 1**(Codex PR#289 P1 · 현재 txn 정의역). 앞 부등식은 WAL
+선기록에서, 뒤 부등식은 정정 204 불변식 ①에서 나온다. **저널 stage 만 보고 복구표를 분기하면**
+권위가 앞선 관측(= 저널 단독 롤백·손상)이 `no-mutation` 으로 통과해 **손상 위에서 포기·재준비가
+인가**된다. 어긋난 두 방향은 각각 다른 종별로 답한다. ⚠ 저널 `abandoned` 는 종결 기록이라 이 결속의
+정의역 밖이다(포기 CAS 가 pending 일 뿐이다).
+
+**stage 가 같아도 결속은 따로 본다**(Codex PR#289 3R P1) — 순서 비교는 **인덱스만** 보므로 「둘 다
+`composed` 인데 `resultOid`·expected revision·세대가 어긋난」 손상 쌍이 그대로 통과한다. 현재 txn 의
+저널은 **두 배치 중 하나**를 만족해야 한다: ⓐ**CAS 전**(권위가 아직 `previousAuthorityStage` ∧
+`expectedAuthorityRevision === revision`) ⓑ**CAS 후**(권위가 `nextAuthorityStage` ∧
+`revision === expected + 1` ∧ 권위가 든 `resultOid`·세대가 저널의 증언과 일치). 그 외는 손상이며,
+ref 유무와 **무관하게** reconciliation 이다(초안은 ref 가 없으면 `no-mutation` 을 답했다).
+
+**결속은 「창」에 따라 강도가 다르다**(로컬 적대 리뷰 P1 · 계획 정정 233) — 이 절의 revision·draft
+결속은 **개입 CAS 가 불가한 구간에서만** tight 하다.
+
+| 창 | stage | 개입 CAS | 결속 |
+|---|---|---|---|
+| **닫힌 창** | `prepared`·`composed` | 불가(활성 저널 = 실행 차단 · 복구 판정이 모든 권위 CAS 보다 먼저) | `expected === revision`(pre) · `revision === expected + 1`(post) · draft **전체** digest |
+| **열린 창** | `published`·`finalized` | **정상**(C6 · §3-T33 · I8) | pre 는 동일 · post 는 **`revision >= expected + 1`** · draft 전체 digest **폐기** |
+
+⚠ `revision` 은 **모든 CAS** 가 +1 하는 전역 카운터이고, 통합 4필드를 보존하는 CAS(활동 시작/종료 ·
+gated-orphan 회수 · lifecycle 변경)는 전이 검사의 **no-op** 으로 통과한다. 그 개입을 스펙이 **요구**하므로
+(C6 「`published` 저널은 소비자 완결까지 무기한 열려 있는 정상 상태」) 열린 창에 tight 등식을 걸면
+**정상 상태가 영구 `reconciliation-required`** 가 되고 `resume-composed-cas` 가 도달 불가가 된다.
+⚠ 열린 창의 draft 전체 digest 대조를 **폐기한 것은 탐지력 감소**다(정직 표기): 그것으로 잡으려던
+「`lifecycle`·`sourceGeneration`·`activeActivity` 롤백」은 무기한 창에서 **정상 변화와 구분 불가**다.
+그 축의 탐지는 revision 단조(§W-4)와 앵커가 나눠 진다.
+
+**저널이 든 `resultRef` 이름 자체를 검증한다**(Codex PR#289 4R·5R P1 · 로컬 적대 리뷰 P1) — 문법·bench·txn 결속에 더해
+**revision 산술을 stage 전수에 건다**: `resultRef` 는 불변이고 ref 는 composed CAS **앞**에서 한 번만
+발행되므로, `prepared` 저널이 관측한 revision 을 `R0` 라 하면 **ref = `R0 + 2` 고정**이고
+`expected = R0 + stageIndex` 다 — 즉 **`ref = expected + 2 - stageIndex`**(prepared +2 · composed +1 ·
+published +0). ⚠ **`finalized` 는 등식이 아니라 상한**(`ref ≤ expected`)이다 — 그 저널은 외부 소비자 머지 관측 **이후**에 기록되고 그 사이 개입 CAS 가 `expected` 를 올린다. ⚠ **`abandoned` 도 정의역 안**이다(계획 정정 236 이 초안의 면제를 폐기했다) — 정의역은 `previousAuthorityStage`(=P)가 주고 결속은 **밴드**다: **`expected + 1 - idx(P) ≤ ref ≤ expected + 2 - idx(P)`**. 밴드인 이유는 `P` 가 권위 stage 가 아니라 **직전 저널 stage** 이기 때문이다 — WAL 선기록상 저널이 P 일 때 권위는 P(post-CAS) **또는 P-1**(pre-CAS 크래시 창 · §3-T83)이라 `expected` 가 두 값을 가진다. 열린 창(`P ∈ {published, finalized}`)은 개입 CAS 가 `expected` 를 올리므로 **하한을 뗀다**(그 arm 은 상한만 남아 형제 저널의 낮은 revision 을 닫지 못한다 — 정직 표기). **`P` 부재는 fail-closed**.
+그 값은 **불변 필드**라 git ref 가 아직 없어도 잘못된 이름이 살아남아 **나중에 그대로 발행**된다.
+
+**ref 발행 이후의 상태는 ref 를 요구한다**(Codex PR#289 5R P1) — post-CAS `composed`·`published`·
+`finalized` 에서 결과 ref 가 **없는 것**은 프로토콜상 불가능하므로 `no-mutation` 이 아니라
+`result-ref-missing` 이다(`abandoned` 제외 — `prepared` 에서 포기하면 ref 가 존재한 적 없다).
+
+⚠ **복구표의 「`prepared` ∧ ref 존재」 행은 전용 분기 없이 답한다**(위 산술의 연쇄): 그 상태의 ref 는
+구조적으로 `revision + 1`(현재 txn 정의역에서 그 결속은 **post-CAS 뿐**이라 `expected = revision - 1` ∧
+`ref = expected + 2`)이라 **항상 앵커 후보**이고, 표가 요구하는 결과(reconciliation)를 앵커가
+그대로 보장한다. 도달 불가 분기를 남기지 않는다(정정 183·189).
+
+**현재 txn 의 ref 이름·OID 대조는 stage 와 무관하다**(Codex PR#289 4R P1) — `published` 저널의 ref 는
+revision 이 권위 이하라 앵커 후보가 아니므로, 그 분기에서 대조를 빼면 **교체·손상된 ref 위에서 게시가
+계속**된다.
+
+**post-CAS 결속에는 `draftDigest` 대조가 포함된다**(Codex PR#289 4R P1) — stage·revision·세대·
+`resultOid` 만 보면 draft 투영 안의 나머지 필드가 롤백·손상돼도 통과한다.
+
+**재검증 증거는 저널 레코드 전체를 봉인한다**(Codex PR#289 4R P1 · `digestJournalRecord`) —
+`draftDigest` 는 권위 draft 투영만 덮으므로 `sourceSnapshot`·`targetBranch`·
+`targetHeadBeforeIntegration`·`resultTree` 가 바뀌어도 같은 값이 나온다.
+
+**6R·로컬 리뷰 반영분**(계획 정정 227~235) — ⓐ최초 레코드의 `lifecycle` 은 `open`(첫 CAS 가 완결을
+주장하는 종결 bench 를 만들 수 없다) ⓑ새 txn 시작은 **출발지·목적지 둘 다** `open` ⓒ종결 증거
+(`abandonedAt`·`abandonReason`)는 **admitted 저널 전수**에서 본다(`journal-terminal-evidence`) ⓓpre-CAS
+도 결과 상속·draft 결속을 본다 ⓔ`composed` 이후의 포기는 ref 를 요구한다 ⓕ**종결 bench 에는 고아
+benign 창이 없다** ⓖ현재 txn ref 이름·OID 대조는 **승격 경로에도** 적용된다(면제 반환 앞) ⓗ완결 귀속
+검사는 **활성 게이트 밖**이며 판정은 「`finalized` 가 아니다」다(`completed-txn-journal-unfinalized`).
+
+**완결 귀속 txn 의 저널이 `finalized` 가 아니면 blocker 다**(CodeRabbit PR#289 · 정정 234) — 완결된 txn 의
+저널은 정상 상태에서 `finalized` 다. 「귀속돼 있으니 고아가 아니다」로 제외하면 매체 손상의 증거가
+조용히 통과한다.
+
+**7R 반영분**(계획 정정 236~240) — ⓐ`abandoned` 의 ref revision 도 `previousAuthorityStage` 로 결속한다
+(위 산술 절 · 면제 폐기) ⓑ포기 저널의 **상속 증거 형태**(`resultTree`·`resultOid`·`publishedAt` 이 그
+stage 에서 필수인지 금지인지)를 복구가 **독립적으로** 요구한다(`journal-abandon-evidence-invalid`) —
+쓰기 경로의 증거 동결은 **착지한 레코드를 보는 복구에서 재사용할 수 없다** ⓒ완결 귀속 txn 의 저널
+**부재**도 blocker 다(저널은 감사 보존이라 부재 = 손상) ⓓ**결과 ref 요구는 완결 txn 에도** 건다
+(`current` 정의역에만 걸면 조기 반환보다 뒤라 평가되지 않는다) ⓔ완결 귀속 txn 은 §W-8 5연언 중
+**「현 소스 세대 대표」**를 만족해야 한다(`completed-txn-stale-generation`) — 판정은 **저널의 불변
+`sourceGeneration`** 과 권위 `sourceGeneration` 의 대조다(권위의 `currentIntegrationTxnGeneration` 은
+저널 `integrationGeneration` = **시도 카운터**라 그 값이 아니다) ⓕ완결 귀속의 저널·ref 검사는
+**열거가 `ok` 일 때만** 판정한다 — 실패를 빈 집합으로 축소해 「부재 = 손상」을 주장하면 읽지 못한
+파일에 대한 사실 주장이 된다(§3-T78 · 정정 241).
+
+**8R 반영분**(계획 정정 242~245) — ⓐ완결 txn 의 보존 ref 는 **이름·OID 전수 대조**다(존재 술어면
+OID 교체·여분 손상 ref 가 통과한다 · 같은 손상에 current txn 과 **같은 종별** `result-ref-mismatch`).
+⚠ `integrated → archived` 는 `completedIntegrationTxnId` 를 소거하므로 보관 이후 그 ref 는 이 검사의
+**정의역 밖**이다(정직 표기) ⓑ권위 CAS 는 제출 draft 를 **한 번만 관측**한다 — 사전조건 직후 스냅숏을
+떠 identity·전이 검증·직렬화가 같은 값을 본다(getter·`Proxy` 가 층마다 다른 값을 주면 전이 계층이
+검증한 것과 착지한 것이 갈린다) ⓒ**미종결 통합의 소거는 lifecycle 을 전진시킬 수 없다**(§3-T82) —
+정정 228 의 대칭이며, 그러지 않으면 전이 검증기가 「종결 bench 위의 활성 고아」를 직접 제조한다.
+
+**고아 활성 저널의 benign 창은 「권위에 미종결 통합이 없을 때」에만 열린다**(Codex PR#289 P1) —
+전이 불변식이 「미종결 T1 위에 T2 시작」을 금지하므로 저널-선기록 프로토콜은 T2 저널을 **애초에 쓰지
+말았어야 한다.** 그 존재 자체가 이상 신호인데 benign 규칙이 그것을 삼키면 T1 승격까지 그대로 나간다.
+
+⚠ **면제 판정의 입력을 권위 파일 하나로 좁히지 않는다**(정정 199ⓐ 의 회귀 핀 · §3-T89): 「현재 txn 이니
+면제」는 T1 완료 → 권위가 T2 로 전진 → 파일 롤백으로 current 가 **다시 T1** 인 사슬에서 **롤백을 증명하는
+가장 높은 ref 를 바로 그 이유로 숨긴다.** 정의역 축소도 판정의 일부이고 그 입력이 롤백 가능하다는 사실을
+무시할 수 없다 — 면제는 **독립 매체 두 개(ref + 저널)의 교차검증**으로만 선다.
+
+⚠ **앵커는 `durability` 값으로 게이트하지 않는다**(PR3c 구현 중 확정). 발화가 필요한 표면은
+`file-only`(C3)이지만 그 값은 **롤백 대상인 권위 파일 안에** 있다 — 검사의 활성화 조건을 검사 대상과 같은
+매체에서 읽으면 독립성이 그 지점에서 조용히 끊긴다(정정 199 2R 교훈의 동형). 판정은 **항상** 돌고,
+`file+dir` 표면에서는 정상 프로토콜상 발화 입력 자체가 만들어지지 않는다.
 
 - **ref-앵커 재조정(반증 반영 — 원안 폐기)**: 원안은 "저널 부재 ∧ `lastObservedTargetHead` 불일치"였으나
   두 겹으로 발화하지 않는다 — ⓐ앵커를 **롤백 대상인 권위 레코드 안에** 두었으므로 권위 파일이 통째로
   이전 세대로 되돌아가면 앵커도 함께 되돌아간다 ⓑFleet 은 baseRef 를 어떤 조건에서도 전진시키지 않으므로
   (C11) target HEAD 는 애초에 움직이지 않아 "불일치"가 win32 크래시 주 경로에서 성립하지 않는다.
-- **확정 판정식**: 부팅 시 `git for-each-ref refs/fleet/integrated/<benchId>/` 를 열거해,
-  권위 레코드의 `currentIntegrationTxnId`·`completedIntegrationTxnId` **어디에도 귀속되지 않는 txnId 의
-  결과 ref 가 1건이라도 존재하면 `reconciliation-required`**(권위 롤백 탐지). 앵커가 권위 파일 **밖**에
-  있어야 하는 이유는 안에 두면 롤백 시 함께 되돌아가 발화하지 않기 때문이다.
+  ⓒ**그 대체로 도입한 「귀속되지 않는 ref = reconciliation」식도 폐기됐다**(정정 191) — 포기는 결과 ref 를
+  **보존**하고 §3-T29 는 형제 시도 ref 의 영구 공존을 정상으로 요구하므로 그 식은 **영구 오탐**이었다.
+- **열거는 두 질의 모두**(정정 157 · 실측): 접두 `refs/fleet/integrated/<benchId>/` **와** 정확 이름
+  `refs/fleet/integrated/<benchId>`. 접두 질의는 bare 부모를 **0건**으로 답하므로 접두만 쓰면 D/F 충돌
+  bench 가 「발행된 ref 없음」과 구분되지 않아 최우선 분기가 **도달 불가**가 된다.
 - ⚠ **「독립 매체라 동시 롤백이 불가능하다」는 거짓이다**(git 소스 대조로 확정 · 계획 정정 133·152·156).
   git 은 기본 설정에서 ref 를 fsync 하지 않고(`FSYNC_COMPONENTS_DEFAULT` 에 REFERENCE 부재 ·
   `core.fsync=all` 로도 loose ref 게시 rename 경로에는 디렉터리 fsync 가 없다) 권위 파일은 rename **전에**
@@ -856,7 +1022,7 @@ export interface IntegrationTxnRecord {
 
 | 대상 | 포기가 하는 일 |
 |---|---|
-| 저널 | `stage:'abandoned'` 확인-응답 기록 → 권위 CAS. ⚠ **「엔트리 제거」는 「활성 집합에서 제외」로 읽는다**(계획 정정 135) — 파일은 **삭제하지 않고 감사 보존**한다(1109행이 후행 개정이자 목적 명시라 권위다). 765행 복구표의 「청소 복구」도 **멱등 종결**이지 삭제가 아니며, 그 표 문면 개정은 PR3c 소관이라 그때까지 스펙은 이 축에서 부분 모순으로 남는다(은폐하지 않는다) |
+| 저널 | `stage:'abandoned'` 확인-응답 기록 → 권위 CAS. ⚠ **「엔트리 제거」는 「활성 집합에서 제외」로 읽는다**(계획 정정 135) — 파일은 **삭제하지 않고 감사 보존**한다(1109행이 후행 개정이자 목적 명시라 권위다). 복구표의 「청소 복구」도 **멱등 종결**이지 삭제가 아니며, **그 표 문면은 PR3c 가 개정해 부분 모순이 해소됐다**(표 셀이 「청소 복구(**멱등 종결** · 삭제 아님)」로 확정) |
 | 권위 레코드 | `currentIntegrationTxnId → null`(revision CAS) · `lifecycle` **무변** · `sourceGeneration` **무변** |
 | 결과 ref | **삭제하지 않는다**(소비자가 이미 머지했을 수 있음) |
 | auto-keep 커밋 | **bench 브랜치에 보존**(사용자 작업 무손실 = 포기가 안전한 근거) |
@@ -1165,7 +1331,7 @@ reconciliation 아니라 미인가 · `abandon` = 액션 목록 부재).
 | **I4** | **`broken ∧ busy` 는 도달 가능** — 이때 설계 357행 "삭제만 허용"은 성립하지 않는다 | **전 액션 거부 + 리스 해제 대기 안내** |
 | I6 | `partially-integrated ⟹ lifecycle==='open'` | reconciliation 승격 |
 | I8 | `archived ∧ integration-ready` 도달 가능(결과 ref 보존 · "결과 미적용" 명시) | 정상 |
-| **I11** | **고아 저널을 새로 만들지 않는다** — **활성 저널**(stage ∈ {`prepared`,`composed`})이 있는 bench 레코드는 제거 불가. `published` 는 활성이 아니므로 **integration-ready bench 의 `delete-record` 는 허용** | `delete-record` 거부(`journal-pending`) |
+| **I11** | **고아 저널을 새로 만들지 않는다** — **활성 저널**(stage ∈ {`prepared`,`composed`})이 있는 bench 레코드는 제거 불가. `published` 는 활성이 아니므로 **integration-ready bench 의 `delete-record` 는 허용**. ⚠ 활성 판정은 **stage 단독 순수 술어**이며 귀속 조건을 더하지 않는다(계획 정정 194 — 귀속은 활성 집합의 *정의*가 아니라 복구 판정의 *입력 특성*이다). **권위가 가리키지 않는 활성 stage 엔트리 = 고아 저널**이고 그 처분은 복구 판정이 **2분**한다: (A) 프로토콜상 정상 크래시 창인 `prepared` 고아 = `no-mutation`(재준비 적격) — 단 **ⓐ대응 ref 없음 ∧ ⓑ권위에 미종결 통합 없음 ∧ ⓒ`lifecycle === 'open'`** 을 모두 만족할 때만이다(계획 정정 212·232 — 종결 bench 나 pending txn 위에서는 그 저널이 애초에 쓰일 수 없다). 그 외(고아 `composed` · ref 를 동반한 고아 `prepared` · 종결 bench 의 고아) = `reconciliation-required`. 이 2분이 없으면 정정 154ⓐ 가 닫은 영구 고착이 `delete-record` 표면에서 재현된다 | `delete-record` 거부(`journal-pending`) |
 | **I12** | **`incompatible-version`(지원 범위 초과 schemaVersion) bench 는 `reconciliation-required` 로만 노출하고 `delete-record` 를 포함한 모든 파괴 액션을 거부**(사유 `newer-schema` · 안내 = "더 새 버전의 Fleet 으로 열 것") | 파괴 액션 거부 |
 
 - **`incompatible-version` 을 `invalid` 로 분류하지 않는 이유(반증 반영)**: `invalid` → broken → "삭제만
@@ -1195,7 +1361,7 @@ reconciliation 아니라 미인가 · `abandon` = 액션 목록 부재).
 | `src/shared/transport/channels.ts` | bench invoke 채널 6(scope `'both'`) · **push 0** |
 | `src/shared/transport/fixtures.ts` | `CHANNEL_FIXTURES` 6 추가 · **`PUSH_FIXTURES` 신설** |
 | `src/shared/transport/serialization.test.ts` | push 왕복 검증 확장 |
-| `src/main/core/workbench/` **(신설)** | `ulid.ts` · `slug.ts` · `authority.ts` · `journal.ts` · `locks.ts` · `coord-area.ts` · `integration.ts` · `registry.ts` · `derive.ts` · `authorize.ts` · **`bench-workspace.ts`**(태스크 경로 seam 주입) |
+| `src/main/core/workbench/` **(신설)** | `ulid.ts` · `slug.ts` · `authority.ts` · `journal.ts` · **`result-ref.ts`**(결과 ref 문법 · PR3c) · **`recovery.ts`**(복구 판정 순수 함수 · PR3c) · `locks.ts` · `coord-area.ts` · `integration.ts` · `registry.ts` · `derive.ts` · `authorize.ts` · **`bench-workspace.ts`**(태스크 경로 seam 주입) |
 | `src/main/core/durable/` **(신설)** | `DurableFs` 구현 + 등급 프로브 (기존 store 무변경) |
 | `src/main/core/workspace/git.ts` | `GitRepo` 표면 추가 + `createWorkspace` 에 `taskWorktreeDir` **옵셔널 seam**(미주입 = 현행 바이트 동일) |
 | `src/renderer/components/ProjectPanel.tsx` | **라이브 이벤트 핸들러 3분기 + `getRunActivity` 하이드레이션의 benchId 스코프화(R-2)** — 누락 시 CI 가 잡지 못하는 **조용한 회귀** |
@@ -1259,9 +1425,9 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T16b** | **type-level(`@ts-expect-error`)** — `AuthorityCommit` 인자 없는 bench launcher 호출이 tsc 에러임을 고정(계약 4항의 1차 방어) | verify |
 | **T16c** | `no-restricted-syntax` bench-spawn 가드가 eslint flat config 에 `'error'` 로 존재함을 **config 객체 단언**으로 핀(`eslint-config-purity.test.ts` 동형) | verify |
 | **T18** | 내구 등급 — win32 `'file-only'` 가 레코드에 기록되고 조용히 스킵되지 않음(U4) | verify |
-| **T18b** | **file-only 롤백 시뮬레이션** — 권위 파일을 이전 세대 바이트로 되돌린 뒤 재부팅 → **ref-앵커 재조정**이 reconciliation 을 강제하고 되돌아간 revision 위에 새 CAS 가 커밋되지 않음(C3 파급) | verify |
+| **T18b** | **file-only 롤백 시뮬레이션** — 권위 파일을 이전 세대 바이트로 되돌린 뒤 재부팅 → **ref-앵커**(`refRevision > record.revision` · 계획 정정 191 이 귀속식을 대체)가 reconciliation 을 강제하고 되돌아간 revision 위에 새 CAS 가 커밋되지 않음(C3 파급). ⚠ **판정 계층은 PR3c(§3-T73)**, **「새 CAS 가 커밋되지 않는다」는 행동 연언은 시퀀서 소유라 PR5 T18 귀속**(정직 표기 — PR3c 안에서는 생산자 부재로 vacuous) | verify |
 | **T19** | **크로스 프로세스 stale-cache(계약 5항 · 재작성)** — **같은 표면의 두 엔진 인스턴스**(재시작 전후·컨테이너 교체·데스크톱 다중 창 — §W-2-b 로 두 표면 동시는 배제됐으므로 시나리오를 이렇게 고정). 두 인스턴스는 **`vi.resetModules()` + 동적 `import()` 2회로 모듈 인스턴스를 격리**하고 각자 별도 `DurableFs` 를 주입한다(모듈 상태 공유 금지가 테스트 셋업 계약). 원안의 단순 in-process 2인스턴스는 **같은 ESM 모듈을 공유**하므로 — 스펙 자신이 `readSeq`·commit WeakSet 을 "모듈 내부"로 규정하므로 이는 가정이 아니라 확정 — `Map<path,record>` 모듈 캐시 구현이 **GREEN 통과**하고 실제 2프로세스 배포에서만 RED 가 된다. 인스턴스1 이 T1 무효화·G2 기록 후 리스 해제 → 인스턴스2 가 낡은 T1/G1 투영으로 리스 획득 → 공유 권위 G2 fresh read 로 `integrated` **거부**. **negative control 2중**: ⓐ전이 직전 `projection.currentIntegrationTxnId===T1 ∧ sourceGeneration===G1` ⓑ**모듈 격리 자기검사** — 인스턴스 A 의 모듈 스코프 카운터가 B 에서 초기값임을 단언(격리가 깨지면 이 행이 먼저 RED) | verify |
-| **T20** | stale 전체 스냅숏 순차 기록이 최신 세대를 되돌리지 못함(revision-CAS) | verify |
+| **T20** | stale 전체 스냅숏 순차 기록이 최신 세대를 되돌리지 못함(revision-CAS). ⚠ **두 해석의 귀속을 나눈다**(계획 정정 85 이월분 — 이제까지 빈 귀속이었다): ⓐ**CAS 경유** 해석분은 PR2b 의 revision-CAS 가 이미 막는다 ⓑ**raw 전체 스냅숏 쓰기** 해석분(`createJsonFileStore` LWW 클로버)은 store 에 막을 수단이 없고 탐지식이 §W-7 **ref-앵커**라 **PR3c 귀속**이다 — 판정은 `refRevision > record.revision`(§3-T73)이 답하고, 「되돌아간 revision 위에 새 CAS 가 커밋되지 않는다」는 **행동** 연언은 §3-T18b 와 같이 **PR5 T18 귀속** | verify |
 | **T21** | **마이그레이션 충돌(계약 6항)** — 두 표면이 같은 bench 에 상충 권위 필드를 만든 상태에서 자동 병합·LWW 없이 `reconciliation-required`. **"기존 로컬 레코드 없음" 전제의 근거 = `StoreState` 무변경(T53)** — 이 근거를 계약 문면에 명시해 6항 미충족 재지적을 차단한다 | verify |
 | **T21c** | **버전 스큐(I12)** — 지원 범위 초과 `schemaVersion` 레코드 → `incompatible-version` 분류 · `delete-record` 거부 · git 호출 0 · area 락 획득 시도 0(구 버전이 신 버전 권위를 삭제하면 RED) | verify |
 | **T22** | 실 fork 2 프로세스 + 파일 배리어 — 리스 배타성이 in-process Map 뮤텍스로는 통과 불가함을 증명 | verify |
@@ -1274,9 +1440,9 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T29** | 다중 시도 **형제 그래프** — R1 만 머지 → `partially-integrated` · T2 ff 불가 감지 → 명령 노출 중단 → `stale-attempt` → 재준비 T3 후에만 완결, 완결은 **T3 귀속** | verify(실 git) |
 | **T30** | 다중 시도 **조상 그래프** — R1 적용 후 T2 준비 → 정상 ff → 완결이 정확히 T2 귀속 · 저널 순회 순서 무관 | verify(실 git) |
 | **T31** | 활동-무효화 원자성 — exec 게이트 직전 정지 후 R1 소비자 머지와 완료 관측 동시 실행 → ⓐ또는ⓑ **하나만** 성립 · 무효화 저장 실패 시 **CLI 0줄 실행** | verify |
-| **T32** | WAL 복구 판정 순수 함수 — `prepared`/`composed` × ref 유무 6조합 + `REF_NAMESPACE_CONFLICT` 최우선 | verify |
-| **T33** | **`published` 저널은 차단하지 않는다**(C6) — integration-ready bench 가 실행·통합 가능, **그리고 `delete-record`·`abandon` 도 허용**(활성 저널 집합 = `prepared`·`composed` 뿐) | verify |
-| **T34** | **ref-앵커 재조정** — 권위 레코드의 어느 txnId 에도 귀속되지 않는 결과 ref 가 존재하면 reconciliation(win32 4번째 분기 · C3). 앵커를 권위 파일 안에 두면 롤백 시 함께 되돌아가 발화하지 않으므로 **git ref 열거가 판정식**임을 고정 | verify(실 git) |
+| **T32** | WAL 복구 판정 순수 함수(**PR3c**) — `prepared`/`composed` × ref 유무 6조합 + `ref-namespace-conflict` **최우선**. ⚠ 표기는 **kebab 통일**(계획 정정 141)이고 표는 **first-match 가 아니라 계층**이다 — 앵커 게이트가 이 6조합보다 **먼저** 답한다(§3-T79) | verify |
+| **T33** | **`published` 저널은 차단하지 않는다**(C6) — integration-ready bench 가 실행·통합 가능, **그리고 `delete-record`·`abandon` 도 허용**(활성 저널 집합 = `prepared`·`composed` 뿐 · **stage 단독 순수 술어**로 유지 · 계획 정정 194). **권위가 가리키지 않는 활성 stage 엔트리**(고아 저널)는 활성 집합의 정의를 바꾸는 대신 **복구 판정이 2분**한다(I11 참조) | verify |
+| **T34** | **ref-앵커 재조정** — 판정식은 **`refRevision > record.revision`**(권위 부재 = `0`)이며 「어느 txnId 에도 귀속되지 않는 ref」식은 **폐기**됐다(계획 정정 191: 포기가 결과 ref 를 보존하고 §3-T29 가 형제 ref 공존을 정상으로 요구하므로 귀속식은 영구 오탐이었다). 앵커를 권위 파일 안에 두면 롤백 시 함께 되돌아가 발화하지 않으므로 **git ref 열거가 판정식**임을 고정하고, **정확 이름 질의**를 함께 실어 D/F 충돌이 「ref 없음」과 구분되게 한다 | verify(실 git) |
 | **T35** | 포기 — git 변이 0 · 결과 ref/keep 커밋 보존 · `lifecycle` 무변 · `reachable-from-base` 거부 | verify(실 git) |
 | **T36** | 생성 고아 — 디렉터리 선점으로 `worktree add -b` 실패 시 브랜치 잔존을 **결정론적으로 재현**하고 R1~R4 되감기 허용 · 크래시 경로는 R1 미충족으로 자동 삭제 차단 | verify(실 git) |
 | **T37** | 상태×액션 인가 표 **전수 테이블 테스트**(표 자체가 단일 권위). ⚠ 완료 조건의 "엔진 거부 집합 == **UI 액션 여집합**"은 §7 범위 분리(UI = #253)와 충돌하므로 **UI 여집합 일치는 #253 완료 조건으로 이관**한다 | verify |
@@ -1292,6 +1458,28 @@ playwright(ubuntu, 컨테이너 없음)만 돈다. 해당 행(T55·N2·N3·N4)�
 | **T70** | **저널 쓰기는 bench 리스 아래에서만(신설 · PR3b)** — 비민팅(복제) 리스면 파일시스템 **무접촉**(쓰기 0) · 리스 identity ↔ 레코드 3필드 대조 실패 시 거부 · tmp 이름의 `<ownerToken>` 은 **리스에서만** 취한다(문자열 인자 부재 = 위조 불가) · rename **회차마다** `revalidate()` 를 다시 보므로 「1회차 실패 → 그 사이 탈취 → 2회차 성공」 구현이 RED(L-6 동형). PR3d 수확기의 배타원이 이 계약 위에 선다 | verify |
 | **T71** | **저널 레코드 불변 필드·조건부 결속(신설 · PR3b)** — 단계 전진에서 불변 12필드(`txnId`·`benchId`·`repoCommonGitDir`·`benchRoot`·`sourceBranch`·`sourceSnapshot`·`sourceGeneration`·`targetBranch`·`targetHeadBeforeIntegration`·`resultRef`·`startedAt`·`ownerEngineId`) 중 하나라도 바뀌면 거부(「전이는 합법인데 내용이 통째로 바뀐」 레코드 차단) · `stage ≥ composed` → `resultOid`·`resultTree` 필수 · `published`·`finalized` → `publishedAt` 필수이고 **`prepared`·`composed` 는 금지**(게시 전 게시 시각) · 결과 증거(`resultTree`·`resultOid`·`publishedAt`)는 **그 값을 요구하는 단계에서만 도입**되고 그 뒤 불변 · `abandoned` → `abandonedAt`·`abandonReason` 필수 ∧ `nextAuthorityStage` **부재**(포기 CAS 는 통합 필드를 소거한다) · 그 외 stage 는 `stage === nextAuthorityStage` | verify |
 | **T72** | **생성 저널 3채널 판정 규칙(신설 · PR4 T16)** — {①저널 엔트리 ②worktree 디렉터리 ③git 브랜치} **8조합 전수**를 {없음·부분·완전}으로 사상하는 **순수 술어** + 그 판정을 소비하는 생성 트랜잭션의 행동 단언. 생성은 통합의 `prepared` 규칙을 상속하지 않으므로 「없음」은 reconciliation 없이 종결 가능해야 한다. ⚠ **귀속이 PR3b → PR4 로 바뀌었다**(계획 정정 182): 규칙만 먼저 착지시키면 「판정 함수가 자기 입력의 생산자보다 먼저 서는」 배치가 되어 정정 159 가 방금 제거한 안티패턴을 되살린다. 대상 레코드도 통합 WAL 이 아니라 **생성 저널**이라 PR3b 모듈의 계약이 아니다 | verify |
+| **T73** | **앵커 발화(신설 · PR3c)** — 권위 `N` → 결과 ref `<N+1>-<txnId>` 발행 → CAS 로 권위 `N+1` → **권위 파일만** 이전 세대로 롤백(`file-only`) → 재부팅 관측이 `refRevision(N+1) > record.revision(N)` 을 **참**으로 읽고 `reconciliation-required`. ⚠ 판정식은 **귀속이 아니라 revision 비교**다(계획 정정 191 이 「귀속 없는 ref = reconciliation」을 영구 오탐으로 폐기) | verify |
+| **T74** | **음성 통제(신설 · PR3c)** — 권위가 `N+1` **이상**이면 같은 ref 집합에서 오탐 **0**. 앵커는 「권위 단독 롤백」만 답해야 하고 정상 진행·완결 후 상태를 차단하면 안 된다 | verify |
+| **T75** | **ref 값의 산술 결속(신설 · PR3c)** — 결속은 **stage 전수**에 건다. `prepared` 저널의 expected 를 `R0` 라 하면 **`refRevision = R0 + 2` 고정**(= 그 ref 에 결속된 composed CAS 가 **기록할** revision)이고, 관측 저널 기준으로는 `refRevision = expected + 2 - stageIndex` 다 — `prepared` +2 · `composed` +1 · `published` +0(계획 정정 223). ⚠ **`finalized` 는 등식이 아니라 상한**(`refRevision ≤ expected` — 머지 관측 이후의 개입 CAS 가 `expected` 를 올린다 · 계획 정정 233). **`abandoned` 도 정의역 안**이며 정의역은 `previousAuthorityStage`(=P)가 준다 — 결속은 **밴드** `expected + 1 - idx(P) ≤ refRevision ≤ expected + 2 - idx(P)`(P 가 **직전 저널 stage** 라 권위는 post-CAS 이거나 pre-CAS 크래시 창이고 `expected` 가 두 값을 가진다 · 열린 창 `P ∈ {published, finalized}` 는 **하한을 뗀다**) · `P` **부재는 fail-closed**(계획 정정 236 이 「abandoned 는 정의역 밖」을 폐기 — 무검사 대역이 `refRevision ≤ record.revision` 전체였다). ⚠ 계획 정정 196 의 고정식 `expected + 1` 은 **`composed` 한 stage 로 정의역이 좁혀졌다** — 전 stage 에 균일 적용하면 정상 `prepared`(+2)·`published`(+0)·`finalized`(상한) 저널이 전부 RED 다. 정의역을 벗어난 값을 실은 ref(예: `composed` 저널에 `<expected>-<txnId>`)는 저널과 **산술 결속 불일치**로 fail-closed 이며 「결과 없음」으로 축소되지 않는다. 문법은 `refs/fleet/integrated/<benchId>/<revision>-<txnId>` · 10진 가변폭 · **선행 0 거부**(`01`·`1` 비단사 매핑 차단) · 안전 정수 초과는 파싱이 거부 | verify |
+| **T76** | **보존된 전 결과 ref 에 동일 판정(신설 · PR3c)** — 포기·`stale-attempt` 로 보존된 형제 시도 ref(§3-T29 가 영구 공존을 정상으로 요구)는 revision 이 **현재 이하**라 앵커가 침묵한다. 같은 함수·같은 식으로 판정하며 예외 조항을 두지 않는다 | verify |
+| **T77** | **권위 부재 + ref 잔존(신설 · PR3c)** — 권위 레코드가 없으면 비교 기준 revision 은 `0` 이고 모든 결과 ref(revision ≥ 1)가 그보다 크므로 `reconciliation-required`. 「레코드가 없으니 판정 없음」으로 조용히 통과시키지 않는다 | verify |
+| **T78** | **열거 실패를 empty set 으로 축소하지 않음(신설 · PR3c)** — git 실패·D/F 충돌(`refs/fleet/integrated/<benchId>` 자신이 ref) · 문법 위반 ref 는 **각각 다른 blocker 종별**이며 어느 것도 「발행된 ref 없음」과 같은 결론을 내지 않는다. `ref-namespace-conflict` 는 **최우선**이라 다른 사유에 가려지지 않는다 | verify |
+| **T79** | **앵커 게이트가 승격 판정보다 먼저(신설 · PR3c)** — 저널이 승격 조건을 전부 만족해도 **설명되지 않는 더 높은 ref** 가 하나라도 있으면 승격이 아니라 reconciliation 이다(순서를 뒤집으면 롤백된 stage 위에서 승격한다). 저널은 게이트 **앞에서 읽되**(읽기·검증만) 권위 CAS·저널 변이는 게이트 뒤다(계획 정정 200) | verify |
+| **T80** | **blocker 존재 중 행동 인가 전면 차단(신설 · PR3c)** — blocker 가 하나라도 있으면 판정은 **어떤 입력 조합에서도** `no-mutation`·`resume-composed-cas`·`normal-wait` 를 답하지 않는다(조합 전수 성질). ⚠ 이 행의 **행동** 단언(복구기가 실제로 인가를 막는지)은 소비자 부재로 PR5·PR7 귀속 | verify |
+| **T81** | **앵커 검사의 결속 구간(신설 · PR3c)** — 판정은 「새 리스 획득 후 fresh read」와 **같은 임계 구역**에 결속하며 통과 결과를 장기 캐시로 재사용하지 않는다. PR3c 는 그 구조적 seam(면제가 의존한 입력 전체의 증거 다이제스트 + 재검증 동치 판정)만 착지시키고 **행동 단언은 PR5·PR7 귀속**(정직 표기) | verify |
+| **T82** | **신·구 레코드 전이 불변식 계층(신설 · PR3c)** — 현행 `checkInvariants` 는 단일 레코드 전용이라 `published → prepared` 역행·단계 건너뛰기·미종결 txn 위의 새 시도가 **어느 층에서도** 차단되지 않았다. 계획 정정 142 가 저널에 세운 전이 강제를 권위 쪽에 세우고, **복구 판정의 면제 조건 8**(후속 전이 일치)이 이 계층을 재사용한다. ⓐ**최초 레코드(`prev` 부재)도 시작 단계를 본다** — `prepared` 외의 stage 로 태어나는 첫 CAS 는 거부다(WAL 1단계와 그 크래시 안전 순서를 건너뛴다). 「단일 레코드 불변식이 막는다」는 **거짓**이었다(Codex PR#289 P1 — `checkInvariants` 어디에도 그 규칙이 없다) ⓗ**세대 대표성은 이 층의 소관이 아니다**(Codex PR#289 7R P1 → 로컬 적대 리뷰가 위치 정정) — 「어느 세대의 결과인가」를 싣는 값은 **저널의 불변 `sourceGeneration`** 이라 권위 레코드 두 장만 보는 이 함수에서는 보이지 않는다. 착지 레코드의 감사는 §W-7 복구의 `completed-txn-stale-generation` 이, CAS 시점 강제는 완결 관측 생산자(PR5)가 맡는다. ⚠ 권위의 `currentIntegrationTxnGeneration` 을 대신 쓰면 안 된다 — 그것은 저널 `integrationGeneration`(「`prepared` 마다 +1」= **시도 카운터**)과 묶이는 값이라 활동 카운터와 등치하면 정상 흐름을 막는다 ⓕ**완결 귀속은 결과 증거를 전제한다**(Codex PR#289 5R P1) — txn identity 만 보면 `prepared` 상태의 T1 을 그대로 `integrated`+`completed: T1` 로 커밋해 **결과가 존재한 적 없는 bench 를 완결로 기록**한다 ⓖ**lifecycle 은 통합 축과 독립으로 단조다**(`open → integrated → archived` · Codex PR#289 5R P1) — 통합 축을 건드리지 않는 CAS 는 그 축의 검사를 통째로 건너뛰므로, archived 를 `archivedBranch` 만 떼고 `open` 으로 되돌리는 제출이 **어느 층에도 걸리지 않았다** ⓔ**`abandoned` 는 종결이라 숫자 stage 비교의 정의역 밖이다**(Codex PR#289 4R P1) — 파서는 그 값을 여전히 읽는데 `indexOf` 가 **-1** 이라 `abandoned → prepared` 가 역행·건너뛰기 **두 검사를 모두 통과**해 포기된 txn 을 부활시킨다. 숫자 비교 앞에서 잘라내되 **소거(청소 복구)는 계속 허용**한다 ⓒ**새 txn 시작 인가는 stage 가 아니라 `lifecycle` 에 건다**(Codex PR#289 3R P1) — `integrated` ∧ current stage `finalized` 인 레코드는 「미종결 아님」을 통과해 **종결된 bench 를 다시 연다**. §5 「lifecycle 회귀(재개) 없음 · `integrated` 후 추가 작업은 새 bench」와 정면 충돌이다 ⓓ**완결 귀속의 「도입」도 검사한다**(Codex PR#289 3R P1) — 교체 금지만 있으면 첫 도입이 무제한이라 current 가 T1 인데 `completedIntegrationTxnId: T2` 로 커밋해도 두 층이 다 통과하고 **부분 통합이 숨는다**. §W-8 의 「완결은 권위 시도만 · 관측 CAS 는 txn 동일」을 코드로 세운다(도달성·stage 전제는 외부 관측이라 여기서 보지 않는다 — 정직 표기) ⓑ`completedIntegrationTxnId` 소거 금지의 **예외는 보관 전이**다(`lifecycle → 'archived'`) — 불변식 ②가 그 필드를 `integrated` 에만 허용하므로 예외가 없으면 `integrated → archived` 가 **전부 `invariant-violation`** 이 된다. 예외는 「소거」가 아니라 **lifecycle 에 결속**한다(귀속 교체는 계속 거부) | verify |
+| **T83** | **정상 crash window(신설 · PR3c)** — 권위 `N` · 유효 `composed` 저널(expected `N`) · matching ref `N+1` → **`resume-composed-cas`** 이며 전역 reconciliation **아님**. 픽스처 인터리브는 (A) 로 고정한다: composed 저널 acknowledged → 결과 ref create-only 발행 → **composed 권위 CAS**(그 직전 crash) | verify |
+| **T84** | **저널 없는 `N+1` ref(신설 · PR3c)** → reconciliation. 대응 저널이 없으면 그 ref 를 설명할 증거가 없다 | verify |
+| **T85** | **result OID 불일치(신설 · PR3c)** — ref 가 가리키는 OID ≠ `journal.resultOid` → reconciliation(`result-ref-mismatch`) | verify |
+| **T86** | **expected revision 불일치(신설 · PR3c)** — `journal.expectedAuthorityRevision` 이 관측 권위 revision 과 다르면(`N-1`·`N+1` 양방향) 승격 **금지** | verify |
+| **T87** | **두 단계 이상 앞섬(신설 · PR3c)** — 권위 `N-1` · 저널 expected `N` · ref `N+1` → reconciliation. 정상 프로토콜에서 ref 는 txn 당 한 번만 만들어지므로 두 단계 앞섬은 발생하지 않는다(계획 정정 204 가 4경로를 금지) | verify |
+| **T88** | **복수 next-revision ref(신설 · PR3c)** — 같은 resulting revision 을 주장하는 promotable ref 가 둘 이상이면 reconciliation. `+1` 은 필요조건이지 충분조건이 아니다 | verify |
+| **T89** | **롤백된 current 슬롯(신설 · PR3c · 회귀 핀)** — `current` 라는 이유만으로 면제되지 않는다. 면제 판정의 입력이 **롤백 가능한 권위 파일 하나**로 좁혀지면 「롤백을 증명하는 가장 높은 ref 가 바로 그 이유로 숨는다」(계획 정정 199ⓐ). 면제는 **독립 매체 두 개(ref + 저널)의 교차검증**으로만 성립한다 | verify |
+| **T90** | **superseded/abandoned ref(신설 · PR3c)** — 현재 revision **이하** = 정상 보존(차단 아님) · 현재 **초과** = `current` 여부와 무관하게 reconciliation | verify |
+| **T91** | **anchor-before-mutation(신설 · PR3c)** — 저널은 판정 **전에 읽지만**(읽기·검증만) 권위 CAS·저널 stage 변이는 게이트 전 **0건**. PR3c 의 판정 함수는 **순수**(무변이 관찰)이며 그 사실 자체가 이 행의 구조적 형태다 — 변이 순서의 **행동** 단언은 PR5 귀속 | verify |
+| **T92** | **재검증 race(신설 · PR3c)** — 최초 분류와 락·리스 획득 사이에 입력이 바뀌면 fresh 재검증이 실패하고 promotion **0건**. PR3c 는 면제가 의존한 입력 전체를 증거 다이제스트로 봉인하고 「같은 증거인가」를 판정하는 층까지 착지시킨다(**행동 단언은 PR5 귀속**) | verify |
+| **T93** | **정확한 promotion(신설 · PR3c)** — CAS 성공 후 `record.revision === parsedRefRevision` 이고 저널은 **그 뒤에만** `published` 로 전진한다. 권위가 이미 `N+1` 이며 composed 전이를 **정확히** 반영한 상태는 재실행이 아니라 **완료 확인**이다(계획 정정 204ⓑ) — 판정은 그 상태를 `normal-wait` 로 답한다. **CAS 행동 단언은 PR5 귀속** | verify |
+| **T94** | **CAS 실패 시 ref 보존(신설 · PR3c)** — 승격 CAS 가 실패해도 결과 ref 는 보존되고 그 상태가 「정상 대기」로 숨겨지지 않는다(다음 관측에서 같은 blocker 로 다시 발화). **행동 단언은 PR5 귀속** | verify |
 | **T38** | **I4: `broken ∧ busy` → 전 액션 거부**(크로스 프로세스 리스 보유) | verify |
 | **T39** | **I11 분리** — `prepared`/`composed` 잔존 bench 만 `delete-record` 거부(`journal-pending`) · **integration-ready(`published`) bench 는 허용** · `broken ∧ 활성 저널`은 `abandon-and-discard` 3구간으로만 탈출(락 밖 승인 → 락 안 재검사 → 단일 CAS) | verify |
 | **T39b** | bench 런 진행 중 **레거시 ProjectPanel 의 running 잠금·자동 선택이 발생하지 않음**(라이브 이벤트 + 하이드레이션 두 경로 · R-2) | verify |

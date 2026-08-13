@@ -231,7 +231,19 @@ export interface JournalStore {
  * 순수 술어 — 소비자(PR3c·PR5·PR7)보다 먼저 서는 부분
  * ============================================================================================= */
 
-const STAGE_ORDER: readonly IntegrationStage[] = ['prepared', 'composed', 'published', 'finalized']
+/**
+ * WAL 단계의 **순서**(종결 `abandoned` 는 순서 밖이다). 소비자가 둘이 되면서 export 한다 — PR3c 의
+ * 복구 판정이 「권위 stage ≤ 저널 stage ≤ 권위 stage + 1」 교차 결속을 이 순서로 판정하므로, 사본을
+ * 만들면 두 곳이 조용히 갈린다.
+ */
+export const WAL_STAGE_ORDER: readonly IntegrationStage[] = [
+  'prepared',
+  'composed',
+  'published',
+  'finalized',
+]
+
+const STAGE_ORDER = WAL_STAGE_ORDER
 
 /**
  * 합법 전이 그래프(계획 정정 142). 타입·스펙·코드 어디에도 없어 **역행·부활이 어느 층에서도 차단되지
@@ -354,6 +366,18 @@ const canonicalJson = (value: unknown): string => {
  * 저널이 결속하는 `draftDigest` 의 **유일한 생산자**(계획 정정 167). 여기 두지 않으면 생산자(PR5)와
  * 대조자(PR3c)가 각자 다른 정준화를 만들어 「불일치」가 상시 참이 된다.
  */
+/**
+ * 저널 레코드 **전체**의 정준 다이제스트(#251 PR3c · Codex PR#289 4R P1).
+ *
+ * 복구의 증거 봉인이 `draftDigest` 만 실으면 **권위 draft 투영 밖의 통합 입력**(`sourceSnapshot`·
+ * `targetBranch`·`targetHeadBeforeIntegration`·`resultTree` …)이 관측과 락 사이에 바뀌어도 같은 값이
+ * 나온다 — 소비자가 **바뀐 통합 의도를 같은 증거로** 받아들인다. 정준화를 복구 쪽에서 새로 만들지 않고
+ * 여기 두는 것은 `digestAuthorityDraft` 와 같은 이유다(생산자가 둘이면 정준화가 갈린다).
+ */
+export function digestJournalRecord(record: IntegrationTxnRecord): string {
+  return createHash('sha256').update(canonicalJson(record), 'utf8').digest('hex')
+}
+
 export function digestAuthorityDraft(draft: BenchAuthorityDraft): string {
   // ⚠ **CAS 가 실제로 기록할 투영을 해시한다**(Codex PR#269 3R P1). 호출자 draft 를 그대로 해시하면
   // 구조적 서브타이핑으로 실려 온 **초과 키**가 값에 섞이는데, 정작 CAS 는 필드 명시 재조립을 기록한다 —

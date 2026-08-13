@@ -108,7 +108,12 @@ export interface BenchAuthorityRecord {
    * ⚠ `durability==='file-only'` 표면에서는 머신 크래시 시 디렉터리 엔트리 유실로 단조성이 보장되지
    * 않는다(C3). **win32 전용이 아니다**(계획 정정 151) — dirfd fsync 를 지원하지 않는 마운트 위의 POSIX 도
    * `probeDurability`(durable-fs.ts:184-201)가 같은 등급으로 강등한다. 그 표면의 **보조** 탐지가 §W-7
-   * **ref-앵커**(PR3c 미착지)다.
+   * **ref-앵커**이며 `recovery.ts` 의 `classifyRecovery` 가 그것을 판정한다(PR3c 착지).
+   *
+   * ⚠ 그 판정은 이 필드(`writtenBy.durability`)를 **읽지 않는다**(계획 정정 205) — 검사의 활성화 조건을
+   * 검사 대상과 같은 매체에서 읽으면 독립성이 그 지점에서 끊긴다. 판정은 항상 돌고 `file+dir` 표면에서는
+   * 발화 입력이 만들어지지 않는다. **「되돌아간 revision 위에 새 CAS 가 커밋되지 않는다」는 행동 연언의
+   * 생산자는 여전히 PR5(시퀀서)** 이므로 이 표면의 안전 논증은 아직 미완결이다.
    *
    * ⚠ **「git ref 는 독립 매체라 동시 롤백이 불가능하다」는 거짓이었다**(계획 정정 133·152·156 — git
    * **소스** 대조로 확정. 문서만 읽으면 정반대 결론이 나온다): ⓐ두 경로는 대개 같은 볼륨이다(정션·심링크·
@@ -988,6 +993,223 @@ const checkInvariants = (r: BenchAuthorityRecord): string[] => {
   return v
 }
 
+/**
+ * 권위 레코드가 **가질 수 있는** 통합 단계의 순서. `abandoned` 는 **없다** — 포기는 권위에 단계를
+ * 남기지 않고 통합 4필드를 함께 소거하는 것으로 표현한다(계획 정정 177 · `reclaimDraft` 선례).
+ */
+const AUTHORITY_STAGE_ORDER: readonly IntegrationStage[] = [
+  'prepared',
+  'composed',
+  'published',
+  'finalized',
+]
+
+/**
+ * lifecycle 의 **단조 순서**(스펙 §5 「lifecycle 회귀(재개) 없음」). `open → integrated → archived` 이며
+ * 뒤로 가는 전이는 없다(`open → archived` 처럼 건너뛰는 전진은 허용 — 통합 없이 보관할 수 있다).
+ */
+const LIFECYCLE_ORDER: readonly BenchLifecycle[] = ['open', 'integrated', 'archived']
+
+// ⚠ 유니온 밖 값은 이 계층의 소관이 아니다 — 형태 오류는 왕복 검증이 답해야 하는데 전이 검사가
+//    먼저 발화하면 더 근본적인 진단을 가린다(기존 무회귀 핀이 실제로 잡았다). 판정은 파일 위쪽의
+//    `isLifecycle`(LIFECYCLES 기반)을 **재사용**한다 — 사본을 만들지 않는다.
+
+/** 미종결 = 아직 `finalized` 에 도달하지 않은 진행 중 통합. 새 시도의 시작을 막는 기준이다. */
+const isPendingStage = (s: IntegrationStage | undefined): boolean =>
+  s !== undefined && s !== 'finalized'
+
+/**
+ * **신·구 레코드 전이 불변식 계층**(#251 PR3c · 계획 정정 195·204 · §3-T82).
+ *
+ * `checkInvariants` 는 신 레코드를 **단독으로만** 본다. 그래서 `published → prepared` 역행이나 단계
+ * 건너뛰기가 어느 층에서도 차단되지 않았다 — 계획 정정 142 가 저널 쪽에 세운 전이 강제를 권위 쪽에
+ * 세우는 것이 이 함수다.
+ *
+ * ⚠ **최초 레코드(`prev === undefined`)에서도 시작 단계는 본다**(Codex PR#289 P1). 초안은 「그것은 단일
+ * 레코드 불변식 ③ 계열의 소관」이라며 침묵했는데 **그 주장이 거짓이었다** — `checkInvariants` 어디에도
+ * 「최초 stage 는 `prepared`」가 없어서 첫 CAS 가 `composed`·`published`·`finalized` 로 곧바로 태어나
+ * **WAL 의 `prepared` 단계와 그 크래시 안전 순서를 건너뛸 수 있었다.** 검증 없는 안전 주장을 주석으로
+ * 착지시킨 형태(PR#266 교훈)의 재발이라 그 자리에서 규칙으로 바꾼다.
+ *
+ * 정정 204 의 불변식 ①③⑤(단계 커밋 전진 금지 · pending 중 새 시도 금지 · CAS 실패는 published
+ * 전진의 인가가 아님)가 여기서 **문면이 아니라 코드**가 된다.
+ */
+export function checkTransitionInvariants(
+  prev: BenchAuthorityRecord | undefined,
+  next: BenchAuthorityDraft,
+): string[] {
+  if (prev === undefined) {
+    const v0: string[] = []
+    const to = next.currentIntegrationStage
+    // 통합을 아예 들고 있지 않은 최초 레코드는 정상(생성 직후)이다.
+    if (to !== undefined && to !== 'prepared') {
+      v0.push(`전이: 최초 레코드는 prepared 로만 통합을 시작할 수 있다(관측: ${to})`)
+    }
+    // ⚠ **최초 레코드는 `open` 이다**(Codex PR#289 6R P1). bench 는 열린 상태로 태어난다 —
+    // 이 early return 이 아래 완결 귀속 검사들을 통째로 건너뛰므로, `lifecycle: 'integrated'` +
+    // 임의의 `completedIntegrationTxnId` 를 든 **첫 CAS** 가 두 층을 다 통과해 **트랜잭션도 결과도
+    // 없이 완결을 주장하는 종결 bench** 를 만들 수 있었다. 최초 쓰기에는 대조할 출처가 없으므로
+    // 형태로 막는다.
+    if (isLifecycle(next.lifecycle) && next.lifecycle !== 'open') {
+      v0.push(`전이: 최초 레코드의 lifecycle 은 open 이어야 한다(관측: ${next.lifecycle})`)
+    }
+    return v0
+  }
+  const v: string[] = []
+
+  const from = prev.currentIntegrationStage
+  const to = next.currentIntegrationStage
+  const sameTxn =
+    prev.currentIntegrationTxnId !== undefined &&
+    prev.currentIntegrationTxnId === next.currentIntegrationTxnId
+
+  // **통합 축을 건드리지 않는 CAS 는 이 축의 no-op 이다.** gated-orphan 회수(`reclaimDraft`)·활동
+  // 시작/종료·lifecycle 변경은 통합 4필드를 **보존한 채** 커밋되므로, 「stage 가 같다」를 자기 전이로
+  // 읽으면 정상 경로가 전부 거부된다(기존 무회귀 핀 `authority-node.test.ts` 가 내 초안을 그렇게 잡았다).
+  const integrationUnchanged =
+    prev.currentIntegrationTxnId === next.currentIntegrationTxnId &&
+    prev.currentIntegrationStage === next.currentIntegrationStage &&
+    prev.currentIntegrationTxnGeneration === next.currentIntegrationTxnGeneration &&
+    prev.currentIntegrationResultOid === next.currentIntegrationResultOid
+
+  if (integrationUnchanged) {
+    // 통합 축 검사를 통째로 건너뛴다.
+  } else if (to === 'abandoned') {
+    v.push('전이: 권위 레코드는 abandoned 를 가질 수 없다(포기 = 통합 4필드 소거 · 정정 177)')
+  } else if (to === undefined) {
+    // 소거 = 포기. 어느 단계에서나 허용한다(§W-7 「포기 의미론」).
+    // ⚠ **단, 같은 CAS 가 bench 를 종결시킬 수는 없다**(Codex PR#289 8R P1). 제약이 없으면 한 CAS 가
+    //   미종결 통합을 지우면서 동시에 `archived`·`integrated` 로 넘어갈 수 있고, 단일 레코드 검사와
+    //   lifecycle 단조 검사는 그것을 받아들인다 — 그러면 보존된 그 txn 의 저널이 **종결 bench 위의
+    //   활성 고아**가 되어 복구가 즉시 reconciliation 을 답한다(6R 정정 232 가 복구 쪽에서 잡던 상태를
+    //   **전이 검증기 자신이 제조**한다). 대칭 규칙은 이미 있다 — 「새 통합 txn 은 open bench 에서만
+    //   시작한다」(정정 228). 포기는 포기대로 먼저 착지시키고 종결은 그 다음 CAS 다.
+    // ⚠ 정의역은 **미종결**(`isPendingStage`)에만 건다 — `finalized` txn 의 소거는 완결·보관 경로의
+    //   정상 동반 변경이고, 그 저널은 활성 집합 밖이라 고아가 되지 않는다.
+    const advancesLifecycle =
+      isLifecycle(next.lifecycle) &&
+      LIFECYCLE_ORDER.indexOf(next.lifecycle) > LIFECYCLE_ORDER.indexOf(prev.lifecycle)
+    if (isPendingStage(from) && advancesLifecycle) {
+      v.push(
+        `전이: 미종결 통합의 소거는 lifecycle 을 전진시킬 수 없다(${String(from)} · ${prev.lifecycle} → ${String(next.lifecycle)})`,
+      )
+    }
+  } else if (!sameTxn) {
+    // 새 txn 의 시작. 직전 txn 이 미종결이면 거부한다(정정 204 불변식 ③) — 허용하면 pending CAS 를
+    // 둔 채 다음 시도가 시작돼 결과 ref 가 권위보다 두 단계 앞서는 창이 열린다.
+    if (isPendingStage(from)) {
+      v.push(
+        `전이: 미종결 txn(${String(prev.currentIntegrationTxnId)} · ${String(from)}) 위에 새 txn 을 시작할 수 없다`,
+      )
+    }
+    // ⚠ **stage 종결만으로는 부족하다**(Codex PR#289 3R P1). `lifecycle==='integrated'` ∧ current
+    // stage `finalized` 인 레코드는 위 pending 검사를 통과해 **종결된 bench 를 다시 열어버린다** —
+    // 스펙 §5 「lifecycle 회귀(재개) 없음 · `integrated` 후 추가 작업은 **새 bench**」와 정면 충돌이다.
+    // 시작 인가를 stage 가 아니라 **lifecycle** 에 건다.
+    // ⚠ **출발지와 목적지 둘 다** `open` 이어야 한다(Codex PR#289 6R P1). `prev` 만 보면 **한 CAS 가**
+    //    T2 를 시작하면서 동시에 bench 를 `integrated`·`archived` 로 넘길 수 있고, 그 뒤의 같은-T2
+    //    단계 전이는 이 게이트를 **아예 지나지 않아** 종결 bench 위에서 작업이 계속된다.
+    if (prev.lifecycle !== 'open' || next.lifecycle !== 'open') {
+      v.push(
+        `전이: 새 통합 txn 은 open bench 에서만 시작한다(${prev.lifecycle} → ${next.lifecycle})`,
+      )
+    }
+    if (to !== 'prepared') {
+      v.push(`전이: 새 txn 은 prepared 로 시작해야 한다(관측: ${to})`)
+    }
+  } else {
+    // ⚠ **`abandoned` 는 종결이다**(Codex PR#289 4R P1). 파서는 그 값을 여전히 읽을 수 있는데
+    // (레거시·손상 레코드) `AUTHORITY_STAGE_ORDER.indexOf('abandoned')` 가 **-1** 이라, 아래 숫자
+    // 비교에서 `abandoned → prepared` 가 `fi=-1 · ti=0` 으로 **두 검사를 모두 통과**해 포기된 txn 을
+    // 부활시킨다(저널 전이 그래프가 금지하는 바로 그것). 숫자 비교 **앞에서** 잘라낸다.
+    // ⚠ 소거(`to === undefined` · 청소 복구)는 위 분기가 이미 처리했으므로 여기 걸리지 않는다.
+    const fi = from === undefined ? -1 : AUTHORITY_STAGE_ORDER.indexOf(from)
+    const ti = AUTHORITY_STAGE_ORDER.indexOf(to)
+    // ⚠ **「자기 전이 금지」 규칙은 두지 않는다.** stage 가 같은데 여기 도달했다는 것은 통합 4필드 중
+    // 무언가가 바뀌었다는 뜻인데, 바뀔 수 있는 나머지 둘(`TxnGeneration`·`ResultOid`)은 **아래 동결
+    // 규칙이 이름을 짚어 거부**한다. 별도 규칙을 두면 같은 입력에 두 방어가 함께 발화해 **가림**이
+    // 기본값이 되고(정정 189 가 실측한 형태), 독립 반증력은 0 이다(정정 183 의 「도달 불가 arm」 규율).
+    // ⚠ **`abandoned` 는 종결이라 숫자 비교의 정의역 밖이다**(Codex PR#289 4R P1). 파서는 그 값을
+    // 여전히 읽을 수 있는데(레거시·손상 레코드) `indexOf('abandoned')` 가 **-1** 이라
+    // `abandoned → prepared` 가 `fi=-1 · ti=0` 으로 **두 검사를 모두 통과**해 포기된 txn 을 부활시킨다.
+    // `else` 로 묶어 **한 입력에 한 사유만** 발화시킨다(가림 방지 · 정정 189).
+    // ⚠ 소거(`to === undefined` · 청소 복구)는 위 분기가 이미 처리했으므로 여기 오지 않는다.
+    if (from === 'abandoned') {
+      v.push('전이: abandoned 는 종결이다 — 같은 txn 을 되살릴 수 없다(정정 177)')
+    } else if (ti < fi) v.push(`전이: stage 역행 금지(${String(from)} → ${to})`)
+    else if (ti > fi + 1) v.push(`전이: 단계 건너뛰기 금지(${String(from)} → ${to})`)
+
+    if (
+      prev.currentIntegrationResultOid !== undefined &&
+      next.currentIntegrationResultOid !== prev.currentIntegrationResultOid
+    ) {
+      v.push('전이: currentIntegrationResultOid 는 한 번 나타나면 동결이다(증거 교체 금지)')
+    }
+    if (
+      prev.currentIntegrationTxnGeneration !== undefined &&
+      next.currentIntegrationTxnGeneration !== prev.currentIntegrationTxnGeneration
+    ) {
+      v.push('전이: 같은 txn 안에서 currentIntegrationTxnGeneration 변경 금지')
+    }
+  }
+
+  // **lifecycle 회귀 없음**(Codex PR#289 5R P1 · 스펙 §5). 통합 축을 건드리지 않는 CAS 는 위에서
+  // 통째로 건너뛰므로, archived 레코드를 `archivedBranch` 만 떼고 `open` 으로 되돌리는 제출이 **어느
+  // 층에도 걸리지 않았다** — 종결된 bench 가 되살아나 이후 작업이 가능해진다. lifecycle 은 통합 축과
+  // **독립**이므로 그 검사도 독립으로 세운다.
+  const li = (l: BenchLifecycle): number => LIFECYCLE_ORDER.indexOf(l)
+  if (isLifecycle(next.lifecycle) && li(next.lifecycle) < li(prev.lifecycle)) {
+    v.push(`전이: lifecycle 회귀 금지(${prev.lifecycle} → ${next.lifecycle})`)
+  }
+  if (next.sourceGeneration < prev.sourceGeneration) {
+    v.push(`전이: sourceGeneration 은 단조다(${prev.sourceGeneration} → ${next.sourceGeneration})`)
+  }
+  // ⚠ **완결 귀속의 「도입」도 검사한다**(Codex PR#289 3R P1). 아래 규칙은 **이미 귀속이 있을 때**만
+  // 돌아서, 첫 도입이 무제한이었다 — current 가 T1 인 레코드를 `completedIntegrationTxnId: T2` 로
+  // 커밋해도 단일 레코드·전이 검사가 **둘 다 통과**했고, 무관한 txn 이 완결로 기록되면서 부분 통합이
+  // 숨는다. 스펙 §W-8 은 「완결은 **권위 시도만**(`currentIntegrationTxnId` 의 도달성) · 관측 CAS 는
+  // **txn 동일**」이므로 그 결속을 여기서 코드로 세운다.
+  // ⚠ 정직 표기: **도달성 전제는 여기서 보지 않는다** — `resultOid` 가 base 에서 도달 가능한지는
+  //    외부 관측(§W-8)이고 이 순수 함수의 입력에 없다.
+  if (
+    prev.completedIntegrationTxnId === undefined &&
+    next.completedIntegrationTxnId !== undefined
+  ) {
+    if (next.completedIntegrationTxnId !== prev.currentIntegrationTxnId) {
+      v.push(
+        '전이: 완결 귀속은 직전 레코드의 current txn 이어야 한다(무관한 txn 을 완결로 기록 금지)',
+      )
+    } else if (prev.currentIntegrationResultOid === undefined) {
+      // ⚠ **txn 이 같다는 것만으로는 부족하다**(Codex PR#289 5R P1). `prepared` 상태의 T1 을 그대로
+      // `integrated` + `completed: T1` 로 커밋해도 두 층이 통과해 **결과가 존재한 적 없는 bench 를
+      // 완결로 기록**한다. §W-8 의 완결 정의는 「`resultOid` 의 base 도달성」이므로 **결과 증거의
+      // 존재**가 최소 전제다(불변식 ③d 가 그것을 `stage >= composed` 와 등가로 만든다).
+      v.push('전이: 결과 증거 없는 txn 을 완결로 기록할 수 없다(resultOid 부재)')
+    }
+    // ⚠ **세대 대표성(§W-8 완결 CAS 5연언의 나머지 한 항)은 이 층에서 판정할 수 없다**(Codex PR#289
+    //   7R P1 → 로컬 적대 리뷰가 위치를 정정). 「어느 세대의 결과인가」를 싣는 값은 **저널의 불변
+    //   `sourceGeneration`** 인데 이 함수는 권위 레코드 두 장만 본다. 초안은 대신
+    //   `currentIntegrationTxnGeneration === sourceGeneration` 을 걸었는데, 그 필드는 저널
+    //   `integrationGeneration`(「`prepared` 마다 +1」= **시도 카운터**)과 묶이는 값이라 두 카운터를
+    //   등치시켜 「활동 2회 뒤 첫 통합」 같은 **정상 흐름을 막았다**(실측 적발).
+    //   착지 레코드의 감사는 `recovery.ts` 의 `completed-txn-stale-generation` 이 맡고, CAS 시점의
+    //   강제는 완결 관측 생산자(PR5)의 몫이다 — 여기에 이름만 남기면 「검사한다」로 읽힌다(정정 234 의 잣대).
+  }
+  if (
+    prev.completedIntegrationTxnId !== undefined &&
+    next.completedIntegrationTxnId !== prev.completedIntegrationTxnId
+  ) {
+    // ⚠ **보관은 예외다**(Codex PR#289 P1). 단일 레코드 불변식 ②가 「`completedIntegrationTxnId` 존재
+    // ⟺ `lifecycle==='integrated'`」이므로 `integrated → archived` 는 **반드시** 그 필드를 소거한다.
+    // 초안은 그 정상 전이를 `invariant-violation` 으로 답해 **보관 워크플로를 통째로 막았다.**
+    // 예외를 「소거」가 아니라 **lifecycle 에 결속**시킨다 — 그래야 귀속 교체는 계속 거부된다.
+    const archiving = next.completedIntegrationTxnId === undefined && next.lifecycle === 'archived'
+    if (!archiving) v.push('전이: 완결 귀속(completedIntegrationTxnId)의 교체·소거 금지')
+  }
+
+  return v
+}
+
 const sameIdentity = (a: BenchAuthorityIdentity, b: BenchAuthorityIdentity): boolean =>
   a.commonGitDir === b.commonGitDir && a.benchRoot === b.benchRoot && a.benchId === b.benchId
 
@@ -1249,7 +1471,13 @@ export function createBenchAuthorityStore(
       if (Object.hasOwn(next, 'writtenBy'))
         bad.push('draft 는 writtenBy 를 실을 수 없다(저장소만 배정)')
       if (bad.length > 0) return { kind: 'invariant-violation', violations: bad }
-      if (!sameIdentity(next.identity, lease.identity)) {
+      // ⚠ **여기서 draft 를 한 번만 관측한다**(Codex PR#289 8R P1). 초안은 `next` 를 사전조건·전이
+      //   검증·직렬화에서 **각각 다시 읽었다** — 평범한 객체는 안전하지만 getter·`Proxy` 는 층마다
+      //   다른 값을 줄 수 있고, 유일한 사후 관문인 왕복 검증은 `checkInvariants`(**단일 레코드**)만
+      //   태우므로 **WAL 단계를 건너뛴 레코드가 커밋**됐다(전이 계층이 본 것과 착지한 것이 갈린다).
+      //   이 줄 이후로 `next` 를 **다시 읽지 않는다** — identity 검사·전이 검증·직렬화가 같은 값을 본다.
+      const submitted: BenchAuthorityDraft = { ...next }
+      if (!sameIdentity(submitted.identity, lease.identity)) {
         return { kind: 'lease-invalid', reason: 'identity-mismatch' }
       }
 
@@ -1304,8 +1532,17 @@ export function createBenchAuthorityStore(
           return assertNever(fresh)
       }
 
+      // ④b **전이 불변식 계층**(#251 PR3c · §3-T82). ④ 가 방금 읽은 **디스크 레코드**와 대조한다 —
+      //    토큰이 실어온 값이 아니라 디스크여야 한다(④ 가 재독을 강제한 것과 같은 이유). 이 층이 없으면
+      //    `published → prepared` 역행·단계 건너뛰기가 **어느 층에서도** 차단되지 않는다.
+      const prevRecord = fresh.kind === 'found' ? fresh.record : undefined
+      const transitionViolations = checkTransitionInvariants(prevRecord, submitted)
+      if (transitionViolations.length > 0) {
+        return { kind: 'invariant-violation', violations: transitionViolations }
+      }
+
       const revision = minted.observedRevision + 1
-      const record = serialize(next, revision, {
+      const record = serialize(submitted, revision, {
         ownerToken: lease.ownerToken,
         at: opts.now(),
         durability: opts.durability,

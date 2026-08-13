@@ -639,12 +639,27 @@ describe('§3-T13 revision-CAS', () => {
   it('ⓑ 첫 draft 가 세운 옵셔널이 두 번째 커밋에 살아남지 않는다(LWW 병합이면 RED)', async () => {
     const { store, lease, benchId, fs, path } = await setup()
 
+    // 4필드를 전부 세우려면 `composed` 가 필요한데(`prepared` 는 `resultOid` 를 실을 수 없다 ·
+    // 불변식 ③c), **최초 레코드는 `prepared` 로만 시작할 수 있다**(Codex PR#289 P1). 그래서 두 단계로
+    // 올라간 뒤 4필드가 전부 선 상태를 만든다 — 지름길이 막힌 것이지 시나리오가 바뀐 것은 아니다.
     await store.withAuthority(lease, async (tx) => {
       const read = tx.readFresh()
       if (read.kind !== 'absent') throw new Error('absent 예상')
       return tx.compareAndSwap(
         read.read,
-        // `composed` 를 쓴다 — `prepared` 는 `resultOid` 를 실을 수 없다(불변식 ③c · Codex 2R P1-E).
+        draft(benchId, {
+          currentIntegrationTxnId: 'T1',
+          currentIntegrationStage: 'prepared',
+          currentIntegrationTxnGeneration: 1,
+        }),
+      )
+    })
+
+    await store.withAuthority(lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'found') throw new Error('found 예상')
+      return tx.compareAndSwap(
+        read.read,
         draft(benchId, {
           currentIntegrationTxnId: 'T1',
           currentIntegrationStage: 'composed',
@@ -1782,11 +1797,48 @@ describe('store 옵션은 생성 시점 스냅샷이다(Codex 2R P1-C)', () => {
  * 그래서 그 규칙은 **WAL 이 첫 단계에 진입조차 못 하게** 만들었다.
  */
 describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
+  const STAGE_PATH = ['prepared', 'composed', 'published', 'finalized'] as const
+
+  /**
+   * 목표 stage 까지 **WAL 순서대로 올라간 뒤** 마지막 draft 를 커밋한다.
+   *
+   * ⚠ 이전 판은 **첫 CAS 로 곧바로 목표 stage 를 만들었다**(픽스처 지름길). Codex PR#289 P1 이후
+   * 「최초 레코드는 `prepared` 로만 통합을 시작한다」가 전이 불변식으로 서면서 그 지름길은 표현
+   * 불가능해졌고, **지름길이 성립했다는 사실 자체가 결함**이었다 — 첫 CAS 가 `composed` 로 태어나면
+   * WAL 의 `prepared` 단계와 그 크래시 안전 순서를 통째로 건너뛴다. 이 describe 가 검증하는 것은
+   * **resultOid 규칙**이지 진입 경로가 아니므로, 경로만 합법으로 바꿔 의도를 보존한다.
+   */
   const casWith = async (over: Partial<BenchAuthorityDraft>): Promise<CasResult> => {
     const fx = await setup()
+    const target = over.currentIntegrationStage
+    const climb =
+      target === undefined || target === 'prepared'
+        ? []
+        : // ⚠ `abandoned` 도 **prepared 를 먼저 커밋한 뒤** 제출한다(CodeRabbit PR#289): 첫 CAS 로
+          //   내면 「최초는 prepared 로만」이 먼저 답해서, 이 행이 겨냥한 「권위는 abandoned 를 갖지
+          //   않는다」(정정 177)를 **한 번도 검증하지 못한다**(가림).
+          target === 'abandoned'
+          ? (['prepared'] as const)
+          : STAGE_PATH.slice(0, STAGE_PATH.indexOf(target))
+    for (const stage of climb) {
+      const step = await fx.store.withAuthority(fx.lease, async (tx) => {
+        const read = tx.readFresh()
+        if (read.kind !== 'absent' && read.kind !== 'found') throw new Error(read.kind)
+        return tx.compareAndSwap(
+          read.read,
+          draft(fx.benchId, {
+            currentIntegrationTxnId: 'T1',
+            currentIntegrationStage: stage,
+            currentIntegrationTxnGeneration: 1,
+            ...(stage === 'prepared' ? {} : { currentIntegrationResultOid: 'oid1' }),
+          }),
+        )
+      })
+      if (step.kind !== 'committed') return step
+    }
     return fx.store.withAuthority(fx.lease, async (tx) => {
       const read = tx.readFresh()
-      if (read.kind !== 'absent') throw new Error('absent 예상')
+      if (read.kind !== 'absent' && read.kind !== 'found') throw new Error(read.kind)
       return tx.compareAndSwap(read.read, draft(fx.benchId, over))
     })
   }
@@ -1840,12 +1892,95 @@ describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
     expect(r.kind).toBe('invariant-violation')
   })
 
-  it('abandoned 는 resultOid 를 요구하지 않는다', async () => {
+  /**
+   * **CodeRabbit PR#289** — 「최초 레코드가 완결 귀속을 들고 태어나는」 축에 행이 없었다. 전이 계층은
+   * `prev === undefined` 에서 lifecycle 만 보므로(정정 227) 그 조합을 막는 것은 **단일 레코드 불변식
+   * ②**(`completedIntegrationTxnId` 존재 ⟺ `lifecycle==='integrated'`)다. 이 세션의 규율대로
+   * **「다른 층이 막는다」를 주석이 아니라 행으로** 남긴다 — 규칙 이름을 문면까지 단언한다.
+   */
+  it('최초 CAS 는 완결 상태를 직접 만들 수 없다(②와 정정 227 이 각각 답한다)', async () => {
+    // ⓐ `open` + 완결 귀속 → 불변식 ② 가 답한다.
+    const openWithCompleted = await casWith({ completedIntegrationTxnId: 'T1' })
+    expect(openWithCompleted.kind).toBe('invariant-violation')
+    expect(
+      openWithCompleted.kind === 'invariant-violation' && openWithCompleted.violations.join(),
+    ).toContain('②')
+
+    // ⓑ `integrated` + 완결 귀속 → 전이 계층(정정 227)이 답한다.
+    const integrated = await casWith({
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: 'T1',
+    })
+    expect(integrated.kind).toBe('invariant-violation')
+    expect(integrated.kind === 'invariant-violation' && integrated.violations.join()).toContain(
+      '최초 레코드의 lifecycle 은 open',
+    )
+  })
+
+  /**
+   * ⚠ **기대가 뒤집혔다**(Codex PR#289 P1 의 파급 · 은폐하지 않는다). 이전 판은 첫 CAS 로
+   * `abandoned` 레코드를 만들어 「resultOid 를 요구하지 않는다」를 보였는데, 계획 정정 177 은
+   * **권위 레코드가 `abandoned` 를 갖지 않는다**고 못박았다 — 포기는 단계를 남기는 게 아니라 통합
+   * 4필드를 **소거**하는 것이다. 즉 이전 기대는 **어떤 생산자도 만들지 않는 상태**를 정상으로
+   * 고정하고 있었고, 「최초는 prepared 로만」이 서면서 그 모순이 드러났다.
+   */
+  it('abandoned 는 권위 레코드가 가질 수 있는 단계가 아니다(정정 177)', async () => {
     const r = await casWith({
       currentIntegrationTxnId: 'T1',
       currentIntegrationStage: 'abandoned',
       currentIntegrationTxnGeneration: 1,
     })
-    expect(r.kind).toBe('committed')
+    expect(r.kind).toBe('invariant-violation')
+    expect(r.kind === 'invariant-violation' && r.violations.join()).toContain(
+      'abandoned 를 가질 수 없다',
+    )
+  })
+})
+
+/* ================================================================================================
+ * draft 스냅숏 — **검증한 값과 착지한 값은 같은 값**이어야 한다 (Codex PR#289 8R P1)
+ * ============================================================================================= */
+
+describe('CAS 는 제출 draft 를 한 번만 관측한다(전이 검증의 전제)', () => {
+  /**
+   * **Codex PR#289 8R P1** — `runCas` 는 `next` 를 ③사전조건·④b `checkTransitionInvariants`·
+   * `serialize` 에서 **각각 다시 읽는다**. 평범한 객체는 안전하지만 getter·`Proxy` 는 층마다 다른 값을
+   * 줄 수 있고, 유일한 사후 관문인 왕복 검증은 `checkInvariants`(**단일 레코드**)만 태우므로
+   * **WAL 단계를 건너뛴 레코드가 커밋된다** — 전이 계층이 본 것과 디스크에 착지한 것이 갈린다.
+   *
+   * 재현: 최초 CAS(권위 부재)에서 `currentIntegrationStage` 가 전이 검증 때는 `prepared`(정정 227 이
+   * 허용하는 유일한 시작), 직렬화 때는 `published` 를 답한다.
+   */
+  it('getter 가 층마다 다른 값을 줘도 검증한 값이 그대로 착지한다', async () => {
+    const fx = await setup()
+    let reads = 0
+    const shifty = {
+      schemaVersion: 1,
+      identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId: fx.benchId },
+      lifecycle: 'open',
+      sourceGeneration: 1,
+      currentIntegrationTxnId: 'T1',
+      currentIntegrationTxnGeneration: 1,
+      currentIntegrationResultOid: 'a'.repeat(40),
+      get currentIntegrationStage() {
+        reads += 1
+        // 첫 관측만 합법(`prepared`), 그 뒤로는 단계를 건너뛴 값을 답한다.
+        return reads <= 1 ? 'prepared' : 'published'
+      },
+    } as unknown as BenchAuthorityDraft
+
+    const r = await fx.store.withAuthority(fx.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return tx.compareAndSwap(read.read, shifty)
+    })
+
+    // 커밋되든 거부되든 **디스크에 단계를 건너뛴 레코드가 남아서는 안 된다.**
+    if (r.kind === 'committed') {
+      const landed = JSON.parse(fx.fs.readFileUtf8(fx.path)) as BenchAuthorityRecord
+      expect(landed.currentIntegrationStage).toBe('prepared')
+    } else {
+      expect(r.kind).toBe('invariant-violation')
+    }
   })
 })
