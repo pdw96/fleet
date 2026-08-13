@@ -1479,6 +1479,59 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
   })
 
   /**
+   * **Codex PR#289 8R P1** — 7R 이 넣은 완결 ref 요구가 **존재 술어(∃)** 였다. 같은 txnId 를 든 ref 가
+   * 하나라도 있으면 통과하므로 ⓐ이름은 기대값인데 **OID 가 교체**된 ref ⓑ**다른 이름**의 ref
+   * ⓒ정상 ref **옆의 여분 손상 ref** 가 전부 `no-mutation` 으로 끝난다 — **불변 완결 결과의 교체가 숨는다.**
+   *
+   * current txn 은 같은 손상을 이미 `result-ref-mismatch` 로 잡는다(정정 235 의 전수 루프) — 비대칭이
+   * 곧 결함이었다. 완결 txn 은 앵커가 구조적으로 답하지 않는다(완결 CAS 가 revision 을 올려 보존 ref 는
+   * 항상 `revision` 이하)므로 이 층 말고는 그것을 볼 곳이 없다.
+   */
+  it('완결 귀속 txn 의 보존 ref 도 이름·OID 로 전수 결속한다', () => {
+    const completedRecord = record({
+      revision: R0 + 4,
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: T2,
+      currentIntegrationTxnId: undefined,
+      currentIntegrationStage: undefined,
+      currentIntegrationTxnGeneration: undefined,
+    })
+    const finalizedJournal = journal({
+      txnId: T2,
+      ...walBound('finalized'),
+      resultRef: formatResultRef(BENCH, R0 + 2, T2),
+      publishedAt: 9,
+    })
+    const withRefs = (refPairs: readonly (readonly [string, string])[]) =>
+      classifyRecovery(
+        obs({
+          authority: { kind: 'found', record: completedRecord },
+          prefixRefs: { kind: 'ok', refs: refPairs.map(([ref, oid]) => ({ ref, oid })) },
+          journal: entries(finalizedJournal),
+        }),
+      )
+    const sound = formatResultRef(BENCH, R0 + 2, T2)
+
+    // ⓐ 이름은 기대값인데 OID 가 교체됐다 — 불변 결과의 대체.
+    expect(kinds(withRefs([[sound, OID2]]))).toContain('result-ref-mismatch')
+    // ⓑ 이름이 저널이 증언한 값과 다르다.
+    expect(kinds(withRefs([[formatResultRef(BENCH, R0 + 1, T2), OID]]))).toContain(
+      'result-ref-mismatch',
+    )
+    // ⓒ 정상 ref 가 **있어도** 여분 손상 ref 를 잡는다(존재 술어가 아니라 전수여야 하는 이유).
+    expect(
+      kinds(
+        withRefs([
+          [sound, OID],
+          [formatResultRef(BENCH, R0 + 1, T2), OID2],
+        ]),
+      ),
+    ).toContain('result-ref-mismatch')
+    // 음성 통제 — 정확히 일치하는 ref 하나면 정상이다.
+    expect(kinds(withRefs([[sound, OID]]))).toEqual([])
+  })
+
+  /**
    * **로컬 적대 리뷰 P2(7R 반영분에 대한)** — 완결 귀속 검사 두 개가 **관측 실패를 손상 사실로 승격**
    * 한다. 이 모듈의 원칙은 「실패를 빈 집합으로 축소하지 않는다」(§3-T78)인데, 열거가 `failed` 면
    * `journals`·`parsedRefs` 가 비고 그 공집합이 「저널이 `finalized` 가 아니다」·「불변 ref 가 사라졌다」

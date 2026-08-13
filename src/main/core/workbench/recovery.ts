@@ -707,15 +707,28 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       // ⚠ 그래서 이 검사는 권위 레코드 두 장만 보는 **전이 불변식 층에서는 불가능**하다(저널 불가시).
       //   CAS 시점의 강제는 완결 관측 생산자(PR5)의 몫이고, 이 층은 **착지한 레코드의 감사**다.
       blockers.push(blocker('completed-txn-stale-generation', completedTxnId))
-    } else if (
-      obs.prefixRefs.kind === 'ok' &&
-      !parsedRefs.some((r) => r.txnId === completedTxnId)
-    ) {
+    } else if (obs.prefixRefs.kind === 'ok' && completedTxnId !== currentTxnId) {
       // ⚠ **ref 요구도 완결 txn 에 걸어야 한다**(Codex PR#289 7R P1). 5R 정정 224 의 요구는 아래
       //   `current` 정의역에만 있어서, 완결 txn 이 더 이상 current 가 아니면 `current === undefined`
       //   조기 반환보다 뒤라 **한 번도 평가되지 않았다**. 게시는 필연적으로 finalization 에
       //   선행하므로(§W-8) 그 불변 ref 의 소실은 손상이고 `no-mutation` 으로 답할 수 없다.
-      blockers.push(blocker('result-ref-missing', completedJournal.resultRef))
+      // ⚠ **존재가 아니라 전수 결속이다**(Codex PR#289 8R P1). 초안은 `some(txnId 일치)` 라 ⓐ이름은
+      //   맞고 **OID 가 교체**된 ref ⓑ**다른 이름**의 ref ⓒ정상 ref **옆의 여분 손상 ref** 를 전부
+      //   통과시켰다 — 완결 txn 은 앵커가 구조적으로 답하지 않으므로(완결 CAS 가 revision 을 올려
+      //   보존 ref 는 항상 `revision` 이하) 이 층 말고는 그 교체를 볼 곳이 없다. 그래서 위 `current`
+      //   경로의 **전수 대조를 같은 형태로** 적용한다(같은 손상에 같은 종별).
+      // ⚠ 저널 `resultOid` 는 `stage === 'finalized'` 가 확정된 이 분기에서 **존재가 보장**된다
+      //   (`journal.ts` 형태 층이 `composed` 이상에 필수로 요구) — `!== undefined` 가드는 반증력 0 이다.
+      // ⚠ `completedTxnId === currentTxnId` 면 위 루프가 이미 같은 판정을 냈다(중복 발화 회피).
+      const completedRefs = parsedRefs.filter((r) => r.txnId === completedTxnId)
+      if (completedRefs.length === 0) {
+        blockers.push(blocker('result-ref-missing', completedJournal.resultRef))
+      }
+      for (const r of completedRefs) {
+        if (r.refName !== completedJournal.resultRef || r.oid !== completedJournal.resultOid) {
+          blockers.push(blocker('result-ref-mismatch', r.refName))
+        }
+      }
     }
   }
 
@@ -726,8 +739,12 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
     // 엔트리는 결과 ref 를 가질 수 없으므로, ref 를 동반한 고아·`composed` 고아는 전부 reconciliation 이다
     // (계획 정정 194 의 2분 — 활성 집합의 **정의**는 stage 단독으로 유지한다).
     // ⚠ **종결 bench 에는 benign 창이 없다**(Codex PR#289 6R P1): `integrated`·`archived` 권위는
-    //   current txn 이 없어 `authorityPending` 이 거짓이지만, 그 위에서는 새 txn 을 **시작할 수 없으므로**
-    //   (전이 불변식) 그 저널이 애초에 쓰일 수 없었다. stage 의 pending 여부만 보면 그 사실을 놓친다.
+    //   current txn 이 없어 `authorityPending` 이 거짓이지만, stage 의 pending 여부만 보면 그 사실을 놓친다.
+    // ⚠ **근거 정정**(8R 로컬 검증): 초안은 「그 저널이 **애초에 쓰일 수 없었다**」고 적었는데 그것은
+    //   거짓이다 — 그 저널은 bench 가 `open` 이던 시절에 **합법으로** 쓰였을 수 있고(정상 크래시 창),
+    //   전이 층이 막는 것은 그 위에서 **새 txn 을 시작**하는 것뿐이다. 참인 근거는 「종결 bench 위에서는
+    //   그 저널의 재개·재준비가 인가되지 않으므로 처분을 사람에게 넘긴다」이다. 판정은 그대로다 —
+    //   바뀐 것은 **검증되지 않은 안전 주장**을 문서로 남기지 않는다는 규율이다(정정 133·152·156 계열).
     const benign =
       j.stage === 'prepared' &&
       !authorityPending &&

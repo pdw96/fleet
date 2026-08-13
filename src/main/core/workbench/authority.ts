@@ -1078,6 +1078,22 @@ export function checkTransitionInvariants(
     v.push('전이: 권위 레코드는 abandoned 를 가질 수 없다(포기 = 통합 4필드 소거 · 정정 177)')
   } else if (to === undefined) {
     // 소거 = 포기. 어느 단계에서나 허용한다(§W-7 「포기 의미론」).
+    // ⚠ **단, 같은 CAS 가 bench 를 종결시킬 수는 없다**(Codex PR#289 8R P1). 제약이 없으면 한 CAS 가
+    //   미종결 통합을 지우면서 동시에 `archived`·`integrated` 로 넘어갈 수 있고, 단일 레코드 검사와
+    //   lifecycle 단조 검사는 그것을 받아들인다 — 그러면 보존된 그 txn 의 저널이 **종결 bench 위의
+    //   활성 고아**가 되어 복구가 즉시 reconciliation 을 답한다(6R 정정 232 가 복구 쪽에서 잡던 상태를
+    //   **전이 검증기 자신이 제조**한다). 대칭 규칙은 이미 있다 — 「새 통합 txn 은 open bench 에서만
+    //   시작한다」(정정 228). 포기는 포기대로 먼저 착지시키고 종결은 그 다음 CAS 다.
+    // ⚠ 정의역은 **미종결**(`isPendingStage`)에만 건다 — `finalized` txn 의 소거는 완결·보관 경로의
+    //   정상 동반 변경이고, 그 저널은 활성 집합 밖이라 고아가 되지 않는다.
+    const advancesLifecycle =
+      isLifecycle(next.lifecycle) &&
+      LIFECYCLE_ORDER.indexOf(next.lifecycle) > LIFECYCLE_ORDER.indexOf(prev.lifecycle)
+    if (isPendingStage(from) && advancesLifecycle) {
+      v.push(
+        `전이: 미종결 통합의 소거는 lifecycle 을 전진시킬 수 없다(${String(from)} · ${prev.lifecycle} → ${String(next.lifecycle)})`,
+      )
+    }
   } else if (!sameTxn) {
     // 새 txn 의 시작. 직전 txn 이 미종결이면 거부한다(정정 204 불변식 ③) — 허용하면 pending CAS 를
     // 둔 채 다음 시도가 시작돼 결과 ref 가 권위보다 두 단계 앞서는 창이 열린다.
@@ -1455,7 +1471,13 @@ export function createBenchAuthorityStore(
       if (Object.hasOwn(next, 'writtenBy'))
         bad.push('draft 는 writtenBy 를 실을 수 없다(저장소만 배정)')
       if (bad.length > 0) return { kind: 'invariant-violation', violations: bad }
-      if (!sameIdentity(next.identity, lease.identity)) {
+      // ⚠ **여기서 draft 를 한 번만 관측한다**(Codex PR#289 8R P1). 초안은 `next` 를 사전조건·전이
+      //   검증·직렬화에서 **각각 다시 읽었다** — 평범한 객체는 안전하지만 getter·`Proxy` 는 층마다
+      //   다른 값을 줄 수 있고, 유일한 사후 관문인 왕복 검증은 `checkInvariants`(**단일 레코드**)만
+      //   태우므로 **WAL 단계를 건너뛴 레코드가 커밋**됐다(전이 계층이 본 것과 착지한 것이 갈린다).
+      //   이 줄 이후로 `next` 를 **다시 읽지 않는다** — identity 검사·전이 검증·직렬화가 같은 값을 본다.
+      const submitted: BenchAuthorityDraft = { ...next }
+      if (!sameIdentity(submitted.identity, lease.identity)) {
         return { kind: 'lease-invalid', reason: 'identity-mismatch' }
       }
 
@@ -1514,13 +1536,13 @@ export function createBenchAuthorityStore(
       //    토큰이 실어온 값이 아니라 디스크여야 한다(④ 가 재독을 강제한 것과 같은 이유). 이 층이 없으면
       //    `published → prepared` 역행·단계 건너뛰기가 **어느 층에서도** 차단되지 않는다.
       const prevRecord = fresh.kind === 'found' ? fresh.record : undefined
-      const transitionViolations = checkTransitionInvariants(prevRecord, next)
+      const transitionViolations = checkTransitionInvariants(prevRecord, submitted)
       if (transitionViolations.length > 0) {
         return { kind: 'invariant-violation', violations: transitionViolations }
       }
 
       const revision = minted.observedRevision + 1
-      const record = serialize(next, revision, {
+      const record = serialize(submitted, revision, {
         ownerToken: lease.ownerToken,
         at: opts.now(),
         durability: opts.durability,

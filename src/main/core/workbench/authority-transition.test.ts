@@ -199,6 +199,54 @@ describe('전이 불변식 — 통합 stage', () => {
       expect(checkTransitionInvariants(prev, draft())).toEqual([])
     }
   })
+
+  /**
+   * **Codex PR#289 8R P1** — 소거 arm 이 **목적지 lifecycle 에 아무 제약도 걸지 않았다.** 그래서 한 CAS 가
+   * 미종결 통합을 지우면서 동시에 bench 를 종결(`archived`·`integrated`)시킬 수 있고, 단일 레코드
+   * 검사와 lifecycle 단조 검사는 그것을 받아들인다. 그러면 보존된 그 txn 의 저널이 **종결 bench 위의
+   * 활성 고아**가 되어 복구가 즉시 `reconciliation-required` 를 답한다.
+   *
+   * 6R 정정 232 가 복구 쪽에서 잡던 상태를 **전이 검증기 자신이 제조**할 수 있다는 것이 새 증거다.
+   * 대칭 규칙은 이미 있다 — 「새 통합 txn 은 open bench 에서만 시작한다」(정정 228). 그 역방향으로
+   * 「미종결 통합의 소거는 lifecycle 을 전진시킬 수 없다」를 세운다(포기는 포기대로 먼저 착지시켜라).
+   */
+  it('미종결 통합의 소거는 lifecycle 을 전진시킬 수 없다', () => {
+    for (const from of ['prepared', 'composed', 'published'] as const) {
+      const prev = base({
+        currentIntegrationTxnId: T1,
+        currentIntegrationStage: from,
+        currentIntegrationTxnGeneration: 3,
+        ...(from === 'prepared' ? {} : { currentIntegrationResultOid: 'a'.repeat(40) }),
+      })
+      const terminalize = draft({ lifecycle: 'archived', archivedBranch: 'preserved' })
+      expect(checkTransitionInvariants(prev, terminalize), from).toEqual([
+        expect.stringContaining('미종결 통합의 소거'),
+      ])
+    }
+    // 음성 통제 ⓐ — lifecycle 을 그대로 두는 소거(정상 포기)는 계속 허용된다.
+    const pending = base({
+      currentIntegrationTxnId: T1,
+      currentIntegrationStage: 'composed',
+      currentIntegrationTxnGeneration: 3,
+      currentIntegrationResultOid: 'a'.repeat(40),
+    })
+    expect(checkTransitionInvariants(pending, draft())).toEqual([])
+    // 음성 통제 ⓑ — **종결된**(`finalized`) txn 의 소거는 종결화와 함께여도 정상이다(완결·보관 경로).
+    const finalized = base({
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: T1,
+      currentIntegrationTxnId: T1,
+      currentIntegrationStage: 'finalized',
+      currentIntegrationTxnGeneration: 3,
+      currentIntegrationResultOid: 'a'.repeat(40),
+    })
+    expect(
+      checkTransitionInvariants(
+        finalized,
+        draft({ lifecycle: 'archived', archivedBranch: 'preserved' }),
+      ),
+    ).toEqual([])
+  })
 })
 
 describe('전이 불변식 — pending 중 새 시도 금지 (정정 204 불변식 ③)', () => {

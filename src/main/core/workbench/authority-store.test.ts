@@ -1936,3 +1936,51 @@ describe('통합 WAL 단계별 resultOid 규칙(Codex 2R P1-E)', () => {
     )
   })
 })
+
+/* ================================================================================================
+ * draft 스냅숏 — **검증한 값과 착지한 값은 같은 값**이어야 한다 (Codex PR#289 8R P1)
+ * ============================================================================================= */
+
+describe('CAS 는 제출 draft 를 한 번만 관측한다(전이 검증의 전제)', () => {
+  /**
+   * **Codex PR#289 8R P1** — `runCas` 는 `next` 를 ③사전조건·④b `checkTransitionInvariants`·
+   * `serialize` 에서 **각각 다시 읽는다**. 평범한 객체는 안전하지만 getter·`Proxy` 는 층마다 다른 값을
+   * 줄 수 있고, 유일한 사후 관문인 왕복 검증은 `checkInvariants`(**단일 레코드**)만 태우므로
+   * **WAL 단계를 건너뛴 레코드가 커밋된다** — 전이 계층이 본 것과 디스크에 착지한 것이 갈린다.
+   *
+   * 재현: 최초 CAS(권위 부재)에서 `currentIntegrationStage` 가 전이 검증 때는 `prepared`(정정 227 이
+   * 허용하는 유일한 시작), 직렬화 때는 `published` 를 답한다.
+   */
+  it('getter 가 층마다 다른 값을 줘도 검증한 값이 그대로 착지한다', async () => {
+    const fx = await setup()
+    let reads = 0
+    const shifty = {
+      schemaVersion: 1,
+      identity: { commonGitDir: COMMON_GIT_DIR, benchRoot: BENCH_ROOT, benchId: fx.benchId },
+      lifecycle: 'open',
+      sourceGeneration: 1,
+      currentIntegrationTxnId: 'T1',
+      currentIntegrationTxnGeneration: 1,
+      currentIntegrationResultOid: 'a'.repeat(40),
+      get currentIntegrationStage() {
+        reads += 1
+        // 첫 관측만 합법(`prepared`), 그 뒤로는 단계를 건너뛴 값을 답한다.
+        return reads <= 1 ? 'prepared' : 'published'
+      },
+    } as unknown as BenchAuthorityDraft
+
+    const r = await fx.store.withAuthority(fx.lease, async (tx) => {
+      const read = tx.readFresh()
+      if (read.kind !== 'absent') throw new Error('absent 예상')
+      return tx.compareAndSwap(read.read, shifty)
+    })
+
+    // 커밋되든 거부되든 **디스크에 단계를 건너뛴 레코드가 남아서는 안 된다.**
+    if (r.kind === 'committed') {
+      const landed = JSON.parse(fx.fs.readFileUtf8(fx.path)) as BenchAuthorityRecord
+      expect(landed.currentIntegrationStage).toBe('prepared')
+    } else {
+      expect(r.kind).toBe('invariant-violation')
+    }
+  })
+})
