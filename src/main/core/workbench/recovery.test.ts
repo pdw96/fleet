@@ -37,7 +37,7 @@ const OID = 'a'.repeat(40)
 const OID2 = 'b'.repeat(40)
 const TREE = 'c'.repeat(40)
 
-/** 관측된 권위 revision. 결과 ref 는 `N+1` 을 이름에 싣는다(계획 정정 196). */
+/** 관측된 권위 revision. 결과 ref 는 `N+1`(= 아래 `R0 + 2`)을 이름에 싣는다(계획 정정 223·233). */
 const N = 5
 
 /**
@@ -536,8 +536,10 @@ describe('면제 10조건 — 하나라도 깨지면 승격이 아니다', () =>
     expect(reasons(v)).toContain('expected-revision-mismatch')
   })
 
-  it('T75 — ref 이름의 revision 이 expected+1 이 아니면 산술 결속 위반이다', () => {
+  it('T75 — `composed` 저널의 ref revision 이 expected+1 이 아니면 산술 결속 위반이다', () => {
     // 발행자가 `expectedAuthorityRevision` 을 그대로 실은 off-by-one(정정 196 이 폐기한 정의).
+    // ⚠ 이 픽스처의 정의역은 `journal()` 기본값인 **`composed`** 다 — 전 stage 식은
+    //   `expected + 2 - stageIndex`(정정 223)이고 `published` 에서는 `<expected>` 가 **정상**이다.
     const wrong = formatResultRef(BENCH, N, T1)
     const v = classifyRecovery(
       obs({ prefixRefs: refs([wrong, OID]), journal: entries(journal({ resultRef: wrong })) }),
@@ -547,7 +549,9 @@ describe('면제 10조건 — 하나라도 깨지면 승격이 아니다', () =>
     expect(kinds(v)).toContain('journal-result-ref-invalid')
   })
 
-  it('T75 — 앵커 후보 쪽 산술 결속도 같은 식으로 본다(expected+2 를 실은 이름)', () => {
+  it('T75 — 앵커 후보 쪽 산술 결속도 같은 식으로 본다(`composed` 저널에 expected+2 를 실은 이름)', () => {
+    // ⚠ `expected + 2` 는 `prepared`(stageIndex 0)에서는 **정상값**이다 — 위반이 되는 것은 이 픽스처의
+    //   정의역인 `composed` 에서다(정정 223).
     // ⚠ 위 케이스는 `refRevision ≤ revision` 이라 **복구표 경로**가 잡는다. 면제 조건 ⑥ 자신의
     // 반증력은 **후보 경로**(`refRevision > revision`)에서만 관측된다 — 뮤테이션 자기검사가 이 공백을
     // 드러냈다(⑥ 삭제 뮤턴트 생존).

@@ -3,14 +3,16 @@ import { describe, expect, it } from 'vitest'
 import { RESULT_REF_ROOT, formatResultRef, parseResultRef, resultRefPrefix } from './result-ref'
 
 /**
- * §3-T75 계열 — 결과 ref 문법(계획 정정 192·196).
+ * §3-T75 계열 — 결과 ref 문법(계획 정정 192·196·223).
  *
  * 문법 = `refs/fleet/integrated/<benchId>/<resultingRevision>-<txnId>` ·
  * **10진 가변폭 · 선행 0 금지 · 파싱 실패 fail-closed**.
  *
- * ⚠ 이 파일이 고정하는 핵심은 **`resultingRevision` 은 `expectedAuthorityRevision + 1`** 이라는 것이다
- * (정정 196 P1). 초안은 두 값을 같다고 적었고, 그러면 ref 발행에 결속된 **바로 그 CAS** 가 롤백돼도
- * `N > N` 이 거짓이라 앵커가 영원히 침묵한다.
+ * ⚠ 이 파일이 고정하는 것은 **문법**이다 — 산술 결속의 **정의역**(stage 별 식 `expected + 2 - stageIndex` ·
+ * `finalized` 는 상한 · `abandoned` 는 정의역 밖 · 정정 223·233)은 여기가 아니라 `recovery.ts` 가 강제하고
+ * `recovery.test.ts` 가 핀으로 박는다. 아래 회귀 핀의 `+1` 은 **`composed` 저널 기준 상대식**이며(절대식은
+ * `prepared` 저널의 expected `R0` 기준 `R0 + 2`), 두 값을 같다고 둔 초안을 막는다 — 그러면 ref 발행에
+ * 결속된 **바로 그 CAS** 가 롤백돼도 `N > N` 이 거짓이라 앵커가 영원히 침묵한다(정정 196 P1).
  */
 
 const BENCH = '01J8Z4T7K9QW3M5N7P9R1S3T5V'
@@ -127,11 +129,13 @@ describe('결과 ref 문법 — 파싱', () => {
   })
 })
 
-describe('산술 결속 — refRevision = expectedAuthorityRevision + 1 (정정 196)', () => {
-  it('`expectedAuthorityRevision` 그대로가 아니라 **+1** 이 ref 에 실린다', () => {
+describe('산술 결속(문법 층) — `composed` 저널 기준 refRevision = expected + 1 (정정 196·223)', () => {
+  it('`composed` 저널의 `expectedAuthorityRevision` 그대로가 아니라 **+1** 이 ref 에 실린다', () => {
     // 이 행이 이 PR 의 P1 회귀 핀이다. `journal.ts:115` 의 expected 는 「CAS 가 **맞출**」 값(현재 N)이고
     // `authority.ts:1307` 은 `observedRevision + 1` 을 기록한다. 두 값을 같다고 두면 ref 발행에 결속된
     // 바로 그 CAS 의 롤백을 앵커가 못 잡는다.
+    // ⚠ 이 핀의 정의역은 **`composed` 저널 하나**다(정정 223) — stage 전수 식 `expected + 2 - stageIndex`
+    // 와 `finalized` 상한(정정 233)은 `recovery.ts` 의 `revisionBound` 가 강제한다.
     const expectedAuthorityRevision = 41
     const ref = formatResultRef(BENCH, expectedAuthorityRevision + 1, TXN)
     const parsed = parseResultRef(ref)

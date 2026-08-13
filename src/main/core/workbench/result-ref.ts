@@ -6,7 +6,13 @@
  * refs/fleet/integrated/<benchId>/<resultingRevision>-<txnId>
  * ```
  *
- * **`resultingRevision` = `journal.expectedAuthorityRevision + 1`** 이다(정정 196 · Codex 체크포인트 1R P1).
+ * **`resultingRevision` = 「이 ref 에 결속된 composed 권위 CAS 가 *기록할* revision」**이다(정정 196 ·
+ * Codex 체크포인트 1R P1 → 정정 223 이 정의역을 stage 전수로 넓혔다). 이름은 **불변 필드**라 `prepared`
+ * 저널을 쓸 때 이미 정해지므로 **발행자가 실어야 할 값은 `prepared` 시점 `expectedAuthorityRevision`(`R0`)
+ * 의 `+2`** 다 — `resultingRevision = R0 + 2` 가 절대식이고, 관측한 저널 기준 상대식
+ * `expected + 2 - stageIndex` 는 `expected = R0 + stageIndex` 에서 파생된다(`composed` 에서만 `+1` 로
+ * 보인다 · 강제자는 `recovery.ts` 의 `revisionBound`). ⚠ 발행자가 `R0 + 1`(= prepared CAS 가 기록한 값)에
+ * 머물면 그것이 정정 196 이 적발한 **off-by-one** 이다:
  * 저널의 `expectedAuthorityRevision` 은 「이어질 CAS 가 **맞출**(비교할) revision」(= 현재값 `N`)이고
  * `authority.ts` 의 CAS 는 `observedRevision + 1` 을 **기록**한다. 두 값을 같다고 두면 ref 발행에 결속된
  * **바로 그 CAS** 가 롤백돼도 `N > N` 이 거짓이라 앵커가 침묵한다 — 정정 169 가 막으려던 revision
