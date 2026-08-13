@@ -1170,6 +1170,14 @@ export function checkTransitionInvariants(
       // 존재**가 최소 전제다(불변식 ③d 가 그것을 `stage >= composed` 와 등가로 만든다).
       v.push('전이: 결과 증거 없는 txn 을 완결로 기록할 수 없다(resultOid 부재)')
     }
+    // ⚠ **세대 대표성(§W-8 완결 CAS 5연언의 나머지 한 항)은 이 층에서 판정할 수 없다**(Codex PR#289
+    //   7R P1 → 로컬 적대 리뷰가 위치를 정정). 「어느 세대의 결과인가」를 싣는 값은 **저널의 불변
+    //   `sourceGeneration`** 인데 이 함수는 권위 레코드 두 장만 본다. 초안은 대신
+    //   `currentIntegrationTxnGeneration === sourceGeneration` 을 걸었는데, 그 필드는 저널
+    //   `integrationGeneration`(「`prepared` 마다 +1」= **시도 카운터**)과 묶이는 값이라 두 카운터를
+    //   등치시켜 「활동 2회 뒤 첫 통합」 같은 **정상 흐름을 막았다**(실측 적발).
+    //   착지 레코드의 감사는 `recovery.ts` 의 `completed-txn-stale-generation` 이 맡고, CAS 시점의
+    //   강제는 완결 관측 생산자(PR5)의 몫이다 — 여기에 이름만 남기면 「검사한다」로 읽힌다(정정 234 의 잣대).
   }
   if (
     prev.completedIntegrationTxnId !== undefined &&

@@ -563,6 +563,233 @@ describe('면제 10조건 — 하나라도 깨지면 승격이 아니다', () =>
     expect(kinds(v)).toContain('journal-result-ref-invalid')
   })
 
+  /**
+   * **Codex PR#289 7R P1** — `abandoned` 를 **산술 정의역에서 통째로 빼면** 그 자리에 구멍이 남는다.
+   * 근거였던 「포기 시점에 따라 expected 가 달라져 식이 하나로 고정되지 않는다」는 **식을 찾으라는
+   * 신호**였지 면제의 근거가 아니었다(5R 정정 223 이 같은 형태를 이미 한 번 교정했다).
+   *
+   * 포기 저널은 `previousAuthorityStage`(=P)를 **반드시** 싣고(`journal.ts` `canAdvanceStage` +
+   * append 의 디스크 stage 대조), 포기 CAS 는 권위가 P 를 커밋한 뒤에 pending 이므로
+   * `expected = R0 + idx(P) + 1` 이다. 절대식 `ref = R0 + 2` 를 대입하면
+   * **`ref = expected + 1 - idx(P)`** — 닫힌 창(P ∈ {prepared, composed})은 등식,
+   * 열린 창(P ∈ {published, finalized})은 개입 CAS 가 `expected` 를 올리므로 **상한**이다.
+   *
+   * 이 구멍의 대역은 **`refRevision ≤ record.revision`** 이다 — 높은 쪽은 앵커가 잡지만 낡은 이름은
+   * 어디서도 안 잡혀, 그 상태가 청소된 뒤 권위 롤백을 증언할 유일한 증인이 침묵한다.
+   */
+  it('T75 — `abandoned` 저널의 ref revision 은 previousAuthorityStage 로 결속된다', () => {
+    const rec = record({
+      revision: R0 + 2,
+      currentIntegrationStage: 'composed',
+      currentIntegrationResultOid: OID,
+    })
+    const abandoned = (resultRef: string) =>
+      journal({
+        stage: 'abandoned',
+        expectedAuthorityRevision: R0 + 2,
+        previousAuthorityStage: 'composed',
+        nextAuthorityStage: undefined,
+        resultRef,
+        abandonedAt: 9,
+        abandonReason: 'user-abandon',
+        draftDigest: abandonDraftDigestOf(rec),
+      })
+    // P = composed → 등식 `ref = expected + 1 - 1 = expected`. 낡은 이름은 앵커 대역 밖이라 여기서 잡아야 한다.
+    const stale = formatResultRef(BENCH, R0 - 1, T1)
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        prefixRefs: refs([stale, OID]),
+        journal: entries(abandoned(stale)),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-result-ref-invalid')
+
+    // 음성 통제 — 도출식이 요구하는 값이면 통과한다(과결속이 아니다).
+    const sound = formatResultRef(BENCH, R0 + 2, T1)
+    const ok = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        prefixRefs: refs([sound, OID]),
+        journal: entries(abandoned(sound)),
+      }),
+    )
+    expect(kinds(ok)).not.toContain('journal-result-ref-invalid')
+  })
+
+  /**
+   * 열린 창(`published`·`finalized`)에서의 포기는 **등식이 아니라 상한**이다 — 그 창에서는 활동·회수
+   * CAS 가 정상적으로 `expected` 를 올린다(정정 233 이 같은 이유로 `finalized` 를 상한으로 되돌렸다).
+   * 등식을 걸면 **정상 상태를 손상으로 오분류**한다.
+   */
+  it('T75 — 열린 창에서의 포기는 상한이라 개입 CAS 를 오분류하지 않는다', () => {
+    // published 커밋 직후의 정상 revision 은 `R0+3` 인데, 그 뒤 개입 CAS 4회가 지나갔다.
+    const rec = record({
+      revision: R0 + 7,
+      currentIntegrationStage: 'published',
+      currentIntegrationResultOid: OID,
+    })
+    const sound = formatResultRef(BENCH, R0 + 2, T1)
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        prefixRefs: refs([sound, OID]),
+        journal: entries(
+          journal({
+            stage: 'abandoned',
+            expectedAuthorityRevision: R0 + 7,
+            previousAuthorityStage: 'published',
+            nextAuthorityStage: undefined,
+            resultRef: sound,
+            publishedAt: 9,
+            abandonedAt: 9,
+            abandonReason: 'user-abandon',
+            draftDigest: abandonDraftDigestOf(rec),
+          }),
+        ),
+      }),
+    )
+    expect(kinds(v)).not.toContain('journal-result-ref-invalid')
+  })
+
+  /**
+   * 파서는 `previousAuthorityStage` 부재를 허용한다(`journal.ts` 의 optional 필드). 그 필드가 없으면
+   * 포기 산술의 **정의역 자체를 알 수 없으므로** fail-closed 여야 한다 — 그러지 않으면 필드를 지우는
+   * 것만으로 방금 세운 결속을 통째로 우회한다.
+   */
+  /**
+   * **로컬 적대 리뷰 P1(7R 반영분에 대한)** — 포기 산술을 **등식**으로 두면 WAL 의 **정상 크래시 창**을
+   * 손상으로 오분류한다. `previousAuthorityStage`(=P)는 권위 stage 가 아니라 **직전 저널 stage** 이고
+   * (`journal.ts` 의 append 가 디스크 stage 와 일치를 강제한다), WAL 은 선기록이므로 저널이 P 일 때
+   * 권위는 **P(post-CAS) 또는 P-1(pre-CAS 크래시 창)** 이다 — 후자는 §3-T83 이 정상으로 고정한 상태다.
+   *
+   * pre-CAS 에서 포기하면 `expected` 가 1 낮아 `ref = expected + 2 - idx(P)` 이므로, 등식은 정확히
+   * 1 어긋난다. 저널은 삭제 금지·바이트 동일 재기록만 허용되므로 그 bench 는 **영구 고착**한다.
+   * ⇒ 결속은 등식이 아니라 **밴드**여야 한다: `expected + 1 - idx(P) ≤ ref ≤ expected + 2 - idx(P)`.
+   */
+  it('T75 — 포기 산술은 밴드다(저널 선기록 뒤 CAS 전 포기를 오분류하지 않는다)', () => {
+    const rec = record({
+      currentIntegrationTxnId: undefined,
+      currentIntegrationStage: undefined,
+      currentIntegrationTxnGeneration: undefined,
+      currentIntegrationResultOid: undefined,
+    })
+    // 형제 txn — `composed` 저널을 선기록한 뒤 그 CAS 전에 포기했다(권위는 아직 `prepared` = R0+1).
+    const preCasAbandon = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        journal: entries(
+          journal({
+            txnId: T2,
+            stage: 'abandoned',
+            previousAuthorityStage: 'composed',
+            nextAuthorityStage: undefined,
+            expectedAuthorityRevision: R0 + 1,
+            resultRef: formatResultRef(BENCH, R0 + 2, T2),
+            abandonedAt: 9,
+            abandonReason: 'user-abandon',
+          }),
+        ),
+      }),
+    )
+    expect(kinds(preCasAbandon)).not.toContain('journal-result-ref-invalid')
+  })
+
+  it('T75 — previousAuthorityStage 없는 포기 저널은 fail-closed 다', () => {
+    // ⚠ 정의역을 **형제 txn**(current 아님)으로 잡는다 — current 로 잡으면 결속 축
+    //   (`journal-authority-binding`)이 먼저 답해 산술 층의 반증력이 가려진다. 종결 stage 는
+    //   활성 집합 밖이라 고아 검사도 침묵하므로, 이 상태를 잡을 수 있는 층은 **저널 등재 산술뿐**이다.
+    const rec = record({
+      currentIntegrationTxnId: undefined,
+      currentIntegrationStage: undefined,
+      currentIntegrationTxnGeneration: undefined,
+      currentIntegrationResultOid: undefined,
+    })
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: rec },
+        journal: entries(
+          journal({
+            txnId: T2,
+            stage: 'abandoned',
+            expectedAuthorityRevision: R0 + 2,
+            previousAuthorityStage: undefined,
+            nextAuthorityStage: undefined,
+            resultRef: formatResultRef(BENCH, R0 + 2, T2),
+            abandonedAt: 9,
+            abandonReason: 'user-abandon',
+          }),
+        ),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('journal-result-ref-invalid')
+  })
+
+  /**
+   * **Codex PR#289 7R P1** — 포기 저널의 검증이 종결 필드의 **존재**만 봤다. 결과·게시 증거가
+   * `previousAuthorityStage` 와 정합하는지는 **쓰기 경로**(`journal.ts` 의 `EVIDENCE_FIELDS` 도입
+   * 단계 제한)에만 있고, **복구는 착지한 레코드만 본다** — 그 방어가 돌지 않은 디스크 상태(롤백·손상)를
+   * 복구가 그대로 받아 `idempotent-cleanup` 을 인가한다.
+   *
+   * 6R 이 「종결 증거는 모든 admitted 저널에서 본다」를 같은 이유로 세웠다. 이번엔 그 **반대 방향**이다:
+   * 종결 레코드가 **이전 stage 에서 상속돼야 할 증거 형태**를 갖췄는지 복구가 독립적으로 요구한다.
+   */
+  it('포기 저널의 상속 증거 형태는 previousAuthorityStage 와 정합해야 한다', () => {
+    const rec = record({
+      currentIntegrationTxnId: undefined,
+      currentIntegrationStage: undefined,
+      currentIntegrationTxnGeneration: undefined,
+      currentIntegrationResultOid: undefined,
+    })
+    // 형제 txn(current 아님)으로 잡아 **저널 등재 층**만 남긴다. ref 는 절대식 `R0 + 2` 로 고정이고
+    // `expected = R0 + idx(P) + 1` 이므로 stage 마다 expected 만 달라진다.
+    const sibling = (
+      previousAuthorityStage: 'prepared' | 'composed' | 'published',
+      over: Partial<IntegrationTxnRecord>,
+    ) =>
+      classifyRecovery(
+        obs({
+          authority: { kind: 'found', record: rec },
+          journal: entries(
+            journal({
+              txnId: T2,
+              stage: 'abandoned',
+              previousAuthorityStage,
+              nextAuthorityStage: undefined,
+              expectedAuthorityRevision: R0 + WAL_ORDER.indexOf(previousAuthorityStage) + 1,
+              resultRef: formatResultRef(BENCH, R0 + 2, T2),
+              abandonedAt: 9,
+              abandonReason: 'user-abandon',
+              ...over,
+            }),
+          ),
+        }),
+      )
+    const EV = 'journal-abandon-evidence-invalid'
+
+    // ⓐ `composed` 에서 포기했는데 **게시 시각이 날조**됐다 — 게시된 적 없는 시도가 게시로 증언된다.
+    expect(kinds(sibling('composed', { publishedAt: 9 }))).toContain(EV)
+    // ⓑ `published` 에서 포기했는데 **게시 시각이 소거**됐다 — 이미 발행된 결과의 증거가 사라진다.
+    expect(kinds(sibling('published', { publishedAt: undefined }))).toContain(EV)
+    // ⓒ `prepared` 에서 포기했는데 **존재한 적 없는 결과**를 들고 있다.
+    expect(
+      kinds(sibling('prepared', { resultTree: TREE, resultOid: OID, publishedAt: undefined })),
+    ).toContain(EV)
+    // ⓓ `composed` 에서 포기했는데 **결과 증거가 없다**.
+    expect(kinds(sibling('composed', { resultTree: undefined, resultOid: undefined }))).toContain(
+      EV,
+    )
+
+    // 음성 통제 — 세 stage 의 **정상 형태**는 통과한다(과결속이 아니다).
+    expect(
+      kinds(sibling('prepared', { resultTree: undefined, resultOid: undefined })),
+    ).not.toContain(EV)
+    expect(kinds(sibling('composed', {}))).not.toContain(EV)
+    expect(kinds(sibling('published', { publishedAt: 9 }))).not.toContain(EV)
+  })
+
   it('journal.resultRef 와 실제 ref 이름이 다르면 승격하지 않는다', () => {
     const v = classifyRecovery(
       obs({
@@ -782,14 +1009,18 @@ describe('T32 — 복구표는 현재 txn 1건을 정의역으로 한다', () =>
     )
     expect(finalized.kind).toBe('idempotent-cleanup')
 
-    const abandonedRec = record({ revision: N + 3 })
+    // ⚠ 산술이 **가능한 쌍**이어야 한다(Codex PR#289 7R P1 이후): `prepared` 에서의 포기는
+    //   `expected = R0 + 1 = N` 이고 ref 는 `expected + 1 = N + 1`(기본값)이다. 초안의 `N + 3` 은
+    //   닫힌 창(활성 저널 = 실행 차단)에 개입 CAS 3회를 가정한 **존재할 수 없는 쌍**이었고,
+    //   `abandoned` 산술 면제가 그것을 정상으로 고정해 온 것이 그 면제의 방증이다.
+    const abandonedRec = record()
     const abandoned = classifyRecovery(
       obs({
         authority: { kind: 'found', record: abandonedRec },
         journal: entries(
           journal({
             stage: 'abandoned',
-            expectedAuthorityRevision: N + 3,
+            expectedAuthorityRevision: N,
             previousAuthorityStage: 'prepared',
             nextAuthorityStage: undefined,
             // `prepared` 에서의 포기라 결과 증거가 **없다** — 그래야 ref 를 요구하지 않는다(6R P1).
@@ -1177,6 +1408,166 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
   })
 
   /**
+   * **Codex PR#289 7R P1** — 위 검사는 저널이 **존재할 때만** 돌았다. 열거가 비면
+   * `journals.get(completedTxnId)` 가 `undefined` 라 검사를 통째로 건너뛰고, 뒤이은
+   * `current === undefined` 반환이 그 상태를 **`no-mutation`**(= 무변이 적격)으로 답한다.
+   *
+   * 저널은 **감사 보존**이고(§W-7 「복구 중 삭제 금지」) 완결 txn 은 `finalized` 저널을 반드시
+   * 남기므로, 그 부재는 삭제·롤백이라는 **손상**이다. 「검사의 위치가 곧 정의역」(정정 229)의
+   * 같은 형태 — 이번에는 **존재 전제**가 정의역을 좁혔다.
+   */
+  it('완결 귀속 txn 의 저널 부재도 blocker 다(존재할 때만 보면 삭제가 숨는다)', () => {
+    const completedRecord = record({
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: T2,
+      currentIntegrationTxnId: undefined,
+      currentIntegrationStage: undefined,
+      currentIntegrationTxnGeneration: undefined,
+    })
+    // 저널 열거가 **정상 성공**했는데 내용이 비어 있다(열거 실패는 별개 종별이다).
+    const v = classifyRecovery(
+      obs({ authority: { kind: 'found', record: completedRecord }, journal: entries() }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('completed-txn-journal-unfinalized')
+  })
+
+  /**
+   * **Codex PR#289 7R P1**(로컬 적대 리뷰가 **위치를 정정**) — §W-8 은 완결 CAS 를 「txn 동일 ∧
+   * valid/current ∧ **현 소스 세대 대표** ∧ 활성/시작-중 편집 활동 없음 ∧ 전이 가능」으로 규정하는데
+   * 세대 항이 비어 있었다. 열린 창에서의 실행(C6·§3-T33)이 `sourceGeneration` 을 올린 뒤 완결하면
+   * **통합된 적 없는 세대의 작업을 든 bench 가 `integrated`** 로 기록돼 부분 통합이 숨는다.
+   *
+   * ⚠ **`currentIntegrationTxnGeneration` 은 그 값이 아니다** — 그것은 저널의 `integrationGeneration`
+   * (「`prepared` 마다 +1」= 시도 카운터)과 묶이는 값이라(`recovery.ts` 의 stage 결속·면제 조건),
+   * `sourceGeneration`(활동 시작마다 +1)과 등치하면 **활동 2회 뒤 첫 통합** 같은 정상 흐름이 막힌다.
+   * 「어느 세대의 결과인가」를 싣는 값은 저널의 **불변** `sourceGeneration`(T71 불변 12필드)이고,
+   * 그것은 권위 레코드 두 장만 보는 전이 불변식 층에서는 **보이지 않는다** — 그래서 이 층이다.
+   */
+  it('완결 귀속 txn 은 현 소스 세대를 대표해야 한다', () => {
+    const completed = (sourceGeneration: number) =>
+      classifyRecovery(
+        obs({
+          authority: {
+            kind: 'found',
+            record: record({
+              revision: R0 + 4,
+              sourceGeneration,
+              lifecycle: 'integrated',
+              completedIntegrationTxnId: T2,
+              currentIntegrationTxnId: undefined,
+              currentIntegrationStage: undefined,
+              currentIntegrationTxnGeneration: undefined,
+            }),
+          },
+          prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T2), OID]),
+          journal: entries(
+            journal({
+              txnId: T2,
+              ...walBound('finalized'),
+              // 저널의 `sourceGeneration` 은 기본값 3 — 이 시도가 통합한 소스 세대다(불변 필드).
+              resultRef: formatResultRef(BENCH, R0 + 2, T2),
+              publishedAt: 9,
+            }),
+          ),
+        }),
+      )
+    // 권위 세대가 4 로 전진했는데 완결된 시도는 세대 3 을 통합했다 — 세대 4 작업은 통합된 적이 없다.
+    expect(kinds(completed(4))).toContain('completed-txn-stale-generation')
+    // 음성 통제 — 대표하면 정상이다.
+    expect(kinds(completed(3))).not.toContain('completed-txn-stale-generation')
+  })
+
+  /**
+   * **로컬 적대 리뷰 P2(7R 반영분에 대한)** — 완결 귀속 검사 두 개가 **관측 실패를 손상 사실로 승격**
+   * 한다. 이 모듈의 원칙은 「실패를 빈 집합으로 축소하지 않는다」(§3-T78)인데, 열거가 `failed` 면
+   * `journals`·`parsedRefs` 가 비고 그 공집합이 「저널이 `finalized` 가 아니다」·「불변 ref 가 사라졌다」
+   * 라는 **적극적 주장**으로 바뀐다. 읽지 못한 파일에 대한 사실 주장이고, 정정 189 가 금지한 **가림**
+   * (한 입력에 두 사유 발화)이며, 사용자의 조치가 「IO 복구」에서 「매체 손상 대응」으로 갈린다.
+   */
+  it('완결 귀속 검사는 열거 실패를 손상으로 승격하지 않는다', () => {
+    const completedRecord = record({
+      revision: R0 + 4,
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: T2,
+      currentIntegrationTxnId: undefined,
+      currentIntegrationStage: undefined,
+      currentIntegrationTxnGeneration: undefined,
+    })
+    const journalFailed = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: completedRecord },
+        journal: { kind: 'failed', detail: 'EIO' },
+      }),
+    )
+    expect(kinds(journalFailed)).toContain('journal-enumeration-failed')
+    expect(kinds(journalFailed)).not.toContain('completed-txn-journal-unfinalized')
+
+    const refsFailed = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: completedRecord },
+        prefixRefs: { kind: 'failed', detail: 'EIO' },
+        journal: entries(
+          journal({
+            txnId: T2,
+            ...walBound('finalized'),
+            resultRef: formatResultRef(BENCH, R0 + 2, T2),
+            publishedAt: 9,
+          }),
+        ),
+      }),
+    )
+    expect(kinds(refsFailed)).toContain('ref-enumeration-failed')
+    expect(kinds(refsFailed)).not.toContain('result-ref-missing')
+  })
+
+  /**
+   * **Codex PR#289 7R P1** — 「ref 발행 이후의 상태는 ref 를 요구한다」(5R 정정 224)가 **`current`
+   * 에만** 걸려 있었다. 완결 txn 이 더 이상 current 가 아니면 그 검사는 `current === undefined`
+   * 조기 반환보다 뒤에 있어 **한 번도 평가되지 않는다** — 게시는 필연적으로 finalization 에
+   * 선행하므로(§W-8) 그 불변 ref 의 소실은 손상인데 `no-mutation` 이 나온다.
+   *
+   * 6R 정정 229 의 「검사의 위치가 곧 정의역」이 세 번째로 같은 형태를 낸 것이다.
+   */
+  it('완결 귀속 txn 의 결과 ref 소실도 blocker 다(요구가 current 에만 걸려 있었다)', () => {
+    const completedRecord = record({
+      // 완결 CAS(`finalized` 저널의 expected `R0+3` 를 맞춘 CAS)가 기록한 revision = `R0+4`.
+      // 낮게 두면 보존된 결과 ref(`R0+2`)가 앵커 후보가 돼 **다른 축**이 먼저 답한다.
+      revision: R0 + 4,
+      lifecycle: 'integrated',
+      completedIntegrationTxnId: T2,
+      currentIntegrationTxnId: undefined,
+      currentIntegrationStage: undefined,
+      currentIntegrationTxnGeneration: undefined,
+    })
+    const finalizedJournal = journal({
+      txnId: T2,
+      ...walBound('finalized'),
+      resultRef: formatResultRef(BENCH, R0 + 2, T2),
+      publishedAt: 9,
+    })
+    const withRef = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: completedRecord },
+        prefixRefs: refs([formatResultRef(BENCH, R0 + 2, T2), OID]),
+        journal: entries(finalizedJournal),
+      }),
+    )
+    // 음성 통제 — ref 가 보존돼 있으면 정상이다(검사가 완결 상태 자체를 차단하지 않는다).
+    expect(kinds(withRef)).toEqual([])
+    expect(withRef.kind).toBe('no-mutation')
+
+    const v = classifyRecovery(
+      obs({
+        authority: { kind: 'found', record: completedRecord },
+        journal: entries(finalizedJournal),
+      }),
+    )
+    expect(v.kind).toBe('reconciliation-required')
+    expect(kinds(v)).toContain('result-ref-missing')
+  })
+
+  /**
    * **Codex PR#289 6R P1** — `integrated`·`archived` 권위는 current txn 이 없어 `authorityPending`
    * 이 거짓이지만, 그 위에서 새 txn 을 **시작할 수 없으므로**(전이 불변식) 그 저널은 애초에 쓰일 수
    * 없었다. stage 의 pending 여부만 보면 그 사실을 놓친다.
@@ -1211,8 +1602,10 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
    * 숨긴다.** 면제는 「`prepared` 에서의 포기」에만 준다.
    */
   it('composed 이후의 포기는 결과 ref 를 요구한다', () => {
+    // ⚠ `composed` 에서의 포기는 `expected = R0 + 2 = N + 1` 이고 ref 는 `expected`(기본값 `N+1`)다
+    //   — 7R P1 로 포기 산술이 서면서 `N + 3` 쌍은 표현 불가가 됐다(닫힌 창엔 개입 CAS 가 없다).
     const rec = record({
-      revision: N + 3,
+      revision: N + 1,
       currentIntegrationStage: 'composed',
       currentIntegrationResultOid: OID,
     })
@@ -1222,7 +1615,7 @@ describe('P1 — 미종결 txn 위의 고아 prepared 저널', () => {
         journal: entries(
           journal({
             stage: 'abandoned',
-            expectedAuthorityRevision: N + 3,
+            expectedAuthorityRevision: N + 1,
             previousAuthorityStage: 'composed',
             nextAuthorityStage: undefined,
             abandonedAt: 9,

@@ -133,6 +133,12 @@ export type RecoveryBlockerKind =
   | 'journal-result-ref-invalid'
   /** 활성·진행 stage 인데 종결 증거(`abandonedAt`·`abandonReason`)를 들고 있다(모순 레코드). */
   | 'journal-terminal-evidence'
+  /**
+   * 포기 저널이 **`previousAuthorityStage` 에서 상속돼야 할 증거 형태**를 갖추지 못했다 —
+   * 날조된 `publishedAt`, 소거된 결과 증거 등. 위 종별의 **반대 방향**이라 이름을 나눈다
+   * (쓰기 경로의 증거 동결은 착지한 레코드를 보는 복구에서 재사용할 수 없다).
+   */
+  | 'journal-abandon-evidence-invalid'
   /** 설명되지 않는 `refRevision > record.revision` — 앵커 발화. */
   | 'anchor-rollback'
   | 'result-ref-mismatch'
@@ -144,6 +150,11 @@ export type RecoveryBlockerKind =
   | 'current-txn-journal-missing'
   /** 완결 귀속 txn 의 저널이 `finalized` 가 아니다(활성·published·abandoned 전부 손상 증거). */
   | 'completed-txn-journal-unfinalized'
+  /**
+   * 완결 귀속 txn 이 **현 소스 세대를 대표하지 않는다**(§W-8 완결 CAS 5연언 중 세대 항) — 그 시도가
+   * 통합한 세대 **이후의 작업**이 통합된 적 없는데 bench 가 `integrated` 로 기록됐다(부분 통합 은폐).
+   */
+  | 'completed-txn-stale-generation'
   | 'orphan-active-journal'
 
 /** 앵커 후보가 **면제**에 실패한 조건(계획 정정 199ⓒ). 전수를 싣는다 — 첫 사유만 남기면 진단이 좁아진다. */
@@ -210,6 +221,19 @@ interface ParsedRef {
   readonly resultingRevision: number
   readonly txnId: string
 }
+
+/**
+ * 결과·게시 증거의 **도입 단계**(`journal.ts` 의 `EVIDENCE_FIELDS` introducer 와 같은 표).
+ *
+ * 포기 저널은 `previousAuthorityStage` 까지의 증거를 **상속**하므로, 그 stage 가 도입 단계 이상이면
+ * 그 필드는 **필수**이고 미만이면 **금지**다. 쓰기 경로가 같은 규칙을 강제하지만 복구는 착지한
+ * 레코드만 보므로(Codex PR#289 7R P1) 여기서 독립적으로 요구한다.
+ */
+const ABANDON_EVIDENCE = [
+  ['resultTree', 'composed'],
+  ['resultOid', 'composed'],
+  ['publishedAt', 'published'],
+] as const
 
 const blocker = (
   kind: RecoveryBlockerKind,
@@ -450,8 +474,7 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       //
       //   prepared(0) → ref = expected + 2 · composed(1) → +1 · published(2) → +0 · finalized(3) → -1
       //
-      // ⚠ `abandoned` 는 **정의역 밖**이다 — 어느 단계에서 포기했는지에 따라 expected 가 달라져 식이
-      //    하나로 고정되지 않는다(포기 시점의 관측 revision 을 싣는다).
+      // ⚠ `abandoned` 도 **산술 정의역 안**이다(7R P1 이 초안의 면제를 폐기했다 — 아래 `abandonBound`).
       // **종결 증거는 모든 admitted 저널에서 본다**(Codex PR#289 6R P1). 초안은 이 검사를 **앵커
       // 면제 평가 안에만** 뒀는데, post-CAS `composed` 저널의 ref 는 revision 이 권위와 같아 후보가
       // 되지 않으므로 그 경로에 **영영 도달하지 않는다** — `abandonedAt`·`abandonReason` 을 든 채
@@ -463,19 +486,65 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
       //   revision 이 정확히 +1 이고 등식이 성립한다. 그런데 `finalized` 저널은 **외부 소비자 머지 관측
       //   이후**에 기록되고 그 사이의 활동·회수·보관 CAS 가 `expected` 를 올리므로, 불변 필드인
       //   `resultRef` 의 revision 은 `expected` **이하**로만 보장된다.
+      // ⚠ **`abandoned` 는 stage 순서 밖이지만 산술 밖은 아니다**(Codex PR#289 7R P1). 초안은
+      //   `stageIndex < 0` 로 단락시켜 **모든 revision 을 통과**시켰는데, 그 면제의 근거였던 「포기
+      //   시점에 따라 expected 가 달라져 식이 하나로 고정되지 않는다」는 5R 정정 223 이 이미 답한
+      //   형태다 — **「stage 마다 다르다」는 면제의 근거가 아니라 식을 찾으라는 신호다.**
+      //   정의역은 `previousAuthorityStage`(=P)가 준다.
+      // ⚠ **등식이 아니라 밴드다**(로컬 적대 리뷰 P1 — 초안의 등식이 정상 상태를 오분류했다). `P` 는
+      //   권위 stage 가 아니라 **직전 저널 stage** 이고(append 가 디스크 stage 와 일치를 강제한다),
+      //   WAL 은 선기록이므로 저널이 P 일 때 권위는 **P(post-CAS)** 이거나 **P-1(pre-CAS 크래시 창 ·
+      //   §3-T83 이 정상으로 고정한 상태)** 이다. 그래서 `expected` 는 `R0 + idx(P) + 1` 또는
+      //   `R0 + idx(P)` 이고, 절대식 `ref = R0 + 2` 를 대입하면
+      //   **`expected + 1 - idx(P) ≤ ref ≤ expected + 2 - idx(P)`** 다.
+      // ⚠ 열린 창(P ∈ {published, finalized})은 개입 CAS 가 `expected` 를 올리므로 **하한을 뗀다**
+      //   (정정 233 과 같은 근거). ⚠ **정직 표기**: 그 arm 은 상한만 남으므로 형제(비-current) 포기
+      //   저널이 `P = finalized` 를 주장하면 임의로 낮은 revision 이 통과한다 — `expected` 를 대조할
+      //   권위 축이 그 저널에는 없기 때문이다(면제 이전보다 좁지만 닫히지는 않았다).
+      // ⚠ `previousAuthorityStage` 부재는 **fail-closed** 다: 파서가 그 필드를 optional 로 허용하므로,
+      //   부재를 통과시키면 필드를 지우는 것만으로 이 결속을 통째로 우회한다.
+      // 막힌 대역: 이 검사가 없으면 `refRevision ≤ record.revision` 전체가 무검사다(높은 쪽만 앵커가
+      // 잡는다) — 그 상태가 청소되고 나면 권위 롤백을 증언할 유일한 증인이 침묵한다.
       const stageIndex = WAL_STAGE_ORDER.indexOf(j.stage)
+      const abandonedFrom =
+        j.stage === 'abandoned' && j.previousAuthorityStage !== undefined
+          ? WAL_STAGE_ORDER.indexOf(j.previousAuthorityStage)
+          : -1
+      const abandonFloor = j.expectedAuthorityRevision + 1 - abandonedFrom
+      const abandonCeil = abandonFloor + 1
       const revisionBound =
-        stageIndex < 0 ||
-        (named.kind === 'ok' &&
-          (j.stage === 'finalized'
+        named.kind === 'ok' &&
+        (j.stage === 'abandoned'
+          ? abandonedFrom >= 0 &&
+            named.resultingRevision <= abandonCeil &&
+            (abandonedFrom >= WAL_STAGE_ORDER.indexOf('published') ||
+              named.resultingRevision >= abandonFloor)
+          : j.stage === 'finalized'
             ? named.resultingRevision <= j.expectedAuthorityRevision
-            : named.resultingRevision === j.expectedAuthorityRevision + 2 - stageIndex))
+            : named.resultingRevision === j.expectedAuthorityRevision + 2 - stageIndex)
+      // **상속 증거의 형태도 복구가 독립적으로 요구한다**(Codex PR#289 7R P1). 초안은 포기 저널에서
+      // 종결 필드의 **존재**만 봤고, 결과·게시 증거가 `previousAuthorityStage` 와 정합하는지는
+      // **쓰기 경로**(`journal.ts` 의 증거 동결)에만 있었다 — 그런데 **복구는 착지한 레코드만 본다**.
+      // 그 방어가 돌지 않은 디스크 상태(롤백·손상)에서 `composed` 포기가 날조된 `publishedAt` 을,
+      // `published` 포기가 소거된 게시 시각을 들고도 `idempotent-cleanup` 을 받았다.
+      // ⚠ 6R 의 「종결 증거는 모든 admitted 저널에서」와 **반대 방향**이라 종별을 나눈다.
+      const abandonEvidenceInvalid =
+        j.stage === 'abandoned' &&
+        abandonedFrom >= 0 &&
+        ABANDON_EVIDENCE.some(
+          ([field, introducer]) =>
+            abandonedFrom >= WAL_STAGE_ORDER.indexOf(introducer) !== (j[field] !== undefined),
+        )
       if (!nameBound || !revisionBound) {
         blockers.push(blocker('journal-result-ref-invalid', entry.txnId))
         continue
       }
       if (terminalEvidence) {
         blockers.push(blocker('journal-terminal-evidence', entry.txnId))
+        continue
+      }
+      if (abandonEvidenceInvalid) {
+        blockers.push(blocker('journal-abandon-evidence-invalid', entry.txnId))
         continue
       }
       journals.set(j.txnId, j)
@@ -613,11 +682,40 @@ export function classifyRecovery(obs: RecoveryObservation): RecoveryVerdict {
   // txn 의 저널은 정상 상태에서 `finalized` 다」인데, 초안은 이 검사를 **활성 stage 루프 안**에 둬서
   // 그 txn 의 저널이 `published`·`abandoned` 로 남은 경우를 놓쳤다 — 6R 정정 229 가 지적한 「검사의
   // 위치가 곧 정의역」의 같은 형태다. 종별도 그 사실에 맞춰 개명한다.
+  // ⚠ **열거 실패는 손상 사실이 아니다**(로컬 적대 리뷰 P2). `journals`·`parsedRefs` 는 열거가 `failed`
+  //   여도 비어 있으므로, 가드 없이 「부재 = 손상」을 주장하면 **읽지 못한 파일에 대한 사실 주장**이
+  //   된다 — 이 모듈의 「실패를 빈 집합으로 축소하지 않는다」(§3-T78)와 정면 충돌이고, 한 입력에 두
+  //   사유를 발화해 진단을 가린다(정정 189). 실패는 이미 자기 종별로 답했다.
   const completedTxnId = record?.completedIntegrationTxnId
-  if (completedTxnId !== undefined) {
+  if (record !== undefined && completedTxnId !== undefined && obs.journal.kind === 'ok') {
+    // ⚠ **부재도 위반이다**(Codex PR#289 7R P1). 초안은 `!== undefined` 를 전제로 걸어서, 저널 열거가
+    //   비면 검사를 통째로 건너뛰고 뒤이은 `current === undefined` 반환이 그 상태를 `no-mutation`
+    //   (무변이 적격)으로 답했다 — **삭제·롤백된 저널이 양성으로 숨는다.** 저널은 **감사 보존**이고
+    //   (§W-7 「복구 중 삭제 금지」 · spec:1005·1330 — 포기조차 파일을 남긴다) 완결 txn 은 `finalized`
+    //   저널을 반드시 남기므로, 부재는 정상 상태가 아니라 손상이다.
     const completedJournal = journals.get(completedTxnId)
-    if (completedJournal !== undefined && completedJournal.stage !== 'finalized') {
+    if (completedJournal === undefined || completedJournal.stage !== 'finalized') {
       blockers.push(blocker('completed-txn-journal-unfinalized', completedTxnId))
+    } else if (completedJournal.sourceGeneration !== record.sourceGeneration) {
+      // **완결은 현 소스 세대를 대표해야 한다**(Codex PR#289 7R P1 · §W-8 완결 CAS 5연언). 열린 창에서의
+      // 실행(C6 · §3-T33 이 정상으로 요구)이 `sourceGeneration` 을 올린 뒤 완결하면, 그 세대의 작업은
+      // 통합된 적 없는데 bench 가 `integrated` 로 기록돼 **부분 통합이 숨는다**.
+      // ⚠ **판정에 쓰는 값은 저널의 불변 `sourceGeneration`** 이다(T71 불변 12필드 — 그 시도가 통합한
+      //   소스 세대). 권위의 `currentIntegrationTxnGeneration` 은 저널 `integrationGeneration`
+      //   (「`prepared` 마다 +1」= **시도 카운터**)과 묶이는 값이라 등치하면 「활동 2회 뒤 첫 통합」 같은
+      //   정상 흐름을 막는다 — 로컬 적대 리뷰가 초안의 그 오류를 실측으로 적발했다.
+      // ⚠ 그래서 이 검사는 권위 레코드 두 장만 보는 **전이 불변식 층에서는 불가능**하다(저널 불가시).
+      //   CAS 시점의 강제는 완결 관측 생산자(PR5)의 몫이고, 이 층은 **착지한 레코드의 감사**다.
+      blockers.push(blocker('completed-txn-stale-generation', completedTxnId))
+    } else if (
+      obs.prefixRefs.kind === 'ok' &&
+      !parsedRefs.some((r) => r.txnId === completedTxnId)
+    ) {
+      // ⚠ **ref 요구도 완결 txn 에 걸어야 한다**(Codex PR#289 7R P1). 5R 정정 224 의 요구는 아래
+      //   `current` 정의역에만 있어서, 완결 txn 이 더 이상 current 가 아니면 `current === undefined`
+      //   조기 반환보다 뒤라 **한 번도 평가되지 않았다**. 게시는 필연적으로 finalization 에
+      //   선행하므로(§W-8) 그 불변 ref 의 소실은 손상이고 `no-mutation` 으로 답할 수 없다.
+      blockers.push(blocker('result-ref-missing', completedJournal.resultRef))
     }
   }
 

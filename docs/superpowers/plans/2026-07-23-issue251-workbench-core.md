@@ -1407,7 +1407,7 @@ U+0000 이 섞였고 발견 경로는 게이트가 아니라 `grep` 이 그 파�
 
 | # | 지적 → 확정 | 근거 |
 |---|---|---|
-| 223 | **결과 ref 의 revision 산술은 stage 전수에 고정된다** — `ref = expected + 2 - stageIndex` | 4R 에서 나는 「`expected+1` 은 composed 에서만 성립」이라며 **다른 stage 를 면제**했는데, 정확한 답은 면제가 아니라 **stage 별 식**이었다. `resultRef` 는 불변이고 ref 는 composed CAS 앞에서 한 번만 발행되므로, `prepared` 저널이 관측한 revision 을 `R0` 라 하면 **ref = R0 + 2 고정**이고 `expected = R0 + stageIndex` 다. ⚠ `abandoned` 만 정의역 밖이다(포기 시점에 따라 expected 가 달라진다). ⚠ **정정 233 이 이 「만」을 좁혔다** — `finalized` 는 정의역 안이지만 **등식이 아니라 상한**(`ref ≤ expected`)이다. 이 행만 읽고 `finalized → expected - 1` 등식을 세우면 그것이 233 이 적발한 설계급 결함(정상 상태의 영구 `reconciliation-required` · `resume-composed-cas` 도달 불가)이다 |
+| 223 | **결과 ref 의 revision 산술은 stage 전수에 고정된다** — `ref = expected + 2 - stageIndex` | 4R 에서 나는 「`expected+1` 은 composed 에서만 성립」이라며 **다른 stage 를 면제**했는데, 정확한 답은 면제가 아니라 **stage 별 식**이었다. `resultRef` 는 불변이고 ref 는 composed CAS 앞에서 한 번만 발행되므로, `prepared` 저널이 관측한 revision 을 `R0` 라 하면 **ref = R0 + 2 고정**이고 `expected = R0 + stageIndex` 다. ⚠ `abandoned` 만 정의역 밖이다(포기 시점에 따라 expected 가 달라진다). ⚠ **정정 236(7R)이 이 면제를 폐기했다** — 포기의 식은 `previousAuthorityStage` 가 준다(`ref = expected + 1 - idx(P)`). 「식이 하나로 고정되지 않는다」는 관찰은 이 행 자신의 논거(면제가 아니라 식을 찾으라)에 걸린다. ⚠ **정정 233 이 이 「만」을 좁혔다** — `finalized` 는 정의역 안이지만 **등식이 아니라 상한**(`ref ≤ expected`)이다. 이 행만 읽고 `finalized → expected - 1` 등식을 세우면 그것이 233 이 적발한 설계급 결함(정상 상태의 영구 `reconciliation-required` · `resume-composed-cas` 도달 불가)이다 |
 | 224 | **ref 발행 이후의 상태는 ref 를 요구한다** — post-CAS composed · `published` · `finalized` | 발행이 composed CAS **앞**이므로 그 상태에서 ref 가 **사라진 것**은 프로토콜상 불가능한데, 초안은 `no-mutation`(포기·재준비 적격)을 답해 **ref 롤백·손상을 그대로 숨겼다** → 신설 종별 `result-ref-missing`. `abandoned` 는 제외(`prepared` 에서 포기하면 ref 가 존재한 적 없다) |
 | 225 | **완결 귀속은 결과 증거를 전제한다** — `prev.currentIntegrationResultOid` 부재면 거부 | 3R 정정 217 은 **txn identity 만** 봤다. `prepared` 상태의 T1 을 그대로 `integrated`+`completed: T1` 로 커밋해도 두 층이 통과해 **결과가 존재한 적 없는 bench 가 완결로 기록**된다. ⚠ 도달성 자체는 여전히 §W-8 소관(정직 표기 유지) |
 | 226 | **lifecycle 은 통합 축과 독립으로 단조다**(`open → integrated → archived`) | 통합 축을 건드리지 않는 CAS 는 그 축의 검사를 **통째로 건너뛴다**(정정 195 의 no-op 규칙). 그래서 archived 레코드를 `archivedBranch` 만 떼고 `open` 으로 되돌리는 제출이 **어느 층에도 걸리지 않았다** — 종결된 bench 가 되살아난다. lifecycle 검사를 통합 축 **밖**에 세운다 |
@@ -1489,6 +1489,29 @@ prepare/re-prepare 시작 금지」에 **`abandon` 도 포함**한다 — 포기
 형태로 세 번 학습했다(정정 133·152·156 의 「검증 안 된 안전 주장의 문서화」 · [[static-guard-form-over-name]]).
 **규율**: 방어를 **생략**하는 근거로 다른 층을 인용할 때는 그 층의 **규칙 이름과 줄**을 주석에 적는다 —
 적을 수 없으면 그 층은 없는 것이다.
+
+**Codex 7R — P1×5 · 전부 실재 · 전부 수용.** 이번 라운드의 축은 **면제와 조기 반환**이다 — 정의역을
+좁힌 것이 셋(`abandoned` 산술 면제 · 존재 전제 · `current` 한정), 5연언 중 빠진 항이 하나다.
+
+| # | 지적 → 확정 | 근거 |
+|---|---|---|
+| 236 | **`abandoned` 도 산술 정의역 안이다** — 결속은 **밴드**다: `expected + 1 - idx(P) ≤ ref ≤ expected + 2 - idx(P)`(P = `previousAuthorityStage` · 열린 창은 **하한을 뗀다**) · `P` 부재는 **fail-closed**. ⚠ **정정 223 의 「`abandoned` 만 정의역 밖」을 폐기한다.** ⚠ **초안의 등식은 로컬 적대 리뷰가 P1 으로 되돌렸다** — `P` 는 권위 stage 가 아니라 **직전 저널 stage** 이고 WAL 은 선기록이라, 저널이 P 일 때 권위는 P(post-CAS) **또는 P-1**(pre-CAS 크래시 창 · §3-T83 이 정상으로 고정)이다. 등식은 그 창의 포기를 1 어긋나게 만들어 **영구 `reconciliation-required`** 로 고착시켰다(저널은 삭제 금지·바이트 동일 재기록만 허용). 정정 233 과 동형의 재발이며 이번엔 상한으로도 부족해 **밴드**여야 했다. ⚠ **정직 표기**: 열린 창 arm 은 상한만 남아, 형제(비-current) 포기 저널이 `P = finalized` 를 주장하면 임의로 낮은 revision 이 통과한다(그 저널에는 `expected` 를 대조할 권위 축이 없다) — 면제보다 좁지만 닫히지 않았다 | 면제의 근거였던 「포기 시점에 따라 expected 가 달라져 식이 하나로 고정되지 않는다」는 5R 정정 223 이 이미 답한 형태다 — **「stage 마다 다르다」는 면제의 근거가 아니라 식을 찾으라는 신호다.** 포기 저널은 `previousAuthorityStage` 를 반드시 싣고(`canAdvanceStage` + append 의 디스크 stage 대조) 포기 CAS 는 권위가 P 를 커밋한 뒤 pending 이므로 `expected = R0 + idx(P) + 1` 이고, 절대식 `ref = R0 + 2` 를 대입하면 식이 나온다. 무검사 대역은 **`refRevision ≤ record.revision` 전체**였다(높은 쪽만 앵커가 잡는다) — 낡은 이름이 청소를 통과하면 이후 권위 롤백을 증언할 유일한 증인이 침묵한다. ⚠ 이 면제가 **존재할 수 없는 픽스처 2건**(닫힌 창에 개입 CAS 3회)을 정상으로 고정해 온 것이 그 자체로 방증이다 — 4R 교훈(「픽스처의 비현실성이 방어의 공백을 가린다」)의 재발 |
+| 237 | **포기 저널의 상속 증거 형태를 복구가 독립 요구한다**(신설 종별 `journal-abandon-evidence-invalid`) | 초안은 종결 필드의 **존재**만 봤다. 결과·게시 증거가 `previousAuthorityStage` 와 정합하는지는 **쓰기 경로**(`journal.ts` 의 `EVIDENCE_FIELDS` 도입 단계 제한)에만 있는데, **복구는 착지한 레코드만 본다** — 그 방어가 돌지 않은 디스크 상태에서 `composed` 포기가 날조된 `publishedAt` 을, `published` 포기가 소거된 게시 시각을 들고도 `idempotent-cleanup` 을 받았다. 6R 정정 229 의 「종결 증거는 admitted 전수에서」와 **반대 방향**이라 종별을 나눈다 |
+| 238 | **완결 귀속 txn 의 저널 **부재**도 blocker 다** | 정정 234ⓐ 가 검사를 활성 게이트 밖으로 옮겼지만 `!== undefined` **존재 전제**가 남아, 저널 열거가 비면 검사를 건너뛰고 `current === undefined` 반환이 `no-mutation` 을 답했다. 저널은 **감사 보존**이라(포기조차 파일을 남긴다) 부재는 삭제·롤백이라는 손상이다. 「검사의 위치가 곧 정의역」(229)의 변주 — 이번엔 **존재 전제**가 정의역을 좁혔다 |
+| 239 | **결과 ref 요구를 완결 txn 에도 건다** | 5R 정정 224 의 요구가 `current` 정의역에만 있어, 완결 txn 이 더 이상 current 가 아니면 `current === undefined` 조기 반환보다 뒤라 **한 번도 평가되지 않았다**. 게시는 필연적으로 finalization 에 선행하므로(§W-8) 그 불변 ref 의 소실은 손상이다 |
+| 240 | **완결 귀속은 현 소스 세대를 대표해야 한다** — 판정은 **저널의 불변 `sourceGeneration` 과 권위 `sourceGeneration` 의 대조**이고 위치는 **복구 판정 층**이다(신설 종별 `completed-txn-stale-generation`) | §W-8 은 완결 CAS 를 「txn 동일 ∧ valid/current ∧ **현 소스 세대 대표** ∧ 활성/시작-중 편집 활동 없음 ∧ 전이 가능」의 5연언으로 규정하는데, 3R(정정 217 txn 동일)·5R(정정 225 결과 증거) 뒤로 **세대 항만 비어 있었다**. 도달 경로는 전 단계가 합법이다: gen 3 준비·게시 → **열린 창에서 실행**(C6·§3-T33 이 정상으로 요구)이 `sourceGeneration` 을 올림 → 활동 종료(세대는 되돌리지 않는다) → 완결 관측 ⇒ 세대 4 작업이 통합된 적 없는데 bench 가 `integrated` 로 기록돼 **부분 통합이 숨는다**. ⚠ 단일 레코드 불변식 ④(`<=`)는 그 **격차 상태**를 허용하지만 **스키마가 상태를 허용하는 것과 전이가 완결을 허가하는 것은 다른 질문**이다 — 로컬 검증의 한 렌즈가 정확히 이 혼동으로 REFUTED 를 냈다. ⚠ **초안은 위치와 값을 둘 다 틀렸고 로컬 적대 리뷰가 P1 으로 적발했다** — 전이 불변식 층에 `currentIntegrationTxnGeneration === sourceGeneration` 을 걸었는데, ⓐ그 필드는 저널 `integrationGeneration`(「`prepared` 마다 +1」= **시도 카운터** · `recovery.ts` 의 stage 결속·면제 조건이 그렇게 묶는다)과 같은 값이라 활동 카운터와 등치하면 **「활동 2회 뒤 첫 통합」 같은 정상 흐름이 막히고**(실측), ⓑ완결 CAS 가 통합 축을 소거하는 형태에서는 next 측 조건이 **구조적으로 만족 불가**였다. 「어느 세대의 결과인가」를 싣는 값은 저널의 **불변** `sourceGeneration`(T71 불변 12필드)이고 그것은 권위 레코드 두 장만 보는 전이 층에서 **보이지 않는다**. ⚠ CAS 시점의 강제는 완결 관측 생산자(PR5)의 몫이며, 이 PR 은 **착지한 레코드의 감사**를 맡는다 — 「생산자 부재」가 방어를 면제하지는 않지만, **틀린 층에 이름만 남기면 「검사한다」로 읽힌다**(정정 234 의 잣대). ⚠ 막다른 길이 아니다 — txn 은 `finalized` 로 남고 lifecycle 은 `open` 이라 재준비(§W-8 「명시 액션 = 새 txn」)가 가능하다 |
+| 241 | **관측 실패를 손상 사실로 승격하지 않는다** — 완결 귀속의 저널·ref 검사에 `kind === 'ok'` 가드 | 열거가 `failed` 여도 `journals`·`parsedRefs` 는 비므로, 가드 없이 「부재 = 손상」을 주장하면 **읽지 못한 파일에 대한 사실 주장**이 된다(§3-T78 「실패를 빈 집합으로 축소하지 않는다」 위반 · 정정 189 가 금지한 가림). 진단이 「IO 복구」에서 「매체 손상 대응」으로 갈린다. 로컬 적대 리뷰 P2×2 |
+
+**교훈(7R·2) — 반영이 만든 P1 이 3건이다(236 등식 · 240 위치·값 · 241 승격).** 셋 다 **로컬 적대 리뷰가
+잡았고 봇 지적 자체는 옳았다** — 틀린 것은 내 **처방**이었다. 특히 240 은 봇이 제안한 필드
+(`currentIntegrationTxnGeneration`)를 그대로 받아 쓴 결과다. **규율**: 지적이 실재해도 **처방은 별도로
+검증한다** — 지적이 지목한 필드가 그 의미를 정말 싣는지(생산자·소비자 양쪽에서) 확인하고, 새 검사가
+**어느 정의역에서 참인지**를 픽스처로 고정하기 전에는 착지시키지 않는다.
+
+**교훈(7R) — 「정의역을 좁히는 세 가지 형태」가 한 라운드에 다 나왔다.** ⓐ**면제**(`stageIndex < 0`
+단락) ⓑ**존재 전제**(`!== undefined` 뒤에 검사를 건다) ⓒ**조기 반환보다 뒤**(`current` 한정). 셋 다
+「검사는 있다」는 인상을 남기면서 실제 정의역은 비어 있다. **규율**: 방어를 세울 때 그 검사의
+**정의역을 문장으로 적고**(「어떤 입력 집합에 대해 참인가」) 그 집합의 **경계마다 픽스처를 하나씩** 둔다.
 
 ### PR3 — `GitRepo` 완성 · 통합 WAL 저널
 
