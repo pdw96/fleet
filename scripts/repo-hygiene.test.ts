@@ -69,15 +69,79 @@ describe('ci.yml quality 잡 — 단일 verify 진입(#175 item2 재drift 차단
 })
 
 /**
- * 소스 위생 — **원시 NUL 바이트 금지**(#251 PR1b 가 `src/**` 에 신설한 가드의 레포 전역 확장).
+ * 소스 위생 — **원시 제어문자 금지**(#251 PR1b `src/**` → PR1c 레포 전역 → 여기서 **문자 범위 확장**).
  *
  * git 은 NUL 이 있는 파일을 **바이너리로 분류**하므로 PR diff 가 「Binary files … differ」가 되고
  * ripgrep 도 라인을 내지 않는다 — 이 레포의 리뷰(Codex·CodeRabbit)는 diff 를 읽는 봇에 의존하므로
  * 파일 하나가 통째로 리뷰 사각으로 사라진다(PR1b 에서 실제로 발생). 그 가드가 `src/**` 의 `.ts/.tsx`
  * 에만 걸려 있어 `scripts/`·`e2e/`·`deploy/` 는 무방비였다(자체 적대 리뷰 R6-4 · prettier·tsc 도 NUL 을
  * 그대로 통과시킨다). 제어문자는 이스케이프(`\u0000`)로 쓴다.
+ *
+ * ## 왜 NUL 만으로는 부족한가 (#251 PR3c 실측)
+ *
+ * PR3c 가 `recovery.ts` 에 **U+0001** 을 실어 착지시켰고 `npm run verify` **7게이트가 전부 통과**했다.
+ * 발견자는 게이트가 아니라 외부 리뷰어(CodeRabbit)였다. 문자별 프로브가 경계를 정확히 그린다 —
+ * **U+0000 = RED(잡힘)** · **U+0001 · U+001F · U+007F = 통과(무신호)**. 이 가드는 **NUL 만** 보고 있었다.
+ *
+ * NUL 이 아닌 제어문자는 diff 를 바이너리로 접지는 않지만 **소스에서 보이지 않는다** — 리뷰어는
+ * `join('')` 로 읽는데 실제로는 다른 구분자가 돌고, 문자열 상수·정규식 리터럴에 섞이면 값이 조용히
+ * 달라진다. 「보이지 않는 바이트가 의미를 바꾼다」는 축이 같으므로 **C0/C1 전반**으로 넓힌다.
+ *
+ * 허용은 **탭·LF·CR** 뿐이다(CR 은 win32 체크아웃의 CRLF 때문에 필수).
+ *
+ * ⚠ **패턴을 이스케이프 문자열로 만든다.** 문자 클래스에 raw 제어문자를 적으면 **이 가드 자신이
+ * 오염원**이 된다 — PR3c 에서 이 규율을 적는 편집이 실제로 8건을 재생산했다.
+ *
+ * ⚠ `no-control-regex` 를 **이 한 줄에서만** 끈다. 그 규칙의 목적(제어문자가 정규식에 실수로 들어가는
+ * 것)과 이 줄의 목적(제어문자를 **찾는** 것)이 정확히 반대다. 규칙을 config 에서 끄면 나머지 레포가
+ * 방어를 잃으므로 범위를 한 줄로 묶는다.
  */
-describe('소스 위생 — 리뷰 대상 텍스트에 원시 NUL 0건(#251 PR1c)', () => {
+const CONTROL_CHAR_RE = new RegExp(
+  // eslint-disable-next-line no-control-regex -- 제어문자 탐지가 이 상수의 존재 이유다
+  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F]',
+  'g',
+)
+
+/** 위반 위치를 `파일:줄 U+XXXX` 로 답한다 — 「몇 건」만 알면 고칠 수가 없다. */
+const findControlChars = (text: string, label = ''): string[] => {
+  const hits: string[] = []
+  text.split('\n').forEach((line, i) => {
+    for (const m of line.matchAll(CONTROL_CHAR_RE)) {
+      const code = m[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')
+      hits.push(`${label}${label ? ':' : ''}${i + 1} U+${code}`)
+    }
+  })
+  return hits
+}
+
+/**
+ * **판정식 자기검사**(양성 통제). 레포가 깨끗할 때 아래 전수 스캔은 **항진**이라 판정식이 망가져도
+ * 초록이다 — 그 vacuous-GREEN 을 막는 것이 이 블록이다. PR3c 가 실제로 흘린 두 문자를 회귀 핀으로 둔다.
+ */
+describe('소스 위생 — 제어문자 판정식 자기검사', () => {
+  it('C0/C1 을 전부 잡는다(PR3c 가 흘린 U+0000·U+0001 포함)', () => {
+    for (const code of [0x00, 0x01, 0x07, 0x08, 0x0b, 0x0c, 0x0e, 0x1f, 0x7f, 0x80, 0x9f]) {
+      const probe = `const a = 'x${String.fromCharCode(code)}y'`
+      expect(findControlChars(probe), `U+${code.toString(16)} 를 놓쳤다`).toHaveLength(1)
+    }
+  })
+
+  it('탭·LF·CR 은 허용한다(win32 CRLF 체크아웃이 전량 RED 가 되면 안 된다)', () => {
+    expect(findControlChars('a\tb\r\nc\nd\r\n')).toEqual([])
+  })
+
+  it('비ASCII 를 오탐하지 않는다(한글·이모지·전각)', () => {
+    expect(findControlChars('한글 · 이모지 🚀 · 전각Ａ · 결합문자 é')).toEqual([])
+  })
+
+  it('위치를 파일:줄 U+XXXX 로 답한다', () => {
+    expect(findControlChars(`ok\nbad${String.fromCharCode(1)}here`, 'f.ts')).toEqual([
+      'f.ts:2 U+0001',
+    ])
+  })
+})
+
+describe('소스 위생 — 리뷰 대상 텍스트에 원시 제어문자 0건(#251 PR1c · PR3c 범위 확장)', () => {
   const ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github']
   const EXT = /\.(?:ts|tsx|mjs|cjs|js|sh|ya?ml|json|md)$/
   const files: string[] = []
@@ -98,5 +162,9 @@ describe('소스 위생 — 리뷰 대상 텍스트에 원시 NUL 0건(#251 PR1c
 
   it('원시 NUL 바이트가 0건이다(리뷰 diff 가 바이너리로 접히지 않는다)', () => {
     expect(files.filter((f) => readFileSync(f).includes(0))).toEqual([])
+  })
+
+  it('NUL 외 C0/C1 제어문자도 0건이다(소스에서 보이지 않는 바이트가 의미를 바꾼다)', () => {
+    expect(files.flatMap((f) => findControlChars(read(f), f))).toEqual([])
   })
 })
