@@ -336,7 +336,10 @@ describe('T2 — 배포 실패 모드 분기(실측 근거 · 조용한 폴백 �
     expect(r.status === 'disabled' && r.reason).toBe('not-a-repo')
   })
 
-  it.runIf(process.platform !== 'win32')(
+  // root(uid 0)는 mode 비트를 우회해 `chmod 0o500` 으로도 EACCES 를 주입할 수 없다 — 실패 주입이
+  // 성립하지 않으므로 가시적으로 skip 한다(근거·선례는 `workbench/active-instance.test.ts` 의
+  // `CAN_DENY_WRITE` 주석).
+  it.runIf(process.platform !== 'win32' && process.getuid?.() !== 0)(
     '영역 디렉터리 생성이 EACCES 면 io-failure — 성공으로 위장하지 않는다(POSIX)',
     async () => {
       const base = mkTmp()
