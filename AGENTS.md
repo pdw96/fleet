@@ -180,8 +180,9 @@ Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회
 - **자가(로컬) 적대 리뷰 계층화(토큰 효율).** 자가리뷰(fleet-pr-review 스킬)는 봇과 렌즈가 겹치지
   않게 계층화한다 — 양봇이 리뷰할 일반 PR 은 **봇 공백 렌즈**(프레임 전복·성능 정량·커버리지·동적
   검증 — Codex 502건 실측 분류의 공백 축)만 기본 가동하고, 위 P1 신호(계약·보안) 접점 또는 Codex
-  미가용 대체 시에만 풀 렌즈로 확장한다. **축소 적용의 전제 = 머지 전 Codex 리뷰 완료(리뷰 또는
-  👍 clean) 확인** — Codex 는 required check 가 아니므로(ADR-0001), 무응답 fallback 으로 머지하려면
+  미가용 대체 시에만 풀 렌즈로 확장한다. **축소 적용의 전제 = 머지 전 Codex 리뷰 완료(공식 리뷰
+  또는 무결 리뷰 코멘트) 확인** — 👍 리액션은 확인 채널이 아니다(commit 결속이 없다 · 아래 44R 절 ·
+  hook 에서 폐기됨). Codex 는 required check 가 아니므로(ADR-0001), 무응답 fallback 으로 머지하려면
   P1 신호 렌즈를 포함한 풀 렌즈 자가리뷰가 선행되어야 하고, 그 근거를 담은 OWNER 코멘트에
   head-결속 마커 `[codex-gate-fallback] head=<현재 head SHA>` 로 **시작하는** 코멘트를 해당 PR 에
   남겨야 머지 게이트 hook 이 통과시킨다(첫머리 앵커 — 인용·질문 불인정, 감사 가능 경로 —
@@ -266,7 +267,33 @@ project number `1`, owner `pdw96`).
 플래그(add→read→remove 라운드트립 실측 정상). GitHub 퍼블릭 프리뷰·동일 레포 한정 →
 prose 「<M> 선행」 주석 대신 플랫폼 관계로 인코딩(트랙 진행 시 막힌 이슈가 보드/이슈에서 가시화).
 보드 추가는 **Auto-add 워크플로가 `tier:` 라벨 매칭 시 자동**(수동 fallback: `gh project item-add 1 --owner pdw96 --url …`). 기능
-이슈는 `enhancement` 유지. 차기 작업 공급원 = #27 말미 🔬 컷오프 갭 / Hermes 후보 또는 재랭킹.
+이슈는 `enhancement` 유지. 차기 작업 공급원 = #27 말미 🔬 컷오프 갭 / Hermes 후보. **재랭킹은
+정기 절차가 아니라 트리거 기반이다**(ADR-0018 — 신규 외부 입력·큐 고갈 등 트리거 발생 시에만
+`fleet-backlog-rerank` 를 돌린다. 14차 이후 미실행이 정상 상태).
+
+### 릴리스 절차 (ADR-0018 — 2주 고정 리듬)
+
+출하는 「준비되면」이 아니라 **주기**다. v0.1.0 이후 79 PR 이 머지되는 동안 릴리스가 0건이던 상태를
+닫기 위한 절차이며, ADR-0018 의 net-zero 짝(재랭킹 트리거 격하)과 함께 도입됐다.
+
+**1.0 표면 = Windows / Linux 데스크톱 전용 · 미서명**(ADR-0017). macOS·셀프호스트 서버는 post-1.0 —
+서버 번들은 `electron-builder.yml` 이 asar 에서 제외하므로 배포 아티팩트에 실리지 않는다.
+
+릴리스 태그 push 전 체크리스트:
+
+1. **버전** — `package.json` version 상향. 태그는 정확히 `v${version}`(`release.yml` 이 불일치를 하드 실패).
+2. **CHANGELOG** — 해당 버전 절 작성. 릴리스 노트는 이 절을 `--notes-file` 로 주입하며, 미서명 경고
+   우회 안내 푸터가 함께 붙는지 확인한다(#304).
+3. **순서 규칙** — v0.1.0 잔존 설치본은 `allowPrerelease = true` 로 나갔다. **stable 태그보다 먼저
+   `-beta`/`-alpha` 태그를 push 하지 않는다**(먼저 push 하면 기존 사용자가 배너에서 프리릴리스를 본다).
+4. **게이트** — `npm run verify` GREEN + 태그 push 후 `release.yml` 양 레그(windows·ubuntu) 성공.
+   `release` 잡이 `needs: build` 라 실패 시 draft 가 공개되지 않는다(fail-closed).
+5. **산출물 확인** — 릴리스 자산에 인스톨러와 `latest.yml`/`latest-linux.yml` 이 모두 있는지.
+   누락 시 증상은 크래시가 아니라 **조용한 무업데이트**라 무신호다.
+6. **실사용 확인** — 최소 1개 OS 에서 다운로드→설치(경고 우회 절차대로)→기동→업데이트 확인.
+   `npm run build` 는 번들 생성까지만이라 이 단계를 대체하지 못한다(ADR-0015).
+
+주기를 두 번 연속 지키지 못하면 주기를 늘리거나 리듬을 폐기하고 ADR-0018 을 supersede 한다.
 
 ### 결정 기록 (ADR)
 
