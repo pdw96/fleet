@@ -43,6 +43,14 @@ import { createFakeLockBackend, type FakeNamespace } from './__testing__/lock-ba
  */
 
 const IS_POSIX = process.platform !== 'win32'
+/**
+ * 쓰기 거부를 `chmod` 로 **주입할 수 있는가**. root(uid 0)는 mode 비트를 우회하므로 `0o500` 을 걸어도
+ * 쓰기가 성공해 「실패 주입」 자체가 성립하지 않는다 — 컨테이너·CI 이미지가 root 로 도는 경우가 흔해
+ * 그대로 두면 **레포와 무관한 RED** 가 난다(2026-08-24 실측: root 컨테이너에서 이 파일 2건 + coord-area
+ * 1건 실패). 조용히 통과시키지 않고 `runIf` 로 **가시적 skip** 처리한다 — 같은 계열 선례는
+ * `workspace/ignored-baseline.test.ts` 의 root 조기 반환이다.
+ */
+const CAN_DENY_WRITE = IS_POSIX && process.getuid?.() !== 0
 const DIGEST = 'c'.repeat(32)
 const MARKER_A = 'a'.repeat(64)
 const MARKER_B = 'b'.repeat(64)
@@ -482,7 +490,7 @@ describe('부수효과 이전 판정 — 실패자는 아무것도 만지지 않
   })
 
   /** 잔재를 지울 수 없는 상태(부모 디렉터리 쓰기 불가)도 `io-failure` — 회수를 조용히 포기하지 않는다. */
-  it.runIf(IS_POSIX)('잔재 제거가 실패하면 io-failure 다', async () => {
+  it.runIf(CAN_DENY_WRITE)('잔재 제거가 실패하면 io-failure 다', async () => {
     seedStale(MARKER_B)
     chmodSync(root, 0o500)
     const got = await claim()
@@ -579,7 +587,7 @@ describe('ⓓ 해제 — ReleaseOutcome', () => {
    * win32 는 열린 파일도 읽기전용 파일도 `unlink` 가 **성공**해 실패를 만들 수 없다). 이 한계는 은폐하지
    * 않는다 — 대신 규칙 자체(부모 디렉터리 쓰기 불가 → `removal-failed` ∧ 파일 존속)를 여기서 고정한다.
    */
-  it.runIf(IS_POSIX)('제거가 실패하면 removal-failed 이고 파일이 남는다', async () => {
+  it.runIf(CAN_DENY_WRITE)('제거가 실패하면 removal-failed 이고 파일이 남는다', async () => {
     const got = await claim()
     if (got.status !== 'claimed') throw new Error('전제 붕괴')
     chmodSync(root, 0o500)
