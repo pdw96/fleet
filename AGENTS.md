@@ -282,8 +282,11 @@ prose 「<M> 선행」 주석 대신 플랫폼 관계로 인코딩(트랙 진행
 릴리스 태그 push 전 체크리스트:
 
 1. **버전** — `package.json` version 상향. 태그는 정확히 `v${version}`(`release.yml` 이 불일치를 하드 실패).
-2. **CHANGELOG** — 해당 버전 절 작성. 릴리스 노트는 이 절을 `--notes-file` 로 주입하며, 미서명 경고
-   우회 안내 푸터가 함께 붙는지 확인한다(#304).
+2. **CHANGELOG — ⚠ 아직 선행 전제다(#304 미착지).** 레포에 `CHANGELOG.md` 가 없고
+   `release.yml` 의 `gh release create` 는 `--generate-notes`(자동 생성 노트)를 쓴다 — 즉 **지금
+   태그를 밀면 미서명 경고 우회 안내가 릴리스 노트에 실리지 않는다**(ADR-0017 이 서명 대신 두는
+   유일한 완화책이 빠진다). 첫 1.0 릴리스 전에 #304 의 CHANGELOG + `--notes-file` 전환을 먼저
+   착지시키고, 그 뒤에야 이 단계가 「해당 버전 절 작성 → 노트 주입 확인」이 된다.
 3. **순서 규칙** — v0.1.0 잔존 설치본은 `allowPrerelease = true` 로 나갔다. **stable 태그보다 먼저
    `-beta`/`-alpha` 태그를 push 하지 않는다**(먼저 push 하면 기존 사용자가 배너에서 프리릴리스를 본다).
 4. **게이트** — `npm run verify` GREEN + 태그 push 후 `release.yml` 양 레그(windows·ubuntu) 성공.
