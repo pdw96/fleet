@@ -104,6 +104,16 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
     완전히 충족하지 못하는 예외가 생기면 근거 절에 **미충족을 명시**해 리뷰 가능하게 두고 추적
     이슈를 단다(선례: `workspace/git.ts` 의 `index.lock` 강제 삭제는 소유 확인이 불가능해 PR#282
     에서 **삭제 자체를 제거**했다 — 소유 기반 자동 회수 복원은 #285).
+- **shell 실행의 예외 = verify 단계**(ADR-0019 — 위 fs 예외 열거와 별개 축이다). 위 「안전 우선」의
+  shell 규칙은 **에이전트가 실행을 요청한 명령**을 다룬다. verify 는 그 문언은 만족한다 — 명령을 고르는
+  주체가 에이전트가 아니라 Fleet 이고, 고정된 세 개(`npm run typecheck`·`lint`·`test`)뿐이다. 그런데
+  **그 명령이 실행하는 스크립트 본문과 테스트 파일은 직전 implementer 가 방금 쓴 코드**라, 실질은
+  에이전트 산출 코드를 승인 없이·샌드박스 없이 사용자 권한으로 돌리는 통로다(`core/verify/run.ts` →
+  engine 의 `currentVerify`). 게이트는 이 경로에 없다.
+  이 예외를 **ADR-0019 로 명시 수용**했다 — 게이트를 세우지 않는 근거, 기각한 대안(실행당 1회 승인·
+  데스크톱 샌드박스·`package.json` 특별취급·명령 allowlist), 재평가 트리거가 거기 있다. fs 예외와 달리
+  **기계 대조 대상이 아니다**: 집행 수단이 lint 경계가 아니라 그 ADR 의 재평가 트리거이므로, 트리거에
+  해당하는 변경(멀티유저·워크스페이스 선택 없는 실행 경로·비-npm verify 확장)을 낼 때 ADR 을 함께 연다.
 - **provider 계약.** `ApiProvider.chat()` 는 구조화된 `ChatResult`(text·toolCalls·finishReason·
   usage)를 반환한다. `LlmSession.send()` 는 하위호환을 위해 여전히 `string` 을 반환한다.
 
@@ -288,7 +298,10 @@ prose 「<M> 선행」 주석 대신 플랫폼 관계로 인코딩(트랙 진행
    유일한 완화책이 빠진다). 첫 1.0 릴리스 전에 #304 의 CHANGELOG + `--notes-file` 전환을 먼저
    착지시키고, 그 뒤에야 이 단계가 「해당 버전 절 작성 → 노트 주입 확인」이 된다.
 3. **순서 규칙** — v0.1.0 잔존 설치본은 `allowPrerelease = true` 로 나갔다. **stable 태그보다 먼저
-   `-beta`/`-alpha` 태그를 push 하지 않는다**(먼저 push 하면 기존 사용자가 배너에서 프리릴리스를 본다).
+   프리릴리스 태그(`-beta`·`-alpha`·`-rc` 등 `v1.2.3-<식별자>` 전부)를 push 하지 않는다**(먼저 push
+   하면 기존 사용자가 배너에서 프리릴리스를 본다). ADR-0018 이 처방한 `v1.0.0-rc.1` 도 이 규칙 대상이다.
+   `release.yml` 의 publish 스텝이 프리릴리스 식별자를 **전부** 격리 채널로 보내 stable 피드
+   (`latest.yml`) 갱신을 막지만(Codex 2R P1 로 `-rc`·catch-all 추가), 그건 심층방어이고 **순서가 계약**이다.
 4. **게이트** — `npm run verify` GREEN + 태그 push 후 `release.yml` 양 레그(windows·ubuntu) 성공.
    `release` 잡이 `needs: build` 라 실패 시 draft 가 공개되지 않는다(fail-closed).
 5. **산출물 확인** — 릴리스 자산에 인스톨러와 `latest.yml`/`latest-linux.yml` 이 모두 있는지.

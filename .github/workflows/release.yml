@@ -88,6 +88,13 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-beta*) CHANNEL_ARG="-c.publish.channel=beta" ;;
             *-alpha*) CHANNEL_ARG="-c.publish.channel=alpha" ;;
+            *-rc*) CHANNEL_ARG="-c.publish.channel=rc" ;;
+            # 그 외 **모든** 프리릴리스 식별자(`v1.2.3-<id>`)도 격리한다 — prepare 잡의 `--prerelease`
+            # 판정은 `*-*` 인데 여기만 beta/alpha 열거였다. 그 비대칭이 결함이다(Codex 2R P1):
+            # 열거에 없는 `-rc` 태그는 채널 인자 없이 발행돼 **stable 피드(latest.yml)를 갱신**하고,
+            # `allowPrerelease = true` 로 나간 v0.1.0 잔존 설치본이 그것을 업데이트로 집는다.
+            # ADR-0018 이 `v1.0.0-rc.1` 을 처방하므로 이건 가정이 아니라 예정된 경로였다.
+            *-*) CHANNEL_ARG="-c.publish.channel=prerelease" ;;
           esac
           npx electron-builder --publish always $CHANNEL_ARG
         env:
