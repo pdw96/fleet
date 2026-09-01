@@ -434,6 +434,25 @@ export function createGitRepo(
     },
 
     async casUpdateRef(ref, newOid, expectedOldOid) {
+      // **선제 symbolic-ref 검사** — `--no-deref` 만으로는 이 계약이 git 버전에 의존한다(실측:
+      // 2.43.0 은 dangling symref 자리에 exit 0 으로 발행하며 symref 를 정상 ref 로 **조용히 치환**한다.
+      // 네임스페이스 탈출은 없다 — 대상 ref 는 만들어지지 않는다). 거부(128)를 도입한 정확한 git 버전은
+      // **미검증**이고, 배포 런타임은 2.39.5(deploy/fleet/Dockerfile)라 지원 매트릭스 하단에서 계약이
+      // 성립하지 않았다. 그래서 심층방어를 구현 쪽에서 복원한다 — symref 자리면 발행하지 않는다.
+      // ⚠ 원자적이지 않다(검사와 발행 사이 TOCTOU). 이건 「symref 자리에 쓰지 않는다」는 불변식을
+      //    구버전에서도 성립시키는 좁히기이지, 락이 아니다. 최신 git 의 128 거부가 남은 창을 덮는다.
+      // 판정은 **exit 0 + 비어 있지 않은 대상**일 때만이다(`-q` 는 「symref 아님/없음」을 exit 1 +
+      // 무출력으로 답하고, symref 면 대상 refname 을 stdout 으로 낸다). 그 외 코드(레포 아님=128 등)는
+      // 여기서 실패로 분류하지 않고 그대로 진행시킨다 — 이 검사는 **좁히기**이지 새 실패 축이 아니다.
+      const sym = await run(['symbolic-ref', '-q', ref])
+      const symTarget = sym.stdout.trim()
+      if (sym.code === 0 && symTarget !== '') {
+        return {
+          status: 'failed',
+          stderr: `symbolic ref 자리에는 발행하지 않는다: ${ref} → ${symTarget}`,
+          code: sym.code,
+        }
+      }
       // 빈 문자열 = 「존재하지 않아야 한다」(실측). 40×0 도 같은 뜻이지만 SHA-256 레포에서 길이가
       // 달라지므로 길이에 의존하지 않는 형태를 쓴다.
       // ⚠ `--stdin --batch-updates` 금지 — **거부에도 exit 0** 을 내서(2.54 실측) CAS 가 무성 통과한다.

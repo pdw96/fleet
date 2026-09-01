@@ -1,7 +1,7 @@
 # Fleet — 코드베이스 브레인 (자동 생성)
 
 > `npm run brain` 로 `src/` 에서 자동 추출한 구조 지도다. **코드를 탐색하기 전에 이 파일을 먼저 읽어** 토큰을 아껴라.
-> 103 files · 247 import wires · 47 IPC channels · 생성 2026-09-01T06:06 UTC
+> 103 files · 247 import wires · 47 IPC channels · 생성 2026-09-01T06:18 UTC
 > 표기: `파일 — 역할 · →의존 · ←피의존`. id 는 `main/core/` 생략(예: `session/manager`).
 
 ## 레이어 (위 → 아래로 흐름)
@@ -170,7 +170,7 @@
 
 ### engine · core — 여러 AI(구독형 CLI와 API)를 한곳에서 등록·관리하고, 채팅과 프로젝트 작업을 진행시키는 앱의 중앙 관제실 역할을 하는 모듈이다.
 - **engine** — 앱의 모든 핵심 기능을 한곳에 모아 화면 쪽에 단일 창구로 내주는 '중앙 관제실' 부품 _AI 세션 등록·삭제, 채팅 주고받기, 프로젝트 작업 실행과 취소, 외부 도구 연결 같은 기능을 묶어 화면(IPC) 쪽에서 부르기 쉬운 하나의 입구로 제공한다. 앱을 다시 켜도 저장해 둔 AI 세션을 다시 살려내고, API 키는 OS 암호화로 안전하게 보관·복원한다._
-  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/stdio, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, +15 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 928줄
+  - →의존: chat/room, cli/detect, cli/probe, cli/registry, mcp/host, mcp/stdio, mcp/types, orchestrator/assignment, orchestrator/orchestrator, providers/registry, +15 · ←피의존: main/e2e, main/index, server/boot, server/handlers · 950줄
 
 ### session · core — 여러 AI(구독형 CLI와 API)를 똑같은 방식으로 다룰 수 있게 감싸서, 작업방이 AI의 종류를 신경 쓰지 않고 '말 걸고-답받기'만 하면 되도록 통일해 주는 모듈.
 - **session/cli-session** — 클로드·코덱스·제미니 같은 설치형 AI 프로그램을 실제로 실행해 대화를 주고받는 일꾼 _프롬프트를 명령어 형태로 만들어 해당 AI 프로그램을 돌리고 결과 글을 받아 깔끔하게 정리해 돌려준다. 매번 새 프로그램을 띄우는 '독립 실행', AI 자체 기능으로 대화를 이어가는 '대화 유지', 지정한 폴더의 파일을 직접 고치는 '편집'의 세 가지 방식을 지원하며, 가능하면 답을 한 글자씩 실시간으로 흘려보내고 같은 세션의 동시 요청은 순서대로 줄 세운다._
@@ -222,7 +222,7 @@
 
 ### workspace · core — AI들이 작업방에서 코드를 고칠 때, 시작 시점을 기록해 두고 무엇이 바뀌었는지 보여주거나 통째로 되돌릴 수 있게 해주는 안전장치 모듈.
 - **workspace/git** — AI가 코드를 고치기 전 상태를 저장해 두고, 바뀐 내용을 모아 보여주거나 처음으로 되돌리는 작업 기록 관리원 _작업방을 버전 관리 저장소(git)로 만들어 '시작 사진'을 찍어두고, AI가 무엇을 바꿨는지 변경 목록과 그 내용(diff)을 모아 보여주거나, 마음에 안 들면 시작 사진 시점으로 통째로 되돌립니다. 사용자가 미리 만들어둔 작업은 시작 때 따로 보존해 지워지지 않게 하고, 여러 AI가 동시에 저장소를 건드려 생기는 잠금 충돌은 잠깐 기다렸다 다시 시도하며, 변경 내용이 너무 길면 6만 자에서 잘라 보여줍니다._
-  - →의존: cli/detect, workspace/ignored-baseline · ←피의존: engine, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workbench/coord-area, workspace/ignored-baseline · 735줄
+  - →의존: cli/detect, workspace/ignored-baseline · ←피의존: engine, orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workbench/coord-area, workspace/ignored-baseline · 754줄
 - **workspace/ignored-baseline**
   - →의존: safety/approval, workspace/git · ←피의존: orchestrator/diff-risk, orchestrator/ignored-guard, orchestrator/orchestrator, workspace/git · 639줄
 - **workspace/path-guard**
@@ -262,7 +262,7 @@
 
 ### shared · shared — 앱의 모든 부분(메인·중계·화면)이 똑같이 쓰는 '공용 용어 사전'으로, 주고받는 데이터의 모양과 약속을 한곳에 정의해 둔 파일이다.
 - **shared/types** — 앱 전체가 함께 쓰는 데이터 모양 약속 모음(공용 설명서) _AI 연결 정보, 채팅방·메시지, 작업과 프로젝트, 승인 요청, 화면-내부 사이에 오가는 신호 등 앱이 다루는 거의 모든 정보의 '겉모양과 규칙'을 글자 그대로 적어 둔 사전이다. 여기에는 실제로 동작하는 기능은 없고, 모두가 같은 틀로 데이터를 주고받도록 맞춰 주는 약속만 들어 있다._
-  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +39 · 709줄
+  - →의존: — · ←피의존: chat/room, cli/authHint, cli/detect, cli/output, cli/probe, cli/registry, engine, main/auto-update, main/external-links, main/index, +39 · 726줄
 - **shared/cliAuthInstallMeta**
   - →의존: shared/types · ←피의존: cli/registry, main/external-links, renderer/bridge/ws-bridge, renderer/components/AddAiWizard · 42줄
 - **shared/transport/channels**

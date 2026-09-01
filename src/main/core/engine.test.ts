@@ -8,7 +8,13 @@ import type {
   ChatStreamEvent,
   OrchestratorEvent,
 } from '../../shared/types'
-import { APPROVAL_TIMEOUT_MS, MAX_REPLAN_ROUNDS, MAX_CONCURRENCY } from '../../shared/types'
+import {
+  APPROVAL_TIMEOUT_MS,
+  MAX_DISCUSS_ROUNDS,
+  MAX_REPLAN_ROUNDS,
+  MAX_REVIEW_ROUNDS,
+  MAX_CONCURRENCY,
+} from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine, clampConcurrency } from './engine'
 import type { McpHost } from './mcp/types'
@@ -943,6 +949,58 @@ describe('FleetEngine', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // [P3-1] replan 과 같은 논거의 짝 — orchestrator 는 maxReviewRounds 의 하한만 보정하므로 상한은
+  // engine 경계가 강제해야 한다. 서버 표면(ws-host)은 프레임 args 를 검증하지 않아 인증 클라가 임의
+  // 큰 값을 실을 수 있고, taskTimeoutMs 는 per-send 라 총량을 막지 못한다.
+  it('clamps an over-range maxReviewRounds to MAX_REVIEW_ROUNDS at the engine boundary', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-clamp-review-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const events: OrchestratorEvent[] = []
+      // 리뷰어가 매번 수정을 요구해야 라운드가 상한까지 소진된다(APPROVE 면 첫 라운드에 종료).
+      const revisingRunner: CommandRunner = async (cmd, args, opts) => {
+        const prompt = [...args, opts.stdinInput ?? ''].join(' ')
+        if (prompt.includes('검토')) return { code: 0, stdout: 'REVISE 더 고쳐라', stderr: '' }
+        return roleRunner(cmd, args, opts)
+      }
+      const engine = createFleetEngine({
+        store,
+        runner: revisingRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
+        onOrchestratorEvent: (e) => events.push(e),
+      })
+      engine.registerCliSession('claude')
+
+      await engine.runProjectFlow({ goal: 'g', maxReviewRounds: MAX_REVIEW_ROUNDS + 3 })
+
+      // 작업 1개 × 라운드당 'task.review' 1회 → 상한을 넘지 않는다.
+      expect(events.filter((e) => e.type === 'task.review').length).toBe(MAX_REVIEW_ROUNDS)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // [P3-1 동반] discussRoom 도 같은 경계 — 라운드 × 참여 LLM 수만큼 발언이 나가므로 무상한이면
+  // 취소 전까지 토큰 비용이 러너웨이한다(UI 셀렉트는 1..MAX_DISCUSS_ROUNDS 만 보낸다).
+  it('clamps discussRoom rounds to MAX_DISCUSS_ROUNDS at the engine boundary', async () => {
+    let turn = 0
+    const engine = createFleetEngine({
+      runner: async () => {
+        turn += 1
+        return { code: 0, stdout: `발언${turn}`, stderr: '' }
+      },
+    })
+    engine.registerCliSession('claude')
+    engine.registerCliSession('codex')
+    const room = engine.createRoom('토론방', ['cli:claude', 'cli:codex'])
+
+    const msgs = await engine.discussRoom(room.id, ['cli:claude', 'cli:codex'], 1e9)
+
+    expect(msgs).toHaveLength(MAX_DISCUSS_ROUNDS * 2) // 상한 라운드 × 2 LLM
   })
 
   // #197 B1: 영속 라이브 orchestrator 이벤트는 store 가 배정한 단조 seq 를 실어(재접속 커서용),

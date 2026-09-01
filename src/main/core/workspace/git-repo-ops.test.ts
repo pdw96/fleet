@@ -261,9 +261,20 @@ describe('T11/§3-T23 — listRefs 열거와 D/F 판정(실 git)', () => {
    * **Codex PR#268 2차 P1** — 기본 `update-ref` 는 **symref 를 따라간다**. 대상 자리가 dangling symbolic ref
    * 면 create-if-absent 가 그 **대상 ref(네임스페이스 밖)** 를 만들고 exit 0 을 내며, 왕복 검증마저
    * 통과한다(실측: `refs/heads/other` 가 생기고 txn ref 는 symbolic 인 채 새 OID 로 해소된다).
-   * `--no-deref` 는 `dangling symref already exists`(128)로 **fail-closed** 한다.
+   *
+   * ⚠ **`--no-deref` 단독은 이 계약을 git 버전에 의존시킨다**(2026-09-01 진단 [P3-4] · 실측 재현):
+   *   - 신형 git: `dangling symref already exists`(exit 128)로 거부 = fail-closed.
+   *   - **git 2.43.0**(우분투 24.04 stock): **exit 0 으로 발행**하고 symref 를 정상 ref 로 조용히 치환한다.
+   *     단 **네임스페이스 탈출은 없다** — `refs/heads/other` 는 만들어지지 않는다(원 위협 #268 P1 은 재발
+   *     하지 않고, 약화되는 건 심층방어 불변식뿐).
+   *   거부가 도입된 **정확한 git 버전은 미검증**이다. 배포 런타임은 2.39.5(`deploy/fleet/Dockerfile`)라
+   *   지원 매트릭스 하단이 신형 쪽이라는 보장이 없으므로, 계약은 구현의 **선제 `symbolic-ref` 검사**가
+   *   버전 무관하게 성립시킨다(`git.ts` casUpdateRef). 이 테스트는 그 통합 결과를 핀한다.
+   *
+   * 📌 workbench txn 실배선(#251 PR3+) 시점에는 배포 런타임 **git 2.39.5 에서의 실측이 필수**다 —
+   *    여기서 확인한 것은 2.43 계열 동작과 구현 폴백이지, 2.39.5 의 update-ref 동작 자체가 아니다.
    */
-  it('symbolic ref 자리에는 발행하지 않는다 — 네임스페이스 밖을 만들지 않는다(`--no-deref`)', async () => {
+  it('symbolic ref 자리에는 발행하지 않는다 — 네임스페이스 밖을 만들지 않는다(선제 symbolic-ref 검사)', async () => {
     const r = initRepo(join(mkTmp(), 'repo'))
     const c = git(r, 'rev-parse', 'HEAD')
     const repo = createGitRepo(r, execRunner)
@@ -277,6 +288,8 @@ describe('T11/§3-T23 — listRefs 열거와 D/F 판정(실 git)', () => {
     // 게다가 CAS 는 `updated` 를 답한다(왕복 검증도 symref 를 따라가 통과한다 · 실측).
     expect(await repo.revParse('refs/heads/other')).toEqual({ status: 'absent' })
     expect(await repo.refExists('refs/heads/other')).toEqual({ status: 'ok', exists: false })
+    // symref 는 **그대로 남는다** — 구버전 git 의 조용한 치환(symref → 정상 ref)도 일어나지 않았다.
+    expect(git(r, 'symbolic-ref', REF)).toBe('refs/heads/other')
   })
 
   it('`--no-deref` 가 정상 ref 발행을 막지 않는다(회귀 통제)', async () => {
@@ -837,7 +850,9 @@ describe('T12/§3-T58 — R-5: 신규 연산은 남의 락을 지우지 않는�
       (await repo.casUpdateRef('refs/fleet/integrated/B/T1', 'a'.repeat(40), null)).status,
     ).toBe('failed')
     expect(waited).toEqual([])
-    expect(calls).toBe(2) // update-ref 1회 + 실패 후 값 재조회 1회 — 재시도는 0
+    // 선제 symbolic-ref 검사 1회 + update-ref 1회 + 실패 후 값 재조회 1회 — **재시도는 0**.
+    // (선제 검사는 이 러너에서 code 128 이라 symref 판정이 아니고, 그대로 발행 경로로 진행한다.)
+    expect(calls).toBe(3)
   })
 })
 
