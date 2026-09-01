@@ -29,20 +29,25 @@
                 │ contextBridge IPC (preload, contextIsolation:true)
 ┌───────────────┴───────────────────────────────────────────────────┐
 │ Electron Main (Node)                                               │
-│   ipc/  — 채널 핸들러 (core ↔ renderer 배선)                        │
+│   index.ts — 앱 엔트리 + 채널 핸들러 (core ↔ renderer 배선)          │
 │   ┌───────────────────────────────────────────────────────────┐   │
 │   │ core/ (순수 TS, Electron 비의존)                            │   │
-│   │   cli/        CLI 감지 + PTY 세션      ← 요구사항 2A         │   │
+│   │   cli/        CLI 감지 + 명령 러너      ← 요구사항 2A         │   │
 │   │   providers/  API LLM provider         ← 요구사항 2B         │   │
 │   │   session/    통합 LlmSession 추상화    ← 요구사항 2,4        │   │
 │   │   orchestrator/ 목표분해·역할·재검토루프 ← 요구사항 4,5       │   │
 │   │   chat/       메시지 버스(라이브 채팅)   ← 요구사항 3          │   │
 │   │   store/      상태 + 대화 로그 영속화     ← 요구사항 6,7        │   │
 │   │   verify/     test/lint/typecheck/smoke ← 요구사항 5          │   │
-│   │   fileops/    파일작업 + 승인 게이트      ← 요구사항 6          │   │
+│   │   safety/     승인 게이트(ApprovalGate)  ← 요구사항 6          │   │
+│   │   workspace/  워크스페이스·git 조작       ← 요구사항 6          │   │
+│   │   (그 외: workbench · secret · mcp · tools · process)        │   │
 │   └───────────────────────────────────────────────────────────┘   │
 └───────────────────────────────────────────────────────────────────┘
 ```
+
+> 이 그림은 초기 설계의 요구사항 대응표다. **현행 파일 단위 지도의 권위는 [`brain.md`](./brain.md)**
+> (자동 생성 · CI 가 신선도 강제)이며, 웹 표면(`src/server/`)은 같은 코어를 재사용하는 별도 진입점이다.
 
 ---
 
@@ -65,11 +70,9 @@
 
 ```
 LlmSession (인터페이스)
- ├─ CliSession      ← CliAdapter + PtyTransport
- │    PtyTransport 구현:
- │      NodePtyTransport  (node-pty, 실제 TUI; 네이티브 빌드 필요)
- │      PipeTransport     (child_process 파이프; 빌드 불요 폴백)
- │      MockTransport     (테스트)
+ ├─ CliSession      ← CliAdapter + CommandRunner (cross-spawn 파이프)
+ │      defaultRunner  (cli/detect.ts — PATHEXT 셰임 해석·타임아웃/abort·트리 킬)
+ │      주입 러너      (테스트·E2E 페이크)
  └─ ApiSession      ← ApiProvider (Anthropic | OpenAI | Google)
 ```
 
@@ -77,8 +80,11 @@ LlmSession (인터페이스)
 - `ApiProvider`: `name`, `chat(messages, opts)` → 스트림. 키·모델·temperature·max_tokens 설정 보유.
 - **둘 다 `LlmSession`을 만족** → 오케스트레이터/채팅방은 동일하게 다룬다.
 
-PTY 폴백 전략: `NodePtyTransport` 설치 실패(네이티브 툴체인 부재) 시 `PipeTransport`로 자동 강등.
-코어는 import 시점에 node-pty를 강제 로드하지 않는다(지연 로드).
+**현행: PTY 이중화는 폐기됐다.** 초기 설계의 `NodePtyTransport`/`PipeTransport` 이원화는 채택되지
+않았고(`node-pty` 의존성 부재 — 실제 경로는 cross-spawn 파이프 단일), CLI 는 전부 헤드리스 모드
+(`-p` 등)로 돌리므로 실 TUI 를 흉내 낼 이유가 없다. 근거: `docs/superpowers/specs/2026-06-25-session-auth-picker-design.md` D3.
+전송 계층의 관심사는 이제 PTY 유무가 아니라 **Windows 셰임·타임아웃·프로세스 트리 킬**이고, 그것을
+`defaultRunner` 단일 구현이 공유한다(`core/process/kill-tree.ts`).
 
 ---
 
@@ -126,7 +132,16 @@ goal ──▶ Planner(LLM) ──▶ TaskGraph(작업 분해)
 
 - `ApprovalGate`: 파일 쓰기·삭제·shell 실행 전 `ApprovalRequest` 발행. 정책에 따라 자동승인(안전)/
   사용자승인(위험) 분기. 기본은 destructive 작업 차단.
-- `DESTRUCTIVE` 패턴(rm -rf, del /s, 강제 push, 포맷 등) 거부 리스트. 모든 게이트 통과/거부는 이벤트 로그 기록.
+- **현행: 코어에는 명령 거부 리스트(denylist)가 없다.** 게이트는 *무엇이 destructive 인지 판정하지
+  않고*, 호출자가 신고한 `req.risk` 를 집행할 뿐이다(risk **enforcement**, not classification).
+  셸/명령 위험 분류는 sub-agent CLI 경계에 위임된다(#167/#170). 권위는
+  [`core/safety/approval.ts`](./src/main/core/safety/approval.ts) 의 `createApprovalGate` 독스트링.
+  초안의 "`rm -rf`·`del /s` 패턴 거부 리스트"는 채택되지 않았다 — 동적 셸에서 패턴 열거는 끝나지 않고,
+  그 목록의 존재 자체가 "막혀 있다"는 오해를 만든다.
+- 파일 쓰기 경계는 별도 계약이 기계로 집행한다: 코어의 fs 접근은 eslint `CORE_FS_ALLOWLIST` 가
+  import 경계에서 봉인하고, 게이트 예외 모듈 열거는 `scripts/approval-gate-exceptions.test.ts` 가
+  AGENTS.md 와 양방향 대조한다(#282 · ADR-0013). verify 단계의 무게이트 실행은 ADR-0019 로 수용 기록.
+- 모든 게이트 통과/거부는 이벤트 로그에 기록된다.
 
 ---
 
@@ -201,7 +216,10 @@ renderer 의 시각 정체성은 "멀티 LLM 을 지휘하는 정밀 계측기"�
 7. 대화 로그 저장·재로딩
 8. 프로젝트 목표 입력 + 작업 분해
 9. 전체 `test`/`typecheck`/`lint` 통과, 코어 엔진 헤드리스 검증
-10. (배포) electron-builder 로 unsigned Windows NSIS + Linux AppImage 산출 + 태그 기반 GitHub Release CI. autoUpdater·macOS·코드서명·커스텀 아이콘은 후속(#74 트랙)
+10. (배포) electron-builder 로 unsigned Windows NSIS + Linux AppImage 산출 + 태그 기반 GitHub Release CI.
+    **현행: autoUpdater 는 구현 완비**(`src/main/auto-update.ts` — 패키지드·non-E2E·non-darwin 무장,
+    stable/beta 채널 가드 + store 영속). macOS·코드서명은 post-1.0(ADR-0017 — 1.0 표면은
+    Windows/Linux 데스크톱·미서명).
 
 ---
 
@@ -215,4 +233,5 @@ renderer 의 시각 정체성은 "멀티 LLM 을 지휘하는 정밀 계측기"�
 ### 배포 (#74)
 
 - `npm run dist` — `electron-vite build` 후 electron-builder 로 현재 플랫폼 인스톨러를 `dist/` 에 생성(`build` 의 smoke 정의와 별개). `npm run dist:dir` 은 언팩 디렉터리(빠른 로컬 기동 확인).
-- 릴리스: `package.json` version 을 올리고 일치 태그(`v${version}`)를 push → `.github/workflows/release.yml` 이 windows+ubuntu 에서 게이트→빌드→GitHub Release 게시(unsigned). autoUpdater·macOS·코드서명은 후속.
+- 릴리스: `package.json` version 을 올리고 일치 태그(`v${version}`)를 push → `.github/workflows/release.yml` 이 windows+ubuntu 에서 게이트→빌드→GitHub Release 게시(unsigned). 절차 체크리스트는 AGENTS.md 「릴리스 절차」(ADR-0018).
+- 자동 업데이트: **현행 구현 완비**(`src/main/auto-update.ts`). electron-updater 를 패키지드·non-E2E·non-darwin 에서만 무장하고, 채널(stable/beta)은 store 에 영속되어 `allowPrerelease` 를 결정한다. macOS·코드서명만 post-1.0 으로 남았다(ADR-0017).

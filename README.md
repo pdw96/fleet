@@ -28,14 +28,18 @@ npm test            # vitest (코어 엔진 단위/통합)
 
 ```
 src/
-  main/        Electron 메인 (Node)
-    core/      순수 TS 엔진 (cli, providers, session, orchestrator, chat, store, verify, fileops)
-    ipc/       IPC 핸들러
-    index.ts   앱 엔트리
+  main/        Electron 메인 (Node) — index.ts 가 앱 엔트리이자 IPC 등록 지점
+    core/      순수 TS 엔진 (Electron 비의존) — cli · providers · session · orchestrator ·
+               chat · store · verify · workspace · workbench · safety · secret · mcp ·
+               tools · process
   preload/     contextBridge (window.fleet)
   renderer/    React UI
-  shared/      main/renderer 공유 타입 (단일 진실 원천)
+  server/      웹 표면(fleet-server + ws-bridge) — 데스크톱과 같은 코어를 재사용
+  shared/      main/renderer/server 공유 타입 (단일 진실 원천)
 ```
+
+> 파일 단위 지도(역할·의존·피의존·IPC 배선)의 **권위는 [`brain.md`](./brain.md)**(`npm run brain`
+> 자동 생성 · CI 가 신선도 강제)다. 위 블록은 첫 방향 잡기용 요약이라 세부는 brain.md 를 본다.
 
 ## 역할 배정 정책
 
@@ -59,6 +63,7 @@ summarizer)로 한정된다. 실행된 LLM 은 작업 보드에 `→ 이름` 칩
 |-----------|--------------|-----------|
 | `claude`  | `anthropic`  | `reviewer` |
 | `codex`   | `openai`     | `implementer` |
+| —         | `openai-compatible` | `implementer` |
 | `gemini`  | `google`     | `planner`, `summarizer` |
 
 - 채점: 이진 적합도(역할 포함=1) 최고 LLM → 동점 시 덜 쓰인 LLM(부하분산) → 인덱스. 어떤 세션도 맡지
