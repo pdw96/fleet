@@ -307,8 +307,12 @@ prose 「<M> 선행」 주석 대신 플랫폼 관계로 인코딩(트랙 진행
    (#304 ⑤ 가 릴리스 순서 항목을 이미 들고 있다).
 4. **게이트** — `npm run verify` GREEN + 태그 push 후 `release.yml` 양 레그(windows·ubuntu) 성공.
    `release` 잡이 `needs: build` 라 실패 시 draft 가 공개되지 않는다(fail-closed).
-5. **산출물 확인** — 릴리스 자산에 인스톨러와 `latest.yml`/`latest-linux.yml` 이 모두 있는지.
-   누락 시 증상은 크래시가 아니라 **조용한 무업데이트**라 무신호다.
+5. **산출물 확인** — 릴리스 자산에 인스톨러와 **그 태그가 나간 채널의** 업데이트 메타데이터가 모두
+   있는지. 파일명은 채널을 따른다(3단계의 라우팅과 짝) — stable 태그 → `latest.yml`/`latest-linux.yml`,
+   프리릴리스(`-rc`·`-beta`·그 외) → `beta.yml`/`beta-linux.yml`, `-alpha` → `alpha.yml`/`alpha-linux.yml`.
+   ⚠ **프리릴리스에서 `latest*` 를 기대하지 말 것** — 있다면 그건 정상이 아니라 **채널 격리가 깨졌다는
+   신호**다(stable 사용자에게 프리릴리스가 흘렀다는 뜻). 누락 시 증상은 크래시가 아니라 **조용한
+   무업데이트**라 무신호다.
 6. **실사용 확인** — 최소 1개 OS 에서 다운로드→설치(경고 우회 절차대로)→기동→업데이트 확인.
    `npm run build` 는 번들 생성까지만이라 이 단계를 대체하지 못한다(ADR-0015).
 
