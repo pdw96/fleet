@@ -27,6 +27,7 @@ import { installNavigationGuards } from './window-guards'
 import { installPermissionGuards } from './permission-guards'
 import { installChildProcessObserver, installCrashRecovery } from './crash-recovery'
 import { createSafeStorageCrypto } from './secret-crypto'
+import { acquireSingleInstanceLock } from './single-instance'
 
 function broadcastOrchestratorEvent(event: OrchestratorEvent): void {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -246,7 +247,8 @@ function createWindow(): void {
   }
 }
 
-void app.whenReady().then(() => {
+// whenReady 콜백 본체 — 단일 인스턴스 락을 잡은 프로세스에서만 호출된다(파일 말미 가드).
+function bootstrap(): void {
   const { engine, ipcApprover, store } = buildEngine()
   registerIpc(engine, ipcApprover)
   // 보조 프로세스(GPU·Utility 등) 종료 관측 — child-process-gone 은 app 에만 발화한다. Chromium 이
@@ -298,8 +300,15 @@ void app.whenReady().then(() => {
   if (process.env['FLEET_SMOKE']) {
     setTimeout(() => app.quit(), 2000)
   }
-})
+}
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+// 이중 기동 배타(#293 W1 · 보고서 [P2-1]) — store 는 부팅 1회 로드 + 전체 스냅샷 덮어쓰기라, 배타 없이
+// 두 인스턴스가 같은 userData 를 잡으면 나중에 저장한 쪽이 상대 데이터를 무성 소거한다(last-writer-wins).
+// 락을 못 잡으면 엔진·store·IPC 를 **아무것도 만들지 않고** 종료한다 — 그래서 부팅 배선이 전부 이 가드 안이다.
+if (acquireSingleInstanceLock(app, { getWindows: () => BrowserWindow.getAllWindows() })) {
+  void app.whenReady().then(bootstrap)
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
+}
