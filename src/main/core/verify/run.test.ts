@@ -330,9 +330,38 @@ describe('detectVerifyCommands — npm 프로젝트 판정 (#300)', () => {
     })
   })
 
-  it('스크립트 값이 비-string 이면 그 이름은 npm 프로젝트 근거로 치지 않는다', () => {
+  // Codex PR#313 5R P1 — 이전 라운드에서 이 케이스를 `none` 으로 고정했던 것이 오히려 결함의
+  // 증거였다. **인식하는 이름이 아예 없는 것**과 **있는데 값이 깨진 것**은 다르다. 후자를 스킵으로
+  // 접으면 매니페스트 전체가 깨진 경우(4R P1)와 같은 위장이 스크립트 값 단위로 재현된다.
+  it('인식하는 이름이 있는데 값이 비-string 이면 invalid (none 이 아니다)', () => {
     withDir((dir) => {
       writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 123 } }))
+      const detection = detectVerifyCommands(dir)
+      expect(detection.kind).toBe('invalid')
+      if (detection.kind !== 'invalid') return
+      expect(detection.reason).toContain('test')
+    })
+  })
+
+  it('일부만 깨져도 invalid — 성한 것만 골라 돌리지 않는다', () => {
+    withDir((dir) => {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { test: 'vitest run', lint: null } }),
+      )
+      const detection = detectVerifyCommands(dir)
+      expect(detection.kind).toBe('invalid')
+      if (detection.kind !== 'invalid') return
+      expect(detection.reason).toContain('lint')
+    })
+  })
+
+  it('인식하는 이름이 하나도 없으면 none — 값 깨짐과 구분한다', () => {
+    withDir((dir) => {
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ scripts: { build: 'tsc -b', start: 42 } }),
+      )
       expect(detectVerifyCommands(dir)).toEqual({ kind: 'none' })
     })
   })

@@ -285,14 +285,25 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     // 배선 시점 스냅숏으로 씨앗을 둔다 — 삭제가 첫 verify 보다 **먼저**(구현 단계에서) 일어나도
     // 같은 위장이 성립하기 때문이다. 이 스냅숏은 **엄격해지는 방향으로만** 쓴다: 스킵을 거부할 뿐
     // 검증을 건너뛰게 만들지 않으므로, 호출 시점 재탐지(1R P1)의 성질을 해치지 않는다.
-    let sawCommands = detectVerifyCommands(dir).kind === 'commands'
+    // **불변식**: 이 실행에서 검증할 것이 한 번이라도 있었다고 관측되면(`commands` 든 `invalid` 든)
+    // 그 실행은 **끝까지 스킵될 수 없다**. 「검증 0회가 성공으로 접히는」 경로는 오직
+    // 「처음부터 끝까지 none」 하나뿐이다.
+    //
+    // 관측 상태를 `commands` 로만 잡으면 두 번 샜다 — ①검사를 지워 없애는 경로(2R P1) ②깨진
+    // 매니페스트를 낸 뒤 그것마저 지워 `none` 으로 되돌리는 경로(5R P1). `invalid` 도 「검증할 것이
+    // 있었다」는 관측이므로 같은 자물쇠에 넣는다.
+    //
+    // 배선 시점 스냅숏으로 씨앗을 둔다 — 삭제가 첫 verify 보다 **먼저**(구현 단계에서) 일어나도
+    // 같은 위장이 성립하기 때문이다. 이 스냅숏은 **엄격해지는 방향으로만** 쓴다: 스킵을 거부할 뿐
+    // 검증을 건너뛰게 만들지 않으므로, 호출 시점 재탐지(1R P1)의 성질을 해치지 않는다.
+    let skipForbidden = detectVerifyCommands(dir).kind !== 'none'
     return async () => {
       const detection = detectVerifyCommands(dir)
-      // 「없다」가 아니라 **「있는데 깨졌다」** 면 스킵이 아니라 검증 실패다(Codex PR#313 4R P1).
-      // sawCommands 는 이 경로를 막지 못한다 — 깨진 매니페스트는 명령을 낸 적이 **없기** 때문이다.
+      // 「없다」가 아니라 **「있는데 깨졌다」** 면 스킵이 아니라 검증 실패다(4R P1).
       // 실패 결과를 하나 실어 보내면 ①verifyFailed 가 자연히 참이 되고 ②사유가 verify.failed 로
       // 표면화되며 ③verify-fix 라운드가 매니페스트를 고칠 기회를 갖는다.
       if (detection.kind === 'invalid') {
+        skipForbidden = true // 고치지 않고 **지워서** none 으로 되돌리는 우회를 막는다(5R P1)
         lastVerifySkipNote = undefined
         const failure: VerificationResult = {
           kind: 'custom',
@@ -308,10 +319,10 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       }
       if (detection.kind === 'none') {
         // 사라진 것이면 사유를 남기지 않는다 → orchestrator 가 빈 결과를 실패로 접는다.
-        lastVerifySkipNote = sawCommands ? undefined : '검증 없음(npm 프로젝트 아님)'
+        lastVerifySkipNote = skipForbidden ? undefined : '검증 없음(npm 프로젝트 아님)'
         return []
       }
-      sawCommands = true
+      skipForbidden = true
       lastVerifySkipNote = undefined
       return runAllVerifications(detection.commands, {
         runner: effectiveVerifyRunner,

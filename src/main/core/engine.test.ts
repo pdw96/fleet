@@ -518,6 +518,50 @@ describe('FleetEngine', () => {
     }
   })
 
+  // #300 · Codex PR#313 5R P1 — invalid 를 관측한 뒤에도 스킵 자물쇠가 걸리지 않으면, 수정 라운드가
+  // 매니페스트를 **고치는 대신 지워서** none 으로 되돌리는 것만으로 확정 실패가 done 이 된다.
+  // invalid 도 「검증할 것이 있었다」는 관측이므로 commands 와 같은 자물쇠에 들어가야 한다.
+  it('#300: invalid 를 낸 뒤 매니페스트를 지워도 실패가 done 으로 뒤집히지 않는다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-invalid-then-gone-'))
+    try {
+      // 1회차 편집: 깨진 package.json 을 만든다 → invalid.
+      // 2회차 이후(verify-fix 라운드) 편집: 고치는 대신 지운다 → none 으로 되돌리기 시도.
+      let edits = 0
+      const runner: CommandRunner = async (_cmd, args, opts) => {
+        const prompt = [...args, opts.stdinInput ?? ''].join(' ')
+        if (prompt.includes('분해'))
+          return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+        if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
+        if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
+        if (opts.cwd) {
+          edits += 1
+          if (edits === 1) writeFileSync(join(opts.cwd, 'package.json'), '{ not json')
+          else rmSync(join(opts.cwd, 'package.json'), { force: true })
+        }
+        return { code: 0, stdout: '구현 완료', stderr: '' }
+      }
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({
+        store,
+        runner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
+      })
+      engine.registerCliSession('claude')
+
+      const result = await engine.runProjectFlow({ goal: 'g' })
+
+      expect(edits).toBeGreaterThan(1) // 수정 라운드가 실제로 돌아 매니페스트를 지웠다
+      expect(store.getProject(result.projectId)?.status).toBe('failed')
+      const done = store.listEvents().find((e) => e.type === 'project.done')
+      expect(done?.message).not.toContain('검증 없음')
+      expect(done?.message).toContain('프로젝트 실패')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('#300: 세 스크립트 중 하나라도 있으면 verify 를 그대로 돌린다(무회귀)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-npmws-'))
     try {

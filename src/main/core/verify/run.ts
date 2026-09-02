@@ -264,6 +264,20 @@ export function detectVerifyCommands(cwd: string): VerifyDetection {
   if (manifest.state === 'invalid') return { kind: 'invalid', reason: manifest.reason }
   const scripts = manifest.scripts
   if (scripts === undefined) return { kind: 'none' }
-  if (!NPM_VERIFY_SCRIPTS.some((name) => typeof scripts[name] === 'string')) return { kind: 'none' }
+  // 「인식하는 이름이 아예 없다」와 「있는데 값이 깨졌다」를 가른다(Codex PR#313 5R P1).
+  // 후자를 none 으로 접으면 `{"scripts":{"test":123}}` 같은 매니페스트가 조용히 스킵된다 —
+  // 매니페스트 전체가 깨진 경우(4R P1)와 같은 위장이 **스크립트 값 단위**로 재현된다.
+  // (npm 도 비-string 스크립트 값으로는 `npm run <name>` 을 돌리지 못하므로 실제로 깨진 상태다.)
+  const present = NPM_VERIFY_SCRIPTS.filter((name) =>
+    Object.prototype.hasOwnProperty.call(scripts, name),
+  )
+  if (present.length === 0) return { kind: 'none' }
+  const malformed = present.filter((name) => typeof scripts[name] !== 'string')
+  if (malformed.length > 0) {
+    return {
+      kind: 'invalid',
+      reason: `package.json 의 검증 스크립트 값이 문자열이 아닙니다: ${malformed.join(', ')}`,
+    }
+  }
   return { kind: 'commands', commands: npmVerifyCommands(cwd) }
 }
