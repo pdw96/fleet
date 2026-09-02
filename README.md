@@ -20,9 +20,14 @@
 
 ### 전제조건
 
-- **LLM 접근 수단 최소 1개** — 구독형 CLI(`claude` · `codex` · `gemini`) 중 하나가 설치돼 있거나,
-  provider API 키(Anthropic · OpenAI · Google) 중 하나. 앱의 [세션] 탭에서 등록한다.
+- **구독형 CLI 최소 1개** (`claude` · `codex` · `gemini`) — **프로젝트 실행에 필수다.** 구현
+  (implementer) 역할이 워크스페이스를 직접 편집하므로 CLI 세션이 하나도 없으면 실행이 시작되지 않고
+  거부된다. API 키만으로는 프로젝트를 실행할 수 없다.
+- **provider API 키**(Anthropic · OpenAI · Google) — 선택. 계획·리뷰·요약 역할과 채팅에 쓸 수 있고,
+  CLI 와 섞어 역할을 나눌 수 있다. **CLI 를 대체하지는 못한다.**
 - **git** — 오케스트레이션이 작업 체크포인트에 git 을 쓴다. 없으면 프로젝트 실행이 실패한다.
+
+둘 다 앱의 [세션] 탭에서 등록한다.
 
 ### ⚠ 미서명 빌드 — OS 경고 우회
 
@@ -41,15 +46,24 @@ gh attestation verify Fleet-Setup-<버전>.exe --repo pdw96/fleet
 ```
 
 > ⚠ attestation 은 **인스톨러 두 종에만** 발행된다. 릴리스에 함께 올라가는 업데이트 메타데이터
-> (`latest.yml` · `latest-linux.yml` · `.blockmap`)에는 없다 — 그쪽 무결성은 `electron-updater` 가
-> `latest.yml` 의 **sha512 체크섬**으로 검증한다. 자세한 위협모델은 [`SECURITY.md`](./SECURITY.md).
+> (`latest.yml` · `latest-linux.yml` · `.blockmap`)에는 **없다.** 자동 업데이트 시 `electron-updater`
+> 는 `latest.yml` 의 sha512 로 **내려받은 인스톨러가 그 메타데이터와 일치하는지**를 확인한다 —
+> 메타데이터 자체를 인증하지는 못하므로, 릴리스 자산을 바꿀 수 있는 공격자는 체크섬과 인스톨러를
+> 함께 바꿀 수 있다. 그 층의 신뢰는 GitHub Releases 의 HTTPS 전송과 계정 보안에 의존한다.
+> 인스톨러의 출처를 독립적으로 확인하려면 위 `gh attestation verify` 를 쓰는 것이 유일한 경로다.
+> 자세한 위협모델은 [`SECURITY.md`](./SECURITY.md).
 
 ### 첫 실행 3단계
 
 1. **[세션] 탭** — 쓸 LLM 을 등록한다(설치된 CLI 자동 탐지 또는 API 키 입력).
 2. **[프로젝트] 탭** — 작업할 **워크스페이스 폴더**를 고른다(git 저장소 권장).
 3. 목표를 적고 실행 — 역할(planner · implementer · reviewer · summarizer)이 배정돼 협업한다.
-   파일 변경·삭제·shell 실행은 **승인 모달**을 거친다(기본은 destructive 차단).
+
+> ⚠ **에이전트가 워크스페이스를 직접 편집한다.** 변경은 위험도로 분류되며 **`destructive` 로 분류된
+> 것만 승인 모달을 띄운다**(민감 파일 변경 · 대량 삭제 · ignored 파일 변경 등). 일반적인 코드 편집은
+> `caution` 으로 분류돼 **모달 없이 자동 승인**되고, 검증 명령(`npm run typecheck`·`lint`·`test`)도
+> 게이트를 거치지 않는다. 즉 모달은 최후의 방어선이지 모든 변경의 확인 절차가 아니다 —
+> **작업 내용이 git 으로 되돌릴 수 있는 워크스페이스에서 쓰는 것을 전제로 한다.**
 
 > 업데이트는 앱이 GitHub Releases 피드에서 확인해 알린다(자동 다운로드는 꺼져 있어 사용자가
 > 승인해야 받는다). 보안 신고 절차와 위협모델은 [`SECURITY.md`](./SECURITY.md) 참조.

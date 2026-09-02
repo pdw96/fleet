@@ -276,12 +276,23 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     const dir = workspaceDir
     if (!dir) return undefined
     lastVerifySkipNote = undefined // 실행마다 초기화(직전 실행의 판정이 새 실행에 새지 않게)
+    // 이 실행에서 검증 명령이 존재한 적이 있는가. 에이전트가 검사를 **없애서** 통과시키는 길을
+    // 막는다(Codex PR#313 2R P1): 수정 에이전트가 마지막 typecheck/lint/test 스크립트를 지우거나
+    // package.json 을 삭제·훼손하면 다음 호출이 [] 를 돌리는데, 그걸 「원래 npm 프로젝트가 아니었다」로
+    // 접으면 확정 실패가 done 으로 뒤집힌다. **「원래 없던 것」과 「사라진 것」은 다르다.**
+    //
+    // 배선 시점 스냅숏으로 씨앗을 둔다 — 삭제가 첫 verify 보다 **먼저**(구현 단계에서) 일어나도
+    // 같은 위장이 성립하기 때문이다. 이 스냅숏은 **엄격해지는 방향으로만** 쓴다: 스킵을 거부할 뿐
+    // 검증을 건너뛰게 만들지 않으므로, 호출 시점 재탐지(1R P1)의 성질을 해치지 않는다.
+    let sawCommands = detectVerifyCommands(dir).length > 0
     return async () => {
       const commands = detectVerifyCommands(dir)
       if (commands.length === 0) {
-        lastVerifySkipNote = '검증 없음(npm 프로젝트 아님)'
+        // 사라진 것이면 사유를 남기지 않는다 → orchestrator 가 빈 결과를 실패로 접는다.
+        lastVerifySkipNote = sawCommands ? undefined : '검증 없음(npm 프로젝트 아님)'
         return []
       }
+      sawCommands = true
       lastVerifySkipNote = undefined
       return runAllVerifications(commands, {
         runner: effectiveVerifyRunner,

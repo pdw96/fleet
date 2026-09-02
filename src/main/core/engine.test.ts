@@ -436,6 +436,46 @@ describe('FleetEngine', () => {
     }
   })
 
+  // #300 · Codex PR#313 2R P1 — verify-fix 라운드가 **검사를 없애서** 통과시키는 길을 막는다.
+  // 검증 실패 → 수정 에이전트가 package.json 을 지우면 다음 호출이 [] 를 돌리는데, 그걸 「원래 npm
+  // 프로젝트가 아니었다」로 접으면 확정 실패가 done 으로 뒤집힌다. 「원래 없던 것」과 「사라진 것」은
+  // 다르다 — 후자는 실패로 유지돼야 한다.
+  it('#300: 수정 라운드가 package.json 을 지워도 실패가 done 으로 뒤집히지 않는다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-vanish-'))
+    try {
+      writeFileSync(join(dir, 'package.json'), NPM_WS_PKG)
+      // 구현/수정 에이전트가 워크스페이스를 편집할 때 package.json 을 지운다(검사를 없애 통과 시도).
+      const runner: CommandRunner = async (_cmd, args, opts) => {
+        const prompt = [...args, opts.stdinInput ?? ''].join(' ')
+        if (prompt.includes('분해'))
+          return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+        if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
+        if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
+        if (opts.cwd) rmSync(join(opts.cwd, 'package.json'), { force: true })
+        return { code: 0, stdout: '구현 완료', stderr: '' }
+      }
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({
+        store,
+        runner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 1, stdout: '', stderr: '검증 실패' }),
+      })
+      engine.registerCliSession('claude')
+
+      const result = await engine.runProjectFlow({ goal: 'g' })
+
+      expect(store.getProject(result.projectId)?.status).toBe('failed')
+      const done = store.listEvents().find((e) => e.type === 'project.done')
+      // 사라진 검사를 「원래 없었다」로 위장하지 않는다.
+      expect(done?.message).not.toContain('검증 없음')
+      expect(done?.message).toContain('프로젝트 실패')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('#300: 세 스크립트 중 하나라도 있으면 verify 를 그대로 돌린다(무회귀)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-npmws-'))
     try {
