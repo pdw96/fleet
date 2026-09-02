@@ -428,6 +428,23 @@ export interface OrchestratorEvent {
 export const MAX_REPLAN_ROUNDS = 3
 
 /**
+ * 한 작업의 구현→검토 재시도 상한 — replan 과 같은 이유의 engine 신뢰 경계 clamp.
+ * orchestrator 는 하한(1)만 보정하므로 상한은 여기서 강제한다: 데스크톱 UI 는 이 필드를 보내지
+ * 않지만(기본 2) 서버 표면은 `ws-host` 가 프레임 args 를 검증하지 않고 핸들러로 흘리므로, 인증된
+ * 클라이언트가 임의 큰 값을 실으면 취소 전까지 토큰 비용이 러너웨이한다(`taskTimeoutMs` 는
+ * per-send 라 총량을 막지 못한다).
+ * 값 5 = 실사용 기본 2 의 2배 이상 여유. 리뷰어가 5회 안에 수렴하지 못하면 라운드를 더 도는 것보다
+ * 사람이 개입하는 편이 싸다는 판단이며, 필요해지면 이 값만 올린다.
+ */
+export const MAX_REVIEW_ROUNDS = 5
+
+/**
+ * 채팅방 토론(discussRoom) 라운드 상한 — UI 셀렉트 지원 범위(1..3)이자 engine 신뢰 경계의 안전 상한.
+ * 라운드 × 참여 LLM 수만큼 발언이 나가므로 무상한이면 같은 러너웨이가 성립한다(취소는 가능).
+ */
+export const MAX_DISCUSS_ROUNDS = 3
+
+/**
  * 한 프로젝트 내 독립 작업의 최대 동시 실행 수. 1=순차(기본·무회귀). engine 경계에서 [1,MAX_CONCURRENCY] 정수 clamp.
  */
 export const MAX_CONCURRENCY = 4

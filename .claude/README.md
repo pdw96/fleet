@@ -11,6 +11,7 @@
 | `fleet-pr-review` | 다차원 적대 PR 리뷰 | 로컬만(Codex 봇 중복) |
 | `fleet-backlog-induction` | 백로그 착수 절차 래퍼 | 로컬만(L2-only) |
 | `fleet-plan-panel` | 판사 패널 계획 수립 | 로컬만 |
+| `fleet-advisor` | 1.0 완성도·운영 ROI 진단(deep/check) | 로컬만 |
 
 > 클라우드(claude-code-action) 실행은 폐기됐다(ADR-0012) — 두 스킬은 로컬 `Skill` 툴로만 돈다.
 
@@ -20,6 +21,8 @@
 |---|---|---|
 | `fleet-refuter` | 후보/주장/발견 반증(verify) | 기본 기각 · brain.md 먼저·코드가 권위 · file:line 의무 · verdict 스키마 · ADR-0003 ROI 렌즈 · 생태계 성숙≠내부 수요 · 재평가 트리거 명시 |
 | `fleet-finder` | 렌즈 기반 탐지(find) | 렌즈는 호출 시 지정 · 구조화 출력 · 근거 없는 발견 금지 · **자기 발견 확정 금지**(find≠verify) |
+| `fleet-planner` | 독립 구현 계획 초안(draft) | 각도는 호출 시 지정(리스크/MVP/계약) · 초안은 확정 아님(draft≠judge) |
+| `fleet-plan-judge` | 초안 루브릭 채점(judge) | 렌즈 그룹 지정 · draft 작성 인스턴스와 분리 디스패치 |
 
 스킬 산문("독립 서브에이전트 디스패치")의 실행 타입을 고정해, 세션마다 규율 프롬프트를
 재작성하던 비효율을 없앤다(14차 재랭킹에서 동일 템플릿 7회 수기 작성 실측). 산문 권위는

@@ -22,7 +22,13 @@ import type {
   Task,
   ToolStep,
 } from '../../shared/types'
-import { ASSIGNABLE_ROLES, MAX_REPLAN_ROUNDS, MAX_CONCURRENCY } from '../../shared/types'
+import {
+  ASSIGNABLE_ROLES,
+  MAX_DISCUSS_ROUNDS,
+  MAX_REPLAN_ROUNDS,
+  MAX_REVIEW_ROUNDS,
+  MAX_CONCURRENCY,
+} from '../../shared/types'
 import { createChatController, type AskOptions, type ChatController } from './chat/room'
 import { defaultRunner, detectAll, type CommandRunner } from './cli/detect'
 import { probeCliAuth } from './cli/probe'
@@ -717,6 +723,16 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
       const maxReplanRounds = Number.isFinite(requestedReplan)
         ? Math.min(Math.max(requestedReplan, 0), MAX_REPLAN_ROUNDS)
         : 0
+      // 같은 신뢰 경계 논거의 짝 — maxReviewRounds 도 상한을 강제한다. orchestrator 는 하한(1)만
+      // 보정하고, 서버 표면(ws-host)은 프레임 args 를 검증하지 않으므로 미보정이면 인증 클라가 임의
+      // 큰 라운드를 실을 수 있다. 미지정(undefined)은 그대로 넘겨 orchestrator 기본 2 를 보존한다.
+      const requestedReview = input.maxReviewRounds
+      const maxReviewRounds =
+        requestedReview === undefined
+          ? undefined
+          : Number.isFinite(Math.floor(requestedReview))
+            ? Math.min(Math.max(Math.floor(requestedReview), 1), MAX_REVIEW_ROUNDS)
+            : 1
       // 병렬 모드용: implementer CLI 를 작업별 독립 인스턴스로 복제하는 팩토리(편집은 stateless 라 안전).
       // 호출마다 새 createCliSession 인스턴스(자체 chain)를 만들어 반환 → CLI chain 직렬화 우회(#80 결함①).
       // 순차 모드(maxConcurrency === 1, 기본값)면 팩토리를 전달하지 않아 기존 단일 implementer 그대로(무회귀).
@@ -746,7 +762,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           store,
           sessions,
           assignments,
-          maxReviewRounds: input.maxReviewRounds,
+          maxReviewRounds,
           maxReplanRounds,
           maxConcurrency: mc,
           taskTimeoutMs: input.taskTimeoutMs,
@@ -843,13 +859,19 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     },
 
     async discussRoom(roomId, llmIds, rounds = 1) {
+      // 신뢰 경계 clamp(replan·review 와 동형) — UI 셀렉트는 1..MAX_DISCUSS_ROUNDS 지만 렌더러·서버
+      // 클라이언트는 임의 값을 실을 수 있고, 라운드 × 참여 LLM 수만큼 발언이 나간다.
+      const requestedRounds = Math.floor(rounds)
+      const totalRounds = Number.isFinite(requestedRounds)
+        ? Math.min(Math.max(requestedRounds, 0), MAX_DISCUSS_ROUNDS)
+        : 1
       // busy 는 토론 시작에 1회, idle 은 전체 토론 종료에 1회 — 턴 사이 공백에도 진행 표시가 유지된다.
       enterOp(roomId)
       try {
         const signal = activeChatRuns.get(roomId)?.signal
         const controller = createChatController({ store, sessions, roomId })
         const out: ChatMessage[] = []
-        for (let r = 0; r < rounds; r++) {
+        for (let r = 0; r < totalRounds; r++) {
           for (const id of llmIds) {
             // 취소되면 남은 턴을 시작하지 않는다 — in-flight 발언은 signal 이 session.send 에서 중단한다.
             if (signal?.aborted) return out

@@ -7,8 +7,13 @@ files:
   - '!out/server/**' # 서버 번들은 컨테이너 전용(B6 deploy) — 데스크톱 asar 에 싣지 않는다
   - package.json
 asar: true
-# 채널별 업데이트 피드 생성(#98) — 안정=latest.yml, 베타(x.y.z-beta.N)=beta.yml.
-# electron-updater 가 autoUpdater.channel 로 베타 스트림을 읽으려면 채널별 yml 산출이 필요하다.
+# ⚠ 이 플래그는 **현 구성에서 no-op 이다**(#304 ⑥ · Codex 5R 오탐의 원인이 된 주석을 실물로 정정).
+# `app-builder-lib` 의 `computeChannelNames` 는 `publishConfig.provider === 'github'` 이면
+# **현재 채널 하나만** 반환하고 즉시 끝낸다(`out/publish/updateInfoBuilder.js` — alpha·github·플래그-off
+# 세 조건의 OR). 즉 프리릴리스 빌드가 `latest.yml` 을 덤으로 뱉는 일은 없다.
+# 실제로 채널별 yml 을 가르는 것은 `release.yml` publish 스텝의 `-c.publish.channel=<채널>` 뿐이다 —
+# **그 줄이 사라지면 격리가 사라진다**(이 플래그가 대신 해주지 않는다). 값은 provider 를 github 이 아닌
+# 것으로 바꿀 때를 대비해 남겨 둔다.
 generateUpdatesFilesForAllChannels: true
 publish:
   provider: github
