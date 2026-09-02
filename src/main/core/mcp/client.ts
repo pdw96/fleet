@@ -23,7 +23,7 @@ const MAX_PROGRESS_MESSAGE_CHARS = 1024
  * MCP 서버에 **틀린 버전으로 자기를 소개**해 서버측 호환 처리·진단을 오도한다(Codex PR#313 2R P2 —
  * 0.1.1 범프가 이 상수를 0.1.0 에 남겨둔 채 나갈 뻔했다).
  * 「드리프트 시 수정」이라는 산문 규약은 실제로 드리프트했으므로, 정합은 이제
- * `client-version.test.ts` 가 대조로 강제한다(ADR-0016 선례 — 산문 대신 게이트).
+ * `scripts/mcp-client-version.test.ts` 가 대조로 강제한다(ADR-0016 선례 — 산문 대신 게이트).
  */
 const CLIENT_VERSION = '0.1.1'
 
