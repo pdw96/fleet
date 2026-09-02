@@ -394,6 +394,48 @@ describe('FleetEngine', () => {
     }
   })
 
+  // #300 · Codex PR#313 P1 — 탐지는 배선 시점이 아니라 verify 호출 시점이어야 한다. 빈 워크스페이스로
+  // 시작한 실행이 구현 단계에서 npm 프로젝트를 만들어내면 그 package.json 이 재탐지돼 검증이 돌아야
+  // 하고, 「npm 프로젝트 아님」 표기가 붙어서는 안 된다(배선 시점 스냅숏이면 둘 다 틀린다).
+  it('#300: 구현이 도중에 package.json 을 만들면 verify 가 재탐지돼 실제로 돈다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-becomes-npm-'))
+    try {
+      // 구현 단계에서 워크스페이스를 npm 프로젝트로 만든다("빈 폴더에 Node 앱을 만들어줘" 시나리오).
+      const runner: CommandRunner = async (_cmd, args, opts) => {
+        const prompt = [...args, opts.stdinInput ?? ''].join(' ')
+        if (prompt.includes('분해'))
+          return { code: 0, stdout: '[{"title":"작업1","description":"d1"}]', stderr: '' }
+        if (prompt.includes('검토')) return { code: 0, stdout: 'APPROVE', stderr: '' }
+        if (prompt.includes('누락')) return { code: 0, stdout: '요약', stderr: '' }
+        if (opts.cwd) writeFileSync(join(opts.cwd, 'package.json'), NPM_WS_PKG)
+        return { code: 0, stdout: '구현 완료', stderr: '' }
+      }
+      const store = createMemoryStore(deterministic())
+      let verifyCalls = 0
+      const engine = createFleetEngine({
+        store,
+        runner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => {
+          verifyCalls += 1
+          return { code: 0, stdout: '', stderr: '' }
+        },
+      })
+      engine.registerCliSession('claude')
+
+      const result = await engine.runProjectFlow({ goal: '빈 폴더에 Node 앱 만들기' })
+
+      expect(verifyCalls).toBeGreaterThan(0) // 배선 시점 스냅숏이었다면 0 이다
+      expect((result.verifications ?? []).length).toBeGreaterThan(0)
+      expect(store.getProject(result.projectId)?.status).toBe('done')
+      const done = store.listEvents().find((e) => e.type === 'project.done')
+      expect(done?.message).not.toContain('검증 없음')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('#300: 세 스크립트 중 하나라도 있으면 verify 를 그대로 돌린다(무회귀)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-npmws-'))
     try {

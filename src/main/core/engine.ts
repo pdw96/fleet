@@ -263,26 +263,33 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const activeRuns = new Map<string, AbortController>()
   const currentWorkspace = () =>
     workspaceDir ? createWorkspace(workspaceDir, effectiveGitRunner) : undefined
-  // 비-npm 워크스페이스면 검증 명령이 없다(#300) — verify 를 아예 주지 않아 orchestrator 가
-  // 검증 단계·verify-fix 라운드를 통째로 건너뛰게 한다. 그 사실은 currentVerifySkipNote 가 들고
-  // 있다가 project.done 에 실린다(#166 — 무성 스킵 금지).
-  const currentVerifyCommands = () => (workspaceDir ? detectVerifyCommands(workspaceDir) : [])
+  // 비-npm 워크스페이스면 검증 명령이 없다(#300) — 빈 결과를 돌려 orchestrator 가 검증 실패로
+  // 접지 않게 하고, 그 사실은 lastVerifySkipNote 가 들고 있다가 project.done 에 실린다
+  // (#166 — 무성 스킵 금지).
+  //
+  // ⚠ **탐지는 배선 시점이 아니라 호출 시점**이다(Codex PR#313 P1). 빈 워크스페이스로 시작한 실행이
+  // 구현 단계에서 npm 프로젝트를 만들어낼 수 있는데, 배선 시점에 명령 목록을 스냅숏하면 그 package.json
+  // 이 영영 재탐지되지 않아 검증이 통째로 빠지고 「npm 프로젝트 아님」이라는 **틀린** 표기가 붙는다.
+  // (원본도 클로저 안에서 npmVerifyCommands 를 불러 이 성질을 갖고 있었다 — 회귀 복구.)
+  let lastVerifySkipNote: string | undefined
   const currentVerify = (signal?: AbortSignal) => {
-    const commands = currentVerifyCommands()
-    return commands.length > 0
-      ? () =>
-          runAllVerifications(commands, {
-            runner: effectiveVerifyRunner,
-            timeoutMs: VERIFY_TIMEOUT_MS,
-            signal,
-          })
-      : undefined
+    const dir = workspaceDir
+    if (!dir) return undefined
+    lastVerifySkipNote = undefined // 실행마다 초기화(직전 실행의 판정이 새 실행에 새지 않게)
+    return async () => {
+      const commands = detectVerifyCommands(dir)
+      if (commands.length === 0) {
+        lastVerifySkipNote = '검증 없음(npm 프로젝트 아님)'
+        return []
+      }
+      lastVerifySkipNote = undefined
+      return runAllVerifications(commands, {
+        runner: effectiveVerifyRunner,
+        timeoutMs: VERIFY_TIMEOUT_MS,
+        signal,
+      })
+    }
   }
-  /** 워크스페이스는 있는데 npm 프로젝트가 아니라 검증을 건너뛸 때의 표면화 문구(그 외 undefined). */
-  const currentVerifySkipNote = (): string | undefined =>
-    workspaceDir !== null && currentVerifyCommands().length === 0
-      ? '검증 없음(npm 프로젝트 아님)'
-      : undefined
 
   // ── 채팅 진행 상태(단일 소스 오브 트루스) ──────────────────────────────────
   // 렌더러는 ChatPanel 마운트 시 getChatActivity 로 복원하고 busy/idle·delta 로 라이브 동기화한다.
@@ -780,7 +787,8 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           workspaceRoot: workspaceDir ?? undefined,
           gate,
           verify: currentVerify(controller.signal),
-          verifySkipNote: currentVerifySkipNote(),
+          // 게터다 — 판정이 verify 호출 시점에 나므로 배선 시점 값은 아직 없다(위 주석).
+          verifySkipNote: () => lastVerifySkipNote,
           signal: controller.signal,
           onEvent,
           makeEditSession,

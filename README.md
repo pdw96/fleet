@@ -34,11 +34,15 @@
 - **Linux**: AppImage 는 실행 권한이 필요하다. → `chmod +x Fleet-<버전>.AppImage` 후 실행.
 
 **출처를 직접 검증하려면**(권장) — 이 저장소의 GitHub Actions 가 빌드했다는 SLSA build provenance
-attestation 이 모든 릴리스 자산에 붙어 있다:
+attestation 이 **인스톨러 자산**(`.exe` · `.AppImage`)에 붙어 있다:
 
 ```bash
 gh attestation verify Fleet-Setup-<버전>.exe --repo pdw96/fleet
 ```
+
+> ⚠ attestation 은 **인스톨러 두 종에만** 발행된다. 릴리스에 함께 올라가는 업데이트 메타데이터
+> (`latest.yml` · `latest-linux.yml` · `.blockmap`)에는 없다 — 그쪽 무결성은 `electron-updater` 가
+> `latest.yml` 의 **sha512 체크섬**으로 검증한다. 자세한 위협모델은 [`SECURITY.md`](./SECURITY.md).
 
 ### 첫 실행 3단계
 

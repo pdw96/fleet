@@ -340,4 +340,22 @@ describe('detectVerifyCommands — npm 프로젝트 판정 (#300)', () => {
       expect(detectVerifyCommands(dir)).toEqual([])
     })
   })
+
+  // Codex PR#313 P2 — `{"scripts": null}` 은 유효 JSON 이고 typeof null === 'object' 라
+  // 선언 타입만 믿으면 소비자가 null 을 인덱싱해 TypeError 로 깨진다. 형태를 좁혀 접는다.
+  it.each([
+    ['null', '{"scripts": null}'],
+    ['배열', '{"scripts": []}'],
+    ['문자열', '{"scripts": "nope"}'],
+    ['숫자', '{"scripts": 7}'],
+  ])('scripts 가 %s 이면 던지지 않고 빈 배열 (비-객체 형태 방어)', (_label, body) => {
+    withDir((dir) => {
+      writeFileSync(join(dir, 'package.json'), body)
+      expect(() => detectVerifyCommands(dir)).not.toThrow()
+      expect(detectVerifyCommands(dir)).toEqual([])
+      // 같은 방어를 npmVerifyCommands 도 받는다(readPackageScripts 공유).
+      expect(() => npmVerifyCommands(dir)).not.toThrow()
+      expect(npmVerifyCommands(dir).every((c) => c.noop === undefined)).toBe(true)
+    })
+  })
 })

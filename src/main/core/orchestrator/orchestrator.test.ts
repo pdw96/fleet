@@ -2789,8 +2789,9 @@ describe('runProject', () => {
       ],
       workspace: fakeWorkspace(),
       workspaceRoot: '/ws',
-      // engine 이 detectVerifyCommands 로 비-npm 을 판정하면 verify 를 주지 않고 사유만 넘긴다.
-      verifySkipNote: '검증 없음(npm 프로젝트 아님)',
+      // engine 은 verify 를 항상 배선하고, 호출 시점에 비-npm 을 판정하면 빈 결과 + 사유를 남긴다.
+      verify: async () => [],
+      verifySkipNote: () => '검증 없음(npm 프로젝트 아님)',
       onEvent: (e) => events.push(e),
     })
     const done = events.find((e) => e.type === 'project.done')
@@ -2818,7 +2819,8 @@ describe('runProject', () => {
       ],
       workspace: fakeWorkspace(),
       workspaceRoot: '/ws',
-      verifySkipNote: '검증 없음(npm 프로젝트 아님)',
+      // 검증이 실제로 돌았으면 engine 은 사유를 지운다 — 게터가 undefined 를 돌려준다.
+      verifySkipNote: () => undefined,
       onEvent: (e) => events.push(e),
       verify: async () => [
         {
@@ -2834,6 +2836,38 @@ describe('runProject', () => {
     })
     const done = events.find((e) => e.type === 'project.done')
     expect(done?.message).not.toContain('검증 없음')
+  })
+
+  // #300 · Codex PR#313 P1 — 빈 결과라도 사유가 없으면(검증 실행 오류 등) 여전히 실패다.
+  // 「검사가 하나도 안 돌았다 = 모른다 = 실패」 backstop 을 스킵 예외가 갉아먹지 않는지 고정한다.
+  it('#300: 사유 없는 빈 검증 결과는 여전히 실패로 접는다(backstop 보존)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      maxVerifyFixRounds: 0,
+      verify: async () => {
+        throw new Error('boom') // verifyOnce 가 잡아서 [] 를 돌려준다
+      },
+      verifySkipNote: () => undefined,
+      onEvent: (e) => events.push(e),
+    })
+    const done = events.find((e) => e.type === 'project.done')
+    expect(done?.message).toContain('프로젝트 실패')
+    expect(done?.message).not.toContain('검증 없음')
+    expect(store.getProject(result.projectId)?.status).toBe('failed')
   })
 
   it('#166: verify 결과가 전부 no-op 이면 "검증 항목 없음" 으로 표면화한다', async () => {

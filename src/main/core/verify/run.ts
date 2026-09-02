@@ -146,13 +146,22 @@ export function isNoOpScript(body?: string): boolean {
   return n === '' || n === 'exit 0' || n === 'true' || n === ':'
 }
 
-/** <cwd>/package.json 의 scripts 맵 (읽기/파싱 실패·없음 → undefined = 알 수 없음). */
+/**
+ * <cwd>/package.json 의 scripts 맵 (읽기/파싱 실패·없음 → undefined = 알 수 없음).
+ *
+ * ⚠ **런타임 캐스트는 거짓일 수 있다** — `{"scripts": null}` 이나 `{"scripts": []}` 는 유효한 JSON
+ * 이고 `typeof null === 'object'` 라 선언 타입만 믿으면 소비자가 null 을 인덱싱해 TypeError 로
+ * 깨진다(Codex PR#313 P2). 형태를 여기서 좁혀 **비-null·비-배열 객체가 아니면 undefined**(= 알 수
+ * 없음)로 접는다 — `isNoOpScript` 의 `typeof` 가드와 같은 방어 축이다.
+ */
 function readPackageScripts(cwd: string): Record<string, string> | undefined {
   try {
     const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as {
-      scripts?: Record<string, string>
+      scripts?: unknown
     }
-    return pkg.scripts
+    const scripts = pkg.scripts
+    if (typeof scripts !== 'object' || scripts === null || Array.isArray(scripts)) return undefined
+    return scripts as Record<string, string>
   } catch {
     return undefined
   }

@@ -282,13 +282,16 @@ W4 가 끝나는 주기의 출하다.
 릴리스 태그 push 전 체크리스트:
 
 1. **버전** — `package.json` version 상향. 태그는 정확히 `v${version}`(`release.yml` 이 불일치를 하드 실패).
-2. **릴리스 노트 — 0.x 는 자동 노트, 1.0 은 CHANGELOG 필수.** `release.yml` 의 `gh release create`
-   는 `--generate-notes`(자동 생성 노트)를 쓴다. 여기에 미서명 경고 우회 안내가 실리지 않는 것이
-   문제였는데(ADR-0017 이 서명 대신 두는 유일한 완화책), **README 「설치 (사용자)」 절이 그 안내를
-   들고 있으므로 0.x 는 노트에서 README 를 링크하는 것으로 충족한다**(ADR-0021 §결정 4).
-   ⚠ **1.0 부터는 충족되지 않는다** — #304 ③의 `CHANGELOG.md` + `--notes-file` 전환을
+2. **릴리스 노트 — 0.x 는 자동 노트 + 안내 푸터, 1.0 은 CHANGELOG 필수.** `release.yml` 의
+   `gh release create` 는 `--generate-notes`(자동 생성 노트)를 쓴다. 자동 노트는 미서명 경고 우회
+   안내를 합성해 주지 않는데(ADR-0017 이 서명 대신 두는 **유일한** 완화책이다), `prepare` 잡의
+   **「Append 설치·경고 우회 안내 푸터」 스텝**이 지원 OS·SmartScreen 우회·AppImage `chmod +x`·
+   attestation 검증·README 설치 절 링크를 푸터로 덧붙여 이를 충족한다. 마커
+   (`<!-- fleet-install-footer -->`)로 중복 append 를 막으므로 `prepare` 재실행에 안전하다.
+   ⚠ **이 스텝을 지우면 미서명 완화책이 사라진다** — ADR-0017 의 의무라 리팩터 시 보존할 것.
+   ⚠ **1.0 부터는 이것만으로 충족되지 않는다** — #304 ③의 `CHANGELOG.md` + `--notes-file` 전환을
    `v1.0.0-rc.1` **전에** 착지시켜야 하고, 그 뒤 이 단계는 「해당 버전 절 작성 → 노트 주입 확인」이
-   된다. 그때 경고 우회 안내는 노트 하단 **고정 푸터**로도 append 한다.
+   된다(푸터 스텝은 그대로 뒤에 붙는다).
 3. **채널 격리 규칙** — **프리릴리스 태그(`v1.2.3-<식별자>`)는 반드시 stable 이 아닌 피드로 나가야
    한다.** `release.yml` 의 publish 스텝이 집행한다(`-beta`·`-rc`·그 외 식별자 전부 → beta 피드,
    `-alpha` → alpha). 그래서 **stable 태그보다 먼저 프리릴리스를 push 해도 stable 사용자에게는
