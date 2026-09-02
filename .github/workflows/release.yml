@@ -80,6 +80,15 @@ jobs:
           - **Linux**: \`chmod +x Fleet-*.AppImage\` 후 실행
 
           출처 검증(인스톨러 자산 한정): \`gh attestation verify <파일> --repo $GITHUB_REPOSITORY\`
+
+          ### ⚠ 알려진 제약 (0.1.x)
+
+          - **워크스페이스는 npm 프로젝트여야 합니다.** 검증 단계가 \`npm run typecheck\`·\`lint\`·\`test\`
+            로 고정돼 있어, Python·Go·Rust·빈 폴더에서는 모든 작업이 성공해도 프로젝트가 「검증 실패」로
+            끝납니다. 게다가 자동 수정 라운드가 그 실패를 고치려다 **워크스페이스에 \`package.json\` 을
+            만들어 넣을 수 있습니다.** JS/TS 저장소가 아니라면 이 버전은 권장하지 않습니다(추적: #300).
+          - 프로젝트 실행에는 구독형 CLI(\`claude\`/\`codex\`/\`gemini\`) 최소 1개가 필요합니다 — API 키만으로는
+            실행되지 않습니다.
           EOF
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
 

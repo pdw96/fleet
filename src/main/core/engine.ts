@@ -21,7 +21,6 @@ import type {
   RunProjectRequest,
   Task,
   ToolStep,
-  VerificationResult,
 } from '../../shared/types'
 import {
   ASSIGNABLE_ROLES,
@@ -53,7 +52,7 @@ import { createMemoryStore } from './store/memory'
 import type { Store } from './store/types'
 import {
   createVerifyRunner,
-  detectVerifyCommands,
+  npmVerifyCommands,
   runAllVerifications,
   type VerifyRunner,
 } from './verify/run'
@@ -264,72 +263,16 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const activeRuns = new Map<string, AbortController>()
   const currentWorkspace = () =>
     workspaceDir ? createWorkspace(workspaceDir, effectiveGitRunner) : undefined
-  // 비-npm 워크스페이스면 검증 명령이 없다(#300) — 빈 결과를 돌려 orchestrator 가 검증 실패로
-  // 접지 않게 하고, 그 사실은 lastVerifySkipNote 가 들고 있다가 project.done 에 실린다
-  // (#166 — 무성 스킵 금지).
-  //
-  // ⚠ **탐지는 배선 시점이 아니라 호출 시점**이다(Codex PR#313 P1). 빈 워크스페이스로 시작한 실행이
-  // 구현 단계에서 npm 프로젝트를 만들어낼 수 있는데, 배선 시점에 명령 목록을 스냅숏하면 그 package.json
-  // 이 영영 재탐지되지 않아 검증이 통째로 빠지고 「npm 프로젝트 아님」이라는 **틀린** 표기가 붙는다.
-  // (원본도 클로저 안에서 npmVerifyCommands 를 불러 이 성질을 갖고 있었다 — 회귀 복구.)
-  let lastVerifySkipNote: string | undefined
   const currentVerify = (signal?: AbortSignal) => {
     const dir = workspaceDir
-    if (!dir) return undefined
-    lastVerifySkipNote = undefined // 실행마다 초기화(직전 실행의 판정이 새 실행에 새지 않게)
-    // 이 실행에서 검증 명령이 존재한 적이 있는가. 에이전트가 검사를 **없애서** 통과시키는 길을
-    // 막는다(Codex PR#313 2R P1): 수정 에이전트가 마지막 typecheck/lint/test 스크립트를 지우거나
-    // package.json 을 삭제·훼손하면 다음 호출이 [] 를 돌리는데, 그걸 「원래 npm 프로젝트가 아니었다」로
-    // 접으면 확정 실패가 done 으로 뒤집힌다. **「원래 없던 것」과 「사라진 것」은 다르다.**
-    //
-    // 배선 시점 스냅숏으로 씨앗을 둔다 — 삭제가 첫 verify 보다 **먼저**(구현 단계에서) 일어나도
-    // 같은 위장이 성립하기 때문이다. 이 스냅숏은 **엄격해지는 방향으로만** 쓴다: 스킵을 거부할 뿐
-    // 검증을 건너뛰게 만들지 않으므로, 호출 시점 재탐지(1R P1)의 성질을 해치지 않는다.
-    // **불변식**: 이 실행에서 검증할 것이 한 번이라도 있었다고 관측되면(`commands` 든 `invalid` 든)
-    // 그 실행은 **끝까지 스킵될 수 없다**. 「검증 0회가 성공으로 접히는」 경로는 오직
-    // 「처음부터 끝까지 none」 하나뿐이다.
-    //
-    // 관측 상태를 `commands` 로만 잡으면 두 번 샜다 — ①검사를 지워 없애는 경로(2R P1) ②깨진
-    // 매니페스트를 낸 뒤 그것마저 지워 `none` 으로 되돌리는 경로(5R P1). `invalid` 도 「검증할 것이
-    // 있었다」는 관측이므로 같은 자물쇠에 넣는다.
-    //
-    // 배선 시점 스냅숏으로 씨앗을 둔다 — 삭제가 첫 verify 보다 **먼저**(구현 단계에서) 일어나도
-    // 같은 위장이 성립하기 때문이다. 이 스냅숏은 **엄격해지는 방향으로만** 쓴다: 스킵을 거부할 뿐
-    // 검증을 건너뛰게 만들지 않으므로, 호출 시점 재탐지(1R P1)의 성질을 해치지 않는다.
-    let skipForbidden = detectVerifyCommands(dir).kind !== 'none'
-    return async () => {
-      const detection = detectVerifyCommands(dir)
-      // 「없다」가 아니라 **「있는데 깨졌다」** 면 스킵이 아니라 검증 실패다(4R P1).
-      // 실패 결과를 하나 실어 보내면 ①verifyFailed 가 자연히 참이 되고 ②사유가 verify.failed 로
-      // 표면화되며 ③verify-fix 라운드가 매니페스트를 고칠 기회를 갖는다.
-      if (detection.kind === 'invalid') {
-        skipForbidden = true // 고치지 않고 **지워서** none 으로 되돌리는 우회를 막는다(5R P1)
-        lastVerifySkipNote = undefined
-        const failure: VerificationResult = {
-          kind: 'custom',
-          command: 'package.json 정합 검사',
-          passed: false,
-          exitCode: null,
-          stdout: '',
-          stderr: detection.reason,
-          analysis: detection.reason,
-          durationMs: 0,
-        }
-        return [failure]
-      }
-      if (detection.kind === 'none') {
-        // 사라진 것이면 사유를 남기지 않는다 → orchestrator 가 빈 결과를 실패로 접는다.
-        lastVerifySkipNote = skipForbidden ? undefined : '검증 없음(npm 프로젝트 아님)'
-        return []
-      }
-      skipForbidden = true
-      lastVerifySkipNote = undefined
-      return runAllVerifications(detection.commands, {
-        runner: effectiveVerifyRunner,
-        timeoutMs: VERIFY_TIMEOUT_MS,
-        signal,
-      })
-    }
+    return dir
+      ? () =>
+          runAllVerifications(npmVerifyCommands(dir), {
+            runner: effectiveVerifyRunner,
+            timeoutMs: VERIFY_TIMEOUT_MS,
+            signal,
+          })
+      : undefined
   }
 
   // ── 채팅 진행 상태(단일 소스 오브 트루스) ──────────────────────────────────
@@ -828,8 +771,6 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           workspaceRoot: workspaceDir ?? undefined,
           gate,
           verify: currentVerify(controller.signal),
-          // 게터다 — 판정이 verify 호출 시점에 나므로 배선 시점 값은 아직 없다(위 주석).
-          verifySkipNote: () => lastVerifySkipNote,
           signal: controller.signal,
           onEvent,
           makeEditSession,

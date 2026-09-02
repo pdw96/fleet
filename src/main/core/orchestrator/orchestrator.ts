@@ -61,16 +61,6 @@ export interface RunOptions {
   /** diff 위험 승인 게이트. 없으면 위험 변경은 거부(안전 기본값). */
   gate?: ApprovalGate
   verify?: () => Promise<VerificationResult[]>
-  /**
-   * `verify` 가 **빈 결과를 돌려준 이유**가 「워크스페이스가 npm 프로젝트가 아님」일 때의 표면화
-   * 문구(#300). project.done 의 breakdown 에 실리며, 그 경우 빈 결과를 검증 실패로 접지 않는다 —
-   * 검증을 조용히 건너뛰면 #166(무성 격하)의 재발이다.
-   *
-   * **게터인 이유**: 판정은 배선 시점이 아니라 `verify` 호출 시점에 난다(빈 워크스페이스로 시작한
-   * 실행이 구현 단계에서 npm 프로젝트를 만들 수 있다 — Codex PR#313 P1). 실행이 끝난 뒤 평가한다.
-   * 검증이 실제로 돌았거나 실행 오류로 비었으면 `undefined` 를 돌려야 한다(그건 실패다).
-   */
-  verifySkipNote?: () => string | undefined
   maxVerifyFixRounds?: number
   /** 검증 실패 시 planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/음수/NaN → 0(비활성). */
   maxReplanRounds?: number
@@ -1051,22 +1041,13 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const total = finalTasks.length
   const doneCount = finalTasks.filter((t) => t.status === 'done').length
   // 단일 breakdown — verify-fail·partial·집계-failed 메시지가 공유(포맷 drift 방지).
-  // 검증이 비-npm 워크스페이스라 건너뛰였으면 그 사실을 breakdown 에 실어 표면화한다(#300 · #166).
-  // 판정은 verify 호출 시점에 나므로(위 verifySkipNote 주석) 실행이 끝난 지금 평가한다.
-  const verifySkipNote =
-    verifications !== undefined && verifications.length === 0 ? opts.verifySkipNote?.() : undefined
-  const verifySkipSuffix = verifySkipNote ? ` · ${verifySkipNote}` : ''
   const breakdown =
     `총 ${total} · 완료 ${doneCount} · 실패 ${finalTasks.filter((t) => t.status === 'failed').length}` +
-    ` · 건너뜀 ${finalTasks.filter((t) => t.status === 'skipped').length}` +
-    verifySkipSuffix
+    ` · 건너뜀 ${finalTasks.filter((t) => t.status === 'skipped').length}`
 
   const signalAborted = opts.signal?.aborted === true
-  // 빈 결과는 기본적으로 실패다(「검사가 하나도 안 돌았다 = 모른다」는 backstop). 예외는 단 하나 —
-  // npm 프로젝트가 아니라 **돌릴 검사가 애초에 없었던** 경우이며, 그건 verifySkipNote 가 증명한다(#300).
   const verifyFailed =
     !!opts.verify &&
-    !verifySkipNote &&
     !(
       verifications !== undefined &&
       verifications.length > 0 &&
