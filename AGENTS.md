@@ -171,18 +171,11 @@ Codex 봇은 Fleet 에서 **스타일 리뷰어가 아니라 P0/P1 고위험 회
   PR open/ready 시 `@codex review` 없이 자동 리뷰를 받는다. 수동 `@codex review` 코멘트는
   **자동 리뷰 지연·무응답 시 fallback** 으로만 유지(cadence·👍 clean 감지는 아래 「백로그 착수 절차」
   4단계 「Codex 봇 운영」 참조).
-- **required check 화(현재 미도입·보류).** Automatic reviews 자체는 머지 게이트가 아니다. Codex 를 머지
-  차단 **required status check** 로 강제하려면 Automatic reviews 가 아니라 별도 GitHub Actions
-  워크플로에 `openai/codex-action@v1` job 을 만들고, `master protection` ruleset 에 그 **job 표시명**
-  (잡 id 아님 — skip 시 영구 pending 함정)을 required check 로 등록한다. **단 공식 `openai/codex-action@v1`
-  경로는 OpenAI/provider API 키 기반**이며 GitHub integration(ChatGPT) 인증을 직접 받지 못한다(액션
-  issue #92 = 그 기능 요청). ChatGPT 인증으로 CI 를 돌리는 **공식 경로 자체는 있으나 제약적**이다 —
-  `CODEX_ACCESS_TOKEN`+`codex exec` 는 **Business/Enterprise 전용**, ChatGPT-managed `auth.json` 유지는
-  **trusted private runner 한정 advanced**(직렬화 필수·GitHub-hosted 러너 부적합)이며 OpenAI 가
-  *"automation 인증은 API 키가 정답"*이라 명시한다. 또 클라우드 리뷰 봇은 commit status/check run 을 안
-  낸다(코멘트+👍만). 즉 솔로 Plus-플랜+hosted 러너엔 깔끔한 구독-only 게이트 경로가 없어, 자체 `codex exec`
-  job(API 키 권장) 또는 서드파티 wrapper 뿐이다. ROI·중복·비결정성 리스크로 **현재 보류**(2026-06-23
-  Codex↔Claude 1차출처 토론 합의 · #98). 협업자 합류/1.0 근처 재검토.
+- **required check 화(현재 미도입·보류).** Automatic reviews 자체는 머지 게이트가 아니다. Codex 를
+  required status check 로 만드는 경로는 전부 조사·기각됐고 **현재 보류**다 — 조사한 경로 5종의 기각
+  사유(공식 액션의 API 키 전제 · `CODEX_ACCESS_TOKEN` 의 Business/Enterprise 한정 · 클라우드 봇이
+  check run 을 안 내는 점 등), 재검토 트리거, 등록 시 함정은 **ADR-0001 이 권위**다. 여기서 재서술하지
+  않는다.
 - **CodeRabbit 보조 리뷰(advisory·비-required).** `coderabbitai[bot]` 가 활성이다 — PR 당 Codex +
   CodeRabbit 2봇 리뷰. **required 게이트 아님**(Codex=P0/P1 senior, CodeRabbit=스타일·incremental 보조).
   인라인 스레드 resolve 는 ruleset(미해결 스레드 0)이 강제하나 CodeRabbit 자체는 머지를 차단하지 않는다.
@@ -243,24 +236,16 @@ project number `1`, owner `pdw96`).
    PR open 후 **Codex 봇 자동리뷰를 기다려** 반영(위 「리뷰 피드백 교차검증」) → 사용자 확인 후 squash 머지.
    **ruleset 이 required check 통과 + 미해결 리뷰 스레드 resolve 를 머지 전 강제** — Codex 인라인 지적은
    반영/반박 후 스레드를 resolve(`gh api graphql … resolveReviewThread`) 해야 머지 가능.
-   - **Codex 봇 운영**: 자동리뷰가 항상 즉발은 아니다(보통 7~20분; 무응답 시 `@codex review`
-     코멘트로 명시 트리거, 인지하면 트리거 코멘트에 👀 리액션). Codex 는 라운드마다 commit_id
-     결속 공식 리뷰(COMMENTED)를 남긴다 — **단 지적이 0건이면 공식 리뷰를 발행하지 않고**
-     이슈 코멘트 `Codex Review: Didn't find any major issues` + `**Reviewed commit:** <축약 SHA>`
-     만 남긴다(51R 실측). 👍 리액션이 곁들여질 수 있다.
-     **👍 는 clean 을 눈으로 확인하는 관측 보조일 뿐, 머지 게이트 통과 신호가 아니다**
-     (44R P1: 리액션은 commit 결속이 없어 hook 이 인가로 안 쓴다) → 머지 인가는 **commit_id 가
-     현재 head 인 공식 리뷰**이거나 **head 를 지목한 무결 리뷰 코멘트**이거나 head-결속 폴백 마커다. 관측 시엔 reviews·인라인·
-     이슈 코멘트·리액션 네 채널을 `gh api … --paginate` 로 보되(comments/reviews 만 보면 놓친다),
-     머지 판단은 head 결속(공식 리뷰 commit_id · 무결 코멘트 본문 SHA) 기준으로 한다. 봇 로그인 = `chatgpt-codex-connector[bot]`
-     (필터 `test("codex")`). ~4라운드 넘으면 레이트리밋 가능.
-     **대기는 수동 폴링 대신 `/loop`** (예: `/loop 5m` + "PR <N> 의 commit_id 결속 Codex 리뷰
-     도착 확인, 도착하면 요약 보고" — 공식 scheduled-tasks 의 babysit-a-PR 용례). 머지 명령 자체는
-     `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 **현재
-     head 에 결속된** Codex 신호 부재 시 기계 차단한다(fail-closed·canonical allowlist —
-     허용 형태는 `gh pr merge <번호> … --match-head-commit <head SHA>` 단일 명령뿐, REST/
-     GraphQL/복합 명령 경유는 전부 차단) — 산문 규율의 구조 강제라 우회 금지. 차단 메시지가
-     복사 가능한 정확한 재시도 명령을 준다.
+   - **Codex 봇 운영**: 머지 인가 판정은 사람이 채널을 훑어 내리지 않는다 —
+     `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 **현재 head 에
+     결속된** Codex 신호 부재 시 머지를 기계 차단하며(fail-closed·canonical allowlist),
+     **차단 메시지가 복사 가능한 정확한 재시도 명령을 준다.** 산문 규율의 구조 강제라 우회 금지.
+     대기는 수동 폴링 대신 **`/loop`**(예: `/loop 5m` + "PR <N> 의 commit_id 결속 Codex 리뷰 도착
+     확인, 도착하면 요약 보고").
+     사람이 알아야 할 것은 두 가지뿐이다: ① **👍 리액션은 인가 신호가 아니다**(44R P1 — 리액션은
+     commit 결속이 없어 hook 이 인가로 쓰지 않는다). ② **지적이 0건이면 Codex 는 공식 리뷰를 발행하지
+     않고** 이슈 코멘트(`Codex Review: Didn't find any major issues` + `**Reviewed commit:** <SHA>`)만
+     남긴다(51R 실측) — 리뷰가 안 온 것이 아니므로 무응답으로 오판하지 말 것.
 5. **머지 후 동기화** — (a) 이슈 닫힘·#27 진행률 = `Closes #N` 으로 자동. (b) **보드 Status → Done**:
    보드 내장 워크플로(Item closed→Done · Auto-add(`tier:` 라벨) · Item added→Todo · Reopened→In Progress)가
    켜져 있어 자동. 예외 보정이 필요할 때만 `gh project item-edit`
