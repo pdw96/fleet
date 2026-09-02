@@ -301,61 +301,76 @@ describe('detectVerifyCommands — npm 프로젝트 판정 (#300)', () => {
     }
   }
 
-  it('package.json 이 없으면 빈 배열 — 호출자가 검증 자체를 비활성한다', () => {
-    withDir((dir) => expect(detectVerifyCommands(dir)).toEqual([]))
+  it('package.json 이 없으면 none — 정당한 스킵이다', () => {
+    withDir((dir) => expect(detectVerifyCommands(dir)).toEqual({ kind: 'none' }))
   })
 
-  it('package.json 이 깨져 있어도 빈 배열(파싱 실패 = 알 수 없음)', () => {
-    withDir((dir) => {
-      writeFileSync(join(dir, 'package.json'), '{ not json')
-      expect(detectVerifyCommands(dir)).toEqual([])
-    })
-  })
-
-  it('scripts 키가 없으면 빈 배열', () => {
+  it('scripts 키가 없으면 none', () => {
     withDir((dir) => {
       writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: '1.0.0' }))
-      expect(detectVerifyCommands(dir)).toEqual([])
+      expect(detectVerifyCommands(dir)).toEqual({ kind: 'none' })
     })
   })
 
-  it('typecheck·lint·test 가 하나도 없으면 빈 배열', () => {
+  it('typecheck·lint·test 가 하나도 없으면 none', () => {
     withDir((dir) => {
       writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { build: 'tsc -b' } }))
-      expect(detectVerifyCommands(dir)).toEqual([])
+      expect(detectVerifyCommands(dir)).toEqual({ kind: 'none' })
     })
   })
 
   it('세 스크립트 중 하나라도 있으면 현행 세 명령 그대로 (무회귀)', () => {
     withDir((dir) => {
       writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }))
-      expect(detectVerifyCommands(dir)).toEqual(npmVerifyCommands(dir))
-      expect(detectVerifyCommands(dir).map((c) => c.kind)).toEqual(['typecheck', 'lint', 'test'])
+      const detection = detectVerifyCommands(dir)
+      expect(detection.kind).toBe('commands')
+      if (detection.kind !== 'commands') return
+      expect(detection.commands).toEqual(npmVerifyCommands(dir))
+      expect(detection.commands.map((c) => c.kind)).toEqual(['typecheck', 'lint', 'test'])
     })
   })
 
   it('스크립트 값이 비-string 이면 그 이름은 npm 프로젝트 근거로 치지 않는다', () => {
     withDir((dir) => {
       writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 123 } }))
-      expect(detectVerifyCommands(dir)).toEqual([])
+      expect(detectVerifyCommands(dir)).toEqual({ kind: 'none' })
     })
   })
 
-  // Codex PR#313 P2 — `{"scripts": null}` 은 유효 JSON 이고 typeof null === 'object' 라
-  // 선언 타입만 믿으면 소비자가 null 을 인덱싱해 TypeError 로 깨진다. 형태를 좁혀 접는다.
-  it.each([
-    ['null', '{"scripts": null}'],
-    ['배열', '{"scripts": []}'],
-    ['문자열', '{"scripts": "nope"}'],
-    ['숫자', '{"scripts": 7}'],
-  ])('scripts 가 %s 이면 던지지 않고 빈 배열 (비-객체 형태 방어)', (_label, body) => {
-    withDir((dir) => {
-      writeFileSync(join(dir, 'package.json'), body)
-      expect(() => detectVerifyCommands(dir)).not.toThrow()
-      expect(detectVerifyCommands(dir)).toEqual([])
-      // 같은 방어를 npmVerifyCommands 도 받는다(readPackageScripts 공유).
-      expect(() => npmVerifyCommands(dir)).not.toThrow()
-      expect(npmVerifyCommands(dir).every((c) => c.noop === undefined)).toBe(true)
+  // Codex PR#313 4R P1 — 「없다」와 「있는데 깨졌다」를 같은 값으로 접으면, 구현 에이전트가 깨진
+  // package.json 을 만들어 놓는 것만으로 검증이 통째로 건너뛰어지고 프로젝트가 done 으로 보고된다.
+  // sawCommands 는 이 경로를 막지 못한다(명령을 낸 적이 없다) → 여기서 invalid 로 올려 실패로 접는다.
+  describe('있는데 깨진 매니페스트는 스킵이 아니라 invalid (fail closed)', () => {
+    it.each([
+      ['JSON 파싱 실패', '{ not json'],
+      ['최상위가 배열', '[1,2,3]'],
+      ['최상위가 문자열', '"nope"'],
+      ['scripts 가 null', '{"scripts": null}'],
+      ['scripts 가 배열', '{"scripts": []}'],
+      ['scripts 가 문자열', '{"scripts": "nope"}'],
+      ['scripts 가 숫자', '{"scripts": 7}'],
+    ])('%s → invalid (사유 포함)', (_label, body) => {
+      withDir((dir) => {
+        writeFileSync(join(dir, 'package.json'), body)
+        const detection = detectVerifyCommands(dir)
+        expect(detection.kind).toBe('invalid')
+        if (detection.kind !== 'invalid') return
+        expect(detection.reason).toBeTruthy()
+      })
     })
+
+    // 1R P2 의 요구(던지지 않는다)는 유지된다 — invalid 로 올리되 예외를 내지는 않는다.
+    it.each([['{ not json'], ['{"scripts": null}'], ['{"scripts": []}'], ['{"scripts": 7}']])(
+      '%s 에서 던지지 않는다 (detect·npmVerifyCommands 양쪽)',
+      (body) => {
+        withDir((dir) => {
+          writeFileSync(join(dir, 'package.json'), body)
+          expect(() => detectVerifyCommands(dir)).not.toThrow()
+          // npmVerifyCommands 는 관대한 읽기를 유지한다(noop 태깅 전용 · 무회귀).
+          expect(() => npmVerifyCommands(dir)).not.toThrow()
+          expect(npmVerifyCommands(dir).every((c) => c.noop === undefined)).toBe(true)
+        })
+      },
+    )
   })
 })

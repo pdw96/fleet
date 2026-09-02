@@ -21,6 +21,7 @@ import type {
   RunProjectRequest,
   Task,
   ToolStep,
+  VerificationResult,
 } from '../../shared/types'
 import {
   ASSIGNABLE_ROLES,
@@ -284,17 +285,35 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
     // 배선 시점 스냅숏으로 씨앗을 둔다 — 삭제가 첫 verify 보다 **먼저**(구현 단계에서) 일어나도
     // 같은 위장이 성립하기 때문이다. 이 스냅숏은 **엄격해지는 방향으로만** 쓴다: 스킵을 거부할 뿐
     // 검증을 건너뛰게 만들지 않으므로, 호출 시점 재탐지(1R P1)의 성질을 해치지 않는다.
-    let sawCommands = detectVerifyCommands(dir).length > 0
+    let sawCommands = detectVerifyCommands(dir).kind === 'commands'
     return async () => {
-      const commands = detectVerifyCommands(dir)
-      if (commands.length === 0) {
+      const detection = detectVerifyCommands(dir)
+      // 「없다」가 아니라 **「있는데 깨졌다」** 면 스킵이 아니라 검증 실패다(Codex PR#313 4R P1).
+      // sawCommands 는 이 경로를 막지 못한다 — 깨진 매니페스트는 명령을 낸 적이 **없기** 때문이다.
+      // 실패 결과를 하나 실어 보내면 ①verifyFailed 가 자연히 참이 되고 ②사유가 verify.failed 로
+      // 표면화되며 ③verify-fix 라운드가 매니페스트를 고칠 기회를 갖는다.
+      if (detection.kind === 'invalid') {
+        lastVerifySkipNote = undefined
+        const failure: VerificationResult = {
+          kind: 'custom',
+          command: 'package.json 정합 검사',
+          passed: false,
+          exitCode: null,
+          stdout: '',
+          stderr: detection.reason,
+          analysis: detection.reason,
+          durationMs: 0,
+        }
+        return [failure]
+      }
+      if (detection.kind === 'none') {
         // 사라진 것이면 사유를 남기지 않는다 → orchestrator 가 빈 결과를 실패로 접는다.
         lastVerifySkipNote = sawCommands ? undefined : '검증 없음(npm 프로젝트 아님)'
         return []
       }
       sawCommands = true
       lastVerifySkipNote = undefined
-      return runAllVerifications(commands, {
+      return runAllVerifications(detection.commands, {
         runner: effectiveVerifyRunner,
         timeoutMs: VERIFY_TIMEOUT_MS,
         signal,
