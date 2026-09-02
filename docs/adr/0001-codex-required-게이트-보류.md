@@ -29,3 +29,5 @@ Codex 를 required CI 게이트로 만들지 **않는다**(보류). 솔로 pre-1
 현 required check = `typecheck·lint·test·build` + `windows vitest`(ruleset id 17940177)만 유지.
 Codex·CodeRabbit 는 비차단 어드바이저리 리뷰어로 운용(머지 전 대기·반영, 스레드 resolve).
 **재검토 트리거**: 협업자 합류 또는 1.0 근처.
+재검토 시 함정 하나 — required check 로 등록하는 이름은 **잡 id 가 아니라 job 표시명**이다.
+잡 id 로 걸면 그 잡이 skip 될 때 영구 pending 이 되어 머지가 영원히 막힌다.

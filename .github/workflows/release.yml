@@ -46,6 +46,52 @@ jobs:
             --generate-notes \
             $PRERELEASE
 
+      # ADR-0017 이 미서명을 고르며 **경고 우회 안내를 유일한 완화책**으로 못 박았다. 그런데 자동 생성
+      # 노트(--generate-notes)는 그 안내를 합성해 주지 않으므로, 사용자가 실제로 착지하는 릴리스
+      # 페이지엔 안내가 없었다(Codex PR#313 P1). 여기서 푸터로 명시 append 한다.
+      # ⚠ `--notes` + `--generate-notes` 의 합성 순서는 gh 문서에 명시돼 있지 않아 의존하지 않는다 —
+      # 문서화된 플래그만 쓴다(`release view --json body` 로 읽고 `release edit --notes-file` 로 쓴다).
+      # prepare 는 재실행 가능해야 하므로(위 reuse 경로) 마커로 중복 append 를 막는다.
+      - name: Append 설치·경고 우회 안내 푸터 (미서명 완화책 — ADR-0017)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- fleet-install-footer -->'
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body -q .body > notes.md
+          if grep -qF "$MARKER" notes.md; then
+            echo "설치 안내 푸터가 이미 있음 — 건너뜀"
+            exit 0
+          fi
+          README="https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md#설치-사용자"
+          cat >> notes.md <<EOF
+
+          ---
+
+          $MARKER
+          ### 설치 안내
+
+          **지원 OS: Windows · Linux.** 설치 절차·전제조건·첫 실행은 [README 설치 절]($README) 참조.
+
+          이 빌드는 **코드서명이 없다.** 그래서 OS 가 설치를 막는다:
+
+          - **Windows**: SmartScreen 이 *"Windows에서 PC를 보호했습니다"* 를 띄운다 → **「추가 정보」 → 「실행」**
+          - **Linux**: \`chmod +x Fleet-*.AppImage\` 후 실행
+
+          출처 검증(인스톨러 자산 한정): \`gh attestation verify <파일> --repo $GITHUB_REPOSITORY\`
+
+          ### ⚠ 알려진 제약 (0.1.x)
+
+          - **워크스페이스는 npm 프로젝트여야 합니다.** 검증 단계가 \`npm run typecheck\`·\`lint\`·\`test\`
+            로 고정돼 있어, Python·Go·Rust·빈 폴더에서는 모든 작업이 성공해도 프로젝트가 「검증 실패」로
+            끝납니다. 게다가 자동 수정 라운드가 그 실패를 고치려다 **워크스페이스에 \`package.json\` 을
+            만들어 넣을 수 있습니다.** JS/TS 저장소가 아니라면 이 버전은 권장하지 않습니다(추적: #300).
+          - 프로젝트 실행에는 구독형 CLI(\`claude\`/\`codex\`/\`gemini\`) 최소 1개가 필요합니다 — API 키만으로는
+            실행되지 않습니다.
+          EOF
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+
   build:
     needs: prepare
     # build 잡은 attestation 용 id-token/attestations(write)가 추가로 필요한데, job-level permissions 를

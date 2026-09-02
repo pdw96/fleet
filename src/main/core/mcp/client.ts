@@ -18,8 +18,14 @@ const MAX_TOOLS_LIST_PAGES = 100
  * 입력측에서 잘라 막는다(orchestrator 의 task.progress 영속 제외와 같은 동기).
  */
 const MAX_PROGRESS_MESSAGE_CHARS = 1024
-/** clientInfo.version — package.json 과 동기화(드리프트 시 수정). */
-const CLIENT_VERSION = '0.1.0'
+/**
+ * clientInfo.version — `package.json` 의 version 과 동기여야 한다. 여기가 낡으면 모든 설치본이
+ * MCP 서버에 **틀린 버전으로 자기를 소개**해 서버측 호환 처리·진단을 오도한다(Codex PR#313 2R P2 —
+ * 0.1.1 범프가 이 상수를 0.1.0 에 남겨둔 채 나갈 뻔했다).
+ * 「드리프트 시 수정」이라는 산문 규약은 실제로 드리프트했으므로, 정합은 이제
+ * `scripts/mcp-client-version.test.ts` 가 대조로 강제한다(ADR-0016 선례 — 산문 대신 게이트).
+ */
+const CLIENT_VERSION = '0.1.1'
 
 interface Pending {
   resolve: (value: Record<string, unknown>) => void
