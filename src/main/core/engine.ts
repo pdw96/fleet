@@ -52,7 +52,7 @@ import { createMemoryStore } from './store/memory'
 import type { Store } from './store/types'
 import {
   createVerifyRunner,
-  npmVerifyCommands,
+  detectVerifyCommands,
   runAllVerifications,
   type VerifyRunner,
 } from './verify/run'
@@ -263,17 +263,26 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
   const activeRuns = new Map<string, AbortController>()
   const currentWorkspace = () =>
     workspaceDir ? createWorkspace(workspaceDir, effectiveGitRunner) : undefined
+  // 비-npm 워크스페이스면 검증 명령이 없다(#300) — verify 를 아예 주지 않아 orchestrator 가
+  // 검증 단계·verify-fix 라운드를 통째로 건너뛰게 한다. 그 사실은 currentVerifySkipNote 가 들고
+  // 있다가 project.done 에 실린다(#166 — 무성 스킵 금지).
+  const currentVerifyCommands = () => (workspaceDir ? detectVerifyCommands(workspaceDir) : [])
   const currentVerify = (signal?: AbortSignal) => {
-    const dir = workspaceDir
-    return dir
+    const commands = currentVerifyCommands()
+    return commands.length > 0
       ? () =>
-          runAllVerifications(npmVerifyCommands(dir), {
+          runAllVerifications(commands, {
             runner: effectiveVerifyRunner,
             timeoutMs: VERIFY_TIMEOUT_MS,
             signal,
           })
       : undefined
   }
+  /** 워크스페이스는 있는데 npm 프로젝트가 아니라 검증을 건너뛸 때의 표면화 문구(그 외 undefined). */
+  const currentVerifySkipNote = (): string | undefined =>
+    workspaceDir !== null && currentVerifyCommands().length === 0
+      ? '검증 없음(npm 프로젝트 아님)'
+      : undefined
 
   // ── 채팅 진행 상태(단일 소스 오브 트루스) ──────────────────────────────────
   // 렌더러는 ChatPanel 마운트 시 getChatActivity 로 복원하고 busy/idle·delta 로 라이브 동기화한다.
@@ -771,6 +780,7 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
           workspaceRoot: workspaceDir ?? undefined,
           gate,
           verify: currentVerify(controller.signal),
+          verifySkipNote: currentVerifySkipNote(),
           signal: controller.signal,
           onEvent,
           makeEditSession,

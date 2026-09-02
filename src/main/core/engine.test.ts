@@ -17,6 +17,17 @@ import {
 } from '../../shared/types'
 import type { CommandRunner } from './cli/detect'
 import { createFleetEngine, clampConcurrency } from './engine'
+
+/**
+ * verify 경로를 타는 테스트의 워크스페이스 픽스처(#300). engine 은 `detectVerifyCommands` 로
+ * 비-npm 워크스페이스를 판정해 verify 를 아예 배선하지 않으므로, **검증 동작을 단언하는 테스트는
+ * 워크스페이스가 npm 프로젝트여야 한다.** 실제 npm spawn 은 `verifyRunner` 목이 가로채므로
+ * 스크립트 본문은 임의값이면 된다(이름의 존재만이 판정 근거).
+ */
+const NPM_WS_PKG = JSON.stringify({
+  name: 'fixture-ws',
+  scripts: { typecheck: 'tsc --noEmit', lint: 'eslint .', test: 'vitest run' },
+})
 import type { McpHost } from './mcp/types'
 import type { HttpClient } from './providers/types'
 import { createSessionManager } from './session/manager'
@@ -347,6 +358,66 @@ describe('FleetEngine', () => {
       expect(result.summary).toContain('요약')
       expect(engine.listProjects()).toHaveLength(1)
       expect(engine.getProjectTasks(result.projectId)).toHaveLength(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // #300 — 비-npm 워크스페이스에서 verify 를 아예 배선하지 않는다. verifyRunner 가 한 번도 불리지
+  // 않는 것이 핵심 단언이다: 불렸다면 `npm run typecheck` 가 돌고 실패해 verify-fix 라운드가
+  // implementer 를 재스폰하며, 그 라운드가 남의 레포에 package.json 을 심는다.
+  it('#300: package.json 없는 워크스페이스는 verify 를 돌리지 않고 done 으로 끝난다', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-nonnpm-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      let verifyCalls = 0
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => {
+          verifyCalls += 1
+          return { code: 1, stdout: '', stderr: 'npm ERR! Missing script: "typecheck"' }
+        },
+      })
+      engine.registerCliSession('claude')
+
+      const result = await engine.runProjectFlow({ goal: 'Python 레포 작업' })
+
+      expect(verifyCalls).toBe(0)
+      expect(store.getProject(result.projectId)?.status).toBe('done')
+      const done = store.listEvents().find((e) => e.type === 'project.done')
+      expect(done?.message).toContain('검증 없음(npm 프로젝트 아님)')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('#300: 세 스크립트 중 하나라도 있으면 verify 를 그대로 돌린다(무회귀)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-npmws-'))
+    try {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }))
+      const store = createMemoryStore(deterministic())
+      let verifyCalls = 0
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => {
+          verifyCalls += 1
+          return { code: 0, stdout: '', stderr: '' }
+        },
+      })
+      engine.registerCliSession('claude')
+
+      const result = await engine.runProjectFlow({ goal: 'npm 레포 작업' })
+
+      expect(verifyCalls).toBeGreaterThan(0)
+      expect(store.getProject(result.projectId)?.status).toBe('done')
+      const done = store.listEvents().find((e) => e.type === 'project.done')
+      expect(done?.message).not.toContain('검증 없음')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -828,6 +899,9 @@ describe('FleetEngine', () => {
   it('runs the implementer as a direct-edit agent in the workspace and verifies when workspaceDir is set', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-engine-'))
     try {
+      // #300: 이 테스트의 대상은 verify 경로다 → 워크스페이스를 npm 프로젝트로 만든다.
+      // (비-npm 이면 engine 이 verify 를 배선하지 않아 검증 단언이 무의미해진다.)
+      writeFileSync(join(dir, 'package.json'), NPM_WS_PKG)
       // 편집 모드(opts.cwd 지정)에서 에이전트가 워크스페이스에 파일을 직접 만든다 → 실제 git diff 발생.
       const runner: CommandRunner = async (_cmd, args, opts) => {
         const prompt = [...args, opts.stdinInput ?? ''].join(' ')
@@ -870,6 +944,7 @@ describe('FleetEngine', () => {
   it('forwards maxReplanRounds so the orchestrator replans when verification keeps failing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-replan-'))
     try {
+      writeFileSync(join(dir, 'package.json'), NPM_WS_PKG) // #300: verify 경로 테스트 → npm 워크스페이스
       const store = createMemoryStore(deterministic())
       const events: OrchestratorEvent[] = []
       const engine = createFleetEngine({
@@ -929,6 +1004,7 @@ describe('FleetEngine', () => {
   it('clamps an over-range maxReplanRounds to MAX_REPLAN_ROUNDS at the engine boundary', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-clamp-'))
     try {
+      writeFileSync(join(dir, 'package.json'), NPM_WS_PKG) // #300: verify 경로 테스트 → npm 워크스페이스
       const store = createMemoryStore(deterministic())
       const events: OrchestratorEvent[] = []
       const engine = createFleetEngine({

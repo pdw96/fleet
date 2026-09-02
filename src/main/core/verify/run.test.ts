@@ -6,6 +6,7 @@ import {
   allPassed,
   createVerifyRunner,
   defaultVerifyRunner,
+  detectVerifyCommands,
   isNoOpScript,
   npmVerifyCommands,
   runAllVerifications,
@@ -283,5 +284,60 @@ describe('npmVerifyCommands', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+// #300 — 비-npm 워크스페이스에서는 검증 명령을 내지 않는다. 이 판정이 없으면 Python·Go·Rust·빈 폴더
+// 워크스페이스가 모든 작업 성공 후에도 **항상** 「검증 실패」로 끝나고, verify-fix 라운드가
+// implementer 를 재스폰해 *"npm run typecheck 실패를 고쳐라"* 를 시켜 남의 레포에 package.json 을
+// 심는다(#299 와 결합해 리뷰·승인도 우회).
+describe('detectVerifyCommands — npm 프로젝트 판정 (#300)', () => {
+  const withDir = (fn: (dir: string) => void): void => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-verify-detect-'))
+    try {
+      fn(dir)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('package.json 이 없으면 빈 배열 — 호출자가 검증 자체를 비활성한다', () => {
+    withDir((dir) => expect(detectVerifyCommands(dir)).toEqual([]))
+  })
+
+  it('package.json 이 깨져 있어도 빈 배열(파싱 실패 = 알 수 없음)', () => {
+    withDir((dir) => {
+      writeFileSync(join(dir, 'package.json'), '{ not json')
+      expect(detectVerifyCommands(dir)).toEqual([])
+    })
+  })
+
+  it('scripts 키가 없으면 빈 배열', () => {
+    withDir((dir) => {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: '1.0.0' }))
+      expect(detectVerifyCommands(dir)).toEqual([])
+    })
+  })
+
+  it('typecheck·lint·test 가 하나도 없으면 빈 배열', () => {
+    withDir((dir) => {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { build: 'tsc -b' } }))
+      expect(detectVerifyCommands(dir)).toEqual([])
+    })
+  })
+
+  it('세 스크립트 중 하나라도 있으면 현행 세 명령 그대로 (무회귀)', () => {
+    withDir((dir) => {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }))
+      expect(detectVerifyCommands(dir)).toEqual(npmVerifyCommands(dir))
+      expect(detectVerifyCommands(dir).map((c) => c.kind)).toEqual(['typecheck', 'lint', 'test'])
+    })
+  })
+
+  it('스크립트 값이 비-string 이면 그 이름은 npm 프로젝트 근거로 치지 않는다', () => {
+    withDir((dir) => {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 123 } }))
+      expect(detectVerifyCommands(dir)).toEqual([])
+    })
   })
 })

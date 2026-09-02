@@ -2769,6 +2769,73 @@ describe('runProject', () => {
     expect(store.getProject(result.projectId)?.status).toBe('done')
   })
 
+  // #300 — 비-npm 워크스페이스면 engine 이 verify 를 아예 주지 않는다. 그때 실행이 done 으로 끝나야
+  // 하지만(현행은 항상 failed), **조용히** 끝나면 #166 의 무성 격하가 재발한다 — 스킵 사실이
+  // project.done 에 실려야 한다.
+  it('#300: 비-npm 워크스페이스는 done 으로 끝나되 "검증 없음" 을 표면화한다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      // engine 이 detectVerifyCommands 로 비-npm 을 판정하면 verify 를 주지 않고 사유만 넘긴다.
+      verifySkipNote: '검증 없음(npm 프로젝트 아님)',
+      onEvent: (e) => events.push(e),
+    })
+    const done = events.find((e) => e.type === 'project.done')
+    expect(done?.message).toContain('검증 없음(npm 프로젝트 아님)')
+    // #166 규약: breakdown 의 "실패 N" 카운트와 충돌하므로 접두 문면으로 판정한다.
+    expect(done?.message).not.toContain('프로젝트 실패')
+    expect(done?.message).toContain('프로젝트 완료')
+    expect(store.getProject(result.projectId)?.status).toBe('done')
+  })
+
+  it('#300: verify 가 있으면 verifySkipNote 는 무시된다(스킵하지 않았으므로)', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('rev', () => 'APPROVE'))
+    const events: OrchestratorEvent[] = []
+    await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+      ],
+      workspace: fakeWorkspace(),
+      workspaceRoot: '/ws',
+      verifySkipNote: '검증 없음(npm 프로젝트 아님)',
+      onEvent: (e) => events.push(e),
+      verify: async () => [
+        {
+          kind: 'test',
+          command: 'npm test',
+          passed: true,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          durationMs: 1,
+        },
+      ],
+    })
+    const done = events.find((e) => e.type === 'project.done')
+    expect(done?.message).not.toContain('검증 없음')
+  })
+
   it('#166: verify 결과가 전부 no-op 이면 "검증 항목 없음" 으로 표면화한다', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()

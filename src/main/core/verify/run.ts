@@ -183,3 +183,28 @@ export function npmVerifyCommands(cwd: string): VerifyCommand[] {
     mk('test', 'test', ['test']),
   ]
 }
+
+/** `npmVerifyCommands` 가 거는 스크립트 이름(= npm 프로젝트 판정의 근거 집합). */
+const NPM_VERIFY_SCRIPTS = ['typecheck', 'lint', 'test'] as const
+
+/**
+ * 워크스페이스를 보고 **실제로 돌릴 수 있는** 검증 명령을 정한다(#300).
+ *
+ * `npmVerifyCommands` 는 세 npm 스크립트를 무조건 반환하므로, 빈 폴더·Python·Go·Rust 워크스페이스
+ * 에서는 모든 작업이 성공해도 `npm run typecheck` 가 없어 **항상** 「검증 실패」로 끝났다. 게다가
+ * verify-fix 라운드가 implementer 를 재스폰해 *"npm run typecheck 실패를 고쳐라"* 를 시키는 탓에
+ * **남의 레포에 `package.json` 이 심어졌다**(#300 · #299 와 결합).
+ *
+ * 그래서 npm 프로젝트가 아니면 **빈 배열**을 돌려주고, 호출자(`engine`)가 검증 자체를 비활성한다.
+ * ⚠ 스킵은 **조용하면 안 된다**(#166 — 무성 격하 재발) — 호출자는 스킵 사실을 project.done 에
+ * 표면화할 의무가 있다.
+ *
+ * 판정: `package.json` 이 없거나 파싱 불가거나 `scripts` 가 없으면 비-npm. 있으면 위 세 스크립트가
+ * **하나도** 없을 때만 비-npm(하나라도 있으면 현행 세 명령 그대로 — 무회귀).
+ */
+export function detectVerifyCommands(cwd: string): VerifyCommand[] {
+  const scripts = readPackageScripts(cwd)
+  if (scripts === undefined) return []
+  if (!NPM_VERIFY_SCRIPTS.some((name) => typeof scripts[name] === 'string')) return []
+  return npmVerifyCommands(cwd)
+}

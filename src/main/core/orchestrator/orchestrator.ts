@@ -61,6 +61,12 @@ export interface RunOptions {
   /** diff 위험 승인 게이트. 없으면 위험 변경은 거부(안전 기본값). */
   gate?: ApprovalGate
   verify?: () => Promise<VerificationResult[]>
+  /**
+   * `verify` 가 없는 이유가 「워크스페이스는 있는데 npm 프로젝트가 아님」일 때의 표면화 문구(#300).
+   * project.done 의 breakdown 에 실린다 — 검증을 조용히 건너뛰면 #166(무성 격하)의 재발이다.
+   * 워크스페이스 자체가 없어 verify 가 없는 경우엔 주지 않는다(그건 작업 실행 자체가 스킵된다).
+   */
+  verifySkipNote?: string
   maxVerifyFixRounds?: number
   /** 검증 실패 시 planner 가 보정 작업을 분해→append→실행→재검증하는 최대 라운드. 0/음수/NaN → 0(비활성). */
   maxReplanRounds?: number
@@ -1041,9 +1047,12 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
   const total = finalTasks.length
   const doneCount = finalTasks.filter((t) => t.status === 'done').length
   // 단일 breakdown — verify-fail·partial·집계-failed 메시지가 공유(포맷 drift 방지).
+  // 검증이 비-npm 워크스페이스라 건너뛰였으면 그 사실을 breakdown 에 실어 표면화한다(#300 · #166).
+  const verifySkipSuffix = !opts.verify && opts.verifySkipNote ? ` · ${opts.verifySkipNote}` : ''
   const breakdown =
     `총 ${total} · 완료 ${doneCount} · 실패 ${finalTasks.filter((t) => t.status === 'failed').length}` +
-    ` · 건너뜀 ${finalTasks.filter((t) => t.status === 'skipped').length}`
+    ` · 건너뜀 ${finalTasks.filter((t) => t.status === 'skipped').length}` +
+    verifySkipSuffix
 
   const signalAborted = opts.signal?.aborted === true
   const verifyFailed =
