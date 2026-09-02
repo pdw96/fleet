@@ -50,6 +50,26 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
     it('누락 시 exit 1 로 공개를 막는다', () => {
       const step = yml.slice(assetCheck, publish)
       expect(step).toMatch(/if \[ -n "\$MISSING" \]; then[\s\S]{0,600}?exit 1/)
+      // 판정의 입력이 실제 릴리스 자산 조회여야 한다 — assets.txt 가 다른 출처로 갈아끼워지면
+      // grep 들은 그대로인 채 게이트만 무의미해진다.
+      expect(step).toMatch(/gh release view[^\n]*--json assets[\s\S]{0,120}> assets\.txt/)
+    })
+  })
+
+  // `exit 1` 은 스텝이 실제로 잡을 실패시킬 때만 게이트다. `continue-on-error: true` 는 실패한
+  // 스텝을 성공으로 접고 **다음 스텝을 그대로 실행**시키므로, 자산 게이트에 그 한 줄만 붙이면
+  // exit 1 이 나도 바로 뒤의 공개 스텝이 돌아 v0.1.1 이 그대로 재현된다(공개 스텝의 `if: always()`
+  // 도 동형). 편집 1줄로 완성되는 fail-open 이고 동기도 현실적이다 — 막힌 릴리스를 뚫으려는
+  // 조작이 바로 v0.1.1 을 만든 압력이다. `deploy-cd-pin.test.ts:79-83` 이 같은 밴을 이미 갖는다.
+  // 현재 `release.yml` 에 `if:`·`continue-on-error` 는 0건이라 오탐 위험이 없다.
+  describe('fail-open 조건 밴', () => {
+    it('워크플로 어디에도 continue-on-error: true 가 없다', () => {
+      expect(yml).not.toMatch(/continue-on-error:\s*true/)
+    })
+
+    it('자산 확인~공개 구간에 조건부 실행(if:)이 없다', () => {
+      // 파일 전체가 아니라 이 구간만 본다 — prepare·build 의 장래 정당한 `if:` 를 오탐하지 않는다.
+      expect(yml.slice(yml.indexOf('자산 실재 확인'))).not.toMatch(/^\s+if:/m)
     })
   })
 })
