@@ -25,7 +25,7 @@ const MAX_PROGRESS_MESSAGE_CHARS = 1024
  * 「드리프트 시 수정」이라는 산문 규약은 실제로 드리프트했으므로, 정합은 이제
  * `scripts/mcp-client-version.test.ts` 가 대조로 강제한다(ADR-0016 선례 — 산문 대신 게이트).
  */
-const CLIENT_VERSION = '0.1.1'
+const CLIENT_VERSION = '0.1.2'
 
 interface Pending {
   resolve: (value: Record<string, unknown>) => void
