@@ -77,12 +77,20 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
       expect(yml).not.toMatch(/git\/ref\/tags/)
     })
 
-    it('세 잡이 같은 커밋을 본다(checkout ref 고정)', () => {
-      // dispatch 경로에서 github.ref 는 브랜치라, 고정하지 않으면 prepare 가 태그를 붙인 커밋과
+    it('dispatch 에서만 커밋을 고정한다(push 경로 무변경)', () => {
+      // dispatch 에서 github.ref 는 브랜치라, 고정하지 않으면 prepare 가 태그를 붙인 커밋과
       // build 가 빌드한 커밋이 갈릴 수 있다(그 사이 브랜치에 push 가 들어오면).
+      // 반대로 push 경로는 건드리지 않는다 — 문서는 push 의 GITHUB_SHA 를 「Tip commit pushed to
+      // the ref」라고만 하고 annotated 태그에서 그것이 커밋인지 태그 객체인지 단정하지 않는다.
+      // 무조건 `github.sha` 로 고정하면 **동작하던 출하 경로**를 미검증 가정 위에 올리게 된다.
       const checkouts = yml.match(/uses: actions\/checkout@/g) ?? []
-      const pins = yml.match(/ref: \$\{\{ github\.sha \}\}/g) ?? []
+      const pins =
+        yml.match(
+          /ref: \$\{\{ github\.event_name == 'workflow_dispatch' && github\.sha \|\| github\.ref \}\}/g,
+        ) ?? []
       expect(pins).toHaveLength(checkouts.length)
+      // 무조건 고정(push 경로까지 바꾸는 형태)은 금지.
+      expect(yml).not.toMatch(/ref: \$\{\{ github\.sha \}\}/)
     })
 
     it('태그가 잡 출력으로 전파된다(GITHUB_REF_NAME 재사용 금지)', () => {
