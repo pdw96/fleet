@@ -70,27 +70,44 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
       expect(step.indexOf('!= "workflow_dispatch"')).toBeLessThan(step.indexOf('"$EXISTING" !='))
     })
 
-    it('태그 존재 확인에 commits/<ref> 를 쓴다(annotated 태그 오탐 방지)', () => {
-      // `git/ref/tags/<t>` 의 object.sha 는 annotated 태그에서 **태그 객체**라 커밋과 비교하면
-      // 항상 불일치로 읽힌다 — 정상 push 를 오탐으로 막는다. `commits/<ref>` 는 둘 다 역참조한다.
-      expect(yml).toMatch(/gh api "repos\/\$GITHUB_REPOSITORY\/commits\/\$TAG" -q \.sha/)
-      expect(yml).not.toMatch(/git\/ref\/tags/)
+    it('태그 존재 확인이 refs/tags 정확 조회다(동명 브랜치 오인 차단)', () => {
+      // `commits/<ref>` 는 같은 이름의 **브랜치**도 해석한다. 태그가 없는데 동명 브랜치의 head 가
+      // 이 실행의 커밋이면 생성을 건너뛰고, 뒤의 `gh release create` 가 문서화된 동작대로 기본
+      // 브랜치 최신 상태에서 태그를 날조한다 — 빌드한 커밋과 다른 곳에 태그가 붙는다.
+      expect(yml).toMatch(/REF_API="repos\/\$GITHUB_REPOSITORY\/git\/ref\/tags\/\$TAG"/)
+      expect(yml).not.toMatch(/GITHUB_REPOSITORY\/commits\//)
     })
 
-    it('dispatch 에서만 커밋을 고정한다(push 경로 무변경)', () => {
+    it('annotated 태그를 벗겨서 커밋과 비교한다', () => {
+      // refs/tags 정확 조회의 대가: object 가 커밋이 아니라 태그 객체일 수 있다. 안 벗기면
+      // 정상 태그를 「다른 커밋을 가리킨다」로 오탐해 출하를 막는다.
+      expect(yml).toMatch(
+        /if \[ "\$OBJ_TYPE" = "tag" \]; then[\s\S]{0,200}?gh api "repos\/\$GITHUB_REPOSITORY\/git\/tags\/\$EXISTING" -q \.object\.sha/,
+      )
+    })
+
+    it('gh release create 가 태그를 날조하지 못한다(--verify-tag)', () => {
+      // 「태그 ref 보장」이 사라지거나 조건이 어긋나도 여기서 fail-closed 로 막는 이중 방어.
+      expect(yml).toMatch(/gh release create "\$TAG"[\s\S]{0,200}?--verify-tag/)
+    })
+
+    it('dispatch 에서만 커밋을 고정하고, push 는 checkout 기본값을 쓴다', () => {
       // dispatch 에서 github.ref 는 브랜치라, 고정하지 않으면 prepare 가 태그를 붙인 커밋과
       // build 가 빌드한 커밋이 갈릴 수 있다(그 사이 브랜치에 push 가 들어오면).
-      // 반대로 push 경로는 건드리지 않는다 — 문서는 push 의 GITHUB_SHA 를 「Tip commit pushed to
-      // the ref」라고만 하고 annotated 태그에서 그것이 커밋인지 태그 객체인지 단정하지 않는다.
-      // 무조건 `github.sha` 로 고정하면 **동작하던 출하 경로**를 미검증 가정 위에 올리게 된다.
+      //
+      // push 쪽 폴백은 **빈 문자열**이어야 한다. `github.ref` 를 명시하는 것은 무변경이 아니라
+      // **고정 해제**다: checkout 기본값은 내부적으로 github.sha(이벤트에 기록된 커밋)를 쓰는데,
+      // ref 이름을 넘기면 checkout 시점의 원격 태그가 현재 가리키는 곳을 다시 해석한다 — 이벤트
+      // 후 태그가 강제 갱신되면 워크플로·릴리스가 나타내는 커밋과 빌드한 커밋이 갈린다(Codex P1).
       const checkouts = yml.match(/uses: actions\/checkout@/g) ?? []
       const pins =
         yml.match(
-          /ref: \$\{\{ github\.event_name == 'workflow_dispatch' && github\.sha \|\| github\.ref \}\}/g,
+          /ref: \$\{\{ github\.event_name == 'workflow_dispatch' && github\.sha \|\| '' \}\}/g,
         ) ?? []
       expect(pins).toHaveLength(checkouts.length)
-      // 무조건 고정(push 경로까지 바꾸는 형태)은 금지.
+      // 무조건 고정도, ref 이름 폴백도 금지.
       expect(yml).not.toMatch(/ref: \$\{\{ github\.sha \}\}/)
+      expect(yml).not.toMatch(/\|\| github\.ref \}\}/)
     })
 
     it('태그가 잡 출력으로 전파된다(GITHUB_REF_NAME 재사용 금지)', () => {
