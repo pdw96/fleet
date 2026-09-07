@@ -12,16 +12,111 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
 
   describe('prepare — 공개된 릴리스 재사용 차단', () => {
     it('기존 릴리스의 draft 여부를 조회한다', () => {
-      expect(yml).toMatch(/gh release view "\$GITHUB_REF_NAME".*--json isDraft/)
+      expect(yml).toMatch(/gh release view "\$TAG".*--json isDraft/)
     })
 
     it('draft 가 아니면 하드 실패한다(재사용하지 않는다)', () => {
       // `!= "true"` 분기 안에 exit 1 이 있어야 한다. 경고만 찍고 통과하면 v0.1.1 이 재발한다.
-      expect(yml).toMatch(/if \[ "\$EXISTING_DRAFT" != "true" \]; then[\s\S]{0,600}?exit 1/)
+      expect(yml).toMatch(/if \[ "\$EXISTING_DRAFT" != "true" \]; then[\s\S]{0,700}?exit 1/)
     })
 
-    it('실패 메시지가 올바른 태그 push 방법을 안내한다', () => {
-      expect(yml).toMatch(/git push origin \$GITHUB_REF_NAME/)
+    it('실패 메시지가 올바른 개시 방법을 안내한다', () => {
+      expect(yml).toMatch(/git push origin \$TAG/)
+    })
+  })
+
+  // 브라우저만 쓰는 운용 환경에서 태그 push 가 막히면 파이프라인 전체가 인질이 된다(실측:
+  // 세션의 git 프록시가 refs/tags/* 를 403 으로 거부, Codespaces 한도 소진). 그래서 dispatch 개시
+  // 경로를 뒀는데, 이 경로는 **태그를 워크플로가 직접 만든다** — 잘못 만들면 태그가 가리키지 않는
+  // 커밋이 그 태그로 발행되고, 발행은 immutable 이라 되돌릴 수 없다. 아래가 그 안전 조건들이다.
+  describe('dispatch 개시 경로', () => {
+    it('workflow_dispatch 로 태그 입력을 받는다', () => {
+      expect(yml).toMatch(/workflow_dispatch:[\s\S]{0,300}?inputs:[\s\S]{0,300}?tag:/)
+    })
+
+    it('태그를 `inputs` 컨텍스트가 아니라 github.event_name 분기로 정한다', () => {
+      // `inputs` 컨텍스트가 push 이벤트에서 어떻게 채워지는지는 문서에 명시돼 있지 않다.
+      // `inputs.tag || github.ref_name` 류의 축약은 그 미명시 동작에 의존하므로 쓰지 않는다.
+      expect(yml).toMatch(/EVENT_NAME: \$\{\{ github\.event_name \}\}/)
+      expect(yml).toMatch(/if \[ "\$EVENT_NAME" = "workflow_dispatch" \]/)
+      expect(yml).not.toMatch(/\$\{\{\s*inputs\./)
+    })
+
+    it('사용자 입력을 셸에 인라인 보간하지 않는다(env 경유 1회뿐)', () => {
+      // `run:` 안에 `${{ github.event.inputs.tag }}` 를 직접 쓰면 태그 문자열이 셸 소스로 들어간다.
+      const uses = yml.match(/\$\{\{\s*github\.event\.inputs\./g) ?? []
+      expect(uses).toHaveLength(1)
+      expect(yml).toMatch(/INPUT_TAG: \$\{\{ github\.event\.inputs\.tag \}\}/)
+    })
+
+    it('태그 형식을 검증한다', () => {
+      expect(yml).toMatch(/grep -qE '\^v\[0-9\]\+/)
+    })
+
+    it('기존 태그가 이 실행의 커밋과 다르면 하드 실패한다', () => {
+      // 다른 커밋을 그 태그로 발행하는 것이 이 경로 고유의 최악 실패다.
+      expect(yml).toMatch(/if \[ "\$EXISTING" != "\$GITHUB_SHA" \]; then[\s\S]{0,400}?exit 1/)
+    })
+
+    it('SHA 대조가 dispatch 경로로 한정된다(annotated 태그 push 오탐 방지)', () => {
+      // annotated 태그 push 에서 GITHUB_SHA 는 커밋이 아니라 태그 객체일 수 있는데 `commits/<ref>`
+      // 는 항상 커밋을 준다 — push 경로까지 대조하면 정상 출하를 막는 오탐이 된다. 그래서 스텝 진입
+      // 직후 push 를 조기 반환시킨다. 이 가드가 사라지면 게이트가 오탐 장치로 바뀐다.
+      const step = yml.slice(yml.indexOf('태그 ref 보장'))
+      expect(step).toMatch(
+        /if \[ "\$EVENT_NAME" != "workflow_dispatch" \]; then[\s\S]{0,200}?exit 0/,
+      )
+      // 조기 반환이 대조보다 **먼저** 와야 한다.
+      expect(step.indexOf('!= "workflow_dispatch"')).toBeLessThan(step.indexOf('"$EXISTING" !='))
+    })
+
+    it('태그 존재 확인이 refs/tags 정확 조회다(동명 브랜치 오인 차단)', () => {
+      // `commits/<ref>` 는 같은 이름의 **브랜치**도 해석한다. 태그가 없는데 동명 브랜치의 head 가
+      // 이 실행의 커밋이면 생성을 건너뛰고, 뒤의 `gh release create` 가 문서화된 동작대로 기본
+      // 브랜치 최신 상태에서 태그를 날조한다 — 빌드한 커밋과 다른 곳에 태그가 붙는다.
+      expect(yml).toMatch(/REF_API="repos\/\$GITHUB_REPOSITORY\/git\/ref\/tags\/\$TAG"/)
+      expect(yml).not.toMatch(/GITHUB_REPOSITORY\/commits\//)
+    })
+
+    it('annotated 태그를 벗겨서 커밋과 비교한다', () => {
+      // refs/tags 정확 조회의 대가: object 가 커밋이 아니라 태그 객체일 수 있다. 안 벗기면
+      // 정상 태그를 「다른 커밋을 가리킨다」로 오탐해 출하를 막는다.
+      expect(yml).toMatch(
+        /if \[ "\$OBJ_TYPE" = "tag" \]; then[\s\S]{0,200}?gh api "repos\/\$GITHUB_REPOSITORY\/git\/tags\/\$EXISTING" -q \.object\.sha/,
+      )
+    })
+
+    it('gh release create 가 태그를 날조하지 못한다(--verify-tag)', () => {
+      // 「태그 ref 보장」이 사라지거나 조건이 어긋나도 여기서 fail-closed 로 막는 이중 방어.
+      expect(yml).toMatch(/gh release create "\$TAG"[\s\S]{0,200}?--verify-tag/)
+    })
+
+    it('dispatch 에서만 커밋을 고정하고, push 는 checkout 기본값을 쓴다', () => {
+      // dispatch 에서 github.ref 는 브랜치라, 고정하지 않으면 prepare 가 태그를 붙인 커밋과
+      // build 가 빌드한 커밋이 갈릴 수 있다(그 사이 브랜치에 push 가 들어오면).
+      //
+      // push 쪽 폴백은 **빈 문자열**이어야 한다. `github.ref` 를 명시하는 것은 무변경이 아니라
+      // **고정 해제**다: checkout 기본값은 내부적으로 github.sha(이벤트에 기록된 커밋)를 쓰는데,
+      // ref 이름을 넘기면 checkout 시점의 원격 태그가 현재 가리키는 곳을 다시 해석한다 — 이벤트
+      // 후 태그가 강제 갱신되면 워크플로·릴리스가 나타내는 커밋과 빌드한 커밋이 갈린다(Codex P1).
+      const checkouts = yml.match(/uses: actions\/checkout@/g) ?? []
+      const pins =
+        yml.match(
+          /ref: \$\{\{ github\.event_name == 'workflow_dispatch' && github\.sha \|\| '' \}\}/g,
+        ) ?? []
+      expect(pins).toHaveLength(checkouts.length)
+      // 무조건 고정도, ref 이름 폴백도 금지.
+      expect(yml).not.toMatch(/ref: \$\{\{ github\.sha \}\}/)
+      expect(yml).not.toMatch(/\|\| github\.ref \}\}/)
+    })
+
+    it('태그가 잡 출력으로 전파된다(GITHUB_REF_NAME 재사용 금지)', () => {
+      expect(yml).toMatch(/outputs:\s*\n\s*tag: \$\{\{ steps\.tag\.outputs\.tag \}\}/)
+      expect(yml).toMatch(/needs: \[prepare, build\]/)
+      // 태그 결정 스텝 **뒤로는** GITHUB_REF_NAME 이 값으로 쓰이면 안 된다 — dispatch 에선 브랜치명이다.
+      const afterDecision = yml.slice(yml.indexOf('Verify tag matches package.json version'))
+      expect(afterDecision).not.toMatch(/"\$GITHUB_REF_NAME"/)
+      expect(afterDecision).not.toMatch(/\$GITHUB_REF_NAME\b/)
     })
   })
 

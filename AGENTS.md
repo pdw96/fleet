@@ -281,15 +281,24 @@ W4 가 끝나는 주기의 출하다.
 **1.0 표면 = Windows / Linux 데스크톱 전용 · 미서명**(ADR-0017). macOS·셀프호스트 서버는 post-1.0 —
 서버 번들은 `electron-builder.yml` 이 asar 에서 제외하므로 배포 아티팩트에 실리지 않는다.
 
-릴리스 태그 push 전 체크리스트:
+출하 개시 전 체크리스트:
 
-1. **출하는 태그 push 로만 시작한다 — 릴리스를 웹 UI 로 만들지 말 것.**
-   `git push origin v${version}` 이 유일한 개시 방법이다. GitHub 웹의 「Draft a new release」로
-   릴리스를 만들어 **발행**하면 그 행위가 태그를 만들어 워크플로를 띄우는데, 파이프라인이 도착했을 땐
-   이미 릴리스가 공개 상태다. `electron-builder.yml` 의 `releaseType: draft` 는 공개 릴리스에
-   자산을 올리지 않고 **경고만 내고 exit 0** 하므로, 4개 잡이 전부 초록인 채 **자산 0개 릴리스**가
-   나간다. `v0.1.1`(2026-09-02)이 실제로 그렇게 나갔고, immutable releases 가 켜져 있어 사후
-   자산 추가도 태그 이름 재사용도 불가능해 복구가 `v0.1.2` 재출하뿐이었다.
+1. **개시는 태그 ref 생성뿐이다 — 릴리스를 웹 UI 로 발행하지 말 것.**
+   개시 방법은 둘, 그리고 이 둘뿐이다:
+   - `git push origin v${version}`
+   - Actions → **Release** → 「Run workflow」 — 브랜치를 고르고 태그를 입력한다. `prepare` 가
+     `package.json` 버전과 대조한 뒤 **태그 ref 를 직접 만든다.** 터미널이 없는 환경(브라우저 전용)
+     에서 쓴다. 이미 있는 태그가 이 실행의 커밋과 다른 곳을 가리키면 하드 실패한다.
+
+   두 방법 모두 **태그 ref 만** 만들고 릴리스는 만들지 않는다 — 그것이 이 항의 실제 불변식이다:
+   **electron-builder 가 도착했을 때 공개된 릴리스가 없어야 한다.**
+
+   반대로 GitHub 웹의 「Draft a new release」로 릴리스를 만들어 **발행**하면 그 행위가 태그를 만들어
+   워크플로를 띄우는데, 파이프라인이 도착했을 땐 이미 릴리스가 공개 상태다. `electron-builder.yml` 의
+   `releaseType: draft` 는 공개 릴리스에 자산을 올리지 않고 **경고만 내고 exit 0** 하므로, 4개 잡이
+   전부 초록인 채 **자산 0개 릴리스**가 나간다. `v0.1.1`(2026-09-02)이 실제로 그렇게 나갔고,
+   immutable releases 가 켜져 있어 사후 자산 추가도 태그 이름 재사용도 불가능해 복구가 `v0.1.2`
+   재출하뿐이었다.
    이제 `prepare` 잡이 기존 릴리스가 draft 가 아니면 하드 실패한다(`scripts/release-pipeline-gates.test.ts` 가 핀).
 2. **버전** — `package.json` version 상향. 태그는 정확히 `v${version}`(`release.yml` 이 불일치를 하드 실패).
    버전은 3곳에 미러된다 — `package.json` · `package-lock.json` 루트(`npm install --package-lock-only`
@@ -313,7 +322,7 @@ W4 가 끝나는 주기의 출하다.
    프리릴리스 릴리스를 최신으로 집었을 때 `latest.yml` 부재를 어떻게 다루는지(무업데이트 / 확인 실패
    배너)는 **실측하지 않았다**. RC 태그를 밀기 전에 그 코호트에서 업데이트 확인 동작을 확인할 것
    (#304 ⑤ 가 릴리스 순서 항목을 이미 들고 있다).
-5. **게이트** — `npm run verify` GREEN + 태그 push 후 `release.yml` 양 레그(windows·ubuntu) 성공.
+5. **게이트** — `npm run verify` GREEN + 개시(1항) 후 `release.yml` 양 레그(windows·ubuntu) 성공.
    `release` 잡이 `needs: build` 라 실패 시 draft 가 공개되지 않는다(fail-closed).
    ⚠ **잡 성공은 자산 존재를 뜻하지 않는다** — electron-builder 는 업로드를 건너뛰고도 exit 0 한다.
    그래서 `release` 잡이 `--draft=false` **전에** 자산을 직접 세고, 인스톨러(`*.exe`·`*.AppImage`)와
