@@ -59,8 +59,12 @@ breaking change 가 자유롭게 발생할 수 있으니 항상 최신 릴리스
 
 - **Linux 키링 부재 환경**: secret 저장이 비활성화된다(평문 저장은 하지 않는다 — 의도된 동작).
 - **devDependency 취약점**: 빌드/테스트 도구(electron-builder·jsdom·vite 등) 한정이며 **배포되는
-  앱 런타임과 무관**하다. Dependabot · `dependency-review` 워크플로 · `npm audit` 로 추적하고,
-  필요 시 `package.json` `overrides` 로 패치한다.
+  앱 런타임과 무관**하다. Dependabot · `dependency-review` 워크플로 · 주간 `audit` 워크플로로
+  추적하고, 필요 시 `package.json` `overrides` 로 패치한다. 세 층의 담당 표면이 다르다 —
+  `dependency-review` 는 **PR 로 새로 들어오는** 의존성, Dependabot 은 **부모 range 안에서 수정이
+  계산되는** 기존 의존성, `audit.yml` 은 **그 둘이 놓친 나머지**(부모 range 밖이라 봇이 PR 을 못
+  여는 건 — 알림이 Security 탭에만 남는다). `audit.yml` 은 **출하 트리(`--omit=dev`)만 fail-hard**
+  이고 dev/build 트리는 런 요약에 남기는 advisory 다.
 - **MCP 서버 환경변수(`env`)**: 사용자가 명시 입력하는 값으로 **의도적 평문** 저장이다(secret 운반은
   사용자 책임 — 인라인 secret 대신 파일 경로 사용 권장).
 - **미서명 바이너리**: 현재 릴리스 빌드에는 OS 코드서명(Windows Authenticode·macOS notarization)이

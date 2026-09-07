@@ -1,0 +1,82 @@
+name: Audit
+
+# 락파일에 **이미 있는** 의존성에 새 권고가 발행되는 경로를 덮는다.
+#
+# 왜 필요한가 — 기존 층이 이 표면을 못 덮는다:
+#  - `dependency-review.yml` 은 PR diff 에 **새로 들어오는** 의존성만 본다(action 이 두 리비전의
+#    의존성 차분을 스캔 — 트리 전체 스캔이 아니다). 이미 있던 패키지에 새 CVE 가 뜨면 무신호.
+#  - Dependabot security updates 는 켜져 있지만 **부모 range 안에서 수정 계산이 되는 건만** PR 을
+#    열고, 안 되면 알림이 Security 탭에만 남는다. 그 사각이 **출하 트리에서 실현된 적이 있다** —
+#    #243: `js-yaml@4.2.0`(high · GHSA-52cp-r559-cp3m)이 `electron-updater` 경유 프로덕션 트리에
+#    있었는데 봇이 못 잡았고, 사람이 수동 `npm audit` 을 돌려 발견해 #247 로 닫았다.
+#  - `npm ci` 로그에 audit 요약이 이미 찍히지만(npm 기본값) **실패하지 않아** 지나치기 쉽다.
+#    여기서 그 신호를 실패로 승격해 사람의 수동 의식(儀式)을 기계로 대체한다.
+#
+# **`npm run verify` 에 넣지 않는다**: audit 은 네트워크·시각 의존이라 AGENTS.md 「품질 게이트」의
+# 「로컬 == CI, drift 원천 차단」 불변식을 깨고, 새 advisory 하나가 무관한 PR 전체를 red 로 만든다.
+# 머지 게이트가 아니라 **스케줄 센서**가 맞은 자리다(머지는 막지 않는다 — 실패는 소유자에게 통지).
+#
+# schedule 은 기본 브랜치(master)의 워크플로만 실행된다. 정시 혼잡(스케줄 지연·드롭) 회피로 분을
+# 오프셋 — 월 18:37 UTC = 화 03:37 KST. dependabot 주간 실행(월) **뒤**에 놓아, 봇이 자동으로 덮은
+# 뒤 남은 것만 뜨게 한다(중복 신호 억제).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '37 18 * * 1'
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+# 토큰 미사용(checkout 만) — 최소권한.
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: npm audit (출하 트리 fail-hard · 전체 트리 advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # ① 출하 트리 — 사용자에게 실제로 실리는 것만. `--omit=dev` 는 electron-builder 가 asar 복사
+      #    그래프를 만들 때 쓰는 것과 **같은 오라클**이다(app-builder-lib 의 node-module-collector 가
+      #    `npm list -a --include prod --include optional --omit dev` 를 부른다). 프로덕션 의존은
+      #    29개뿐이라 소음이 거의 없어 fail-hard 로 둔다 — 여기 걸리면 진짜 출하 사고다.
+      - name: 출하 트리 audit (fail-hard)
+        run: npm audit --omit=dev --audit-level=high
+
+      # ② 전체 트리 — dev/build 표면. 여기 걸리는 건 사용자에게 실리지 않으므로 잡을 red 로 만들지
+      #    않는다(방치된 red 는 신호가 아니라 잡음이다 — 프로세스 net-zero). 대신 런 요약에 전문을
+      #    남겨, 잡이 green 이어도 무엇이 열려 있는지 한눈에 보이게 한다.
+      - name: 전체 트리 audit (advisory)
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo '### 전체 트리 audit — dev/build 표면 (출하 무관)'
+            echo ''
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          npm audit --audit-level=high 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          status=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo '`npm audit fix` 로 기존 semver 범위 안에서 닫히는지 먼저 확인할 것 (락파일 단독 변경).' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $status
