@@ -3,6 +3,17 @@ on:
   push:
     tags:
       - 'v*'
+  # 터미널이 없는 운용 환경(브라우저만)에서도 출하를 개시할 수 있어야 한다 — 태그 push 가
+  # 불가능한 상황에서 파이프라인 전체가 인질이 되면 ADR-0021 이 없애려던 「낼 수 없어서 안 냄」이
+  # 그대로 재현된다. 이 경로는 **태그 ref 만** 만든다(`prepare` 의 「태그 ref 보장」 스텝) —
+  # 릴리스를 발행하지 않으므로 AGENTS.md 1항의 실제 불변식(「electron-builder 가 도착했을 때
+  # 공개된 릴리스가 없을 것」)은 그대로다. git push 로 태그를 미는 것과 동형이다.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '출하할 태그 (예: v0.1.2). 「Use workflow from」에서 고른 브랜치의 package.json 버전과 일치해야 한다.'
+        required: true
+        type: string
 permissions:
   contents: write
 jobs:
@@ -10,22 +21,89 @@ jobs:
   # prerelease 태그(v*-*) 는 생성 시점에 prerelease 로 표시(P2-E).
   prepare:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # dispatch 경로에서 `github.ref` 는 브랜치다. 세 잡이 **같은 커밋**을 보게 SHA 로 고정한다
+          # (push 경로에서는 checkout 기본값과 동일 — 무영향).
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version-file: '.nvmrc'
           cache: npm
-      - name: Verify tag matches package.json version
+      # 이후 모든 잡·스텝은 `GITHUB_REF_NAME` 이 아니라 이 출력을 쓴다 — dispatch 경로에서
+      # `GITHUB_REF_NAME` 은 브랜치명이라 태그가 아니다. `inputs` 컨텍스트가 push 이벤트에서
+      # 어떻게 채워지는지는 문서에 명시돼 있지 않으므로 의존하지 않고 `github.event_name` 으로 분기한다.
+      # 사용자 입력은 셸에 인라인 보간하지 않고 env 로 넘긴다(주입 차단).
+      - name: 태그 결정 (push=ref_name · dispatch=input)
+        id: tag
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          PKG="v$(node -p "require('./package.json').version")"
-          if [ "$GITHUB_REF_NAME" != "$PKG" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG"
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$GITHUB_REF_NAME"
+          fi
+          if ! printf '%s' "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::태그 형식이 아니다: '$TAG' (예: v0.1.2 · v1.0.0-rc.1)"
             exit 1
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "출하 태그: $TAG (이벤트: $EVENT_NAME)"
+      - name: Verify tag matches package.json version
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag $TAG does not match package.json version $PKG"
+            exit 1
+          fi
+      # dispatch 경로에는 태그가 아직 없다. 여기서 만든다 — 이 시점 이후로는 두 경로가 완전히 같다.
+      #
+      # ⚠ **이 스텝 전체가 dispatch 전용이다.** push 경로에서는 태그가 정의상 이미 존재하고 어느 커밋을
+      # 가리키는지는 git 이 이미 결정했으므로 검증할 것이 없다. 그런데도 SHA 를 대조하면 **정상 출하를
+      # 막는 오탐**이 된다: annotated 태그 push 에서 `GITHUB_SHA` 는 커밋이 아니라 태그 객체일 수 있는데
+      # `commits/<ref>` 는 항상 커밋으로 역참조하므로 둘이 어긋난다. 게이트의 실패 비용이 특히 큰 자리라
+      # (발행은 immutable) 검증 범위를 실제로 검증할 것이 있는 경로로 좁힌다.
+      #
+      # dispatch 에서 `GITHUB_SHA` 는 고른 브랜치의 head — 항상 커밋이라 대조가 성립한다. 태그가 이미
+      # 다른 커밋을 가리키면 하드 실패한다: 태그가 가리키지 않는 커밋을 그 태그로 발행하는 것이 이
+      # 경로 고유의 최악 실패다. 존재 확인에 `git/ref` 대신 `commits/<ref>` 를 쓰는 이유도 위와 같다.
+      #
+      # 참고: 여기서 만든 ref 는 `push: tags` 를 다시 띄우지 않는다 — GITHUB_TOKEN 이 만든 이벤트는
+      # 워크플로를 트리거하지 않는다(재귀 방지). 중복 실행이 없는 것은 우연이 아니라 이 규칙 덕이다.
+      - name: 태그 ref 보장 (dispatch 개시 경로 전용)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "push 개시 — 태그 $TAG 는 이미 존재한다. 생성·대조 불요."
+            exit 0
+          fi
+          if EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" -q .sha 2>/dev/null); then
+            if [ "$EXISTING" != "$GITHUB_SHA" ]; then
+              echo "::error::태그 $TAG 는 이미 $EXISTING 를 가리킨다 — 이 실행이 빌드하는 커밋($GITHUB_SHA)과 다르다."
+              echo "::error::태그가 가리키지 않는 커밋을 그 태그로 발행할 뻔했다. 중단한다."
+              exit 1
+            fi
+            echo "태그 $TAG 가 이미 $GITHUB_SHA 를 가리킨다 — 생성 생략"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" > /dev/null
+          echo "태그 $TAG → $GITHUB_SHA 생성"
       # 재사용 경로는 **draft 일 때만** 유효하다. 이미 공개된 릴리스가 있으면 electron-builder 의
       # `releaseType: draft` 가 자산 업로드를 거부하는데, 그걸 **경고로만** 내고 exit 0 한다
       # (`reason=existing type not compatible with publishing type`). v0.1.1 이 그래서 4개 잡 전부
@@ -37,26 +115,27 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          if EXISTING_DRAFT=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null); then
+          if EXISTING_DRAFT=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null); then
             if [ "$EXISTING_DRAFT" != "true" ]; then
-              echo "::error::Release $GITHUB_REF_NAME 이 이미 **공개**(draft=false) 상태다."
+              echo "::error::Release $TAG 이 이미 **공개**(draft=false) 상태다."
               echo "::error::electron-builder(releaseType: draft)는 공개 릴리스에 자산을 올리지 않고 조용히 건너뛴다 — 자산 0개 릴리스가 된다."
-              echo "::error::릴리스를 웹 UI 로 만들지 말 것. 태그만 민다: git push origin $GITHUB_REF_NAME (AGENTS.md 「릴리스 절차」 1항)."
+              echo "::error::릴리스를 웹 UI 로 발행하지 말 것. 개시는 태그 ref 생성뿐이다: git push origin $TAG, 또는 Actions 「Run workflow」 (AGENTS.md 「릴리스 절차」 1항)."
               exit 1
             fi
-            echo "Release $GITHUB_REF_NAME already exists as a draft; reusing"
+            echo "Release $TAG already exists as a draft; reusing"
             exit 0
           fi
           PRERELEASE=""
-          case "$GITHUB_REF_NAME" in
+          case "$TAG" in
             *-*) PRERELEASE="--prerelease" ;;
           esac
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --draft \
-            --title "$GITHUB_REF_NAME" \
+            --title "$TAG" \
             --generate-notes \
             $PRERELEASE
 
@@ -70,15 +149,16 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           MARKER='<!-- fleet-install-footer -->'
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body -q .body > notes.md
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body > notes.md
           if grep -qF "$MARKER" notes.md; then
             echo "설치 안내 푸터가 이미 있음 — 건너뜀"
             exit 0
           fi
-          README="https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/README.md#설치-사용자"
+          README="https://github.com/$GITHUB_REPOSITORY/blob/$TAG/README.md#설치-사용자"
           cat >> notes.md <<EOF
 
           ---
@@ -104,7 +184,7 @@ jobs:
           - 프로젝트 실행에는 구독형 CLI(\`claude\`/\`codex\`/\`gemini\`) 최소 1개가 필요합니다 — API 키만으로는
             실행되지 않습니다.
           EOF
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
 
   build:
     needs: prepare
@@ -126,6 +206,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }} # prepare 와 같은 커밋 (dispatch 경로에서 github.ref 는 브랜치다)
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -145,7 +226,7 @@ jobs:
         shell: bash
         run: |
           CHANNEL_ARG=""
-          case "$GITHUB_REF_NAME" in
+          case "$TAG" in
             *-beta*) CHANNEL_ARG="-c.publish.channel=beta" ;;
             *-alpha*) CHANNEL_ARG="-c.publish.channel=alpha" ;;
             # `-rc` 와 그 외 **모든** 프리릴리스 식별자(`v1.2.3-<id>`)는 **beta 피드**로 보낸다.
@@ -164,6 +245,7 @@ jobs:
           npx electron-builder --publish always $CHANNEL_ARG
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
       # 산출물 서명: electron-builder 가 dist/ 에 설치본을 만든 직후 build provenance attestation 생성.
       # 매트릭스 레그별로 자기 OS 산출물만 가리킨다(win=*.exe / linux=*.AppImage) — 0-match 면 액션 실패라
       # OS 조건부 subject-path 필수. *.exe 는 .exe.blockmap·latest.yml 을 매치하지 않아 레그당 정확히 1개.
@@ -174,7 +256,9 @@ jobs:
 
   # 양 플랫폼 build 가 모두 성공해 draft 에 자산을 올린 뒤에만 공개(부분 릴리스 노출 방지).
   release:
-    needs: build
+    # `prepare` 를 needs 에 넣는 것은 순서 때문이 아니라(build 가 이미 의존한다) 그 출력(tag)을
+    # 참조하기 위해서다 — needs 에 없는 잡의 outputs 는 읽을 수 없다.
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
       # `needs: build` 는 **잡의 성공**만 보증한다. electron-builder 는 업로드를 건너뛰고도 exit 0 하므로
@@ -186,9 +270,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' > assets.txt
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' > assets.txt
           echo "붙은 자산:"
           cat assets.txt
           MISSING=""
@@ -197,7 +282,7 @@ jobs:
           grep -qE -- '-linux\.yml$' assets.txt || MISSING="$MISSING Linux업데이트메타(*-linux.yml)"
           grep -vE -- '-linux\.yml$' assets.txt | grep -qE '\.yml$' || MISSING="$MISSING Windows업데이트메타(*.yml)"
           if [ -n "$MISSING" ]; then
-            echo "::error::릴리스 $GITHUB_REF_NAME 에 자산이 없다 —$MISSING"
+            echo "::error::릴리스 $TAG 에 자산이 없다 —$MISSING"
             echo "::error::build 잡이 성공했더라도 electron-builder 가 업로드를 건너뛴 것이다. build 잡 로그에서 'reason=' 를 확인할 것."
             echo "::error::draft 를 공개하지 않고 중단한다 — 공개는 immutable 이라 되돌릴 수 없다."
             exit 1
@@ -206,4 +291,5 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
