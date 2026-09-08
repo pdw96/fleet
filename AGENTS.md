@@ -38,13 +38,14 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
 회귀를 밤새 검증). 로컬에서도 필요 시 수동 실행.
 
 **의존성 취약점**은 `verify` 에 넣지 않는다 — audit 은 네트워크·시각 의존이라 위 「로컬 == CI」
-불변식을 깨고, 새 advisory 하나가 무관한 PR 전체를 red 로 만든다. 대신 `audit.yml` 이 **주간
-cron(월 18:37 UTC = 화 03:37 KST)** + dispatch 로 돌며 **출하 트리(`--omit=dev`)만 fail-hard**,
-dev/build 트리는 런 요약 advisory 다(머지는 막지 않는다). 덮는 표면은 **Dependabot 과
-`dependency-review` 가 구조적으로 못 보는 자리** — 부모 range 밖이라 봇이 PR 을 못 여는 기존
-의존성의 새 권고다. 그 사각이 출하 트리에서 실현된 선례가 #243(`js-yaml` high, `electron-updater`
-경유·봇 미감지 → #247). 봇 PR 을 검수하다 사람이 수동 `npm audit` 을 돌려 발견하던 의식(儀式)을
-이 잡이 대체한다.
+불변식을 깬다. 대신 `audit.yml` 이 **주간 cron(월 18:37 UTC = 화 03:37 KST)** + dispatch 로 도는
+**advisory 센서**다 — 게이트가 아니라, 잡을 red 로 만들지 않고 런 요약과 `::warning::` 애노테이션만
+남긴다. 덮는 자리는 **Dependabot 알림과 봇 PR 사이의 창**이다 — #243 의 `js-yaml`(high)은 advisory
+공개(7/2)와 봇 PR(#276) 사이 19일 창에서 사람이 먼저 발견했다(부모 range 밖이어서가 아니라 봇이
+늦어서다 — `electron-updater` 의 `^4.1.0` 안에 패치가 있었다). 봇 PR 검수 시점의 수동 audit 을
+**대체하지 않고 보완한다** — 이 잡은 PR 이벤트에 돌지 않는다.
+⚠ 런타임 레그(`--omit=dev`)는 「출하물 전부」가 **아니다** — Electron(Chromium) 자체와 렌더러 번들에
+인라인되는 react·react-dom·force-graph 는 devDependency 라 여기 안 잡힌다.
 
 **커버리지 floor**: `test:coverage` 가 `src/main/core/**` 전역 4메트릭 floor(회귀 backstop)를 강제한다.
 커버리지가 유의하게 오르면 `vitest.config.ts` 의 `coverage.thresholds` 를 수동 상향(ratchet) — `autoUpdate`

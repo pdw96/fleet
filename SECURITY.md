@@ -61,10 +61,11 @@ breaking change 가 자유롭게 발생할 수 있으니 항상 최신 릴리스
 - **devDependency 취약점**: 빌드/테스트 도구(electron-builder·jsdom·vite 등) 한정이며 **배포되는
   앱 런타임과 무관**하다. Dependabot · `dependency-review` 워크플로 · 주간 `audit` 워크플로로
   추적하고, 필요 시 `package.json` `overrides` 로 패치한다. 세 층의 담당 표면이 다르다 —
-  `dependency-review` 는 **PR 로 새로 들어오는** 의존성, Dependabot 은 **부모 range 안에서 수정이
-  계산되는** 기존 의존성, `audit.yml` 은 **그 둘이 놓친 나머지**(부모 range 밖이라 봇이 PR 을 못
-  여는 건 — 알림이 Security 탭에만 남는다). `audit.yml` 은 **출하 트리(`--omit=dev`)만 fail-hard**
-  이고 dev/build 트리는 런 요약에 남기는 advisory 다.
+  `dependency-review` 는 **PR 로 새로 들어오는** 의존성, Dependabot security updates 는 **알림 기반
+  자동 PR**, `audit.yml` 은 **그 사이의 창**(알림과 봇 PR 사이의 지연 · dev scope 로 auto-dismiss 된
+  알림)을 주 1회 훑는다. `audit.yml` 은 **게이트가 아니라 advisory 센서**다 — 잡을 red 로 만들지
+  않고 런 요약과 `::warning::` 로만 알린다. 런타임 레그(`--omit=dev`)도 Electron 과 렌더러 번들에
+  인라인되는 의존은 포함하지 않는다.
 - **MCP 서버 환경변수(`env`)**: 사용자가 명시 입력하는 값으로 **의도적 평문** 저장이다(secret 운반은
   사용자 책임 — 인라인 secret 대신 파일 경로 사용 권장).
 - **미서명 바이너리**: 현재 릴리스 빌드에는 OS 코드서명(Windows Authenticode·macOS notarization)이

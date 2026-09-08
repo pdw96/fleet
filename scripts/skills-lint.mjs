@@ -105,19 +105,39 @@ export function scanReleaseSafety(text) {
  * "무엇이 안전인가"가 두 벌로 갈라지지 않게 한다.
  * @returns {{rule:string, line:number, msg:string}[]} 위반 목록(빈 배열 = 안전)
  */
-export function scanCheckoutPersistCredentials(text) {
-  const hits = []
+/**
+ * YAML 스텝 블록 분할 — **단일 공유 구현**(#245 의 「무엇이 안전인가가 두 벌로 갈라지지 않게 한다」).
+ * 리스트 아이템(`- `)을 스텝 경계로 잡고 들여쓰기로 블록을 자른다.
+ * ⚠ 빈 줄뿐 아니라 **주석 전용 줄도 블록을 끊지 않는다**. YAML 은 주석 줄을 블록 구조와 무관하게
+ * 무시하므로, 들여쓰기가 스텝 base 이하인 주석에서 끊으면 그 뒤에 오는 키의 소속을 오판한다 —
+ * 예: `- name: X` / `run: …` / `  # 메모` / `    continue-on-error: true` 에서 GitHub 은 그 키를
+ * 스텝 X 의 것으로 읽는데, 끊는 파서는 블록 밖으로 보내 「없다」고 판정한다(audit.yml 자가리뷰 적발).
+ * @param {string} text 워크플로 전문
+ * @returns {{start:number, lines:string[]}[]} 0-based 시작 줄 인덱스와 그 블록의 줄들
+ */
+export function stepBlocks(text) {
   const lines = text.split(/\r?\n/)
-  const indentOf = (l) => l.match(/^\s*/)[0].length
+  const indentOf = (l) => /^\s*/.exec(l)[0].length
+  const skippable = (l) => l.trim() === '' || /^\s*#/.test(l)
+  const out = []
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^(\s*)-\s/)
+    const m = /^(\s*)-\s/.exec(lines[i])
     if (!m) continue
     const base = m[1].length // '-' 앞 들여쓰기 = 스텝 레벨
     let end = i + 1
-    while (end < lines.length && (lines[end].trim() === '' || indentOf(lines[end]) > base)) end++
-    const block = lines.slice(i, end)
+    while (end < lines.length && (skippable(lines[end]) || indentOf(lines[end]) > base)) end++
+    out.push({ start: i, lines: lines.slice(i, end) })
+    i = end - 1 // 이 블록은 통째로 소비(중첩 스텝 오탐 방지)
+  }
+  return out
+}
+
+export function scanCheckoutPersistCredentials(text) {
+  const hits = []
+  const indentOf = (l) => /^\s*/.exec(l)[0].length
+  for (const { start, lines: block } of stepBlocks(text)) {
+    const i = start
     if (!block.some((l) => RE_CHECKOUT_USES.test(l))) {
-      i = end - 1
       continue
     }
     // 이 스텝의 with: 블록 안에서만 persist-credentials:false 를 인정(env: 등 다른 키 아래는 무효).
@@ -141,7 +161,6 @@ export function scanCheckoutPersistCredentials(text) {
         line: i + 1,
         msg: `checkout 스텝(L${i + 1})의 with: 아래 persist-credentials: false 없음 — 자격증명 잔류 위험`,
       })
-    i = end - 1 // 이 블록은 통째로 소비(중첩 스텝 오탐 방지)
   }
   return hits
 }
