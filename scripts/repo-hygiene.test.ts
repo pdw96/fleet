@@ -87,7 +87,13 @@ describe('ci.yml quality 잡 — 단일 verify 진입(#175 item2 재drift 차단
  * `join('')` 로 읽는데 실제로는 다른 구분자가 돌고, 문자열 상수·정규식 리터럴에 섞이면 값이 조용히
  * 달라진다. 「보이지 않는 바이트가 의미를 바꾼다」는 축이 같으므로 **C0/C1 전반**으로 넓힌다.
  *
- * 허용은 **탭·LF·CR** 뿐이다(CR 은 win32 체크아웃의 CRLF 때문에 필수).
+ * 허용은 **탭·LF** 뿐이다. CR 은 **거부한다**(Codex #290 P1 — 최초 판본은 「win32 체크아웃의 CRLF
+ * 때문에 필수」라며 허용했는데, 그 전제가 실물과 어긋난다): `.gitattributes` 가 `* text=auto eol=lf`
+ * 로 워킹트리를 전 플랫폼 LF 로 정규화하므로(그 파일은 이 PR 의 base `b92221c` 에도 이미 있었다)
+ * 정상 체크아웃에서는 CRLF 자체가 생기지 않는다. 반대로 CR 을 열어 두면 **단독 CR** 이 통과하는데,
+ * JS 에서 CR 은 LineTerminator 라 `//` 주석을 조용히 끝낸다 — 이제 스캔에 들어온 머지 게이트 훅
+ * (`.claude/hooks/require-codex-review.mjs`)에서도 그렇다. 이 가드가 막으려는 「보이지 않는 바이트가
+ * 의미를 바꾼다」의 교과서적 사례라 예외로 둘 이유가 없다.
  *
  * ⚠ **패턴을 이스케이프 문자열로 만든다.** 문자 클래스에 raw 제어문자를 적으면 **이 가드 자신이
  * 오염원**이 된다 — PR3c 에서 이 규율을 적는 편집이 실제로 8건을 재생산했다.
@@ -98,7 +104,7 @@ describe('ci.yml quality 잡 — 단일 verify 진입(#175 item2 재drift 차단
  */
 const CONTROL_CHAR_RE = new RegExp(
   // eslint-disable-next-line no-control-regex -- 제어문자 탐지가 이 상수의 존재 이유다
-  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F]',
+  '[\\u0000-\\u0008\\u000B\\u000C\\u000D-\\u001F\\u007F-\\u009F]',
   'g',
 )
 
@@ -120,14 +126,22 @@ const findControlChars = (text: string, label = ''): string[] => {
  */
 describe('소스 위생 — 제어문자 판정식 자기검사', () => {
   it('C0/C1 을 전부 잡는다(PR3c 가 흘린 U+0000·U+0001 포함)', () => {
-    for (const code of [0x00, 0x01, 0x07, 0x08, 0x0b, 0x0c, 0x0e, 0x1f, 0x7f, 0x80, 0x9f]) {
+    for (const code of [0x00, 0x01, 0x07, 0x08, 0x0b, 0x0c, 0x0d, 0x0e, 0x1f, 0x7f, 0x80, 0x9f]) {
       const probe = `const a = 'x${String.fromCharCode(code)}y'`
       expect(findControlChars(probe), `U+${code.toString(16)} 를 놓쳤다`).toHaveLength(1)
     }
   })
 
-  it('탭·LF·CR 은 허용한다(win32 CRLF 체크아웃이 전량 RED 가 되면 안 된다)', () => {
-    expect(findControlChars('a\tb\r\nc\nd\r\n')).toEqual([])
+  it('탭·LF 만 허용한다', () => {
+    expect(findControlChars('a\tb\nc\nd\n')).toEqual([])
+  })
+
+  // CR 은 거부 쪽이다(Codex #290 P1). `.gitattributes` 의 `* text=auto eol=lf` 가 워킹트리를 전
+  // 플랫폼 LF 로 정규화하므로 정상 체크아웃에 CRLF 가 없고, JS 에서 CR 은 LineTerminator 라
+  // 단독으로 섞이면 `//` 주석을 조용히 끝낸다. CRLF 도 그 CR 때문에 잡힌다 — 그게 의도다.
+  it('CR 은 단독이든 CRLF 든 잡는다', () => {
+    expect(findControlChars('a\rb', 'f.ts')).toEqual(['f.ts:1 U+000D'])
+    expect(findControlChars('a\r\nb', 'f.ts')).toEqual(['f.ts:1 U+000D'])
   })
 
   it('비ASCII 를 오탐하지 않는다(한글·이모지·전각)', () => {
