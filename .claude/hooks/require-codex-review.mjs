@@ -285,14 +285,16 @@ export function aliasIsSuspect(rawExp) {
   return hasMergeWord(exp) || /\$(?![@*])|`/.test(exp) || /--input|=@|graphql/i.test(exp)
 }
 
+const mergeCapability = (s) =>
+  /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s)
+const mergeVerb = (s) => /merge|enqueuepullrequest/i.test(s)
+
 export function hasMergeSignal(cmd) {
-  const capability = (s) =>
-    /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s)
-  const signal = (s) => /merge|enqueuepullrequest/i.test(s) && capability(s)
+  const signal = (s) => mergeVerb(s) && mergeCapability(s)
   const { variants, overflow } = scanVariants(cmd)
   // brace 전개 overflow = 병합 단어 존재를 정적으로 배제할 수 없음 — 능력 토큰이 있으면
   // 신호로 취급한다(fail-closed).
-  return variants.some(signal) || (overflow && variants.some(capability))
+  return variants.some(signal) || (overflow && variants.some(mergeCapability))
 }
 
 // 투명 래퍼 — 실효 실행 파일을 가린다(37R P1: `env xargs gh`). 실행 파일 탐색에서 건너뛴다.
@@ -990,6 +992,80 @@ export function classifyHookInput(input, _depth = 0) {
   return { ...canonical, kind: 'merge', viaMcp: false }
 }
 
+// 차단 안내는 **판정이 아니다** — `kind: 'blocked'` 이 이미 확정된 뒤 「왜 막혔는지」를 사람이
+// 읽을 수 있게 고르는 순수 함수다. 이 함수를 어떻게 고쳐도 무엇이 차단되는지는 바뀌지 않는다.
+//
+// 계열은 둘뿐이다:
+//   ① 머지 — MCP `merge_pull_request` 분기, 그리고 `hasMergeSignal` 이 참이라 진입하는
+//      `parseCanonicalMerge` 이후의 형태 이탈(canonical 아님 · PR 번호 부재). 머지를 하려는
+//      것이 확실하므로 canonical 형태만 안내한다.
+//   ② 판별 불가 — 그 밖의 모든 blocked. 「무엇이 실행될지 모른다」가 곧 차단 사유이므로
+//      **형태 교정**이 필요한 정보이고, 동시에 가려진 자리에 머지가 있을 수 있어
+//      **머지가 아니라고 단언해서는 안 된다**(45R P2). 둘 다 준다.
+//
+// ②를 「비머지」로 부르고 그렇게 단언했던 판이 두 번 반증됐다: 동사 AND 능력(`hasMergeSignal`)의
+// 부정은 한쪽만 가려도 무너지고(`$(printf g)h pr merge 222`), 동사 OR 능력으로 넓혀도
+// 양쪽이 다 동적이면 무너진다(`bash -c '"$CLI" pr "$ACTION" 222'` — 상속 env 로 머지가 된다).
+// 어떤 술어로도 안전한 단언이 안 되므로 단언 자체를 버렸다.
+//
+// 애초에 이 분기를 만든 이유는 남아 있다 — 실측으로 한 세션에서 머지와 무관한 명령이 5회 이상
+// 막히는 동안 안내문이 매번 머지 문법뿐이라 원인 진단이 불가능했다. ②는 그걸 해결한다.
+// 줄 번호는 적지 않는다(이 파일은 계속 자란다). 계열이 갈리는 지점은 `hasMergeSignal` 하나뿐이고,
+// 그 대응은 scripts/require-codex-review.test.ts 의 blockedGuidance describe 가 고정한다.
+const MERGE_GUIDANCE =
+  '머지는 canonical 형태만 허용된다:\n' +
+  '  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
+  '(REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
+  '거면 --body-file 로 우회하라.)'
+
+// ⚠ 이 문구는 **차단을 뚫으려는 순간에 읽힌다** — 「막힌 내용을 게이트가 못 보는 자리로
+// 옮겨라」로 읽힐 여지를 남기면 그게 곧 우회 지도가 된다(45R P1·P2). 게이트가 스크립트 내용을
+// 읽지 않는다는 사실(`node x.mjs`·`python3 x.py`·`npm run x` 는 pass)은 이 안내가 만든 구멍이
+// 아니지만, 여기에 적는 순간 복사 가능한 우회가 된다. 그래서 **재작성만** 권하고 재배치는
+// 명시적으로 금지하며, 예시에도 스크립트 실행 형태를 쓰지 않는다.
+const CANONICAL_FORM =
+  'gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>'
+
+// 인용으로 풀리는 자리와 안 풀리는 자리를 구분한다(45R P2) — 실행 파일·서브커맨드 자리는
+// 인용해도 차단이라(`gh pr "$ACTION" 1`) 「인용하라」가 못 쓰는 재시도를 광고하게 된다.
+const UNKNOWN_GUIDANCE =
+  '게이트는 이 명령이 **무엇을 실행하는지 판별하지 못했다** — 그래서 막혔다(fail-closed).\n' +
+  '머지인지 아닌지도 단언하지 않는다: 확장·치환·조립 뒤에는 무엇이든 들어갈 수 있다.\n' +
+  '**같은 일을 리터럴 명령으로 다시 써라**:\n' +
+  '  · 실행 파일·서브커맨드 자리의 $·백틱·글롭 → 인용으로는 안 풀린다. 리터럴 토큰으로\n' +
+  '     (`$CMD --run` → `git status` · `gh pr "$ACTION" 1` → `gh pr view 1`)\n' +
+  '  · 값 인자의 확장 → 인용하면 통과한다 (`gh pr view "$NUM"`)\n' +
+  '  · eval · source/. · 인터프리터 중첩 → 실행 시점에 내용이 정해져 정적 분류 불가\n' +
+  '  · `bash x.sh` · 파이프/stdin 스크립트 → 하려는 일을 명령줄에 그대로\n' +
+  '파일 **내용**이 문제였다면 Write 도구로 쓴다(실행이 아니라 기록이다).\n' +
+  '⚠ 막힌 **명령**을 스크립트(`x.sh`·`x.mjs`·npm 스크립트 등)로 옮겨 실행하는 것은 해결이 ' +
+  '아니라 우회다 — 게이트가 못 보게 만들 뿐이고, 그렇게 한 머지는 리뷰 결속을 건너뛴 무효 ' +
+  '머지다.\n' +
+  '머지가 맞다면 가리지 말고 이 형태 그대로 써라(경로와 무관하게 이것만 허용된다):\n' +
+  `  ${CANONICAL_FORM}`
+
+/**
+ * 차단 메시지에 붙일 안내 문단을 고른다. 순수 함수 — 판정에 관여하지 않는다.
+ *
+ * **2계열뿐이다.** 「이건 머지가 아니다」는 어떤 술어로도 안전하게 단언할 수 없다 — blocked 는
+ * 애초에 「무엇이 실행될지 모른다」는 뜻이라, 가려진 자리에 머지가 들어있을 가능성이 항상 남는다
+ * (45R P2 실측: `bash -c '"$CLI" pr "$ACTION" 222'` 은 동사도 능력 토큰도 명령에 없지만
+ * 상속 env 로 머지가 된다. `bash x.sh`·`source ./x.sh` 도 같은 성질이다).
+ * 그래서 단언 대신 **판별 실패**를 말하고, 형태 교정과 canonical 형태를 함께 준다.
+ * @param {{tool_name?:unknown, tool_input?:{command?:unknown}}} input hook 입력
+ * @returns {string}
+ */
+export function blockedGuidance(input) {
+  const toolName = String(input?.tool_name ?? '')
+  if (/merge_pull_request/.test(toolName)) return MERGE_GUIDANCE
+  // Bash 가 아니면 classifyHookInput 이 pass 라 여기 오지 않지만, 안내 선택은 fail-safe 하게
+  // 둔다 — 판별 불가면 머지 안내(기존 문구)로 되돌아간다.
+  if (toolName !== 'Bash') return MERGE_GUIDANCE
+  return hasMergeSignal(String(input?.tool_input?.command ?? ''))
+    ? MERGE_GUIDANCE
+    : UNKNOWN_GUIDANCE
+}
+
 // ── main (직접 실행 시에만 — 테스트 import 시 stdin 을 읽지 않는다) ───────────
 function main() {
   let input = {}
@@ -1158,12 +1234,7 @@ function main() {
     process.exit(0)
   }
   if (verdict.kind === 'blocked') {
-    console.error(
-      `[codex-gate] 차단(${verdict.reason}). 머지는 canonical 형태만 허용된다:\n` +
-        '  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
-        '(REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
-        '거면 --body-file 로 우회하라.)',
-    )
+    console.error(`[codex-gate] 차단(${verdict.reason}).\n${blockedGuidance(input)}`)
     process.exit(2)
   }
 
