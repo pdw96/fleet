@@ -69,7 +69,9 @@ jobs:
       - name: Test (vitest — win32 .cmd 셰임·트리 킬 회귀 실행)
         run: npm test
 
-  # 출하 런타임 = Electron 42 = Node 24 인데 .nvmrc/CI 기본은 Node 22(dev floor). 이 잡이 Node 24 에서
+  # 출하 런타임 = 현 Electron 이 번들한 Node(메이저 24)인데 .nvmrc/CI 기본은 Node 22(dev floor).
+  # ⚠ Electron 패치 버전은 적지 않는다 — 락파일이 권위다. 여기 고정된 건 아래 node-version 의
+  # 메이저뿐이고, Electron 이 Node 메이저를 넘길 때 그 값을 함께 올려야 한다. 이 잡이 Node 24 에서
   # vitest 를 돌려 출하 런타임 고유 회귀를 smoke 한다. matrix 를 quality 잡에 걸면 required check 이름
   # (`typecheck · lint · test · build`)이 `... (22)`/`... (24)` 로 분기해 사라지므로, 별도 잡으로
   # required check 를 보존한다(advisory — required 아님).
