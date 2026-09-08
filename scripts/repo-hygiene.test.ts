@@ -142,7 +142,18 @@ describe('소스 위생 — 제어문자 판정식 자기검사', () => {
 })
 
 describe('소스 위생 — 리뷰 대상 텍스트에 원시 제어문자 0건(#251 PR1c · PR3c 범위 확장)', () => {
-  const ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github']
+  // `.claude` 를 포함하는 이유(Codex #290 P1) — 그 트리는 **다른 어떤 게이트도 제어문자를 보지
+  // 않는다**: eslint 는 `.claude/**` 를 통째로 ignores 하고(eslint.config.mjs 「.claude/** 는 eslint
+  // 대상에서 제외」절), 그 자리를 대신한다고 적힌 `skills:lint` 에는 제어문자 검사가 없다(실측 0건).
+  // 그런데 그 안에 **머지 게이트 자신**(`.claude/hooks/require-codex-review.mjs`)이 있고, 보이지 않는
+  // 바이트가 그 정규식에 섞이면 무엇을 막는지가 조용히 달라진다. 스캔에서 빼면 정확히 이 가드가
+  // 막으려는 오염이 가장 위험한 파일에서만 무방비가 된다.
+  // ⚠ `.gitignore` 가 `.claude/*` 를 allowlist 로 다루므로 이 루트에는 **추적되지 않는 로컬 파일**
+  // (`settings.local.json` 등)이 함께 있을 수 있고, 아래 walk 는 파일시스템 기준이라 그것도 스캔한다.
+  // 의도적으로 그대로 둔다 — JSON 은 제어문자를 이스케이프해야 하므로 실현 위험이 낮고, git 조회를
+  // 넣으면 이 테스트에 환경 의존 축(#307 계열)을 하나 더 만든다. 로컬 파일 때문에 RED 가 나면
+  // 그건 진짜 오염이므로 고쳐야 할 대상이다.
+  const ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github', '.claude']
   const EXT = /\.(?:ts|tsx|mjs|cjs|js|sh|ya?ml|json|md)$/
   const files: string[] = []
   const walk = (dir: string): void => {
@@ -155,7 +166,7 @@ describe('소스 위생 — 리뷰 대상 텍스트에 원시 제어문자 0건(
   }
   for (const r of ROOTS) if (existsSync(r)) walk(r)
 
-  it('앵커: 스캔 대상이 충분히 많고 네 루트를 모두 덮는다', () => {
+  it('앵커: 스캔 대상이 충분히 많고 ROOTS 전부를 덮는다', () => {
     expect(files.length).toBeGreaterThan(100)
     for (const r of ROOTS) expect(files.some((f) => f.startsWith(`${r}${sep}`))).toBe(true)
   })
