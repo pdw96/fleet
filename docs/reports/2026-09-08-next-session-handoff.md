@@ -1,8 +1,9 @@
 # 2026-09-08 세션 인계 — v0.1.2 출하 + 의존성 보안 라운드
 
 > 이 세션이 착지시킨 것과 다음 세션이 이어받을 것. 각 프롬프트는 자체 완결이라 새 세션 첫
-> 메시지로 그대로 붙여넣으면 된다. 권장 순서 1→2→3→4.
-> 기준 시점 `master` = `ef35cfc`.
+> 메시지로 그대로 붙여넣으면 된다. 권장 순서 2→3→4 — **프롬프트 1(dependabot 그룹 PR)은
+> 소진됐다**(아래 §1의 두 번째 표).
+> 기준 시점 `master` = `45998f0`.
 
 ---
 
@@ -14,6 +15,28 @@
 | — | **v0.1.2 출하** (run `34143196912`) | 자산 5개 · stable 채널 · 설치 푸터 정상 |
 | #319 | `npm audit fix` — 취약점 5건 폐쇄(high 4 · moderate 1) | 머지 `ff1e6c1` |
 | #321 | `.github/workflows/audit.yml` — 주간 advisory 센서 | 머지 `ef35cfc` |
+
+### 같은 날 이어서 착지한 것
+
+| PR | 내용 | 결과 |
+|---|---|---|
+| #322 | 이 인계 문서 + 자가리뷰 렌즈 템플릿 + electron 산문 정정 | 머지 `34eecc4` |
+| #324 | 인계 문서의 봇 PR 참조를 #323 으로 갱신 | 머지 `62e84b6` |
+| #325 | 머지 게이트 차단 안내를 2계열로 분기(판정 로직 무변경) | 머지 `f88c185` |
+| #323 | dependabot `npm-minor-patch` 8건 — 풀 렌즈 적대 리뷰 후 머지 | 머지 `45998f0` |
+
+**#323 리뷰 결론**(차단 사유 0건). 실측으로 확정된 것 셋만 남긴다:
+
+- `jose`·`ws` 는 **app.asar 에 실린다** — 이번엔 추론이 아니라 `electron-builder --dir` 산출
+  asar 에서 `node_modules/jose@6.2.11`·`node_modules/ws@8.21.3` 을 직접 확인했다(`/out/server`
+  는 없다). 서버 트랙 전용 임포트라도 출하 표면으로 취급할 것.
+- `eslint@10.10.0` 의 `"file-entry-cache": "11.1.5 || >11.1.6 <12"` 구멍은 **실제 공급망 사건의
+  흔적**이다. 등록소 실측: jaredwray 계열 6패키지가 2026-08-04 09:31~10:14Z 사이 한 버전씩
+  발행됐다 전부 unpublish 됐다. **락파일이 고정한 12개 버전은 전부 그 이전 발행**이고, base 에도
+  이미 같은 유지보수자의 `keyv@4.5.4`·`flat-cache@4.0.1`·`file-entry-cache@8.0.0` 이 있어
+  신뢰 주체 수는 1→1 불변이다. 거절하면 carve-out 없는 구 라인에 머무르므로 번프가 더 방어적이다.
+- e2e 는 **PR CI 가 돌리지 않는다**(`e2e.yml` = dispatch + master nightly). 의존성 번프를
+  리뷰할 때 e2e 는 로컬에서 직접 돌릴 것.
 
 **#318 의 배경**: 이 세션의 git 프록시가 태그 push 를 403 으로 거부했다(`info/refs` GET 200 →
 `git-receive-pack` POST 403, GitHub 헤더 없음 = 프록시 ref 정책). Codespaces 는 사용량 한도
@@ -30,10 +53,14 @@
 
 ## 2. 남은 열린 PR
 
-- **#323** — dependabot `npm-minor-patch` 8건. **라벨과 달리 표면이 크다**(아래 프롬프트 1).
-  ⚠ 봇은 이 그룹 PR 을 **번호째로 갈아치운다**(#317 → #320 → #323, 브랜치 해시도 매번 바뀐다).
-  아래 프롬프트를 쓰기 전에 열린 `npm-minor-patch` PR 번호를 먼저 확인할 것.
-- **#290** — 제어문자 가드 확장(NUL → C0/C1). 2026-08-12 이후 정지 상태.
+- **#290** — 제어문자 가드 확장(NUL → C0/C1). 2026-08-12 이후 정지. **재개 가능함을 실측했다**:
+  변경은 `scripts/repo-hygiene.test.ts` 1파일 +70/−2(테스트 전용)이고, 그 diff 를 현재 master
+  에 얹어 돌리면 14/14 통과한다(레포에 새로 들어온 C0/C1 오염 없음). 미해결 리뷰 스레드도 0건.
+  base 이동에도 **충돌 없다** — base(`b92221c`) 이후 master 가 그 파일을 건드린 커밋이 0건이고,
+  ruleset 이 최신 base 를 요구하지 않는다(#323 도 2커밋 뒤에서 머지됐다). 즉 브랜치 동기화는
+  불필요하고, 남은 건 head `952b057` 에 결속된 Codex 리뷰뿐이다(2026-09-08 재트리거함).
+  ⚠ dependabot 그룹 PR 은 봇이 **번호째로 갈아치운다**(#317 → #320 → #323). 다음 그룹 PR 을
+  다룰 때는 열린 `npm-minor-patch` 번호를 먼저 확인하고 배경 수치를 실물 diff 로 대조할 것.
 
 ---
 
@@ -55,58 +82,6 @@
 ---
 
 ## 4. 다음 세션 프롬프트
-
-### 프롬프트 1 — dependabot 그룹 PR 적대 리뷰 (권장 시작점)
-
-```
-Fleet 레포 작업. 먼저 AGENTS.md 와 brain.md 를 읽고 시작할 것.
-
-열려 있는 dependabot `npm-minor-patch` 그룹 PR 을 적대 리뷰하고 머지 여부를 판단한다.
-**2026-09-08 07:53Z 기준 #323**(8건). 봇이 이 PR 을 번호째 재생성하므로(#317 → #320 → #323)
-먼저 현재 열린 번호를 확인하고, 아래 배경의 버전·건수도 실물 diff 로 대조할 것 — 재생성될 때마다
-낡는다.
-
-배경 — 라벨은 minor/patch 지만 실질 표면이 크다:
- 1. **프로덕션 의존 2종**: `jose` ^6.2.8→^6.2.11 · `ws` ^8.21.2→^8.21.3. 둘 다 열린 GHSA 는
-    없다(2026-09-07 기준 npm audit 0건). 하지만 **둘 다 데스크톱 app.asar 에 실린다** — 임포트가
-    서버 트랙(src/server/access-jwt.ts · src/server/boot.ts)뿐이고 electron-builder.yml:7 에
-    `!out/server/**` 가 있어도 그렇다. 그 글롭이 빼는 건 **컴파일된 서버 번들뿐**이고
-    node_modules 는 `files:` 와 무관하게 통째로 복사된다: app-builder-lib 의
-    `getNodeModuleFileMatcher`(out/fileMatcher.js:177-213)가 「grab only excludes」주석대로
-    `!` 접두 패턴만 등록한 뒤 `prependPattern("**/*")` 를 얹으므로, `npm list --omit=dev` 가
-    뱉는 프로덕션 트리 전체가 asar 에 들어간다. 즉 **출하 표면으로 취급해 리뷰할 것.**
-    (이 세션에서 정반대로 「배제되므로 출하 표면이 아니다」라고 반복 주장했다가 Codex P1 으로
-    반증됐다 — 1차 증거는 위 파일이다.)
- 2. **eslint 10.8.0→10.10.0 이 캐시 백엔드를 통째로 간다.** `file-entry-cache` 를 8.0.0→11.1.5 로
-    **메이저 3단** 올리며 flat-cache+keyv 계열에서 cacheable 계열로 이동 → `cacheable` ·
-    `@cacheable/memory` · `@cacheable/utils` · `@keyv/bigmap` · `@keyv/serialize` · `hashery` ·
-    `hookified` · `qified` 가 **신규 유입**되고 `flat-cache` 4.0.1→6.1.23 · `keyv` 5.6.0 이
-    중첩 사본으로 여러 곳에 박힌다. 락파일 +259/−150 의 대부분이 이것이다.
-    확인 대상 3가지:
-    - **`hookified` 가 1.15.1 과 2.2.0 두 버전**으로 동시에 들어온다(qified 만 2.x).
-    - eslint 의 의존 range 가 `"11.1.5 || >11.1.6 <12"` 라는 **구멍 뚫린 형태**다 — 11.1.6 을
-      명시적으로 배제한 것이라 그 버전에 문제가 있었다는 신호다. 릴리스 노트로 확인할 것.
-    - 신규 패키지는 락파일상 **전부 `"dev": true`** 다(확인함). 즉 출하 표면이 아니라
-      `dependency-review` 의 `fail-on-scopes: development` 가 담당하는 자리다.
- 3. **나머지 5건은 dev 전용 마이너/패치**(2 + 1 + 5 = 8): @playwright/test 1.62.1→1.63.0(이 번프가 playwright 의
-    `optionalDependencies.fsevents` 2.3.2 핀을 제거한다) · @testing-library/react 16.3.2→16.3.3 ·
-    @types/react-dom 19.2.4→19.2.7 · lint-staged 17.3.0→17.5.0 · typescript-eslint 8.66.0→8.69.0.
-
-할 일:
-1. dependency-review 잡 결과를 먼저 볼 것 — 이 게이트는 「PR 로 새로 들어오는 의존성」이
-   담당 표면이라 여기서 실제로 일할 자리다(fail-on-severity: high · fail-on-scopes 에
-   development 포함).
-2. 신규 8종의 출처·유지보수 상태·라이선스를 확인한다. eslint 가 왜 캐시 백엔드를 갈았는지
-   릴리스 노트로 교차검증(context7).
-3. npm run verify green 확인. lint 가 실제로 도는지가 핵심이다(file-entry-cache 는 eslint 의
-   캐시 경로다).
-4. Codex 한도가 회복됐으면 정규 리뷰, 아니면 AGENTS.md 「Codex 리뷰 운영 기준」의
-   **자가리뷰 계층화** 절대로 풀 렌즈 자가 적대 리뷰(줄 번호 말고 절 이름으로 찾을 것).
-5. 머지는 사용자 승인 후. 봇 PR 이므로 내 브랜치로 옮기지 말고 그대로 머지한다
-   (레포 선례 = 봇 PR 개별 머지 + 봇이 놓친 잔여만 사람 PR).
-6. 리뷰 중 봇이 PR 을 재생성하면(번호가 바뀌면) 새 번호의 diff 를 다시 뜬다 — 이 세션에서
-   #320 이 리뷰 착수 전에 #323 으로 교체됐다.
-```
 
 ### 프롬프트 2 — `audit.yml` 실패 경로 검증 (선택)
 
@@ -158,6 +133,15 @@ Fleet 레포 작업. 먼저 AGENTS.md 와 brain.md 를 읽고 이슈 #300 을 �
 - **v0.1.1 릴리스 노트 경고 배너** — v0.1.2 가 Latest 를 가져가서 급하지 않다. 이 세션의 `gh`
   토큰이 무효라 웹 UI 로만 가능했고, immutable release 설정 때문에 아예 불가능할 수도 있다.
 - **태그 스왑 윈도우** — PR #318 리뷰에서 나온 잔여 항목. 태그 ruleset 으로 다룰 별건.
+- **`.npmrc` 에 `ignore-scripts` 가 없다 + `release.yml` 이 특권 잡에서 `npm ci` 를 돈다** —
+  `release.yml` 의 build 잡은 `contents/id-token/attestations: write` 를 걸고 있어 install 훅이
+  sigstore OIDC 토큰을 발급받을 수 있다. #323 이 만든 갭이 아니라 사전 존재 조건이라 그 PR 과
+  분리했다. electron 43 은 postinstall 바이너리 다운로드를 이미 쓰지 않으므로(락파일에
+  `hasInstallScript` 없음) 실검증 대상은 `esbuild`·`electron-winstaller` 2종뿐이다.
+- **`src/server/access-jwt.ts:66` · `access-jwt.test.ts:125` 의 「jose 6.2.3 소스 실측」 주석** —
+  서술 내용은 6.2.11 에서도 참임을 확인했다(non-200·JSON 파싱 실패 → base JOSEError, 타임아웃
+  → JWKSTimeout, 에러 클래스명·`code` 무변). **버전 라벨만 낡았다.** 그 파일을 건드릴 때
+  「jose v6 remote 리졸버」로 일반화할 것 — 다음 번프마다 또 낡는다.
 - **취약점 탐지 관련 후속 후보** — `dependency-review` 의 `fail-on-severity: high` 를 moderate
   로 낮추는 안은 이 세션에서 **명시적으로 기각**했다(PR 신규 유입 moderate 는 실측 사고 0건이고
   audit.yml 이 같은 표면을 더 싸게 덮는다). 되살리려면 실측 사고 1건이 먼저 필요하다.
@@ -191,6 +175,18 @@ electron-builder 는 프로덕션 node_modules 를 `files:` 와 무관하게 통
 그리고 뮤턴트 집합이 `run:` 줄 텍스트만 건드려, **10/10 GREEN 을 유지한 채 잡을 무력화하는 우회
 5종**(주석 잔류 · `|| true` · `if:` skip · 잡 레벨 `continue-on-error` · 얕은 주석 파서 절단)을
 하나도 짚지 못했다. 뮤테이션은 **「무엇을 못 잡는가」를 먼저 물은 뒤** 설계할 것.
+
+**`dependency-review` GREEN 을 안전 근거로 쓰지 않는다.** #323 리뷰에서 확정했다 — 악성 버전은
+unpublish 되어 **애초에 락파일 후보에 들어올 수 없다**. 존재하지 않는 노드는 어떤 게이트도 flag
+하지 못하므로 그 잡의 통과는 안전의 증거가 아니라 **무정보**다. 게다가 이 사건 유형의 페이로드는
+preinstall 훅이라 `dev: true` 여부와 무관하게 개발자 머신과 `npm ci` 에서 실행된다 — 「dev 전용이라
+출하 표면이 아니다」는 위험 축을 잘못 잡은 서술이다.
+
+**재현되지 않는 관측은 발견이 아니다.** #323 리뷰 중 playwright 1.63 이 web e2e 를 깨는 것처럼
+보이는 실패를 1회 잡았고(`__dirname is not defined`, 7 failed) P1 로 올릴 뻔했다. 같은 조건
+(패키징 직후까지 재현)으로 3회 더 돌렸더니 전부 20/20 통과였다. **한 번 본 빨강은 근거가 아니라
+가설이다** — 대조군(구 버전)과 재현을 붙이기 전에는 보고하지 않는다. 반대로 이 규율이 실제로
+값을 낸 자리이기도 하다: 대조 실험이 없었으면 존재하지 않는 회귀로 봇 PR 을 막았을 것이다.
 
 **Codex 한도 소진 시 경로**: AGENTS.md 「Codex 리뷰 운영 기준」의 **자가리뷰 계층화** 절이 요구하는
 풀 렌즈 자가 적대 리뷰(P1 신호 렌즈 포함) → PR 코멘트를
