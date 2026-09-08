@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, sep } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const read = (p: string) => readFileSync(p, 'utf8')
 
@@ -162,12 +163,18 @@ describe('소스 위생 — 리뷰 대상 텍스트에 원시 제어문자 0건(
   // 그런데 그 안에 **머지 게이트 자신**(`.claude/hooks/require-codex-review.mjs`)이 있고, 보이지 않는
   // 바이트가 그 정규식에 섞이면 무엇을 막는지가 조용히 달라진다. 스캔에서 빼면 정확히 이 가드가
   // 막으려는 오염이 가장 위험한 파일에서만 무방비가 된다.
-  // ⚠ `.gitignore` 가 `.claude/*` 를 allowlist 로 다루므로 이 루트에는 **추적되지 않는 로컬 파일**
-  // (`settings.local.json` 등)이 함께 있을 수 있고, 아래 walk 는 파일시스템 기준이라 그것도 스캔한다.
-  // 의도적으로 그대로 둔다 — JSON 은 제어문자를 이스케이프해야 하므로 실현 위험이 낮고, git 조회를
-  // 넣으면 이 테스트에 환경 의존 축(#307 계열)을 하나 더 만든다. 로컬 파일 때문에 RED 가 나면
-  // 그건 진짜 오염이므로 고쳐야 할 대상이다.
-  const ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github', '.claude']
+  // ⚠ 다만 `.claude` 만은 **추적 파일로 한정**한다(Codex #290 P2). 이 루트는 `.gitignore` 가
+  // `.claude/*` allowlist 라 무시되는 런타임 자산이 같은 트리에 산다 — `settings.local.json` 뿐
+  // 아니라 **워크플로 worktree**(= 그 아래에 통째로 다른 체크아웃)까지다. eslint 가 이 트리를
+  // 제외한 사유가 바로 그것이라고 `eslint.config.mjs` 상단이 적고 있다. 파일시스템 walk 는 그것을
+  // 전부 읽으므로, 로컬에만 있는 CRLF 파일 하나로 `npm test`·`npm run verify` 가 RED 가 된다 —
+  // `.gitattributes` 의 `eol=lf` 는 **추적 콘텐츠만** 정규화하므로 그 파일들은 보호 밖이다.
+  // 필수 게이트가 개발자 머신 상태에 따라 갈리는 것은 #307 이 닫으려는 축과 같은 것이라
+  // `git ls-files` 로 추적 자산만 센다. 코드 루트는 walk 그대로 둔다 — 그쪽은 무시 자산이 사실상
+  // 없고, 커밋 전 새 파일도 잡아 주는 편이 낫다.
+  const WALK_ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github']
+  const TRACKED_ROOTS = ['.claude']
+  const ROOTS = [...WALK_ROOTS, ...TRACKED_ROOTS]
   const EXT = /\.(?:ts|tsx|mjs|cjs|js|sh|ya?ml|json|md)$/
   const files: string[] = []
   const walk = (dir: string): void => {
@@ -178,11 +185,26 @@ describe('소스 위생 — 리뷰 대상 텍스트에 원시 제어문자 0건(
       } else if (EXT.test(e.name)) files.push(p)
     }
   }
-  for (const r of ROOTS) if (existsSync(r)) walk(r)
+  // `git ls-files` 는 항상 `/` 구분자를 낸다 — 아래 앵커가 `sep` 로 비교하므로 win32 에서
+  // 어긋나지 않게 정규화한다(그 한 줄이 없으면 windows 레그에서만 앵커가 깨진다).
+  const tracked = (root: string): string[] =>
+    execFileSync('git', ['ls-files', '-z', '--', root], { encoding: 'utf8' })
+      .split('\0')
+      .filter((p) => p !== '' && EXT.test(p))
+      .map((p) => p.split('/').join(sep))
+  for (const r of WALK_ROOTS) if (existsSync(r)) walk(r)
+  for (const r of TRACKED_ROOTS) files.push(...tracked(r))
 
   it('앵커: 스캔 대상이 충분히 많고 ROOTS 전부를 덮는다', () => {
     expect(files.length).toBeGreaterThan(100)
     for (const r of ROOTS) expect(files.some((f) => f.startsWith(`${r}${sep}`))).toBe(true)
+  })
+
+  // 루트 단위 앵커만으로는 `.claude` 에서 **아무 파일 하나**만 있어도 통과한다. 이 가드를 넓힌
+  // 이유가 머지 게이트 본체였으므로(#290 P1) 그 파일을 이름으로 못박는다 — `TRACKED_ROOTS` 의
+  // 추적 열거가 좁아지거나 EXT 가 `.mjs` 를 잃으면 여기서 RED 가 난다.
+  it('앵커: 머지 게이트 훅이 스캔 대상에 실제로 들어 있다', () => {
+    expect(files).toContain(join('.claude', 'hooks', 'require-codex-review.mjs'))
   })
 
   it('원시 NUL 바이트가 0건이다(리뷰 diff 가 바이너리로 접히지 않는다)', () => {
