@@ -653,6 +653,25 @@ describe('blockedGuidance — 차단 사유 계열별 안내', () => {
     expect(blockedGuidance(bash('bash script.sh'))).toContain('gh pr ' + 'merge')
   })
 
+  it('비머지 안내가 우회 지도가 되지 않는다 — 재배치 금지 (Codex 45R P1)', () => {
+    const g = blockedGuidance(bash('bash script.sh'))
+    // 게이트는 스크립트 파일의 내용을 읽지 않는다(`node x.mjs`·`python3 x.py` 는 pass) —
+    // 차단당한 순간에 읽히는 문구가 「그 자리로 옮겨라」로 읽히면 복사 가능한 우회가 된다.
+    expect(g).not.toMatch(/파일로 쓴 뒤|node <파일>|스크립트로 옮겨 실행하면/)
+    // 재배치는 명시적으로 금지돼 있어야 한다.
+    expect(g).toContain('우회다')
+    // 그리고 머지 경로는 경로 무관하게 canonical 하나뿐임을 못박아야 한다.
+    expect(g).toContain('경로와 무관하게')
+  })
+
+  it('게이트가 스크립트 내용을 읽지 않는다는 전제를 고정한다', () => {
+    // 이 전제가 깨지면(=node/python 도 차단하게 되면) 위 안내 문구를 다시 설계해야 한다.
+    for (const cmd of ['node x.mjs', 'python3 x.py', 'npm run x']) {
+      expect(classify(cmd).kind, cmd).toBe('pass')
+    }
+    expect(classify('bash x.sh').kind).toBe('blocked')
+  })
+
   it('계열 판별이 classifyHookInput 의 hasMergeSignal 분기와 일치한다', () => {
     // 안내 계열은 판정 구조에서 파생돼야 한다 — 둘이 갈리면 안내가 다시 거짓말을 시작한다.
     for (const cmd of [
