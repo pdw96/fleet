@@ -12,6 +12,7 @@
 | `fleet-backlog-induction` | 백로그 착수 절차 래퍼 | 로컬만(L2-only) |
 | `fleet-plan-panel` | 판사 패널 계획 수립 | 로컬만 |
 | `fleet-advisor` | 1.0 완성도·운영 ROI 진단(deep/check) | 로컬만 |
+| `fleet-release` | 출하 절차(주기 점검→개시→감시→산출물 확인) | 로컬만 |
 
 > 클라우드(claude-code-action) 실행은 폐기됐다(ADR-0012) — 두 스킬은 로컬 `Skill` 툴로만 돈다.
 
