@@ -1,7 +1,7 @@
 ---
 name: fleet-planner
 description: 승인된 스펙으로부터 독립 구현 계획 초안을 작성하는 전담 에이전트 — fleet-plan-panel 스킬의 draft 단계에 사용. 디스패치 시 각도(리스크 우선/MVP 우선/계약 우선) 하나를 프롬프트로 지정한다. 초안은 확정이 아니라 fleet-plan-judge 가 채점할 후보다(draft≠judge).
-tools: Read, Glob, Grep, WebSearch, WebFetch, mcp__context7__resolve-library-id, mcp__context7__query-docs
+tools: Read, Glob, Grep, WebSearch, WebFetch, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__Context7__resolve-library-id, mcp__Context7__query-docs
 model: inherit
 ---
 

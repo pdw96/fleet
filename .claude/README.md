@@ -28,6 +28,16 @@
 재작성하던 비효율을 없앤다(14차 재랭킹에서 동일 템플릿 7회 수기 작성 실측). 산문 권위는
 여전히 AGENTS.md·각 SKILL.md — 에이전트는 실행 래퍼다.
 
+**⚠ context7 툴명은 두 표기를 모두 적는다** — `mcp__context7__*` **와** `mcp__Context7__*`.
+`tools:` 는 정확한 문자열 매칭 allowlist 이고, MCP 툴명은 `mcp__<서버명>__<툴명>` 으로 조립되는데
+**서버명은 레포가 아니라 세션 환경이 정한다**: 이 레포엔 `.mcp.json` 이 없어서 로컬은
+`settings.local.json`(비추적)의 키를, 원격(Claude Code on the web)은 claude.ai 커넥터 이름
+`Context7`(대문자 C)를 쓴다. 한쪽만 적으면 **다른 쪽 환경에서 네 에이전트가 조용히 context7 을
+잃는다** — 그러면 `fleet-cutoff-gap-audit`(스킬 정의 자체가 「context7 현행 문서와 코드를 fan-out
+대조」)의 전제가 사라지고, 그 사실은 아무 신호 없이 지나간다. 해결 안 되는 이름은 그냥 매칭되지
+않을 뿐이라 **양쪽 등재의 비용은 0** 이다. 이 정합을 강제하는 기계는 없다(`skills:lint` 는
+차단패턴 스캔만 한다) — 새 에이전트를 추가할 때 사람이 함께 지킬 것.
+
 ## hooks/ + settings.json (기계 게이트 — 프롬프트 규율의 구조화)
 
 `settings.json` 의 `PreToolUse` hook(`hooks/require-codex-review.mjs`)이 머지를 게이트한다.

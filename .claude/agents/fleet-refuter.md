@@ -1,7 +1,7 @@
 ---
 name: fleet-refuter
 description: Fleet 후보/주장/발견을 적대적으로 반증하는 검증 전담 에이전트. 백로그 재랭킹 후보 refute, 갭감사 후보 검증, PR 적대 리뷰의 verify 단계, 진단·외부 주장 검증에 사용. 기본 자세는 기각 — 확실한 증거로만 생존시킨다. find 를 수행한 에이전트와 반드시 다른 인스턴스로 디스패치할 것(find≠verify).
-tools: Read, Glob, Grep, WebSearch, WebFetch, mcp__context7__resolve-library-id, mcp__context7__query-docs
+tools: Read, Glob, Grep, WebSearch, WebFetch, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__Context7__resolve-library-id, mcp__Context7__query-docs
 model: inherit
 ---
 

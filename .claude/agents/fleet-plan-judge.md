@@ -1,7 +1,7 @@
 ---
 name: fleet-plan-judge
 description: 복수 계획 초안을 루브릭으로 독립 채점하고 승자와 이식 아이디어를 추출하는 전담 에이전트 — fleet-plan-panel 스킬의 judge 단계에 사용. 디스패치 시 렌즈 그룹(공백 그룹/Codex 강점 그룹)을 지정한다. draft 를 작성한 인스턴스와 반드시 분리 디스패치(draft≠judge).
-tools: Read, Glob, Grep, mcp__context7__resolve-library-id, mcp__context7__query-docs
+tools: Read, Glob, Grep, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__Context7__resolve-library-id, mcp__Context7__query-docs
 model: inherit
 ---
 
