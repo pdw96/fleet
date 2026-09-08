@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   hasMergeSignal,
+  mergeCannotBeExcluded,
   hasMergeWord,
   aliasIsSuspect,
   stripShellExpansions,
@@ -612,6 +613,7 @@ describe('tokenizeSegments — 근사 셸 시맨틱', () => {
 describe('blockedGuidance — 차단 사유 계열별 안내', () => {
   const MERGE_MARK = 'canonical 형태만 허용된다'
   const NON_MERGE_MARK = '막힌 것은 머지 시도가 아니라'
+  const AMBIGUOUS_MARK = '머지인지 **판별하지 못했다**'
 
   it('MCP merge_pull_request 는 머지 안내', () => {
     const g = blockedGuidance({ tool_name: 'mcp__github__merge_pull_request', tool_input: {} })
@@ -640,7 +642,6 @@ describe('blockedGuidance — 차단 사유 계열별 안내', () => {
       'source ./setup.sh', // 외부 스크립트 소싱
       'bash script.sh', // -c 없이 스크립트 파일
       'cat f | bash', // -c 없이 stdin 스크립트
-      'gh `printf pr` view 1', // gh 인데 머지 시도가 아니다
     ]) {
       expect(classify(cmd).kind, cmd).toBe('blocked')
       const g = blockedGuidance(bash(cmd))
@@ -672,17 +673,49 @@ describe('blockedGuidance — 차단 사유 계열별 안내', () => {
     expect(classify('bash x.sh').kind).toBe('blocked')
   })
 
-  it('계열 판별이 classifyHookInput 의 hasMergeSignal 분기와 일치한다', () => {
-    // 안내 계열은 판정 구조에서 파생돼야 한다 — 둘이 갈리면 안내가 다시 거짓말을 시작한다.
+  // 45R P2: 위장된 머지는 hasMergeSignal(동사 AND 능력)이 false 가 된다 — 그 부정으로
+  // 「머지가 아니다」를 단언하면 거짓말이 된다. 단언은 mergeCannotBeExcluded(동사 OR 능력)로
+  // 과대근사한 뒤에만 한다.
+  it('가려진 머지를 「머지가 아니다」라고 단언하지 않는다 (Codex 45R P2)', () => {
+    for (const cmd of [
+      '$(printf g)h pr ' + 'merge 222 --squash', // 능력 토큰이 조립돼 사라짐 — 동사만 남는다
+      "printf 'pr m%crge 222' e | xargs gh", // 동사가 조립돼 사라짐 — 능력 토큰만 남는다
+    ]) {
+      expect(classify(cmd).kind, cmd).toBe('blocked')
+      expect(hasMergeSignal(cmd), cmd).toBe(false) // 결합 신호는 안 잡힌다
+      expect(mergeCannotBeExcluded(cmd), cmd).toBe(true) // 그래도 배제는 못 한다
+      const g = blockedGuidance(bash(cmd))
+      expect(g, cmd).toContain(AMBIGUOUS_MARK)
+      expect(g, cmd).not.toContain(NON_MERGE_MARK) // 「머지가 아니다」 단언 금지
+      expect(g, cmd).toContain('gh pr ' + 'merge') // 정규 형태는 준다
+    }
+  })
+
+  it('계열 판별이 두 술어에서 파생된다 — 3분류', () => {
+    // 안내 계열은 판정 구조에서 파생돼야 한다 — 갈리면 안내가 다시 거짓말을 시작한다.
     for (const cmd of [
       'gh api -X PUT repos/o/r/pulls/1/' + 'merge',
       'bash script.sh',
       'gh `printf pr` view 1',
+      '$(printf g)h pr ' + 'merge 222',
       '$CMD --run',
       'ls -la',
     ]) {
-      const expected = hasMergeSignal(cmd) ? MERGE_MARK : NON_MERGE_MARK
+      const expected = hasMergeSignal(cmd)
+        ? MERGE_MARK
+        : mergeCannotBeExcluded(cmd)
+          ? AMBIGUOUS_MARK
+          : NON_MERGE_MARK
       expect(blockedGuidance(bash(cmd)), cmd).toContain(expected)
+    }
+  })
+
+  it('세 계열 모두 재배치 우회를 금지하고 정규 형태를 남긴다', () => {
+    for (const cmd of ['bash script.sh', 'gh `printf pr` view 1']) {
+      const g = blockedGuidance(bash(cmd))
+      expect(g, cmd).not.toMatch(/파일로 쓴 뒤|node <파일>/)
+      expect(g, cmd).toContain('우회다')
+      expect(g, cmd).toContain('gh pr ' + 'merge')
     }
   })
 

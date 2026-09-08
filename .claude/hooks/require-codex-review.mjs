@@ -285,14 +285,34 @@ export function aliasIsSuspect(rawExp) {
   return hasMergeWord(exp) || /\$(?![@*])|`/.test(exp) || /--input|=@|graphql/i.test(exp)
 }
 
+const mergeCapability = (s) =>
+  /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s)
+const mergeVerb = (s) => /merge|enqueuepullrequest/i.test(s)
+
 export function hasMergeSignal(cmd) {
-  const capability = (s) =>
-    /(^|[^\p{L}\d])gh(\.exe)?([^\p{L}\d]|$)/iu.test(s) || /github\.com|graphql/i.test(s)
-  const signal = (s) => /merge|enqueuepullrequest/i.test(s) && capability(s)
+  const signal = (s) => mergeVerb(s) && mergeCapability(s)
   const { variants, overflow } = scanVariants(cmd)
   // brace 전개 overflow = 병합 단어 존재를 정적으로 배제할 수 없음 — 능력 토큰이 있으면
   // 신호로 취급한다(fail-closed).
-  return variants.some(signal) || (overflow && variants.some(capability))
+  return variants.some(signal) || (overflow && variants.some(mergeCapability))
+}
+
+/**
+ * 「이 명령이 머지가 **아니라고** 단언할 수 있는가」의 부정. `hasMergeSignal` 은 병합 동사와
+ * 능력 토큰의 **AND** 라, 둘 중 하나만 가려져도 false 가 된다 — 그래서 이 술어로 머지 여부를
+ * 단언하면 위장된 머지를 「머지가 아니다」라고 말하게 된다(45R P2 실측:
+ * `$(printf g)h pr merge 222` 는 동사만 남고, `printf 'pr m%crge 222' e | xargs gh` 는 능력
+ * 토큰만 남는다 — 둘 다 blocked 지만 hasMergeSignal 은 false).
+ *
+ * 안내 문구는 판정이 아니라 **주장**이므로 여기서는 OR 로 과대근사한다: 동사든 능력 토큰이든
+ * 하나라도 보이면 머지 가능성을 배제하지 못한 것으로 취급한다. 틀리는 방향이 「머지일지도
+ * 모른다」쪽이라 안전하다.
+ * @param {string} cmd
+ * @returns {boolean}
+ */
+export function mergeCannotBeExcluded(cmd) {
+  const { variants, overflow } = scanVariants(cmd)
+  return overflow || variants.some((s) => mergeVerb(s) || mergeCapability(s))
 }
 
 // 투명 래퍼 — 실효 실행 파일을 가린다(37R P1: `env xargs gh`). 실행 파일 탐색에서 건너뛴다.
@@ -1014,22 +1034,43 @@ const MERGE_GUIDANCE =
 // 내용을 읽지 않는다는 사실(`node x.mjs`·`python3 x.py` 는 pass)은 이 안내가 만든 구멍이
 // 아니지만, 여기에 적는 순간 복사 가능한 우회가 된다. 그래서 **재작성만** 권하고 재배치는
 // 명시적으로 금지한다.
-const NON_MERGE_GUIDANCE =
-  '이 명령에는 머지 신호가 없다 — 막힌 것은 머지 시도가 아니라 **명령의 형태**다.\n' +
-  '게이트는 무엇이 실행될지 정적으로 판별할 수 있어야 하고(fail-closed), 위 사유는 그게 ' +
-  '불가능하다는 뜻이다. **같은 일을 리터럴 명령으로 다시 써라**:\n' +
+// 형태 안내 — 세 계열이 공유한다.
+const SHAPE_REMEDIES =
   '  · 실행 파일 자리에 $·백틱·글롭  → 실행 대상을 리터럴로 (`npm run x` 등)\n' +
   '  · eval · source/. · 인터프리터 중첩 → 실행 시점에 내용이 정해져 정적 분류 불가\n' +
   '  · `bash x.sh` · 파이프/stdin 스크립트 → 하려는 일을 명령줄에 그대로\n' +
   '  · gh 인자에 비인용 확장·글롭      → 인용하거나 리터럴로\n' +
   '파일 **내용**이 문제였다면 Write 도구로 쓴다(실행이 아니라 기록이다).\n' +
   '⚠ 막힌 **명령**을 스크립트로 옮겨 실행하는 것은 해결이 아니라 우회다 — 게이트가 못 보게 ' +
-  '만들 뿐이고, 그렇게 한 머지는 리뷰 결속을 건너뛴 무효 머지다.\n' +
-  '(머지를 하려던 게 맞다면 경로와 무관하게 이 형태만 허용된다: gh pr merge <번호> ' +
-  '[-R owner/repo] [--squash 등] --match-head-commit <head SHA>)'
+  '만들 뿐이고, 그렇게 한 머지는 리뷰 결속을 건너뛴 무효 머지다.'
+
+const CANONICAL_FORM =
+  'gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>'
+
+const NON_MERGE_GUIDANCE =
+  '이 명령에는 병합 동사도 gh/GitHub 능력 토큰도 없다 — 막힌 것은 머지 시도가 아니라 ' +
+  '**명령의 형태**다.\n' +
+  '게이트는 무엇이 실행될지 정적으로 판별할 수 있어야 하고(fail-closed), 위 사유는 그게 ' +
+  '불가능하다는 뜻이다. **같은 일을 리터럴 명령으로 다시 써라**:\n' +
+  SHAPE_REMEDIES +
+  `\n(머지를 하려던 게 맞다면 경로와 무관하게 이 형태만 허용된다: ${CANONICAL_FORM})`
+
+// 병합 동사나 능력 토큰 중 **하나만** 보이는 경우 — 위장된 머지일 수 있어 「머지가 아니다」라고
+// 단언하면 안 된다(45R P2). 형태 안내와 canonical 형태를 **둘 다** 준다.
+const AMBIGUOUS_GUIDANCE =
+  '게이트는 이 명령이 머지인지 **판별하지 못했다** — 병합 동사나 gh/GitHub 능력 토큰 중 ' +
+  '하나가 확장·치환·조립 뒤에 가려져 있다. 그래서 머지가 아니라고 단언하지 않는다.\n' +
+  '머지가 아니었다면 **같은 일을 리터럴 명령으로 다시 써라**:\n' +
+  SHAPE_REMEDIES +
+  '\n머지가 맞다면 가리지 말고 이 형태 그대로 써라(경로와 무관하게 이것만 허용된다):\n' +
+  `  ${CANONICAL_FORM}`
 
 /**
  * 차단 메시지에 붙일 안내 문단을 고른다. 순수 함수 — 판정에 관여하지 않는다.
+ *
+ * 3계열이다. 「머지가 아니다」는 **주장**이라, 그걸 `hasMergeSignal`(동사 AND 능력)의 부정으로
+ * 삼으면 위장된 머지를 머지가 아니라고 말하게 된다(45R P2) — 그래서 단언은
+ * `mergeCannotBeExcluded`(동사 OR 능력)로 과대근사한 뒤에만 한다.
  * @param {{tool_name?:unknown, tool_input?:{command?:unknown}}} input hook 입력
  * @returns {string}
  */
@@ -1039,9 +1080,9 @@ export function blockedGuidance(input) {
   // Bash 가 아니면 classifyHookInput 이 pass 라 여기 오지 않지만, 안내 선택은 fail-safe 하게
   // 둔다 — 판별 불가면 머지 안내(기존 문구)로 되돌아간다.
   if (toolName !== 'Bash') return MERGE_GUIDANCE
-  return hasMergeSignal(String(input?.tool_input?.command ?? ''))
-    ? MERGE_GUIDANCE
-    : NON_MERGE_GUIDANCE
+  const cmd = String(input?.tool_input?.command ?? '')
+  if (hasMergeSignal(cmd)) return MERGE_GUIDANCE
+  return mergeCannotBeExcluded(cmd) ? AMBIGUOUS_GUIDANCE : NON_MERGE_GUIDANCE
 }
 
 // ── main (직접 실행 시에만 — 테스트 import 시 stdin 을 읽지 않는다) ───────────
