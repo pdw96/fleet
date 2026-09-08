@@ -62,9 +62,15 @@ PR #320(dependabot npm-minor-patch 7건)을 적대 리뷰하고 머지 여부를
 
 배경 — 라벨은 minor/patch 지만 실질 표면이 크다:
  1. 프로덕션 의존 2종: jose ^6.2.8→^6.2.11 · ws ^8.21.2→^8.21.3. 둘 다 열린 GHSA 는
-    없다(2026-09-07 기준 npm audit 0건). 임포트는 전부 서버 트랙(src/server/access-jwt.ts ·
-    src/server/boot.ts)이고 electron-builder.yml:7 의 `!out/server/**` 로 데스크톱 asar 에서
-    배제되므로 출하 표면이 아니다 — 이건 이 세션에서 반증까지 마친 사실이다.
+    없다(2026-09-07 기준 npm audit 0건). **둘 다 데스크톱 app.asar 에 실린다** — 임포트가 서버
+    트랙(src/server/access-jwt.ts · src/server/boot.ts)뿐이고 electron-builder.yml:7 에
+    `!out/server/**` 가 있어도 그렇다. 그 글롭이 빼는 건 **컴파일된 서버 번들뿐**이고
+    node_modules 는 `files:` 와 무관하게 통째로 복사된다: app-builder-lib 의
+    `getNodeModuleFileMatcher`(out/fileMatcher.js:177-213)가 「grab only excludes」주석대로
+    `!` 접두 패턴만 등록한 뒤 `prependPattern("**/*")` 를 얹으므로, `npm list --omit=dev` 가
+    뱉는 프로덕션 트리 전체가 asar 에 들어간다. 즉 **출하 표면으로 취급해 리뷰할 것.**
+    (이 세션에서 정반대로 「배제되므로 출하 표면이 아니다」라고 반복 주장했다가 Codex P1 으로
+    반증됐다 — 1차 증거는 위 파일이다.)
  2. eslint 10.8.0→10.10.0 이 file-entry-cache 를 8.0.0→11.1.5 로 **메이저 3단** 올리며 캐시
     백엔드를 flat-cache+keyv 에서 cacheable 계열로 바꾼다 → @cacheable/memory ·
     @cacheable/utils · @keyv/bigmap · @keyv/serialize · hashery · hookified · qified 등
@@ -79,7 +85,8 @@ PR #320(dependabot npm-minor-patch 7건)을 적대 리뷰하고 머지 여부를
    릴리스 노트로 교차검증(context7).
 3. npm run verify green 확인. lint 가 실제로 도는지가 핵심이다(file-entry-cache 는 eslint 의
    캐시 경로다).
-4. Codex 한도가 회복됐으면 정규 리뷰, 아니면 AGENTS.md:186 풀 렌즈 자가 적대 리뷰.
+4. Codex 한도가 회복됐으면 정규 리뷰, 아니면 AGENTS.md 「Codex 리뷰 운영 기준」의
+   **자가리뷰 계층화** 절대로 풀 렌즈 자가 적대 리뷰(줄 번호 말고 절 이름으로 찾을 것).
 5. 머지는 사용자 승인 후. 봇 PR 이므로 내 브랜치로 옮기지 말고 그대로 머지한다
    (레포 선례 = 봇 PR 개별 머지 + 봇이 놓친 잔여만 사람 PR).
 ```
@@ -154,12 +161,21 @@ Fleet 레포 작업. 먼저 AGENTS.md 와 brain.md 를 읽고 이슈 #300 을 �
 둘 다 자가 적대 리뷰가 잡았지만, 리뷰가 없었으면 그대로 나갔을 것들이다. 과거 PR·이슈·락파일을
 근거로 들 때는 **`mcp__github__*` 로 원문을 열고 락파일을 직접 읽은 뒤에** 쓸 것.
 
+**세션 안에서 이미 반증한 사실을 다시 주장하지 않는다.** 이 세션은 #320 배경 설명에서
+「jose·ws 는 `!out/server/**` 로 asar 에서 배제되니 출하 표면이 아니다」를 여러 번 썼다. **틀렸다** —
+electron-builder 는 프로덕션 node_modules 를 `files:` 와 무관하게 통째로 싣는다
+(app-builder-lib `out/fileMatcher.js:177-213` 의 「grab only excludes」). 더 나쁜 건 이 기전을
+**#319 의 범위 렌즈 refuter 가 같은 세션에서 이미 확립했다**는 점이다 — 새 정보가 아니라 내가
+연결하지 못한 정보였다. 패키징·번들 경계 주장은 매번 `fileMatcher.js`/`npmNodeModulesCollector.js`
+를 다시 열고 쓸 것. 「이건 반증까지 마친 사실이다」류의 자기 확신 표현은 그 자체가 경보다.
+
 **뮤테이션 검증의 오라클을 먼저 검증한다.** #321 에서 뮤턴트 적용 여부를 `git diff` 로 판정했는데
 신규 파일이라 항상 비어 있어, **미적용 뮤턴트가 「검출됨」으로 보였다.** `cmp` 로 바꿔 잡았다.
 그리고 뮤턴트 집합이 `run:` 줄 텍스트만 건드려, **10/10 GREEN 을 유지한 채 잡을 무력화하는 우회
 5종**(주석 잔류 · `|| true` · `if:` skip · 잡 레벨 `continue-on-error` · 얕은 주석 파서 절단)을
 하나도 짚지 못했다. 뮤테이션은 **「무엇을 못 잡는가」를 먼저 물은 뒤** 설계할 것.
 
-**Codex 한도 소진 시 경로**: `AGENTS.md:186` 풀 렌즈 자가 적대 리뷰 → PR 코멘트를
+**Codex 한도 소진 시 경로**: AGENTS.md 「Codex 리뷰 운영 기준」의 **자가리뷰 계층화** 절이 요구하는
+풀 렌즈 자가 적대 리뷰(P1 신호 렌즈 포함) → PR 코멘트를
 `[codex-gate-fallback] head=<40자 SHA>` 로 **시작**해야 머지 게이트를 통과한다. `## ` 같은
 접두가 붙으면 첫머리 앵커 조건을 못 맞춰 차단된다(이 세션에서 한 번 걸렸다).

@@ -7,7 +7,9 @@
 # ⚠ Electron 패치 버전은 여기 적지 않는다 — 락파일이 권위다(`package-lock.json` 의 `electron`).
 # 과거 이 주석이 특정 패치 버전을 고정하고 있다가 실물이 한 메이저 올라가며 조용히 낡았다.
 # 고정해야 하는 건 패치가 아니라 **번들 Node 메이저**뿐이다.
-# 산문이 다시 패치를 고정하면 `skills:lint` 의 electron 버전 대조 규칙이 RED 를 낸다.
+# ⚠ 이걸 강제하는 기계는 **없다**(대조 규칙을 만들었다가 기각했다 — 정확한 문서를 RED 로 만드는
+# 등 양방향으로 틀렸다. 사유는 이 줄을 넣은 커밋 본문). Electron 메이저를 올릴 때 사람이 함께
+# 갱신할 것: 아래 `@types/node` ignore 의 `^24` 와 `ci.yml` 의 `test-node24` 잡 `node-version`.
 version: 2
 updates:
   - package-ecosystem: 'npm'
