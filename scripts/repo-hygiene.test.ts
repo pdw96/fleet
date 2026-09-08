@@ -4,7 +4,7 @@
 //   - verify 집계: package.json `verify` 가 6 품질게이트 + brain:check 를 모두 체인
 //   - CI 정합: ci.yml quality 잡이 개별 게이트가 아니라 단일 `npm run verify` 만 실행
 import { describe, it, expect } from 'vitest'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
@@ -122,14 +122,36 @@ const findControlChars = (text: string, label = ''): string[] => {
 }
 
 /**
+ * 금지 코드포인트를 **`CONTROL_CHAR_RE` 와 독립적으로** 정의한다(Codex #290 4R P2). 아래 자기검사가
+ * 통제로 성립하려면 기대값이 판정식에서 파생돼선 안 된다 — 같은 범위를 옮겨 적으면 범위가 틀릴 때
+ * 둘이 함께 틀린다. 그래서 사양(C0 전체 · DEL · C1 전체, 허용은 탭·LF 뿐)에서 직접 만든다.
+ */
+const FORBIDDEN_CODE_POINTS = [
+  ...Array.from({ length: 0x20 }, (_, i) => i), // C0: U+0000–U+001F
+  0x7f, // DEL
+  ...Array.from({ length: 0x20 }, (_, i) => 0x80 + i), // C1: U+0080–U+009F
+].filter((c) => c !== 0x09 && c !== 0x0a) // 허용 = 탭·LF 뿐
+
+/**
  * **판정식 자기검사**(양성 통제). 레포가 깨끗할 때 아래 전수 스캔은 **항진**이라 판정식이 망가져도
- * 초록이다 — 그 vacuous-GREEN 을 막는 것이 이 블록이다. PR3c 가 실제로 흘린 두 문자를 회귀 핀으로 둔다.
+ * 초록이다 — 그 vacuous-GREEN 을 막는 것이 이 블록이다.
+ *
+ * ⚠ **표본이 아니라 전수여야 한다.** 처음엔 12개만 찍었는데, 그러면 정규식 편집이 U+0002–U+0006
+ * 같은 **내부 구멍**을 만들어도 이 통제가 통과한다 — 통제가 통제 구실을 못 한다(4R P2). 63개
+ * 전부를 개별로 돌린다.
  */
 describe('소스 위생 — 제어문자 판정식 자기검사', () => {
-  it('C0/C1 을 전부 잡는다(PR3c 가 흘린 U+0000·U+0001 포함)', () => {
-    for (const code of [0x00, 0x01, 0x07, 0x08, 0x0b, 0x0c, 0x0d, 0x0e, 0x1f, 0x7f, 0x80, 0x9f]) {
+  it('금지 집합이 63개다(사양 대조 — 범위를 잘못 적으면 여기서 먼저 걸린다)', () => {
+    expect(FORBIDDEN_CODE_POINTS).toHaveLength(63)
+    expect(FORBIDDEN_CODE_POINTS).not.toContain(0x09)
+    expect(FORBIDDEN_CODE_POINTS).not.toContain(0x0a)
+  })
+
+  it('금지 코드포인트 63개를 하나도 빠짐없이 잡는다(PR3c 가 흘린 U+0000·U+0001 포함)', () => {
+    for (const code of FORBIDDEN_CODE_POINTS) {
       const probe = `const a = 'x${String.fromCharCode(code)}y'`
-      expect(findControlChars(probe), `U+${code.toString(16)} 를 놓쳤다`).toHaveLength(1)
+      const label = `U+${code.toString(16).toUpperCase().padStart(4, '0')}`
+      expect(findControlChars(probe), `${label} 를 놓쳤다`).toHaveLength(1)
     }
   })
 
@@ -163,28 +185,19 @@ describe('소스 위생 — 리뷰 대상 텍스트에 원시 제어문자 0건(
   // 그런데 그 안에 **머지 게이트 자신**(`.claude/hooks/require-codex-review.mjs`)이 있고, 보이지 않는
   // 바이트가 그 정규식에 섞이면 무엇을 막는지가 조용히 달라진다. 스캔에서 빼면 정확히 이 가드가
   // 막으려는 오염이 가장 위험한 파일에서만 무방비가 된다.
-  // ⚠ 다만 `.claude` 만은 **추적 파일로 한정**한다(Codex #290 P2). 이 루트는 `.gitignore` 가
-  // `.claude/*` allowlist 라 무시되는 런타임 자산이 같은 트리에 산다 — `settings.local.json` 뿐
-  // 아니라 **워크플로 worktree**(= 그 아래에 통째로 다른 체크아웃)까지다. eslint 가 이 트리를
-  // 제외한 사유가 바로 그것이라고 `eslint.config.mjs` 상단이 적고 있다. 파일시스템 walk 는 그것을
-  // 전부 읽으므로, 로컬에만 있는 CRLF 파일 하나로 `npm test`·`npm run verify` 가 RED 가 된다 —
-  // `.gitattributes` 의 `eol=lf` 는 **추적 콘텐츠만** 정규화하므로 그 파일들은 보호 밖이다.
-  // 필수 게이트가 개발자 머신 상태에 따라 갈리는 것은 #307 이 닫으려는 축과 같은 것이라
-  // `git ls-files` 로 추적 자산만 센다. 코드 루트는 walk 그대로 둔다 — 그쪽은 무시 자산이 사실상
-  // 없고, 커밋 전 새 파일도 잡아 주는 편이 낫다.
-  const WALK_ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github']
-  const TRACKED_ROOTS = ['.claude']
-  const ROOTS = [...WALK_ROOTS, ...TRACKED_ROOTS]
+  // ⚠ 전 루트를 **추적 파일로 한정**한다(Codex #290 3R·4R P2). 파일시스템 순회는 `.gitignore` 가
+  // 무시하는 런타임 자산까지 읽는데, 그런 자산은 스캔 루트 **안쪽에** 산다:
+  //   · `.claude/` — `settings.local.json` · 서브에이전트 **worktree**(그 아래가 통째로 다른 체크아웃)
+  //   · `deploy/workspace/` — 문서화된 기본 워크스페이스, 즉 **사용자 프로젝트·생성물**
+  //   · `deploy/cloudflared/*.json` · `config.yml` — 로컬 터널 크리덴셜
+  // `.gitattributes` 의 `eol=lf` 는 **추적 콘텐츠만** 정규화하므로 그 파일들은 보호 밖이고,
+  // CR 을 거부하는 지금은 그런 파일 하나로 `npm test`·`npm run verify` 가 RED 가 된다 —
+  // **리뷰된 트리와 CI 체크아웃은 멀쩡한데 개발자 머신 상태에 따라 필수 게이트가 갈린다.**
+  // 루트마다 예외를 깎는 대신 기준을 하나로 통일한다: 이 가드가 지키려는 것은 **리뷰 대상 텍스트**
+  // 이고 그건 정확히 git 이 추적하는 것이다. CI 의 깨끗한 체크아웃과도 정의상 일치한다(로컬 == CI).
+  // (인덱스 기준이라 `git add` 된 새 파일은 커밋 전에도 포함된다.)
+  const ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github', '.claude']
   const EXT = /\.(?:ts|tsx|mjs|cjs|js|sh|ya?ml|json|md)$/
-  const files: string[] = []
-  const walk = (dir: string): void => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const p = join(dir, e.name)
-      if (e.isDirectory()) {
-        if (e.name !== 'node_modules') walk(p)
-      } else if (EXT.test(e.name)) files.push(p)
-    }
-  }
   // `git ls-files` 는 항상 `/` 구분자를 낸다 — 아래 앵커가 `sep` 로 비교하므로 win32 에서
   // 어긋나지 않게 정규화한다(그 한 줄이 없으면 windows 레그에서만 앵커가 깨진다).
   const tracked = (root: string): string[] =>
@@ -192,8 +205,7 @@ describe('소스 위생 — 리뷰 대상 텍스트에 원시 제어문자 0건(
       .split('\0')
       .filter((p) => p !== '' && EXT.test(p))
       .map((p) => p.split('/').join(sep))
-  for (const r of WALK_ROOTS) if (existsSync(r)) walk(r)
-  for (const r of TRACKED_ROOTS) files.push(...tracked(r))
+  const files: string[] = ROOTS.flatMap(tracked)
 
   it('앵커: 스캔 대상이 충분히 많고 ROOTS 전부를 덮는다', () => {
     expect(files.length).toBeGreaterThan(100)
