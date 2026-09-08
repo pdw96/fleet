@@ -88,7 +88,7 @@ Fleet 레포 작업. 먼저 AGENTS.md 와 brain.md 를 읽고 시작할 것.
       명시적으로 배제한 것이라 그 버전에 문제가 있었다는 신호다. 릴리스 노트로 확인할 것.
     - 신규 패키지는 락파일상 **전부 `"dev": true`** 다(확인함). 즉 출하 표면이 아니라
       `dependency-review` 의 `fail-on-scopes: development` 가 담당하는 자리다.
- 3. **나머지 4건은 dev 전용 마이너/패치**: @playwright/test 1.62.1→1.63.0(이 번프가 playwright 의
+ 3. **나머지 5건은 dev 전용 마이너/패치**(2 + 1 + 5 = 8): @playwright/test 1.62.1→1.63.0(이 번프가 playwright 의
     `optionalDependencies.fsevents` 2.3.2 핀을 제거한다) · @testing-library/react 16.3.2→16.3.3 ·
     @types/react-dom 19.2.4→19.2.7 · lint-staged 17.3.0→17.5.0 · typescript-eslint 8.66.0→8.69.0.
 
