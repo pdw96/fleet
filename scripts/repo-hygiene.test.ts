@@ -4,7 +4,7 @@
 //   - verify 집계: package.json `verify` 가 6 품질게이트 + brain:check 를 모두 체인
 //   - CI 정합: ci.yml quality 잡이 개별 게이트가 아니라 단일 `npm run verify` 만 실행
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
@@ -179,44 +179,64 @@ describe('소스 위생 — 제어문자 판정식 자기검사', () => {
 })
 
 describe('소스 위생 — 리뷰 대상 텍스트에 원시 제어문자 0건(#251 PR1c · PR3c 범위 확장)', () => {
-  // `.claude` 를 포함하는 이유(Codex #290 P1) — 그 트리는 **다른 어떤 게이트도 제어문자를 보지
-  // 않는다**: eslint 는 `.claude/**` 를 통째로 ignores 하고(eslint.config.mjs 「.claude/** 는 eslint
-  // 대상에서 제외」절), 그 자리를 대신한다고 적힌 `skills:lint` 에는 제어문자 검사가 없다(실측 0건).
-  // 그런데 그 안에 **머지 게이트 자신**(`.claude/hooks/require-codex-review.mjs`)이 있고, 보이지 않는
-  // 바이트가 그 정규식에 섞이면 무엇을 막는지가 조용히 달라진다. 스캔에서 빼면 정확히 이 가드가
-  // 막으려는 오염이 가장 위험한 파일에서만 무방비가 된다.
-  // ⚠ 전 루트를 **추적 파일로 한정**한다(Codex #290 3R·4R P2). 파일시스템 순회는 `.gitignore` 가
-  // 무시하는 런타임 자산까지 읽는데, 그런 자산은 스캔 루트 **안쪽에** 산다:
-  //   · `.claude/` — `settings.local.json` · 서브에이전트 **worktree**(그 아래가 통째로 다른 체크아웃)
-  //   · `deploy/workspace/` — 문서화된 기본 워크스페이스, 즉 **사용자 프로젝트·생성물**
-  //   · `deploy/cloudflared/*.json` · `config.yml` — 로컬 터널 크리덴셜
-  // `.gitattributes` 의 `eol=lf` 는 **추적 콘텐츠만** 정규화하므로 그 파일들은 보호 밖이고,
-  // CR 을 거부하는 지금은 그런 파일 하나로 `npm test`·`npm run verify` 가 RED 가 된다 —
-  // **리뷰된 트리와 CI 체크아웃은 멀쩡한데 개발자 머신 상태에 따라 필수 게이트가 갈린다.**
-  // 루트마다 예외를 깎는 대신 기준을 하나로 통일한다: 이 가드가 지키려는 것은 **리뷰 대상 텍스트**
-  // 이고 그건 정확히 git 이 추적하는 것이다. CI 의 깨끗한 체크아웃과도 정의상 일치한다(로컬 == CI).
-  // (인덱스 기준이라 `git add` 된 새 파일은 커밋 전에도 포함된다.)
-  const ROOTS = ['src', 'scripts', 'e2e', 'deploy', '.github', '.claude']
-  const EXT = /\.(?:ts|tsx|mjs|cjs|js|sh|ya?ml|json|md)$/
+  // 대상은 **추적 파일 전체**다(Codex #290 5R P2). 루트·확장자 화이트리스트로 좁혀 뒀더니
+  // 「리뷰 대상 텍스트」라는 문면과 달리 실제로는 사각이 넓었다 — `eslint.config.mjs`(파일시스템
+  // 경계를 구현하는 파일) · `package.json`(scripts) · `.semgrep/guardian.yml`(보안 게이트) ·
+  // `docs/**`(ADR) · `src/renderer/index.html`·`styles.css` · Dockerfile 이 전부 빠져 있었다.
+  // 좁은 필터를 조금씩 넓히는 대신 기준을 뒤집는다: **전부 보고, 텍스트가 아닌 것만 명시 제외**한다.
+  //
+  // 왜 파일시스템 순회가 아니라 `git ls-files` 인가(3R·4R P2) — `.gitignore` 가 무시하는 런타임
+  // 자산이 스캔 경로 **안쪽에** 산다: `.claude/settings.local.json` 과 서브에이전트 worktree(그
+  // 아래가 통째로 다른 체크아웃) · `deploy/workspace/`(문서화된 기본 워크스페이스 = 사용자
+  // 프로젝트·생성물) · `deploy/cloudflared/*.json`(로컬 터널 크리덴셜). `.gitattributes` 의
+  // `eol=lf` 는 **추적 콘텐츠만** 정규화하므로 그것들은 보호 밖이고, CR 을 거부하는 지금은 그런
+  // 파일 하나로 `npm test`·`npm run verify` 가 RED 가 된다 — 리뷰된 트리와 CI 체크아웃은 멀쩡한데
+  // 개발자 머신 상태에 따라 필수 게이트가 갈린다. 추적본만 보면 CI 의 깨끗한 체크아웃과 정의상
+  // 일치한다(로컬 == CI).
+  //
+  // ⚠ `git ls-files` 는 **인덱스**를 낸다 — 추적 파일을 지우고 스테이징하기 전이면 그 경로가
+  // 그대로 나와 `readFileSync` 가 ENOENT 로 죽는다(5R P2). 편집 중 정상 상태이므로 `existsSync`
+  // 로 거른다. 스테이징된 추가는 그대로 포함된다(인덱스에 있고 파일도 있다).
+  const BINARY_EXT =
+    /\.(?:woff2?|ttf|otf|eot|png|jpe?g|gif|webp|avif|ico|icns|pdf|zip|gz|tgz|mp4|webm|wasm)$/i
   // `git ls-files` 는 항상 `/` 구분자를 낸다 — 아래 앵커가 `sep` 로 비교하므로 win32 에서
   // 어긋나지 않게 정규화한다(그 한 줄이 없으면 windows 레그에서만 앵커가 깨진다).
-  const tracked = (root: string): string[] =>
-    execFileSync('git', ['ls-files', '-z', '--', root], { encoding: 'utf8' })
-      .split('\0')
-      .filter((p) => p !== '' && EXT.test(p))
-      .map((p) => p.split('/').join(sep))
-  const files: string[] = ROOTS.flatMap(tracked)
+  const trackedAll: string[] = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
+    .split('\0')
+    .filter((path) => path !== '')
+    .map((path) => path.split('/').join(sep))
+  const excluded = trackedAll.filter((f) => BINARY_EXT.test(f))
+  const files = trackedAll.filter((f) => !BINARY_EXT.test(f) && existsSync(f))
 
-  it('앵커: 스캔 대상이 충분히 많고 ROOTS 전부를 덮는다', () => {
-    expect(files.length).toBeGreaterThan(100)
-    for (const r of ROOTS) expect(files.some((f) => f.startsWith(`${r}${sep}`))).toBe(true)
+  it('앵커: 워크트리에 있는 추적 파일은 스캔되거나 명시 제외되거나 둘 중 하나다', () => {
+    expect(files.length).toBeGreaterThan(400)
+    // 「선언한 제외」 말고 다른 사유로 빠지는 파일이 없다는 단언 — 나중에 루트·확장자 화이트리스트
+    // 같은 필터가 다시 들어오면 여기서 RED 가 난다. **워크트리에 실재하는 것만** 센다: 추적 파일을
+    // 지우고 스테이징하기 전 상태는 편집 중 정상이고, 그걸 RED 로 만들면 게이트가 스테이징
+    // 순서에 의존하게 된다(5R P2 가 지적한 바로 그 실패다).
+    const present = trackedAll.filter((f) => existsSync(f))
+    expect(files.length + excluded.filter((f) => existsSync(f)).length).toBe(present.length)
   })
 
-  // 루트 단위 앵커만으로는 `.claude` 에서 **아무 파일 하나**만 있어도 통과한다. 이 가드를 넓힌
-  // 이유가 머지 게이트 본체였으므로(#290 P1) 그 파일을 이름으로 못박는다 — `TRACKED_ROOTS` 의
-  // 추적 열거가 좁아지거나 EXT 가 `.mjs` 를 잃으면 여기서 RED 가 난다.
-  it('앵커: 머지 게이트 훅이 스캔 대상에 실제로 들어 있다', () => {
-    expect(files).toContain(join('.claude', 'hooks', 'require-codex-review.mjs'))
+  // 제외를 **명시적으로 못박는다**(5R P2 「explicitly anchor every intentional exclusion」).
+  // 새 바이너리 유형을 선언 없이 커밋하면 여기서 먼저 RED 가 난다 — 선언하라는 신호다.
+  it('앵커: 텍스트 아님으로 제외되는 것은 폰트(.woff2)뿐이다', () => {
+    const exts = new Set(excluded.map((f) => f.slice(f.lastIndexOf('.')).toLowerCase()))
+    expect([...exts].sort()).toEqual(['.woff2'])
+  })
+
+  // 파일 수 앵커만으로는 **어느** 파일이 빠졌는지 못 잡는다. 이 가드를 넓힌 계기가 된 파일과,
+  // 5R 에서 사각으로 지목된 보안·경계 파일을 이름으로 고정한다.
+  it('앵커: 고위험 파일이 실제로 스캔 대상에 들어 있다', () => {
+    for (const f of [
+      join('.claude', 'hooks', 'require-codex-review.mjs'), // 머지 게이트 본체(1R P1)
+      'eslint.config.mjs', // 파일시스템 경계 구현(5R P2)
+      'package.json', // scripts — verify 체인
+      join('.semgrep', 'guardian.yml'), // 보안 게이트 규칙
+      join('deploy', 'fleet', 'Dockerfile'), // 확장자 없는 텍스트
+    ]) {
+      expect(files, `${f} 가 스캔 대상에서 빠졌다`).toContain(f)
+    }
   })
 
   it('원시 NUL 바이트가 0건이다(리뷰 diff 가 바이너리로 접히지 않는다)', () => {
