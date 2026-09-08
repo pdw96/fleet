@@ -250,8 +250,13 @@ project number `1`, owner `pdw96`).
      `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 **현재 head 에
      결속된** Codex 신호 부재 시 머지를 기계 차단하며(fail-closed·canonical allowlist),
      **차단 메시지가 복사 가능한 정확한 재시도 명령을 준다.** 산문 규율의 구조 강제라 우회 금지.
-     대기는 수동 폴링 대신 **`/loop`**(예: `/loop 5m` + "PR <N> 의 commit_id 결속 Codex 리뷰 도착
-     확인, 도착하면 요약 보고").
+     **대기 방식은 실행 환경으로 갈린다** — 폴링은 이제 로컬 전용 폴백이다:
+     - **원격(Claude Code on the web)** — `subscribe_pr_activity` 로 그 PR 을 구독한다. 리뷰·CI·코멘트가
+       **도착할 때만** 세션이 깨어나므로 대기 턴이 0이다. `/loop 5m` 은 리뷰가 20분 걸리면 아무 일도
+       없는 턴을 4번 태운다. 구독은 PR 이 merged/closed 될 때까지 유효하고, 웹훅이 CI 성공·푸시·머지
+       충돌 전이를 늘 덮지는 않으므로 `send_later` 로 1시간 폴백 하트비트를 함께 건다.
+     - **로컬 CLI** — 구독 툴이 없다. 기존대로 **`/loop`**(예: `/loop 5m` + "PR <N> 의 commit_id 결속
+       Codex 리뷰 도착 확인, 도착하면 요약 보고").
      사람이 알아야 할 것은 두 가지뿐이다: ① **👍 리액션은 인가 신호가 아니다**(44R P1 — 리액션은
      commit 결속이 없어 hook 이 인가로 쓰지 않는다). ② **지적이 0건이면 Codex 는 공식 리뷰를 발행하지
      않고** 이슈 코멘트(`Codex Review: Didn't find any major issues` + `**Reviewed commit:** <SHA>`)만
