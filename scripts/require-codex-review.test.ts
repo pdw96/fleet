@@ -14,6 +14,7 @@ import {
   resolveAliasExpansion,
   parseCanonicalMerge,
   classifyHookInput,
+  blockedGuidance,
   tokenizeSegments,
   extractInterpreterScripts,
   fallbackMarkerHasEvidence,
@@ -597,5 +598,80 @@ describe('tokenizeSegments — 근사 셸 시맨틱', () => {
   it('연산자·개행·그룹핑이 세그먼트를 가른다', () => {
     expect(tokenizeSegments('a && b; c\nd')).toEqual([['a'], ['b'], ['c'], ['d']])
     expect(tokenizeSegments('(a b) `c`')).toEqual([['a', 'b'], ['c']])
+  })
+})
+
+// ── 차단 안내의 계열 분기(H2) ────────────────────────────────────────────────
+// 안내는 판정이 아니다 — 여기서 고정하는 건 「blocked 사유에 맞는 안내가 붙는가」 하나뿐이고,
+// 무엇이 차단되는지는 위 describe 들이 이미 고정한다. 마지막 두 it 이 그 불변(안내 분기가
+// 차단 범위를 건드리지 않음)을 직접 검사한다.
+//
+// 픽스처는 추측이 아니라 classifyHookInput 실측으로 뽑았다 — 처음 쓴 `node $SCRIPT` 는
+// 확장이 **인자 자리**라 pass 였고(실효 실행 토큰은 `node`), 그걸 blocked 로 단정한 테스트가
+// 먼저 깨졌다. 각 it 이 classify 결과를 함께 단언하는 이유다.
+describe('blockedGuidance — 차단 사유 계열별 안내', () => {
+  const MERGE_MARK = 'canonical 형태만 허용된다'
+  const NON_MERGE_MARK = '막힌 것은 머지 시도가 아니라'
+
+  it('MCP merge_pull_request 는 머지 안내', () => {
+    const g = blockedGuidance({ tool_name: 'mcp__github__merge_pull_request', tool_input: {} })
+    expect(g).toContain(MERGE_MARK)
+    expect(g).not.toContain(NON_MERGE_MARK)
+  })
+
+  it('머지 신호가 있는데 canonical 이탈이면 머지 안내', () => {
+    for (const cmd of [
+      'gh api -X PUT repos/o/r/pulls/1/' + 'merge',
+      'cd /tmp && gh pr ' + 'merge 1 --match-head-commit abc',
+    ]) {
+      expect(classify(cmd).kind, cmd).toBe('blocked')
+      const g = blockedGuidance(bash(cmd))
+      expect(g, cmd).toContain(MERGE_MARK)
+      expect(g, cmd).not.toContain(NON_MERGE_MARK)
+    }
+  })
+
+  it('머지와 무관한 명령이 형태 때문에 막히면 비머지 안내', () => {
+    for (const cmd of [
+      '$CMD --run', // 실행 파일 자리 확장
+      '"$CLI" build', // 인용해도 실행 파일 자리면 동일
+      './x* --run', // 실행 파일 자리 글롭
+      'eval "$(cat x)"', // eval 인자가 동적
+      'source ./setup.sh', // 외부 스크립트 소싱
+      'bash script.sh', // -c 없이 스크립트 파일
+      'cat f | bash', // -c 없이 stdin 스크립트
+      'gh `printf pr` view 1', // gh 인데 머지 시도가 아니다
+    ]) {
+      expect(classify(cmd).kind, cmd).toBe('blocked')
+      const g = blockedGuidance(bash(cmd))
+      expect(g, cmd).toContain(NON_MERGE_MARK)
+      expect(g, cmd).not.toContain(MERGE_MARK)
+    }
+  })
+
+  it('비머지 안내도 머지 방법은 알려준다 — 오분류 시의 탈출구', () => {
+    expect(blockedGuidance(bash('bash script.sh'))).toContain('gh pr ' + 'merge')
+  })
+
+  it('계열 판별이 classifyHookInput 의 hasMergeSignal 분기와 일치한다', () => {
+    // 안내 계열은 판정 구조에서 파생돼야 한다 — 둘이 갈리면 안내가 다시 거짓말을 시작한다.
+    for (const cmd of [
+      'gh api -X PUT repos/o/r/pulls/1/' + 'merge',
+      'bash script.sh',
+      'gh `printf pr` view 1',
+      '$CMD --run',
+      'ls -la',
+    ]) {
+      const expected = hasMergeSignal(cmd) ? MERGE_MARK : NON_MERGE_MARK
+      expect(blockedGuidance(bash(cmd)), cmd).toContain(expected)
+    }
+  })
+
+  it('안내 분기가 차단 범위를 넓히거나 좁히지 않는다', () => {
+    // blockedGuidance 는 classify 이후에만 호출된다 — pass/merge 는 그대로여야 한다.
+    for (const cmd of ['ls -la', 'npm run verify', 'git status', 'gh pr view 1']) {
+      expect(classify(cmd).kind, cmd).toBe('pass')
+    }
+    expect(classify('gh pr ' + 'merge 1').kind).toBe('merge')
   })
 })

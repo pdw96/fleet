@@ -990,6 +990,54 @@ export function classifyHookInput(input, _depth = 0) {
   return { ...canonical, kind: 'merge', viaMcp: false }
 }
 
+// 차단 안내는 **판정이 아니다** — `kind: 'blocked'` 이 이미 확정된 뒤 「왜 막혔는지」를 사람이
+// 읽을 수 있게 고르는 순수 함수다. 이 함수를 어떻게 고쳐도 무엇이 차단되는지는 바뀌지 않는다.
+//
+// 계열 판별은 classifyHookInput 의 분기 구조를 그대로 반영한다 — blocked 가 나오는 자리는 둘뿐:
+//   ① 머지 계열 — MCP `merge_pull_request` 분기, 그리고 `hasMergeSignal` 이 참이라 진입하는
+//      `parseCanonicalMerge` 이후의 형태 이탈(canonical 아님 · PR 번호 부재).
+//   ② 비머지 계열 — `if (!hasMergeSignal(cmd))` 블록 안의 규칙 전부(대다수가 여기다).
+// ②는 **머지 시도가 아닌 명령**이 형태 때문에 걸린 것이라 canonical 머지 형태를 안내하면 원인
+// 진단이 불가능하다(이 분기 이전의 실측: 한 세션에서 머지와 무관한 명령이 5회 이상 막혔는데
+// 안내문은 매번 머지 문법이었다).
+// 줄 번호를 적지 않는 이유는 이 파일이 계속 자라기 때문이다 — 계열이 갈리는 지점은 위 두
+// 조건뿐이므로 `hasMergeSignal` 분기만 따라가면 된다. 그 대응은 테스트가 고정한다
+// (scripts/require-codex-review.test.ts 「계열 판별이 … hasMergeSignal 분기와 일치한다」).
+const MERGE_GUIDANCE =
+  '머지는 canonical 형태만 허용된다:\n' +
+  '  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
+  '(REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
+  '거면 --body-file 로 우회하라.)'
+
+const NON_MERGE_GUIDANCE =
+  '이 명령에는 머지 신호가 없다 — 막힌 것은 머지 시도가 아니라 **명령의 형태**다.\n' +
+  '게이트는 무엇이 실행될지 정적으로 판별할 수 있어야 하고(fail-closed), 위 사유는 그게 ' +
+  '불가능하다는 뜻이다. 리터럴로 다시 쓰면 통과한다:\n' +
+  '  · 실행 파일 자리에 $·백틱·글롭  → 실행 대상을 리터럴로 (`node x.mjs` · `npm run x`)\n' +
+  '  · 명령 안에서 파일 내용을 조립   → 내용은 Write 도구로 쓰고 Bash 는 실행만\n' +
+  '  · `bash x.sh` · 파이프/stdin 스크립트 → -c 없이 외부 스크립트를 먹는 형태는 내용 관측 ' +
+  '불가. 파일로 쓴 뒤 `node <파일>` 로 직접 실행\n' +
+  '  · eval · source/. · 인터프리터 중첩 → 실행 시점에 내용이 정해져 정적 분류 불가\n' +
+  '  · gh 인자에 비인용 확장·글롭      → 인용하거나 리터럴로\n' +
+  '(머지를 하려던 게 맞다면: gh pr merge <번호> [-R owner/repo] [--squash 등] ' +
+  '--match-head-commit <head SHA>)'
+
+/**
+ * 차단 메시지에 붙일 안내 문단을 고른다. 순수 함수 — 판정에 관여하지 않는다.
+ * @param {{tool_name?:unknown, tool_input?:{command?:unknown}}} input hook 입력
+ * @returns {string}
+ */
+export function blockedGuidance(input) {
+  const toolName = String(input?.tool_name ?? '')
+  if (/merge_pull_request/.test(toolName)) return MERGE_GUIDANCE
+  // Bash 가 아니면 classifyHookInput 이 pass 라 여기 오지 않지만, 안내 선택은 fail-safe 하게
+  // 둔다 — 판별 불가면 머지 안내(기존 문구)로 되돌아간다.
+  if (toolName !== 'Bash') return MERGE_GUIDANCE
+  return hasMergeSignal(String(input?.tool_input?.command ?? ''))
+    ? MERGE_GUIDANCE
+    : NON_MERGE_GUIDANCE
+}
+
 // ── main (직접 실행 시에만 — 테스트 import 시 stdin 을 읽지 않는다) ───────────
 function main() {
   let input = {}
@@ -1158,12 +1206,7 @@ function main() {
     process.exit(0)
   }
   if (verdict.kind === 'blocked') {
-    console.error(
-      `[codex-gate] 차단(${verdict.reason}). 머지는 canonical 형태만 허용된다:\n` +
-        '  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
-        '(REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
-        '거면 --body-file 로 우회하라.)',
-    )
+    console.error(`[codex-gate] 차단(${verdict.reason}).\n${blockedGuidance(input)}`)
     process.exit(2)
   }
 
