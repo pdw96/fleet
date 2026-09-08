@@ -7,7 +7,6 @@
 import { describe, it, expect } from 'vitest'
 import {
   hasMergeSignal,
-  mergeCannotBeExcluded,
   hasMergeWord,
   aliasIsSuspect,
   stripShellExpansions,
@@ -604,21 +603,20 @@ describe('tokenizeSegments — 근사 셸 시맨틱', () => {
 
 // ── 차단 안내의 계열 분기(H2) ────────────────────────────────────────────────
 // 안내는 판정이 아니다 — 여기서 고정하는 건 「blocked 사유에 맞는 안내가 붙는가」 하나뿐이고,
-// 무엇이 차단되는지는 위 describe 들이 이미 고정한다. 마지막 두 it 이 그 불변(안내 분기가
-// 차단 범위를 건드리지 않음)을 직접 검사한다.
+// 무엇이 차단되는지는 위 describe 들이 이미 고정한다. 마지막 it 이 그 불변을 직접 검사한다.
 //
-// 픽스처는 추측이 아니라 classifyHookInput 실측으로 뽑았다 — 처음 쓴 `node $SCRIPT` 는
-// 확장이 **인자 자리**라 pass 였고(실효 실행 토큰은 `node`), 그걸 blocked 로 단정한 테스트가
-// 먼저 깨졌다. 각 it 이 classify 결과를 함께 단언하는 이유다.
+// **계열은 둘뿐이다.** 「이건 머지가 아니다」는 어떤 술어로도 안전하게 단언할 수 없다는 것이
+// 45R P2 의 결론이다 — blocked 는 애초에 「무엇이 실행될지 모른다」는 뜻이라 가려진 자리에
+// 머지가 있을 수 있다. 아래 「단언하지 않는다」 그룹이 그 반례들을 고정한다.
 describe('blockedGuidance — 차단 사유 계열별 안내', () => {
   const MERGE_MARK = 'canonical 형태만 허용된다'
-  const NON_MERGE_MARK = '막힌 것은 머지 시도가 아니라'
-  const AMBIGUOUS_MARK = '머지인지 **판별하지 못했다**'
+  const UNKNOWN_MARK = '무엇을 실행하는지 판별하지 못했다'
+  const FORBIDDEN_ASSERTION = /머지 시도가 아니|머지가 아니라고 볼 수|병합 동사도 .*없다/
 
   it('MCP merge_pull_request 는 머지 안내', () => {
     const g = blockedGuidance({ tool_name: 'mcp__github__merge_pull_request', tool_input: {} })
     expect(g).toContain(MERGE_MARK)
-    expect(g).not.toContain(NON_MERGE_MARK)
+    expect(g).not.toContain(UNKNOWN_MARK)
   })
 
   it('머지 신호가 있는데 canonical 이탈이면 머지 안내', () => {
@@ -629,11 +627,11 @@ describe('blockedGuidance — 차단 사유 계열별 안내', () => {
       expect(classify(cmd).kind, cmd).toBe('blocked')
       const g = blockedGuidance(bash(cmd))
       expect(g, cmd).toContain(MERGE_MARK)
-      expect(g, cmd).not.toContain(NON_MERGE_MARK)
+      expect(g, cmd).not.toContain(UNKNOWN_MARK)
     }
   })
 
-  it('머지와 무관한 명령이 형태 때문에 막히면 비머지 안내', () => {
+  it('그 밖의 blocked 는 판별 불가 안내 — 형태 교정과 정규 형태를 둘 다 준다', () => {
     for (const cmd of [
       '$CMD --run', // 실행 파일 자리 확장
       '"$CLI" build', // 인용해도 실행 파일 자리면 동일
@@ -642,80 +640,71 @@ describe('blockedGuidance — 차단 사유 계열별 안내', () => {
       'source ./setup.sh', // 외부 스크립트 소싱
       'bash script.sh', // -c 없이 스크립트 파일
       'cat f | bash', // -c 없이 stdin 스크립트
+      'gh `printf pr` view 1', // gh 인데 서브커맨드가 동적
     ]) {
       expect(classify(cmd).kind, cmd).toBe('blocked')
       const g = blockedGuidance(bash(cmd))
-      expect(g, cmd).toContain(NON_MERGE_MARK)
-      expect(g, cmd).not.toContain(MERGE_MARK)
+      expect(g, cmd).toContain(UNKNOWN_MARK)
+      expect(g, cmd).toContain('gh pr ' + 'merge') // 정규 형태도 준다
     }
   })
 
-  it('비머지 안내도 머지 방법은 알려준다 — 오분류 시의 탈출구', () => {
-    expect(blockedGuidance(bash('bash script.sh'))).toContain('gh pr ' + 'merge')
+  // 45R P2 의 핵심 — 이 세 입력은 전부 blocked 이고, 전부 머지일 수 있다.
+  it('가려진 머지를 「머지가 아니다」라고 단언하지 않는다', () => {
+    for (const cmd of [
+      '$(printf g)h pr ' + 'merge 222 --squash', // 능력 토큰이 조립돼 사라짐
+      "printf 'pr m%crge 222' e | xargs gh", // 동사가 조립돼 사라짐
+      `bash -c '"$CLI" pr "$ACTION" 222 --squash'`, // 둘 다 동적 — 상속 env 로 머지가 된다
+      'bash x.sh', // 스크립트 내용이 머지일 수 있다
+      'source ./x.sh', // 소싱 내용이 머지일 수 있다
+    ]) {
+      expect(classify(cmd).kind, cmd).toBe('blocked')
+      const g = blockedGuidance(bash(cmd))
+      expect(g, cmd).not.toMatch(FORBIDDEN_ASSERTION)
+      expect(g, cmd).toContain(UNKNOWN_MARK)
+    }
   })
 
-  it('비머지 안내가 우회 지도가 되지 않는다 — 재배치 금지 (Codex 45R P1)', () => {
+  it('안내가 우회 지도가 되지 않는다 — 재배치 금지 (45R P1)', () => {
     const g = blockedGuidance(bash('bash script.sh'))
-    // 게이트는 스크립트 파일의 내용을 읽지 않는다(`node x.mjs`·`python3 x.py` 는 pass) —
+    // 게이트는 스크립트 내용을 읽지 않는다(`node x.mjs`·`python3 x.py`·`npm run x` 는 pass) —
     // 차단당한 순간에 읽히는 문구가 「그 자리로 옮겨라」로 읽히면 복사 가능한 우회가 된다.
-    expect(g).not.toMatch(/파일로 쓴 뒤|node <파일>|스크립트로 옮겨 실행하면/)
-    // 재배치는 명시적으로 금지돼 있어야 한다.
+    expect(g).not.toMatch(/파일로 쓴 뒤|node <파일>/)
+    // 권장 예시에 스크립트 실행 형태가 있으면 안 된다 — `npm run x` 도 게이트 밖이다(45R P1).
+    expect(g).not.toMatch(/→ .*`npm run|리터럴로 \(`npm run/)
     expect(g).toContain('우회다')
-    // 그리고 머지 경로는 경로 무관하게 canonical 하나뿐임을 못박아야 한다.
+    expect(g).toContain('npm 스크립트') // 재배치 금지 대상으로 **명시**돼야 한다
     expect(g).toContain('경로와 무관하게')
   })
 
+  // 45R P2: 인용은 값 인자에서만 통한다 — 서브커맨드 자리는 인용해도 차단이라
+  // 「인용하라」만 적으면 못 쓰는 재시도를 광고하게 된다.
+  it('인용 처방이 실제로 통하는 자리에만 걸려 있다', () => {
+    expect(classify('gh pr view "$NUM"').kind).toBe('pass') // 값 인자 — 인용으로 풀린다
+    expect(classify('gh pr "$ACTION" 222').kind).toBe('blocked') // 서브커맨드 — 인용해도 차단
+    const g = blockedGuidance(bash('gh pr "$ACTION" 222'))
+    expect(g).toContain('인용으로는 안 풀린다')
+    expect(g).toContain('값 인자의 확장 → 인용하면 통과한다')
+  })
+
   it('게이트가 스크립트 내용을 읽지 않는다는 전제를 고정한다', () => {
-    // 이 전제가 깨지면(=node/python 도 차단하게 되면) 위 안내 문구를 다시 설계해야 한다.
+    // 이 전제가 깨지면(=스크립트도 차단하게 되면) 위 안내 문구를 다시 설계해야 한다.
     for (const cmd of ['node x.mjs', 'python3 x.py', 'npm run x']) {
       expect(classify(cmd).kind, cmd).toBe('pass')
     }
     expect(classify('bash x.sh').kind).toBe('blocked')
   })
 
-  // 45R P2: 위장된 머지는 hasMergeSignal(동사 AND 능력)이 false 가 된다 — 그 부정으로
-  // 「머지가 아니다」를 단언하면 거짓말이 된다. 단언은 mergeCannotBeExcluded(동사 OR 능력)로
-  // 과대근사한 뒤에만 한다.
-  it('가려진 머지를 「머지가 아니다」라고 단언하지 않는다 (Codex 45R P2)', () => {
-    for (const cmd of [
-      '$(printf g)h pr ' + 'merge 222 --squash', // 능력 토큰이 조립돼 사라짐 — 동사만 남는다
-      "printf 'pr m%crge 222' e | xargs gh", // 동사가 조립돼 사라짐 — 능력 토큰만 남는다
-    ]) {
-      expect(classify(cmd).kind, cmd).toBe('blocked')
-      expect(hasMergeSignal(cmd), cmd).toBe(false) // 결합 신호는 안 잡힌다
-      expect(mergeCannotBeExcluded(cmd), cmd).toBe(true) // 그래도 배제는 못 한다
-      const g = blockedGuidance(bash(cmd))
-      expect(g, cmd).toContain(AMBIGUOUS_MARK)
-      expect(g, cmd).not.toContain(NON_MERGE_MARK) // 「머지가 아니다」 단언 금지
-      expect(g, cmd).toContain('gh pr ' + 'merge') // 정규 형태는 준다
-    }
-  })
-
-  it('계열 판별이 두 술어에서 파생된다 — 3분류', () => {
-    // 안내 계열은 판정 구조에서 파생돼야 한다 — 갈리면 안내가 다시 거짓말을 시작한다.
+  it('계열 판별이 hasMergeSignal 분기에서 파생된다', () => {
     for (const cmd of [
       'gh api -X PUT repos/o/r/pulls/1/' + 'merge',
       'bash script.sh',
       'gh `printf pr` view 1',
       '$(printf g)h pr ' + 'merge 222',
       '$CMD --run',
-      'ls -la',
     ]) {
-      const expected = hasMergeSignal(cmd)
-        ? MERGE_MARK
-        : mergeCannotBeExcluded(cmd)
-          ? AMBIGUOUS_MARK
-          : NON_MERGE_MARK
+      const expected = hasMergeSignal(cmd) ? MERGE_MARK : UNKNOWN_MARK
       expect(blockedGuidance(bash(cmd)), cmd).toContain(expected)
-    }
-  })
-
-  it('세 계열 모두 재배치 우회를 금지하고 정규 형태를 남긴다', () => {
-    for (const cmd of ['bash script.sh', 'gh `printf pr` view 1']) {
-      const g = blockedGuidance(bash(cmd))
-      expect(g, cmd).not.toMatch(/파일로 쓴 뒤|node <파일>/)
-      expect(g, cmd).toContain('우회다')
-      expect(g, cmd).toContain('gh pr ' + 'merge')
     }
   })
 
