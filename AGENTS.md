@@ -37,6 +37,16 @@ required check 이름이라 유지되며, 잡 내부 실행은 `npm run verify` 
 `e2e.yml` 이 수동 `workflow_dispatch` + **nightly cron(18:23 UTC = 03:23 KST)**으로 돌린다(그날 머지분
 회귀를 밤새 검증). 로컬에서도 필요 시 수동 실행.
 
+**의존성 취약점**은 `verify` 에 넣지 않는다 — audit 은 네트워크·시각 의존이라 위 「로컬 == CI」
+불변식을 깬다. 대신 `audit.yml` 이 **주간 cron(월 18:37 UTC = 화 03:37 KST)** + dispatch 로 도는
+**advisory 센서**다 — 게이트가 아니라, 잡을 red 로 만들지 않고 런 요약과 `::warning::` 애노테이션만
+남긴다. 덮는 자리는 **Dependabot 알림과 봇 PR 사이의 창**이다 — #243 의 `js-yaml`(high)은 advisory
+공개(7/2)와 봇 PR(#276) 사이 19일 창에서 사람이 먼저 발견했다(부모 range 밖이어서가 아니라 봇이
+늦어서다 — `electron-updater` 의 `^4.1.0` 안에 패치가 있었다). 봇 PR 검수 시점의 수동 audit 을
+**대체하지 않고 보완한다** — 이 잡은 PR 이벤트에 돌지 않는다.
+⚠ 런타임 레그(`--omit=dev`)는 「출하물 전부」가 **아니다** — Electron(Chromium) 자체와 렌더러 번들에
+인라인되는 react·react-dom·force-graph 는 devDependency 라 여기 안 잡힌다.
+
 **커버리지 floor**: `test:coverage` 가 `src/main/core/**` 전역 4메트릭 floor(회귀 backstop)를 강제한다.
 커버리지가 유의하게 오르면 `vitest.config.ts` 의 `coverage.thresholds` 를 수동 상향(ratchet) — `autoUpdate`
 는 config 자가변경 churn 회피 위해 미사용. **Node24 smoke**: 출하 런타임(현 `electron@43` = Node 24)

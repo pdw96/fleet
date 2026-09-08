@@ -1,0 +1,121 @@
+name: Audit
+
+# 락파일에 **이미 있는** 의존성에 새 권고가 발행되는 창(window)을 주 1회 훑는 **advisory 센서**다.
+# 머지도, 잡도 막지 않는다 — 신호를 런 요약과 애노테이션으로 남기는 게 전부다.
+#
+# 덮는 자리 — 기존 두 층이 각자 못 보는 것:
+#  - `dependency-review.yml` 은 PR diff 에 **새로 들어오는** 의존성만 본다(두 리비전의 의존성 차분
+#    스캔). 이미 있던 패키지에 새 CVE 가 뜨면 무신호.
+#  - Dependabot security updates 는 켜져 있고 실제로 잘 동작한다. 다만 **알림과 PR 사이에 창이
+#    있다** — #243 의 `js-yaml`(GHSA-52cp-r559-cp3m, high)은 advisory 공개(2026-07-02)와 봇 PR
+#    (#276, 08-10) 사이 19일 창에서 사람이 수동 `npm audit` 을 돌려 먼저 발견했다.
+#    ⚠ 그 건은 「부모 range 밖이라 봇이 못 연다」가 **아니었다** — `electron-updater` 의
+#    `js-yaml: ^4.1.0` 안에 패치(4.3.0)가 들어 있었고, 봇은 늦었을 뿐이다.
+#  - `npm ci` 로그에 audit 요약이 이미 찍히지만(npm 기본값) 아무도 안 본다.
+#
+# **의도적으로 게이트가 아니다.** fail-hard 로 두면 (a) 레지스트리 5xx/429 가 취약점과 구분 불가한
+# red 를 만들고(`npm audit` 은 advisory 엔드포인트 오류에도 exit 1 — `--audit-level` 이 못 막는다),
+# (b) `npm audit` 엔 allowlist 가 없어 **패치 없는 high** 하나면 무기한 red → 방치 → 잡 제거로
+# 끝난다. 출하 트리에서 실제로 실현된 사건은 지금까지 #243 **1건**이라, 그 리스크를 감수할 만큼의
+# 실측 근거가 없다.
+#
+# **`npm run verify` 에도 넣지 않는다**: audit 은 네트워크·시각 의존이라 AGENTS.md 「품질 게이트」의
+# 「로컬 == CI, drift 원천 차단」 불변식을 깬다.
+#
+# schedule 은 기본 브랜치(master)의 워크플로만 실행된다 → 이 잡은 **머지 후에야 처음 돈다.**
+# 정시 혼잡(스케줄 지연·드롭) 회피로 분을 오프셋 — 월 18:37 UTC = 화 03:37 KST.
+# ⚠ public 레포의 스케줄 워크플로는 **60일 무활동 시 자동 비활성화**된다. 조용한 기간에 스스로
+# 꺼지고, 그 상태는 「실패 없음」과 구분되지 않는다 — 되살리려면 Actions 탭에서 재활성화한다.
+#
+# **폐기 트리거**: 6개월간 이 잡이 한 번도 새 정보를 주지 못했거나(=봇·dependency-review 가 항상
+# 먼저 잡았거나), 요약을 아무도 읽지 않는 상태가 굳으면 제거한다. 이 잡은 순증 프로세스이므로
+# (어드바이저 원칙 #6 의 짝이 없다) 그 값어치를 스스로 증명하지 못하면 남을 이유가 없다.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '37 18 * * 1'
+
+# 주 1회 센서라 큐 압력이 없다. cancel-in-progress 는 이득 없이 신호만 날린다(취소는 red 가 아니라
+# 무신호다) — schedule 과 dispatch 가 둘 다 refs/heads/master 라 서로를 취소할 수 있다.
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: false
+
+# 토큰 미사용(checkout 만) — 최소권한.
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: npm audit (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      # --no-audit: 설치 단계의 audit 왕복을 뺀다. 아래 두 레그가 같은 일을 하므로 중복이고,
+      # 설치 실패와 audit 실패가 같은 red 로 뭉개지는 것도 피한다.
+      - name: Install
+        run: npm ci --no-audit
+
+      # ── 레그 ①: 런타임 node_modules 트리 ────────────────────────────────────────
+      # `--omit=dev` 는 electron-builder 의 node-module-collector 와 **타입 스코프가 같은
+      # 상위집합** 오라클이다(그쪽은 `--include prod --include optional --omit dev` 에 더해
+      # `_dependencies` 필터·중복 프루닝·files/asar 규칙을 얹는다).
+      # ⚠ 이 레그는 「사용자에게 실리는 코드 전부」가 **아니다** — Electron(Chromium) 자체와
+      #   렌더러 번들에 인라인되는 react·react-dom·force-graph 는 devDependency 라 여기 안 잡힌다.
+      #   이 레그가 조용하다고 출하물이 깨끗하다는 뜻이 아니다.
+      - name: 런타임 트리 audit
+        id: runtime
+        continue-on-error: true
+        shell: bash
+        run: |
+          # 러너는 `shell: bash` 를 `bash --noprofile --norc -eo pipefail {0}` 로 부른다 — **-e 가
+          # 켜져 있어** 파이프라인이 비0 이면 그 자리에서 스크립트가 죽는다. 뒤의 요약·정리 코드가
+          # 죽은 코드가 되지 않도록 상태를 `|| status=$?` 로 포획한다(|| 문맥엔 -e 가 적용되지 않는다).
+          status=0
+          npm audit --omit=dev --audit-level=high > /tmp/runtime-audit.txt 2>&1 || status=$?
+          {
+            echo '### ① 런타임 node_modules 트리 (`--omit=dev`)'
+            echo ''
+            echo '```'
+            head -c 200000 /tmp/runtime-audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo "::warning title=런타임 트리::npm audit 이 비0 로 끝났다 — high 이상 권고 또는 레지스트리 오류. 런 요약을 볼 것."
+          fi
+          exit $status
+
+      # ── 레그 ②: 전체 트리(dev/build 포함) ──────────────────────────────────────
+      # `!cancelled()` — ①이 「실패」로 표시돼도 이 레그는 돌아야 한다. 기본 `success()` 면
+      # ① 비0 일 때 통째로 skip 되어, 정작 중요한 런에서 요약이 비게 된다.
+      - name: 전체 트리 audit
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          status=0
+          npm audit --audit-level=high > /tmp/full-audit.txt 2>&1 || status=$?
+          {
+            echo '### ② 전체 트리 (dev/build 포함)'
+            echo ''
+            echo '```'
+            head -c 200000 /tmp/full-audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo '`npm audit fix` 로 기존 semver 범위 안에서 닫히는지 먼저 확인할 것 (락파일 단독 변경).' >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=전체 트리::npm audit 이 비0 로 끝났다 — high 이상 권고 또는 레지스트리 오류. 런 요약을 볼 것."
+          fi
+          exit $status
