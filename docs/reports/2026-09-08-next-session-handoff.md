@@ -23,13 +23,16 @@
 한다 — 워크플로가 대조해 불일치 시 hard fail).
 
 **봇 PR 정리**: #311·#315·#316 은 #319 가 흡수해 `@dependabot close` 로 닫혔고,
-`open-pull-requests-limit: 3` 슬롯이 회수되면서 봇이 #317 을 스스로 대체해 **#320** 을 새로 열었다.
+`open-pull-requests-limit: 3` 슬롯이 회수되면서 봇이 #317 을 스스로 대체해 #320 을 열었고, 같은 날
+07:53Z 에 그것마저 **#323**(8건)으로 다시 갈아치웠다.
 
 ---
 
 ## 2. 남은 열린 PR
 
-- **#320** — dependabot `npm-minor-patch` 7건. **라벨과 달리 표면이 크다**(아래 프롬프트 1).
+- **#323** — dependabot `npm-minor-patch` 8건. **라벨과 달리 표면이 크다**(아래 프롬프트 1).
+  ⚠ 봇은 이 그룹 PR 을 **번호째로 갈아치운다**(#317 → #320 → #323, 브랜치 해시도 매번 바뀐다).
+  아래 프롬프트를 쓰기 전에 열린 `npm-minor-patch` PR 번호를 먼저 확인할 것.
 - **#290** — 제어문자 가드 확장(NUL → C0/C1). 2026-08-12 이후 정지 상태.
 
 ---
@@ -53,17 +56,20 @@
 
 ## 4. 다음 세션 프롬프트
 
-### 프롬프트 1 — #320 적대 리뷰 (권장 시작점)
+### 프롬프트 1 — dependabot 그룹 PR 적대 리뷰 (권장 시작점)
 
 ```
 Fleet 레포 작업. 먼저 AGENTS.md 와 brain.md 를 읽고 시작할 것.
 
-PR #320(dependabot npm-minor-patch 7건)을 적대 리뷰하고 머지 여부를 판단한다.
+열려 있는 dependabot `npm-minor-patch` 그룹 PR 을 적대 리뷰하고 머지 여부를 판단한다.
+**2026-09-08 07:53Z 기준 #323**(8건). 봇이 이 PR 을 번호째 재생성하므로(#317 → #320 → #323)
+먼저 현재 열린 번호를 확인하고, 아래 배경의 버전·건수도 실물 diff 로 대조할 것 — 재생성될 때마다
+낡는다.
 
 배경 — 라벨은 minor/patch 지만 실질 표면이 크다:
- 1. 프로덕션 의존 2종: jose ^6.2.8→^6.2.11 · ws ^8.21.2→^8.21.3. 둘 다 열린 GHSA 는
-    없다(2026-09-07 기준 npm audit 0건). **둘 다 데스크톱 app.asar 에 실린다** — 임포트가 서버
-    트랙(src/server/access-jwt.ts · src/server/boot.ts)뿐이고 electron-builder.yml:7 에
+ 1. **프로덕션 의존 2종**: `jose` ^6.2.8→^6.2.11 · `ws` ^8.21.2→^8.21.3. 둘 다 열린 GHSA 는
+    없다(2026-09-07 기준 npm audit 0건). 하지만 **둘 다 데스크톱 app.asar 에 실린다** — 임포트가
+    서버 트랙(src/server/access-jwt.ts · src/server/boot.ts)뿐이고 electron-builder.yml:7 에
     `!out/server/**` 가 있어도 그렇다. 그 글롭이 빼는 건 **컴파일된 서버 번들뿐**이고
     node_modules 는 `files:` 와 무관하게 통째로 복사된다: app-builder-lib 의
     `getNodeModuleFileMatcher`(out/fileMatcher.js:177-213)가 「grab only excludes」주석대로
@@ -71,17 +77,26 @@ PR #320(dependabot npm-minor-patch 7건)을 적대 리뷰하고 머지 여부를
     뱉는 프로덕션 트리 전체가 asar 에 들어간다. 즉 **출하 표면으로 취급해 리뷰할 것.**
     (이 세션에서 정반대로 「배제되므로 출하 표면이 아니다」라고 반복 주장했다가 Codex P1 으로
     반증됐다 — 1차 증거는 위 파일이다.)
- 2. eslint 10.8.0→10.10.0 이 file-entry-cache 를 8.0.0→11.1.5 로 **메이저 3단** 올리며 캐시
-    백엔드를 flat-cache+keyv 에서 cacheable 계열로 바꾼다 → @cacheable/memory ·
-    @cacheable/utils · @keyv/bigmap · @keyv/serialize · hashery · hookified · qified 등
-    **신규 패키지 7종이 트리에 유입**된다. 락파일 +247/−120 의 대부분이 이것이다.
-    hookified 가 1.15.1 과 2.2.0 두 버전으로 들어오는 것도 확인 대상.
+ 2. **eslint 10.8.0→10.10.0 이 캐시 백엔드를 통째로 간다.** `file-entry-cache` 를 8.0.0→11.1.5 로
+    **메이저 3단** 올리며 flat-cache+keyv 계열에서 cacheable 계열로 이동 → `cacheable` ·
+    `@cacheable/memory` · `@cacheable/utils` · `@keyv/bigmap` · `@keyv/serialize` · `hashery` ·
+    `hookified` · `qified` 가 **신규 유입**되고 `flat-cache` 4.0.1→6.1.23 · `keyv` 5.6.0 이
+    중첩 사본으로 여러 곳에 박힌다. 락파일 +259/−150 의 대부분이 이것이다.
+    확인 대상 3가지:
+    - **`hookified` 가 1.15.1 과 2.2.0 두 버전**으로 동시에 들어온다(qified 만 2.x).
+    - eslint 의 의존 range 가 `"11.1.5 || >11.1.6 <12"` 라는 **구멍 뚫린 형태**다 — 11.1.6 을
+      명시적으로 배제한 것이라 그 버전에 문제가 있었다는 신호다. 릴리스 노트로 확인할 것.
+    - 신규 패키지는 락파일상 **전부 `"dev": true`** 다(확인함). 즉 출하 표면이 아니라
+      `dependency-review` 의 `fail-on-scopes: development` 가 담당하는 자리다.
+ 3. **나머지 4건은 dev 전용 마이너/패치**: @playwright/test 1.62.1→1.63.0(이 번프가 playwright 의
+    `optionalDependencies.fsevents` 2.3.2 핀을 제거한다) · @testing-library/react 16.3.2→16.3.3 ·
+    @types/react-dom 19.2.4→19.2.7 · lint-staged 17.3.0→17.5.0 · typescript-eslint 8.66.0→8.69.0.
 
 할 일:
 1. dependency-review 잡 결과를 먼저 볼 것 — 이 게이트는 「PR 로 새로 들어오는 의존성」이
    담당 표면이라 여기서 실제로 일할 자리다(fail-on-severity: high · fail-on-scopes 에
    development 포함).
-2. 신규 7종의 출처·유지보수 상태·라이선스를 확인한다. eslint 가 왜 캐시 백엔드를 갈았는지
+2. 신규 8종의 출처·유지보수 상태·라이선스를 확인한다. eslint 가 왜 캐시 백엔드를 갈았는지
    릴리스 노트로 교차검증(context7).
 3. npm run verify green 확인. lint 가 실제로 도는지가 핵심이다(file-entry-cache 는 eslint 의
    캐시 경로다).
@@ -89,6 +104,8 @@ PR #320(dependabot npm-minor-patch 7건)을 적대 리뷰하고 머지 여부를
    **자가리뷰 계층화** 절대로 풀 렌즈 자가 적대 리뷰(줄 번호 말고 절 이름으로 찾을 것).
 5. 머지는 사용자 승인 후. 봇 PR 이므로 내 브랜치로 옮기지 말고 그대로 머지한다
    (레포 선례 = 봇 PR 개별 머지 + 봇이 놓친 잔여만 사람 PR).
+6. 리뷰 중 봇이 PR 을 재생성하면(번호가 바뀌면) 새 번호의 diff 를 다시 뜬다 — 이 세션에서
+   #320 이 리뷰 착수 전에 #323 으로 교체됐다.
 ```
 
 ### 프롬프트 2 — `audit.yml` 실패 경로 검증 (선택)
