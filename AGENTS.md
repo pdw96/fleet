@@ -250,8 +250,13 @@ project number `1`, owner `pdw96`).
      `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 **현재 head 에
      결속된** Codex 신호 부재 시 머지를 기계 차단하며(fail-closed·canonical allowlist),
      **차단 메시지가 복사 가능한 정확한 재시도 명령을 준다.** 산문 규율의 구조 강제라 우회 금지.
-     대기는 수동 폴링 대신 **`/loop`**(예: `/loop 5m` + "PR <N> 의 commit_id 결속 Codex 리뷰 도착
-     확인, 도착하면 요약 보고").
+     **대기 방식은 실행 환경으로 갈린다** — 폴링은 이제 로컬 전용 폴백이다:
+     - **원격(Claude Code on the web)** — `subscribe_pr_activity` 로 그 PR 을 구독한다. 리뷰·CI·코멘트가
+       **도착할 때만** 세션이 깨어나므로 대기 턴이 0이다. `/loop 5m` 은 리뷰가 20분 걸리면 아무 일도
+       없는 턴을 4번 태운다. 구독은 PR 이 merged/closed 될 때까지 유효하고, 웹훅이 CI 성공·푸시·머지
+       충돌 전이를 늘 덮지는 않으므로 `send_later` 로 1시간 폴백 하트비트를 함께 건다.
+     - **로컬 CLI** — 구독 툴이 없다. 기존대로 **`/loop`**(예: `/loop 5m` + "PR <N> 의 commit_id 결속
+       Codex 리뷰 도착 확인, 도착하면 요약 보고").
      사람이 알아야 할 것은 두 가지뿐이다: ① **👍 리액션은 인가 신호가 아니다**(44R P1 — 리액션은
      commit 결속이 없어 hook 이 인가로 쓰지 않는다). ② **지적이 0건이면 Codex 는 공식 리뷰를 발행하지
      않고** 이슈 코멘트(`Codex Review: Didn't find any major issues` + `**Reviewed commit:** <SHA>`)만
@@ -294,8 +299,21 @@ W4 가 끝나는 주기의 출하다.
 출하 개시 전 체크리스트:
 
 1. **개시는 태그 ref 생성뿐이다 — 릴리스를 웹 UI 로 발행하지 말 것.**
+   **출하 커밋은 `master` 여야 한다.** 두 경로 모두 「지금 고른 것」의 HEAD 를 그대로 태깅하는데
+   이를 막는 기계 게이트가 **없다** — CLI 는 어느 브랜치에서든 태깅되고, dispatch 경로의 「태그 ref
+   보장」 스텝도 선택 ref 의 `$GITHUB_SHA` 에 태그를 만든다. 즉 머지·리뷰되지 않은 코드가 immutable
+   공개 릴리스로 나갈 수 있고 복구는 재출하뿐이다. CLI 는 `git rev-parse HEAD origin/master` 가
+   같은지, Actions 는 「Use workflow from」이 `master` 인지 **사람이** 확인한다.
+   (기계 강제는 미도입 — `prepare` 의 master 포함 검사 + 핀 테스트가 후속 과제다. Codex 3R P1.)
+
    개시 방법은 둘, 그리고 이 둘뿐이다:
-   - `git push origin v${version}`
+   - **버전 상향 커밋 후** `git tag v${version}` **후** `git push origin v${version}`.
+     **`git tag` 를 빼면 push 가 `error: src refspec v${version} does not match any` 로
+     실패한다**(실측) — 이 레포의 버전 상향은 손편집 + `npm install --package-lock-only` 라
+     `npm version` 처럼 태그가 딸려 만들어지지 않는다. 그리고 **상향을 커밋하기 전에 태그를 찍으면
+     안 된다** — `git tag` 는 대상 생략 시 현재 `HEAD` 를 가리키므로 태그가 상향 이전 커밋에 붙고,
+     밀고 나면 `prepare` 의 버전 대조가 하드 실패하며 원격에 잘못된 태그만 남는다.
+     `git rev-parse v${version} HEAD` 두 줄이 같은지 확인할 것.
    - Actions → **Release** → 「Run workflow」 — 브랜치를 고르고 태그를 입력한다. `prepare` 가
      `package.json` 버전과 대조한 뒤 **태그 ref 를 직접 만든다.** 터미널이 없는 환경(브라우저 전용)
      에서 쓴다. 이미 있는 태그가 이 실행의 커밋과 다른 곳을 가리키면 하드 실패한다.
@@ -312,8 +330,9 @@ W4 가 끝나는 주기의 출하다.
    이제 `prepare` 잡이 기존 릴리스가 draft 가 아니면 하드 실패한다(`scripts/release-pipeline-gates.test.ts` 가 핀).
 2. **버전** — `package.json` version 상향. 태그는 정확히 `v${version}`(`release.yml` 이 불일치를 하드 실패).
    버전은 3곳에 미러된다 — `package.json` · `package-lock.json` 루트(`npm install --package-lock-only`
-   로 재생성, 손편집 금지) · `src/main/core/mcp/client.ts` 의 `CLIENT_VERSION`
-   (`scripts/mcp-client-version.test.ts` 가 대조).
+   로 재생성, 손편집 금지) · `src/main/core/mcp/client.ts` 의 `CLIENT_VERSION`.
+   **셋 전부** `scripts/mcp-client-version.test.ts` 가 대조한다(락파일은 `version` 과
+   `packages[""].version` 두 자리를 함께 본다 — 한쪽만 보면 손편집으로 갈라진 상태를 놓친다).
 3. **릴리스 노트 — 0.x 는 자동 노트 + 안내 푸터, 1.0 은 CHANGELOG 필수.** `release.yml` 의
    `gh release create` 는 `--generate-notes`(자동 생성 노트)를 쓴다. 자동 노트는 미서명 경고 우회
    안내를 합성해 주지 않는데(ADR-0017 이 서명 대신 두는 **유일한** 완화책이다), `prepare` 잡의

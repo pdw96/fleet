@@ -12,6 +12,7 @@
 | `fleet-backlog-induction` | 백로그 착수 절차 래퍼 | 로컬만(L2-only) |
 | `fleet-plan-panel` | 판사 패널 계획 수립 | 로컬만 |
 | `fleet-advisor` | 1.0 완성도·운영 ROI 진단(deep/check) | 로컬만 |
+| `fleet-release` | 출하 절차(주기 점검→개시→감시→산출물 확인) | 로컬만 |
 
 > 클라우드(claude-code-action) 실행은 폐기됐다(ADR-0012) — 두 스킬은 로컬 `Skill` 툴로만 돈다.
 
@@ -23,10 +24,21 @@
 | `fleet-finder` | 렌즈 기반 탐지(find) | 렌즈는 호출 시 지정 · 구조화 출력 · 근거 없는 발견 금지 · **자기 발견 확정 금지**(find≠verify) |
 | `fleet-planner` | 독립 구현 계획 초안(draft) | 각도는 호출 시 지정(리스크/MVP/계약) · 초안은 확정 아님(draft≠judge) |
 | `fleet-plan-judge` | 초안 루브릭 채점(judge) | 렌즈 그룹 지정 · draft 작성 인스턴스와 분리 디스패치 |
+| `fleet-sweeper` | 기계적 수집·나열(sweep) | **판정 금지**(해석은 finder/refuter 몫) · 표본 아닌 전수 · 잘라낸 범위 명시 · `model: haiku` 고정 |
 
 스킬 산문("독립 서브에이전트 디스패치")의 실행 타입을 고정해, 세션마다 규율 프롬프트를
 재작성하던 비효율을 없앤다(14차 재랭킹에서 동일 템플릿 7회 수기 작성 실측). 산문 권위는
 여전히 AGENTS.md·각 SKILL.md — 에이전트는 실행 래퍼다.
+
+**⚠ context7 툴명은 두 표기를 모두 적는다** — `mcp__context7__*` **와** `mcp__Context7__*`.
+`tools:` 는 정확한 문자열 매칭 allowlist 이고, MCP 툴명은 `mcp__<서버명>__<툴명>` 으로 조립되는데
+**서버명은 레포가 아니라 세션 환경이 정한다**: 이 레포엔 `.mcp.json` 이 없어서 로컬은
+`settings.local.json`(비추적)의 키를, 원격(Claude Code on the web)은 claude.ai 커넥터 이름
+`Context7`(대문자 C)를 쓴다. 한쪽만 적으면 **다른 쪽 환경에서 네 에이전트가 조용히 context7 을
+잃는다** — 그러면 `fleet-cutoff-gap-audit`(스킬 정의 자체가 「context7 현행 문서와 코드를 fan-out
+대조」)의 전제가 사라지고, 그 사실은 아무 신호 없이 지나간다. 해결 안 되는 이름은 그냥 매칭되지
+않을 뿐이라 **양쪽 등재의 비용은 0** 이다. 이 정합을 강제하는 기계는 없다(`skills:lint` 는
+차단패턴 스캔만 한다) — 새 에이전트를 추가할 때 사람이 함께 지킬 것.
 
 ## hooks/ + settings.json (기계 게이트 — 프롬프트 규율의 구조화)
 

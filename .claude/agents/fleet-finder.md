@@ -1,7 +1,7 @@
 ---
 name: fleet-finder
 description: 렌즈 기반 탐지 전담 에이전트 — PR 적대 리뷰의 find 단계(Fleet P1 신호 렌즈), 컷오프 갭 감사(context7 현행 문서↔코드 대조)에 사용. 디스패치 시 렌즈(관점)를 프롬프트로 지정한다. 발견은 확정이 아니라 fleet-refuter 가 검증할 후보다(find≠verify).
-tools: Read, Glob, Grep, WebSearch, WebFetch, mcp__context7__resolve-library-id, mcp__context7__query-docs
+tools: Read, Glob, Grep, WebSearch, WebFetch, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__Context7__resolve-library-id, mcp__Context7__query-docs
 model: inherit
 ---
 
