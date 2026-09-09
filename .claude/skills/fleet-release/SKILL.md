@@ -21,9 +21,20 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
 - 최신 태그 이후 `master` 에 머지된 커밋 수를 센다.
 - **최신 릴리스의 발행 시각과 지금의 차이를 잰다 — 이 절의 판정은 시각으로 한다.** 태그·버전·커밋
   수만 보면 출하 1일째와 15일째가 같은 값을 내므로 2주 주기도, 「두 번 연속 미준수」도 판정할 수
-  없다. `gh release view --json publishedAt` 또는 `gh api repos/pdw96/fleet/releases/latest`
-  (`published_at`)가 출처다 — 태그의 커밋 날짜가 아니라 **릴리스 발행 시각**이어야 한다(태그는
-  출하보다 먼저 찍히고, v0.1.1 처럼 태그와 배달이 어긋난 선례가 있다).
+  없다. 태그의 커밋 날짜가 아니라 **릴리스 발행 시각**이어야 한다 — 태그는 출하보다 먼저 찍히고,
+  `v0.1.1` 처럼 태그는 있는데 배달은 없던 선례가 있다.
+
+  ⚠ **`gh release view`(태그 생략)도 `…/releases/latest` 도 쓰지 마라 — 둘 다 프리릴리스를
+  건너뛴다.** REST 의 `releases/latest` 는 「가장 최근의 non-prerelease·non-draft 릴리스」로
+  정의돼 있고, `gh release view` 의 태그 생략 조회도 같은 자리를 가리킨다. 그런데 ADR-0018 은
+  `v1.0.0-rc.1` 을 **주기 출하 그 자체**로 처방한다 — RC 를 낸 직후에도 앵커가 이전 stable 에
+  머물러, 방금 지킨 주기를 「미준수」로, 심하면 ADR supersede 대상으로 오판한다. draft 만 걸러내고
+  프리릴리스는 **포함해** 직접 고른다:
+
+  ```sh
+  gh api repos/pdw96/fleet/releases \
+    --jq 'map(select(.draft|not)) | sort_by(.published_at) | last | {tag_name, published_at, prerelease}'
+  ```
 - **매 주기에는 그때까지 완료된 것만 싣는다.** 「이번 주기에 X 가 들어가야 하니 미룬다」는 금지다 —
   그 사고방식이 79 PR / 0 릴리스를 만들었다. `v1.0.0-rc.1` 도 리듬의 개시 *조건*이 아니라 W4 가
   끝나는 주기의 출하일 뿐이다.
@@ -45,16 +56,23 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
 
 **방법은 둘, 그리고 이 둘뿐이다:**
 
-- **CLI** — 태그를 **만들고** 민다. 두 명령이다:
+- **CLI** — **버전 상향을 먼저 커밋한 뒤** 태그를 만들고 민다:
 
   ```sh
-  git tag v${version}        # 버전 상향 커밋을 가리키게
+  git status --porcelain            # 비어 있어야 한다 — 상향이 커밋됐다는 뜻
+  git tag v${version}               # 대상 생략 = 현재 HEAD
+  git rev-parse v${version} HEAD    # 두 줄이 같은 SHA 여야 한다
   git push origin v${version}
   ```
 
-  ⚠ `git tag` 를 빼면 push 가 `error: src refspec v${version} does not match any` 로 실패한다
+  ⚠ **버전 3곳을 고쳐 두고 커밋하지 않은 채 태그를 찍으면 안 된다.** `git tag <name>` 은 대상을
+  생략하면 현재 `HEAD` 를 가리키므로, 1단계의 미러 점검과 `verify` 가 워크트리 내용으로 통과해도
+  태그는 **상향 이전 커밋**에 붙는다. 그대로 밀면 `release.yml` 의 `prepare` 가 `package.json`
+  버전 대조에서 하드 실패하고 원격에는 잘못된 태그만 남는다.
+
+  ⚠ `git tag` 자체를 빼면 push 가 `error: src refspec v${version} does not match any` 로 실패한다
   (실측). 이 레포의 버전 상향은 손편집 + `npm install --package-lock-only` 라, `npm version` 처럼
-  태그가 딸려 만들어지지 않는다 — 그래서 이 단계가 명시적이어야 한다.
+  태그가 딸려 만들어지지 않는다 — 그래서 두 단계가 다 명시적이어야 한다.
 - **Actions** → **Release** → 「Run workflow」 (브라우저 전용 환경용. `prepare` 가 `package.json` 과
   대조한 뒤 태그 ref 를 직접 만든다 — 이쪽은 로컬 태그가 필요 없다)
 
