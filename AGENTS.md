@@ -300,7 +300,10 @@ W4 가 끝나는 주기의 출하다.
 
 1. **개시는 태그 ref 생성뿐이다 — 릴리스를 웹 UI 로 발행하지 말 것.**
    개시 방법은 둘, 그리고 이 둘뿐이다:
-   - `git push origin v${version}`
+   - `git tag v${version}` **후** `git push origin v${version}`. **`git tag` 를 빼면 push 가
+     `error: src refspec v${version} does not match any` 로 실패한다**(실측) — 이 레포의 버전
+     상향은 손편집 + `npm install --package-lock-only` 라 `npm version` 처럼 태그가 딸려 만들어지지
+     않는다. 태그는 버전 상향 커밋을 가리켜야 한다.
    - Actions → **Release** → 「Run workflow」 — 브랜치를 고르고 태그를 입력한다. `prepare` 가
      `package.json` 버전과 대조한 뒤 **태그 ref 를 직접 만든다.** 터미널이 없는 환경(브라우저 전용)
      에서 쓴다. 이미 있는 태그가 이 실행의 커밋과 다른 곳을 가리키면 하드 실패한다.

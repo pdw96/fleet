@@ -19,6 +19,11 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
 
 - 최신 태그와 `package.json` 의 version 을 대조한다.
 - 최신 태그 이후 `master` 에 머지된 커밋 수를 센다.
+- **최신 릴리스의 발행 시각과 지금의 차이를 잰다 — 이 절의 판정은 시각으로 한다.** 태그·버전·커밋
+  수만 보면 출하 1일째와 15일째가 같은 값을 내므로 2주 주기도, 「두 번 연속 미준수」도 판정할 수
+  없다. `gh release view --json publishedAt` 또는 `gh api repos/pdw96/fleet/releases/latest`
+  (`published_at`)가 출처다 — 태그의 커밋 날짜가 아니라 **릴리스 발행 시각**이어야 한다(태그는
+  출하보다 먼저 찍히고, v0.1.1 처럼 태그와 배달이 어긋난 선례가 있다).
 - **매 주기에는 그때까지 완료된 것만 싣는다.** 「이번 주기에 X 가 들어가야 하니 미룬다」는 금지다 —
   그 사고방식이 79 PR / 0 릴리스를 만들었다. `v1.0.0-rc.1` 도 리듬의 개시 *조건*이 아니라 W4 가
   끝나는 주기의 출하일 뿐이다.
@@ -40,9 +45,18 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
 
 **방법은 둘, 그리고 이 둘뿐이다:**
 
-- `git push origin v${version}`
-- Actions → **Release** → 「Run workflow」 (브라우저 전용 환경용. `prepare` 가 `package.json` 과
-  대조한 뒤 태그 ref 를 직접 만든다)
+- **CLI** — 태그를 **만들고** 민다. 두 명령이다:
+
+  ```sh
+  git tag v${version}        # 버전 상향 커밋을 가리키게
+  git push origin v${version}
+  ```
+
+  ⚠ `git tag` 를 빼면 push 가 `error: src refspec v${version} does not match any` 로 실패한다
+  (실측). 이 레포의 버전 상향은 손편집 + `npm install --package-lock-only` 라, `npm version` 처럼
+  태그가 딸려 만들어지지 않는다 — 그래서 이 단계가 명시적이어야 한다.
+- **Actions** → **Release** → 「Run workflow」 (브라우저 전용 환경용. `prepare` 가 `package.json` 과
+  대조한 뒤 태그 ref 를 직접 만든다 — 이쪽은 로컬 태그가 필요 없다)
 
 **⚠ GitHub 웹의 「Draft a new release」로 릴리스를 만들어 발행하지 마라.** 이 항의 실제 불변식은
 *electron-builder 가 도착했을 때 공개된 릴리스가 없을 것* 이다. 웹 UI 발행은 그 행위가 태그를 만들어
