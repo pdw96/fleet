@@ -56,9 +56,16 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
 
 **방법은 둘, 그리고 이 둘뿐이다:**
 
-- **CLI** — **버전 상향을 먼저 커밋한 뒤** 태그를 만들고 민다:
+**출하 커밋은 `master` 여야 한다 — 이 절 전체의 전제다.** 두 경로 모두 「지금 고른 것」의 HEAD 를
+그대로 태깅하고, **그것을 막는 기계 게이트가 없다**(아래 「알려진 공백」). 되돌릴 수도 없다 —
+immutable releases 라 잘못 나간 출하의 복구는 재출하뿐이다(v0.1.1 선례).
+
+- **CLI** — **`master` 위에서, 버전 상향을 먼저 커밋한 뒤** 태그를 만들고 민다:
 
   ```sh
+  git rev-parse --abbrev-ref HEAD   # master 여야 한다
+  git fetch origin master
+  git rev-parse HEAD origin/master  # 두 줄이 같은 SHA 여야 한다 — 미머지 코드 출하 방지
   git status --porcelain            # 비어 있어야 한다 — 상향이 커밋됐다는 뜻
   git tag v${version}               # 대상 생략 = 현재 HEAD
   git rev-parse v${version} HEAD    # 두 줄이 같은 SHA 여야 한다
@@ -74,7 +81,18 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
   (실측). 이 레포의 버전 상향은 손편집 + `npm install --package-lock-only` 라, `npm version` 처럼
   태그가 딸려 만들어지지 않는다 — 그래서 두 단계가 다 명시적이어야 한다.
 - **Actions** → **Release** → 「Run workflow」 (브라우저 전용 환경용. `prepare` 가 `package.json` 과
-  대조한 뒤 태그 ref 를 직접 만든다 — 이쪽은 로컬 태그가 필요 없다)
+  대조한 뒤 태그 ref 를 직접 만든다 — 이쪽은 로컬 태그가 필요 없다).
+  ⚠ **「Use workflow from」에서 반드시 `master` 를 고를 것.** `release.yml` 의 「태그 ref 보장」
+  스텝이 고른 ref 의 `$GITHUB_SHA` 에 태그를 만들므로, 특성 브랜치를 고르면 그 브랜치 HEAD 가
+  그대로 출하된다.
+
+> **알려진 공백 — 기계 강제가 없다.** 위 「`master` 여야 한다」는 현재 **산문 규율일 뿐**이다.
+> CLI 는 어느 브랜치에서든 태깅되고, `release.yml` 의 dispatch 경로도 ref 를 master 로 제한하지
+> 않는다(실측: 「태그 ref 보장」 스텝이 `-f sha="$GITHUB_SHA"` 로 선택 ref 의 커밋에 태그를 만든다).
+> 즉 **머지·리뷰되지 않은 코드가 immutable 공개 릴리스로 나갈 수 있고, 사람이 위 두 줄을 확인하는
+> 것이 유일한 방어다.** 이 레포의 관례상 이 자리는 기계로 옮겨야 하는 자리다(머지 게이트 훅과 동형)
+> — `prepare` 에 master 포함 검사 + `scripts/release-pipeline-gates.test.ts` 핀. Codex 3R P1 로
+> 제기됐고, 릴리스 파이프라인 변경이라 별건으로 다룬다.
 
 **⚠ GitHub 웹의 「Draft a new release」로 릴리스를 만들어 발행하지 마라.** 이 항의 실제 불변식은
 *electron-builder 가 도착했을 때 공개된 릴리스가 없을 것* 이다. 웹 UI 발행은 그 행위가 태그를 만들어
