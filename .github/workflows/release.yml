@@ -74,6 +74,61 @@ jobs:
             echo "::error::Tag $TAG does not match package.json version $PKG"
             exit 1
           fi
+      # 두 개시 경로 모두 「지금 고른 것」의 HEAD 를 그대로 태깅한다 — CLI 의 `git tag` 는 어느
+      # 브랜치에서든 찍히고, 아래 「태그 ref 보장」은 고른 ref 의 커밋에 태그를 만든다. 즉 머지·리뷰되지
+      # 않은 코드가 immutable 공개 릴리스로 나갈 수 있었고, 그것을 막는 것은 사람의 확인뿐이었다
+      # (Codex PR#327 3R P1 → #328). 복구는 재출하뿐이다 — v0.1.1 이 이미 그 비용을 치렀다.
+      #
+      # 판정은 **브랜치 이름이 아니라 포함 관계**로 한다. dispatch 는 고른 ref 이름을 주지만 push 는
+      # 태그만 오므로, 두 경로를 하나의 술어로 덮으려면 「이 커밋이 master 에 있는가」여야 한다.
+      # 그래서 이 스텝에는 `EVENT_NAME` 분기가 없다 — 한쪽만 덮으면 다른 경로가 그대로 뚫린다.
+      #
+      # 대상은 `$GITHUB_SHA` 가 아니라 **워크트리의 HEAD** 다. 이유는 「GITHUB_SHA 가 무엇인가」에
+      # 답하기 위해서가 아니라 **그 물음에 의존하지 않기 위해서**다 — checkout 이 무엇을 해석했든
+      # 체크아웃된 워크트리의 HEAD 는 커밋이다. 그리고 build 잡의 checkout `ref:` 식이 이 잡과 같으므로
+      # 그것이 곧 **실제로 빌드되는 커밋**이다.
+      # ⚠ 「빌드되는 커밋」까지다. 발행 시점에 태그가 가리키는 곳은 별개다 — `release` 잡은 태그
+      # **이름**으로 발행하므로, 이 게이트 통과 후 태그가 강제 갱신되면 자산과 태그가 갈릴 수 있다.
+      # 그 창(태그 스왑 윈도우)은 이 게이트가 닫는 것이 아니라 태그 ruleset 이 닫을 별건이다.
+      #
+      # compare 의 `status` 는 base=master 기준 4값이다(REST 스키마: diverged|ahead|behind|identical.
+      # 실측 2026-09-09 pdw96/fleet: 같은 커밋 identical · master 위 옛 커밋 behind · 특성 브랜치 diverged).
+      # 통과는 앞의 둘뿐 — `ahead` 는 master 의 **자손**이라 아직 머지되지 않았다.
+      # ⚠ `behind`(= master 의 조상) 허용은 **squash 머지 관례에 기댄다**(AGENTS.md 「백로그 착수 절차」).
+      # squash 아래서는 master 의 조상 = master 자신의 커밋열이라 「포함 == 리뷰됨」이 성립한다.
+      # 머지 커밋이나 master 직접 push 가 들어오면 그 등가가 깨지므로, 그때 이 arm 을 재검토할 것.
+      #
+      # ⚠ **이 게이트의 한계 — 자기가 판정할 커밋 안에 산다.** Actions 는 개시자가 고른 ref/커밋의
+      # 워크플로 파일을 실행하므로(dispatch = 「Use workflow from」의 브랜치, push = 태그가 붙은 커밋),
+      # 이 스텝을 **포함하지 않는** ref 로 개시하면 게이트도 함께 없다. 트리 밖 강제(태그 ruleset)가
+      # 아니면 닫히지 않는 잔여 공백이고, 그래서 AGENTS.md 1항의 사람 확인은 폐기하지 않았다.
+      - name: 출하 커밋 master 포함 확인 (미머지 코드 출하 차단)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          # base 해석 실패(기본 브랜치 이름 변경·커밋 부재)와 「포함되지 않음」을 구분해서 낸다 —
+          # 합치면 릴리스가 막힌 원인을 오도한다. 어느 쪽이든 판정 불가이므로 fail-closed 다.
+          if ! STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$SHA" -q .status); then
+            echo "::error::master 와 $SHA 를 비교하지 못해 판정할 수 없다 — 중단한다."
+            echo "::error::기본 브랜치가 master 가 아니게 바뀌었거나(이 스텝은 master 를 하드코딩한다: 이름 변경 시 조용히 느슨해지는 대신 멈추도록 한 선택이다), 커밋이 이 레포에 없다."
+            exit 1
+          fi
+          case "$STATUS" in
+            identical|behind)
+              echo "출하 커밋 $SHA 는 master 에 포함된다 (compare=$STATUS)"
+              ;;
+            *)
+              echo "::error::출하 커밋 $SHA 가 master 에 없다 (compare=$STATUS) — 머지·리뷰되지 않은 코드다."
+              echo "::error::릴리스는 immutable 이라 잘못 나가면 되돌릴 수 없다. 복구는 재출하뿐이다(v0.1.1 선례)."
+              echo "::error::태그 push 로 개시했다면 잘못된 태그가 이미 원격에 있다. 먼저 지워라 — 지우지 않으면 재개시가 'Everything up-to-date' 로 조용히 no-op 이 되고 dispatch 경로도 「태그 ref 보장」에서 막힌다: git push --delete origin $TAG"
+              echo "::error::그다음 master 에서 개시한다 — git push origin $TAG, 또는 Actions 「Run workflow」의 「Use workflow from」을 master 로 고를 것 (AGENTS.md 「릴리스 절차」 1항)."
+              exit 1
+              ;;
+          esac
       # dispatch 경로에는 태그가 아직 없다. 여기서 만든다 — 이 시점 이후로는 두 경로가 완전히 같다.
       #
       # ⚠ **이 스텝 전체가 dispatch 전용이다.** push 경로에서는 태그가 정의상 이미 존재하고 어느 커밋을

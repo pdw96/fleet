@@ -44,6 +44,8 @@
 **터미널에서 태그를 push 할 수 없는 세션에서도 출하가 가능**하다는 뜻이므로, 다음에 같은 벽을
 만나면 `release.yml` 의 「Run workflow」로 태그를 입력하면 된다(`package.json` 버전과 일치해야
 한다 — 워크플로가 대조해 불일치 시 hard fail).
+⚠ **추기(#328)**: 「Use workflow from」은 반드시 `master` 여야 한다. `prepare` 가 출하 커밋의
+master 포함 여부를 검사해 아니면 하드 실패한다.
 
 **봇 PR 정리**: #311·#315·#316 은 #319 가 흡수해 `@dependabot close` 로 닫혔고,
 `open-pull-requests-limit: 3` 슬롯이 회수되면서 봇이 #317 을 스스로 대체해 #320 을 열었고, 같은 날

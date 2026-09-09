@@ -299,12 +299,23 @@ W4 가 끝나는 주기의 출하다.
 출하 개시 전 체크리스트:
 
 1. **개시는 태그 ref 생성뿐이다 — 릴리스를 웹 UI 로 발행하지 말 것.**
-   **출하 커밋은 `master` 여야 한다.** 두 경로 모두 「지금 고른 것」의 HEAD 를 그대로 태깅하는데
-   이를 막는 기계 게이트가 **없다** — CLI 는 어느 브랜치에서든 태깅되고, dispatch 경로의 「태그 ref
-   보장」 스텝도 선택 ref 의 `$GITHUB_SHA` 에 태그를 만든다. 즉 머지·리뷰되지 않은 코드가 immutable
-   공개 릴리스로 나갈 수 있고 복구는 재출하뿐이다. CLI 는 `git rev-parse HEAD origin/master` 가
-   같은지, Actions 는 「Use workflow from」이 `master` 인지 **사람이** 확인한다.
-   (기계 강제는 미도입 — `prepare` 의 master 포함 검사 + 핀 테스트가 후속 과제다. Codex 3R P1.)
+   **출하 커밋은 `master` 여야 한다 — `prepare` 잡이 강제한다.** 두 경로 모두 「지금 고른 것」의
+   HEAD 를 그대로 태깅하므로(CLI 의 `git tag` 는 어느 브랜치에서든 찍히고, dispatch 의 「태그 ref
+   보장」은 선택 ref 의 커밋에 태그를 만든다) 머지·리뷰되지 않은 코드가 immutable 공개 릴리스로
+   나갈 수 있었다. 이제 **「출하 커밋 master 포함 확인」 스텝**이 태그 ref 를 만들기 **전에**
+   체크아웃된 커밋이 `master` 에 포함되는지 보고(`compare/master...<sha>` 의 `status` 가
+   `identical`·`behind`), 아니면 하드 실패한다. 판정을 브랜치 **이름**이 아니라 **포함 관계**로
+   하므로 태그 push 와 dispatch 를 한 술어로 덮는다 — 그래서 이 스텝엔 이벤트 분기가 없다.
+   `scripts/release-pipeline-gates.test.ts` 가 핀한다(#328).
+
+   ⚠ **그래도 사람 확인을 폐기하지 않는다 — 게이트는 개시에 쓰인 ref 의 `release.yml` 안에 있다.**
+   Actions 는 이벤트의 커밋/ref 에 있는 워크플로 버전을 실행하므로(dispatch = 「Use workflow from」
+   에서 고른 브랜치, push = 태그가 붙은 커밋), **게이트를 포함하지 않는 ref 로 개시하면 게이트도
+   함께 없다.** 트리 안의 어떤 스텝으로도 못 닫는다 — ref 독립 강제는 태그 ruleset 뿐이라 별건이다.
+   그러니 CLI 는 `git rev-parse HEAD origin/master` 가 같은지, Actions 는 「Use workflow from」이
+   `master` 인지 **사람이 확인한다.** 이건 왕복 절약이 아니라 규칙이다.
+   (CLI 점검은 게이트보다 **엄격하다** — 게이트는 `behind`(master 의 조상)도 통과시키지만 이 점검은
+   `identical` 만 통과시킨다. 통과하면 게이트도 반드시 통과한다.)
 
    개시 방법은 둘, 그리고 이 둘뿐이다:
    - **버전 상향 커밋 후** `git tag v${version}` **후** `git push origin v${version}`.
@@ -314,9 +325,14 @@ W4 가 끝나는 주기의 출하다.
      안 된다** — `git tag` 는 대상 생략 시 현재 `HEAD` 를 가리키므로 태그가 상향 이전 커밋에 붙고,
      밀고 나면 `prepare` 의 버전 대조가 하드 실패하며 원격에 잘못된 태그만 남는다.
      `git rev-parse v${version} HEAD` 두 줄이 같은지 확인할 것.
-   - Actions → **Release** → 「Run workflow」 — 브랜치를 고르고 태그를 입력한다. `prepare` 가
+   - Actions → **Release** → 「Run workflow」 — **`master` 를 고르고** 태그를 입력한다. `prepare` 가
      `package.json` 버전과 대조한 뒤 **태그 ref 를 직접 만든다.** 터미널이 없는 환경(브라우저 전용)
      에서 쓴다. 이미 있는 태그가 이 실행의 커밋과 다른 곳을 가리키면 하드 실패한다.
+
+   **개시가 하드 실패했으면 태그부터 지운다 — `git push --delete origin v${version}`.**
+   태그 push 로 개시했다면 게이트가 막아도 태그는 이미 원격에 있다(버전 대조 실패도 같다). 지우지
+   않으면 두 경로가 다 막힌다: 재push 는 `Everything up-to-date` 로 조용히 no-op 이고, dispatch 는
+   「태그 ref 보장」이 기존 태그와 이 실행의 커밋이 다르다며 하드 실패한다. 지운 뒤 다시 개시할 것.
 
    두 방법 모두 **태그 ref 만** 만들고 릴리스는 만들지 않는다 — 그것이 이 항의 실제 불변식이다:
    **electron-builder 가 도착했을 때 공개된 릴리스가 없어야 한다.**
