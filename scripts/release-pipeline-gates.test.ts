@@ -10,6 +10,16 @@ import { describe, expect, it } from 'vitest'
 describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
   const yml = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
 
+  /** 이름으로 스텝 하나를 잘라낸다 — 다음 스텝(`- name:`/`- uses:`) 직전까지. */
+  const step = (name: string): string => {
+    const start = yml.indexOf(`      - name: ${name}`)
+    if (start === -1) throw new Error(`스텝을 찾지 못했다: ${name}`)
+    const ends = ['\n      - name: ', '\n      - uses: ']
+      .map((m) => yml.indexOf(m, start + 1))
+      .filter((i) => i !== -1)
+    return ends.length === 0 ? yml.slice(start) : yml.slice(start, Math.min(...ends))
+  }
+
   describe('prepare — 공개된 릴리스 재사용 차단', () => {
     it('기존 릴리스의 draft 여부를 조회한다', () => {
       expect(yml).toMatch(/gh release view "\$TAG".*--json isDraft/)
@@ -62,12 +72,16 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
       // annotated 태그 push 에서 GITHUB_SHA 는 커밋이 아니라 태그 객체일 수 있는데 `commits/<ref>`
       // 는 항상 커밋을 준다 — push 경로까지 대조하면 정상 출하를 막는 오탐이 된다. 그래서 스텝 진입
       // 직후 push 를 조기 반환시킨다. 이 가드가 사라지면 게이트가 오탐 장치로 바뀐다.
-      const step = yml.slice(yml.indexOf('태그 ref 보장'))
-      expect(step).toMatch(
+      // 스텝 **선언**으로 앵커한다 — 다른 스텝의 주석이 이 스텝을 이름으로 참조하므로,
+      // 문자열 첫 등장으로 자르면 슬라이스가 남의 스텝까지 삼켜 보장이 헐거워진다.
+      const ensure = step('태그 ref 보장 (dispatch 개시 경로 전용)')
+      expect(ensure).toMatch(
         /if \[ "\$EVENT_NAME" != "workflow_dispatch" \]; then[\s\S]{0,200}?exit 0/,
       )
       // 조기 반환이 대조보다 **먼저** 와야 한다.
-      expect(step.indexOf('!= "workflow_dispatch"')).toBeLessThan(step.indexOf('"$EXISTING" !='))
+      expect(ensure.indexOf('!= "workflow_dispatch"')).toBeLessThan(
+        ensure.indexOf('"$EXISTING" !='),
+      )
     })
 
     it('태그 존재 확인이 refs/tags 정확 조회다(동명 브랜치 오인 차단)', () => {
@@ -117,6 +131,58 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
       const afterDecision = yml.slice(yml.indexOf('Verify tag matches package.json version'))
       expect(afterDecision).not.toMatch(/"\$GITHUB_REF_NAME"/)
       expect(afterDecision).not.toMatch(/\$GITHUB_REF_NAME\b/)
+    })
+  })
+
+  // 두 개시 경로 모두 「지금 고른 것」의 HEAD 를 그대로 태깅한다 — CLI 의 `git tag` 는 어느 브랜치에서든
+  // 찍히고, dispatch 의 「태그 ref 보장」은 고른 ref 의 커밋에 태그를 만든다. 즉 머지·리뷰되지 않은
+  // 코드가 immutable 공개 릴리스로 나갈 수 있었고, 그것을 막는 것은 **사람의 확인뿐**이었다
+  // (Codex PR#327 3R P1 → #328). 복구는 재출하뿐이다 — v0.1.1 이 이미 그 비용을 치렀다.
+  // 정상 출하는 이 게이트가 있든 없든 green 이라 소실이 무신호다 — 위 두 게이트와 같은 근거로 핀한다.
+  describe('prepare — 출하 커밋의 master 포함 강제', () => {
+    const NAME = '출하 커밋 master 포함 확인 (미머지 코드 출하 차단)'
+
+    it('게이트 스텝이 존재한다', () => {
+      expect(yml).toContain(`- name: ${NAME}`)
+    })
+
+    it('판정 대상이 체크아웃된 커밋이다($GITHUB_SHA 가 아니라)', () => {
+      // annotated 태그 push 에서 `GITHUB_SHA` 가 커밋인지 태그 객체인지는 문서가 단정하지 않는다
+      // (아래 「태그 ref 보장」이 SHA 대조를 dispatch 로 좁힌 이유와 같다). `git rev-parse HEAD` 는
+      // 항상 커밋이고, checkout `ref:` 식이 build 잡과 같으므로 **실제로 출하되는 커밋**이다.
+      expect(step(NAME)).toMatch(/SHA=\$\(git rev-parse HEAD\)/)
+    })
+
+    it('판정을 compare API 의 status 로 한다(브랜치 이름이 아니라 포함 관계)', () => {
+      expect(step(NAME)).toMatch(/compare\/master\.\.\.\$SHA" -q \.status/)
+    })
+
+    it('포함(identical·behind)만 통과시킨다', () => {
+      // 실측(2026-09-09, pdw96/fleet): 같은 커밋 `identical` · master 위 옛 커밋 `behind` ·
+      // 특성 브랜치 `diverged`. master 의 자손은 `ahead` — 아직 머지되지 않았으므로 통과시키면 안 된다.
+      expect(step(NAME)).toMatch(/^\s+identical\|behind\)/m)
+    })
+
+    it('그 외 status 는 하드 실패한다', () => {
+      expect(step(NAME)).toMatch(/^\s+\*\)[\s\S]{0,800}?exit 1/m)
+    })
+
+    it('게이트가 태그 ref 생성보다 **먼저** 온다', () => {
+      // 뒤에 오면 dispatch 경로가 특성 브랜치 커밋에 태그를 이미 만든 뒤 실패한다.
+      // 산문 언급이 아니라 **스텝 선언**의 위치로 비교한다 — 주석이 서로를 참조하기 때문이다.
+      expect(yml.indexOf(`- name: ${NAME}`)).toBeGreaterThan(-1)
+      expect(yml.indexOf(`- name: ${NAME}`)).toBeLessThan(yml.indexOf('- name: 태그 ref 보장'))
+    })
+
+    it('두 개시 경로를 모두 덮는다(이벤트 분기가 없다)', () => {
+      // push 만/dispatch 만 덮으면 다른 경로가 그대로 뚫린다 — 포함 관계 술어를 고른 이유가 이것이다.
+      expect(step(NAME)).not.toMatch(/EVENT_NAME/)
+    })
+
+    it('게이트 스텝에 fail-open 조건이 붙어 있지 않다', () => {
+      // `continue-on-error: true` 한 줄이면 exit 1 이 나도 다음 스텝이 그대로 돈다(#314 패턴).
+      expect(step(NAME)).not.toMatch(/^\s+if:/m)
+      expect(step(NAME)).not.toMatch(/continue-on-error/)
     })
   })
 

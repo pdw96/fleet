@@ -74,6 +74,44 @@ jobs:
             echo "::error::Tag $TAG does not match package.json version $PKG"
             exit 1
           fi
+      # 두 개시 경로 모두 「지금 고른 것」의 HEAD 를 그대로 태깅한다 — CLI 의 `git tag` 는 어느
+      # 브랜치에서든 찍히고, 아래 「태그 ref 보장」은 고른 ref 의 커밋에 태그를 만든다. 즉 머지·리뷰되지
+      # 않은 코드가 immutable 공개 릴리스로 나갈 수 있었고, 그것을 막는 것은 사람의 확인뿐이었다
+      # (Codex PR#327 3R P1 → #328). 복구는 재출하뿐이다 — v0.1.1 이 이미 그 비용을 치렀다.
+      #
+      # 판정은 **브랜치 이름이 아니라 포함 관계**로 한다. dispatch 는 고른 ref 이름을 주지만 push 는
+      # 태그만 오므로, 두 경로를 하나의 술어로 덮으려면 「이 커밋이 master 에 있는가」여야 한다.
+      # 그래서 이 스텝에는 `EVENT_NAME` 분기가 없다 — 한쪽만 덮으면 다른 경로가 그대로 뚫린다.
+      #
+      # 대상은 `$GITHUB_SHA` 가 아니라 **체크아웃된 커밋**이다. annotated 태그 push 에서 `GITHUB_SHA`
+      # 가 커밋인지 태그 객체인지는 문서가 단정하지 않는다(아래 「태그 ref 보장」이 SHA 대조를 dispatch
+      # 로 좁힌 것과 같은 이유). `git rev-parse HEAD` 는 항상 커밋이고, build 잡의 checkout `ref:` 식이
+      # 이 잡과 같으므로 그것이 곧 **실제로 빌드·출하되는 커밋**이다 — 게이트가 보는 것과 나가는 것이
+      # 일치한다.
+      #
+      # compare 의 `status` 는 base=master 기준이다(실측 2026-09-09): 같은 커밋 `identical` ·
+      # master 위의 옛 커밋 `behind` · 특성 브랜치 `diverged` · master 의 자손 `ahead`.
+      # 포함은 앞의 둘뿐이다. 커밋이 레포에 없으면 API 가 404 라 `set -e` 로 fail-closed.
+      - name: 출하 커밋 master 포함 확인 (미머지 코드 출하 차단)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$SHA" -q .status)
+          case "$STATUS" in
+            identical|behind)
+              echo "출하 커밋 $SHA 는 master 에 포함된다 (compare=$STATUS)"
+              ;;
+            *)
+              echo "::error::출하 커밋 $SHA 가 master 에 없다 (compare=$STATUS) — 머지·리뷰되지 않은 코드다."
+              echo "::error::릴리스는 immutable 이라 잘못 나가면 되돌릴 수 없다. 복구는 재출하뿐이다(v0.1.1 선례)."
+              echo "::error::개시는 master 에서만 한다 — master 를 체크아웃해 git push origin $TAG, 또는 Actions 「Run workflow」의 「Use workflow from」을 master 로 고를 것 (AGENTS.md 「릴리스 절차」 1항)."
+              exit 1
+              ;;
+          esac
       # dispatch 경로에는 태그가 아직 없다. 여기서 만든다 — 이 시점 이후로는 두 경로가 완전히 같다.
       #
       # ⚠ **이 스텝 전체가 dispatch 전용이다.** push 경로에서는 태그가 정의상 이미 존재하고 어느 커밋을
