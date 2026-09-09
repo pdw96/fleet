@@ -193,6 +193,9 @@ export const DEFAULT_GLOBS = [
   '.claude/settings.json',
   '.claude/skills/**/*.md',
   '.claude/workflows/**/*.js',
+  // Gemini CLI 운영 자산도 같은 스캔을 받는다 — 추적되는 순간 경로·시크릿 노출 위험은 동일하다.
+  '.gemini/hooks/*.mjs',
+  '.gemini/settings.json',
   '.github/workflows/*.yml',
   '.github/workflows/*.yaml',
   'docs/adr/**/*.md',

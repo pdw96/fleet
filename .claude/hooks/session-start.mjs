@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// SessionStart 훅 — 원격 세션(Claude Code on the web)을 **작업 가능한 상태**로 만든다:
-// ① npm 의존성 설치로 `npm run verify` 를 돌릴 수 있게, ② `gh` 설치로 머지 게이트가 검증을
-// 수행할 수 있게. 둘 다 없으면 원격 세션은 자기 변경을 검증하지도, 머지하지도 못한다.
+// SessionStart 훅 — 세션을 **작업 가능한 상태**로 만든다:
+// ⓪ 규율 안내를 세션 컨텍스트에 주입(로컬·원격 공통), ① npm 의존성 설치로 `npm run verify` 를
+// 돌릴 수 있게, ② `gh` 설치로 머지 게이트가 검증을 수행할 수 있게. ①② 가 없으면 원격 세션은
+// 자기 변경을 검증하지도, 머지하지도 못한다.
 //
 // ## 왜 필요한가
 // 원격 컨테이너는 레포를 fresh clone 만 하고 `node_modules` 를 만들지 않는다. 그 상태에서는
@@ -27,6 +28,30 @@
 // 계속 시작되므로 차단이 아니라 신호다.
 
 import { spawnSync } from 'node:child_process'
+import { AGENT_GUIDANCE } from '../../scripts/agent-guidance.mjs'
+
+// ── ⓪ 규율 안내 주입(로컬·원격 공통) ────────────────────────────────────────
+//
+// ## 왜 필요한가
+// `AGENTS.md` 는 이 레포 작업 규율의 권위지만 **Claude Code 에 자동 주입되지 않는다** — 읽히는
+// 것은 `CLAUDE.md` 뿐이고 그건 「AGENTS.md 를 먼저 읽어라」는 얇은 포인터다. 포인터를 따라가지
+// 않은 세션은 규율 전체를 잃은 채로 작업하고, **그 유실은 아무 신호도 남기지 않는다** — 게이트가
+// 잡아주는 것은 코드 결함이지 「규율을 안 읽었음」이 아니다.
+// SessionStart 의 stdout 은 세션 컨텍스트로 주입되므로(아래 「출력 규약」) 그 자리를 안내에 쓴다.
+//
+// ## 호스트별 짝 (Codex PR#334 P1)
+// 이 훅은 `.claude/settings.json` 이 등록하므로 **Claude Code 세션에만** 발동한다. 같은 포인터
+// 문제를 가진 Gemini CLI 는 자기 훅이 따로 필요하다 — `.gemini/hooks/session-start.mjs` +
+// `.gemini/settings.json`(주입 경로가 stdout 원문이 아니라 `hookSpecificOutput.additionalContext`
+// JSON 이라 훅 본체가 갈린다). **문구는 `scripts/agent-guidance.mjs` 단일 출처를 공유**하고,
+// 두 호스트가 같은 바이트를 내는지는 `scripts/session-start-hook.test.ts` 가 핀한다.
+// Codex CLI 는 `AGENTS.md` 를 파일명 규약으로 네이티브 로드하므로 훅이 불필요하다.
+//
+// ## 경계
+// - **원격 분기보다 먼저** 낸다. 부트스트랩(①②)은 원격 전용이지만 규율 유실은 로컬도 똑같다.
+// - **포인터만 둔다 — 규율 본문을 복사하지 않는다**(사유는 `agent-guidance.mjs` 참조).
+// - **안내는 강제가 아니다.** 강제는 `npm run verify`·master ruleset·머지 게이트 훅이 한다.
+process.stdout.write(AGENT_GUIDANCE + '\n')
 
 if (process.env['CLAUDE_CODE_REMOTE'] !== 'true') process.exit(0)
 

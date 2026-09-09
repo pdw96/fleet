@@ -47,6 +47,15 @@ brain.tmp.json
 !.claude/hooks/*.mjs
 !.claude/settings.json
 
+# Gemini CLI 운영 디렉터리 — 추적 자산(settings.json·hooks/*.mjs)만. `.claude/*` 와 같은 사유로
+# allowlist 로 잠근다: 디렉터리를 통째로 열어 두면 향후 캐시·크레덴셜·스크래치 파일이
+# skills:lint 스캔 없이 `git add -A` 로 staged 된다(#175 · Codex PR#288 P1 과 동일 갭).
+.gemini/*
+!.gemini/hooks/
+.gemini/hooks/*
+!.gemini/hooks/*.mjs
+!.gemini/settings.json
+
 # superpowers brainstorming visual-companion scratch
 .superpowers/
 
