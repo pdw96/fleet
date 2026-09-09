@@ -28,31 +28,30 @@
 // 계속 시작되므로 차단이 아니라 신호다.
 
 import { spawnSync } from 'node:child_process'
+import { AGENT_GUIDANCE } from '../../scripts/agent-guidance.mjs'
 
 // ── ⓪ 규율 안내 주입(로컬·원격 공통) ────────────────────────────────────────
 //
 // ## 왜 필요한가
-// `AGENTS.md` 는 이 레포 작업 규율의 권위지만 **어떤 에이전트에게도 자동 주입되지 않는다** —
-// Claude Code 는 `CLAUDE.md` 를, Gemini CLI 는 `GEMINI.md` 를 읽고, 그 둘은 「AGENTS.md 를 먼저
-// 읽어라」는 얇은 포인터다(`AGENTS.md` 를 파일명 규약으로 네이티브 로드하는 것은 Codex CLI 뿐).
-// 포인터를 따라가지 않은 세션은 규율 전체를 잃은 채로 작업하고, **그 유실은 아무 신호도 남기지
-// 않는다** — 게이트가 잡아주는 것은 코드 결함이지 「규율을 안 읽었음」이 아니다.
+// `AGENTS.md` 는 이 레포 작업 규율의 권위지만 **Claude Code 에 자동 주입되지 않는다** — 읽히는
+// 것은 `CLAUDE.md` 뿐이고 그건 「AGENTS.md 를 먼저 읽어라」는 얇은 포인터다. 포인터를 따라가지
+// 않은 세션은 규율 전체를 잃은 채로 작업하고, **그 유실은 아무 신호도 남기지 않는다** — 게이트가
+// 잡아주는 것은 코드 결함이지 「규율을 안 읽었음」이 아니다.
 // SessionStart 의 stdout 은 세션 컨텍스트로 주입되므로(아래 「출력 규약」) 그 자리를 안내에 쓴다.
+//
+// ## 호스트별 짝 (Codex PR#334 P1)
+// 이 훅은 `.claude/settings.json` 이 등록하므로 **Claude Code 세션에만** 발동한다. 같은 포인터
+// 문제를 가진 Gemini CLI 는 자기 훅이 따로 필요하다 — `.gemini/hooks/session-start.mjs` +
+// `.gemini/settings.json`(주입 경로가 stdout 원문이 아니라 `hookSpecificOutput.additionalContext`
+// JSON 이라 훅 본체가 갈린다). **문구는 `scripts/agent-guidance.mjs` 단일 출처를 공유**하고,
+// 두 호스트가 같은 바이트를 내는지는 `scripts/session-start-hook.test.ts` 가 핀한다.
+// Codex CLI 는 `AGENTS.md` 를 파일명 규약으로 네이티브 로드하므로 훅이 불필요하다.
 //
 // ## 경계
 // - **원격 분기보다 먼저** 낸다. 부트스트랩(①②)은 원격 전용이지만 규율 유실은 로컬도 똑같다.
-// - **포인터만 둔다 — 규율 본문을 여기 복사하지 않는다.** 복사하면 `AGENTS.md` 와 이중 권위가
-//   되어 반드시 드리프트한다(#280 이 동기화한 지 20분 만에 #279 가 무효화된 선례). 비대화는
-//   매 세션 로드 비용이기도 하다(ADR-0002 가 #27 본문에서 얻은 교훈).
+// - **포인터만 둔다 — 규율 본문을 복사하지 않는다**(사유는 `agent-guidance.mjs` 참조).
 // - **안내는 강제가 아니다.** 강제는 `npm run verify`·master ruleset·머지 게이트 훅이 한다.
-//   이것은 그 게이트들에 닿기 전에 규율을 읽을 확률을 올릴 뿐이다.
-// - 주입 내용·상한은 `scripts/session-start-hook.test.ts` 가 고정한다.
-process.stdout.write(
-  '[Fleet] 이 레포의 작업 규율은 AGENTS.md 에 있다 — 코드·문서를 바꾸기 전에 읽어라.\n' +
-    '        CLAUDE.md·GEMINI.md 는 그 파일을 가리키는 포인터일 뿐 규율 본문이 아니다.\n' +
-    '[Fleet] src/ 를 통째로 뒤지기 전에 brain.md(자동 생성 구조 지도)를 먼저 읽어 토큰을 아껴라.\n' +
-    '[Fleet] 변경 후 `npm run verify` green 이 머지 조건이다(로컬 == CI).\n',
-)
+process.stdout.write(AGENT_GUIDANCE + '\n')
 
 if (process.env['CLAUDE_CODE_REMOTE'] !== 'true') process.exit(0)
 

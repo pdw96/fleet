@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "name": "fleet-guidance",
+            "type": "command",
+            "command": "node \"$GEMINI_PROJECT_DIR/.gemini/hooks/session-start.mjs\"",
+            "description": "AGENTS.md 규율 안내를 세션 컨텍스트에 주입(.claude 훅의 Gemini 짝)"
+          }
+        ]
+      }
+    ]
+  }
+}

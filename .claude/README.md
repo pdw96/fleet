@@ -58,6 +58,14 @@
 매 세션 로드 비용이 된다(ADR-0002 교훈). 주입 내용·바이트 상한은 `scripts/session-start-hook.test.ts`
 가 고정한다.
 
+**호스트별 짝 — 이 훅은 Claude Code 에서만 발동한다**(등록자가 `.claude/settings.json` 이다). 같은
+포인터 구멍을 가진 Gemini CLI 는 자기 훅이 필요해 `.gemini/`(레포 루트, `.claude/*` 와 같은 allowlist
+패턴으로 추적)에 짝을 둔다 — 주입 경로가 stdout **원문**이 아니라 `hookSpecificOutput.additionalContext`
+**JSON** 이라 봉투가 갈리기 때문이다(원문을 뱉으면 Gemini 쪽에서 파싱 실패로 조용히 사라진다).
+**문구는 `scripts/agent-guidance.mjs` 단일 출처를 공유**하고, 두 호스트가 같은 바이트를 내는지를
+같은 테스트가 핀한다. Codex CLI 는 `AGENTS.md` 를 파일명 규약으로 네이티브 로드하므로 훅이 없다
+(Codex PR#334 P1).
+
 ### PreToolUse (`hooks/require-codex-review.mjs`)
 
 `settings.json` 의 `PreToolUse` hook(`hooks/require-codex-review.mjs`)이 머지를 게이트한다.
