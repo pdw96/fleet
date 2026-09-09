@@ -45,7 +45,8 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
 
 1. **버전 3곳 미러** — `package.json` version · `package-lock.json` 루트(`npm install
    --package-lock-only` 로 **재생성**, 손편집 금지) · `src/main/core/mcp/client.ts` 의
-   `CLIENT_VERSION`. 뒤 둘은 `scripts/mcp-client-version.test.ts` 가 대조하므로 verify 가 잡는다.
+   `CLIENT_VERSION`. 셋의 정합은 `scripts/mcp-client-version.test.ts` 가 전부 대조하므로 verify 가
+   잡는다 — 락파일은 같은 버전을 두 곳(`version` · `packages[""].version`)에 적고 둘 다 본다.
 2. **`npm run verify` GREEN.**
 3. **같은 이름의 릴리스가 이미 공개돼 있지 않은지** — `prepare` 잡이 기존 릴리스가 draft 가 아니면
    하드 실패한다(`scripts/release-pipeline-gates.test.ts` 가 핀). 미리 보면 실패 왕복을 아낀다.

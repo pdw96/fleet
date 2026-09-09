@@ -330,8 +330,9 @@ W4 가 끝나는 주기의 출하다.
    이제 `prepare` 잡이 기존 릴리스가 draft 가 아니면 하드 실패한다(`scripts/release-pipeline-gates.test.ts` 가 핀).
 2. **버전** — `package.json` version 상향. 태그는 정확히 `v${version}`(`release.yml` 이 불일치를 하드 실패).
    버전은 3곳에 미러된다 — `package.json` · `package-lock.json` 루트(`npm install --package-lock-only`
-   로 재생성, 손편집 금지) · `src/main/core/mcp/client.ts` 의 `CLIENT_VERSION`
-   (`scripts/mcp-client-version.test.ts` 가 대조).
+   로 재생성, 손편집 금지) · `src/main/core/mcp/client.ts` 의 `CLIENT_VERSION`.
+   **셋 전부** `scripts/mcp-client-version.test.ts` 가 대조한다(락파일은 `version` 과
+   `packages[""].version` 두 자리를 함께 본다 — 한쪽만 보면 손편집으로 갈라진 상태를 놓친다).
 3. **릴리스 노트 — 0.x 는 자동 노트 + 안내 푸터, 1.0 은 CHANGELOG 필수.** `release.yml` 의
    `gh release create` 는 `--generate-notes`(자동 생성 노트)를 쓴다. 자동 노트는 미서명 경고 우회
    안내를 합성해 주지 않는데(ADR-0017 이 서명 대신 두는 **유일한** 완화책이다), `prepare` 잡의
