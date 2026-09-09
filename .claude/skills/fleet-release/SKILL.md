@@ -59,15 +59,16 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
 
 **출하 커밋은 `master` 여야 한다 — 이 절 전체의 전제다.** 두 경로 모두 「지금 고른 것」의 HEAD 를
 그대로 태깅하고, 되돌릴 수 없다 — immutable releases 라 잘못 나간 출하의 복구는 재출하뿐이다
-(v0.1.1 선례). **`prepare` 잡이 이를 강제한다**(아래 「게이트가 지키는 것」) — 아래 두 경로의
-점검은 그 게이트를 앞당겨 실패 왕복을 아끼는 자리지, 유일한 방어가 아니다.
+(v0.1.1 선례). **`prepare` 잡이 이를 강제한다**(아래 「게이트가 지키는 것」). 다만 게이트는 **개시에
+쓰인 ref 의 `release.yml` 안에** 있으므로 두 방어가 겹치는 것은 **같은 ref 에 둘 다 있을 때뿐**이다
+— 아래 두 경로의 점검은 편의가 아니라 규칙으로 남는다.
 
 - **CLI** — **`master` 위에서, 버전 상향을 먼저 커밋한 뒤** 태그를 만들고 민다:
 
   ```sh
   git rev-parse --abbrev-ref HEAD   # master 여야 한다
   git fetch origin master
-  git rev-parse HEAD origin/master  # 두 줄이 같은 SHA 여야 한다 — prepare 게이트를 앞당겨 잡는다
+  git rev-parse HEAD origin/master  # 두 줄이 같은 SHA 여야 한다 — 게이트보다 엄격한 점검
   git status --porcelain            # 비어 있어야 한다 — 상향이 커밋됐다는 뜻
   git tag v${version}               # 대상 생략 = 현재 HEAD
   git rev-parse v${version} HEAD    # 두 줄이 같은 SHA 여야 한다
@@ -84,21 +85,38 @@ ADR-0018 을 낳았다. 그런데 절차가 산문으로만 있으면 매 주기
   태그가 딸려 만들어지지 않는다 — 그래서 두 단계가 다 명시적이어야 한다.
 - **Actions** → **Release** → 「Run workflow」 (브라우저 전용 환경용. `prepare` 가 `package.json` 과
   대조한 뒤 태그 ref 를 직접 만든다 — 이쪽은 로컬 태그가 필요 없다).
-  ⚠ **「Use workflow from」에서 반드시 `master` 를 고를 것.** `release.yml` 의 「태그 ref 보장」
+  ⚠ **「Use workflow from」에서 반드시 `master` 를 고를 것 — 이건 규칙이다.** 「태그 ref 보장」
   스텝이 고른 ref 의 `$GITHUB_SHA` 에 태그를 만들므로, 특성 브랜치를 고르면 그 브랜치 HEAD 가
-  출하 대상이 된다. 아래 게이트가 태그 생성 **전에** 막지만, 실패한 run 하나를 아끼는 편이 낫다.
+  출하 대상이 된다. 아래 게이트가 태그 생성 전에 막지만 — **게이트도 고른 ref 의 파일이라**,
+  게이트가 없는 브랜치를 고르면 게이트도 없다(아래 「남는 공백」).
 
 > **게이트가 지키는 것 — 「출하 커밋 master 포함 확인」.** `prepare` 가 **태그 ref 를 만들기 전에**
 > 체크아웃된 커밋이 `master` 에 포함되는지 본다 — `compare/master...<sha>` 의 `status` 가
-> `identical`·`behind` 면 통과, `ahead`·`diverged` 면 하드 실패다(실측한 네 값이 전부다).
+> `identical`·`behind` 면 통과, `ahead`·`diverged` 면 하드 실패다(REST 스키마상 이 넷이 전부다).
 > 판정을 브랜치 **이름**이 아니라 **포함 관계**로 하는 이유는 두 개시 경로를 한 술어로 덮기
 > 위해서다 — dispatch 는 고른 ref 이름을 주지만 태그 push 는 태그만 온다. 그래서 이 스텝엔
 > 이벤트 분기가 없고, 넣으면 핀이 RED 다.
-> 대상은 `$GITHUB_SHA` 가 아니라 `git rev-parse HEAD` 다 — annotated 태그 push 에서 전자가
-> 커밋인지 태그 객체인지 문서가 단정하지 않고(「태그 ref 보장」이 SHA 대조를 dispatch 로 좁힌 것과
-> 같은 이유), 후자는 build 잡이 **실제로 빌드하는 그 커밋**이다.
-> `scripts/release-pipeline-gates.test.ts` 가 핀한다 — 스텝 제거 · `continue-on-error` 부착 ·
-> 판정 완화 · 대상 변조 · 경로 분기 · 순서 뒤집기 6종 뮤턴트에서 RED 확인(#328).
+> 대상은 `$GITHUB_SHA` 가 아니라 `git rev-parse HEAD` 다 — 후자는 checkout 이 무엇을 해석했든
+> **항상 커밋**이라 「annotated 태그 push 에서 `GITHUB_SHA` 가 무엇인가」에 의존하지 않고,
+> build 잡이 실제로 빌드하는 그 커밋이다.
+> ⚠ `behind`(master 의 **조상**) 허용은 **squash 머지 관례에 기댄다** — squash 아래서만
+> 「master 에 포함 == 리뷰됨」이 성립한다. 머지 커밋이나 master 직접 push 가 들어오면 재검토할 것.
+> `scripts/release-pipeline-gates.test.ts` 가 핀한다 — 정적 핀 8종에 더해 **실행 계약 테스트**가
+> 워크플로의 `run:` 본문을 파일에서 그대로 뽑아 가짜 `gh` 로 돌린다(status 4값 + 빈 값 + 미지의 값
+> + API 실패 → 종료코드). 뮤턴트 15종에서 전부 RED 확인(#328).
+
+> **남는 공백 — 게이트는 자기가 판정할 커밋 안에 산다.** Actions 는 이벤트의 커밋/ref 에 있는
+> 워크플로 버전을 실행한다. 즉 **이 게이트를 포함하지 않는 ref 로 개시하면 게이트도 없다** —
+> #328 머지 이전에 분기해 그 뒤로 rebase 하지 않은 브랜치가 그 집합이다. 창은 좁다(그런 브랜치는
+> 「태그↔`package.json` 버전 대조」도 자기 브랜치 값으로 통과해야 한다) 그리고 시간이 지나면 닫힌다.
+> 워크플로 파일 안의 어떤 스텝으로도 원리적으로 못 막으므로 — `environment:` 조차 같은 파일에 있다 —
+> **ref 독립 강제는 태그 ruleset(`v*` 생성 제한)뿐이고 그것은 레포 설정이라 별건이다.**
+> 그때까지 위 두 경로의 사람 확인이 이 공백을 덮는 유일한 통제다.
+
+**개시가 하드 실패했으면 태그부터 지운다** — `git push --delete origin v${version}`. 태그 push 로
+개시했다면 게이트(또는 버전 대조)가 막아도 태그는 이미 원격에 있다. 지우지 않으면 재push 는
+`Everything up-to-date` 로 조용히 no-op 이고 dispatch 는 「태그 ref 보장」에서 막혀, **두 경로가 다
+잠긴다.** 지운 뒤 원인을 고치고 다시 개시할 것.
 
 **⚠ GitHub 웹의 「Draft a new release」로 릴리스를 만들어 발행하지 마라.** 이 항의 실제 불변식은
 *electron-builder 가 도착했을 때 공개된 릴리스가 없을 것* 이다. 웹 UI 발행은 그 행위가 태그를 만들어

@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 // v0.1.1 은 Release 워크플로 4개 잡이 **전부 성공**한 채 자산 0개로 발행됐다.
@@ -10,15 +13,34 @@ import { describe, expect, it } from 'vitest'
 describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
   const yml = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8')
 
-  /** 이름으로 스텝 하나를 잘라낸다 — 다음 스텝(`- name:`/`- uses:`) 직전까지. */
+  /**
+   * 이름으로 스텝 하나를 잘라낸다 — **다음 스텝 항목(또는 잡 경계)의 시작 줄까지**, 그리고 그 앞의
+   * 주석 줄은 다음 스텝의 것이므로 떼어낸다.
+   *
+   * 경계를 `- name:`/`- uses:` 두 리터럴로만 잡으면 두 방향으로 틀린다: (a) `- run:` 축약 스텝(이
+   * 파일에 6개 있다)을 경계로 못 봐 슬라이스가 남의 스텝 본문을 삼키고, (b) 다음 스텝의 선행 주석
+   * 블록이 딸려 온다. 부재 단언(`not.toMatch`)이 **남의 텍스트를 감시**하게 되므로 오탐과 과소검출이
+   * 동시에 생긴다 — 실제로 이 게이트 스텝의 슬라이스가 「태그 ref 보장」의 주석 23줄을 삼키고 있었다.
+   */
   const step = (name: string): string => {
-    const start = yml.indexOf(`      - name: ${name}`)
+    const lines = yml.split('\n')
+    const start = lines.findIndex((l) => l === `      - name: ${name}`)
     if (start === -1) throw new Error(`스텝을 찾지 못했다: ${name}`)
-    const ends = ['\n      - name: ', '\n      - uses: ']
-      .map((m) => yml.indexOf(m, start + 1))
-      .filter((i) => i !== -1)
-    return ends.length === 0 ? yml.slice(start) : yml.slice(start, Math.min(...ends))
+    let end = lines.length
+    for (let i = start + 1; i < lines.length; i++) {
+      // 스텝 항목의 시작(`      - `) 또는 더 얕은 들여쓰기(잡·최상위 키) = 이 스텝의 끝.
+      if (/^ {6}- /.test(lines[i]) || /^ {0,5}\S/.test(lines[i])) {
+        end = i
+        break
+      }
+    }
+    while (end > start + 1 && /^\s*#/.test(lines[end - 1])) end--
+    return lines.slice(start, end).join('\n')
   }
+
+  /** 스텝 이름은 한 곳에서만 적는다 — 두 표기로 참조하면 리네임 시 한쪽만 RED 가 된다. */
+  const ENSURE_TAG_STEP = '태그 ref 보장 (dispatch 개시 경로 전용)'
+  const MASTER_GATE_STEP = '출하 커밋 master 포함 확인 (미머지 코드 출하 차단)'
 
   describe('prepare — 공개된 릴리스 재사용 차단', () => {
     it('기존 릴리스의 draft 여부를 조회한다', () => {
@@ -140,16 +162,24 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
   // (Codex PR#327 3R P1 → #328). 복구는 재출하뿐이다 — v0.1.1 이 이미 그 비용을 치렀다.
   // 정상 출하는 이 게이트가 있든 없든 green 이라 소실이 무신호다 — 위 두 게이트와 같은 근거로 핀한다.
   describe('prepare — 출하 커밋의 master 포함 강제', () => {
-    const NAME = '출하 커밋 master 포함 확인 (미머지 코드 출하 차단)'
+    const NAME = MASTER_GATE_STEP
 
-    it('게이트 스텝이 존재한다', () => {
-      expect(yml).toContain(`- name: ${NAME}`)
+    it('게이트가 `prepare` 잡 안에, 태그 ref 생성보다 **먼저** 있다', () => {
+      // 두 가지를 함께 본다. ① 순서 — 뒤에 오면 dispatch 가 특성 브랜치 커밋에 태그를 이미
+      // 만든 뒤 실패한다. ② **소속 잡** — 텍스트 위치만 보면 게이트를 `prepare` 앞의 별도 잡으로
+      // 옮기고 `needs:` 를 빠뜨리는 편집(흔한 리팩터 실수)이 통과한다. 두 잡이 병렬로 돌아
+      // 게이트가 태그 생성을 전혀 막지 못하는데도 순서 단언은 만족된다.
+      const prepare = yml.slice(yml.indexOf('\n  prepare:'), yml.indexOf('\n  build:'))
+      expect(prepare).toContain(`- name: ${NAME}`)
+      expect(prepare).toContain(`- name: ${ENSURE_TAG_STEP}`)
+      expect(prepare.indexOf(`- name: ${NAME}`)).toBeLessThan(
+        prepare.indexOf(`- name: ${ENSURE_TAG_STEP}`),
+      )
     })
 
-    it('판정 대상이 체크아웃된 커밋이다($GITHUB_SHA 가 아니라)', () => {
-      // annotated 태그 push 에서 `GITHUB_SHA` 가 커밋인지 태그 객체인지는 문서가 단정하지 않는다
-      // (아래 「태그 ref 보장」이 SHA 대조를 dispatch 로 좁힌 이유와 같다). `git rev-parse HEAD` 는
-      // 항상 커밋이고, checkout `ref:` 식이 build 잡과 같으므로 **실제로 출하되는 커밋**이다.
+    it('판정 대상이 워크트리의 HEAD 다($GITHUB_SHA 가 아니라)', () => {
+      // `git rev-parse HEAD` 는 checkout 이 무엇을 해석했든 **항상 커밋**이라, annotated 태그
+      // push 에서 `GITHUB_SHA` 가 커밋인지 태그 객체인지라는 물음에 의존하지 않는다.
       expect(step(NAME)).toMatch(/SHA=\$\(git rev-parse HEAD\)/)
     })
 
@@ -157,32 +187,131 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
       expect(step(NAME)).toMatch(/compare\/master\.\.\.\$SHA" -q \.status/)
     })
 
-    it('포함(identical·behind)만 통과시킨다', () => {
-      // 실측(2026-09-09, pdw96/fleet): 같은 커밋 `identical` · master 위 옛 커밋 `behind` ·
-      // 특성 브랜치 `diverged`. master 의 자손은 `ahead` — 아직 머지되지 않았으므로 통과시키면 안 된다.
-      expect(step(NAME)).toMatch(/^\s+identical\|behind\)/m)
+    it('통과 arm 이 정확히 `identical|behind` 와 `*` 뿐이다', () => {
+      // **존재 단언만으로는 부족하다**(실측): `identical|behind)` **앞에** `ahead)` arm 을 끼우면
+      // 「arm 이 존재한다」·「`*)` 아래 exit 1 이 있다」 두 핀이 그대로 매치해 GREEN 이었다.
+      // `ahead` 는 master 의 **자손** = 아직 머지되지 않은 커밋이라, arm 하나로 게이트가 통째로
+      // 무력해진다. 그래서 존재가 아니라 **집합**을 고정한다. 들여쓰기가 아니라 `case`~`esac`
+      // 구간으로 앵커해 정당한 재포맷에는 오탐하지 않는다.
+      const body = step(NAME)
+      const from = body.indexOf('case "$STATUS" in')
+      const to = body.indexOf('esac', from)
+      expect(from).toBeGreaterThan(-1)
+      expect(to).toBeGreaterThan(from)
+      const arms = [...body.slice(from, to).matchAll(/^[ \t]+([^\s)][^)\n]*)\)[ \t]*$/gm)].map(
+        (m) => m[1],
+      )
+      expect(arms).toEqual(['identical|behind', '*'])
     })
 
-    it('그 외 status 는 하드 실패한다', () => {
-      expect(step(NAME)).toMatch(/^\s+\*\)[\s\S]{0,800}?exit 1/m)
+    it('실패 arm 의 `exit 1` 이 **명령**이다(메시지 속 문자열이 아니라)', () => {
+      // `/\*\)[\s\S]*?exit 1/` 는 부분 문자열이라, `exit 1` 을 지우고 그 단어가 들어간
+      // `::warning::` 메시지를 남기면 통과한다 — 게이트가 조용히 경고 장치로 전락한다.
+      // 이 레포는 근거를 긴 메시지로 남기는 관행이 강해 우연 성립 확률이 낮지 않다.
+      const body = step(NAME)
+      expect(body).toMatch(/^\s+exit 1$/m)
+      expect(body).not.toMatch(/::warning::/)
     })
 
-    it('게이트가 태그 ref 생성보다 **먼저** 온다', () => {
-      // 뒤에 오면 dispatch 경로가 특성 브랜치 커밋에 태그를 이미 만든 뒤 실패한다.
-      // 산문 언급이 아니라 **스텝 선언**의 위치로 비교한다 — 주석이 서로를 참조하기 때문이다.
-      expect(yml.indexOf(`- name: ${NAME}`)).toBeGreaterThan(-1)
-      expect(yml.indexOf(`- name: ${NAME}`)).toBeLessThan(yml.indexOf('- name: 태그 ref 보장'))
+    it('판정 입력이 각각 한 번만 대입된다(재대입으로 덮어쓰기 차단)', () => {
+      // `SHA=$(git rev-parse HEAD)` 뒤에 `SHA=<master 의 sha>` 한 줄을 더하면 판정이 항상
+      // `identical` 이 된다 — 첫 대입만 보는 존재 단언으로는 못 막는다. `STATUS` 도 동형이다.
+      const body = step(NAME)
+      expect(body.match(/^\s*SHA=/gm) ?? []).toHaveLength(1)
+      expect(body.match(/^\s*(?:if ! )?STATUS=/gm) ?? []).toHaveLength(1)
     })
 
-    it('두 개시 경로를 모두 덮는다(이벤트 분기가 없다)', () => {
+    it('두 개시 경로를 모두 덮는다(이벤트 분기·조기 종료가 없다)', () => {
       // push 만/dispatch 만 덮으면 다른 경로가 그대로 뚫린다 — 포함 관계 술어를 고른 이유가 이것이다.
-      expect(step(NAME)).not.toMatch(/EVENT_NAME/)
+      // 토큰 `EVENT_NAME` 하나만 밴하면 소문자 표현식(`${{ github.event_name }}`)·다른 컨텍스트
+      // (`GITHUB_REF_TYPE`)·변수 개명으로 전부 우회된다. 그래서 **분기의 결과**(조기 통과)도 막는다.
+      const body = step(NAME)
+      expect(body).not.toMatch(/EVENT_NAME/)
+      expect(body).not.toMatch(/github\.event_name/)
+      expect(body).not.toMatch(/GITHUB_REF_TYPE/)
+      expect(body).not.toMatch(/\bexit 0\b/)
     })
 
     it('게이트 스텝에 fail-open 조건이 붙어 있지 않다', () => {
       // `continue-on-error: true` 한 줄이면 exit 1 이 나도 다음 스텝이 그대로 돈다(#314 패턴).
       expect(step(NAME)).not.toMatch(/^\s+if:/m)
       expect(step(NAME)).not.toMatch(/continue-on-error/)
+    })
+  })
+
+  // 위 핀은 전부 **정적 텍스트 대조**라 셸을 한 번도 실행하지 않는다. 그래서 텍스트가 그럴듯하면서
+  // 동작이 뒤집히는 편집(허용 arm 추가 · `|| echo identical` 폴백 · `exit 1` 을 메시지로 강등)이
+  // 통과할 수 있었다 — 실제로 첫 두 개는 통과했다(실측). 여기서는 워크플로의 `run:` 본문을 파일에서
+  // **그대로 뽑아** 가짜 `gh` 를 PATH 앞에 놓고 돌린다. status 값별 종료코드가 계약이고, 그 계약은
+  // 텍스트 표현이 어떻게 바뀌어도 유지돼야 한다. #328 의 「master 정상 출하는 영향 없음」도 여기서 산다.
+  //
+  // win32 skip: 이 스텝은 `shell: bash` · `runs-on: ubuntu-latest` 에서만 실행되고, 검증 대상도
+  // 그 셸 의미론이다. ci.yml 의 windows 잡은 `.cmd` 셰임 회귀 전용이라 이 계약과 무관하다.
+  describe.skipIf(process.platform === 'win32')('게이트 실행 계약 (status → 종료코드)', () => {
+    const runBody = (): string => {
+      const s = step(MASTER_GATE_STEP)
+      const at = s.indexOf('        run: |\n')
+      if (at === -1) throw new Error('run 블록을 찾지 못했다')
+      return s.slice(at + '        run: |\n'.length)
+    }
+
+    /**
+     * 가짜 `gh` 를 PATH 앞에 놓고 게이트 본문을 실행한다.
+     *
+     * 실패 모드는 **실물과 같아야** 한다 — 진짜 `gh` 는 404 에서 stdout 에 아무것도 쓰지 않고
+     * stderr 로만 보고한다(실측: `gh: Not Found (HTTP 404)`). 스텁이 실패할 때도 stdout 에
+     * 값을 뱉으면 `|| echo …` 폴백 뮤턴트가 두 출력이 이어붙는 바람에 우연히 잡혀, 핀이 실제보다
+     * 강해 보인다. 그 착시를 한 번 겪어서 여기에 적어 둔다.
+     */
+    const runGate = (ghStdout: string, ghExit = 0): number => {
+      const dir = mkdtempSync(join(tmpdir(), 'fleet-master-gate-'))
+      try {
+        const gh = join(dir, 'gh')
+        writeFileSync(
+          gh,
+          ghExit === 0
+            ? `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(ghStdout)}\n`
+            : `#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit ${ghExit}\n`,
+        )
+        chmodSync(gh, 0o755)
+        const script = join(dir, 'gate.sh')
+        writeFileSync(script, runBody())
+        const r = spawnSync('bash', [script], {
+          cwd: new URL('..', import.meta.url).pathname,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${dir}:${process.env.PATH ?? ''}`,
+            GITHUB_REPOSITORY: 'pdw96/fleet',
+            TAG: 'v9.9.9',
+          },
+        })
+        return r.status ?? -1
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
+    it.each([
+      ['identical', 0, 'master HEAD — 정상 출하'],
+      ['behind', 0, 'master 위의 옛 커밋 — 포함된다'],
+    ])('%s 는 통과한다 (%i) — %s', (status, code) => {
+      expect(runGate(status)).toBe(code)
+    })
+
+    it.each([
+      ['ahead', 'master 의 자손 — 아직 머지되지 않았다'],
+      ['diverged', '특성 브랜치'],
+      ['', 'status 가 비었다 — 판정 불가'],
+      ['unexpected-new-value', '모르는 값 — 판정 불가'],
+    ])('%s 는 하드 실패한다 — %s', (status) => {
+      expect(runGate(status)).not.toBe(0)
+    })
+
+    it('compare 조회가 실패하면 통과시키지 않는다(`|| echo identical` 류 폴백 차단)', () => {
+      // 404 는 「이 커밋이 레포에 없다」 = 방어 대상 그 자체다. API 실패를 통과로 접는 한 줄이
+      // 게이트를 fail-open 으로 뒤집는데, 동기가 현실적이다("플레이크에 릴리스가 막힌다").
+      expect(runGate('', 1)).not.toBe(0)
     })
   })
 
@@ -224,8 +353,18 @@ describe('릴리스 파이프라인 fail-closed 게이트 핀', () => {
   // 조작이 바로 v0.1.1 을 만든 압력이다. `deploy-cd-pin.test.ts:79-83` 이 같은 밴을 이미 갖는다.
   // 현재 `release.yml` 에 `if:`·`continue-on-error` 는 0건이라 오탐 위험이 없다.
   describe('fail-open 조건 밴', () => {
-    it('워크플로 어디에도 continue-on-error: true 가 없다', () => {
-      expect(yml).not.toMatch(/continue-on-error:\s*true/)
+    it('워크플로 어디에도 continue-on-error 가 없다(값 무관)', () => {
+      // `\s*true` 만 보면 `continue-on-error: ${{ … }}` 표현식 값으로 우회된다. 이 워크플로에
+      // 정당한 `continue-on-error` 는 하나도 없으므로 키 자체를 밴하는 편이 좁고 정확하다.
+      expect(yml).not.toMatch(/continue-on-error:/)
+    })
+
+    it('실패를 삼키는 `if:` 형태가 없다', () => {
+      // `deploy-cd-pin.test.ts` 와 같은 목록. `자산 실재 확인` 이후 구간만 보던 아래 핀은
+      // 잡 수준 `if: always()`(예: `release:` 잡 자체에 붙이면 build 실패도 무시된다)를 놓친다.
+      expect(yml).not.toMatch(/if:[^\n]*\balways\(\)/)
+      expect(yml).not.toMatch(/if:[^\n]*!\s*cancelled\(\)/)
+      expect(yml).not.toMatch(/if:[^\n]*\bfailure\(\)/)
     })
 
     it('자산 확인~공개 구간에 조건부 실행(if:)이 없다', () => {
