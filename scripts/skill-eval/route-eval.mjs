@@ -199,16 +199,18 @@ function normalize(name) {
 
 /**
  * 이 도구 호출이 「스킬을 열었다」에 해당하는지 판정한다.
- * win32 네이티브 절대경로는 역슬래시로 오므로 정규화 후 매칭한다.
+ *
+ * **`Skill` 도구만 센다.** 초판은 `.claude/skills/<name>/SKILL.md` 를 직접 `Read` 하는 것도
+ * 같은 의도로 보고 함께 셌는데, 도구 제한을 넣자 그게 **허위 발동**을 만들었다 — 이슈를
+ * 나열할 수단이 없어진 모델이 레포를 뒤지다 `SKILL.md` 를 일반 파일로 읽는 경로가 생겼고,
+ * `neg-7`("열려있는 이슈 목록만 뽑아줘")이 9런 중 6런에서 그렇게 「발동」으로 집계됐다.
+ * 그 런들의 도구 목록에는 `Skill` 이 아예 없다.
+ *
+ * 우리가 재려는 것은 **description 이 스킬을 후보로 띄우고 모델이 그것을 선택하는가**다.
+ * 파일 검색으로 SKILL.md 에 닿는 것은 그 기제가 아니므로 세지 않는다.
  */
 function skillFromTool(tool, input) {
   if (tool === 'Skill' && typeof input.skill === 'string') return normalize(input.skill)
-  if (tool === 'Read' && typeof input.file_path === 'string') {
-    const p = input.file_path.replace(/\\/g, '/')
-    if (p.includes('.claude/skills/') && p.endsWith('SKILL.md')) {
-      return p.split('.claude/skills/')[1].split('/')[0]
-    }
-  }
   return null
 }
 
