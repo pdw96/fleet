@@ -261,11 +261,14 @@ project number `1`, owner `pdw96`).
      그 환경에서 머지는 **MCP 경로가 유일**하고, 조회는 REST(`gh api repos/{owner}/{repo}/…`),
      스레드 resolve·draft 전환은 CCR 라우트(`…/pulls/{n}/ccr/review_threads`,
      `…/ccr/comments/{id}/resolve`, `…/ccr/ready_for_review`)를 쓴다.
-   - **코멘트는 MCP 로 단다** — `gh api …/issues/{n}/comments` 로 올린 코멘트는 작성자가
-     `claude[bot]` 이 되고, **Codex 는 연결되지 않은 계정의 `@codex review` 를 거부한다**(실측:
-     계정 연결 안내만 돌아온다). MCP `add_issue_comment` 는 OWNER 계정으로 나가 정상 발화한다.
-     같은 이유로 **드래프트 해제(ready)도 트리거가 되지 않는다** — 행위자가 `claude[bot]` 이면
-     자동 리뷰가 안 걸리므로 ready 직후 수동 `@codex review` 를 MCP 로 함께 건다.
+   - **코멘트·PR 생성은 MCP 로 한다** — `gh api` 경유로 올린 코멘트·PR 은 작성자가 `claude[bot]`
+     이 되고, 이 계정은 리뷰 봇에게 보이지 않거나 거부당한다(전부 실측):
+     - **Codex 는 연결되지 않은 계정의 `@codex review` 를 거부한다** — 계정 연결 안내만 돌아온다.
+     - **CodeRabbit 은 봇이 연 PR 을 건너뛴다** — `Review skipped / Bot user detected`.
+     - **드래프트 해제(ready)도 트리거가 되지 않는다** — 행위자가 `claude[bot]` 이면 자동 리뷰가
+       안 걸리므로 ready 직후 수동 `@codex review` 를 MCP 로 함께 건다.
+
+     MCP `add_issue_comment`·`create_pull_request` 는 OWNER 계정으로 나가 이 문제가 없다.
      **대기 방식은 실행 환경으로 갈린다** — 폴링은 이제 로컬 전용 폴백이다:
      - **원격(Claude Code on the web)** — `subscribe_pr_activity` 로 그 PR 을 구독한다. 리뷰·CI·코멘트가
        **도착할 때만** 세션이 깨어나므로 대기 턴이 0이다. `/loop 5m` 은 리뷰가 20분 걸리면 아무 일도
