@@ -209,6 +209,33 @@ describe('ProjectPanel', () => {
     expect(fleet.runProject).toHaveBeenCalledWith(expect.objectContaining({ maxReplanRounds: 2 }))
   })
 
+  // [#298] manual 배정이 삭제된 세션을 가리킨 채 남으면 select 표시(첫 세션)와 전송값(죽은 id)이
+  // 어긋나고, 그 배정은 리뷰 우회로 이어진다(engine 재배정·orchestrator 미검토 실패로만 드러남).
+  it('[#298] drops manual assignments that point at a removed session', async () => {
+    const other: LlmDescriptor = { id: 'llm-2', kind: 'cli', displayName: 'Codex', ref: 'codex' }
+    const fleet = mockFleet()
+    const { rerender } = await renderSettled(<ProjectPanel sessions={[SESSION, other]} />)
+    await screen.findByText(/워크스페이스 미설정/)
+    fireEvent.change(screen.getByPlaceholderText(/사용자 인증/), { target: { value: '목표' } })
+    fireEvent.change(screen.getByLabelText('역할 배정 정책'), { target: { value: 'manual' } })
+    // reviewer 를 두 번째 세션에 손으로 배정한다.
+    fireEvent.change(screen.getByLabelText('reviewer'), { target: { value: 'llm-2' } })
+
+    // [세션] 탭에서 그 세션이 삭제된 상황 — 부모가 줄어든 목록으로 다시 렌더한다.
+    await act(async () => {
+      rerender(<ProjectPanel sessions={[SESSION]} />)
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '오케스트레이션 실행' }))
+    })
+
+    const sent = fleet.runProject.mock.calls[0][0] as {
+      assignments: { role: string; llmId: string }[]
+    }
+    expect(sent.assignments.find((a) => a.role === 'reviewer')?.llmId).toBe('llm-1')
+    expect(sent.assignments.every((a) => a.llmId === 'llm-1')).toBe(true) // 죽은 id 가 남지 않는다
+  })
+
   // 기본값(비활성=0)은 그대로 전달돼 무회귀(opt-in 유지).
   it('defaults maxReplanRounds to 0 (replan disabled) when the select is untouched', async () => {
     const fleet = mockFleet()

@@ -34,6 +34,14 @@ export function ProjectPanel({ sessions, runtime = null }: Props) {
   // 검증 실패가 verify-fix 로도 안 풀릴 때 planner 가 보정 작업을 분해해 재시도하는 라운드 수. 기본 0=비활성(opt-in).
   const [maxReplanRounds, setMaxReplanRounds] = useState(0)
   const [manual, setManual] = useState<Partial<Record<AgentRole, string>>>({})
+  // [#298] manual 배정의 유효값은 state 가 아니라 이 식이 정한다 — 세션이 삭제되면 select 는
+  // 매칭되는 option 이 없어 첫 세션을 보여주는데 state 는 죽은 id 를 그대로 들고 있어, 표시값과
+  // 전송값이 갈라진다(사용자는 A 를 보는데 실행은 사라진 B 로 나간다). 그 어긋남은 engine 재배정이나
+  // orchestrator 미검토 실패로만 뒤늦게 드러났다. 표시·전송이 같은 식에서 나오게 해 구조로 없앤다.
+  const assignedLlmId = (role: AgentRole): string => {
+    const chosen = manual[role]
+    return chosen && sessions.some((s) => s.id === chosen) ? chosen : (sessions[0]?.id ?? '')
+  }
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [workspace, setWorkspace] = useState<string | null>(null)
@@ -299,7 +307,7 @@ export function ProjectPanel({ sessions, runtime = null }: Props) {
     try {
       const assignments =
         policy === 'manual'
-          ? ASSIGNABLE_ROLES.map((role) => ({ role, llmId: manual[role] ?? sessions[0]?.id ?? '' }))
+          ? ASSIGNABLE_ROLES.map((role) => ({ role, llmId: assignedLlmId(role) }))
           : undefined
       const r = await window.fleet.runProject({
         goal: goal.trim(),
@@ -445,6 +453,7 @@ export function ProjectPanel({ sessions, runtime = null }: Props) {
               <label className="field-label">역할 배정 정책</label>
               <select
                 className="field"
+                aria-label="역할 배정 정책"
                 value={policy}
                 onChange={(e) => setPolicy(e.target.value as AssignmentPolicy)}
               >
@@ -537,7 +546,8 @@ export function ProjectPanel({ sessions, runtime = null }: Props) {
                   <label className="field-label">{role}</label>
                   <select
                     className="field"
-                    value={manual[role] ?? sessions[0]?.id ?? ''}
+                    aria-label={role}
+                    value={assignedLlmId(role)}
                     onChange={(e) => setManual((m) => ({ ...m, [role]: e.target.value }))}
                   >
                     {sessions.map((s) => (

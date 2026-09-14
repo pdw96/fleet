@@ -427,6 +427,45 @@ describe('FleetEngine', () => {
     }
   })
 
+  it('[#298] 리뷰어 배정이 실재하지 않는 세션을 가리키면 살아있는 세션으로 재배정한다', async () => {
+    // 삭제된 세션을 가리키는 manual 배정(stale id)이 그대로 넘어오면 orchestrator 의 리뷰 단계가
+    // 통째로 서지 못한다(#298). implementer 와 같은 재배정 패턴으로 살려내고, 교차검증을 보존하려
+    // implementer 가 아닌 세션을 고른다.
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-rev-reassign-'))
+    try {
+      const store = createMemoryStore(deterministic())
+      const engine = createFleetEngine({
+        store,
+        runner: roleRunner,
+        workspaceDir: dir,
+        gitRunner: fakeGit(),
+        verifyRunner: async () => ({ code: 0, stdout: '', stderr: '' }),
+      })
+      engine.registerCliSession('claude') // cli:claude
+      engine.registerCliSession('codex') // cli:codex — 재배정 대상(implementer 가 아닌 쪽)
+
+      const result = await engine.runProjectFlow({
+        goal: 'g',
+        assignments: [
+          { role: 'planner', llmId: 'cli:claude' },
+          { role: 'implementer', llmId: 'cli:claude' },
+          { role: 'reviewer', llmId: 'cli:ghost' }, // 실재하지 않는 세션
+          { role: 'summarizer', llmId: 'cli:claude' },
+        ],
+      })
+
+      const reassigned = store.listEvents().find((e) => e.type === 'assignment.reviewer_reassigned')
+      expect(reassigned).toBeDefined()
+      expect(reassigned?.data.from).toBe('cli:ghost')
+      expect(reassigned?.data.to).toBe('cli:codex') // implementer(cli:claude)가 아닌 세션 우선
+      // 리뷰가 실제로 실행됐다 = 미검토 실패 경로(#298 fail-closed)로 가지 않는다.
+      expect(result.tasks[0].status).toBe('done')
+      expect(store.listEvents().some((e) => e.type === 'task.review_unavailable')).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('cancelRun aborts an in-flight run: task ends not-done and run.cancelled is emitted', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fleet-cancel-'))
     try {

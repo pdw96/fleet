@@ -248,6 +248,85 @@ describe('runProject', () => {
     expect(store.listEvents().some((e) => e.type === 'project.done')).toBe(true)
   })
 
+  it('[#298] 리뷰어 세션이 없으면 무조건 승인하지 않는다 — 미검토로 실패시키고 감사 이벤트를 남긴다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    sessions.add(fakeSession('impl', () => '구현', 'cli'))
+    sessions.add(fakeSession('sum', () => '요약: 목표 충족'))
+    // 리뷰어 슬롯에 실재하지 않는 세션 id — 삭제된 세션을 가리키는 manual 배정(stale id) 재현.
+    const events: string[] = []
+    const ws = fakeWorkspace()
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'ghost' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      onEvent: (e) => events.push(e.type),
+    })
+
+    // 종전 동작: 리뷰 없이 approved=true → keep + done(무성). 지금은 미검토로 닫힌다.
+    expect(result.tasks[0].status).toBe('failed')
+    expect(result.tasks[0].output).toContain('리뷰어 세션 없음')
+    expect(ws.commits).toHaveLength(0)
+    expect(ws.reverts).toBeGreaterThan(0)
+    expect(events).toContain('task.failed')
+    expect(events).not.toContain('task.done')
+    // 무성 금지 — 감사 로그에 사유가 남는다(배정된 stale id 포함).
+    const audit = store.listEvents().find((e) => e.type === 'task.review_unavailable')
+    expect(audit).toBeDefined()
+    expect(audit?.data.llmId).toBe('ghost')
+  })
+
+  it('[#298] 라운드 중간에 리뷰어가 사라지면 accept-with-warnings 로 채택하지 않는다', async () => {
+    const store = createMemoryStore(deterministic())
+    const sessions = createSessionManager()
+    sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
+    // 2라운드 구현 호출 시 리뷰어를 제거한다 — 1라운드에 파싱된 거부(REVISE)를 남긴 뒤 리뷰어가
+    // 사라지는 순서. lastVerdictParsed 만 보면 이 경로가 「마지막 시도 채택」으로 새 나간다.
+    let implCalls = 0
+    sessions.add({
+      id: 'impl',
+      descriptor: { id: 'impl', kind: 'cli', displayName: 'impl', ref: 'impl', model: '' },
+      async send() {
+        implCalls++
+        if (implCalls === 2) await sessions.remove('rev')
+        return '구현'
+      },
+      async dispose() {},
+    })
+    sessions.add(fakeSession('rev', () => 'REVISE: 부족하다'))
+    sessions.add(fakeSession('sum', () => '요약: 목표 충족'))
+    const events: string[] = []
+    const ws = fakeWorkspace()
+    const result = await runProject('goal', {
+      store,
+      sessions,
+      assignments: [
+        { role: 'planner', llmId: 'planner' },
+        { role: 'implementer', llmId: 'impl' },
+        { role: 'reviewer', llmId: 'rev' },
+        { role: 'summarizer', llmId: 'sum' },
+      ],
+      workspace: ws,
+      workspaceRoot: '/ws',
+      maxReviewRounds: 2,
+      onEvent: (e) => events.push(e.type),
+    })
+
+    expect(implCalls).toBe(2)
+    expect(result.tasks[0].status).toBe('failed')
+    expect(result.tasks[0].output).toContain('리뷰어 세션 없음')
+    expect(events).not.toContain('task.accepted_with_warnings')
+    expect(ws.commits).toHaveLength(0)
+  })
+
   it('summarizer는 reviewer처럼 순수 분석 호출: workspace/cwd 없이 변경 파일이 실린 프롬프트로 평가 (#164)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
@@ -746,12 +825,14 @@ describe('runProject', () => {
     expect((warns[0].data as { feedback?: string })?.feedback).toContain('개선 권장')
   })
 
-  it('does not emit accept-with-warnings when there is no reviewer (#162 no regression)', async () => {
+  it('does not emit accept-with-warnings when there is no reviewer (#162 no regression · 결과는 #298 로 done → failed)', async () => {
     const store = createMemoryStore(deterministic())
     const sessions = createSessionManager()
     sessions.add(fakeSession('planner', () => '[{"title":"T","description":"d"}]'))
     sessions.add(fakeSession('impl', () => '구현', 'cli'))
-    // reviewer 미할당 → approved=true 즉시 → 일반 done (accept-with-warnings 경로 아님)
+    // reviewer 미배정(역할 자체가 배정 목록에 없는 형태) — 종전에는 approved=true 로 곧장 done 이었고
+    // 이 테스트가 그 결과를 핀하고 있었다. #298 이 그 fail-open 을 닫아 지금은 미검토 실패다.
+    // 이 테스트가 지키는 #162 계약(이 경로는 accept-with-warnings 가 아니다)은 그대로 유효하다.
     const events: OrchestratorEvent[] = []
     const result = await runProject('goal', {
       store,
@@ -764,9 +845,10 @@ describe('runProject', () => {
       workspaceRoot: '/ws',
       onEvent: (e) => events.push(e),
     })
-    expect(result.tasks[0].status).toBe('done')
+    expect(result.tasks[0].status).toBe('failed')
     expect(events.some((e) => e.type === 'task.accepted_with_warnings')).toBe(false)
-    expect(events.some((e) => e.type === 'task.done')).toBe(true)
+    expect(events.some((e) => e.type === 'task.done')).toBe(false)
+    expect(events.some((e) => e.type === 'task.failed')).toBe(true)
   })
 
   it('surfaces verify failure even when a task was accepted-with-warnings (#162 not a clean success)', async () => {

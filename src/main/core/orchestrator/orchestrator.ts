@@ -281,6 +281,10 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
       let feedback = ''
       let lastRejectRound = 0
       let lastVerdictParsed = false
+      // [#298] 리뷰어 세션이 없어 리뷰 단계 자체가 서지 못한 상태. lastVerdictParsed 와 별개 축이다 —
+      // 앞 라운드에서 파싱된 거부가 있었더라도(=parsed true) 리뷰어가 사라진 뒤의 라운드를
+      // accept-with-warnings 로 채택하면 「미검토를 done 으로 위장」이 다시 열린다.
+      let reviewerMissing = false
       let lastDiffDestructive = false
       let diff = { files: [] as string[], patch: '', truncated: false }
       let ignoredTouched = false
@@ -381,7 +385,18 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
 
         const reviewer = sessionForRole('reviewer')
         if (!reviewer) {
-          approved = true
+          // [#298] 종전에는 여기서 `approved = true` 로 리뷰 게이트가 통째로 사라졌다 — 경고도 이벤트도
+          // 없이 미검토 변경이 done 이 됐다. assignRoles 는 세션이 하나라도 있으면 전 역할을 채우므로
+          // (자기검토로 수렴할지언정) 이 분기는 정상 구성에서 도달하지 않는다: 삭제된 세션의 stale id
+          // (ProjectPanel 의 manual state 는 세션 삭제 시 정리되지 않는다)나 빈 llmId 같은 이상 상태뿐이다.
+          // 그래서 fail-open 을 닫고 미승인으로 남겨 아래 미승인 후처리(rollback + 실패)로 보낸다.
+          // 감사 이벤트는 영속 로그에만 남긴다(task.self_review 와 같은 채널) — 사용자 대면 사유는
+          // 아래 task.failed 메시지가 싣는다.
+          reviewerMissing = true
+          store.appendEvent({
+            type: 'task.review_unavailable',
+            data: { taskId: task.id, llmId: resolveLlmForRole(assignments, 'reviewer') ?? null },
+          })
           break
         }
         const verdict = parseReviewVerdict(
@@ -437,15 +452,24 @@ export async function runProject(goal: string, opts: RunOptions): Promise<RunRes
         // (b) 채택할 변경이 실재하며 (c) 그 변경이 위험(destructive)하지 않을 때만 적용한다 —
         // 미검토(빈/임의 산문 = parsed:false)·빈 산출물·gate 승인했으나 reviewer 가 거부한 위험 변경을
         // done 으로 위장하지 않게(Codex#1·#2·#3-재리뷰). 그 외는 기존처럼 rollback + 실패.
+        // [#298] 리뷰어 세션 부재(reviewerMissing)도 같은 「미검토」 부류다 — parsed 플래그는 앞 라운드의
+        // 잔상일 수 있으므로 별도 축으로 따로 본다.
         // (destructive gate 미승인·민감 baseline capture 실패·중간 rollback 실패·LLM 오류·abort 는
         //  전부 위에서 이미 return → 여기 미도달, 안전 불변.)
-        if (!lastVerdictParsed || diff.files.length === 0 || lastDiffDestructive) {
+        if (
+          reviewerMissing ||
+          !lastVerdictParsed ||
+          diff.files.length === 0 ||
+          lastDiffDestructive
+        ) {
           const { note } = await rollbackWithIgnored(ws, base, ignoredBaseline)
-          const reason = !lastVerdictParsed
-            ? '미승인(유효한 리뷰 응답 없음)'
-            : diff.files.length === 0
-              ? '미승인(빈 변경 — 산출물 없음)'
-              : '미승인(위험 변경 — 리뷰 거부, 경고 채택 비대상)'
+          const reason = reviewerMissing
+            ? '미승인(리뷰어 세션 없음 — 리뷰 단계 미실행)'
+            : !lastVerdictParsed
+              ? '미승인(유효한 리뷰 응답 없음)'
+              : diff.files.length === 0
+                ? '미승인(빈 변경 — 산출물 없음)'
+                : '미승인(위험 변경 — 리뷰 거부, 경고 채택 비대상)'
           store.updateTask(task.id, {
             status: 'failed',
             output: `${reason}${note}`,
