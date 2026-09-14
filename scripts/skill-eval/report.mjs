@@ -1,6 +1,10 @@
 // scripts/skill-eval/report.mjs
 // route-eval.mjs 의 jsonl 을 집계해 혼동 행렬·실패 쿼리를 낸다.
 //
+// invalid 표본(CLI 가 못 뜸·인증 만료·레이트리밋 등 인프라 실패)은 **모든 통계에서 제외**한다.
+// 그걸 섞어 세면 인프라 실패가 negative 정답이자 positive 미스로 둔갑해 그럴듯하지만
+// 오염된 결과가 나온다. 대신 건수를 눈에 띄게 보고한다.
+//
 // 사용: node scripts/skill-eval/report.mjs /tmp/iter1.jsonl [queries.json]
 
 import { readFile } from 'node:fs/promises'
@@ -15,11 +19,28 @@ if (!recPath) {
   process.exit(2)
 }
 
-const recs = (await readFile(recPath, 'utf8'))
+const all = (await readFile(recPath, 'utf8'))
   .split('\n')
   .filter((l) => l.trim())
   .map((l) => JSON.parse(l))
+const bad = all.filter((r) => r.invalid)
+const recs = all.filter((r) => !r.invalid)
 const queries = new Map(JSON.parse(await readFile(queryPath, 'utf8')).map((q) => [q.id, q.query]))
+
+if (bad.length) {
+  console.log(`⚠ invalid 표본 ${bad.length}/${all.length} — 아래 통계에서 제외됨\n`)
+  const reasons = new Map()
+  for (const r of bad)
+    reasons.set(r.error ?? '(사유 없음)', (reasons.get(r.error ?? '(사유 없음)') ?? 0) + 1)
+  for (const [why, n] of [...reasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)) {
+    console.log(`   ${n}건  ${why.slice(0, 160)}`)
+  }
+  console.log()
+}
+if (!recs.length) {
+  console.log('유효 표본이 없다 — 측정이 성립하지 않는다.')
+  process.exit(1)
+}
 
 const byQuery = new Map()
 for (const r of recs) {
@@ -71,6 +92,14 @@ for (const [id, rs] of [...byQuery.entries()].sort()) {
 }
 if (!anyFail) console.log('  없음')
 
+// 예산 포화는 해석을 바꾼다 — 예산에 걸려 끊긴 표본이 많으면 「미발동」이 아니라
+// 「끝까지 못 봤다」일 수 있다. 눈에 보이게 낸다.
+const saturated = recs.filter((r) => r.fired === 'none' && !r.timed_out && (r.tool_calls ?? 0) > 0)
+const calls = recs.map((r) => r.tool_calls ?? 0).sort((a, b) => a - b)
+const p90 = calls[Math.min(calls.length - 1, Math.floor(calls.length * 0.9))]
+console.log(`\n## 도구 호출 건수 — 중앙값 ${calls[Math.floor(calls.length / 2)]} · p90 ${p90}`)
+console.log(`   미발동 표본 중 호출이 발생한 건: ${saturated.length}`)
+
 const fp = recs.filter((r) => r.expected === 'none' && r.fired !== 'none')
 const wrong = recs.filter(
   (r) => r.expected !== 'none' && r.fired !== 'none' && r.fired !== r.expected,
@@ -84,5 +113,9 @@ const hitAll = recs.filter((r) => r.fired === r.expected).length
 const posHit = pos.filter((r) => r.fired === r.expected).length
 const negHit = neg.filter((r) => r.fired === 'none').length
 console.log(`\n## 전체 ${hitAll}/${recs.length} = ${((hitAll / recs.length) * 100).toFixed(0)}%`)
-console.log(`   positive ${posHit}/${pos.length} = ${((posHit / pos.length) * 100).toFixed(0)}%`)
-console.log(`   negative ${negHit}/${neg.length} = ${((negHit / neg.length) * 100).toFixed(0)}%`)
+if (pos.length) {
+  console.log(`   positive ${posHit}/${pos.length} = ${((posHit / pos.length) * 100).toFixed(0)}%`)
+}
+if (neg.length) {
+  console.log(`   negative ${negHit}/${neg.length} = ${((negHit / neg.length) * 100).toFixed(0)}%`)
+}
