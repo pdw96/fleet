@@ -47,7 +47,40 @@ const ISOLATE_SKIP = new Set([
  *   프롬프트와 무관하게 트리가 변형된다. 프로브는 verify 를 돌릴 일이 없으므로 끈다.
  *   훅의 안내 문구 출력은 이 분기보다 앞이라 그대로 유지된다.
  */
-const STRIP_ENV = ['CLAUDECODE', 'CLAUDE_CODE_REMOTE']
+const STRIP_ENV = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_REMOTE',
+  // 자격증명 — 아래 「원격 무력화」 주석 참조.
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'GH_ENTERPRISE_TOKEN',
+  'GITHUB_ENTERPRISE_TOKEN',
+  'GH_CONFIG_DIR',
+  'SSH_AUTH_SOCK',
+  'GIT_ASKPASS',
+  'SSH_ASKPASS',
+]
+
+/** 접두사로 지우는 환경변수. `GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n` 주입이 git 인증을 실어나른다. */
+const STRIP_ENV_PREFIX = ['GIT_CONFIG_']
+
+/**
+ * 프로브에 강제로 씌우는 환경 — 어떤 경로로도 대화형 자격증명 획득이 일어나지 않게 한다.
+ */
+const FORCE_ENV = {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o IdentitiesOnly=yes -F /dev/null',
+}
+
+/** 프로브 자식에게 줄 환경을 만든다(자격증명 제거 + 비대화형 강제). */
+function probeEnv() {
+  const env = { ...process.env }
+  for (const k of STRIP_ENV) delete env[k]
+  for (const k of Object.keys(env)) {
+    if (STRIP_ENV_PREFIX.some((p) => k.startsWith(p))) delete env[k]
+  }
+  return { ...env, ...FORCE_ENV }
+}
 
 /**
  * win32 시스템 taskkill 절대경로. bare `taskkill` 은 CreateProcess 가 cwd·PATH 를 뒤지므로
@@ -114,6 +147,13 @@ function killTree(child) {
 /** 실행 중인 프로브 — 인터럽트 시 전부 죽이기 위한 전역 등록부. */
 const live = new Set()
 
+/**
+ * 종료 개시 플래그. 스냅샷만 죽이면 부족하다 — 죽은 자식의 `close` 로 워커가 다음 작업으로
+ * 넘어가 **교체 프로브를 새로 띄우고**, 그건 스냅샷에 없어서 `process.exit` 후에도 살아남는다.
+ * 워커가 사본을 뜨거나 spawn 하기 전에 이걸 본다.
+ */
+let cancelled = false
+
 /** `plugin:skill` → `skill`. Skill 도구 인자는 플러그인 접두사를 달고 올 수 있다. */
 function normalize(name) {
   const n = name.trim()
@@ -147,8 +187,7 @@ function skillFromTool(tool, input) {
  */
 function runOnce(query, cwd, model, timeoutMs, maxTools) {
   return new Promise((resolve) => {
-    const env = { ...process.env }
-    for (const k of STRIP_ENV) delete env[k]
+    const env = probeEnv()
 
     const child = spawn(
       'claude',
@@ -310,7 +349,7 @@ function runOnce(query, cwd, model, timeoutMs, maxTools) {
 async function pool(items, limit, fn) {
   let next = 0
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
+    while (next < items.length && !cancelled) {
       const idx = next++
       await fn(items[idx], idx)
     }
@@ -339,22 +378,27 @@ async function makeTemplate(src) {
       !ISOLATE_SKIP.has(basename(from)) && !(linkedWorktree && basename(from) === '.git'),
   })
 
-  if (linkedWorktree) {
-    let origin = null
-    try {
-      origin = execFileSync('git', ['-C', src, 'remote', 'get-url', 'origin'], {
-        encoding: 'utf8',
-      }).trim()
-    } catch {
-      /* origin 없음 — remote 없이 진행 */
-    }
-    try {
-      execFileSync('git', ['-C', tpl, 'init', '-q'], { stdio: 'ignore' })
-      if (origin)
-        execFileSync('git', ['-C', tpl, 'remote', 'add', 'origin', origin], { stdio: 'ignore' })
-    } catch {
-      /* git 미가용 — 프로브는 git 없이 돈다 */
-    }
+  // **원격 무력화.** 사본은 로컬 파일만 지킨다 — ref·GitHub 작업·자격증명은 지키지 못한다.
+  // 스킬이 안 열린 프로브는 프롬프트를 계속 수행하는데, `rel-3`("rc 로 먼저 태그 밀어보자")
+  // 같은 쿼리에서 `fleet-release` 가 미발동하면 에이전트가 문서대로 `git push origin v…` 를
+  // 실행할 수 있고, 그러면 **실제 태그가 올라가 release.yml 이 진짜 릴리스를 낸다**.
+  // 그래서 origin 을 temp 안의 빈 bare 저장소로 갈아끼우고(푸시가 갈 곳이 없다),
+  // 위 `probeEnv()` 가 토큰·git 설정 주입·SSH 에이전트를 벗긴다.
+  //
+  // 대가로 프로브의 `gh` 는 레포를 해석하지 못한다. 측정 충실도를 조금 잃지만, 라우팅 판정은
+  // 앞쪽 도구 호출 몇 개에서 끝나므로 영향이 작고, 반대 방향의 사고는 되돌릴 수 없다.
+  const neutered = join(root, 'origin.git')
+  try {
+    execFileSync('git', ['init', '--bare', '-q', neutered], { stdio: 'ignore' })
+    if (linkedWorktree) execFileSync('git', ['-C', tpl, 'init', '-q'], { stdio: 'ignore' })
+    execFileSync('git', ['-C', tpl, 'remote', 'remove', 'origin'], { stdio: 'ignore' })
+  } catch {
+    /* origin 이 없었거나 git 미가용 — 아래 add 로 이어간다 */
+  }
+  try {
+    execFileSync('git', ['-C', tpl, 'remote', 'add', 'origin', neutered], { stdio: 'ignore' })
+  } catch {
+    /* git 미가용 — 프로브는 remote 없이 돈다(더 안전한 쪽) */
   }
   return { root, tpl, linkedWorktree }
 }
@@ -426,12 +470,17 @@ async function main() {
 
   // 인터럽트·치명적 오류로 부모가 죽을 때 살아있는 프로브를 전부 데려간다. 없으면
   // 10~20분짜리 명령을 Ctrl-C 한 뒤에도 유료 세션 여러 개가 계속 프롬프트를 실행한다.
-  let shuttingDown = false
   const shutdown = async (why) => {
-    if (shuttingDown) return
-    shuttingDown = true
+    if (cancelled) return
+    cancelled = true // 워커가 교체 프로브를 띄우지 못하게 먼저 막는다
     console.error(`\n${why} — 실행 중인 프로브 ${live.size}개 종료 중…`)
-    await Promise.all([...live].map((c) => killTree(c)))
+    // 이미 spawn 직전까지 간 워커가 하나 더 띄울 수 있으므로, live 가 비고 그 상태가
+    // 유지되는 것을 확인할 때까지 반복한다.
+    for (let i = 0; i < 20; i++) {
+      if (live.size) await Promise.all([...live].map((c) => killTree(c)))
+      await new Promise((r) => setTimeout(r, 100))
+      if (!live.size) break
+    }
     if (template) await rm(template.root, { recursive: true, force: true })
     process.exit(130)
   }
@@ -441,6 +490,7 @@ async function main() {
 
   try {
     await pool(jobs, workers, async ({ q, run }, idx) => {
+      if (cancelled) return // 종료 개시 후에는 사본도 뜨지 않고 프로브도 띄우지 않는다
       // 작업마다 템플릿에서 새 사본을 뜬다. 하나를 공유하면 파일을 고치라는 negative
       // 프로브(`neg-2`·`neg-3`)가 남긴 변경·git 인덱스를 뒤따르는 프로브가 보게 되어
       // 결과가 스케줄링에 의존한다.
