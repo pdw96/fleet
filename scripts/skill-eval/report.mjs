@@ -13,9 +13,14 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
-const [, , recPath, queryPath = join(HERE, 'queries.json')] = process.argv
+const argv = process.argv.slice(2)
+// 매니페스트 없는 파일을 점수화하려면 **명시적으로** 이 플래그를 줘야 한다(아래 참조).
+const unverified = argv.includes('--unverified')
+const [recPath, queryPath = join(HERE, 'queries.json')] = argv.filter((a) => !a.startsWith('--'))
 if (!recPath) {
-  console.error('사용: node scripts/skill-eval/report.mjs <결과.jsonl> [queries.json]')
+  console.error(
+    '사용: node scripts/skill-eval/report.mjs <결과.jsonl> [queries.json] [--unverified]',
+  )
   process.exit(2)
 }
 
@@ -52,14 +57,20 @@ if (manifest) {
     console.error('\nroute-eval.mjs 를 다시 완주시켜라.')
     process.exit(1)
   }
-} else {
-  const seen = [...new Set(counts.values())]
-  console.log('⚠ 매니페스트 없음 — 완결성을 검증할 수 없다(구 버전 결과 파일).')
-  if (seen.length > 1) {
-    console.error(`쿼리별 런 수가 제각각이다(${seen.join('/')}) — 중단된 파일로 보인다. 중단한다.`)
-    process.exit(1)
-  }
+} else if (unverified) {
+  console.log('⚠ --unverified — 매니페스트 없이 점수를 낸다. 이 수치는 기준선과 비교할 수 없다.')
+  console.log(`   관측된 쿼리 ${counts.size}개 · 행 ${all.length}개 — 빠진 쿼리는 알 수 없다.`)
   console.log()
+} else {
+  // 런 수가 고르다는 것은 완결성의 증거가 아니다. 앞부분에서 잘린 파일은 살아남은 쿼리들의
+  // 런 수가 그대로 고르므로 이 검사를 통과한다 — 예컨대 `rel-1` 3런만 남은 파일이 「3/3 =
+  // 100%」로 종료 0 을 내고, 나머지 스킬 전부와 negative 전부가 빠진 사실은 드러나지 않는다.
+  // 계획을 모르면 무엇이 빠졌는지 알 수 없으므로 점수를 내지 않는다.
+  console.error(`매니페스트 없음(${recPath}.manifest.json) — 점수를 내지 않는다.`)
+  console.error('  route-eval.mjs 가 결과와 함께 쓴다. 없다면 중단된 실행이거나 구 버전 파일이다.')
+  console.error('  다시 완주시켜라. 내용만 훑어야 한다면 --unverified 로 명시적으로 요구하라')
+  console.error('  — 그 수치는 기준선과 비교할 수 없다.')
+  process.exit(1)
 }
 
 const bad = all.filter((r) => r.invalid)

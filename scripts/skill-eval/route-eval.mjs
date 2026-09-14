@@ -484,8 +484,11 @@ async function main() {
       model: { type: 'string', default: 'claude-opus-5' },
       runs: { type: 'string', default: '3' },
       timeout: { type: 'string', default: '150' },
-      'max-tools': { type: 'string', default: '8' },
-      workers: { type: 'string', default: '8' },
+      // 기본값은 **확정 기준선을 낸 값**이다(README 「기준선」). 플래그를 안 주고 돌린 결과가
+      // 기준선과 곧바로 비교되게 하려는 것이다. 더 작은 예산은 없는 회귀를 만들어냈고(README
+      // 「도구 예산의 함정」), 동시성 8 은 invalid 9건을 냈다 — 둘 다 이 PR 에서 실측한 사고다.
+      'max-tools': { type: 'string', default: '12' },
+      workers: { type: 'string', default: '5' },
       only: { type: 'string' },
       out: { type: 'string' },
       'no-isolate': { type: 'boolean', default: false },
@@ -560,6 +563,10 @@ async function main() {
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  // 터미널을 닫거나 SSH 가 끊기면 부모만 SIGHUP 으로 죽는다. POSIX 프로브는 `detached: true`
+  // 라 별도 프로세스 그룹에 있어 그 hangup 을 받지 않는다 — 걸러내지 않으면 유료 프로브
+  // 여러 개가 고아로 남아 계속 돈다.
+  process.on('SIGHUP', () => void shutdown('SIGHUP'))
   process.on('uncaughtException', (e) => void shutdown(`예외: ${e.message}`))
 
   try {
