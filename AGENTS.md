@@ -255,6 +255,8 @@ project number `1`, owner `pdw96`).
      [-R owner/repo] [--squash 등] --match-head-commit <head SHA>` 와 **GitHub MCP
      `merge_pull_request(owner, repo, pullNumber, expectedHeadSha: <head SHA>)`** 다. MCP 쪽은
      우회가 아니라 **구조화 입력이라 파싱 없이 검증되는 정규 경로**이고, head 결속 필수도 동일하다.
+     결속 필드 이름은 `expectedHeadSha` **뿐**이다 — `sha` 는 그 스키마에 없어 인정하지 않는다
+     (인정하면 서버가 버리는 값을 결속으로 세어 fail-open 이 된다).
      그 밖(REST `pulls/N/merge`·GraphQL mutation·서브셸·복합 명령)은 전부 차단.
    - **원격 세션의 GraphQL 차단** — Claude Code on the web 에서는 `api.github.com/graphql` 이 403 이라
      **`gh pr merge`·`gh pr view --json`·`gh pr comment` 가 전부 실패한다**(전부 GraphQL 클라이언트다).

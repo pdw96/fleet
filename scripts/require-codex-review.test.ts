@@ -572,11 +572,11 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('gh pr merge --squash --match-head-commit abc').kind).toBe('blocked')
     expect(classify('gh pr merge feature/x --merge --match-head-commit abc').kind).toBe('blocked')
   })
-  it('MCP merge_pull_request 는 구조화 입력으로 분류된다(sha 는 main 에서 필수 강제)', () => {
+  it('MCP merge_pull_request 는 구조화 입력으로 분류된다(결속은 main 에서 필수 강제)', () => {
     expect(
       classifyHookInput({
         tool_name: 'mcp__plugin_github_github__merge_pull_request',
-        tool_input: { owner: 'pdw96', repo: 'fleet', pull_number: 240, sha: 'abc' },
+        tool_input: { owner: 'pdw96', repo: 'fleet', pull_number: 240, expectedHeadSha: 'abc' },
       }),
     ).toMatchObject({ kind: 'merge', pr: 240, repo: 'pdw96/fleet', matchHead: 'abc', viaMcp: true })
     expect(
@@ -586,19 +586,28 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
       }).kind,
     ).toBe('blocked')
   })
-  it('MCP 의 head 결속 필드는 `expectedHeadSha` 다 — 실제 도구 스키마 이름', () => {
-    // 게이트는 `sha` 만 읽고 있었는데 GitHub MCP merge_pull_request 스키마에 그 필드는 없다
-    // (`expectedHeadSha` 다). 그래서 정상 호출은 「결속 없음」으로 차단됐고, 차단 메시지가
-    // 안내하는 `sha` 를 넣으면 서버가 그 미지 필드를 버려 **결속 없는 머지**가 나갈 수 있었다
-    // — 3R P1 이 닫은 TOCTOU 보호가 이 경로에서만 무효가 되는 fail-open 이다.
+  it('MCP 의 head 결속 필드는 `expectedHeadSha` **뿐**이다 — `sha` 는 결속으로 안 센다', () => {
+    // 게이트는 `sha` 를 읽고 있었는데 merge_pull_request 스키마에 그 필드는 없다
+    // (`expectedHeadSha` 다). 그래서 정상 호출은 「결속 없음」으로 차단되고, 차단 메시지가
+    // 안내하던 `sha` 를 넣으면 게이트는 결속됐다고 보지만 서버는 그 미지 필드를 버려
+    // **결속 없는 머지**가 나간다 — 3R P1 이 닫은 TOCTOU 보호가 이 경로에서만 무효가 된다.
+    // 따라서 `sha` 를 **대체 이름으로 인정하지 않는다**: 인정하는 순간 같은 fail-open 이
+    // 그대로 남는다(#339 Codex P1). 다른 이름을 쓰는 래퍼가 실제로 나타나면 그 도구를
+    // 따로 식별해 열어야지, 이름만 보고 미리 열어둘 자리가 아니다.
     expect(
       classifyHookInput({
         tool_name: 'mcp__github__merge_pull_request',
         tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 338, expectedHeadSha: 'abc' },
       }),
     ).toMatchObject({ kind: 'merge', pr: 338, matchHead: 'abc', viaMcp: true })
-  })
-  it('MCP 에 두 결속 필드가 동시에, 서로 다르게 오면 차단 — 어느 쪽이 실행될지 모른다', () => {
+    // `sha` 만 온 호출 = 결속 없음 → main 이 head SHA 를 붙여 재시도를 요구한다.
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 338, sha: 'abc' },
+      }),
+    ).toMatchObject({ kind: 'merge', pr: 338, matchHead: null, viaMcp: true })
+    // `sha` 가 곁들여져도 판정은 `expectedHeadSha` 만 본다.
     expect(
       classifyHookInput({
         tool_name: 'mcp__github__merge_pull_request',
@@ -606,24 +615,11 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
           owner: 'pdw96',
           repo: 'fleet',
           pullNumber: 338,
-          sha: 'abc',
-          expectedHeadSha: 'def',
+          sha: 'deadbeef',
+          expectedHeadSha: 'abc',
         },
-      }).kind,
-    ).toBe('blocked')
-    // 같은 값이면 모호하지 않다 — 통과(SHA 비교는 main 에서 대소문자 무시).
-    const same = classifyHookInput({
-      tool_name: 'mcp__github__merge_pull_request',
-      tool_input: {
-        owner: 'pdw96',
-        repo: 'fleet',
-        pullNumber: 338,
-        sha: 'abc',
-        expectedHeadSha: 'ABC',
-      },
-    })
-    expect(same).toMatchObject({ kind: 'merge', viaMcp: true })
-    expect((same as { matchHead: string }).matchHead.toLowerCase()).toBe('abc')
+      }),
+    ).toMatchObject({ kind: 'merge', matchHead: 'abc', viaMcp: true })
   })
 })
 

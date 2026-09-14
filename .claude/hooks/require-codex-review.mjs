@@ -689,25 +689,23 @@ export function classifyHookInput(input, _depth = 0) {
     const pr = ti.pull_number ?? ti.pullNumber ?? null
     if (pr == null) return { kind: 'blocked', reason: 'MCP 입력에 pull_number 없음' }
     const repo = ti.owner && ti.repo ? `${ti.owner}/${ti.repo}` : null
-    // head 결속 필드의 이름은 서버 구현마다 갈린다 — GitHub MCP 는 `expectedHeadSha`,
-    // REST `PUT /pulls/{n}/merge` 계열 래퍼는 `sha`. 전에는 `sha` 만 읽었는데 실제 도구에
-    // 그 필드가 없어, 정상 호출(`expectedHeadSha`)이 「결속 없음」으로 차단되고 차단 메시지가
-    // 안내하는 `sha` 를 넣으면 서버가 미지 필드를 버려 **결속 없는 머지**가 나갈 수 있었다.
-    // 둘 다 받되, 동시에 오면서 값이 다르면 어느 쪽이 실행될지 알 수 없으므로 차단한다.
-    const heads = [ti.expectedHeadSha, ti.sha].filter((v) => typeof v === 'string' && v.trim())
-    const uniq = [...new Set(heads.map((v) => v.trim().toLowerCase()))]
-    if (uniq.length > 1) {
-      return {
-        kind: 'blocked',
-        reason: 'MCP 입력의 head 결속 필드(expectedHeadSha·sha)가 서로 다른 값이다',
-      }
-    }
+    // head 결속으로 인정하는 필드는 `expectedHeadSha` **하나뿐**이다 — merge_pull_request 의
+    // 실제 스키마 이름이다. 전에는 `sha` 를 읽었는데 그 필드는 스키마에 없다: 정상 호출은
+    // 「결속 없음」으로 차단되고, 차단 메시지가 안내하던 `sha` 를 넣으면 게이트는 결속됐다고
+    // 보지만 서버는 그 미지 필드를 버려 **결속 없는 머지**가 나간다 — 3R P1 이 닫은 TOCTOU
+    // 보호가 이 경로에서만 무효가 되는 fail-open 이다.
+    //
+    // 그래서 `sha` 를 **대체 이름으로 함께 받지 않는다**(#339 Codex P1). 받는 순간 위 구멍이
+    // 그대로 남는다 — 「다른 이름을 쓰는 래퍼가 있을 수 있다」는 가정만으로 결속을 인정하는
+    // 것은, 실제로 결속되지 않는 호출을 결속됐다고 부르는 것과 같다. 그런 래퍼가 나타나면
+    // 그 도구를 따로 식별해 스키마를 확인한 뒤 열어야 한다(이름만으로 미리 열지 않는다).
+    const bound = typeof ti.expectedHeadSha === 'string' ? ti.expectedHeadSha.trim() : ''
     return {
       kind: 'merge',
       pr,
       repo,
       target: null,
-      matchHead: heads[0]?.trim() ?? null,
+      matchHead: bound || null,
       viaMcp: true,
     }
   }
@@ -1308,8 +1306,7 @@ function main() {
     // 병합 전략을 조용히 바꾼다). 원 명령은 canonical 단일 세그먼트라 뒤에 덧붙여도 유효.
     const originalCmd = String(input.tool_input?.command ?? '').trim()
     const hint = verdict.viaMcp
-      ? `merge_pull_request 호출에 expectedHeadSha: "${headSha}" 를 포함해 재시도하라` +
-        `(그 필드가 없는 구현이면 sha: "${headSha}").`
+      ? `merge_pull_request 호출에 expectedHeadSha: "${headSha}" 를 포함해 재시도하라.`
       : '이대로 재시도하라:\n' + `  ${originalCmd} --match-head-commit ${headSha}`
     console.error(
       `[codex-gate] PR #${pr} 검증 통과 — 단, 검증 시점의 head 를 서버가 강제하도록 ` +
