@@ -1,6 +1,6 @@
 ---
 name: fleet-pr-review
-description: Fleet 다차원 적대 PR 리뷰 — 차원별 find → 독립 verify(refute) → 합성. 변경·스펙·전제를 적대적으로 검증해야 하면 사용할 것 — "PR 적대 리뷰", "이 스펙 전제가 맞는지 검증해줘", "독립 검증", "PR 전 자가리뷰", Codex 봇 한도 소진 시 리뷰 대체가 모두 해당한다. Codex 미가용·PR 전은 용도이지 발동 조건이 아니다(로컬 전용 — 클라우드 Action 금지).
+description: Fleet 다차원 적대 PR 리뷰 — 차원별 find → 독립 verify(refute) → 합성. Codex 봇 한도 소진 시 대체·PR 전 자가리뷰용(로컬). "PR 적대 리뷰", "스펙/변경 독립 검증" 시 사용.
 ---
 
 # Fleet 적대 PR 리뷰 (로컬)
