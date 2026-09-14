@@ -686,8 +686,19 @@ export function classifyHookInput(input, _depth = 0) {
   const toolName = String(input.tool_name ?? '')
   if (/merge_pull_request/.test(toolName)) {
     const ti = input.tool_input ?? {}
-    const pr = ti.pull_number ?? ti.pullNumber ?? null
-    if (pr == null) return { kind: 'blocked', reason: 'MCP 입력에 pull_number 없음' }
+    // 타깃도 결속 필드와 같은 규율이다(아래 `expectedHeadSha` 주석 참조) — 스키마 이름
+    // `pullNumber` 만 읽고, 스키마 밖 별칭 `pull_number` 가 섞여 있으면 차단한다. 별칭을 먼저
+    // 읽던 이전 코드에서는 두 필드가 함께 온 호출에서 **검증한 PR 과 실행되는 PR 이 갈렸다**:
+    // 리뷰를 통과한 A(`pull_number`)를 검증하고, 전송 계층이 미지 필드를 버려 B(`pullNumber`)가
+    // 머지된다. 두 PR 의 head 가 같으면 `expectedHeadSha` 조차 B 에 맞아 마지막 방어선도 통과한다.
+    if (ti.pull_number !== undefined) {
+      return {
+        kind: 'blocked',
+        reason: 'MCP 입력에 스키마 밖 별칭 pull_number 가 있다 — pullNumber 만 쓴다',
+      }
+    }
+    const pr = ti.pullNumber ?? null
+    if (pr == null) return { kind: 'blocked', reason: 'MCP 입력에 pullNumber 없음' }
     const repo = ti.owner && ti.repo ? `${ti.owner}/${ti.repo}` : null
     // head 결속으로 인정하는 필드는 `expectedHeadSha` **하나뿐**이다 — merge_pull_request 의
     // 실제 스키마 이름이다. 전에는 `sha` 를 읽었는데 그 필드는 스키마에 없다: 정상 호출은
@@ -1289,7 +1300,7 @@ function main() {
   }
 
   // pr 은 항상 명시 번호다 — Bash 는 classify 가 번호/URL 을 강제하고(15R P1: 이중 해석
-  // 레이스 제거) MCP 는 pull_number 필수.
+  // 레이스 제거) MCP 는 pullNumber 필수.
   const { pr, repo } = verdict
   if (pr == null) {
     console.error('[codex-gate] PR 번호 부재 — fail-closed 차단.')

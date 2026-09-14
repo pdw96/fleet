@@ -576,13 +576,38 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(
       classifyHookInput({
         tool_name: 'mcp__plugin_github_github__merge_pull_request',
-        tool_input: { owner: 'pdw96', repo: 'fleet', pull_number: 240, expectedHeadSha: 'abc' },
+        tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 240, expectedHeadSha: 'abc' },
       }),
     ).toMatchObject({ kind: 'merge', pr: 240, repo: 'pdw96/fleet', matchHead: 'abc', viaMcp: true })
     expect(
       classifyHookInput({
         tool_name: 'mcp__plugin_github_github__merge_pull_request',
         tool_input: { owner: 'pdw96', repo: 'fleet' },
+      }).kind,
+    ).toBe('blocked')
+  })
+  it('MCP 의 타깃 필드는 `pullNumber` 뿐 — 별칭 `pull_number` 가 있으면 차단', () => {
+    // `sha` 와 같은 계열의 구멍이다. 스키마에 없는 `pull_number` 를 먼저 읽으면, 두 필드가
+    // 함께 온 호출에서 **게이트가 검증한 PR 과 서버가 실행하는 PR 이 갈린다** — 리뷰를 통과한
+    // A 를 검증하고, 전송 계층이 미지 필드를 버려 B 가 머지된다. 두 PR 의 head 가 같으면
+    // `expectedHeadSha` 조차 B 에 맞아떨어져 마지막 방어선도 통과한다(#339 Codex 2차 P1).
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: {
+          owner: 'pdw96',
+          repo: 'fleet',
+          pull_number: 338,
+          pullNumber: 339,
+          expectedHeadSha: 'abc',
+        },
+      }).kind,
+    ).toBe('blocked')
+    // 별칭만 온 호출도 차단 — 실행될 타깃이 무엇인지 알 수 없다.
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: { owner: 'pdw96', repo: 'fleet', pull_number: 338, expectedHeadSha: 'abc' },
       }).kind,
     ).toBe('blocked')
   })
