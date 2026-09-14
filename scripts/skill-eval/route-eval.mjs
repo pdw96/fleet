@@ -11,6 +11,7 @@
 //   node scripts/skill-eval/route-eval.mjs --only pan-1,pr-3 --runs 1 --out /tmp/spot.jsonl
 //   node scripts/skill-eval/report.mjs /tmp/iter1.jsonl
 
+import crossSpawn from 'cross-spawn'
 import { execFileSync, spawn } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -55,7 +56,6 @@ const STRIP_ENV = [
   'GITHUB_TOKEN',
   'GH_ENTERPRISE_TOKEN',
   'GITHUB_ENTERPRISE_TOKEN',
-  'GH_CONFIG_DIR',
   'SSH_AUTH_SOCK',
   'GIT_ASKPASS',
   'SSH_ASKPASS',
@@ -65,21 +65,36 @@ const STRIP_ENV = [
 const STRIP_ENV_PREFIX = ['GIT_CONFIG_']
 
 /**
- * 프로브에 강제로 씌우는 환경 — 어떤 경로로도 대화형 자격증명 획득이 일어나지 않게 한다.
+ * 프로브 자식에게 줄 환경을 만든다.
+ *
+ * 환경변수를 **지우는 것만으로는 부족하다** — 디스크에 남은 자격증명이 그대로 살아난다.
+ * `GH_CONFIG_DIR` 를 지우면 `gh` 가 `$HOME/.config/gh` 로 폴백해 로그인 상태를 되찾고,
+ * ssh 는 `-F` 로 설정을 끊어도 기본 `~/.ssh/id_*` 를 계속 시도한다. 그러면 origin 을
+ * 무력화해도 `gh --repo pdw96/fleet …` 나 명시 URL 푸시로 **살아있는 리소스를 건드릴 수 있다**.
+ * 그래서 지우는 대신 **빈 샌드박스로 가리킨다**.
+ *
+ * `HOME` 자체는 건드리지 않는다 — claude 의 인증·설정(`~/.claude`)이 거기 있어서 옮기면
+ * 측정 자체가 불가능해진다. 자격증명 표면만 골라서 끊는다.
  */
-const FORCE_ENV = {
-  GIT_TERMINAL_PROMPT: '0',
-  GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o IdentitiesOnly=yes -F /dev/null',
-}
-
-/** 프로브 자식에게 줄 환경을 만든다(자격증명 제거 + 비대화형 강제). */
-function probeEnv() {
+function probeEnv(sandbox) {
   const env = { ...process.env }
   for (const k of STRIP_ENV) delete env[k]
   for (const k of Object.keys(env)) {
     if (STRIP_ENV_PREFIX.some((p) => k.startsWith(p))) delete env[k]
   }
-  return { ...env, ...FORCE_ENV }
+  return {
+    ...env,
+    GIT_TERMINAL_PROMPT: '0',
+    // gh 를 빈 설정 디렉터리로 묶어 디스크 로그인을 못 보게 한다.
+    GH_CONFIG_DIR: sandbox.ghConfigDir,
+    // 전역·시스템 git 설정(자격증명 헬퍼 포함)을 빈 파일로 대체한다.
+    GIT_CONFIG_GLOBAL: sandbox.emptyFile,
+    GIT_CONFIG_SYSTEM: sandbox.emptyFile,
+    // 에이전트·기본 키·사용자 ssh_config 를 전부 끊는다.
+    GIT_SSH_COMMAND:
+      `ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none ` +
+      `-F "${sandbox.emptyFile}" -i "${sandbox.emptyFile}"`,
+  }
 }
 
 /**
@@ -185,11 +200,14 @@ function skillFromTool(tool, input) {
  * 검사하면 스킬 호출이 하필 예산의 마지막 호출일 때 이름이 도착하기 전에 끊겨 정당한
  * 발동이 `none` 으로 기록된다 — 예산이 포화된 바로 그 지점에서 통계가 깨진다.
  */
-function runOnce(query, cwd, model, timeoutMs, maxTools) {
+function runOnce(query, cwd, model, timeoutMs, maxTools, sandbox) {
   return new Promise((resolve) => {
-    const env = probeEnv()
+    const env = probeEnv(sandbox)
 
-    const child = spawn(
+    // cross-spawn 을 쓰는 이유: Windows 에서 npm 설치 CLI 는 `claude.cmd` 배치 셰임이라
+    // node 의 spawn 으로는 PATHEXT 미해석 ENOENT, `.cmd` 명시는 Node 20+ 의 차단(CVE-2024-27980)
+    // 으로 EINVAL 이 난다 — 프로브가 전부 실패한다. 권위 설명은 `src/main/core/cli/detect.ts`.
+    const child = crossSpawn(
       'claude',
       [
         '-p',
@@ -400,7 +418,13 @@ async function makeTemplate(src) {
   } catch {
     /* git 미가용 — 프로브는 remote 없이 돈다(더 안전한 쪽) */
   }
-  return { root, tpl, linkedWorktree }
+
+  // 디스크 자격증명을 가릴 빈 샌드박스(위 `probeEnv()` 주석 참조).
+  const sandbox = { ghConfigDir: join(root, 'gh-config'), emptyFile: join(root, 'empty') }
+  await mkdir(sandbox.ghConfigDir, { recursive: true })
+  await writeFile(sandbox.emptyFile, '')
+
+  return { root, tpl, linkedWorktree, sandbox }
 }
 
 async function main() {
@@ -496,13 +520,33 @@ async function main() {
       // 결과가 스케줄링에 의존한다.
       let jobCwd = values.cwd
       let jobDir = null
+      let jobOrigin = null
       if (template) {
         jobDir = join(template.root, `job-${idx}`)
         await cp(template.tpl, jobDir, { recursive: true })
         jobCwd = jobDir
+        // 무력화된 origin 도 **작업마다 따로** 둔다. 하나를 공유하면, 라우팅이 빗나간
+        // 프로브가 push 를 성사시켰을 때 뒤따르는 프로브가 fetch·remote 조회로 그 태그·ref 를
+        // 보게 되어 결과가 다시 스케줄링에 의존한다.
+        jobOrigin = `${jobDir}-origin.git`
+        try {
+          execFileSync('git', ['init', '--bare', '-q', jobOrigin], { stdio: 'ignore' })
+          execFileSync('git', ['-C', jobDir, 'remote', 'set-url', 'origin', jobOrigin], {
+            stdio: 'ignore',
+          })
+        } catch {
+          /* git 미가용 — 템플릿의 공유 무력 origin 을 그대로 쓴다 */
+        }
       }
       try {
-        const res = await runOnce(q.query, jobCwd, values.model, timeoutMs, maxTools)
+        const res = await runOnce(
+          q.query,
+          jobCwd,
+          values.model,
+          timeoutMs,
+          maxTools,
+          template?.sandbox ?? { ghConfigDir: '', emptyFile: '' },
+        )
         const rec = { id: q.id, run, expected: q.expected, ...res }
         fh.write(JSON.stringify(rec) + '\n')
         finished += 1
@@ -515,6 +559,7 @@ async function main() {
         )
       } finally {
         if (jobDir) await rm(jobDir, { recursive: true, force: true })
+        if (jobOrigin) await rm(jobOrigin, { recursive: true, force: true })
       }
     })
     manifest.completedAt = new Date().toISOString()

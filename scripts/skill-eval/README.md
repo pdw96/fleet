@@ -61,13 +61,30 @@ origin 만 물린다(경고를 찍는다).
 
 두 겹으로 막는다.
 
-- **origin 무력화** — 템플릿의 origin 을 temp 안의 빈 bare 저장소로 갈아끼운다. 푸시가 갈 곳이 없다.
-- **자격증명 제거** — `GH_TOKEN`·`GITHUB_TOKEN`·`SSH_AUTH_SOCK`·askpass 를 지우고,
+- **origin 무력화** — origin 을 빈 bare 저장소로 갈아끼운다. 푸시가 갈 곳이 없다.
+  **작업마다 따로** 둔다 — 하나를 공유하면 push 를 성사시킨 프로브의 ref 를 뒤따르는 프로브가
+  fetch 로 보게 되어 결과가 다시 스케줄링에 의존한다.
+- **환경 자격증명 제거** — `GH_TOKEN`·`GITHUB_TOKEN`·`SSH_AUTH_SOCK`·askpass 를 지우고,
   **`GIT_CONFIG_COUNT`/`_KEY_n`/`_VALUE_n` 주입**(git 인증을 실어나르는 경로)을 접두사로 지운다.
-  `GIT_TERMINAL_PROMPT=0` 과 키 없는 `GIT_SSH_COMMAND` 를 강제한다.
+- **디스크 자격증명 차단** — 지우는 것만으로는 부족하다. `GH_CONFIG_DIR` 를 *지우면* `gh` 가
+  `$HOME/.config/gh` 로 폴백해 로그인 상태를 되찾고, ssh 는 `-F` 로 설정을 끊어도 기본
+  `~/.ssh/id_*` 를 계속 시도한다. 그러면 origin 을 무력화해도 `gh --repo owner/repo …` 나
+  명시 URL 푸시로 살아있는 리소스를 건드릴 수 있다. 그래서 **빈 샌드박스로 가리킨다** —
+  `GH_CONFIG_DIR`·`GIT_CONFIG_GLOBAL`·`GIT_CONFIG_SYSTEM` 을 빈 경로로 돌리고 ssh 는
+  `IdentityAgent=none` + 빈 `-i`/`-F` 로 묶는다.
 
-대가로 프로브의 `gh` 는 레포를 해석하지 못한다. 측정 충실도를 조금 잃지만 라우팅 판정은
-앞쪽 도구 호출 몇 개에서 끝나므로 영향이 작고, **반대 방향의 사고는 되돌릴 수 없다.**
+`HOME` 자체는 건드리지 않는다 — claude 의 인증·설정(`~/.claude`)이 거기 있어 옮기면 측정이
+불가능해진다. 자격증명 표면만 골라 끊는다.
+
+대가로 프로브의 `gh` 는 레포를 해석하지도 인증하지도 못한다. 측정 충실도를 조금 잃지만
+라우팅 판정은 앞쪽 도구 호출 몇 개에서 끝나므로 영향이 작고(도구 호출 중앙값 1),
+**반대 방향의 사고는 되돌릴 수 없다.**
+
+### Windows 실행
+
+`cross-spawn` 으로 띄운다. Windows 에서 npm 설치 CLI 는 `claude.cmd` 배치 셰임이라 node 의
+`spawn` 으로는 PATHEXT 미해석 ENOENT, `.cmd` 명시는 Node 20+ 의 차단(CVE-2024-27980)으로
+EINVAL 이 나 **프로브가 전부 실패한다**. 권위 설명은 `src/main/core/cli/detect.ts`.
 
 ### 프로브 환경
 
@@ -153,6 +170,9 @@ negative 정답이자 positive 미스로 둔갑해 그럴듯하지만 오염된 
 
 회귀를 볼 기준선이다. description 을 고치거나 스킬을 추가한 뒤 이보다 떨어지면 그 변경을
 의심하라.
+
+> ⚠ **디스크 자격증명 격리(`GH_CONFIG_DIR`·git 전역설정·ssh 기본키 차단) 도입 전** 값이다.
+> 그 변경으로 프로브의 `gh`·`git` 인증 표면이 또 달라졌으므로 재측정 중이다.
 
 **동시성을 올리면 invalid 가 난다.** `--workers 8` 로 몰아친 이전 실행에서는 후반 negative
 9건이 `exit=1` 로 죽었다(즉사 또는 작업 중간 사망, stderr 없음). 같은 쿼리를 `--workers 4`
