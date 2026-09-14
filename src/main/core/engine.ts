@@ -716,6 +716,28 @@ export function createFleetEngine(opts: FleetEngineOptions = {}): FleetEngine {
         ]
         store.appendEvent({ type: 'assignment.implementer_reassigned', data: { to: cliId } })
       }
+      // [#298] 리뷰어 슬롯도 세션 실재를 검증한다. manual 배정은 삭제된 세션의 stale id 를 그대로 싣고
+      // (ProjectPanel 의 manual state 는 세션 삭제 시 정리되지 않는다 · 세션이 0개면 빈 문자열이 실린다),
+      // 그 id 가 해소되지 않으면 orchestrator 의 리뷰 단계가 통째로 서지 못한다. implementer 와 같은
+      // 재배정 패턴으로 살아있는 세션에 되돌린다 — 교차검증을 보존하려 implementer 가 아닌 세션을
+      // 우선하고, 그것뿐이면 자기검토로 수렴시킨다(orchestrator 가 task.self_review 로 기록한다).
+      // 여기서 못 고친 경우의 최종 방벽은 orchestrator 의 fail-closed(미승인 → rollback + 실패)다.
+      const curReviewerId = resolveLlmForRole(assignments, 'reviewer')
+      if (!curReviewerId || !sessions.get(curReviewerId)) {
+        const implId = resolveLlmForRole(assignments, 'implementer', 'implementer')
+        const liveIds = sessions.list().map((s) => s.id)
+        const to = liveIds.find((id) => id !== implId) ?? liveIds[0]
+        if (to) {
+          assignments = [
+            ...assignments.filter((a) => a.role !== 'reviewer'),
+            { role: 'reviewer', llmId: to },
+          ]
+          store.appendEvent({
+            type: 'assignment.reviewer_reassigned',
+            data: { from: curReviewerId ?? null, to },
+          })
+        }
+      }
       // 렌더러는 main 기준 신뢰 경계 바깥이다 — UI 셀렉트(0..MAX_REPLAN_ROUNDS)를 우회한 devtools/커스텀
       // 렌더러가 임의 큰 값으로 무한정 planner/구현/검증 사이클(검증이 계속 실패하는 한)을 돌리지 못하도록
       // engine 경계에서 상한을 강제한다(하한·정수·유한성도 함께 보정 — orchestrator 에 sane 값만 넘어가게).
