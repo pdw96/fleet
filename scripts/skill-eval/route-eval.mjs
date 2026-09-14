@@ -5,16 +5,15 @@
 // 왜 이 도구인가: skill-creator 의 run_eval.py 는 스킬 하나를 격리해 「발동/미발동」 이진
 // 판정만 한다. Fleet 은 7개 스킬이 서로 겹치는 표면(백로그 착수↔재랭킹, PR 리뷰↔갭 감사)을
 // 가지므로 정작 알아야 할 것은 「어느 스킬이 켜졌나」다 — 그래야 혼동 행렬이 나온다.
-// 그래서 모든 스킬이 살아있는 레포 트리에서 돌리고 발동한 스킬 이름을 기록한다.
 //
 // 사용:
 //   node scripts/skill-eval/route-eval.mjs --out /tmp/iter1.jsonl
 //   node scripts/skill-eval/route-eval.mjs --only pan-1,pr-3 --runs 1 --out /tmp/spot.jsonl
 //   node scripts/skill-eval/report.mjs /tmp/iter1.jsonl
 
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,8 +23,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 
 /**
  * 격리 사본에서 제외할 디렉터리. 프로브는 빌드·설치를 하지 않으므로 없어도 무방하고,
- * 이것들을 넣으면 사본 생성이 수 분 단위로 늘어난다. `.git` 은 **일부러 포함한다** —
- * 프로브가 `git`·`gh` 로 레포 맥락을 조회하는 경로가 실사용과 같아야 측정이 유효하다.
+ * 이것들을 넣으면 사본 생성이 수 분 단위로 늘어난다.
  */
 const ISOLATE_SKIP = new Set([
   'node_modules',
@@ -38,6 +36,18 @@ const ISOLATE_SKIP = new Set([
   '.playwright-mcp',
   'fleet-data',
 ])
+
+/**
+ * 프로브 자식에서 지워야 하는 환경변수.
+ *
+ * - `CLAUDECODE` — 대화형 터미널 충돌 방지 가드라 서브프로세스 중첩에서는 벗긴다.
+ * - `CLAUDE_CODE_REMOTE` — 이게 `'true'` 면 `.claude/hooks/session-start.mjs` 가 원격
+ *   부트스트랩 분기를 타고 **`npm install` 을 동기 실행한다**. 프로브마다 그게 돌면
+ *   사본에 node_modules 318MB 가 깔리고(실측), 그 시간이 라우팅 결과로 기록되며,
+ *   프롬프트와 무관하게 트리가 변형된다. 프로브는 verify 를 돌릴 일이 없으므로 끈다.
+ *   훅의 안내 문구 출력은 이 분기보다 앞이라 그대로 유지된다.
+ */
+const STRIP_ENV = ['CLAUDECODE', 'CLAUDE_CODE_REMOTE']
 
 /**
  * win32 시스템 taskkill 절대경로. bare `taskkill` 은 CreateProcess 가 cwd·PATH 를 뒤지므로
@@ -53,10 +63,8 @@ function taskkillPath() {
  * 자식 프로세스의 **전체 트리**를 종료한다.
  *
  * win32 에서 POSIX 의 음수 PID(프로세스 그룹) 형식은 지원되지 않아 `process.kill(-pid)` 가
- * 그대로 throw 한다. 그걸 catch 로 삼키면 **detached 된 claude 가 프롬프트를 끝까지 실행한다** —
- * 93런 평가가 유료 세션 수십 개를 동시에 방치하게 된다. 플랫폼별로 갈라 처리한다
- * (권위 구현: `src/main/core/process/kill-tree.ts`. 그쪽은 TS 라 여기서 직접 import 하지 못해
- * 같은 정책을 최소 형태로 재현한다).
+ * 그대로 throw 한다. 그걸 catch 로 삼키면 **detached 된 claude 가 프롬프트를 끝까지 실행한다**.
+ * 권위 구현: `src/main/core/process/kill-tree.ts`(TS 라 여기서 직접 import 하지 못해 재현).
  */
 function killTree(child) {
   if (child.pid == null) return Promise.resolve()
@@ -103,6 +111,9 @@ function killTree(child) {
   })
 }
 
+/** 실행 중인 프로브 — 인터럽트 시 전부 죽이기 위한 전역 등록부. */
+const live = new Set()
+
 /** `plugin:skill` → `skill`. Skill 도구 인자는 플러그인 접두사를 달고 올 수 있다. */
 function normalize(name) {
   const n = name.trim()
@@ -111,10 +122,7 @@ function normalize(name) {
 
 /**
  * 이 도구 호출이 「스킬을 열었다」에 해당하는지 판정한다.
- * Skill 도구가 정규 경로지만, SKILL.md 를 직접 Read 하는 것도 같은 의도이므로 함께 센다.
- *
- * win32 네이티브 절대경로는 `.claude\skills\foo\SKILL.md` 처럼 역슬래시로 온다 —
- * 정규화하지 않으면 정당한 발동이 `none` 으로 기록되어 Windows 측정이 체계적으로 저평가된다.
+ * win32 네이티브 절대경로는 역슬래시로 오므로 정규화 후 매칭한다.
  */
 function skillFromTool(tool, input) {
   if (tool === 'Skill' && typeof input.skill === 'string') return normalize(input.skill)
@@ -130,18 +138,17 @@ function skillFromTool(tool, input) {
 /**
  * 쿼리 하나를 1회 실행하고 무엇이 발동했는지 돌려준다.
  *
- * 도구 예산(maxTools)은 **도구 호출 건수**(tool_use id 기준)로 센다. 이름 기준으로 중복
- * 제거해서 세면 `WebFetch` 를 열 번 불러도 1로 잡혀 예산이 사실상 무력해지고, 프로브가
- * 설정보다 훨씬 많은 일을 하게 되어 예산을 맞춘 비교가 깨진다.
+ * 도구 예산(maxTools)은 **도구 호출 건수**(tool_use id 기준)로 센다. 이름으로 중복 제거해
+ * 세면 `WebFetch` 를 열 번 불러도 1 로 잡혀 예산이 무력해진다.
  *
- * 예산이 필요한 이유: 모델이 스킬을 열기 전에 이슈 조회 같은 선행 작업을 먼저 하는 경우가
- * 있다. 너무 작으면 「뒤늦게 연」 성공을 미발동으로 기록해 **없는 회귀를 만들어낸다**.
+ * 예산 검사는 **진행 중인 tool_use 블록이 닫힌 뒤에만** 한다. `content_block_start` 에서
+ * 검사하면 스킬 호출이 하필 예산의 마지막 호출일 때 이름이 도착하기 전에 끊겨 정당한
+ * 발동이 `none` 으로 기록된다 — 예산이 포화된 바로 그 지점에서 통계가 깨진다.
  */
 function runOnce(query, cwd, model, timeoutMs, maxTools) {
   return new Promise((resolve) => {
     const env = { ...process.env }
-    // CLAUDECODE 가드는 대화형 터미널 충돌 방지용이라 서브프로세스 중첩에서는 벗긴다.
-    delete env.CLAUDECODE
+    for (const k of STRIP_ENV) delete env[k]
 
     const child = spawn(
       'claude',
@@ -157,6 +164,7 @@ function runOnce(query, cwd, model, timeoutMs, maxTools) {
       ],
       { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] },
     )
+    live.add(child)
 
     const start = Date.now()
     const tools = [] // 진단용(이름 중복 제거)
@@ -175,6 +183,7 @@ function runOnce(query, cwd, model, timeoutMs, maxTools) {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      live.delete(child)
       resolve({
         fired: fired ?? 'none',
         elapsed: Math.round((Date.now() - start) / 100) / 10,
@@ -242,8 +251,7 @@ function runOnce(query, cwd, model, timeoutMs, maxTools) {
             const d = se.delta ?? {}
             if (d.type === 'input_json_delta') {
               curJson += d.partial_json ?? ''
-              // 인자가 스트리밍 중이라 대개 파싱에 실패한다. 완성되는 순간 판정해
-              // 도구가 실제로 실행되기 전에 끊는 것이 목적이다.
+              // 인자가 완성되는 순간 판정해 도구가 실제로 실행되기 전에 끊는 것이 목적이다.
               try {
                 consider(curTool, JSON.parse(curJson))
               } catch {
@@ -268,7 +276,8 @@ function runOnce(query, cwd, model, timeoutMs, maxTools) {
           }
         }
 
-        if (fired || callIds.size >= maxTools) {
+        // 발동을 봤으면 즉시 끝. 예산 초과는 **블록이 닫힌 뒤에만** 적용한다(위 주석 참조).
+        if (fired || (curTool === null && callIds.size >= maxTools)) {
           stop()
           return
         }
@@ -310,21 +319,44 @@ async function pool(items, limit, fn) {
 }
 
 /**
- * 프로브를 돌릴 일회용 사본을 만든다.
+ * 프로브용 원본 템플릿을 만든다.
  *
- * 프로브가 스킬을 열지 않으면 예산·타임아웃까지 프롬프트를 계속 실행한다. negative 쿼리 중
- * `neg-2`·`neg-3` 은 **파일을 고치라는 지시**이고, 사용자의 claude 설정이 Edit/Bash 를 이미
- * 허용해뒀다면 살아있는 체크아웃을 실제로 건드린다 — 「작업은 수행되지 않는다」가 깨진다.
- * 사본에서 돌리면 변경이 사본에만 남고 종료 시 통째로 버려진다.
+ * `.git` 이 **파일**이면 linked worktree 라 그 안에 원본 저장소의 관리 디렉터리를 가리키는
+ * 포인터가 들어있다. 그대로 복사하면 프로브의 `git add`·`commit`·`tag` 가 **살아있는
+ * 저장소의 인덱스·ref 를 실제로 변형**하고, temp 디렉터리를 지워도 되돌아오지 않는다.
+ * 그 경우 `.git` 을 빼고 복사한 뒤 빈 저장소를 새로 만들고 origin 만 물려준다
+ * (`gh` 가 레포를 해석하는 데는 remote 만 있으면 된다).
  */
-async function makeIsolatedCopy(src) {
-  const dir = await mkdtemp(join(tmpdir(), 'fleet-skill-eval-'))
-  const dest = join(dir, basename(src) || 'repo')
-  await cp(src, dest, {
+async function makeTemplate(src) {
+  const root = await mkdtemp(join(tmpdir(), 'fleet-skill-eval-'))
+  const tpl = join(root, 'template')
+  const gitStat = await stat(join(src, '.git')).catch(() => null)
+  const linkedWorktree = gitStat?.isFile() ?? false
+
+  await cp(src, tpl, {
     recursive: true,
-    filter: (from) => !ISOLATE_SKIP.has(basename(from)),
+    filter: (from) =>
+      !ISOLATE_SKIP.has(basename(from)) && !(linkedWorktree && basename(from) === '.git'),
   })
-  return { dest, dir }
+
+  if (linkedWorktree) {
+    let origin = null
+    try {
+      origin = execFileSync('git', ['-C', src, 'remote', 'get-url', 'origin'], {
+        encoding: 'utf8',
+      }).trim()
+    } catch {
+      /* origin 없음 — remote 없이 진행 */
+    }
+    try {
+      execFileSync('git', ['-C', tpl, 'init', '-q'], { stdio: 'ignore' })
+      if (origin)
+        execFileSync('git', ['-C', tpl, 'remote', 'add', 'origin', origin], { stdio: 'ignore' })
+    } catch {
+      /* git 미가용 — 프로브는 git 없이 돈다 */
+    }
+  }
+  return { root, tpl, linkedWorktree }
 }
 
 async function main() {
@@ -339,7 +371,6 @@ async function main() {
       workers: { type: 'string', default: '8' },
       only: { type: 'string' },
       out: { type: 'string' },
-      isolate: { type: 'boolean', default: true },
       'no-isolate': { type: 'boolean', default: false },
     },
   })
@@ -353,50 +384,94 @@ async function main() {
   const timeoutMs = Number(values.timeout) * 1000
   const maxTools = Number(values['max-tools'])
   const workers = Number(values.workers)
-  const isolate = values.isolate && !values['no-isolate']
+  const isolate = !values['no-isolate']
 
   let queries = JSON.parse(await readFile(values.queries, 'utf8'))
   if (values.only) {
     const keep = new Set(values.only.split(','))
     queries = queries.filter((q) => keep.has(q.id))
   }
+  const jobs = queries.flatMap((q) => Array.from({ length: runs }, (_, i) => ({ q, run: i })))
 
-  let probeCwd = values.cwd
-  let tempRoot = null
+  let template = null
   if (isolate) {
-    console.error('격리 사본 생성 중…')
-    const made = await makeIsolatedCopy(values.cwd)
-    probeCwd = made.dest
-    tempRoot = made.dir
-    console.error(`프로브 cwd = ${probeCwd}`)
+    console.error('격리 템플릿 생성 중…')
+    template = await makeTemplate(values.cwd)
+    if (template.linkedWorktree) {
+      console.error('⚠ linked worktree 감지 — `.git` 대신 빈 저장소 + origin 만 물렸다')
+    }
   } else {
     console.error('⚠ --no-isolate — 프로브가 실제 체크아웃을 수정할 수 있다')
   }
 
-  const jobs = queries.flatMap((q) => Array.from({ length: runs }, (_, i) => ({ q, run: i })))
-
   await mkdir(dirname(values.out), { recursive: true })
+  // 불완전한 결과 파일이 100% 로 보고되는 것을 막는 매니페스트. report.mjs 가 검증한다.
+  const manifestPath = `${values.out}.manifest.json`
+  const manifest = {
+    queries: queries.map((q) => q.id),
+    runs,
+    expected: jobs.length,
+    model: values.model,
+    maxTools,
+    timeoutSeconds: Number(values.timeout),
+    isolate,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+  }
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2))
+
   const fh = createWriteStream(values.out)
   let finished = 0
   let invalid = 0
 
+  // 인터럽트·치명적 오류로 부모가 죽을 때 살아있는 프로브를 전부 데려간다. 없으면
+  // 10~20분짜리 명령을 Ctrl-C 한 뒤에도 유료 세션 여러 개가 계속 프롬프트를 실행한다.
+  let shuttingDown = false
+  const shutdown = async (why) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.error(`\n${why} — 실행 중인 프로브 ${live.size}개 종료 중…`)
+    await Promise.all([...live].map((c) => killTree(c)))
+    if (template) await rm(template.root, { recursive: true, force: true })
+    process.exit(130)
+  }
+  process.on('SIGINT', () => void shutdown('SIGINT'))
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  process.on('uncaughtException', (e) => void shutdown(`예외: ${e.message}`))
+
   try {
-    await pool(jobs, workers, async ({ q, run }) => {
-      const res = await runOnce(q.query, probeCwd, values.model, timeoutMs, maxTools)
-      const rec = { id: q.id, run, expected: q.expected, ...res }
-      fh.write(JSON.stringify(rec) + '\n')
-      finished += 1
-      if (rec.invalid) invalid += 1
-      const mark = rec.invalid ? 'INVALID' : rec.fired === rec.expected ? 'ok  ' : 'MISS'
-      console.error(
-        `[${finished}/${jobs.length}] ${mark} ${q.id}#${run} exp=${q.expected} got=${rec.fired} ` +
-          `calls=${res.tool_calls} tools=[${res.tools.join(',')}] ` +
-          `(${res.elapsed}s${res.timed_out ? ' TIMEOUT' : ''})${rec.error ? ` ${rec.error}` : ''}`,
-      )
+    await pool(jobs, workers, async ({ q, run }, idx) => {
+      // 작업마다 템플릿에서 새 사본을 뜬다. 하나를 공유하면 파일을 고치라는 negative
+      // 프로브(`neg-2`·`neg-3`)가 남긴 변경·git 인덱스를 뒤따르는 프로브가 보게 되어
+      // 결과가 스케줄링에 의존한다.
+      let jobCwd = values.cwd
+      let jobDir = null
+      if (template) {
+        jobDir = join(template.root, `job-${idx}`)
+        await cp(template.tpl, jobDir, { recursive: true })
+        jobCwd = jobDir
+      }
+      try {
+        const res = await runOnce(q.query, jobCwd, values.model, timeoutMs, maxTools)
+        const rec = { id: q.id, run, expected: q.expected, ...res }
+        fh.write(JSON.stringify(rec) + '\n')
+        finished += 1
+        if (rec.invalid) invalid += 1
+        const mark = rec.invalid ? 'INVALID' : rec.fired === rec.expected ? 'ok  ' : 'MISS'
+        console.error(
+          `[${finished}/${jobs.length}] ${mark} ${q.id}#${run} exp=${q.expected} got=${rec.fired} ` +
+            `calls=${res.tool_calls} tools=[${res.tools.join(',')}] ` +
+            `(${res.elapsed}s${res.timed_out ? ' TIMEOUT' : ''})${rec.error ? ` ${rec.error}` : ''}`,
+        )
+      } finally {
+        if (jobDir) await rm(jobDir, { recursive: true, force: true })
+      }
     })
+    manifest.completedAt = new Date().toISOString()
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2))
   } finally {
     await new Promise((r) => fh.end(r))
-    if (tempRoot) await rm(tempRoot, { recursive: true, force: true })
+    if (template) await rm(template.root, { recursive: true, force: true })
   }
 
   if (invalid > 0) {

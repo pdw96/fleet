@@ -23,6 +23,45 @@ const all = (await readFile(recPath, 'utf8'))
   .split('\n')
   .filter((l) => l.trim())
   .map((l) => JSON.parse(l))
+
+// 완결성 검증을 통계보다 **먼저** 한다. route-eval 이 중간에 죽으면 살아남은 앞부분 행만으로도
+// 그럴듯한 100% 가 나오는데, 그 안에는 스킬 하나가 통째로, 뒤쪽 negative 가 전부 빠져 있을 수
+// 있다. 부분 결과를 점수로 내느니 거부한다.
+const manifest = await readFile(`${recPath}.manifest.json`, 'utf8')
+  .then(JSON.parse)
+  .catch(() => null)
+
+const counts = new Map()
+for (const r of all) counts.set(r.id, (counts.get(r.id) ?? 0) + 1)
+
+if (manifest) {
+  const problems = []
+  if (!manifest.completedAt) problems.push('run 이 완료 표시 없이 끝났다(중단·크래시)')
+  if (all.length !== manifest.expected) {
+    problems.push(`행 수 ${all.length} ≠ 계획 ${manifest.expected}`)
+  }
+  const missing = manifest.queries.filter((id) => (counts.get(id) ?? 0) !== manifest.runs)
+  if (missing.length) {
+    problems.push(
+      `런 수가 ${manifest.runs} 가 아닌 쿼리 ${missing.length}개: ${missing.slice(0, 8).join(', ')}`,
+    )
+  }
+  if (problems.length) {
+    console.error('불완전한 결과 파일 — 점수를 내지 않는다:')
+    for (const p of problems) console.error(`  · ${p}`)
+    console.error('\nroute-eval.mjs 를 다시 완주시켜라.')
+    process.exit(1)
+  }
+} else {
+  const seen = [...new Set(counts.values())]
+  console.log('⚠ 매니페스트 없음 — 완결성을 검증할 수 없다(구 버전 결과 파일).')
+  if (seen.length > 1) {
+    console.error(`쿼리별 런 수가 제각각이다(${seen.join('/')}) — 중단된 파일로 보인다. 중단한다.`)
+    process.exit(1)
+  }
+  console.log()
+}
+
 const bad = all.filter((r) => r.invalid)
 const recs = all.filter((r) => !r.invalid)
 const queries = new Map(JSON.parse(await readFile(queryPath, 'utf8')).map((q) => [q.id, q.query]))
