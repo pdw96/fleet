@@ -23,6 +23,28 @@ import { parseArgs } from 'node:util'
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /**
+ * 프로브에 허용하는 **내장 도구 allowlist**(`--tools` 는 denylist 가 아니라 배타적 목록이다).
+ *
+ * 이것이 부작용을 막는 **1차 방벽**이다. 사본·자격증명 격리는 「할 수 있는데 대상을 치웠다」
+ * 이지만, 이쪽은 **할 수단 자체를 없앤다** — Bash·Write·Edit·Task·WebFetch 가 사라지면
+ * 파일을 고칠 수도, `git push` 를 할 수도, 자격증명을 쓸 수도 없다. 실측 확인:
+ * 거부 메시지가 「Bash is disabled for this session, **in subagents as well as here**」라
+ * 서브에이전트 우회까지 닫힌다.
+ *
+ * `Skill` 은 당연히 남긴다(측정 대상). `Read`·`Glob`·`Grep` 은 읽기 전용이고, 모델이 스킬을
+ * 열기 전에 맥락을 훑는 경로라 실사용과 맞추기 위해 남긴다.
+ *
+ * `--restricted` 는 **쓰지 않는다.** 명령 실행 도구를 제거해주지만 project 설정을 함께
+ * 무시해 **스킬 레지스트리가 사라진다** — 실측에서 `Skill` 도구가 한 번도 호출되지 않고
+ * 모델이 Glob/Grep 으로 헤매다 12번째 호출에서 `SKILL.md` 를 직접 Read 했다. 그러면
+ * description 이 아니라 파일 검색 능력을 측정하게 된다. `--tools` 만으로 Bash 는 이미 막힌다.
+ *
+ * `--strict-mcp-config` 로 MCP 서버를 전부 뺀다 — `mcp__github__*` 같은 변형 도구가 남으면
+ * 위 allowlist 를 우회해 살아있는 리소스를 건드릴 수 있다.
+ */
+const PROBE_TOOLS = 'Read,Glob,Grep,Skill'
+
+/**
  * 격리 사본에서 제외할 디렉터리. 프로브는 빌드·설치를 하지 않으므로 없어도 무방하고,
  * 이것들을 넣으면 사본 생성이 수 분 단위로 늘어난다.
  */
@@ -200,7 +222,7 @@ function skillFromTool(tool, input) {
  * 검사하면 스킬 호출이 하필 예산의 마지막 호출일 때 이름이 도착하기 전에 끊겨 정당한
  * 발동이 `none` 으로 기록된다 — 예산이 포화된 바로 그 지점에서 통계가 깨진다.
  */
-function runOnce(query, cwd, model, timeoutMs, maxTools, sandbox) {
+function runOnce(query, cwd, model, timeoutMs, maxTools, sandbox, probeTools) {
   return new Promise((resolve) => {
     const env = probeEnv(sandbox)
 
@@ -218,6 +240,10 @@ function runOnce(query, cwd, model, timeoutMs, maxTools, sandbox) {
         '--include-partial-messages',
         '--model',
         model,
+        // 부작용 1차 방벽 — 위 PROBE_TOOLS 주석 참조.
+        '--tools',
+        probeTools,
+        '--strict-mcp-config',
       ],
       { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] },
     )
@@ -440,6 +466,7 @@ async function main() {
       only: { type: 'string' },
       out: { type: 'string' },
       'no-isolate': { type: 'boolean', default: false },
+      tools: { type: 'string', default: PROBE_TOOLS },
     },
   })
 
@@ -546,6 +573,7 @@ async function main() {
           timeoutMs,
           maxTools,
           template?.sandbox ?? { ghConfigDir: '', emptyFile: '' },
+          values.tools,
         )
         const rec = { id: q.id, run, expected: q.expected, ...res }
         fh.write(JSON.stringify(rec) + '\n')
