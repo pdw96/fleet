@@ -1,6 +1,6 @@
 ---
 name: fleet-plan-panel
-description: 판사 패널 계획 수립 — 승인된 스펙을 fleet-planner×3(리스크/MVP/계약 각도) 독립 초안 → fleet-plan-judge×2(공백/Codex 강점 렌즈 그룹) 채점 → 메인 루프 합성으로 전개. "판사 패널 계획", "패널로 계획 수립" 시 사용. 소형 작업은 패널 생략(적응형).
+description: 판사 패널 계획 수립 — 승인된 스펙을 fleet-planner×3(리스크/MVP/계약 각도) 독립 초안 → fleet-plan-judge×2(공백/Codex 강점 렌즈 그룹) 채점 → 메인 루프 합성으로 전개. 승인된 스펙이 있고 구현 계획(plan 문서)이 필요하면 사용자가 '패널'이라 말하지 않아도 반드시 사용할 것 — "이 스펙으로 구현 계획 뽑아줘", "계획 세워줘", "계획 초안 여러 각도로 받아보자", fleet-backlog-induction 사이클의 plan 단계가 모두 여기 해당한다. 규모 판정(소형이면 패널 생략)은 스킬 안에서 한다.
 ---
 
 # Fleet 판사 패널 계획 수립
