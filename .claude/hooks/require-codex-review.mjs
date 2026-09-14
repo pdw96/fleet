@@ -689,7 +689,27 @@ export function classifyHookInput(input, _depth = 0) {
     const pr = ti.pull_number ?? ti.pullNumber ?? null
     if (pr == null) return { kind: 'blocked', reason: 'MCP 입력에 pull_number 없음' }
     const repo = ti.owner && ti.repo ? `${ti.owner}/${ti.repo}` : null
-    return { kind: 'merge', pr, repo, target: null, matchHead: ti.sha ?? null, viaMcp: true }
+    // head 결속 필드의 이름은 서버 구현마다 갈린다 — GitHub MCP 는 `expectedHeadSha`,
+    // REST `PUT /pulls/{n}/merge` 계열 래퍼는 `sha`. 전에는 `sha` 만 읽었는데 실제 도구에
+    // 그 필드가 없어, 정상 호출(`expectedHeadSha`)이 「결속 없음」으로 차단되고 차단 메시지가
+    // 안내하는 `sha` 를 넣으면 서버가 미지 필드를 버려 **결속 없는 머지**가 나갈 수 있었다.
+    // 둘 다 받되, 동시에 오면서 값이 다르면 어느 쪽이 실행될지 알 수 없으므로 차단한다.
+    const heads = [ti.expectedHeadSha, ti.sha].filter((v) => typeof v === 'string' && v.trim())
+    const uniq = [...new Set(heads.map((v) => v.trim().toLowerCase()))]
+    if (uniq.length > 1) {
+      return {
+        kind: 'blocked',
+        reason: 'MCP 입력의 head 결속 필드(expectedHeadSha·sha)가 서로 다른 값이다',
+      }
+    }
+    return {
+      kind: 'merge',
+      pr,
+      repo,
+      target: null,
+      matchHead: heads[0]?.trim() ?? null,
+      viaMcp: true,
+    }
   }
   if (toolName !== 'Bash') return { kind: 'pass' }
   const cmd = String(input.tool_input?.command ?? '')
@@ -1012,10 +1032,18 @@ export function classifyHookInput(input, _depth = 0) {
 // 막히는 동안 안내문이 매번 머지 문법뿐이라 원인 진단이 불가능했다. ②는 그걸 해결한다.
 // 줄 번호는 적지 않는다(이 파일은 계속 자란다). 계열이 갈리는 지점은 `hasMergeSignal` 하나뿐이고,
 // 그 대응은 scripts/require-codex-review.test.ts 의 blockedGuidance describe 가 고정한다.
+// 두 경로를 **둘 다** 이름으로 밝힌다. Bash 형태만 적고 「REST/GraphQL 경유는 전부 차단」으로
+// 끝나면, GraphQL 이 막힌 환경(원격 세션에서 `gh pr merge` 는 403 이다)에서는 실행 가능한
+// 머지 경로가 하나도 없는 것처럼 읽힌다 — 실제로 그렇게 읽고 머지를 사람 손에 넘긴 세션이 있다.
+// MCP 경로를 적는 것은 위 「우회 지도 금지」와 충돌하지 않는다: 그쪽은 게이트가 못 보는 자리가
+// 아니라 **구조화 입력으로 같은 검증을 받는 정규 경로**이기 때문이다(head 결속 필수도 동일).
 const MERGE_GUIDANCE =
-  '머지는 canonical 형태만 허용된다:\n' +
-  '  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
-  '(REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
+  '머지는 canonical 형태만 허용된다 — 다음 둘 중 하나다:\n' +
+  '  · Bash  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
+  '  · MCP   merge_pull_request(owner, repo, pullNumber, expectedHeadSha: <head SHA>)\n' +
+  '둘 다 같은 Codex 신호 검증과 head 결속을 거친다. GraphQL 이 막힌 환경에서는 MCP 쪽이 유일한 ' +
+  '실행 경로다.\n' +
+  '(그 밖의 REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
   '거면 --body-file 로 우회하라.)'
 
 // ⚠ 이 문구는 **차단을 뚫으려는 순간에 읽힌다** — 「막힌 내용을 게이트가 못 보는 자리로
@@ -1280,7 +1308,8 @@ function main() {
     // 병합 전략을 조용히 바꾼다). 원 명령은 canonical 단일 세그먼트라 뒤에 덧붙여도 유효.
     const originalCmd = String(input.tool_input?.command ?? '').trim()
     const hint = verdict.viaMcp
-      ? `merge_pull_request 호출에 sha: "${headSha}" 를 포함해 재시도하라.`
+      ? `merge_pull_request 호출에 expectedHeadSha: "${headSha}" 를 포함해 재시도하라` +
+        `(그 필드가 없는 구현이면 sha: "${headSha}").`
       : '이대로 재시도하라:\n' + `  ${originalCmd} --match-head-commit ${headSha}`
     console.error(
       `[codex-gate] PR #${pr} 검증 통과 — 단, 검증 시점의 head 를 서버가 강제하도록 ` +

@@ -586,6 +586,45 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
       }).kind,
     ).toBe('blocked')
   })
+  it('MCP 의 head 결속 필드는 `expectedHeadSha` 다 — 실제 도구 스키마 이름', () => {
+    // 게이트는 `sha` 만 읽고 있었는데 GitHub MCP merge_pull_request 스키마에 그 필드는 없다
+    // (`expectedHeadSha` 다). 그래서 정상 호출은 「결속 없음」으로 차단됐고, 차단 메시지가
+    // 안내하는 `sha` 를 넣으면 서버가 그 미지 필드를 버려 **결속 없는 머지**가 나갈 수 있었다
+    // — 3R P1 이 닫은 TOCTOU 보호가 이 경로에서만 무효가 되는 fail-open 이다.
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 338, expectedHeadSha: 'abc' },
+      }),
+    ).toMatchObject({ kind: 'merge', pr: 338, matchHead: 'abc', viaMcp: true })
+  })
+  it('MCP 에 두 결속 필드가 동시에, 서로 다르게 오면 차단 — 어느 쪽이 실행될지 모른다', () => {
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: {
+          owner: 'pdw96',
+          repo: 'fleet',
+          pullNumber: 338,
+          sha: 'abc',
+          expectedHeadSha: 'def',
+        },
+      }).kind,
+    ).toBe('blocked')
+    // 같은 값이면 모호하지 않다 — 통과(SHA 비교는 main 에서 대소문자 무시).
+    const same = classifyHookInput({
+      tool_name: 'mcp__github__merge_pull_request',
+      tool_input: {
+        owner: 'pdw96',
+        repo: 'fleet',
+        pullNumber: 338,
+        sha: 'abc',
+        expectedHeadSha: 'ABC',
+      },
+    })
+    expect(same).toMatchObject({ kind: 'merge', viaMcp: true })
+    expect((same as { matchHead: string }).matchHead.toLowerCase()).toBe('abc')
+  })
 })
 
 describe('tokenizeSegments — 근사 셸 시맨틱', () => {
@@ -617,6 +656,16 @@ describe('blockedGuidance — 차단 사유 계열별 안내', () => {
     const g = blockedGuidance({ tool_name: 'mcp__github__merge_pull_request', tool_input: {} })
     expect(g).toContain(MERGE_MARK)
     expect(g).not.toContain(UNKNOWN_MARK)
+  })
+
+  it('머지 안내가 MCP 경로도 이름으로 알려준다 — 그게 없으면 막다른 길로 읽힌다', () => {
+    // 안내가 Bash 형태만 말하고 「REST/GraphQL 경유는 전부 차단」으로 끝나면, GraphQL 이
+    // 막힌 환경(원격 세션)에서는 실행 가능한 머지 경로가 하나도 없는 것처럼 읽힌다 —
+    // 실제로 이 레포에서 그렇게 읽고 두 PR 을 사람 손에 넘긴 세션이 있었다. MCP 경로는
+    // 우회가 아니라 게이트가 구조화 입력으로 검증하는 정규 경로이므로 이름을 밝힌다.
+    const g = blockedGuidance({ tool_name: 'mcp__github__merge_pull_request', tool_input: {} })
+    expect(g).toContain('merge_pull_request')
+    expect(g).toContain('expectedHeadSha')
   })
 
   it('머지 신호가 있는데 canonical 이탈이면 머지 안내', () => {
