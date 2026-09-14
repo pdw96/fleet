@@ -226,6 +226,21 @@ function skillFromTool(tool, input) {
  */
 function runOnce(query, cwd, model, timeoutMs, maxTools, sandbox, probeTools) {
   return new Promise((resolve) => {
+    // spawn 직전 마지막 관문. 워커가 사본을 뜨는 동안 종료가 개시되면, shutdown 이 이미
+    // live 가 빈 것을 확인하고 정리에 들어간 뒤에 이 자식이 태어나 `exit(130)` 을 살아남는다.
+    if (cancelled) {
+      resolve({
+        fired: 'none',
+        elapsed: 0,
+        tools: [],
+        tool_calls: 0,
+        timed_out: false,
+        invalid: true,
+        error: '종료 개시로 실행하지 않음',
+      })
+      return
+    }
+
     const env = probeEnv(sandbox)
 
     // cross-spawn 을 쓰는 이유: Windows 에서 npm 설치 CLI 는 `claude.cmd` 배치 셰임이라
@@ -280,15 +295,21 @@ function runOnce(query, cwd, model, timeoutMs, maxTools, sandbox, probeTools) {
     }
 
     /** 측정 목적을 달성했거나 예산이 끝났다 — 트리를 죽이고 표본을 확정한다. */
-    const stop = () => {
+    const stop = (extra = {}) => {
       if (settled || stoppedByUs) return
       stoppedByUs = true
-      void killTree(child).then(() => done({}))
+      void killTree(child).then(() => done(extra))
     }
 
+    // 타임아웃은 **관측 미완**이지 라우팅 결과가 아니다. 인증·레이트리밋·네트워크로 멈춘
+    // 프로브를 `fired: "none"` 으로 확정하면 negative 에서는 기대와 일치해 「정답」이 되고
+    // 실패 목록에도 안 나와, 인프라 장애가 조용히 점수를 부풀린다. invalid 로 찍어 제외한다.
+    //
+    // 예산 소진(`maxTools`)은 다르게 취급한다 — 그쪽은 모든 표본에 균일하게 적용하는 **측정
+    // 정의의 일부**(리포트가 p90 포화를 보고한다)인 반면, 타임아웃은 통제 밖의 환경 사건이다.
     const timer = setTimeout(() => {
       timedOut = true
-      stop()
+      stop({ invalid: true, error: `타임아웃 ${Math.round(timeoutMs / 1000)}s — 관측 미완` })
     }, timeoutMs)
 
     const countCall = (id) => {
@@ -566,6 +587,13 @@ async function main() {
         } catch {
           /* git 미가용 — 템플릿의 공유 무력 origin 을 그대로 쓴다 */
         }
+      }
+      // 사본 뜨기는 느리다 — 그 사이에 종료가 개시됐을 수 있으므로 spawn 직전에 다시 본다
+      // (runOnce 안에도 같은 관문이 하나 더 있다).
+      if (cancelled) {
+        if (jobDir) await rm(jobDir, { recursive: true, force: true })
+        if (jobOrigin) await rm(jobOrigin, { recursive: true, force: true })
+        return
       }
       try {
         const res = await runOnce(
