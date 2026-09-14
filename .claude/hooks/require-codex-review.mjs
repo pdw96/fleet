@@ -686,15 +686,26 @@ export function classifyHookInput(input, _depth = 0) {
   const toolName = String(input.tool_name ?? '')
   if (/merge_pull_request/.test(toolName)) {
     const ti = input.tool_input ?? {}
-    // 타깃도 결속 필드와 같은 규율이다(아래 `expectedHeadSha` 주석 참조) — 스키마 이름
-    // `pullNumber` 만 읽고, 스키마 밖 별칭 `pull_number` 가 섞여 있으면 차단한다. 별칭을 먼저
-    // 읽던 이전 코드에서는 두 필드가 함께 온 호출에서 **검증한 PR 과 실행되는 PR 이 갈렸다**:
-    // 리뷰를 통과한 A(`pull_number`)를 검증하고, 전송 계층이 미지 필드를 버려 B(`pullNumber`)가
-    // 머지된다. 두 PR 의 head 가 같으면 `expectedHeadSha` 조차 B 에 맞아 마지막 방어선도 통과한다.
-    if (ti.pull_number !== undefined) {
+    // 규율 하나로 묶는다: **스키마에 있는 이름만 읽고, 스키마 밖 별칭이 있으면 차단한다.**
+    // merge_pull_request 의 스키마는 타깃 `pullNumber`, 결속 `expectedHeadSha` 다.
+    //
+    // 왜 「무시」가 아니라 「차단」인가 — 별칭이 남아 있으면 **게이트가 검증한 것과 서버가
+    // 실행하는 것이 갈릴 수 있다.** 이 hook 은 `mcp__…merge_pull_request` 를 전부 이 분기로
+    // 보내므로, 별칭을 해석하는 래퍼가 하나라도 있으면:
+    //   · `pull_number` — 리뷰를 통과한 A 를 검증하고 B 가 머지된다. 두 PR 의 head 가 같으면
+    //     `expectedHeadSha` 조차 B 에 맞아떨어져 마지막 방어선도 통과한다.
+    //   · `sha` — 게이트가 검증한 `expectedHeadSha` 와 서버가 강제하는 head 제약이 갈린다.
+    //     검증 후 head 가 움직였을 때 서버 쪽 제약이 새 head 를 가리키면 미리뷰 커밋이 머지된다
+    //     (3R P1 이 닫은 TOCTOU 가 그대로 열린다).
+    // 어느 쪽도 「이 전송 계층은 별칭을 버릴 것이다」라는 가정 위에서만 안전하다. 가정을 근거로
+    // 인가하지 않는다 — 별칭이 보이면 막고, 호출자가 스키마 이름으로 다시 부르게 한다.
+    const aliases = ['pull_number', 'sha'].filter((k) => ti[k] !== undefined)
+    if (aliases.length) {
       return {
         kind: 'blocked',
-        reason: 'MCP 입력에 스키마 밖 별칭 pull_number 가 있다 — pullNumber 만 쓴다',
+        reason:
+          `MCP 입력에 스키마 밖 별칭(${aliases.join('·')})이 있다 — ` +
+          'pullNumber·expectedHeadSha 만 쓴다',
       }
     }
     const pr = ti.pullNumber ?? null
@@ -704,12 +715,7 @@ export function classifyHookInput(input, _depth = 0) {
     // 실제 스키마 이름이다. 전에는 `sha` 를 읽었는데 그 필드는 스키마에 없다: 정상 호출은
     // 「결속 없음」으로 차단되고, 차단 메시지가 안내하던 `sha` 를 넣으면 게이트는 결속됐다고
     // 보지만 서버는 그 미지 필드를 버려 **결속 없는 머지**가 나간다 — 3R P1 이 닫은 TOCTOU
-    // 보호가 이 경로에서만 무효가 되는 fail-open 이다.
-    //
-    // 그래서 `sha` 를 **대체 이름으로 함께 받지 않는다**(#339 Codex P1). 받는 순간 위 구멍이
-    // 그대로 남는다 — 「다른 이름을 쓰는 래퍼가 있을 수 있다」는 가정만으로 결속을 인정하는
-    // 것은, 실제로 결속되지 않는 호출을 결속됐다고 부르는 것과 같다. 그런 래퍼가 나타나면
-    // 그 도구를 따로 식별해 스키마를 확인한 뒤 열어야 한다(이름만으로 미리 열지 않는다).
+    // 보호가 이 경로에서만 무효가 되는 fail-open 이다. `sha` 자체는 위 별칭 관문이 막는다.
     const bound = typeof ti.expectedHeadSha === 'string' ? ti.expectedHeadSha.trim() : ''
     return {
       kind: 'merge',

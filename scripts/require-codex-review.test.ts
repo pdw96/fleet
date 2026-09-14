@@ -625,14 +625,16 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
         tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 338, expectedHeadSha: 'abc' },
       }),
     ).toMatchObject({ kind: 'merge', pr: 338, matchHead: 'abc', viaMcp: true })
-    // `sha` 만 온 호출 = 결속 없음 → main 이 head SHA 를 붙여 재시도를 요구한다.
+    // `sha` 는 **무시가 아니라 차단**이다 — 무시만 하면 `sha` 를 해석하는 래퍼에서
+    // 게이트가 검증한 `expectedHeadSha` 와 서버가 강제하는 head 제약이 갈린다. 검증 후
+    // head 가 움직였을 때 서버 쪽 제약이 새 head 를 가리키면 미리뷰 커밋이 머지된다
+    // (#339 Codex 3차 P1 — `pull_number` 와 같은 규율을 `sha` 에도 적용).
     expect(
       classifyHookInput({
         tool_name: 'mcp__github__merge_pull_request',
         tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 338, sha: 'abc' },
-      }),
-    ).toMatchObject({ kind: 'merge', pr: 338, matchHead: null, viaMcp: true })
-    // `sha` 가 곁들여져도 판정은 `expectedHeadSha` 만 본다.
+      }).kind,
+    ).toBe('blocked')
     expect(
       classifyHookInput({
         tool_name: 'mcp__github__merge_pull_request',
@@ -643,8 +645,8 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
           sha: 'deadbeef',
           expectedHeadSha: 'abc',
         },
-      }),
-    ).toMatchObject({ kind: 'merge', matchHead: 'abc', viaMcp: true })
+      }).kind,
+    ).toBe('blocked')
   })
 })
 

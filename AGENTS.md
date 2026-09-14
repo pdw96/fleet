@@ -255,11 +255,13 @@ project number `1`, owner `pdw96`).
      [-R owner/repo] [--squash 등] --match-head-commit <head SHA>` 와 **GitHub MCP
      `merge_pull_request(owner, repo, pullNumber, expectedHeadSha: <head SHA>)`** 다. MCP 쪽은
      우회가 아니라 **구조화 입력이라 파싱 없이 검증되는 정규 경로**이고, head 결속 필수도 동일하다.
-     **MCP 입력은 스키마에 있는 이름만 읽는다** — 타깃은 `pullNumber`, 결속은 `expectedHeadSha`
-     뿐이고, 스키마 밖 별칭(`pull_number`·`sha`)은 인정하지 않으며 섞여 있으면 차단한다.
-     별칭을 받으면 **게이트가 검증한 것과 서버가 실행하는 것이 갈린다** — 전송 계층이 미지
-     필드를 버리므로, 버려질 값을 근거로 인가하는 꼴이 된다(결속은 fail-open 이 되고, 타깃은
-     리뷰 통과한 A 를 검증하고 B 를 머지하는 경로가 된다).
+     **MCP 입력은 스키마에 있는 이름만 읽고, 스키마 밖 별칭이 보이면 차단한다** — 타깃은
+     `pullNumber`, 결속은 `expectedHeadSha` 뿐이고 `pull_number`·`sha` 는 무시가 아니라 차단이다.
+     별칭이 남아 있으면 **게이트가 검증한 것과 서버가 실행하는 것이 갈릴 수 있다**: 별칭을
+     버리는 전송 계층에서는 버려질 값을 근거로 인가하는 꼴이 되고(결속 fail-open), 별칭을
+     해석하는 래퍼에서는 검증 대상과 실행 대상 자체가 갈린다(리뷰 통과한 A 를 검증하고 B 를
+     머지 · 검증한 head 와 서버가 강제하는 head 가 다름). 어느 쪽도 「이 전송 계층은 별칭을
+     버릴 것이다」라는 **가정 위에서만** 안전하므로, 가정을 근거로 인가하지 않는다.
      그 밖(REST `pulls/N/merge`·GraphQL mutation·서브셸·복합 명령)은 전부 차단.
    - **원격 세션의 GraphQL 차단** — Claude Code on the web 에서는 `api.github.com/graphql` 이 403 이라
      **`gh pr merge`·`gh pr view --json`·`gh pr comment` 가 전부 실패한다**(전부 GraphQL 클라이언트다).
