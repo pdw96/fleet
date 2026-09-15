@@ -572,17 +572,79 @@ describe('classifyHookInput — 3분류(pass/blocked/merge)', () => {
     expect(classify('gh pr merge --squash --match-head-commit abc').kind).toBe('blocked')
     expect(classify('gh pr merge feature/x --merge --match-head-commit abc').kind).toBe('blocked')
   })
-  it('MCP merge_pull_request 는 구조화 입력으로 분류된다(sha 는 main 에서 필수 강제)', () => {
+  it('MCP merge_pull_request 는 구조화 입력으로 분류된다(결속은 main 에서 필수 강제)', () => {
     expect(
       classifyHookInput({
         tool_name: 'mcp__plugin_github_github__merge_pull_request',
-        tool_input: { owner: 'pdw96', repo: 'fleet', pull_number: 240, sha: 'abc' },
+        tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 240, expectedHeadSha: 'abc' },
       }),
     ).toMatchObject({ kind: 'merge', pr: 240, repo: 'pdw96/fleet', matchHead: 'abc', viaMcp: true })
     expect(
       classifyHookInput({
         tool_name: 'mcp__plugin_github_github__merge_pull_request',
         tool_input: { owner: 'pdw96', repo: 'fleet' },
+      }).kind,
+    ).toBe('blocked')
+  })
+  it('MCP 의 타깃 필드는 `pullNumber` 뿐 — 별칭 `pull_number` 가 있으면 차단', () => {
+    // `sha` 와 같은 계열의 구멍이다. 스키마에 없는 `pull_number` 를 먼저 읽으면, 두 필드가
+    // 함께 온 호출에서 **게이트가 검증한 PR 과 서버가 실행하는 PR 이 갈린다** — 리뷰를 통과한
+    // A 를 검증하고, 전송 계층이 미지 필드를 버려 B 가 머지된다. 두 PR 의 head 가 같으면
+    // `expectedHeadSha` 조차 B 에 맞아떨어져 마지막 방어선도 통과한다(#339 Codex 2차 P1).
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: {
+          owner: 'pdw96',
+          repo: 'fleet',
+          pull_number: 338,
+          pullNumber: 339,
+          expectedHeadSha: 'abc',
+        },
+      }).kind,
+    ).toBe('blocked')
+    // 별칭만 온 호출도 차단 — 실행될 타깃이 무엇인지 알 수 없다.
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: { owner: 'pdw96', repo: 'fleet', pull_number: 338, expectedHeadSha: 'abc' },
+      }).kind,
+    ).toBe('blocked')
+  })
+  it('MCP 의 head 결속 필드는 `expectedHeadSha` **뿐**이다 — `sha` 는 결속으로 안 센다', () => {
+    // 게이트는 `sha` 를 읽고 있었는데 merge_pull_request 스키마에 그 필드는 없다
+    // (`expectedHeadSha` 다). 그래서 정상 호출은 「결속 없음」으로 차단되고, 차단 메시지가
+    // 안내하던 `sha` 를 넣으면 게이트는 결속됐다고 보지만 서버는 그 미지 필드를 버려
+    // **결속 없는 머지**가 나간다 — 3R P1 이 닫은 TOCTOU 보호가 이 경로에서만 무효가 된다.
+    // 따라서 `sha` 를 **대체 이름으로 인정하지 않는다**: 인정하는 순간 같은 fail-open 이
+    // 그대로 남는다(#339 Codex P1). 다른 이름을 쓰는 래퍼가 실제로 나타나면 그 도구를
+    // 따로 식별해 열어야지, 이름만 보고 미리 열어둘 자리가 아니다.
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 338, expectedHeadSha: 'abc' },
+      }),
+    ).toMatchObject({ kind: 'merge', pr: 338, matchHead: 'abc', viaMcp: true })
+    // `sha` 는 **무시가 아니라 차단**이다 — 무시만 하면 `sha` 를 해석하는 래퍼에서
+    // 게이트가 검증한 `expectedHeadSha` 와 서버가 강제하는 head 제약이 갈린다. 검증 후
+    // head 가 움직였을 때 서버 쪽 제약이 새 head 를 가리키면 미리뷰 커밋이 머지된다
+    // (#339 Codex 3차 P1 — `pull_number` 와 같은 규율을 `sha` 에도 적용).
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: { owner: 'pdw96', repo: 'fleet', pullNumber: 338, sha: 'abc' },
+      }).kind,
+    ).toBe('blocked')
+    expect(
+      classifyHookInput({
+        tool_name: 'mcp__github__merge_pull_request',
+        tool_input: {
+          owner: 'pdw96',
+          repo: 'fleet',
+          pullNumber: 338,
+          sha: 'deadbeef',
+          expectedHeadSha: 'abc',
+        },
       }).kind,
     ).toBe('blocked')
   })
@@ -617,6 +679,16 @@ describe('blockedGuidance — 차단 사유 계열별 안내', () => {
     const g = blockedGuidance({ tool_name: 'mcp__github__merge_pull_request', tool_input: {} })
     expect(g).toContain(MERGE_MARK)
     expect(g).not.toContain(UNKNOWN_MARK)
+  })
+
+  it('머지 안내가 MCP 경로도 이름으로 알려준다 — 그게 없으면 막다른 길로 읽힌다', () => {
+    // 안내가 Bash 형태만 말하고 「REST/GraphQL 경유는 전부 차단」으로 끝나면, GraphQL 이
+    // 막힌 환경(원격 세션)에서는 실행 가능한 머지 경로가 하나도 없는 것처럼 읽힌다 —
+    // 실제로 이 레포에서 그렇게 읽고 두 PR 을 사람 손에 넘긴 세션이 있었다. MCP 경로는
+    // 우회가 아니라 게이트가 구조화 입력으로 검증하는 정규 경로이므로 이름을 밝힌다.
+    const g = blockedGuidance({ tool_name: 'mcp__github__merge_pull_request', tool_input: {} })
+    expect(g).toContain('merge_pull_request')
+    expect(g).toContain('expectedHeadSha')
   })
 
   it('머지 신호가 있는데 canonical 이탈이면 머지 안내', () => {

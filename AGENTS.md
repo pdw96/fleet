@@ -245,11 +245,37 @@ project number `1`, owner `pdw96`).
    PR 만 `Closes #<N>`** 로 닫는다.
    PR open 후 **Codex 봇 자동리뷰를 기다려** 반영(위 「리뷰 피드백 교차검증」) → 사용자 확인 후 squash 머지.
    **ruleset 이 required check 통과 + 미해결 리뷰 스레드 resolve 를 머지 전 강제** — Codex 인라인 지적은
-   반영/반박 후 스레드를 resolve(`gh api graphql … resolveReviewThread`) 해야 머지 가능.
+   반영/반박 후 스레드를 resolve 해야 머지 가능(로컬은 `gh api graphql … resolveReviewThread`,
+   원격은 아래 「GraphQL 차단」의 CCR 라우트).
    - **Codex 봇 운영**: 머지 인가 판정은 사람이 채널을 훑어 내리지 않는다 —
      `.claude/settings.json` 의 PreToolUse hook(`hooks/require-codex-review.mjs`)이 **현재 head 에
      결속된** Codex 신호 부재 시 머지를 기계 차단하며(fail-closed·canonical allowlist),
      **차단 메시지가 복사 가능한 정확한 재시도 명령을 준다.** 산문 규율의 구조 강제라 우회 금지.
+   - **머지 경로는 둘이고 등급이 같다** — 게이트가 인정하는 형태는 Bash `gh pr merge <번호>
+     [-R owner/repo] [--squash 등] --match-head-commit <head SHA>` 와 **GitHub MCP
+     `merge_pull_request(owner, repo, pullNumber, expectedHeadSha: <head SHA>)`** 다. MCP 쪽은
+     우회가 아니라 **구조화 입력이라 파싱 없이 검증되는 정규 경로**이고, head 결속 필수도 동일하다.
+     **MCP 입력은 스키마에 있는 이름만 읽고, 스키마 밖 별칭이 보이면 차단한다** — 타깃은
+     `pullNumber`, 결속은 `expectedHeadSha` 뿐이고 `pull_number`·`sha` 는 무시가 아니라 차단이다.
+     별칭이 남아 있으면 **게이트가 검증한 것과 서버가 실행하는 것이 갈릴 수 있다**: 별칭을
+     버리는 전송 계층에서는 버려질 값을 근거로 인가하는 꼴이 되고(결속 fail-open), 별칭을
+     해석하는 래퍼에서는 검증 대상과 실행 대상 자체가 갈린다(리뷰 통과한 A 를 검증하고 B 를
+     머지 · 검증한 head 와 서버가 강제하는 head 가 다름). 어느 쪽도 「이 전송 계층은 별칭을
+     버릴 것이다」라는 **가정 위에서만** 안전하므로, 가정을 근거로 인가하지 않는다.
+     그 밖(REST `pulls/N/merge`·GraphQL mutation·서브셸·복합 명령)은 전부 차단.
+   - **원격 세션의 GraphQL 차단** — Claude Code on the web 에서는 `api.github.com/graphql` 이 403 이라
+     **`gh pr merge`·`gh pr view --json`·`gh pr comment` 가 전부 실패한다**(전부 GraphQL 클라이언트다).
+     그 환경에서 머지는 **MCP 경로가 유일**하고, 조회는 REST(`gh api repos/{owner}/{repo}/…`),
+     스레드 resolve·draft 전환은 CCR 라우트(`…/pulls/{n}/ccr/review_threads`,
+     `…/ccr/comments/{id}/resolve`, `…/ccr/ready_for_review`)를 쓴다.
+   - **코멘트·PR 생성은 MCP 로 한다** — `gh api` 경유로 올린 코멘트·PR 은 작성자가 `claude[bot]`
+     이 되고, 이 계정은 리뷰 봇에게 보이지 않거나 거부당한다(전부 실측):
+     - **Codex 는 연결되지 않은 계정의 `@codex review` 를 거부한다** — 계정 연결 안내만 돌아온다.
+     - **CodeRabbit 은 봇이 연 PR 을 건너뛴다** — `Review skipped / Bot user detected`.
+     - **드래프트 해제(ready)도 트리거가 되지 않는다** — 행위자가 `claude[bot]` 이면 자동 리뷰가
+       안 걸리므로 ready 직후 수동 `@codex review` 를 MCP 로 함께 건다.
+
+     MCP `add_issue_comment`·`create_pull_request` 는 OWNER 계정으로 나가 이 문제가 없다.
      **대기 방식은 실행 환경으로 갈린다** — 폴링은 이제 로컬 전용 폴백이다:
      - **원격(Claude Code on the web)** — `subscribe_pr_activity` 로 그 PR 을 구독한다. 리뷰·CI·코멘트가
        **도착할 때만** 세션이 깨어나므로 대기 턴이 0이다. `/loop 5m` 은 리뷰가 20분 걸리면 아무 일도

@@ -686,10 +686,45 @@ export function classifyHookInput(input, _depth = 0) {
   const toolName = String(input.tool_name ?? '')
   if (/merge_pull_request/.test(toolName)) {
     const ti = input.tool_input ?? {}
-    const pr = ti.pull_number ?? ti.pullNumber ?? null
-    if (pr == null) return { kind: 'blocked', reason: 'MCP 입력에 pull_number 없음' }
+    // 규율 하나로 묶는다: **스키마에 있는 이름만 읽고, 스키마 밖 별칭이 있으면 차단한다.**
+    // merge_pull_request 의 스키마는 타깃 `pullNumber`, 결속 `expectedHeadSha` 다.
+    //
+    // 왜 「무시」가 아니라 「차단」인가 — 별칭이 남아 있으면 **게이트가 검증한 것과 서버가
+    // 실행하는 것이 갈릴 수 있다.** 이 hook 은 `mcp__…merge_pull_request` 를 전부 이 분기로
+    // 보내므로, 별칭을 해석하는 래퍼가 하나라도 있으면:
+    //   · `pull_number` — 리뷰를 통과한 A 를 검증하고 B 가 머지된다. 두 PR 의 head 가 같으면
+    //     `expectedHeadSha` 조차 B 에 맞아떨어져 마지막 방어선도 통과한다.
+    //   · `sha` — 게이트가 검증한 `expectedHeadSha` 와 서버가 강제하는 head 제약이 갈린다.
+    //     검증 후 head 가 움직였을 때 서버 쪽 제약이 새 head 를 가리키면 미리뷰 커밋이 머지된다
+    //     (3R P1 이 닫은 TOCTOU 가 그대로 열린다).
+    // 어느 쪽도 「이 전송 계층은 별칭을 버릴 것이다」라는 가정 위에서만 안전하다. 가정을 근거로
+    // 인가하지 않는다 — 별칭이 보이면 막고, 호출자가 스키마 이름으로 다시 부르게 한다.
+    const aliases = ['pull_number', 'sha'].filter((k) => ti[k] !== undefined)
+    if (aliases.length) {
+      return {
+        kind: 'blocked',
+        reason:
+          `MCP 입력에 스키마 밖 별칭(${aliases.join('·')})이 있다 — ` +
+          'pullNumber·expectedHeadSha 만 쓴다',
+      }
+    }
+    const pr = ti.pullNumber ?? null
+    if (pr == null) return { kind: 'blocked', reason: 'MCP 입력에 pullNumber 없음' }
     const repo = ti.owner && ti.repo ? `${ti.owner}/${ti.repo}` : null
-    return { kind: 'merge', pr, repo, target: null, matchHead: ti.sha ?? null, viaMcp: true }
+    // head 결속으로 인정하는 필드는 `expectedHeadSha` **하나뿐**이다 — merge_pull_request 의
+    // 실제 스키마 이름이다. 전에는 `sha` 를 읽었는데 그 필드는 스키마에 없다: 정상 호출은
+    // 「결속 없음」으로 차단되고, 차단 메시지가 안내하던 `sha` 를 넣으면 게이트는 결속됐다고
+    // 보지만 서버는 그 미지 필드를 버려 **결속 없는 머지**가 나간다 — 3R P1 이 닫은 TOCTOU
+    // 보호가 이 경로에서만 무효가 되는 fail-open 이다. `sha` 자체는 위 별칭 관문이 막는다.
+    const bound = typeof ti.expectedHeadSha === 'string' ? ti.expectedHeadSha.trim() : ''
+    return {
+      kind: 'merge',
+      pr,
+      repo,
+      target: null,
+      matchHead: bound || null,
+      viaMcp: true,
+    }
   }
   if (toolName !== 'Bash') return { kind: 'pass' }
   const cmd = String(input.tool_input?.command ?? '')
@@ -1012,10 +1047,18 @@ export function classifyHookInput(input, _depth = 0) {
 // 막히는 동안 안내문이 매번 머지 문법뿐이라 원인 진단이 불가능했다. ②는 그걸 해결한다.
 // 줄 번호는 적지 않는다(이 파일은 계속 자란다). 계열이 갈리는 지점은 `hasMergeSignal` 하나뿐이고,
 // 그 대응은 scripts/require-codex-review.test.ts 의 blockedGuidance describe 가 고정한다.
+// 두 경로를 **둘 다** 이름으로 밝힌다. Bash 형태만 적고 「REST/GraphQL 경유는 전부 차단」으로
+// 끝나면, GraphQL 이 막힌 환경(원격 세션에서 `gh pr merge` 는 403 이다)에서는 실행 가능한
+// 머지 경로가 하나도 없는 것처럼 읽힌다 — 실제로 그렇게 읽고 머지를 사람 손에 넘긴 세션이 있다.
+// MCP 경로를 적는 것은 위 「우회 지도 금지」와 충돌하지 않는다: 그쪽은 게이트가 못 보는 자리가
+// 아니라 **구조화 입력으로 같은 검증을 받는 정규 경로**이기 때문이다(head 결속 필수도 동일).
 const MERGE_GUIDANCE =
-  '머지는 canonical 형태만 허용된다:\n' +
-  '  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
-  '(REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
+  '머지는 canonical 형태만 허용된다 — 다음 둘 중 하나다:\n' +
+  '  · Bash  gh pr merge <번호> [-R owner/repo] [--squash 등] --match-head-commit <head SHA>\n' +
+  '  · MCP   merge_pull_request(owner, repo, pullNumber, expectedHeadSha: <head SHA>)\n' +
+  '둘 다 같은 Codex 신호 검증과 head 결속을 거친다. GraphQL 이 막힌 환경에서는 MCP 쪽이 유일한 ' +
+  '실행 경로다.\n' +
+  '(그 밖의 REST/GraphQL/복합 명령/서브셸 경유 머지는 전부 차단 — 머지 문구를 본문 인용만 하는 ' +
   '거면 --body-file 로 우회하라.)'
 
 // ⚠ 이 문구는 **차단을 뚫으려는 순간에 읽힌다** — 「막힌 내용을 게이트가 못 보는 자리로
@@ -1263,7 +1306,7 @@ function main() {
   }
 
   // pr 은 항상 명시 번호다 — Bash 는 classify 가 번호/URL 을 강제하고(15R P1: 이중 해석
-  // 레이스 제거) MCP 는 pull_number 필수.
+  // 레이스 제거) MCP 는 pullNumber 필수.
   const { pr, repo } = verdict
   if (pr == null) {
     console.error('[codex-gate] PR 번호 부재 — fail-closed 차단.')
@@ -1280,7 +1323,7 @@ function main() {
     // 병합 전략을 조용히 바꾼다). 원 명령은 canonical 단일 세그먼트라 뒤에 덧붙여도 유효.
     const originalCmd = String(input.tool_input?.command ?? '').trim()
     const hint = verdict.viaMcp
-      ? `merge_pull_request 호출에 sha: "${headSha}" 를 포함해 재시도하라.`
+      ? `merge_pull_request 호출에 expectedHeadSha: "${headSha}" 를 포함해 재시도하라.`
       : '이대로 재시도하라:\n' + `  ${originalCmd} --match-head-commit ${headSha}`
     console.error(
       `[codex-gate] PR #${pr} 검증 통과 — 단, 검증 시점의 head 를 서버가 강제하도록 ` +
