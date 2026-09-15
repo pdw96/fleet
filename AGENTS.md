@@ -265,7 +265,6 @@ project number `1`, owner `pdw96`).
      그 밖(REST `pulls/N/merge`·GraphQL mutation·서브셸·복합 명령)은 전부 차단.
    - **원격 세션의 GraphQL 차단** — Claude Code on the web 에서는 `api.github.com/graphql` 이 403 이라
      **`gh pr merge`·`gh pr view --json`·`gh pr comment` 가 전부 실패한다**(전부 GraphQL 클라이언트다).
-     `gh` 가 통째로 막힌 것이 아니라 **GraphQL 인 하위명령만** 실패한다 — `gh api repos/…` 는 통한다.
      그 환경에서 머지는 **MCP 경로가 유일**하고, 조회는 REST(`gh api repos/{owner}/{repo}/…`),
      스레드 resolve·draft 전환은 CCR 라우트(`…/pulls/{n}/ccr/review_threads`,
      `…/ccr/comments/{id}/resolve`, `…/ccr/ready_for_review`)를 쓴다.
@@ -276,20 +275,7 @@ project number `1`, owner `pdw96`).
      - **드래프트 해제(ready)도 트리거가 되지 않는다** — 행위자가 `claude[bot]` 이면 자동 리뷰가
        안 걸리므로 ready 직후 수동 `@codex review` 를 MCP 로 함께 건다.
 
-     MCP `add_issue_comment`·`create_pull_request` 는 OWNER 계정으로 나가 이 문제가 없다 —
-     **단 MCP 쓰기가 열려 있는 환경에서만**이다. 다른 환경에서 같은 호출이 `403 Resource not
-     accessible by integration` 으로 막히는 것을 실측했고, 그건 세션 안에서 고칠 수 없다
-     (claude.ai Settings → Connectors 에서 GitHub 재연결 또는 해당 저장소 앱 접근 부여).
-
-     **신원은 세 축으로 갈린다 — 경로별(MCP/REST) · 환경별 · 읽기/쓰기별.** 자격증명은 프록시가
-     호출 시점에 주입하므로 `$GITHUB_TOKEN`(14자 자리표시자)으로 신원을 고를 수 없고,
-     `gh api user` 가 사람 이름을 돌려준다고 **쓰기도 그 이름으로 나가지 않는다**. 실측 한도가
-     경로를 가른다 — 읽기 `core: 15000`(사람), REST 쓰기 5000(봇).
-
-     **거절이 권한 문제인지는 본문으로 가른다** — 빈 본문 POST 에 `422` 면 권한은 있고 본문만
-     거부된 것, `403` 이면 권한이 없는 것이다. `Content-Type` 을 빠뜨리면 프록시가 먼저
-     가로채 *"Request bodies must declare Content-Type"* 를 내는데, 그건 GitHub 의 답이
-     아니므로 403 판정에 넣지 않는다. 작성자 신원은 쓴 뒤 응답의 `user.login`·`user.type` 로 본다.
+     MCP `add_issue_comment`·`create_pull_request` 는 OWNER 계정으로 나가 이 문제가 없다.
      **대기 방식은 실행 환경으로 갈린다** — 폴링은 이제 로컬 전용 폴백이다:
      - **원격(Claude Code on the web)** — `subscribe_pr_activity` 로 그 PR 을 구독한다. 리뷰·CI·코멘트가
        **도착할 때만** 세션이 깨어나므로 대기 턴이 0이다. `/loop 5m` 은 리뷰가 20분 걸리면 아무 일도
